@@ -103,6 +103,8 @@ export interface AppSession {
   /** How the threads of each workspace are arranged, by "workspace:section".
    *  Each value is a tree from layout.ts and is checked when it is read. */
   layouts?: Record<string, unknown>;
+  threadDetailsOpen?: boolean;
+  threadDetailsCollapsed?: Partial<Record<import("./detailsLayout").DetailsSection, boolean>>;
 }
 
 export type Speaker = { kind: "human" } | { kind: "bot"; id: string };

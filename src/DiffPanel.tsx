@@ -11,7 +11,7 @@ interface Props {
   colorOf: (id: string) => string;
   onReveal: (path: string) => void;
   onRefresh: () => void;
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 /** Everything that changed in the folder since this thread started, under
@@ -27,7 +27,7 @@ export function DiffPanel({ diff, loading, order, nameOf, colorOf, onReveal, onR
         <strong>Since this thread started</strong>
         <span className="muted">{loading ? "Reading…" : `${files.length} files · +${added} −${removed}`}</span>
         <button className="ghost small" onClick={onRefresh} disabled={loading}>Refresh</button>
-        <button className="icon small" aria-label="Close changes" onClick={onClose}>×</button>
+        {onClose && <button className="icon small" aria-label="Close changes" onClick={onClose}>×</button>}
       </header>
       {diff?.note && <p className="changes-note">{diff.note}</p>}
       {!loading && files.length === 0 && <p className="muted changes-empty">Nothing has changed yet.</p>}

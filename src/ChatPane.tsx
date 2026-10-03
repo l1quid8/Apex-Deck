@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
+import { findTrigger, insertAt } from "./composerMenu";
+import { createPortal } from "react-dom";
+import { ThreadDetails, type DetailsHost } from "./ThreadDetails";
 import type { Backend } from "./backend";
 import { providerEnabled, providerForConfig } from "./providers";
 import { registerRoom } from "./hub";
@@ -51,6 +55,7 @@ interface Props {
   profileMode?: boolean;
   onFork?: (title: string, upto: number | null) => Promise<string>;
   disabledProviders: string[];
+  details?: DetailsHost;
 }
 
 type Notice = { key: number; text: string; tone: "info" | "error" };
@@ -294,7 +299,7 @@ function describe(config: ParticipantConfig): string {
   return "Scripted";
 }
 
-export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false }: Props) {
+export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -328,7 +333,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const [asks, setAsks] = useState<Record<string, { request: string; action: ProposedAction }[]>>({});
   /** Files the bots have changed since this chat was opened. */
   const [changes, setChanges] = useState<MadeChange[]>([]);
-  const [showChanges, setShowChanges] = useState(false);
+  const showChanges = Boolean(details?.open && focused && !details.collapsed.changes);
   const showChangesRef = useRef(false);
   showChangesRef.current = showChanges;
   const [diff, setDiff] = useState<ThreadDiff | null>(null);
@@ -343,8 +348,11 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   };
   const refreshDiff = useRef(loadDiff);
   refreshDiff.current = loadDiff;
+  useEffect(() => { if (showChanges) refreshDiff.current(); }, [showChanges]);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState("");
+  const [caret, setCaret] = useState(0);
+  const composerMenu = useRef<ComposerMenuHandle>(null);
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
   const [queuePaused, setQueuePaused] = useState(false);
   const [reply, setReply] = useState<ReplyQuote | null>(null);
@@ -712,7 +720,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       }
 
       case "diff":
-        setText(""); setShowChanges(true); loadDiff(); return;
+        setText(""); details?.show("changes"); loadDiff(); return;
       case "unknown":
         return notify(`${command.typed} isn't a command. Start with // to send it as a message.`, "error");
 
@@ -849,50 +857,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     ? "Enforced with the tool's own permission settings."
     : "Stated to the model as an instruction. Not enforced.";
 
-  return (
-    <div className="chat">
-      <div className="chat-bar">
-        <div className="chips">
-          {!profileMode && participants.map((p) => {
-            const levels = levelsFor(p.id);
-            return (
-            <span
-              className="chip-wrap"
-              key={p.id}
-              onMouseEnter={() => setCard(p.id)}
-              onMouseLeave={() => setCard((open) => (open === p.id ? null : open))}
-              onFocus={() => setCard(p.id)}
-              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCard((open) => (open === p.id ? null : open)); }}
-              onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
-            >
-            <span className="chip" style={{ borderColor: color(p.id) }}>
-              <button className="chip-name" onClick={() => mention(p.id)} title={`Mention @${p.id}`}>
-                <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
-                {p.display_name}
-                <span className="chip-meta">{describe(p)}</span>
-                {(levels.context !== null || levels.plan !== null) && (
-                  <span className="chip-meta chip-levels">
-                    {levels.context !== null && <span className={isLow(levels.context) ? "usage-low" : undefined} title="Context left">{percent(levels.context)}%</span>}
-                    {levels.context !== null && levels.plan !== null && <span className="chip-sep" aria-hidden="true">|</span>}
-                    {levels.plan !== null && <span className={isLow(levels.plan) ? "usage-low" : undefined} title="Plan left">{percent(levels.plan)}%</span>}
-                  </span>
-                )}
-              </button>
-              <button className="chip-edit" onClick={() => startEditing(p)} aria-label={`Change settings for ${p.display_name}`} title="Change model, effort, access or persona" disabled={busy}>
-                ✎
-              </button>
-              <button className="chip-edit" onClick={() => onProfilesChange([...profiles.filter((profile) => profile.id !== p.id), p])} aria-label={`Save ${p.display_name} to Agents`} title="Save to Agents" disabled={busy}>＋</button>
-              <button className="chip-x" onClick={() => removeParticipant(p.id)} aria-label={`Remove ${p.display_name}`} disabled={busy}>
-                ×
-              </button>
-            </span>
-            {card === p.id && usageCard(p)}
-            </span>
-            );
-          })}
-          <button
+  const addButton = (<button
             className="ghost"
             onClick={() => {
+              details?.show("form");
               if (adding) return closeForm(draft.preset);
               if (preset.api?.autoLoad && apiModels.length === 0) loadModels(draft.baseUrl, draft.keyEnv);
               if (!providerEnabled(draft.preset, disabledProviders)) setDraft(emptyDraft(firstPreset));
@@ -901,48 +869,8 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             disabled={!ready || availablePresets.length === 0}
           >
             {adding ? "Cancel" : profileMode ? "+ New agent" : "+ Add model"}
-          </button>
-        </div>
-        {!profileMode && availableProfiles.length > 0 && <select aria-label="Add a saved agent" value="" disabled={!ready || busy} onChange={async (e) => {
-          const config = availableProfiles.find((p) => p.id === e.target.value);
-          if (!config) return;
-          try {
-            await backend.roomAddParticipant(pane.id, config);
-            setParticipants((list) => [...list, config]);
-          } catch (error) { notify(`Could not add the agent: ${String(error)}`, "error"); }
-        }}>
-          <option value="">Add a saved agent…</option>
-          {availableProfiles.map((p) => <option key={p.id} value={p.id} disabled={participants.some((own) => own.id === p.id)}>{p.display_name}</option>)}
-        </select>}
-        {!profileMode && (
-          <button className={`ghost changes-toggle ${showChanges ? "on" : ""}`} onClick={() => { setShowChanges(!showChanges); if (!showChanges) loadDiff(); }} aria-pressed={showChanges} title="Folder changes since this thread started">
-            Changes{changes.length > 0 ? ` · ${new Set(changes.map((c) => c.change.path)).size}` : ""}
-          </button>
-        )}
-        {!profileMode && <div className="chat-options">
-          <label>
-            Who answers
-            <select disabled={!ready || busy} value={options.policy} onChange={(e) => changeOptions({ ...options, policy: e.target.value as TurnPolicy })}>
-              <option value="mention">Only who I @mention</option>
-              <option value="everyone">Everyone at once</option>
-              <option value="round_robin">Everyone in turn</option>
-            </select>
-          </label>
-          <label title="How many rounds of models answering each other are allowed after one of your messages">
-            Model-to-model rounds
-            <input
-              type="number"
-              min={0}
-              max={10}
-              value={options.max_bot_hops}
-              disabled={!ready || busy}
-              onChange={(e) => changeOptions({ ...options, max_bot_hops: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
-            />
-          </label>
-        </div>}
-      </div>
-
-      {adding && (
+          </button>);
+  const modelForm = (adding && (
         <form
           className="add-form"
           onSubmit={(e) => {
@@ -1079,7 +1007,105 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             {editing ? "Save changes" : profileMode ? "Save agent" : "Add to chat"}
           </button>
         </form>
-      )}
+      ));
+  const savedPicker = (availableProfiles.length > 0 && <select aria-label="Add a saved agent" value="" disabled={!ready || busy} onChange={async (e) => {
+          const config = availableProfiles.find((p) => p.id === e.target.value);
+          if (!config) return;
+          try {
+            await backend.roomAddParticipant(pane.id, config);
+            setParticipants((list) => [...list, config]);
+          } catch (error) { notify(`Could not add the agent: ${String(error)}`, "error"); }
+        }}>
+          <option value="">Add a saved agent…</option>
+          {availableProfiles.map((p) => <option key={p.id} value={p.id} disabled={participants.some((own) => own.id === p.id)}>{p.display_name}</option>)}
+        </select>);
+  const roomControls = (<div className="chat-options">
+          <label>
+            Who answers
+            <select disabled={!ready || busy} value={options.policy} onChange={(e) => changeOptions({ ...options, policy: e.target.value as TurnPolicy })}>
+              <option value="mention">Only who I @mention</option>
+              <option value="everyone">Everyone at once</option>
+              <option value="round_robin">Everyone in turn</option>
+            </select>
+          </label>
+          <label title="How many rounds of models answering each other are allowed after one of your messages">
+            Model-to-model rounds
+            <input
+              type="number"
+              min={0}
+              max={10}
+              value={options.max_bot_hops}
+              disabled={!ready || busy}
+              onChange={(e) => changeOptions({ ...options, max_bot_hops: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
+            />
+          </label>
+        </div>);
+  const pinControls = (pins.length > 0 ? <details className="pins" aria-label="Pinned for every model">
+        <summary className="pins-label">Pinned <span>({pins.length})</span></summary>
+        <div className="pins-list">
+        {pins.map((pin, index) => <div className="pin" key={pin}>
+          <span className="pin-text" title={pin}>{pin}</span>
+          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning} onClick={() => removePin(index)}>×</button>
+        </div>)}
+        </div>
+      </details> : <p className="muted">No pinned facts. Add one with /pin.</p>);
+  const botControls = <>{participants.map(p => <article className="details-bot" key={p.id}>
+    <div className="details-bot-title"><Avatar seed={appearance(p.id).seed} color={color(p.id)} levels={levelsFor(p.id)} refills={refillsFor(p.id)} working={Boolean(working[p.id]) && !asks[p.id]?.length} /><strong>{p.display_name}</strong></div>
+    <p className="muted">{describe(p)}</p><p>{p.access === "read" ? "Read only" : p.access === "ask" ? "Ask first" : p.access === "edits" ? "Can edit files" : "Full access"}</p>
+    {usageCard(p)}
+    <div className="details-actions">
+      <button className="ghost small" disabled={busy} aria-label={`Change settings for ${p.display_name}`} onClick={() => { details?.show("form"); startEditing(p); }}>Edit</button>
+      <button className="ghost small" disabled={busy} aria-label={`Save ${p.display_name} to Agents`} onClick={() => onProfilesChange([...profiles.filter(profile => profile.id !== p.id), p])}>Save to Agents</button>
+      <button className="ghost small" disabled={busy} aria-label={`Remove ${p.display_name}`} onClick={() => removeParticipant(p.id)}>Remove</button>
+    </div>
+  </article>)}{addButton}{savedPicker}</>;
+  return (
+    <div className={`chat ${profileMode ? "" : "thread-chat"}`}>
+      {!profileMode && focused && details?.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} bots={botControls} form={modelForm} room={roomControls} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
+      <div className="chat-bar">
+        <div className="chips">
+          {!profileMode && participants.map((p) => {
+            const levels = levelsFor(p.id);
+            return (
+            <span
+              className="chip-wrap"
+              key={p.id}
+              onMouseEnter={() => setCard(p.id)}
+              onMouseLeave={() => setCard((open) => (open === p.id ? null : open))}
+              onFocus={() => setCard(p.id)}
+              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCard((open) => (open === p.id ? null : open)); }}
+              onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
+            >
+            <span className="chip" style={{ borderColor: color(p.id) }}>
+              <button className="chip-name" onClick={() => mention(p.id)} title={`Mention @${p.id}`}>
+                <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
+                {p.display_name}
+                <span className="chip-meta chip-description">{describe(p)}</span>
+                {(levels.context !== null || levels.plan !== null) && (
+                  <span className="chip-meta chip-levels">
+                    {levels.context !== null && <span className={isLow(levels.context) ? "usage-low" : undefined} title="Context left">{percent(levels.context)}%</span>}
+                    {levels.context !== null && levels.plan !== null && <span className="chip-sep" aria-hidden="true">|</span>}
+                    {levels.plan !== null && <span className={isLow(levels.plan) ? "usage-low" : undefined} title="Plan left">{percent(levels.plan)}%</span>}
+                  </span>
+                )}
+              </button>
+
+            </span>
+            {card === p.id && usageCard(p)}
+            </span>
+            );
+          })}
+          {profileMode && addButton}
+        </div>
+
+
+
+        {!profileMode && <div className="thread-counts">{changes.length > 0 && <button className="ghost small" onClick={() => { details?.show("changes"); loadDiff(); }}>Changes · {new Set(changes.map(c => c.change.path)).size}</button>}</div>}
+      </div>
+
+      {!profileMode && pins.length > 0 && pinControls}
+
+      {profileMode && modelForm}
 
       {profileMode && <div className="agent-library">
         {participants.length === 0 && !adding && <div className="empty"><h3>Create your first agent</h3><p>Save a bot profile here, then add it to a conversation in Threads.</p></div>}
@@ -1089,13 +1115,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           <div className="agent-card-actions"><button onClick={() => startEditing(p)}>Edit</button><button className="ghost" onClick={() => removeParticipant(p.id)} aria-label={`Delete agent ${p.display_name}`}>Delete</button></div>
         </article>)}
       </div>}
-      {!profileMode && pins.length > 0 && <div className="pins" aria-label="Pinned for every model">
-        <span className="pins-label">Pinned</span>
-        {pins.map((pin, index) => <div className="pin" key={pin}>
-          <span className="pin-text" title={pin}>{pin}</span>
-          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning} onClick={() => removePin(index)}>×</button>
-        </div>)}
-      </div>}
+
       <div className="chat-body">
       {!profileMode && <div className="transcript" ref={scroller}>
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
@@ -1108,6 +1128,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
                 ? "Add two or more models, then ask them something. Each one sees the whole conversation."
                 : "Type a message below. Use @name to pick who answers, or @all for everyone."}
             </p>
+            {participants.length === 0 && <button className="primary" disabled={!ready} onClick={() => { details?.show("form"); setAdding(true); }}>+ Add model</button>}
           </div>
         )}
         {entries.map((entry) =>
@@ -1205,12 +1226,23 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           );
         })}
       </div>}
-      {!profileMode && showChanges && (
-        <DiffPanel diff={diff} loading={diffLoading} order={participants.map((p) => p.id)} onRefresh={loadDiff} nameOf={(id) => names.get(id) ?? id} colorOf={color} onReveal={(path) => openTarget(path, true)} onClose={() => setShowChanges(false)} />
-      )}
       </div>
 
       {!profileMode && <div className="composer">
+        <ComposerMenu ref={composerMenu} participants={participants} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          if (item.kind === "command" && item.command) {
+            const draft = text;
+            runCommand(item.command);
+            setText(trigger ? text.slice(trigger.end) : draft);
+          } else if (item.kind === "command" && !trigger && text.trim()) {
+            runCommand({ name: "pin", fact: text.trim() });
+          } else {
+            const next = insertAt(text, trigger, caret, `${item.label} `);
+            setText(next.text); setCaret(next.caret);
+            requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
+          }
+          input.current?.focus();
+        }} />
         <div className="composer-input">
         {queued.length > 0 && <div className="queued-messages" aria-label="Queued messages">
           <span className="muted">{queuePaused ? "Queue paused" : "Queued for the next turn"}</span>
@@ -1234,8 +1266,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           ref={input}
           aria-label="Message the room"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
+          onSelect={e => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
+            if (composerMenu.current?.key(e)) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send(e.metaKey || e.ctrlKey);
@@ -1245,7 +1279,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           placeholder={participants.length === 0 ? "Add a model to start" : "Message the room. @name picks who answers."}
           disabled={!ready || participants.length === 0}
         />
-        <div className="composer-hint"><span>{busy ? "Models are responding…" : "@name to mention · @all for everyone · / for commands: compact, clear, pin, diff, fork, export"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
+        <div className="composer-hint"><span>{busy ? "Models are responding…" : "+ for mentions and commands"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
         </div>
         {busy ? (
           <div className="composer-actions">

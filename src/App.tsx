@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBackend, type Backend } from "./backend";
 import { ProviderSettings } from "./ProviderSettings";
 import { providerEnabled } from "./providers";
+import { detailsOverlay, type DetailsSection } from "./detailsLayout";
+import type { DetailsHost } from "./ThreadDetails";
 import { ThreadName } from "./ThreadName";
 import { ChatPane } from "./ChatPane";
 import { startHub } from "./hub";
@@ -74,6 +76,52 @@ export function App() {
   const gridArea = useRef<HTMLDivElement>(null);
   const [picking, setPicking] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
+  const [detailsSlot, setDetailsSlot] = useState<HTMLElement | null>(null);
+  const [availableWidth, setAvailableWidth] = useState(0);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLElement>(null);
+  const detailsToggle = useRef<HTMLButtonElement>(null);
+  const focusDetails = useRef(false);
+  const pendingSection = useRef<DetailsSection | undefined>(undefined);
+  const overlayDetails = detailsOverlay(availableWidth);
+  const closeDetails = () => { setDetailsOpen(false); detailsToggle.current?.focus(); };
+  const showDetails = (target?: DetailsSection) => {
+    pendingSection.current = target;
+    focusDetails.current = true;
+    if (target) setDetailsCollapsed(old => ({ ...old, [target]: false }));
+    setDetailsOpen(true);
+  };
+  const detailsHost: DetailsHost = { slot: detailsSlot, open: detailsOpen && section === "threads", collapsed: detailsCollapsed,
+    toggle: target => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const observer = new ResizeObserver(() => {
+      // Measure available pane space with the rail accounted for, before docking.
+      const rail = body.querySelector<HTMLElement>(".rail");
+      setAvailableWidth(body.clientWidth - (rail?.getBoundingClientRect().width ?? 0));
+    });
+    observer.observe(body);
+    if (canvasRef.current) observer.observe(canvasRef.current);
+    return () => observer.disconnect();
+  }, [backend, railOpen, section]);
+  useEffect(() => {
+    if (!detailsOpen || !detailsSlot) return;
+    if (focusDetails.current) {
+      const target = pendingSection.current ? detailsSlot.querySelector<HTMLElement>(`#details-${pendingSection.current}`) : detailsSlot;
+      target?.scrollIntoView({ block: "nearest" });
+      (target?.querySelector<HTMLElement>("input, button, select, textarea") ?? detailsSlot).focus();
+      focusDetails.current = false;
+    }
+  }, [detailsOpen, detailsSlot, detailsCollapsed]);
+  useEffect(() => {
+    if (!detailsOpen || section !== "threads" || !overlayDetails) return;
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); closeDetails(); } };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [detailsOpen, section, overlayDetails]);
   const [exited, setExited] = useState<Set<string>>(new Set());
   const [, setTick] = useState(0);
   /** Panes that want attention, by pane id. */
@@ -96,6 +144,8 @@ export function App() {
       setDisabledProviders(saved?.disabledProviders ?? []);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
+      setDetailsOpen(saved?.threadDetailsOpen ?? false);
+      setDetailsCollapsed(saved?.threadDetailsCollapsed ?? {});
       // A layout that cannot be read is dropped and rebuilt from the panes.
       const arranged: Record<string, LayoutNode> = {};
       for (const [key, value] of Object.entries(saved?.layouts ?? {})) {
@@ -128,11 +178,11 @@ export function App() {
     saveWorkspaces(workspaces);
     // Terminals are not restored, so only the arrangement of threads is kept.
     const kept = Object.fromEntries(Object.entries(layouts).filter(([key]) => key.endsWith(":threads") && workspaces.some((w) => key === layoutKey(w.id, "threads"))));
-    const session: AppSession = { version: 1, workspaces, panes: panes.filter((p) => p.kind === "chat"), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: kept };
+    const session: AppSession = { version: 1, workspaces, panes: panes.filter((p) => p.kind === "chat"), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: kept, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts]);
+  }, [backend, workspaces, panes, profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed]);
 
   useEffect(() => {
     if (activeWorkspace && workspaces.some((w) => w.id === activeWorkspace)) return;
@@ -401,11 +451,12 @@ export function App() {
         {section !== "agents" && <button className="primary" onClick={() => setPicking(true)} disabled={!current}>
           {section === "threads" ? "+ New thread" : "+ New terminal"}
         </button>}
+        {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
       </header>
 
       {managingProviders && <ProviderSettings agents={agents} disabled={disabledProviders} onChange={setDisabledProviders} onClose={() => setManagingProviders(false)} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
-      <div className="body">
+      <div className="body" ref={bodyRef}>
         {railOpen && section !== "agents" && (
           <aside className="rail">
             <div className="rail-head">
@@ -446,7 +497,7 @@ export function App() {
           </aside>
         )}
 
-        <main className={`canvas section-${section}`}>
+        <main ref={canvasRef} className={`canvas section-${section}`}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} />}
           {section !== "agents" && !current && (
             <div className="picker">
@@ -492,9 +543,9 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible} onActivity={onActivity} onExit={onExit} onSignal={onSignal} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} />
                     ) : (
-                      <ChatPane onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible} onActivity={onActivity} onSignal={onSignal} />
+                      <ChatPane details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} />
                     )}
                   </div>
                 </section>
@@ -504,6 +555,12 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
         </main>
+        {section === "threads" && detailsOpen && <>
+          {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close thread details overlay" onClick={closeDetails} />}
+          <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} aria-label="Thread details">
+            {!(section === "threads" && !picking && shown.some(p => p.kind === "chat" && p.id === focusedPane)) && <p className="muted details-empty">Select a thread to see its bots and changes.</p>}
+          </aside>
+        </>}
       </div>
     </div>
   );

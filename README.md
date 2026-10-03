@@ -54,10 +54,15 @@ edges.
   Approve and a Reject button. Nothing happens until you choose, the pane is
   flagged as waiting on you, and the time you take does not count against
   the reply's time limit. Stop rejects whatever is waiting.
-- **Changes.** The Changes button in a chat lists every file the bots
-  changed there, newest first, with who changed it, the lines added and
-  removed, and a button to show the file in Finder. It covers the chat while
-  it is open; it is not saved and is not a history of the folder.
+- **Thread details.** The right sidebar follows the focused thread and holds
+  model settings, saved agents, reply policy, rounds and Changes. It overlays
+  the conversation in narrow windows. Pins stay above the conversation in a
+  collapsible strip, with full text wrapping when expanded.
+- **Changes.** `/diff` opens Changes in thread details, comparing the workspace
+  against the thread's starting snapshot and grouping files by reported editor.
+- **Composer tools.** Click + for mentions and commands, or type `/` or `@`
+  to filter the menu. Arrows select; Enter or Tab picks. Mentions insert at the
+  cursor. Commands without arguments run while preserving your draft.
 - **Clearing a chat.** Send `/clear` to empty the conversation and keep the
   participants. Models only know what the transcript holds, so they start
   fresh.

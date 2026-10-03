@@ -1593,10 +1593,12 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .queued-message { display: flex; gap: 6px; align-items: start; margin-top: 6px; opacity: .75; }
 .queued-message textarea { min-height: 40px; font-size: 12px; }
 
-.pins { flex-shrink: 0; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
-.pins-label { color: var(--muted); margin-right: 2px; }
-.pin { display: inline-flex; align-items: center; gap: 4px; max-width: min(360px, 100%); min-width: 0; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; }
-.pin-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pins { flex-shrink: 0; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
+.pins-label { color: var(--muted); cursor: pointer; width: fit-content; }
+.pins-label:focus-visible { outline: 2px solid var(--muted); outline-offset: 3px; border-radius: 2px; }
+.pins-list { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: 6px; }
+.pin { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; max-width: min(360px, 100%); min-width: 0; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.pin-text { white-space: normal; overflow-wrap: anywhere; }
 
 .changes-note { padding: 0 16px; font-size: 12px; color: var(--muted); }
 .diff-group { padding: 8px 16px; }
@@ -1609,3 +1611,43 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .fork-message-icon { opacity: 0; }
 .bubble.bot .fork-message-icon { right: 44px; }
 .bubble:hover .fork-message-icon, .bubble:focus-within .fork-message-icon { opacity: 1; }
+
+/* One app-level details rail; pane components stay mounted when it docks. */
+.body { position: relative; }
+.thread-details { width: 320px; flex: none; min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: var(--panel); }
+.thread-details.overlay { position: absolute; right: 0; top: 0; bottom: 0; z-index: 30; width: min(320px, 100%); box-shadow: -12px 0 32px #0005; }
+.details-backdrop { position: absolute; inset: 0; z-index: 29; border: 0; border-radius: 0; background: #0003; }
+.details-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 16px; border-bottom: 1px solid var(--line); }
+.details-head > div { min-width: 0; }
+.details-head p { font-size: 11px; overflow-wrap: anywhere; margin: 6px 0 0; }
+.details-heading { display: flex; justify-content: space-between; width: 100%; padding: 12px 16px; border: 0; border-radius: 0; border-bottom: 1px solid var(--line); background: transparent; font-weight: 600; text-align: left; }
+.details-section-body { padding: 12px; border-bottom: 1px solid var(--line); }
+.details-empty { padding: 20px; }
+.details-bot { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+.details-bot-title, .details-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.details-bot p { font-size: 12px; margin: 7px 0; overflow-wrap: anywhere; }
+.thread-details .usage-card { position: static; width: auto; min-width: 0; box-shadow: none; border: 0; padding: 8px 0; background: transparent; }
+.thread-details .usage-row { display: flex; flex-direction: column; align-items: flex-start; }
+.thread-details .add-form { display: flex; flex-direction: column; padding: 0; border: 0; }
+.thread-details .add-form > *, .thread-details select { min-width: 0; max-width: 100%; }
+.thread-details .chat-options { display: flex; flex-direction: column; align-items: stretch; }
+.thread-details .changes { position: static; width: auto; border: 0; padding: 0; background: transparent; }
+.thread-details .changes-head { padding: 0; flex-wrap: wrap; }
+.thread-details .changes-note, .thread-details .changes-empty { padding: 0; }
+.thread-chat .chat-bar { flex-wrap: nowrap; padding: 8px 12px; min-width: 0; container-type: inline-size; }
+.thread-chat .chips { flex-wrap: nowrap; flex: 1; min-width: 0; overflow-x: auto; }
+.thread-chat .chip-wrap { flex: none; }
+.thread-chat .chip-name { white-space: nowrap; }
+.thread-chat .thread-counts { display: flex; flex: none; gap: 4px; }
+.thread-chat .thread-counts button { white-space: nowrap; font-size: 11px; }
+@container (max-width: 850px) { .thread-chat .chip-meta:not(.chip-levels) { display: none; } }
+@container (max-width: 480px) { .thread-chat .chip-levels { display: none; } }
+
+.composer-tools { position: relative; align-self: flex-end; }
+.composer-plus { font-size: 24px; width: 34px; height: 34px; }
+.composer-menu { position: absolute; bottom: calc(100% + 12px); left: 0; width: min(320px, 75vw); padding: 8px; background: var(--panel, #202124); border: 1px solid var(--border, #444); border-radius: 10px; box-shadow: 0 8px 28px #0005; z-index: 30; }
+.composer-menu input { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
+.composer-menu [role="listbox"] { max-height: 300px; overflow-y: auto; }
+.composer-menu [role="option"] { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 9px 8px; background: transparent; border: 0; text-align: left; }
+.composer-menu [role="option"][aria-selected="true"] { background: #ffffff12; }
+.composer-menu small { opacity: .65; }

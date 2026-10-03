@@ -46,7 +46,7 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | A reply in progress is shown as a draft with its steps, a thinking, working or writing status and elapsed time, so it is not mistaken for the final message | done |
 | Persona and access level per participant | done (access is enforced for Claude Code and Codex, advisory otherwise) |
 | "Ask first" access: a bot proposes each edit and command, and waits for Approve or Reject in the chat | done for Claude Code (checked against the real tool) and Codex (checked against its message format and a stand-in server only) |
-| Changes panel: every file the bots changed in the chat, with added and removed lines | done (kept while the chat is open; not saved) |
+| Changes in thread details: workspace diff with added and removed lines, grouped by reported editor | done (thread baseline and edit records saved) |
 | Anthropic-format API adapter | next |
 | Saved bots (reuse a participant across chats) | done (Agents profiles, with saved appearance) |
 | Per-participant token meter | done for Claude Code, Codex and API models (totals since the app opened; not saved) |
@@ -116,3 +116,5 @@ chat reject everything that is waiting. Code: `crates/apex-core/src/approval.rs`
 | Light theme | later |
 | Keys in the operating system keychain instead of environment variables | later |
 | Editable agent list (today it is a table in `src-tauri/src/agents.rs`) | later |
+
+Thread controls live in one right sidebar following the focused thread; narrow layouts overlay it. The header keeps a single row of chips. Pins remain above the conversation in an expandable, wrapping strip. The composer + menu offers mentions and commands, with `/` and `@` keyboard filtering.
