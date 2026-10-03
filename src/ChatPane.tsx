@@ -16,6 +16,7 @@ import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { TurnQueue, type QueuedMessage } from "./turnQueue";
 import { replyText, type ReplyQuote } from "./reply";
+import { parseComposer, postable, type Command } from "./commands";
 import type {
   Access,
   AgentInfo,
@@ -623,7 +624,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       else if (message === "/clear") {
         await backend.roomClear(pane.id); setEntries([]); setUsed({}); forgetContext();
       }
-      else await backend.roomPost(pane.id, message);
+      else await backend.roomPost(pane.id, postable(message));
     } catch (error) {
       // Compaction failures return through the command without a Failed
       // room event. Remove their transient draft and activity as well.
@@ -637,11 +638,27 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     setQueued,
     (error) => { notify(`Could not send: ${String(error)}. Queued messages are paused.`, "error"); setQueuePaused(true); },
   ));
+  /** Commands run locally and never reach the models. */
+  const runCommand = (command: Command) => {
+    switch (command.name) {
+      case "clear":
+        if (busy || turnQueue.active) return notify("Wait for the models to finish before clearing the chat.");
+        return clearChat();
+      case "compact":
+        return compactChat();
+      case "unknown":
+        return notify(`${command.typed} isn't a command. Start with // to send it as a message.`, "error");
+      default:
+        // Added by later tasks.
+        return notify(`${command.name} isn't available yet.`, "error");
+    }
+  };
+
   const send = (steer = false) => {
     const body = text.trim();
     if (!body || !ready || participants.length === 0) return;
-    if (!busy && !turnQueue.active && body === "/clear") return clearChat();
-    if (!busy && !turnQueue.active && body === "/compact") return compactChat();
+    const parsed = parseComposer(body);
+    if ("command" in parsed) return runCommand(parsed.command);
     const message = replyText(body, reply);
     setText(""); setReply(null);
     if (steer) { setQueuePaused(false); void turnQueue.steer(message); }
@@ -1147,7 +1164,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           placeholder={participants.length === 0 ? "Add a model to start" : "Message the room. @name picks who answers."}
           disabled={!ready || participants.length === 0}
         />
-        <div className="composer-hint"><span>{busy ? "Models are responding…" : "@name to mention · @all for everyone · /compact to summarize · /clear to start fresh"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
+        <div className="composer-hint"><span>{busy ? "Models are responding…" : "@name to mention · @all for everyone · / for commands: compact, clear, pin, diff, fork, export"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
         </div>
         {busy ? (
           <div className="composer-actions">
