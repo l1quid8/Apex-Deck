@@ -178,4 +178,12 @@ fn old_snapshots_without_pins_still_load() {
     let old = json!({ "participants": [], "transcript": [], "options": { "policy": "mention", "max_bot_hops": 3 } });
     let snapshot: apex_core::RoomSnapshot = serde_json::from_value(old).unwrap();
     assert!(snapshot.pins.is_empty());
+    assert!(snapshot.changes.is_empty());
+    assert!(snapshot.baseline.is_none());
+}
+
+#[test]
+fn change_records_shape() {
+    let record = apex_core::ChangeRecord { by: ParticipantId::new("a"), path: "x.rs".into(), added: 1, removed: 2, seq: 3 };
+    assert_eq!(to_value(&record).unwrap(), json!({ "by": "a", "path": "x.rs", "added": 1, "removed": 2, "seq": 3 }));
 }

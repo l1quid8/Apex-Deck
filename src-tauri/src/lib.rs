@@ -6,6 +6,8 @@
 //! - `room-event` `{ room, event }` something happened in a group chat
 
 mod agents;
+mod export;
+mod changes;
 mod pty;
 mod storage;
 
@@ -241,6 +243,13 @@ async fn room_post(
 ) -> Result<(), String> {
     let room = state.room(&id)?;
     let mut room = room.lock().await;
+    if room.baseline().is_none() {
+        if let Some(cwd) = state.room_context(&id)?.cwd {
+            if let Ok(Ok(tree)) = tokio::task::spawn_blocking(move || changes::snapshot(&cwd)).await {
+                room.set_baseline(tree);
+            }
+        }
+    }
     let cwd = state.room_context(&id)?.cwd.map(|p| p.to_string_lossy().into_owned());
     let checkpoint = Mutex::new(SavedRoom { cwd, snapshot: room.snapshot() });
     let save_error = Mutex::new(None);
@@ -256,6 +265,13 @@ async fn room_post(
                 stop.store(true, Ordering::SeqCst);
             }
         }
+        if let RoomEvent::Changed { id: by, change } = &event {
+            let mut saved = checkpoint.lock().unwrap();
+            let seq = saved.snapshot.transcript.len();
+            saved.snapshot.changes.push(apex_core::ChangeRecord { by: by.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
+            let _ = store.save_room(&id, &saved);
+        }
+
         let _ = app.emit("room-event", RoomEventPayload { room: &id, event });
     }).await;
     let mut saved = checkpoint.into_inner().unwrap();
@@ -528,6 +544,33 @@ fn room_delete(state: State<'_, AppState>, store: State<'_, Store>, id: String) 
     store.delete_room(&id)
 }
 
+/// Save an exported thread in the Downloads folder. Returns where it went.
+#[tauri::command]
+fn export_thread(app: AppHandle, file_name: String, contents: String) -> Result<String, String> {
+    use tauri::Manager;
+    let dir = app.path().download_dir().map_err(|e| format!("Could not find the Downloads folder: {e}"))?;
+    let path = export::write_export(&dir, &file_name, &contents)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// What changed in the folder since this thread started, and who changed it.
+/// Reads the saved copy, so it answers while models are still working.
+#[tauri::command]
+async fn room_diff(state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<changes::ThreadDiff, String> {
+    let cwd = state.room_context(&id)?.cwd.ok_or("this thread has no workspace folder")?;
+    let snapshot = store.room(&id)?.ok_or("this thread has not been saved yet")?.snapshot;
+    tokio::task::spawn_blocking(move || changes::thread_diff(&cwd, snapshot.baseline.as_deref(), &snapshot.changes))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fork durable state without waiting for a model turn's live room lock.
+#[tauri::command]
+async fn room_fork(state: State<'_, AppState>, store: State<'_, Store>, source: String, target: String, upto: Option<usize>) -> Result<(), String> {
+    let cwd = state.room_context(&source)?.cwd.map(|p| p.to_string_lossy().into_owned());
+    store.fork_room(&source, &target, upto, cwd)
+}
+
 async fn save_room(state: &AppState, store: &Store, id: &str) -> Result<(), String> {
     let cwd = state.room_context(id)?.cwd.map(|p| p.to_string_lossy().into_owned());
     let room = state.room(id)?;
@@ -556,6 +599,9 @@ pub fn run() {
             pty_write,
             pty_resize,
             pty_kill,
+            room_diff,
+            room_fork,
+            export_thread,
             room_create,
             room_post,
             room_stop,

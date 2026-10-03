@@ -140,6 +140,15 @@ choose **Hide uninstalled tools**, or **Enable all** to restore the list. Choice
 saved across restarts and apply to new terminal and bot selections in all three
 sections. Existing profiles, conversations and running terminals are kept.
 
+Thread commands:
+
+- `/compact` summarizes earlier turns; `/clear` clears the conversation while keeping participants and pins.
+- `/pin <fact>` puts a fact in every model's instructions on every turn. Pins survive clearing and compacting; remove them with × in the Pinned strip.
+- `/diff` shows workspace changes since the thread started, grouped by the agents that reported them. Full diffs require git; otherwise it lists reported edits with an explanation.
+- `/fork [name]` copies the conversation into a new thread. The fork icon on a message copies through that message. Both threads share the same folder.
+- `/export` saves Markdown to Downloads; `/export json` saves the transcript as JSON. Per-message timestamps and tool calls are not stored, so they are not included.
+- Start a message with `//` to send a literal `/`. Unknown commands keep your text and show a warning.
+
 ## Saved data
 
 Chats, participants, options and completed messages are saved automatically.

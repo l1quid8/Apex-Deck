@@ -76,6 +76,30 @@ impl Store {
         self.write(&self.room_path(id), room)
     }
 
+    /// Reserve a new room id while serializing writes; never overwrite a thread.
+    pub fn fork_room(&self, source: &str, target: &str, upto: Option<usize>, cwd: Option<String>) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let saved = self.room(source)?.ok_or("send a message before forking this thread")?;
+        let path = self.room_path(target);
+        let parent = path.parent().unwrap();
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let fork = SavedRoom { cwd, snapshot: saved.snapshot.fork(upto.unwrap_or(saved.snapshot.transcript.len())) };
+        let bytes = serde_json::to_vec_pretty(&fork).map_err(|e| e.to_string())?;
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)] {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { e.to_string() })?;
+        if let Err(e) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("Could not save fork: {e}"));
+        }
+        std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
+    }
+
     pub fn delete_room(&self, id: &str) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         match std::fs::remove_file(self.room_path(id)) {
@@ -115,6 +139,25 @@ mod tests {
         reopened.delete_room("chat-1").unwrap();
         assert!(reopened.room("chat-1").unwrap().is_none());
         assert!(reopened.room("chat-2").unwrap().is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fork_reads_the_saved_copy_and_never_overwrites_targets() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut room = Room::new(vec![], RoomOptions::default());
+        room.post_human("saved", &|_| {}).await;
+        store.save_room("src", &SavedRoom { cwd: Some("/tmp".into()), snapshot: room.snapshot() }).unwrap();
+        // Live room changes are deliberately not saved.
+        room.post_human("live only", &|_| {}).await;
+        store.fork_room("src", "dst", None, Some("/tmp".into())).unwrap();
+        let fork = store.room("dst").unwrap().unwrap();
+        assert_eq!(fork.snapshot.transcript.len(), 1);
+        assert_eq!(fork.snapshot.transcript[0].text, "saved");
+        assert_eq!(fork.cwd.as_deref(), Some("/tmp"));
+        assert!(store.fork_room("src", "dst", Some(0), None).is_err());
+        assert_eq!(store.room("dst").unwrap().unwrap().snapshot.transcript.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

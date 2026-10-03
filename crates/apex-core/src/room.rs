@@ -144,6 +144,17 @@ pub struct Compaction {
     pub upto: usize,
 }
 
+/// A file a participant changed, kept with the chat for attribution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeRecord {
+    pub by: ParticipantId,
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    /// The transcript length when the round that made it began.
+    pub seq: usize,
+}
+
 /// Durable chat data. Running turns and provider processes are never resumed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomSnapshot {
@@ -158,6 +169,29 @@ pub struct RoomSnapshot {
     pub compaction: Option<Compaction>,
     #[serde(default)]
     pub pins: Vec<String>,
+    #[serde(default)]
+    pub changes: Vec<ChangeRecord>,
+    /// Where the folder stood when the chat began, as the app recorded it. Opaque to the room.
+    #[serde(default)]
+    pub baseline: Option<String>,
+}
+
+impl RoomSnapshot {
+    /// Copy the first `upto` messages, retaining only context from that point.
+    pub fn fork(&self, upto: usize) -> Self {
+        let upto = upto.min(self.transcript.len());
+        Self {
+            participants: self.participants.clone(),
+            transcript: self.transcript[..upto].to_vec(),
+            options: self.options,
+            cursors: self.cursors.iter().map(|(id, &seen)| (id.clone(), seen.min(upto))).collect(),
+            last_targets: if upto == self.transcript.len() { self.last_targets.clone() } else { Vec::new() },
+            compaction: self.compaction.clone().filter(|c| c.upto <= upto),
+            pins: self.pins.clone(),
+            changes: self.changes.iter().filter(|c| c.seq < upto).cloned().collect(),
+            baseline: self.baseline.clone(),
+        }
+    }
 }
 
 /// One group chat.
@@ -169,6 +203,8 @@ pub struct Room {
     last_targets: Vec<ParticipantId>,
     compaction: Option<Compaction>,
     pins: Vec<String>,
+    changes: Vec<ChangeRecord>,
+    baseline: Option<String>,
     options: RoomOptions,
     stop: Arc<AtomicBool>,
     /// Actions participants have proposed and are waiting on.
@@ -191,6 +227,8 @@ impl Room {
             last_targets: self.last_targets.clone(),
             compaction: self.compaction.clone(),
             pins: self.pins.clone(),
+            changes: self.changes.clone(),
+            baseline: self.baseline.clone(),
         }
     }
 
@@ -203,6 +241,8 @@ impl Room {
             last_targets: snapshot.last_targets,
             compaction: snapshot.compaction,
             pins: snapshot.pins,
+            changes: snapshot.changes,
+            baseline: snapshot.baseline,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
         }
@@ -216,10 +256,20 @@ impl Room {
             last_targets: Vec::new(),
             compaction: None,
             pins: Vec::new(),
+            changes: Vec::new(),
+            baseline: None,
             options,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
         }
+    }
+
+    pub fn baseline(&self) -> Option<&str> {
+        self.baseline.as_deref()
+    }
+
+    pub fn set_baseline(&mut self, tree: String) {
+        self.baseline = Some(tree);
     }
 
     pub fn transcript(&self) -> &[Message] {
@@ -277,6 +327,8 @@ impl Room {
         self.cursors.clear();
         self.last_targets.clear();
         self.compaction = None;
+        self.changes.clear();
+        self.baseline = None;
     }
 
     /// Facts every model is given on every turn. They live outside the
@@ -516,9 +568,18 @@ impl Room {
                 let Some((participant, request)) = self.request_for(id) else { continue };
                 let shown = self.transcript.len();
                 on_event(RoomEvent::TurnStarted { id: id.clone() });
-                let progress = |update: Progress<'_>| on_event(progress_event(id, update));
+                let made = Mutex::new(Vec::new());
+                let progress = |update: Progress<'_>| {
+                    if let Progress::Change(change) = &update {
+                        made.lock().unwrap().push(ChangeRecord {
+                            by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq: shown,
+                        });
+                    }
+                    on_event(progress_event(id, update));
+                };
                 let approver = RoomApprover { desk: &self.desk, id, on_event };
                 let outcome = Self::interruptible(participant.as_ref(), request, self.stop.clone(), &progress, &approver).await;
+                self.changes.extend(made.into_inner().unwrap());
                 if self.stopped() {
                     if let Ok(reply) = outcome { if !reply.text.trim().is_empty() && reply.text != "[Interrupted]" { self.push(Speaker::Bot(id.clone()), reply.text, on_event); } }
                     return None;
@@ -534,15 +595,26 @@ impl Room {
             for (id, _, _) in &jobs {
                 on_event(RoomEvent::TurnStarted { id: id.clone() });
             }
+            let made = Mutex::new(Vec::new());
+            let made_ref = &made;
             let desk: &ApprovalDesk = &self.desk;
             let stop = &self.stop;
             let outcomes = join_all(jobs.into_iter().map(|(id, participant, request)| async move {
-                let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
+                let progress = |update: Progress<'_>| {
+                    if let Progress::Change(change) = &update {
+                        made_ref.lock().unwrap().push(ChangeRecord {
+                            by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq: shown,
+                        });
+                    }
+                    on_event(progress_event(&id, update));
+                };
                 let approver = RoomApprover { desk, id: &id, on_event };
                 let outcome = Self::interruptible(participant.as_ref(), request, stop.clone(), &progress, &approver).await;
                 (id, outcome)
             }))
             .await;
+            // Reported edits remain even when Stop interrupts the turn.
+            self.changes.extend(made.into_inner().unwrap());
             if self.stopped() {
                 for (id, outcome) in outcomes {
                     if let Ok(reply) = outcome { if !reply.text.trim().is_empty() && reply.text != "[Interrupted]" { self.push(Speaker::Bot(id), reply.text, on_event); } }

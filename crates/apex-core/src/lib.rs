@@ -22,7 +22,7 @@ pub use mention::{handle_for, parse_mentions, MentionTarget};
 pub use participant::{
     DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
 };
-pub use room::{Compaction, Room, RoomEvent, RoomOptions, RoomSnapshot, TurnPolicy};
+pub use room::{ChangeRecord, Compaction, Room, RoomEvent, RoomOptions, RoomSnapshot, TurnPolicy};
 pub use types::{
     Access, AgentTool, Backend, ContextUse, Message, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage,
     PlanWindow, Speaker,

@@ -11,7 +11,9 @@ import { contextLevel, contextLine, isLow, percent, planLevel, planLine, type Le
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention } from "./attention";
-import { ApprovalCard, ChangesPanel, type MadeChange } from "./Approvals";
+import { ApprovalCard, type MadeChange } from "./Approvals";
+import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
+import { DiffPanel } from "./DiffPanel";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { TurnQueue, type QueuedMessage, type TurnKind } from "./turnQueue";
@@ -30,6 +32,7 @@ import type {
   RoomEvent,
   RoomOptions,
   TurnPolicy,
+  ThreadDiff,
 } from "./types";
 
 interface Props {
@@ -46,6 +49,7 @@ interface Props {
   profiles: ParticipantConfig[];
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
+  onFork?: (title: string, upto: number | null) => Promise<string>;
   disabledProviders: string[];
 }
 
@@ -60,6 +64,13 @@ type Entry =
   | { kind: "summary"; summary: Summary }
   | { kind: "low"; low: LowContext };
 
+function messagesOf(entries: Entry[]): Message[] {
+  return entries.flatMap((entry) => entry.kind === "message" ? [entry.message] : []);
+}
+function compactionOf(entries: Entry[]) {
+  const summary = entries.filter((entry) => entry.kind === "summary").at(-1);
+  return summary?.kind === "summary" ? { upto: summary.summary.upto, summary: summary.summary.summary } : null;
+}
 
 /** The @handle the room will match: lower-case letters, digits, dash, underscore, dot. */
 export function slug(name: string): string {
@@ -283,11 +294,20 @@ function describe(config: ParticipantConfig): string {
   return "Scripted";
 }
 
-export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSignal, profiles, onProfilesChange, disabledProviders, profileMode = false }: Props) {
+export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false }: Props) {
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
   const [pins, setPins] = useState<string[]>([]);
+  const [unpinning, setUnpinning] = useState(false);
+  const unpinPending = useRef(false);
+  const removePin = (index: number) => {
+    if (unpinPending.current) return;
+    unpinPending.current = true; setUnpinning(true);
+    backend.roomUnpin(pane.id, index).then(setPins)
+      .catch((error) => notify(`Could not unpin: ${String(error)}`, "error"))
+      .finally(() => { unpinPending.current = false; setUnpinning(false); });
+  };
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   /** Each running turn: when it began, the steps taken so far, and whether
    *  the bot is thinking, using a tool, or writing right now. */
@@ -309,6 +329,20 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   /** Files the bots have changed since this chat was opened. */
   const [changes, setChanges] = useState<MadeChange[]>([]);
   const [showChanges, setShowChanges] = useState(false);
+  const showChangesRef = useRef(false);
+  showChangesRef.current = showChanges;
+  const [diff, setDiff] = useState<ThreadDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const diffRequest = useRef(0);
+  const loadDiff = () => {
+    const request = ++diffRequest.current;
+    setDiffLoading(true);
+    backend.roomDiff(pane.id).then((next) => { if (request === diffRequest.current) setDiff(next); })
+      .catch((error) => notify(`Could not read changes: ${String(error)}`, "error"))
+      .finally(() => { if (request === diffRequest.current) setDiffLoading(false); });
+  };
+  const refreshDiff = useRef(loadDiff);
+  refreshDiff.current = loadDiff;
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState("");
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
@@ -477,6 +511,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           notify("Stopped.");
           break;
         case "idle": {
+          if (showChangesRef.current) refreshDiff.current();
           // A round the person stopped themselves needs no flag.
           const wants = round.current.stopped ? null : afterRound(round.current.failed, round.current.lastReply);
           if (wants) signal.current?.(pane.id, wants.kind, wants.note);
@@ -493,6 +528,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       .roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 3 }, cwd)
       .then((saved) => {
         if (!alive) return;
+        setChanges((saved.changes ?? []).map((c) => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
         setParticipants(saved.participants);
         setOptions(saved.options);
         setPins(saved.pins ?? []);
@@ -637,6 +673,15 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     setQueued,
     (error) => { notify(`Could not send: ${String(error)}. Queued messages are paused.`, "error"); setQueuePaused(true); },
   ));
+  const forkAt = (title: string, upto: number | null) => {
+    if (!onFork) return notify("Forking is available in workspace threads.", "error");
+    return onFork(title, upto)
+      .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
+      .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
+  };
+  const forkButton = (seq: number) => onFork && <button className="quote-reply-icon fork-message-icon" aria-label="Fork from here" title="Fork from here" onClick={() => forkAt(`${pane.title} (fork)`, seq + 1)}>
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2"/><circle cx="11" cy="2.5" r="1.2"/></svg>
+  </button>;
   /** Commands run locally and never reach the models. */
   const runCommand = (command: Command) => {
     switch (command.name) {
@@ -646,24 +691,40 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       case "compact":
         return compactChat();
       case "pin":
+        if (unpinPending.current) return notify("Wait for the pending pin change to finish.");
         if (!command.fact) return notify("Type the fact after /pin, for example: /pin we're on Tauri 2, don't suggest Electron");
+        unpinPending.current = true; setUnpinning(true);
         setText("");
         return void backend.roomPin(pane.id, command.fact)
           .then((next) => { setPins(next); notify(busy ? "Pinned. It applies from the next turn." : "Pinned for every model in this chat."); })
-          .catch((error) => { setText(`/pin ${command.fact}`); notify(`Could not pin: ${String(error)}`, "error"); });
+          .catch((error) => { setText(`/pin ${command.fact}`); notify(`Could not pin: ${String(error)}`, "error"); })
+          .finally(() => { unpinPending.current = false; setUnpinning(false); });
+      case "fork":
+        setText(""); return void forkAt(command.title || `${pane.title} (fork)`, null);
+      case "export": {
+        setText("");
+        const at = new Date();
+        const thread: ThreadExport = { title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries) };
+        const contents = command.format === "json" ? exportJson(thread, at) : exportMarkdown(thread, at);
+        return void backend.exportThread(exportFileName(pane.title, command.format, at), contents)
+          .then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } })
+          .catch((error) => notify(`Could not export: ${String(error)}`, "error"));
+      }
+
+      case "diff":
+        setText(""); setShowChanges(true); loadDiff(); return;
       case "unknown":
         return notify(`${command.typed} isn't a command. Start with // to send it as a message.`, "error");
-      default:
-        // Added by later tasks.
-        return notify(`${command.name} isn't available yet.`, "error");
+
     }
   };
 
   const send = (steer = false) => {
     const body = text.trim();
-    if (!body || !ready || participants.length === 0) return;
+    if (!body || !ready) return;
     const parsed = parseComposer(body);
     if ("command" in parsed) return runCommand(parsed.command);
+    if (participants.length === 0) return;
     const message = replyText(postable(parsed.text), reply);
     setText(""); setReply(null);
     if (steer) { setQueuePaused(false); void turnQueue.steer(message); }
@@ -854,7 +915,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           {availableProfiles.map((p) => <option key={p.id} value={p.id} disabled={participants.some((own) => own.id === p.id)}>{p.display_name}</option>)}
         </select>}
         {!profileMode && (
-          <button className={`ghost changes-toggle ${showChanges ? "on" : ""}`} onClick={() => setShowChanges((open) => !open)} aria-pressed={showChanges} title="Files the bots have changed in this chat">
+          <button className={`ghost changes-toggle ${showChanges ? "on" : ""}`} onClick={() => { setShowChanges(!showChanges); if (!showChanges) loadDiff(); }} aria-pressed={showChanges} title="Folder changes since this thread started">
             Changes{changes.length > 0 ? ` · ${new Set(changes.map((c) => c.change.path)).size}` : ""}
           </button>
         )}
@@ -1028,15 +1089,14 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           <div className="agent-card-actions"><button onClick={() => startEditing(p)}>Edit</button><button className="ghost" onClick={() => removeParticipant(p.id)} aria-label={`Delete agent ${p.display_name}`}>Delete</button></div>
         </article>)}
       </div>}
-      <div className="chat-body">
       {!profileMode && pins.length > 0 && <div className="pins" aria-label="Pinned for every model">
         <span className="pins-label">Pinned</span>
         {pins.map((pin, index) => <div className="pin" key={pin}>
           <span className="pin-text" title={pin}>{pin}</span>
-          <button className="icon small" aria-label={`Unpin ${pin}`} onClick={() =>
-            backend.roomUnpin(pane.id, index).then(setPins).catch((error) => notify(`Could not unpin: ${String(error)}`, "error"))}>×</button>
+          <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning} onClick={() => removePin(index)}>×</button>
         </div>)}
       </div>}
+      <div className="chat-body">
       {!profileMode && <div className="transcript" ref={scroller}>
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
           <div className="empty">
@@ -1070,6 +1130,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           ) : entry.message.speaker.kind === "human" ? (
             <div key={`m${entry.message.seq}`} className="bubble human">
               <RichText text={entry.message.text} onOpen={openTarget} />
+              {forkButton(entry.message.seq)}
             </div>
           ) : (
             <div key={`m${entry.message.seq}`} className="bot-row">
@@ -1088,6 +1149,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
                   setReply({ id: entry.message.speaker.id, name: names.get(entry.message.speaker.id) ?? entry.message.speaker.id, text: entry.message.text });
                   input.current?.focus();
                 }}><DeckIcon name="reply" size={18} /></button>
+                {forkButton(entry.message.seq)}
               </div>
             </div>
           ),
@@ -1144,7 +1206,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         })}
       </div>}
       {!profileMode && showChanges && (
-        <ChangesPanel changes={changes} nameOf={(id) => names.get(id) ?? id} colorOf={color} onReveal={(path) => openTarget(path, true)} onClose={() => setShowChanges(false)} />
+        <DiffPanel diff={diff} loading={diffLoading} order={participants.map((p) => p.id)} onRefresh={loadDiff} nameOf={(id) => names.get(id) ?? id} colorOf={color} onReveal={(path) => openTarget(path, true)} onClose={() => setShowChanges(false)} />
       )}
       </div>
 

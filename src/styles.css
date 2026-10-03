@@ -1593,7 +1593,19 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .queued-message { display: flex; gap: 6px; align-items: start; margin-top: 6px; opacity: .75; }
 .queued-message textarea { min-height: 40px; font-size: 12px; }
 
-.pins { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
+.pins { flex-shrink: 0; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
 .pins-label { color: var(--muted); margin-right: 2px; }
-.pin { display: inline-flex; align-items: center; gap: 4px; max-width: 360px; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.pin { display: inline-flex; align-items: center; gap: 4px; max-width: min(360px, 100%); min-width: 0; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; }
 .pin-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.changes-note { padding: 0 16px; font-size: 12px; color: var(--muted); }
+.diff-group { padding: 8px 16px; }
+.diff-group h4 { margin: 8px 0; font-size: 12px; font-weight: 600; }
+.diff-file { padding: 6px 0; }
+.diff-file-row { display: flex; gap: 8px; width: 100%; text-align: left; padding: 6px 0; border: 0; background: transparent; color: inherit; }
+.diff-file-row .path { flex: 1; overflow-wrap: anywhere; }
+
+.bubble.human { position: relative; }
+.fork-message-icon { opacity: 0; }
+.bubble.bot .fork-message-icon { right: 44px; }
+.bubble:hover .fork-message-icon, .bubble:focus-within .fork-message-icon { opacity: 1; }

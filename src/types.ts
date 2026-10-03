@@ -60,7 +60,18 @@ export interface RoomOptions {
   max_bot_hops: number;
 }
 
+export interface ChangeRecord {
+  by: string;
+  path: string;
+  added: number;
+  removed: number;
+  seq: number;
+}
+export interface DiffFile { path: string; added: number; removed: number; patch: string; by: string[] }
+export interface ThreadDiff { files: DiffFile[]; note: string | null }
 export interface RoomSnapshot {
+  changes?: ChangeRecord[];
+  baseline?: string | null;
   /** Facts every model sees on every turn; kept by /clear and /compact. */
   pins?: string[];
   participants: ParticipantConfig[];

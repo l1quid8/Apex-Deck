@@ -233,6 +233,17 @@ export function App() {
     setPicking(false);
   };
 
+  const forkThread = async (source: Pane, title: string, upto: number | null) => {
+    const id = newId("pane");
+    if (!backend) throw new Error("The backend is not ready yet.");
+    await backend.roomFork(source.id, id, upto);
+    setPanes((list) => [...list, { id, workspaceId: source.workspaceId, kind: "chat", title }]);
+    setFocusedPane(id);
+    setSection("threads");
+    setMaximized(null);
+    return title;
+  };
+
   // A pane the person is looking at right now does not need flagging,
   // except a terminal that is blocked on a question: its dot should say so.
   const watched = useRef<(paneId: string) => boolean>(() => false);
@@ -483,7 +494,7 @@ export function App() {
                     {pane.kind === "terminal" ? (
                       <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible} onActivity={onActivity} onExit={onExit} onSignal={onSignal} />
                     ) : (
-                      <ChatPane pane={pane} cwd={workspace?.path ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible} onActivity={onActivity} onSignal={onSignal} />
+                      <ChatPane onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible} onActivity={onActivity} onSignal={onSignal} />
                     )}
                   </div>
                 </section>

@@ -659,3 +659,83 @@ fn no_pins_leave_the_system_prompt_unchanged() {
     say(&mut room, "hi");
     assert!(!a.requests()[0].system.contains("pinned"));
 }
+
+struct Editor { config: ParticipantConfig, path: &'static str }
+#[async_trait::async_trait]
+impl Participant for Editor {
+    fn config(&self) -> &ParticipantConfig { &self.config }
+    async fn respond(&self, _: TurnRequest, _: DeltaSink<'_>) -> Result<Reply, ParticipantError> { Ok(Reply::text("edited")) }
+    async fn respond_with_approvals(&self, _: TurnRequest, progress: ProgressSink<'_>, _: &dyn Approver) -> Result<Reply, ParticipantError> {
+        progress(Progress::Change(&FileChange::new(self.path, "-a\n+b\n")));
+        Ok(Reply::text("edited"))
+    }
+}
+fn editor(id: &str, path: &'static str) -> Arc<dyn Participant> {
+    Arc::new(Editor { config: ScriptedParticipant::new(id, &[]).config().clone(), path })
+}
+#[test]
+fn changes_and_baseline_survive_restore_and_reset_on_clear() {
+    let mut room = Room::new(vec![editor("a", "x.rs"), editor("b", "y.rs")], RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: 0 });
+    say(&mut room, "go");
+    let changes = room.snapshot().changes;
+    assert_eq!(changes.len(), 2);
+    assert!(changes.iter().any(|c| c.by.as_str() == "a" && c.path == "x.rs" && c.added == 1 && c.removed == 1 && c.seq == 1));
+    assert!(changes.iter().any(|c| c.by.as_str() == "b" && c.path == "y.rs" && c.seq == 1));
+    room.set_baseline("tree123".into());
+    let snapshot = serde_json::from_str(&serde_json::to_string(&room.snapshot()).unwrap()).unwrap();
+    let mut restored = Room::restore(vec![], snapshot);
+    assert_eq!(restored.snapshot().changes, changes);
+    assert_eq!(restored.baseline(), Some("tree123"));
+    restored.clear();
+    assert!(restored.snapshot().changes.is_empty());
+    assert_eq!(restored.baseline(), None);
+}
+#[test]
+fn edits_are_recorded_when_stopped_in_parallel_or_sequential_turns() {
+    for policy in [TurnPolicy::Everyone, TurnPolicy::RoundRobin] {
+        let mut room = Room::new(vec![editor("a", "x.rs")], RoomOptions { policy, max_bot_hops: 0 });
+        let stop = room.stop_handle();
+        block_on(room.post_human("go", &|event| {
+            if matches!(event, RoomEvent::Changed { .. }) { stop.store(true, Ordering::SeqCst); }
+        }));
+        let changes = room.snapshot().changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].seq, 1);
+        assert_eq!(changes[0].path, "x.rs");
+    }
+}
+
+#[test]
+fn fork_retains_pins_and_baseline_but_drops_future_summary() {
+    let a = bot("a", &["one", "two"]);
+    let mut r = room(&[&a], TurnPolicy::Everyone, 0);
+    r.pin("keep me").unwrap();
+    say(&mut r, "first");
+    say(&mut r, "second");
+    let writer = ScriptedParticipant::new("a", &["summary"]);
+    compact(&mut r, &writer).0.unwrap();
+    r.set_baseline("tree".into());
+    let saved = r.snapshot();
+    let whole = saved.fork(usize::MAX);
+    assert_eq!(whole.transcript, saved.transcript);
+    assert_eq!(whole.compaction, saved.compaction);
+    assert_eq!(whole.last_targets, saved.last_targets);
+    let early = saved.fork(2);
+    assert_eq!(early.transcript.len(), 2);
+    assert_eq!(early.compaction, None);
+    assert!(early.last_targets.is_empty());
+    assert!(early.cursors.values().all(|&c| c <= 2));
+    assert_eq!(early.pins, ["keep me"]);
+    assert_eq!(early.baseline.as_deref(), Some("tree"));
+}
+
+#[test]
+fn fork_excludes_edits_after_its_message_cutoff() {
+    let mut r = Room::new(vec![editor("a", "x.rs")], RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: 0 });
+    say(&mut r, "one");
+    say(&mut r, "two");
+    let saved = r.snapshot();
+    assert_eq!(saved.fork(2).changes.len(), 1);
+    assert_eq!(saved.fork(1).changes.len(), 0);
+    assert_eq!(saved.fork(99).transcript.len(), 4);
+}

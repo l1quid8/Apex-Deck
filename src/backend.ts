@@ -3,7 +3,7 @@
 // browser (npm run dev without Tauri) it falls back to a small stand-in so
 // the UI can be worked on without building the app.
 
-import type { AgentInfo, AgentTool, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot } from "./types";
+import type { AgentInfo, AgentTool, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff } from "./types";
 
 type Unlisten = () => void;
 
@@ -45,8 +45,11 @@ export interface Backend {
   /** Empty the transcript, which is all the models see, and keep the participants. */
   roomClear(id: string): Promise<void>;
   /** Pin a fact for every model in the chat. Resolves with all pins. */
+  roomDiff(id: string): Promise<ThreadDiff>;
+  exportThread(fileName: string, contents: string): Promise<string | null>;
   roomPin(id: string, fact: string): Promise<string[]>;
   roomUnpin(id: string, index: number): Promise<string[]>;
+  roomFork(source: string, target: string, upto: number | null): Promise<void>;
   /** Have a participant summarize the chat and show the models that summary
    *  in place of the messages so far. The transcript is kept. */
   roomCompact(id: string): Promise<void>;
@@ -102,8 +105,11 @@ async function tauriBackend(): Promise<Backend> {
     roomUpdateParticipant: (id, participant) => invoke("room_update_participant", { id, participant }),
     roomRemoveParticipant: (id, participant) => invoke("room_remove_participant", { id, participant }),
     roomClear: (id) => invoke("room_clear", { id }),
+    roomDiff: (id) => invoke("room_diff", { id }),
+    exportThread: (fileName, contents) => invoke("export_thread", { fileName, contents }),
     roomPin: (id, fact) => invoke("room_pin", { id, fact }),
     roomUnpin: (id, index) => invoke("room_unpin", { id, index }),
+    roomFork: (source, target, upto) => invoke("room_fork", { source, target, upto }),
     roomCompact: (id) => invoke("room_compact", { id }),
     roomClose: (id) => invoke("room_close", { id }),
     roomDelete: (id) => invoke("room_delete", { id }),
@@ -366,6 +372,28 @@ function demoBackend(): Backend {
       if (room) room.participants = room.participants.filter((p) => p.id !== participant);
       saveRoom(id);
     },
+    roomDiff: async (id) => {
+      const room = rooms.get(id);
+      const [first, second] = room?.participants ?? [];
+      const patch = "--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1,2 +1,2 @@\n-const title = \"Deck\";\n+const title = \"Apex Deck\";\n export default App;\n";
+      return {
+        note: "Preview: these changes are made up. The desktop app reads them from git.",
+        files: [
+          { path: "src/App.tsx", added: 1, removed: 1, patch, by: first ? [first.id] : [] },
+          { path: "README.md", added: 3, removed: 0, patch: "+## Commands\n+\n+/pin, /diff, /fork, /export\n", by: [first, second].filter(Boolean).map((p) => p.id) },
+          { path: "package-lock.json", added: 12, removed: 4, patch: "", by: [] },
+        ],
+      };
+    },
+
+    exportThread: async (fileName, contents) => {
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([contents], { type: "text/plain" }));
+      link.download = fileName;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      return null;
+    },
     roomPin: async (id, fact) => {
       const room = rooms.get(id);
       if (!room) throw new Error(`no group chat with id ${id}`);
@@ -377,6 +405,21 @@ function demoBackend(): Backend {
       pins.push(trimmed);
       saveRoom(id);
       return [...pins];
+    },
+    roomFork: async (source, target, upto) => {
+      const sourceData = localStorage.getItem(`apex-deck.demo.room.${source}`);
+      if (!sourceData) throw new Error("send a message before forking this thread");
+      if (localStorage.getItem(`apex-deck.demo.room.${target}`)) throw new Error("a thread with that id already exists");
+      const fork = JSON.parse(sourceData);
+      const length = fork.transcript.length;
+      const cutoff = upto === null ? length : Math.max(0, Math.min(length, upto));
+      fork.transcript = fork.transcript.slice(0, cutoff);
+      if (fork.compaction?.upto > cutoff) fork.compaction = null;
+      if (cutoff < length) fork.last = [];
+      if (fork.changes) fork.changes = fork.changes.filter((change: { seq: number }) => change.seq < cutoff);
+      fork.seq = cutoff;
+      fork.stopped = false;
+      localStorage.setItem(`apex-deck.demo.room.${target}`, JSON.stringify(fork));
     },
     roomUnpin: async (id, index) => {
       const room = rooms.get(id);
