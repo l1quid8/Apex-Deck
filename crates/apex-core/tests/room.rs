@@ -619,3 +619,43 @@ fn stop_cancels_an_active_response_and_keeps_partial_text_for_the_next_model() {
     say(&mut room, "@next take over");
     assert!(next.requests()[0].turns.iter().any(|t| t.content.contains("unfinished thought")));
 }
+
+#[test]
+fn pins_reach_every_model_and_survive_clear_and_compact() {
+    let a = bot("a", &["one", "two", "three"]);
+    let mut room = room(&[&a], TurnPolicy::Everyone, 0);
+    room.pin("We are on Tauri 2").unwrap();
+    say(&mut room, "hi");
+    assert!(a.requests()[0].system.contains("- We are on Tauri 2"));
+
+    let writer = ScriptedParticipant::new("a", &["summary"]);
+    compact(&mut room, &writer).0.unwrap();
+    say(&mut room, "again");
+    assert!(a.requests().last().unwrap().system.contains("- We are on Tauri 2"));
+
+    room.clear();
+    say(&mut room, "fresh");
+    assert!(a.requests().last().unwrap().system.contains("- We are on Tauri 2"));
+    assert_eq!(room.snapshot().pins, vec!["We are on Tauri 2".to_string()]);
+}
+
+#[test]
+fn pins_reject_empty_duplicate_and_oversized_facts_and_unpin_by_index() {
+    let mut room = room(&[], TurnPolicy::Mention, 0);
+    assert!(room.pin("   ").is_err());
+    room.pin("first").unwrap();
+    room.pin("second").unwrap();
+    assert!(room.pin(" first ").is_err());
+    assert!(room.pin(&"x".repeat(501)).is_err());
+    room.unpin(0).unwrap();
+    assert_eq!(room.pins(), ["second".to_string()]);
+    assert!(room.unpin(5).is_err());
+}
+
+#[test]
+fn no_pins_leave_the_system_prompt_unchanged() {
+    let a = bot("a", &["ok"]);
+    let mut room = room(&[&a], TurnPolicy::Everyone, 0);
+    say(&mut room, "hi");
+    assert!(!a.requests()[0].system.contains("pinned"));
+}

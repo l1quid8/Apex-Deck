@@ -86,6 +86,22 @@ pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> St
     out
 }
 
+/// The longest fact `/pin` accepts. Pins are sent on every turn.
+pub const MAX_PIN_CHARS: usize = 500;
+
+/// Facts the person pinned, for the end of every system prompt. Empty when
+/// nothing is pinned.
+pub fn pinned_section(pins: &[String]) -> String {
+    if pins.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\nThe human pinned these facts for this chat. Treat them as standing instructions:\n");
+    for pin in pins {
+        out.push_str(&format!("- {pin}\n"));
+    }
+    out
+}
+
 /// Turn the shared transcript into the alternating user and assistant turns
 /// that chat APIs expect, from the point of view of `me`.
 ///

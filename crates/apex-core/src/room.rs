@@ -12,7 +12,7 @@ use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedActi
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
 use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker};
-use crate::view::{render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, PASS_TOKEN};
+use crate::view::{pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -156,6 +156,8 @@ pub struct RoomSnapshot {
     pub last_targets: Vec<ParticipantId>,
     #[serde(default)]
     pub compaction: Option<Compaction>,
+    #[serde(default)]
+    pub pins: Vec<String>,
 }
 
 /// One group chat.
@@ -166,6 +168,7 @@ pub struct Room {
     cursors: HashMap<ParticipantId, usize>,
     last_targets: Vec<ParticipantId>,
     compaction: Option<Compaction>,
+    pins: Vec<String>,
     options: RoomOptions,
     stop: Arc<AtomicBool>,
     /// Actions participants have proposed and are waiting on.
@@ -187,6 +190,7 @@ impl Room {
             cursors: self.cursors.clone(),
             last_targets: self.last_targets.clone(),
             compaction: self.compaction.clone(),
+            pins: self.pins.clone(),
         }
     }
 
@@ -198,6 +202,7 @@ impl Room {
             cursors: snapshot.cursors,
             last_targets: snapshot.last_targets,
             compaction: snapshot.compaction,
+            pins: snapshot.pins,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
         }
@@ -210,6 +215,7 @@ impl Room {
             cursors: HashMap::new(),
             last_targets: Vec::new(),
             compaction: None,
+            pins: Vec::new(),
             options,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
@@ -271,6 +277,35 @@ impl Room {
         self.cursors.clear();
         self.last_targets.clear();
         self.compaction = None;
+    }
+
+    /// Facts every model is given on every turn. They live outside the
+    /// transcript, so `/clear` and `/compact` keep them.
+    pub fn pins(&self) -> &[String] {
+        &self.pins
+    }
+
+    pub fn pin(&mut self, fact: &str) -> Result<(), String> {
+        let fact = fact.trim();
+        if fact.is_empty() {
+            return Err("type the fact after /pin".into());
+        }
+        if fact.chars().count() > MAX_PIN_CHARS {
+            return Err(format!("pins can be at most {MAX_PIN_CHARS} characters"));
+        }
+        if self.pins.iter().any(|p| p == fact) {
+            return Err("that is already pinned".into());
+        }
+        self.pins.push(fact.to_string());
+        Ok(())
+    }
+
+    pub fn unpin(&mut self, index: usize) -> Result<(), String> {
+        if index >= self.pins.len() {
+            return Err("that pin is gone".into());
+        }
+        self.pins.remove(index);
+        Ok(())
     }
 
     /// Who writes the summary for `/compact`: whoever was addressed last,
@@ -387,7 +422,7 @@ impl Room {
             .cloned()
             .collect();
         let request = TurnRequest {
-            system: system_prompt(participant.config(), &configs),
+            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins),
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
         };

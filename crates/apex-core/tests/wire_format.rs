@@ -172,3 +172,10 @@ fn model_choice_shape() {
     let bare = ModelChoice { id: "m".into(), label: None, efforts: None };
     assert_eq!(to_value(bare).unwrap(), json!({ "id": "m", "label": null, "efforts": null }));
 }
+
+#[test]
+fn old_snapshots_without_pins_still_load() {
+    let old = json!({ "participants": [], "transcript": [], "options": { "policy": "mention", "max_bot_hops": 3 } });
+    let snapshot: apex_core::RoomSnapshot = serde_json::from_value(old).unwrap();
+    assert!(snapshot.pins.is_empty());
+}
