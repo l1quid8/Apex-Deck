@@ -31,7 +31,9 @@ fn git(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String
 /// as a git tree and return its id.
 pub fn snapshot(cwd: &Path) -> Result<String, String> {
     let real = PathBuf::from(git(cwd, None, &["rev-parse", "--path-format=absolute", "--git-path", "index"])?.trim());
-    let temp: PathBuf = std::env::temp_dir().join(format!("apex-deck-index-{}-{}", std::process::id(),
+    static NEXT_INDEX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = NEXT_INDEX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp: PathBuf = std::env::temp_dir().join(format!("apex-deck-index-{}-{}-{}", std::process::id(), serial,
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
     // Starting from the real index means only changed files are re-read.
     if real.exists() {
@@ -125,7 +127,9 @@ mod tests {
     use std::process::Command;
 
     fn repo() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apex-diff-{}-{}", std::process::id(),
+        static NEXT_REPO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let serial = NEXT_REPO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("apex-diff-{}-{}-{}", std::process::id(), serial,
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
         for args in [&["init", "-q"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
@@ -136,6 +140,18 @@ mod tests {
         Command::new("git").arg("-C").arg(&dir).args(["add", "-A"]).status().unwrap();
         Command::new("git").arg("-C").arg(&dir).args(["commit", "-qm", "init"]).status().unwrap();
         dir
+    }
+
+    #[test]
+    fn concurrent_snapshots_use_independent_indexes() {
+        let dir = repo();
+        std::fs::write(dir.join("parallel.txt"), "unchanged\n").unwrap();
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..8).map(|_| scope.spawn(|| snapshot(&dir).unwrap())).collect();
+            let trees: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
+            assert!(trees.iter().all(|tree| tree == &trees[0]));
+        });
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn record(by: &str, path: &str) -> ChangeRecord {
