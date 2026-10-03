@@ -187,7 +187,6 @@ textarea {
 .section-agents .add-form { border: 1px solid var(--line); border-radius: 10px; margin: 0 12px 16px; }
 .agent-library { overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 0 12px 24px; flex: 1; min-height: 120px; }
 .agent-card { display: flex; align-items: flex-start; gap: 18px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
-.agent-avatar { display: grid; place-items: center; font-size: 30px; width: 52px; height: 52px; background: var(--panel-2); border-radius: 12px; flex-shrink: 0; }
 .agent-card-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .agent-card h2 { font-size: 16px; margin: 0 0 3px; }
 .agent-card p { margin: 0 0 8px; max-width: 65ch; white-space: pre-wrap; }
@@ -442,7 +441,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 4px 3px 9px;
+  padding: 3px 4px 3px 4px;
   font-weight: 600;
 }
 .chip-meta {
@@ -567,7 +566,70 @@ textarea {
 .bubble.bot {
   align-self: flex-start;
   background: var(--panel-2);
-  border-left: 3px solid var(--line);
+  border: 1px solid var(--line);
+}
+/* A bot's avatar beside its reply. */
+.bot-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  align-self: flex-start;
+  max-width: 85%;
+}
+.bot-row > .bubble {
+  max-width: none;
+  min-width: 0;
+}
+/* A participant's avatar: its 5×5 pattern in its colour (Avatar.tsx). */
+.identicon {
+  --cell: 5px;
+  --gap: 1px;
+  display: grid;
+  grid-template-columns: repeat(5, var(--cell));
+  grid-auto-rows: var(--cell);
+  gap: var(--gap);
+  place-content: center;
+  flex: none;
+  box-sizing: border-box;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--who) 32%, transparent);
+  background: var(--panel);
+}
+.identicon i {
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--who) 9%, transparent);
+}
+.identicon i.on {
+  background: var(--who);
+}
+.identicon-sm {
+  --cell: 3px;
+  width: 21px;
+  height: 21px;
+  border-radius: 6px;
+}
+.identicon-sm i {
+  border-radius: 0;
+}
+.identicon-lg {
+  --cell: 7px;
+  --gap: 2px;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+}
+/* Working: the lit squares shimmer in a diagonal wave. */
+.identicon.working i.on {
+  animation: identicon-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes identicon-shimmer {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .identicon.working i.on { animation: none; }
 }
 .bubble.writing {
   opacity: 0.8;
@@ -583,11 +645,12 @@ textarea {
   font-style: italic;
 }
 /* A reply that is still being worked on. It must not be mistaken for the
-   finished message: the text is dimmer, the steps taken are listed above
-   it, and a moving status line sits under it until the turn ends. */
-.bubble.writing {
+   finished message: the avatar shimmers, the text is dimmer, the steps taken
+   are listed above it, and a moving status line sits under it until the turn
+   ends. */
+.bubble.writing,
+.bot-row > .bubble.writing {
   opacity: 1;
-  border-left-style: dashed;
   min-width: 260px;
 }
 .draft-text {
@@ -812,7 +875,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   .picker { padding: 24px 16px; }
   .picker h2 { font-size: 26px; }
   .transcript { padding: 14px; }
-  .bubble { max-width: 95%; }
+  .bubble, .bot-row { max-width: 95%; }
   .chat-options label { flex-wrap: wrap; }
   .composer { padding: 10px; gap: 8px; }
   .composer-hint > span:last-child { display: none; }
@@ -1428,3 +1491,5 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   .changes { width: 100%; position: absolute; inset: 0; z-index: 8; }
   .chat-body { position: relative; }
 }
+
+.appearance-controls { display: flex; align-items: center; gap: 12px; }

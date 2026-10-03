@@ -18,6 +18,7 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
         persona: String::new(),
         access: Access::Read,
         effort: None,
+        appearance: None,
     }
 }
 

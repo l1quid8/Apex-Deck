@@ -345,6 +345,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
         persona: String::new(),
         access: Access::Read,
         effort: None,
+        appearance: None,
     };
     let quiet = bot("quiet", &["hello"]);
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(WorkingBot(config)), quiet.clone()];
@@ -513,6 +514,7 @@ fn asking_room() -> (Room, ParticipantId) {
         persona: String::new(),
         access: Access::Ask,
         effort: None,
+        appearance: None,
     };
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(AskingBot(config))];
     (Room::new(roster, RoomOptions { policy: TurnPolicy::Mention, max_bot_hops: 0 }), id)

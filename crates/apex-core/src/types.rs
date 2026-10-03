@@ -97,6 +97,8 @@ pub struct ParticipantConfig {
     /// example "low" or "high"). `None` leaves the backend's default.
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<AgentAppearance>,
 }
 
 /// A model a tool offers, for the model picker.
@@ -128,4 +130,11 @@ pub struct Message {
     pub seq: usize,
     pub speaker: Speaker,
     pub text: String,
+}
+
+/// Saved visual identity; has no effect on model behavior.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAppearance {
+    pub seed: String,
+    pub color: String,
 }

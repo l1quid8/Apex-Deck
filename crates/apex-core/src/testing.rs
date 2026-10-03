@@ -27,6 +27,7 @@ impl ScriptedParticipant {
             persona: String::new(),
             access: Access::Read,
             effort: None,
+            appearance: None,
         })
     }
 

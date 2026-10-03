@@ -20,6 +20,7 @@ fn participant_config_shapes() {
         persona: "Be brief.".into(),
         access: Access::Edits,
         effort: Some("high".into()),
+        appearance: None,
     };
     assert_eq!(
         to_value(&api).unwrap(),
@@ -63,7 +64,23 @@ fn participant_config_accepts_the_minimum_the_ui_sends() {
     assert_eq!(parsed.access, Access::Read);
     assert_eq!(parsed.persona, "");
     assert_eq!(parsed.effort, None);
+    assert_eq!(parsed.appearance, None);
     assert_eq!(parsed.backend, Backend::Cli { program: "mytool".into(), args: vec![] });
+}
+
+#[test]
+fn saved_agent_appearance_survives_a_config_round_trip() {
+    let value = json!({
+        "id": "null",
+        "display_name": "Null",
+        "backend": { "kind": "agent", "tool": "codex" },
+        "appearance": { "seed": "saved-random-seed", "color": "#2dd4bf" }
+    });
+    let parsed: ParticipantConfig = serde_json::from_value(value.clone()).unwrap();
+    let saved = to_value(&parsed).unwrap();
+    assert_eq!(saved["appearance"], value["appearance"]);
+    let restored: ParticipantConfig = serde_json::from_value(saved).unwrap();
+    assert_eq!(restored, parsed);
 }
 
 #[test]

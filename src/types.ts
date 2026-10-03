@@ -38,6 +38,7 @@ export interface ParticipantConfig {
   access: Access;
   /** How hard the model should think, in the backend's own words. Null leaves its default. */
   effort: string | null;
+  appearance?: { seed: string; color: string } | null;
 }
 
 /** A model a tool offers, for the model picker. */

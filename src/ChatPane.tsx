@@ -6,6 +6,8 @@ import { registerRoom } from "./hub";
 import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups } from "./models";
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
+import { Avatar } from "./Avatar";
+import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention } from "./attention";
 import { ApprovalCard, ChangesPanel, type MadeChange } from "./Approvals";
 import { RichText } from "./RichText";
@@ -48,7 +50,6 @@ type Notice = { key: number; text: string; tone: "info" | "error" };
 type Summary = { by: string | null; summary: string; upto: number };
 type Entry = { kind: "message"; message: Message } | { kind: "notice"; notice: Notice } | { kind: "summary"; summary: Summary };
 
-const COLORS = ["#2dd4bf", "#f59e0b", "#a78bfa", "#f472b6", "#60a5fa", "#a3e635", "#fb7185", "#22d3ee"];
 
 /** The @handle the room will match: lower-case letters, digits, dash, underscore, dot. */
 export function slug(name: string): string {
@@ -154,6 +155,7 @@ function rememberModel(preset: PresetKey, model: string) {
 }
 
 interface Draft {
+  appearance?: AgentAppearance;
   name: string;
   preset: PresetKey;
   /** Empty means the backend's own default (agent presets only). */
@@ -180,7 +182,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -212,7 +214,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -320,13 +322,12 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const names = useMemo(() => new Map(participants.map((p) => [p.id, p.display_name])), [participants]);
   const namesRef = useRef(names);
   namesRef.current = names;
-  // Colours are assigned by the order participants joined and never reused
-  // while the pane is open, so a speaker keeps its colour in the transcript.
-  const colorOf = useRef(new Map<string, string>());
-  const color = (id: string) => {
-    if (!colorOf.current.has(id)) colorOf.current.set(id, COLORS[colorOf.current.size % COLORS.length]);
-    return colorOf.current.get(id)!;
-  };
+  const identities = useRef(new Map<string, AgentAppearance>());
+  for (const p of [...participants, ...profiles]) {
+    identities.current.set(p.id, p.appearance ?? legacyAppearance(p.id));
+  }
+  const appearance = (id: string) => identities.current.get(id) ?? legacyAppearance(id);
+  const color = (id: string) => appearance(id).color;
 
   const notify = (message: string, tone: Notice["tone"] = "info") =>
     setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone } }]);
@@ -483,7 +484,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     const built = draftToConfig(draft);
     if (typeof built === "string") return setFormError(built);
     // When editing, the @handle stays the same even if the name changes.
-    const config = editing ? { ...built, id: editing } : built;
+    const config = { ...built, id: editing ?? built.id, appearance: built.appearance ?? (editing ? appearance(editing) : createAppearance([...identities.current.values()])) };
     if (!editing && participants.some((p) => p.id === config.id)) {
       return setFormError(`@${config.id} is already in this chat. Pick a different name.`);
     }
@@ -495,6 +496,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       } else if (editing) {
         await backend.roomUpdateParticipant(pane.id, config);
         setParticipants((list) => list.map((p) => (p.id === editing ? config : p)));
+        if (profiles.some(p => p.id === editing)) onProfilesChange(profiles.map(p => p.id === editing ? { ...p, appearance: config.appearance } : p));
       } else {
         await backend.roomAddParticipant(pane.id, config);
         setParticipants((list) => [...list, config]);
@@ -507,7 +509,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   };
 
   const startEditing = (config: ParticipantConfig) => {
-    setDraft(configToDraft(config));
+    setDraft(configToDraft({ ...config, appearance: appearance(config.id) }));
     setFormError("");
     setApiModels([]);
     setModelNote("");
@@ -619,7 +621,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const choosePreset = (key: PresetKey) => {
     const next = PRESETS.find((p) => p.key === key)!;
     // Only tools that enforce access themselves can stop and ask.
-    setDraft((d) => ({ ...emptyDraft(key), name: d.name, persona: d.persona, access: d.access === "ask" && !next.agent?.enforcesAccess ? "read" : d.access }));
+    setDraft((d) => ({ ...emptyDraft(key), appearance: d.appearance, name: d.name, persona: d.persona, access: d.access === "ask" && !next.agent?.enforcesAccess ? "read" : d.access }));
     // Model and effort names differ between backends, so they start empty.
     setApiModels([]);
     setModelNote("");
@@ -654,7 +656,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           {!profileMode && participants.map((p) => (
             <span className="chip" key={p.id} style={{ borderColor: color(p.id) }}>
               <button className="chip-name" onClick={() => mention(p.id)} title={`Mention @${p.id}`}>
-                <span className="dot" style={{ background: color(p.id) }} />
+                <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} />
                 {p.display_name}
                 <span className="chip-meta">{describe(p)}</span>
                 {used[p.id] && (
@@ -738,6 +740,13 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             <input name="name" value={draft.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Opus" autoFocus />
             {draft.name && <span className="hint">Mention as @{editing ?? slug(draft.name)}</span>}
           </label>
+          {editing && <div className="appearance-controls">
+            <Avatar seed={(draft.appearance ?? appearance(editing)).seed} color={(draft.appearance ?? appearance(editing)).color} />
+            <label>Color<select aria-label="Agent color" value={(draft.appearance ?? appearance(editing)).color} onChange={e => set("appearance", { ...(draft.appearance ?? appearance(editing)), color: e.target.value })}>
+              {AGENT_COLORS.map((c, i) => <option key={c} value={c}>{["Teal", "Amber", "Purple", "Pink", "Blue", "Lime", "Rose", "Cyan"][i]}</option>)}
+            </select></label>
+            <button type="button" className="ghost" onClick={() => set("appearance", { ...createAppearance([...identities.current.values()]), color: (draft.appearance ?? appearance(editing)).color })}>New pattern</button>
+          </div>}
           <label>
             Connect through
             <select name="preset" value={draft.preset} onChange={(e) => choosePreset(e.target.value as PresetKey)}>
@@ -859,7 +868,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       {profileMode && <div className="agent-library">
         {participants.length === 0 && !adding && <div className="empty"><h3>Create your first agent</h3><p>Save a bot profile here, then add it to a conversation in Threads.</p></div>}
         {participants.map((p) => <article className="agent-card" key={p.id}>
-          <div className="agent-avatar" style={{ color: color(p.id) }} aria-hidden="true">▣</div>
+          <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="lg" />
           <div className="agent-card-copy"><h2>{p.display_name}</h2><p className="muted">{describe(p)}</p><p>{p.persona || "No brief added yet."}</p><span className="hint">@{p.id} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
           <div className="agent-card-actions"><button onClick={() => startEditing(p)}>Edit</button><button className="ghost" onClick={() => removeParticipant(p.id)} aria-label={`Delete agent ${p.display_name}`}>Delete</button></div>
         </article>)}
@@ -895,16 +904,19 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
               <RichText text={entry.message.text} onOpen={openTarget} />
             </div>
           ) : (
-            <div key={`m${entry.message.seq}`} className="bubble bot completed" style={{ borderLeftColor: color(entry.message.speaker.id) }}>
-              <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
-                {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
-              </span>
-              <Markdown text={entry.message.text} onOpen={openTarget} />
-              <button className="quote-reply-icon" aria-label={`Quote response from ${names.get(entry.message.speaker.id) ?? entry.message.speaker.id}`} onClick={() => {
-                if (entry.message.speaker.kind !== "bot") return;
-                setReply({ id: entry.message.speaker.id, name: names.get(entry.message.speaker.id) ?? entry.message.speaker.id, text: entry.message.text });
-                input.current?.focus();
-              }}><DeckIcon name="reply" size={18} /></button>
+            <div key={`m${entry.message.seq}`} className="bot-row">
+              <Avatar seed={appearance(entry.message.speaker.id).seed} color={color(entry.message.speaker.id)} />
+              <div className="bubble bot completed">
+                <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
+                  {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
+                </span>
+                <Markdown text={entry.message.text} onOpen={openTarget} />
+                <button className="quote-reply-icon" aria-label={`Quote response from ${names.get(entry.message.speaker.id) ?? entry.message.speaker.id}`} onClick={() => {
+                  if (entry.message.speaker.kind !== "bot") return;
+                  setReply({ id: entry.message.speaker.id, name: names.get(entry.message.speaker.id) ?? entry.message.speaker.id, text: entry.message.text });
+                  input.current?.focus();
+                }}><DeckIcon name="reply" size={18} /></button>
+              </div>
             </div>
           ),
         )}
@@ -915,42 +927,45 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           const shown = steps.slice(-MAX_STEPS_SHOWN);
           const hidden = steps.length - shown.length;
           return (
-            <div key={`d${id}`} className="bubble bot writing" style={{ borderLeftColor: color(id) }} aria-busy="true">
-              <span className="speaker" style={{ color: color(id) }}>
-                {names.get(id) ?? id}
-              </span>
-              {steps.length > 0 && (
-                <ul className="steps" aria-label="Steps so far">
-                  {hidden > 0 && <li className="step done">{hidden === 1 ? "1 earlier step" : `${hidden} earlier steps`}</li>}
-                  {shown.map((step, i) => (
-                    <li key={steps.length - shown.length + i} className={`step ${i === shown.length - 1 && turn?.phase === "tool" ? "current" : "done"}`}>
-                      {step}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {partial && (
-                <div className="draft-text">
-                  <Markdown text={partial} onOpen={openTarget} />
-                </div>
-              )}
-              {(asks[id] ?? []).map((ask) => (
-                <ApprovalCard
-                  key={ask.request}
-                  action={ask.action}
-                  onDecide={(approve) => {
-                    backend.roomDecide(pane.id, ask.request, approve).catch((error) => notify(`Could not send your answer: ${String(error)}`, "error"));
-                  }}
-                />
-              ))}
-              <div className={`working-line ${asks[id]?.length ? "asking" : ""}`} role="status">
-                <span className="working-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
+            <div key={`d${id}`} className="bot-row">
+              <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} />
+              <div className="bubble bot writing" aria-busy="true">
+                <span className="speaker" style={{ color: color(id) }}>
+                  {names.get(id) ?? id}
                 </span>
-                <span>{asks[id]?.length ? "Waiting for you" : phaseLabel(turn?.phase)}</span>
-                {turn && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
+                {steps.length > 0 && (
+                  <ul className="steps" aria-label="Steps so far">
+                    {hidden > 0 && <li className="step done">{hidden === 1 ? "1 earlier step" : `${hidden} earlier steps`}</li>}
+                    {shown.map((step, i) => (
+                      <li key={steps.length - shown.length + i} className={`step ${i === shown.length - 1 && turn?.phase === "tool" ? "current" : "done"}`}>
+                        {step}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {partial && (
+                  <div className="draft-text">
+                    <Markdown text={partial} onOpen={openTarget} />
+                  </div>
+                )}
+                {(asks[id] ?? []).map((ask) => (
+                  <ApprovalCard
+                    key={ask.request}
+                    action={ask.action}
+                    onDecide={(approve) => {
+                      backend.roomDecide(pane.id, ask.request, approve).catch((error) => notify(`Could not send your answer: ${String(error)}`, "error"));
+                    }}
+                  />
+                ))}
+                <div className={`working-line ${asks[id]?.length ? "asking" : ""}`} role="status">
+                  <span className="working-dots" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  <span>{asks[id]?.length ? "Waiting for you" : phaseLabel(turn?.phase)}</span>
+                  {turn && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
+                </div>
               </div>
             </div>
           );

@@ -174,6 +174,7 @@ mod tests {
             persona: String::new(),
             access: Access::Read,
             effort: None,
+            appearance: None,
         }
     }
 
