@@ -1,0 +1,16 @@
+{
+  "iconSlots": 10,
+  "decodedPngs": 70,
+  "catalogReferences": 34,
+  "transparentImagesChecked": 5,
+  "templateRenderingIntent": true,
+  "unchangedReference": true,
+  "errors": [],
+  "xcodeAssetCompilation": {
+    "status": "passed",
+    "platform": "macosx",
+    "minimumDeploymentTarget": "13.0"
+  },
+  "icnsRoundTrip": "passed",
+  "zipIntegrity": "passed"
+}

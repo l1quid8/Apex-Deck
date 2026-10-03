@@ -1,0 +1,279 @@
+# Apex Deck
+
+A desktop workspace for running coding agents side by side, with group chats
+where several models share one conversation.
+
+Apex Deck is open source (MIT) and runs on your own machine. It does not
+include any model usage: you bring your own command-line agents and API keys.
+
+**Status: early.** Version 0.1 covers the first milestone below. Expect rough
+edges.
+
+## What works in 0.1
+
+- **Workspaces.** Add project folders. Each one keeps its own set of panes,
+  and panes keep running when you switch to another workspace.
+- **Terminal panes.** Real terminals in the workspace folder. Launch a plain
+  shell, or any coding agent Apex Deck finds installed (the list is in
+  `src-tauri/src/agents.rs`).
+- **Layout.** Panes can be arranged any way you like. Drag the line between
+  two panes to resize them. Drag a pane by its title bar onto the side of
+  another to put it there, or onto the middle to swap the two. Three
+  buttons give a ready-made arrangement: an even grid, a large pane on top,
+  or a large pane on the left. Rearranging never restarts a terminal. Each
+  pane can be maximized and restored or closed, and has a status dot that
+  shows whether it produced output in the last moment.
+- **Attention.** A pane that wants you is marked wherever you are in the
+  app: an amber dot when it is waiting on you, red when something failed,
+  cyan when there is a result you have not seen. The Code and Threads tabs
+  and each workspace show a count, and a button in the title bar lists every
+  flagged pane; choose one to go to it. A group chat is flagged when a bot
+  fails, when a reply ends with a question, or when a reply arrives while
+  you are elsewhere. A terminal is flagged when it shows a prompt that
+  blocks until answered (an approval, a yes or no, a password) or when a
+  long run of output ends while you are looking at something else. For
+  terminals this is a judgement from what is on screen, so it can be wrong
+  either way. Looking at a pane clears its flag; a waiting terminal keeps
+  its flag until you type in it.
+- **Group chat.** One conversation with any number of models. Each
+  participant is reached through one of three backends, and you can mix them
+  in the same chat:
+  - an HTTP API that speaks the OpenAI-style chat completions format
+    (hosted providers that offer it, or a local server such as Ollama)
+  - a command-line tool that reads a prompt on standard input and prints a
+    reply
+  - a scripted participant with canned lines, for trying the feature without
+    any model
+- **Turn taking.** `@name` picks who answers, `@all` asks everyone. Without a
+  mention the room follows its policy: whoever you addressed last, everyone
+  at once, or everyone in turn. Models can @mention each other, up to a
+  limit you set, and there is a stop button.
+- **Approvals.** Set a Claude Code or Codex participant to "Ask first" and
+  it stops before every file edit and every command. The chat shows what it
+  wants to do, with the change drawn as added and removed lines, and an
+  Approve and a Reject button. Nothing happens until you choose, the pane is
+  flagged as waiting on you, and the time you take does not count against
+  the reply's time limit. Stop rejects whatever is waiting.
+- **Changes.** The Changes button in a chat lists every file the bots
+  changed there, newest first, with who changed it, the lines added and
+  removed, and a button to show the file in Finder. It covers the chat while
+  it is open; it is not saved and is not a history of the folder.
+- **Clearing a chat.** Send `/clear` to empty the conversation and keep the
+  participants. Models only know what the transcript holds, so they start
+  fresh.
+- **Agent profiles.** Save reusable participants with model, reasoning effort,
+  access and persona settings, then add them to other chats.
+- **Saved threads.** Chats, participants, options and completed messages are
+  saved automatically across restarts.
+- **Provider filtering.** Choose which tools appear in new terminal and bot
+  selections; your choices are saved across restarts.
+- **Live activity and token counts.** See replies in progress and activity
+  status lines, with steps from Claude Code and Codex and per-participant
+  token counts for the chat.
+
+## Requirements
+
+- [Rust](https://rustup.rs) (stable)
+- [Node.js](https://nodejs.org) 20 or newer
+- The Tauri 2 system dependencies for your platform:
+  <https://tauri.app/start/prerequisites/>
+
+## Run it
+
+```sh
+npm install
+npm run tauri dev
+```
+
+The built app also accepts folders on the command line, so `apex-deck .`
+opens the current project as a workspace.
+
+To build an installable app:
+
+```sh
+npm run tauri build
+```
+
+The resulting `target/release/bundle/macos/Apex Deck.app` contains the interface
+and native backend. Move it to Applications and launch it normally; Node.js,
+a development server and an open terminal are not needed to run the packaged app.
+Coding agents still use the command-line tools installed and signed in on your Mac.
+
+To work on the interface alone, `npm run dev` opens it in a browser with a
+stand-in backend. Terminals only echo and chat replies are canned in that
+mode; a badge in the title bar says so.
+
+## Using Apex Deck
+
+The main navigation has three sections:
+
+- **Agents:** reusable bot profiles with model, effort, access and persona settings.
+- **Code:** live terminal panes in your project folders.
+- **Threads:** saved group chats. Use **Add a saved agent** to bring a profile into a chat,
+  or the plus button on a participant chip to save it to Agents.
+
+Use **Providers** in the top bar to hide tools you do not use. Toggle any provider,
+choose **Hide uninstalled tools**, or **Enable all** to restore the list. Choices are
+saved across restarts and apply to new terminal and bot selections in all three
+sections. Existing profiles, conversations and running terminals are kept.
+
+## Saved data
+
+Chats, participants, options and completed messages are saved automatically.
+On macOS the native app stores them in
+`~/Library/Application Support/dev.apexdeck.app/saved-chats-v1/` using atomic file replacements.
+Workspace folders previously remembered by the app are migrated on first launch.
+Running model turns and terminal processes are not restarted automatically.
+Use **Delete thread** to remove a saved conversation. Switching sections or quitting
+the application keeps your chats. Browser demo data is stored separately in browser storage.
+
+## Adding models to a group chat
+
+Go to **Threads**, click **+ New thread**, then **+ Add model**. Give the
+participant a name and pick how to reach it under **Connect through**.
+
+| Preset | What it runs | Model choice |
+|---|---|---|
+| Claude Code | `claude -p` in its event mode, once per turn | Default, a short name that follows the newest version (`opus`, `sonnet`, `haiku`, `fable`, ...), a specific version (`claude-opus-5-5`, `claude-sonnet-4-6`, ...), or any name you type |
+| Codex | `codex app-server`, one short session per turn (falls back to `codex exec --json`) | Default, the models Codex reports for your account, the built-in list, or any name you type |
+| Gemini CLI | `gemini -p`, once per turn | Default, a shortcut (`auto`, `pro`, `flash`, `flash-lite`), a specific version, or any name you type |
+| Ollama | Your local Ollama server | Listed from the server |
+| Other API | Any OpenAI-compatible endpoint | Listed from the server, or typed |
+| Custom command | A command you enter | Whatever the command does |
+| Scripted | Nothing; canned lines for testing | None |
+
+Agent presets are greyed out when the tool is not installed. They run in the
+workspace folder, with the same PATH your terminal has. The exact flags for
+each tool are in `crates/apex-adapters/src/presets.rs`.
+
+**Model and reasoning effort.** Both are dropdowns and both are optional.
+Leave them on Default to use whatever the tool or server is set to, pick
+from the list, or choose the last entry to type an exact name. Names you
+type are remembered. The effort list changes with the model: it shows only
+the levels that model accepts, and is switched off for models with no
+effort setting. The built-in lists live in `src/models.ts`. For Codex they
+are replaced by the list Codex keeps for your account
+(`~/.codex/models_cache.json`) when it has one.
+
+**While a bot works.** Claude Code and Codex report what they are doing as
+they go, so a reply appears as it is written instead of all at once at the
+end. Until the turn is over the reply sits in a dashed bubble that cannot be
+mistaken for a finished message: it lists the steps taken so far (the file
+being read, the command being run), shows the text written so far in a
+dimmer colour, and ends with a moving status line that says whether the bot
+is thinking, working or writing and for how long. When the turn ends the
+bubble is replaced by the final reply, and the bot's chip shows the tokens
+it has used in this chat; hover for the split between input and output.
+
+Claude Code is run in its event mode (`--output-format stream-json`). Codex
+is run through its app server (`codex app-server`), the same interface its
+own apps use, because `codex exec` only hands over each message once it is
+complete. If the app server cannot be started, Apex Deck falls back to
+`codex exec --json`: same reply and steps, but each message arrives whole.
+The other presets print only their answer, so they show text and the status
+line and nothing else.
+
+**When a tool fails.** The chat shows the line that explains it, wherever
+the tool printed it. If the tool is not signed in, the message says how to
+sign in. The full output goes to the app's log.
+
+**Changing a participant.** Click the pencil on its chip to change its
+model, effort, access or persona. It keeps its @handle and its place in the
+conversation.
+
+**Access.** There are four levels:
+
+| Level | What the bot may do |
+|---|---|
+| Read only | Read files. No edits, no commands. |
+| Ask first | Propose each edit and command, and wait for your Approve or Reject. |
+| Can edit files | Edit files in the workspace without asking. |
+| Full access | Edit files and run commands without asking. |
+
+For Claude Code and Codex the level is turned into the tool's own permission
+settings, so it is enforced by the tool. "Ask first" is offered for those
+two only, because it needs the tool to stop and wait. For the other presets
+the level is only stated to the model as an instruction.
+
+How "Ask first" was checked: with Claude Code against the real tool
+(approving wrote the file and listed the change, rejecting left the file
+alone). With Codex only against its published message format and a stand-in
+server, because Codex needs a sign-in to run a turn. If Codex behaves
+differently on your Mac, the chat shows its error.
+
+**API keys.** For "Other API", enter the *name* of an environment variable
+that holds your key. The key itself is never written to disk by Apex Deck; it
+is read from the environment when a turn runs. Because desktop apps do not
+always inherit your shell's environment, start Apex Deck from a terminal
+where the variable is set, or set it in your system environment.
+
+**Cost.** Each reply from an agent preset is a separate run of that tool and
+counts against your subscription or credits for it. The whole conversation
+is sent on every turn.
+
+Give a participant a persona if you want a custom bot: a name plus a short
+description of how it should behave.
+
+## Project layout
+
+| Path | What it is |
+|---|---|
+| `crates/apex-core` | Group chat logic: participants, transcript views, turn taking. No network or process code. |
+| `crates/apex-adapters` | Backends: OpenAI-compatible HTTP streaming and command-line tools. |
+| `src-tauri` | The desktop shell: terminal sessions, agent detection, and the commands the interface calls. |
+| `src` | The interface (React and TypeScript, xterm.js for terminals). |
+| `src/layout.ts` | How panes are arranged: the layout tree and every change to it, with no interface code. |
+| `src/attention.ts` | When a pane counts as needing you: the rules for terminals and chats, with no interface code. |
+| `src/markdownText.ts` | The reader for the markdown in bot replies. |
+| `SPEC.md` | The feature plan and what is left to build. |
+| `public/branding` | Approved logos used by the interface and browser preview. |
+| `branding/macos` | The brand kit: the approved logo, editable vectors, macOS icon files and Xcode assets. |
+
+## Branding
+
+The mark is a mint and cyan pixel diamond around a `>_` terminal prompt. It
+appears in the title bar, startup screen and welcome screen, and the browser
+preview uses it as its favicon. The native bundle uses the matching icon
+from `src-tauri/icons/icon.icns`; the PNG and Windows icon files there use
+the same artwork, with the kit's simplified drawing at 64 pixels and below.
+
+The full source kit and its usage guide are in `branding/macos`, unchanged
+from how it was delivered. Where each file in the app comes from:
+
+| In the app | From the kit |
+|---|---|
+| `public/branding/mark.svg` | `Vectors/BrandMark.svg` |
+| `public/branding/logo-dark.svg`, `logo-light.svg` | `Vectors/LogoStackedDark.svg`, `LogoStackedLight.svg` |
+| `public/branding/logo-horizontal.svg` | `Vectors/LogoHorizontalDark.svg` |
+| `public/branding/menu-bar-template.svg` | `Vectors/MenuBarTemplate.svg` |
+| `public/branding/app-icon.png`, `src-tauri/icons/icon.png` | `PNG/AppIcon-1024.png` |
+| `src-tauri/icons/icon.icns` | `ApexDeck-32bit.icns` |
+| `src-tauri/icons/32x32.png`, `128x128.png`, `128x128@2x.png` | `PNG/AppIcon-32.png`, `AppIcon-128.png`, `AppIcon-256.png` |
+| `src-tauri/icons/icon.ico` | built from `PNG/AppIcon-16` to `AppIcon-256` |
+
+The brand colors in `src/styles.css` (`--brand-mint`, `--brand-cyan`) are the
+kit's Mint `#3DEF91` and Cyan `#1ED7EE`. Light-background and horizontal
+logos, wordmarks, a template menu-bar mark and Xcode assets are in the kit
+for future surfaces. The current app has no menu-bar tray, so the template
+mark is available without adding a new tray feature.
+
+## Tests
+
+```sh
+cargo test --workspace   # room logic, adapters, terminals
+npm test                 # provider preference behavior (Node.js 22.6+)
+npm run build            # type-check and bundle the interface
+```
+
+The adapter tests run against a local mock server and small shell commands,
+so they need no API key and make no outside requests.
+
+## Roadmap
+
+See [SPEC.md](SPEC.md). Next up: a status board across all panes with a
+"needs you" state, a docked browser for `localhost` previews, and an
+Anthropic-format API adapter.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

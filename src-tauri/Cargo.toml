@@ -1,0 +1,23 @@
+[package]
+name = "apex-deck"
+description = "A desktop workspace for running coding agents side by side, with multi-model group chats."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "apex_deck_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+apex-core = { path = "../crates/apex-core" }
+apex-adapters = { path = "../crates/apex-adapters" }
+portable-pty = "0.9"
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tokio.workspace = true

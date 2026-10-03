@@ -1,0 +1,9 @@
+{
+  "method": "Built-in image_gen; native SVG companion artwork and standard raster/icon exports",
+  "selected": [
+    {
+      "name": "App icon master (selected)",
+      "prompt": "Use case: precise-object-edit. Create a production macOS app icon from the supplied Apex Deck 32-bit logo. Preserve the recognizable geometric peaked diamond outline, mint-green upper half, cyan lower half, faceted fine-pixel highlights, and central green > with a cyan underscore. Remove the APEX DECK text entirely. Center the mark alone with generous padding in a dark black-green rounded-square macOS icon tile. The tile should occupy 88 percent of the square canvas, with fully transparent space outside its rounded corners. The colored diamond should fit comfortably inside the tile, occupy approximately 65 percent of the full canvas width, and leave clear space above/below its points. Keep the pixel edges crisp and the restrained 32-bit shading. Use a smooth deep dark-green tile background without a visible grid or noisy texture, subtle inner edge highlight and shallow depth only. No device mockup, no surrounding scene, no drop shadow outside the tile, no faces, no text, no new symbols, no reflections, no bloom. One isolated square macOS app-icon asset with real alpha transparency outside the tile."
+    }
+  ]
+}
