@@ -1592,3 +1592,8 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .queued-messages { padding: 8px 0; font-size: 12px; }
 .queued-message { display: flex; gap: 6px; align-items: start; margin-top: 6px; opacity: .75; }
 .queued-message textarea { min-height: 40px; font-size: 12px; }
+
+.pins { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
+.pins-label { color: var(--muted); margin-right: 2px; }
+.pin { display: inline-flex; align-items: center; gap: 4px; max-width: 360px; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.pin-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

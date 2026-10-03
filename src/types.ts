@@ -61,6 +61,8 @@ export interface RoomOptions {
 }
 
 export interface RoomSnapshot {
+  /** Facts every model sees on every turn; kept by /clear and /compact. */
+  pins?: string[];
   participants: ParticipantConfig[];
   options: RoomOptions;
   transcript: Message[];

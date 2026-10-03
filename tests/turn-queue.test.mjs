@@ -29,3 +29,14 @@ test('a failed stop retains the steering message for retry', async () => {
   assert.equal(q.paused, true); assert.equal(errors.length, 1);
   release(); await tick();
 });
+
+test('literal command text cannot become compaction without explicit kind', async () => {
+  const sent = [];
+  const q = new TurnQueue(async (text, kind) => sent.push({text,kind}), async()=>{}, ()=>{});
+  q.paused = true;
+  const id = q.send('/compact');
+  q.send('/compact', 'compact');
+  q.edit(id, '/clear');
+  q.resume(); await tick();
+  assert.deepEqual(sent, [{text:'/clear',kind:'message'}, {text:'/compact',kind:'compact'}]);
+});

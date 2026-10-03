@@ -360,6 +360,33 @@ async fn room_clear(state: State<'_, AppState>, store: State<'_, Store>, id: Str
     save_room(&state, &store, &id).await
 }
 
+/// Pin a fact for every model in this chat. Returns the pins now in place.
+/// While models are working this waits for the room, so the pin applies
+/// from the next turn.
+#[tauri::command]
+async fn room_pin(state: State<'_, AppState>, store: State<'_, Store>, id: String, fact: String) -> Result<Vec<String>, String> {
+    let pins = {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        room.pin(&fact)?;
+        room.pins().to_vec()
+    };
+    save_room(&state, &store, &id).await?;
+    Ok(pins)
+}
+
+#[tauri::command]
+async fn room_unpin(state: State<'_, AppState>, store: State<'_, Store>, id: String, index: usize) -> Result<Vec<String>, String> {
+    let pins = {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        room.unpin(index)?;
+        room.pins().to_vec()
+    };
+    save_room(&state, &store, &id).await?;
+    Ok(pins)
+}
+
 /// Have a participant summarize the chat, then give the models that summary
 /// in place of the messages so far. The transcript itself is kept. Returns
 /// when the summary is saved; its progress arrives as `room-event` events.
@@ -538,6 +565,8 @@ pub fn run() {
             room_update_participant,
             room_remove_participant,
             room_clear,
+            room_pin,
+            room_unpin,
             room_compact,
             room_close,
             api_models,

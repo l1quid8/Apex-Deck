@@ -44,6 +44,9 @@ export interface Backend {
   roomRemoveParticipant(id: string, participant: string): Promise<void>;
   /** Empty the transcript, which is all the models see, and keep the participants. */
   roomClear(id: string): Promise<void>;
+  /** Pin a fact for every model in the chat. Resolves with all pins. */
+  roomPin(id: string, fact: string): Promise<string[]>;
+  roomUnpin(id: string, index: number): Promise<string[]>;
   /** Have a participant summarize the chat and show the models that summary
    *  in place of the messages so far. The transcript is kept. */
   roomCompact(id: string): Promise<void>;
@@ -99,6 +102,8 @@ async function tauriBackend(): Promise<Backend> {
     roomUpdateParticipant: (id, participant) => invoke("room_update_participant", { id, participant }),
     roomRemoveParticipant: (id, participant) => invoke("room_remove_participant", { id, participant }),
     roomClear: (id) => invoke("room_clear", { id }),
+    roomPin: (id, fact) => invoke("room_pin", { id, fact }),
+    roomUnpin: (id, index) => invoke("room_unpin", { id, index }),
     roomCompact: (id) => invoke("room_compact", { id }),
     roomClose: (id) => invoke("room_close", { id }),
     roomDelete: (id) => invoke("room_delete", { id }),
@@ -111,7 +116,7 @@ async function tauriBackend(): Promise<Backend> {
 function demoBackend(): Backend {
   const dataListeners = new Set<(id: string, data: string) => void>();
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
-  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; seq: number; stopped: boolean; last: string[] }>();
+  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; seq: number; stopped: boolean; last: string[] }>();
   const cancellations = new Map<string, () => void>();
   const emitData = (id: string, data: string) => dataListeners.forEach((cb) => cb(id, data));
   const saveRoom = (id: string) => {
@@ -209,7 +214,7 @@ function demoBackend(): Backend {
       rooms.set(id, room);
       saveRoom(id);
       setTimeout(() => reportMeters(id, room.participants), 50);
-      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null };
+      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [] };
     },
     apiModels: async (baseUrl) => {
       if (baseUrl.includes("11434")) return ["llama3", "qwen2.5-coder"];
@@ -360,6 +365,25 @@ function demoBackend(): Backend {
       const room = rooms.get(id);
       if (room) room.participants = room.participants.filter((p) => p.id !== participant);
       saveRoom(id);
+    },
+    roomPin: async (id, fact) => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      const pins: string[] = (room.pins ??= []);
+      const trimmed = fact.trim();
+      if (!trimmed) throw new Error("type the fact after /pin");
+      if ([...trimmed].length > 500) throw new Error("pins can be at most 500 characters");
+      if (pins.includes(trimmed)) throw new Error("that is already pinned");
+      pins.push(trimmed);
+      saveRoom(id);
+      return [...pins];
+    },
+    roomUnpin: async (id, index) => {
+      const room = rooms.get(id);
+      if (!Number.isInteger(index) || index < 0 || !room?.pins?.[index]) throw new Error("that pin is gone");
+      room.pins.splice(index, 1);
+      saveRoom(id);
+      return [...room.pins];
     },
     roomClear: async (id) => {
       const room = rooms.get(id);

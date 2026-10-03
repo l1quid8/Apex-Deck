@@ -14,9 +14,9 @@ import { afterRound, type Attention } from "./attention";
 import { ApprovalCard, ChangesPanel, type MadeChange } from "./Approvals";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
-import { TurnQueue, type QueuedMessage } from "./turnQueue";
+import { TurnQueue, type QueuedMessage, type TurnKind } from "./turnQueue";
 import { replyText, type ReplyQuote } from "./reply";
-import { parseComposer, postable, type Command } from "./commands";
+import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
   Access,
   AgentInfo,
@@ -287,6 +287,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [pins, setPins] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   /** Each running turn: when it began, the steps taken so far, and whether
    *  the bot is thinking, using a tool, or writing right now. */
@@ -494,6 +495,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         if (!alive) return;
         setParticipants(saved.participants);
         setOptions(saved.options);
+        setPins(saved.pins ?? []);
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
@@ -613,18 +615,15 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     setText("");
     setReply(null);
     setBusy(true);
-    turnQueue.send("/compact");
+    turnQueue.send("/compact", "compact");
   };
 
-  const dispatch = useRef<(message: string) => Promise<void>>(async () => {});
-  dispatch.current = async (message) => {
+  const dispatch = useRef<(message: string, kind: TurnKind) => Promise<void>>(async () => {});
+  dispatch.current = async (message, kind) => {
     setBusy(true);
     try {
-      if (message === "/compact") await backend.roomCompact(pane.id);
-      else if (message === "/clear") {
-        await backend.roomClear(pane.id); setEntries([]); setUsed({}); forgetContext();
-      }
-      else await backend.roomPost(pane.id, postable(message));
+      if (kind === "compact") await backend.roomCompact(pane.id);
+      else await backend.roomPost(pane.id, message);
     } catch (error) {
       // Compaction failures return through the command without a Failed
       // room event. Remove their transient draft and activity as well.
@@ -633,7 +632,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     } finally { setBusy(false); }
   };
   const [turnQueue] = useState(() => new TurnQueue(
-    (message) => dispatch.current(message),
+    (message, kind) => dispatch.current(message, kind),
     () => backend.roomStop(pane.id),
     setQueued,
     (error) => { notify(`Could not send: ${String(error)}. Queued messages are paused.`, "error"); setQueuePaused(true); },
@@ -646,6 +645,12 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         return clearChat();
       case "compact":
         return compactChat();
+      case "pin":
+        if (!command.fact) return notify("Type the fact after /pin, for example: /pin we're on Tauri 2, don't suggest Electron");
+        setText("");
+        return void backend.roomPin(pane.id, command.fact)
+          .then((next) => { setPins(next); notify(busy ? "Pinned. It applies from the next turn." : "Pinned for every model in this chat."); })
+          .catch((error) => { setText(`/pin ${command.fact}`); notify(`Could not pin: ${String(error)}`, "error"); });
       case "unknown":
         return notify(`${command.typed} isn't a command. Start with // to send it as a message.`, "error");
       default:
@@ -659,7 +664,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     if (!body || !ready || participants.length === 0) return;
     const parsed = parseComposer(body);
     if ("command" in parsed) return runCommand(parsed.command);
-    const message = replyText(body, reply);
+    const message = replyText(postable(parsed.text), reply);
     setText(""); setReply(null);
     if (steer) { setQueuePaused(false); void turnQueue.steer(message); }
     else turnQueue.send(message);
@@ -1024,6 +1029,14 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         </article>)}
       </div>}
       <div className="chat-body">
+      {!profileMode && pins.length > 0 && <div className="pins" aria-label="Pinned for every model">
+        <span className="pins-label">Pinned</span>
+        {pins.map((pin, index) => <div className="pin" key={pin}>
+          <span className="pin-text" title={pin}>{pin}</span>
+          <button className="icon small" aria-label={`Unpin ${pin}`} onClick={() =>
+            backend.roomUnpin(pane.id, index).then(setPins).catch((error) => notify(`Could not unpin: ${String(error)}`, "error"))}>×</button>
+        </div>)}
+      </div>}
       {!profileMode && <div className="transcript" ref={scroller}>
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
           <div className="empty">
@@ -1140,7 +1153,13 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         {queued.length > 0 && <div className="queued-messages" aria-label="Queued messages">
           <span className="muted">{queuePaused ? "Queue paused" : "Queued for the next turn"}</span>
           {queued.map(item => <div className="queued-message" key={item.id}>
-            <textarea aria-label={`Queued message ${item.id}`} rows={2} value={item.text} onChange={e => turnQueue.edit(item.id, e.target.value)} />
+            <textarea aria-label={`Queued message ${item.id}`} rows={2} defaultValue={item.text} onBlur={e => {
+              if (e.target.value === item.text) return;
+              const parsed = parseQueueEdit(e.target.value);
+              if ("text" in parsed) turnQueue.edit(item.id, parsed.text);
+              else if (parsed.command.name === "compact") turnQueue.edit(item.id, "/compact", "compact");
+              else { turnQueue.remove(item.id); setText(e.target.value); runCommand(parsed.command); }
+            }} />
             <button className="icon" aria-label="Remove queued message" onClick={() => turnQueue.remove(item.id)}>×</button>
           </div>)}
           {queuePaused && <button className="ghost" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume queue</button>}

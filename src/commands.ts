@@ -42,3 +42,9 @@ export function parseComposer(body: string): Parsed {
 export function postable(message: string): string {
   return message.startsWith("//") ? message.slice(1) : message;
 }
+
+/** Parse an edited queued turn with the same rules as the composer. */
+export function parseQueueEdit(body: string): Parsed {
+  const parsed = parseComposer(body.trim());
+  return "text" in parsed ? { text: postable(parsed.text) } : parsed;
+}
