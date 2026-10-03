@@ -11,7 +11,7 @@ use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedActi
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, Reply, TurnRequest};
 use crate::types::{Message, ParticipantConfig, ParticipantId, Speaker};
-use crate::view::{render_view, system_prompt, PASS_TOKEN};
+use crate::view::{render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -71,6 +71,8 @@ pub enum RoomEvent {
     Failed { id: ParticipantId, error: String },
     /// Bots kept addressing each other and the room cut them off.
     HopLimitReached { limit: usize },
+    /// The models now see `summary` in place of the first `upto` messages.
+    Compacted { id: ParticipantId, summary: String, upto: usize },
     /// The human pressed stop.
     Stopped,
     /// The room finished handling the human message.
@@ -111,6 +113,15 @@ impl Approver for RoomApprover<'_> {
     }
 }
 
+/// A summary the models see in place of the older part of the transcript.
+/// The person still sees every message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Compaction {
+    pub summary: String,
+    /// The summary covers the messages before this index.
+    pub upto: usize,
+}
+
 /// Durable chat data. Running turns and provider processes are never resumed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomSnapshot {
@@ -121,6 +132,8 @@ pub struct RoomSnapshot {
     pub cursors: HashMap<ParticipantId, usize>,
     #[serde(default)]
     pub last_targets: Vec<ParticipantId>,
+    #[serde(default)]
+    pub compaction: Option<Compaction>,
 }
 
 /// One group chat.
@@ -130,6 +143,7 @@ pub struct Room {
     /// For each participant, how much of the transcript it has been shown.
     cursors: HashMap<ParticipantId, usize>,
     last_targets: Vec<ParticipantId>,
+    compaction: Option<Compaction>,
     options: RoomOptions,
     stop: Arc<AtomicBool>,
     /// Actions participants have proposed and are waiting on.
@@ -150,6 +164,7 @@ impl Room {
             options: self.options,
             cursors: self.cursors.clone(),
             last_targets: self.last_targets.clone(),
+            compaction: self.compaction.clone(),
         }
     }
 
@@ -160,6 +175,7 @@ impl Room {
             options: snapshot.options,
             cursors: snapshot.cursors,
             last_targets: snapshot.last_targets,
+            compaction: snapshot.compaction,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
         }
@@ -171,6 +187,7 @@ impl Room {
             transcript: Vec::new(),
             cursors: HashMap::new(),
             last_targets: Vec::new(),
+            compaction: None,
             options,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
@@ -231,6 +248,63 @@ impl Room {
         self.transcript.clear();
         self.cursors.clear();
         self.last_targets.clear();
+        self.compaction = None;
+    }
+
+    /// Who writes the summary for `/compact`: whoever was addressed last,
+    /// or else the first participant.
+    pub fn summarizer(&self) -> Option<ParticipantConfig> {
+        let configs = self.configs();
+        self.last_targets
+            .iter()
+            .find_map(|id| configs.iter().find(|c| &c.id == id))
+            .or_else(|| configs.first())
+            .cloned()
+    }
+
+    /// Have `summarizer` summarize the conversation, then show the models
+    /// that summary in place of every message so far. The person keeps the
+    /// full transcript. The summarizer is passed in rather than taken from
+    /// the roster so the caller can give it narrower access.
+    pub async fn compact(&mut self, summarizer: &dyn Participant, on_event: EventSink<'_>) -> Result<(), String> {
+        self.stop.store(false, Ordering::SeqCst);
+        let upto = self.transcript.len();
+        if upto == self.compacted_upto() {
+            return Err("there is nothing new to summarize".to_string());
+        }
+        let id = summarizer.config().id.clone();
+        // Seen from nobody's side, every message is labelled with its speaker.
+        let outsider = ParticipantId::new("");
+        let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
+        turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
+        let request = TurnRequest { system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new() };
+
+        on_event(RoomEvent::TurnStarted { id: id.clone() });
+        let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
+        let outcome = summarizer.respond_with_progress(request, &progress).await;
+        if self.stopped() {
+            on_event(RoomEvent::Stopped);
+            return Ok(());
+        }
+        let reply = outcome.map_err(|error| error.to_string())?;
+        if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
+            on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens });
+        }
+        let summary = reply.text.trim();
+        if summary.is_empty() || summary.eq_ignore_ascii_case(PASS_TOKEN) {
+            return Err(format!("{} did not write a summary", summarizer.config().display_name));
+        }
+        self.compaction = Some(Compaction { summary: summary.to_string(), upto });
+        on_event(RoomEvent::Compacted { id, summary: summary.to_string(), upto });
+        Ok(())
+    }
+
+    fn compacted_upto(&self) -> usize {
+        self.compaction.as_ref().map_or(0, |c| c.upto.min(self.transcript.len()))
+    }
+
+    fn summary(&self) -> Option<&str> {
+        self.compaction.as_ref().map(|c| c.summary.as_str())
     }
 
     /// A flag another task can set to stop the room. The room checks it
@@ -282,7 +356,9 @@ impl Room {
     fn request_for(&self, id: &ParticipantId) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let participant = self.roster.iter().find(|p| &p.config().id == id)?.clone();
         let configs = self.configs();
-        let seen = self.cursors.get(id).copied().unwrap_or(0).min(self.transcript.len());
+        // What the summary covers counts as seen.
+        let start = self.compacted_upto();
+        let seen = self.cursors.get(id).copied().unwrap_or(0).max(start).min(self.transcript.len());
         let unseen = self.transcript[seen..]
             .iter()
             .filter(|m| m.speaker != Speaker::Bot(id.clone()))
@@ -290,7 +366,7 @@ impl Room {
             .collect();
         let request = TurnRequest {
             system: system_prompt(participant.config(), &configs),
-            turns: render_view(&self.transcript, id, &configs),
+            turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
         };
         Some((participant, request))

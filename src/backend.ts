@@ -44,6 +44,9 @@ export interface Backend {
   roomRemoveParticipant(id: string, participant: string): Promise<void>;
   /** Empty the transcript, which is all the models see, and keep the participants. */
   roomClear(id: string): Promise<void>;
+  /** Have a participant summarize the chat and show the models that summary
+   *  in place of the messages so far. The transcript is kept. */
+  roomCompact(id: string): Promise<void>;
   roomClose(id: string): Promise<void>;
   roomDelete(id: string): Promise<void>;
   onRoomEvent(cb: (room: string, event: RoomEvent) => void): Promise<Unlisten>;
@@ -96,6 +99,7 @@ async function tauriBackend(): Promise<Backend> {
     roomUpdateParticipant: (id, participant) => invoke("room_update_participant", { id, participant }),
     roomRemoveParticipant: (id, participant) => invoke("room_remove_participant", { id, participant }),
     roomClear: (id) => invoke("room_clear", { id }),
+    roomCompact: (id) => invoke("room_compact", { id }),
     roomClose: (id) => invoke("room_close", { id }),
     roomDelete: (id) => invoke("room_delete", { id }),
     onRoomEvent: (cb) => listen<{ room: string; event: RoomEvent }>("room-event", (e) => cb(e.payload.room, e.payload.event)),
@@ -107,7 +111,7 @@ async function tauriBackend(): Promise<Backend> {
 function demoBackend(): Backend {
   const dataListeners = new Set<(id: string, data: string) => void>();
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
-  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; seq: number; stopped: boolean; last: string[] }>();
+  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; seq: number; stopped: boolean; last: string[] }>();
   const emitData = (id: string, data: string) => dataListeners.forEach((cb) => cb(id, data));
   const saveRoom = (id: string) => {
     const room = rooms.get(id);
@@ -168,7 +172,7 @@ function demoBackend(): Backend {
       room.stopped = false;
       rooms.set(id, room);
       saveRoom(id);
-      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript] };
+      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null };
     },
     apiModels: async (baseUrl) => {
       if (baseUrl.includes("11434")) return ["llama3", "qwen2.5-coder"];
@@ -299,9 +303,24 @@ function demoBackend(): Backend {
       const room = rooms.get(id);
       if (!room) throw new Error(`no group chat with id ${id}`);
       room.transcript = [];
+      room.compaction = null;
       room.seq = 0;
       room.last = [];
       saveRoom(id);
+    },
+    roomCompact: async (id) => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      const by = room.participants.find((p) => p.id === room.last[0]) ?? room.participants[0];
+      if (!by) throw new Error("add a participant before compacting");
+      const upto = room.transcript.length;
+      if (upto === (room.compaction?.upto ?? 0)) throw new Error("there is nothing new to summarize");
+      emitRoom(id, { type: "turn_started", id: by.id });
+      await sleep(400);
+      const summary = `Preview summary of ${upto} messages. The desktop app asks ${by.display_name} to write the real one.`;
+      room.compaction = { summary, upto };
+      saveRoom(id);
+      emitRoom(id, { type: "compacted", id: by.id, summary, upto });
     },
     roomClose: async (id) => {
       rooms.delete(id);

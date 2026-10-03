@@ -44,7 +44,9 @@ interface Props {
 }
 
 type Notice = { key: number; text: string; tone: "info" | "error" };
-type Entry = { kind: "message"; message: Message } | { kind: "notice"; notice: Notice };
+/** Where `/compact` cut in: the models see `summary` instead of the messages above it. */
+type Summary = { by: string | null; summary: string; upto: number };
+type Entry = { kind: "message"; message: Message } | { kind: "notice"; notice: Notice } | { kind: "summary"; summary: Summary };
 
 const COLORS = ["#2dd4bf", "#f59e0b", "#a78bfa", "#f472b6", "#60a5fa", "#a3e635", "#fb7185", "#22d3ee"];
 
@@ -401,6 +403,11 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         case "hop_limit_reached":
           notify(`Stopped after ${event.limit} rounds of models answering each other.`);
           break;
+        case "compacted":
+          setDrafts(({ [event.id]: _done, ...rest }) => rest);
+          setWorking(({ [event.id]: _done, ...rest }) => rest);
+          setEntries((list) => [...list, { kind: "summary", summary: { by: event.id, summary: event.summary, upto: event.upto } }]);
+          break;
         case "stopped":
           setDrafts({});
           setWorking({});
@@ -426,7 +433,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         if (!alive) return;
         setParticipants(saved.participants);
         setOptions(saved.options);
-        setEntries(saved.transcript.map((message) => ({ kind: "message", message })));
+        const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
+        // A saved summary does not say who wrote it.
+        if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
+        setEntries(restored);
         setReady(true);
       })
       .catch((error) => notify(`Could not create the chat: ${String(error)}`, "error"));
@@ -534,10 +544,27 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       .catch((error) => notify(`Could not clear the chat: ${String(error)}`, "error"));
   };
 
+  /** Have a model summarize the chat. The models then see the summary in
+   *  place of the messages so far; the person still sees them all. */
+  const compactChat = () => {
+    setText("");
+    setReply(null);
+    setBusy(true);
+    backend
+      .roomCompact(pane.id)
+      .catch((error) => notify(`Could not compact the chat: ${String(error)}`, "error"))
+      .finally(() => {
+        setBusy(false);
+        setDrafts({});
+        setWorking({});
+      });
+  };
+
   const send = () => {
     const body = text.trim();
     if (!body || busy || !ready || participants.length === 0) return;
     if (body === "/clear") return clearChat();
+    if (body === "/compact") return compactChat();
     const message = replyText(body, reply);
     setText("");
     setReply(null);
@@ -856,6 +883,13 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}`}>
               {entry.notice.text}
             </p>
+          ) : entry.kind === "summary" ? (
+            <details key={`s${entry.summary.upto}`} className="compacted">
+              <summary>
+                {entry.summary.by ? `Summarized by ${names.get(entry.summary.by) ?? entry.summary.by}` : "Summarized"} · the models see this instead of the messages above
+              </summary>
+              <Markdown text={entry.summary.summary} onOpen={openTarget} />
+            </details>
           ) : entry.message.speaker.kind === "human" ? (
             <div key={`m${entry.message.seq}`} className="bubble human">
               <RichText text={entry.message.text} onOpen={openTarget} />
@@ -948,7 +982,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           placeholder={participants.length === 0 ? "Add a model to start" : "Message the room. @name picks who answers."}
           disabled={!ready || participants.length === 0}
         />
-        <div className="composer-hint"><span>{busy ? "Models are responding…" : "@name to mention · @all for everyone · /clear to start fresh"}</span><span>Enter to send · Shift + Enter for a new line</span></div>
+        <div className="composer-hint"><span>{busy ? "Models are responding…" : "@name to mention · @all for everyone · /compact to summarize · /clear to start fresh"}</span><span>Enter to send · Shift + Enter for a new line</span></div>
         </div>
         {busy ? (
           <button className="danger" onClick={() => backend.roomStop(pane.id)}>

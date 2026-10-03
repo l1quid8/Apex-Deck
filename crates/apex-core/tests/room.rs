@@ -398,6 +398,82 @@ fn clearing_forgets_the_conversation_but_keeps_the_participants() {
     assert_eq!(opus.requests()[0].unseen.len(), 1);
 }
 
+fn compact(room: &mut Room, summarizer: &ScriptedParticipant) -> (Result<(), String>, Vec<RoomEvent>) {
+    let events = Mutex::new(Vec::new());
+    let result = block_on(room.compact(summarizer, &|e| events.lock().unwrap().push(e)));
+    (result, events.into_inner().unwrap())
+}
+
+#[test]
+fn compacting_shows_the_models_a_summary_instead_of_the_older_messages() {
+    let opus = bot("opus", &["sqlite it is", "noted"]);
+    let mut room = room(&[&opus], TurnPolicy::Mention, 3);
+    say(&mut room, "which database?");
+
+    let writer = ScriptedParticipant::new("opus", &["Chose sqlite."]);
+    let (result, events) = compact(&mut room, &writer);
+    assert_eq!(result, Ok(()));
+    assert!(events.contains(&RoomEvent::Compacted { id: ParticipantId::new("opus"), summary: "Chose sqlite.".into(), upto: 2 }));
+    // The summarizer is shown every message, labelled, and then the ask.
+    let asked = &writer.requests()[0];
+    assert!(asked.turns[0].content.contains("[Human]: which database?"));
+    assert!(asked.turns[0].content.contains("[opus]: sqlite it is"));
+    assert!(asked.turns.last().unwrap().content.contains("summary"));
+
+    // The person keeps the whole transcript; the models get the summary.
+    say(&mut room, "thanks");
+    assert_eq!(lines(&room).len(), 4);
+    let seen = &opus.requests()[1];
+    assert_eq!(seen.turns.len(), 1);
+    assert!(seen.turns[0].content.contains("Chose sqlite."));
+    assert!(seen.turns[0].content.ends_with("[Human]: thanks"));
+    assert!(!seen.turns[0].content.contains("which database?"));
+    assert_eq!(seen.unseen.len(), 1);
+
+    // The summary is saved, and clearing drops it.
+    let snapshot = room.snapshot();
+    assert_eq!(snapshot.compaction.as_ref().map(|c| c.upto), Some(2));
+    room.clear();
+    assert!(room.snapshot().compaction.is_none());
+}
+
+#[test]
+fn compacting_again_folds_the_last_summary_into_the_new_one() {
+    let opus = bot("opus", &["a", "b"]);
+    let mut room = room(&[&opus], TurnPolicy::Mention, 3);
+    say(&mut room, "one");
+    compact(&mut room, &ScriptedParticipant::new("opus", &["first summary"])).0.unwrap();
+
+    // Nothing new since the last summary.
+    assert!(compact(&mut room, &ScriptedParticipant::new("opus", &["x"])).0.is_err());
+
+    say(&mut room, "two");
+    let writer = ScriptedParticipant::new("opus", &["second summary"]);
+    compact(&mut room, &writer).0.unwrap();
+    let shown = &writer.requests()[0].turns[0].content;
+    assert!(shown.contains("first summary") && shown.contains("[Human]: two") && !shown.contains("[Human]: one"));
+}
+
+#[test]
+fn a_summarizer_that_passes_or_fails_leaves_the_chat_as_it_was() {
+    let opus = bot("opus", &["a"]);
+    let mut room = room(&[&opus], TurnPolicy::Mention, 3);
+    say(&mut room, "hi");
+    assert!(compact(&mut room, &ScriptedParticipant::new("opus", &[])).0.is_err());
+    assert!(compact(&mut room, &ScriptedParticipant::new("opus", &["!fail offline"])).0.is_err());
+    assert!(room.snapshot().compaction.is_none());
+}
+
+#[test]
+fn the_last_addressed_bot_writes_the_summary() {
+    let opus = bot("opus", &[]);
+    let grok = bot("grok", &["hey"]);
+    let mut room = room(&[&opus, &grok], TurnPolicy::Mention, 3);
+    assert_eq!(room.summarizer().unwrap().id, ParticipantId::new("opus"));
+    say(&mut room, "@grok hi");
+    assert_eq!(room.summarizer().unwrap().id, ParticipantId::new("grok"));
+}
+
 /// A participant that proposes one edit and reports what it was told.
 struct AskingBot(ParticipantConfig);
 

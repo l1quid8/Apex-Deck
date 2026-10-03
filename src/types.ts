@@ -63,6 +63,13 @@ export interface RoomSnapshot {
   participants: ParticipantConfig[];
   options: RoomOptions;
   transcript: Message[];
+  /** The summary the models see in place of the first `upto` messages, after `/compact`. */
+  compaction?: Compaction | null;
+}
+
+export interface Compaction {
+  summary: string;
+  upto: number;
 }
 
 export type AppSection = "agents" | "code" | "threads";
@@ -108,6 +115,8 @@ export type RoomEvent =
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
   | { type: "hop_limit_reached"; limit: number }
+  /** The models now see `summary` in place of the first `upto` messages. */
+  | { type: "compacted"; id: string; summary: string; upto: number }
   | { type: "stopped" }
   | { type: "idle" };
 

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use apex_adapters::BuildContext;
-use apex_core::{AgentTool, ModelChoice, ParticipantConfig, ParticipantId, Room, RoomEvent, RoomOptions, RoomSnapshot};
+use apex_core::{Access, AgentTool, ModelChoice, ParticipantConfig, ParticipantId, Room, RoomEvent, RoomOptions, RoomSnapshot};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -332,6 +332,27 @@ async fn room_clear(state: State<'_, AppState>, store: State<'_, Store>, id: Str
     save_room(&state, &store, &id).await
 }
 
+/// Have a participant summarize the chat, then give the models that summary
+/// in place of the messages so far. The transcript itself is kept. Returns
+/// when the summary is saved; its progress arrives as `room-event` events.
+#[tauri::command]
+async fn room_compact(app: AppHandle, state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<(), String> {
+    let context = state.room_context(&id)?;
+    {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        let mut config = room.summarizer().ok_or("add a participant before compacting")?;
+        // Writing a summary needs no edits or commands.
+        config.access = Access::Read;
+        let summarizer = apex_adapters::build(config, &context);
+        room.compact(summarizer.as_ref(), &|event| {
+            let _ = app.emit("room-event", RoomEventPayload { room: &id, event });
+        })
+        .await?;
+    }
+    save_room(&state, &store, &id).await
+}
+
 #[tauri::command]
 fn room_close(state: State<'_, AppState>, id: String) {
     if let Some(handle) = state.rooms.lock().unwrap().remove(&id) {
@@ -489,6 +510,7 @@ pub fn run() {
             room_update_participant,
             room_remove_participant,
             room_clear,
+            room_compact,
             room_close,
             api_models,
             agent_models,

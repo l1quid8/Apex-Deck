@@ -22,8 +22,8 @@ pub use mention::{handle_for, parse_mentions, MentionTarget};
 pub use participant::{
     DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
 };
-pub use room::{Room, RoomEvent, RoomOptions, RoomSnapshot, TurnPolicy};
+pub use room::{Compaction, Room, RoomEvent, RoomOptions, RoomSnapshot, TurnPolicy};
 pub use types::{
     Access, AgentTool, Backend, Message, ModelChoice, ParticipantConfig, ParticipantId, Speaker,
 };
-pub use view::{render_prompt, render_view, system_prompt, Role, ViewTurn, PASS_TOKEN};
+pub use view::{render_prompt, render_view, render_view_after, system_prompt, Role, ViewTurn, PASS_TOKEN};

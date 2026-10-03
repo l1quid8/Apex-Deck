@@ -686,6 +686,32 @@ textarea {
 .notice.error {
   color: var(--danger);
 }
+.compacted {
+  align-self: stretch;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compacted summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.compacted summary::-webkit-details-marker { display: none; }
+.compacted summary::before,
+.compacted summary::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+.compacted[open] > :not(summary) {
+  margin-top: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+}
 
 .composer {
   display: flex;

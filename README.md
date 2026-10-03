@@ -61,6 +61,11 @@ edges.
 - **Clearing a chat.** Send `/clear` to empty the conversation and keep the
   participants. Models only know what the transcript holds, so they start
   fresh.
+- **Compacting a chat.** Send `/compact` to have the model you addressed last
+  summarize the conversation, with read-only access. From then on the models
+  see that summary in place of the older messages, which keeps long threads
+  cheap. You still see every message, and you can open the summary from the
+  divider where it was made.
 - **Agent profiles.** Save reusable participants with model, reasoning effort,
   access and persona settings, then add them to other chats.
 - **Saved threads.** Chats, participants, options and completed messages are

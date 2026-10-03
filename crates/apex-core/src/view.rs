@@ -7,6 +7,19 @@ use crate::types::{Access, Message, ParticipantConfig, ParticipantId, Speaker};
 /// drops the reply instead of adding it to the transcript.
 pub const PASS_TOKEN: &str = "[pass]";
 
+/// How a compacted chat's summary is introduced to the models.
+const SUMMARY_LABEL: &str = "[Summary of the earlier conversation]";
+
+/// Instructions for the turn that summarizes a chat for `/compact`.
+pub const COMPACT_SYSTEM: &str = "You summarize a group chat between a human and several AI models. \
+Your summary replaces the older messages for every model in the chat, so keep what is needed to carry on: \
+what the human wants, decisions and who made them, work done (files, commands, results), open questions \
+and next steps. Keep names, @handles, file paths and exact values. Leave out greetings and small talk. \
+Write compact plain notes. Do not use tools, do not address anyone, and do not add a preamble.";
+
+/// The request that ends the conversation handed to the summarizer.
+pub const COMPACT_ASK: &str = "Write the summary of the conversation above now.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -84,7 +97,21 @@ pub fn render_view(
     me: &ParticipantId,
     roster: &[ParticipantConfig],
 ) -> Vec<ViewTurn> {
+    render_view_after(None, transcript, me, roster)
+}
+
+/// Like `render_view`, but the conversation opens with `summary`, which
+/// stands in for messages that came before `transcript`.
+pub fn render_view_after(
+    summary: Option<&str>,
+    transcript: &[Message],
+    me: &ParticipantId,
+    roster: &[ParticipantConfig],
+) -> Vec<ViewTurn> {
     let mut turns: Vec<ViewTurn> = Vec::new();
+    if let Some(summary) = summary {
+        turns.push(ViewTurn { role: Role::User, content: format!("{SUMMARY_LABEL}:\n{summary}") });
+    }
 
     for message in transcript {
         let (role, content) = match &message.speaker {
@@ -185,6 +212,20 @@ mod tests {
         let view = render_view(&transcript, &ParticipantId::new("opus"), &roster);
         assert_eq!(view[0].role, Role::User);
         assert_eq!(view[1], ViewTurn { role: Role::Assistant, content: "first".into() });
+    }
+
+    #[test]
+    fn a_summary_opens_the_view_and_the_live_messages_follow() {
+        let roster = vec![cfg("opus", "Opus")];
+        let transcript = vec![msg(5, Speaker::Bot(ParticipantId::new("opus")), "next")];
+        let view = render_view_after(Some("we chose sqlite"), &transcript, &ParticipantId::new("opus"), &roster);
+        assert_eq!(
+            view,
+            vec![
+                ViewTurn { role: Role::User, content: format!("{SUMMARY_LABEL}:\nwe chose sqlite") },
+                ViewTurn { role: Role::Assistant, content: "next".into() },
+            ]
+        );
     }
 
     #[test]

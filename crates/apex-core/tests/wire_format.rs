@@ -121,6 +121,10 @@ fn room_event_shapes() {
         json!({ "type": "failed", "id": "opus", "error": "boom" })
     );
     assert_eq!(to_value(RoomEvent::HopLimitReached { limit: 3 }).unwrap(), json!({ "type": "hop_limit_reached", "limit": 3 }));
+    assert_eq!(
+        to_value(RoomEvent::Compacted { id: ParticipantId::new("opus"), summary: "s".into(), upto: 4 }).unwrap(),
+        json!({ "type": "compacted", "id": "opus", "summary": "s", "upto": 4 })
+    );
     assert_eq!(to_value(RoomEvent::Stopped).unwrap(), json!({ "type": "stopped" }));
     assert_eq!(to_value(RoomEvent::Idle).unwrap(), json!({ "type": "idle" }));
 }
