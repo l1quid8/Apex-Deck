@@ -48,12 +48,15 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | "Ask first" access: a bot proposes each edit and command, and waits for Approve or Reject in the chat | done for Claude Code (checked against the real tool) and Codex (checked against its message format and a stand-in server only) |
 | Changes panel: every file the bots changed in the chat, with added and removed lines | done (kept while the chat is open; not saved) |
 | Anthropic-format API adapter | next |
-| Saved bots (reuse a participant across chats) | next |
+| Saved bots (reuse a participant across chats) | done (Agents profiles, with saved appearance) |
 | Per-participant token meter | done for Claude Code, Codex and API models (totals since the app opened; not saved) |
 | Session resume for command-line tools (send only unseen messages) | next (the room already tracks unseen messages) |
 | Moderator policy: a cheap model picks who answers | later |
-| Shared summary when the transcript gets long | later |
-| Cancel a reply that is in flight (today stop takes effect between turns) | later |
+| Shared summary when the transcript gets long | done (`/compact`, persisted summary) |
+| Cancel a reply that is in flight | done (Stop cancels promptly; streamed partial text is retained) |
+| Rename group chats | done (header and sidebar; saved with the session) |
+| Queue added context or steer to another model | done (editable in-memory queue; Steer interrupts and starts a new turn, `@handle` selects the recipient) |
+| Context and provider plan avatar meters | implemented (preview and real Codex desktop readings checked; successful Claude context check blocked by session quota) |
 
 **Access levels.** Read only, Ask first, Can edit files, Full access. Claude
 Code and Codex participants get the tool's own permission settings, so the

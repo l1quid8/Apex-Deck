@@ -20,8 +20,10 @@ use crate::codex_server::{self, TurnError};
 use crate::presets::{agent_command, clean_effort, clean_model, output_format};
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 
-/// How long one turn may run before the tool is killed.
-const TURN_TIMEOUT: Duration = Duration::from_secs(600);
+/// How long a turn may go without any sign of life before the tool is
+/// killed. Every update the tool sends restarts the clock, so long turns
+/// that keep working are never cut off; the person can still press Stop.
+const TURN_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// A participant backed by a command-line tool.
 ///
@@ -366,20 +368,20 @@ pub(crate) fn sign_in_hint(program: &str, summary: &str) -> Option<&'static str>
     })
 }
 
-/// Passes proposals on, and notes how long the person took to answer.
+/// Passes proposals on, and restarts the quiet clock once the person has
+/// answered.
 struct Timed<'a> {
     inner: &'a dyn Approver,
-    waited: &'a Mutex<Duration>,
+    last_heard: &'a Mutex<Instant>,
     asking: &'a AtomicBool,
 }
 
 #[async_trait]
 impl Approver for Timed<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
-        let asked = Instant::now();
         self.asking.store(true, Ordering::SeqCst);
         let decision = self.inner.decide(action).await;
-        *self.waited.lock().unwrap() += asked.elapsed();
+        *self.last_heard.lock().unwrap() = Instant::now();
         self.asking.store(false, Ordering::SeqCst);
         decision
     }
@@ -423,9 +425,14 @@ impl Participant for CliParticipant {
         let (program, args, format) = self.command_line()?;
         let program = program.as_str();
         let prompt = render_prompt(&request.system, &request.turns);
-        let waited = Mutex::new(Duration::ZERO);
+        let last_heard = Mutex::new(Instant::now());
         let asking = AtomicBool::new(false);
-        let approver = Timed { inner: approver, waited: &waited, asking: &asking };
+        let approver = Timed { inner: approver, last_heard: &last_heard, asking: &asking };
+        let heard = |update: Progress<'_>| {
+            *last_heard.lock().unwrap() = Instant::now();
+            on_progress(update);
+        };
+        let on_progress: ProgressSink<'_> = &heard;
         let turn = async {
             // Codex writes its reply live only through its app server.
             if let Backend::Agent { tool: AgentTool::Codex, model } = &self.config.backend {
@@ -438,20 +445,18 @@ impl Participant for CliParticipant {
             }
             self.run(program, &args, format, prompt, on_progress).await
         };
-        // The time limit is on the tool's own work. Time spent waiting for
-        // the person to answer does not count against it.
+        // The time limit is on silence, not on the whole turn. Time spent
+        // waiting for the person to answer does not count against it.
         tokio::pin!(turn);
-        let started = Instant::now();
         loop {
-            let allowed = self.timeout + *waited.lock().unwrap();
-            let left = allowed.saturating_sub(started.elapsed());
+            let left = self.timeout.saturating_sub(last_heard.lock().unwrap().elapsed());
             tokio::select! {
                 result = &mut turn => return result,
                 _ = tokio::time::sleep(left.max(Duration::from_millis(50))) => {
-                    let over = started.elapsed() >= self.timeout + *waited.lock().unwrap();
+                    let over = last_heard.lock().unwrap().elapsed() >= self.timeout;
                     if over && !asking.load(Ordering::SeqCst) {
                         return Err(ParticipantError::Failed(format!(
-                            "`{program}` did not finish within {} seconds",
+                            "`{program}` went {} seconds without any output, so it was stopped",
                             self.timeout.as_secs()
                         )));
                     }

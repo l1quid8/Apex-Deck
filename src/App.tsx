@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBackend, type Backend } from "./backend";
 import { ProviderSettings } from "./ProviderSettings";
 import { providerEnabled } from "./providers";
+import { ThreadName } from "./ThreadName";
 import { ChatPane } from "./ChatPane";
 import { startHub } from "./hub";
 import { SectionNavigation } from "./SectionNavigation";
@@ -220,6 +221,8 @@ export function App() {
     setWorkspaces((list) => list.filter((w) => w.id !== id));
   };
 
+  const renamePane = (id: string, title: string) => setPanes(list => list.map(p => p.id === id ? {...p, title} : p));
+
   const addPane = (kind: Pane["kind"], title: string, agent?: string) => {
     if (!activeWorkspace) return;
     const pane: Pane = { id: newId("pane"), workspaceId: activeWorkspace, kind, title, agent };
@@ -420,11 +423,11 @@ export function App() {
                     </button>
                   </div>
                   {own.map((pane) => (
-                    <button key={pane.id} className={`pane-row ${pane.id === focusedPane ? "focused" : ""}`} onClick={() => focusPane(pane)}>
+                    <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane ? "focused" : ""}`} onClick={() => focusPane(pane)}>
                       <span className={`dot ${statusOf(pane)}`} title={statusOf(pane)} />
-                      <span className="pane-row-title">{pane.title}</span>
+                      <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} />
                       {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note}>{label(attention[pane.id].kind)}</span>}
-                    </button>
+                    </div>
                   ))}
                 </div>
               );
@@ -465,7 +468,7 @@ export function App() {
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={maximized || visiblePanes.length < 2 ? undefined : "Drag onto another pane to move it"}>
                     <span className={`dot ${status}`} title={status} />
-                    <span className="pane-title">{pane.title}</span>
+                    {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} /> : <span className="pane-title">{pane.title}</span>}
                     <span className="pane-folder">{workspace?.name}</span>
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />

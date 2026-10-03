@@ -113,6 +113,10 @@ export type RoomEvent =
   | { type: "changed"; id: string; change: FileChange }
   /** Tokens a finished turn used, when the backend reports them. */
   | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null }
+  /** How full a participant's context window was on its latest request. */
+  | { type: "context_usage"; id: string; used_tokens: number; window_tokens: number }
+  /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value. */
+  | { type: "plan_usage"; provider: AgentTool; windows: PlanWindow[]; partial: boolean }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
   | { type: "hop_limit_reached"; limit: number }
@@ -120,6 +124,17 @@ export type RoomEvent =
   | { type: "compacted"; id: string; summary: string; upto: number }
   | { type: "stopped" }
   | { type: "idle" };
+
+/** One rate-limit window of a provider plan. */
+export interface PlanWindow {
+  /** The tool's own name, such as "five_hour" or "primary". */
+  name: string;
+  /** 0 to 100. */
+  used_percent: number;
+  window_minutes: number | null;
+  /** Unix seconds. */
+  resets_at: number | null;
+}
 
 export interface AgentInfo {
   key: string;

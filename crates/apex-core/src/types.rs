@@ -132,6 +132,41 @@ pub struct Message {
     pub text: String,
 }
 
+/// How full a participant's context window was on its latest request: the
+/// tokens the model was given against the most it can take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUse {
+    pub used_tokens: u64,
+    pub window_tokens: u64,
+}
+
+/// One rate-limit window of a provider plan, as the tool reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanWindow {
+    /// The tool's own name for the window, such as "five_hour" or "primary".
+    pub name: String,
+    /// How much of the window is used, 0 to 100.
+    pub used_percent: u32,
+    /// How long the window is, when reported.
+    #[serde(default)]
+    pub window_minutes: Option<u64>,
+    /// When the window starts over, in Unix seconds, when reported.
+    #[serde(default)]
+    pub resets_at: Option<u64>,
+}
+
+/// How much of a provider account's plan is used. The plan belongs to the
+/// account, so every agent on that provider shares it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanUsage {
+    pub provider: AgentTool,
+    pub windows: Vec<PlanWindow>,
+    /// True when only the windows listed changed, and any others keep their
+    /// last value. False when this is the whole picture.
+    #[serde(default)]
+    pub partial: bool,
+}
+
 /// Saved visual identity; has no effect on model behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAppearance {

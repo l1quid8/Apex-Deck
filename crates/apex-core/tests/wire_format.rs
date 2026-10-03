@@ -142,6 +142,25 @@ fn room_event_shapes() {
         to_value(RoomEvent::Compacted { id: ParticipantId::new("opus"), summary: "s".into(), upto: 4 }).unwrap(),
         json!({ "type": "compacted", "id": "opus", "summary": "s", "upto": 4 })
     );
+    assert_eq!(
+        to_value(RoomEvent::ContextUsage { id: ParticipantId::new("opus"), used_tokens: 36_000, window_tokens: 200_000 }).unwrap(),
+        json!({ "type": "context_usage", "id": "opus", "used_tokens": 36000, "window_tokens": 200000 })
+    );
+    let plan = apex_core::PlanUsage {
+        provider: AgentTool::ClaudeCode,
+        windows: vec![
+            apex_core::PlanWindow { name: "five_hour".into(), used_percent: 65, window_minutes: Some(300), resets_at: Some(1791063000) },
+            apex_core::PlanWindow { name: "secondary".into(), used_percent: 19, window_minutes: None, resets_at: None },
+        ],
+        partial: false,
+    };
+    assert_eq!(
+        to_value(RoomEvent::plan(&plan)).unwrap(),
+        json!({ "type": "plan_usage", "provider": "claude_code", "partial": false, "windows": [
+            { "name": "five_hour", "used_percent": 65, "window_minutes": 300, "resets_at": 1791063000 },
+            { "name": "secondary", "used_percent": 19, "window_minutes": null, "resets_at": null }
+        ] })
+    );
     assert_eq!(to_value(RoomEvent::Stopped).unwrap(), json!({ "type": "stopped" }));
     assert_eq!(to_value(RoomEvent::Idle).unwrap(), json!({ "type": "idle" }));
 }

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use apex_core::testing::ScriptedParticipant;
-use apex_core::{Backend, Participant, ParticipantConfig};
+use apex_core::{AgentTool, Backend, Participant, ParticipantConfig, PlanUsage};
 
 pub use catalog::{codex_models_from_cache, installed_models};
 pub use cli::CliParticipant;
@@ -35,6 +35,8 @@ pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressS
             events::Step::Text(text) => on_progress(Progress::Text(&text)),
             events::Step::Activity(text) => on_progress(Progress::Activity(&text)),
             events::Step::Change(change) => on_progress(Progress::Change(&change)),
+            events::Step::Context(context) => on_progress(Progress::Context(context)),
+            events::Step::Plan(plan) => on_progress(Progress::Plan(&plan)),
         }
     }
 }
@@ -58,6 +60,37 @@ pub fn build(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Parti
             Arc::new(CliParticipant::new(config).with_context(context))
         }
         Backend::Scripted { .. } => Arc::new(ScriptedParticipant::from_config(config)),
+    }
+}
+
+/// Read how much of a provider account's plan is used, without asking a
+/// model anything. Only Codex can be asked outside a turn; Claude Code
+/// reports its plan during turns only, so this gives `None` for it.
+pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanUsage> {
+    if tool != AgentTool::Codex {
+        return None;
+    }
+    let mut command = tokio::process::Command::new("codex");
+    command.args(codex_server::ARGS).env("NO_COLOR", "1").env("TERM", "dumb");
+    if let Some(path) = &context.path {
+        command.env("PATH", path);
+    }
+    if let Some(cwd) = context.cwd.as_ref().filter(|dir| dir.is_dir()) {
+        command.current_dir(cwd);
+    }
+    let child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    match codex_server::read_plan(child).await {
+        Ok(plan) => Some(plan),
+        Err(why) => {
+            eprintln!("[apex-deck] could not read Codex plan limits: {why}");
+            None
+        }
     }
 }
 

@@ -70,6 +70,24 @@ edges.
   access and persona settings, then add them to other chats.
 - **Saved threads.** Chats, participants, options and completed messages are
   saved automatically across restarts.
+- **Thread names.** Double-click a thread's title in its header or sidebar
+  to rename it. Enter saves; Escape cancels. Focus a title and press Enter
+  or F2 to rename with the keyboard.
+- **Queue and steer.** While models reply, Enter queues your message for
+  the next turn. You can edit or remove queued messages. Steer (or
+  Command/Ctrl+Enter) interrupts the current turn and sends immediately;
+  `@name` selects the next model. Streamed text is kept as an interrupted
+  reply. Pending messages stay in the open pane and are not saved across
+  app restarts. Steering currently starts a new turn for all providers,
+  including Codex; its native `turn/steer` protocol is not wired in.
+- **Avatar batteries.** The left half shows context remaining, the right
+  half the provider account's plan remaining. Usage cards show reset times,
+  other plan windows and session token totals, with a Compact now button.
+  Unknown readings draw full without inventing a percentage. Claude Code
+  reports plan usage during replies; Codex also reports it when joining.
+  Plan readings are shared across agents using the same provider account.
+  Command-line turns stop after 15 minutes without output, with approval
+  waits excluded; active work has no fixed total time limit.
 - **Provider filtering.** Choose which tools appear in new terminal and bot
   selections; your choices are saved across restarts.
 - **Live activity and token counts.** See replies in progress and activity

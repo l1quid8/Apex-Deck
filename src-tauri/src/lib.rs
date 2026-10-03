@@ -163,10 +163,33 @@ fn pty_kill(state: State<'_, AppState>, id: String) {
 
 // ---------------------------------------------------------------- group chats
 
+/// Read the plan usage of each provider in `configs` that can report it
+/// outside a turn (only Codex can), and send it to the chat as a
+/// `plan_usage` event. Runs in the background; it asks no model anything.
+fn read_plans(app: &AppHandle, room: &str, configs: &[ParticipantConfig], context: &BuildContext) {
+    let mut tools: Vec<AgentTool> = Vec::new();
+    for config in configs {
+        if let apex_core::Backend::Agent { tool: AgentTool::Codex, .. } = config.backend {
+            if !tools.contains(&AgentTool::Codex) {
+                tools.push(AgentTool::Codex);
+            }
+        }
+    }
+    for tool in tools {
+        let (app, room, context) = (app.clone(), room.to_string(), context.clone());
+        tauri::async_runtime::spawn(async move {
+            if let Some(plan) = apex_adapters::plan_usage(tool, &context).await {
+                let _ = app.emit("room-event", RoomEventPayload { room: &room, event: RoomEvent::plan(&plan) });
+            }
+        });
+    }
+}
+
 /// Open group chat `id`, restoring saved data before creating a new room.
 /// `cwd` is the workspace folder; command-line participants run there.
 #[tauri::command]
 fn room_create(
+    app: AppHandle,
     state: State<'_, AppState>,
     store: State<'_, Store>,
     id: String,
@@ -188,6 +211,7 @@ fn room_create(
         seen.push(&config.id);
     }
     let participants = saved.as_ref().map(|s| s.snapshot.participants.clone()).unwrap_or(participants);
+    read_plans(&app, &id, &participants, &context);
     let roster = participants.into_iter().map(|p| apex_adapters::build(p, &context)).collect();
     let room = match saved {
         Some(saved) => Room::restore(roster, saved.snapshot),
@@ -280,6 +304,7 @@ async fn room_set_options(
 
 #[tauri::command]
 async fn room_add_participant(
+    app: AppHandle,
     state: State<'_, AppState>,
     store: State<'_, Store>,
     id: String,
@@ -287,6 +312,7 @@ async fn room_add_participant(
 ) -> Result<(), String> {
     let name = participant.id.clone();
     let context = state.room_context(&id)?;
+    read_plans(&app, &id, std::slice::from_ref(&participant), &context);
     let changed = state.room(&id)?.lock().await.add_participant(apex_adapters::build(participant, &context));
     if changed {
         save_room(&state, &store, &id).await
@@ -299,6 +325,7 @@ async fn room_add_participant(
 /// without removing it from the chat.
 #[tauri::command]
 async fn room_update_participant(
+    app: AppHandle,
     state: State<'_, AppState>,
     store: State<'_, Store>,
     id: String,
@@ -306,6 +333,7 @@ async fn room_update_participant(
 ) -> Result<(), String> {
     let name = participant.id.clone();
     let context = state.room_context(&id)?;
+    read_plans(&app, &id, std::slice::from_ref(&participant), &context);
     let changed = state.room(&id)?.lock().await.replace_participant(apex_adapters::build(participant, &context));
     if changed {
         save_room(&state, &store, &id).await

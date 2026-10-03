@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use apex_core::testing::ScriptedParticipant;
 use apex_core::{
-    Access, ActionKind, Approver, Backend, Decision, DeltaSink, FileChange, Participant, ParticipantConfig,
-    ParticipantError, ParticipantId, Progress, ProgressSink, ProposedAction, Reply, Role, Room, RoomEvent,
+    Access, ActionKind, AgentTool, Approver, Backend, ContextUse, Decision, DeltaSink, FileChange, Participant, ParticipantConfig,
+    ParticipantError, ParticipantId, PlanUsage, PlanWindow, Progress, ProgressSink, ProposedAction, Reply, Role, Room, RoomEvent,
     RoomOptions, Speaker, TurnPolicy, TurnRequest,
 };
 use futures::executor::block_on;
@@ -331,6 +331,12 @@ impl Participant for WorkingBot {
     ) -> Result<Reply, ParticipantError> {
         on_progress(Progress::Activity("Reading notes.txt"));
         on_progress(Progress::Text("Done."));
+        on_progress(Progress::Context(ContextUse { used_tokens: 36_000, window_tokens: 200_000 }));
+        on_progress(Progress::Plan(&PlanUsage {
+            provider: AgentTool::Codex,
+            windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
+            partial: true,
+        }));
         Ok(Reply { text: "Done.".into(), input_tokens: Some(120), output_tokens: Some(7) })
     }
 }
@@ -358,7 +364,9 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
             RoomEvent::TurnStarted { id: who }
             | RoomEvent::Activity { id: who, .. }
             | RoomEvent::Delta { id: who, .. }
+            | RoomEvent::ContextUsage { id: who, .. }
             | RoomEvent::Usage { id: who, .. } => who == &id,
+            RoomEvent::PlanUsage { .. } => true,
             RoomEvent::MessageAdded { message } => message.speaker == Speaker::Bot(id.clone()),
             _ => false,
         })
@@ -369,6 +377,13 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
             &RoomEvent::TurnStarted { id: id.clone() },
             &RoomEvent::Activity { id: id.clone(), text: "Reading notes.txt".into() },
             &RoomEvent::Delta { id: id.clone(), text: "Done.".into() },
+            &RoomEvent::ContextUsage { id: id.clone(), used_tokens: 36_000, window_tokens: 200_000 },
+            // The plan is the provider's, so it is not tied to the bot.
+            &RoomEvent::PlanUsage {
+                provider: AgentTool::Codex,
+                windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
+                partial: true,
+            },
             &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7) },
             &RoomEvent::MessageAdded {
                 message: apex_core::Message { seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into() }
@@ -576,4 +591,31 @@ fn a_rejected_or_abandoned_proposal_changes_nothing() {
         assert!(!events.iter().any(|e| matches!(e, RoomEvent::Changed { .. })));
         assert_eq!(lines(&room), ["human: go", "asker: Left it alone."]);
     }
+}
+
+struct StreamingUntilStopped { config: ParticipantConfig }
+#[async_trait::async_trait]
+impl Participant for StreamingUntilStopped {
+    fn config(&self) -> &ParticipantConfig { &self.config }
+    async fn respond(&self, _: TurnRequest, on_delta: DeltaSink<'_>) -> Result<Reply, ParticipantError> {
+        on_delta("unfinished thought");
+        futures::future::pending().await
+    }
+}
+#[test]
+fn stop_cancels_an_active_response_and_keeps_partial_text_for_the_next_model() {
+    let config = bot("first", &[]).config().clone();
+    let next = bot("next", &["taking over"]);
+    let mut room = Room::new(vec![Arc::new(StreamingUntilStopped { config }), next.clone()], RoomOptions::default());
+    let stop = room.stop_handle();
+    let thread = std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(40)); stop.store(true, Ordering::SeqCst); });
+    let started = std::time::Instant::now();
+    let events = say(&mut room, "@first begin");
+    thread.join().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(events.contains(&RoomEvent::Stopped));
+    assert!(lines(&room)[1].contains("unfinished thought"));
+    assert!(lines(&room)[1].contains("[Interrupted]"));
+    say(&mut room, "@next take over");
+    assert!(next.requests()[0].turns.iter().any(|t| t.content.contains("unfinished thought")));
 }

@@ -2,6 +2,7 @@
 // register here instead of each adding its own global listener.
 
 import type { Backend } from "./backend";
+import { recordPlan } from "./plans";
 import type { RoomEvent } from "./types";
 
 type PtyHandlers = { onData: (data: string) => void; onExit: (code: number | null) => void };
@@ -15,7 +16,11 @@ export async function startHub(backend: Backend): Promise<void> {
   started = true;
   await backend.onPtyData((id, data) => ptys.get(id)?.onData(data));
   await backend.onPtyExit((id, code) => ptys.get(id)?.onExit(code));
-  await backend.onRoomEvent((room, event) => rooms.get(room)?.(event));
+  await backend.onRoomEvent((room, event) => {
+    // A provider's plan is the same in every chat, so it is kept app-wide.
+    if (event.type === "plan_usage") recordPlan(event.provider, event.windows, event.partial);
+    rooms.get(room)?.(event);
+  });
 }
 
 export function registerPty(id: string, handlers: PtyHandlers): () => void {

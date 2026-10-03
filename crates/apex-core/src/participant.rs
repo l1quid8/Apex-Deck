@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::approval::{Approver, FileChange};
-use crate::types::{Message, ParticipantConfig};
+use crate::types::{ContextUse, Message, ParticipantConfig, PlanUsage};
 use crate::view::ViewTurn;
 
 /// What a participant is given when it is asked to speak.
@@ -66,6 +66,10 @@ pub enum Progress<'a> {
     Activity(&'a str),
     /// A file the participant has just changed.
     Change(&'a FileChange),
+    /// How full the participant's context window is, as the backend reports it.
+    Context(ContextUse),
+    /// How much of the provider account's plan is used.
+    Plan(&'a PlanUsage),
 }
 
 /// Receives progress while a reply is being worked on.

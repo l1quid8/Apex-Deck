@@ -112,6 +112,7 @@ function demoBackend(): Backend {
   const dataListeners = new Set<(id: string, data: string) => void>();
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
   const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; seq: number; stopped: boolean; last: string[] }>();
+  const cancellations = new Map<string, () => void>();
   const emitData = (id: string, data: string) => dataListeners.forEach((cb) => cb(id, data));
   const saveRoom = (id: string) => {
     const room = rooms.get(id);
@@ -129,6 +130,41 @@ function demoBackend(): Backend {
   /** Proposals waiting for a yes or no, by request id. */
   const asks = new Map<string, (approve: boolean) => void>();
   let askCount = 0;
+
+  // Preview only: made-up meter readings so the identicon battery can be
+  // seen. Claude Code agents start nearly out of context (18% left), Codex
+  // agents with plenty; each reply fills a little more.
+  const WINDOWS: Partial<Record<AgentTool, number>> = { claude_code: 200_000, codex: 272_000 };
+  const contextUsed = new Map<string, number>();
+  const planUsed: Record<"claude_code" | "codex", number> = { claude_code: 36, codex: 58 };
+  const hours = (n: number) => Math.floor(Date.now() / 1000 + n * 3600);
+  const reportContext = (room: string, p: ParticipantConfig, grow: number) => {
+    if (p.backend.kind !== "agent") return;
+    const window = WINDOWS[p.backend.tool];
+    if (!window) return;
+    const key = `${room}:${p.id}`;
+    const used = Math.min(window, (contextUsed.get(key) ?? (p.backend.tool === "claude_code" ? 164_000 : 98_000)) + grow);
+    contextUsed.set(key, used);
+    emitRoom(room, { type: "context_usage", id: p.id, used_tokens: used, window_tokens: window });
+  };
+  const reportPlan = (room: string, tool: AgentTool) => {
+    if (tool === "claude_code") {
+      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
+        { name: "five_hour", used_percent: planUsed.claude_code, window_minutes: 300, resets_at: hours(2) },
+        { name: "seven_day", used_percent: 19, window_minutes: 10_080, resets_at: hours(80) },
+      ] });
+    } else if (tool === "codex") {
+      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
+        { name: "primary", used_percent: planUsed.codex, window_minutes: 10_080, resets_at: hours(100) },
+      ] });
+    }
+  };
+  /** What a room shows when it opens: every agent's context, and the plan of
+   *  providers that can be read outside a turn (only Codex can). */
+  const reportMeters = (room: string, participants: ParticipantConfig[]) => {
+    for (const p of participants) reportContext(room, p, 0);
+    if (participants.some((p) => p.backend.kind === "agent" && p.backend.tool === "codex")) reportPlan(room, "codex");
+  };
 
   return {
     demo: true,
@@ -172,6 +208,7 @@ function demoBackend(): Backend {
       room.stopped = false;
       rooms.set(id, room);
       saveRoom(id);
+      setTimeout(() => reportMeters(id, room.participants), 50);
       return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null };
     },
     apiModels: async (baseUrl) => {
@@ -187,10 +224,24 @@ function demoBackend(): Backend {
       else throw new Error("files cannot be opened in the browser demo");
     },
     roomPost: async (id, text) => {
+      let active = true;
+      const partials = new Map<string, string>();
+      const emit = (event: RoomEvent) => {
+        if (!active) return;
+        if (event.type === "delta") partials.set(event.id, (partials.get(event.id) ?? "") + event.text);
+        if (event.type === "message_added" && event.message.speaker.kind === "bot") partials.delete(event.message.speaker.id);
+        emitRoom(id, event);
+      };
+      const cancelled = new Promise<void>(resolve => cancellations.set(id, () => {
+        const room = rooms.get(id);
+        for (const [bot, text] of partials) if (text.trim() && room) emit({type: "message_added", message: {seq: room.seq++, speaker: {kind:"bot", id:bot}, text: text.trim() + "\n\n[Interrupted]"}});
+        emit({type: "stopped"}); emit({type: "idle"}); active = false; resolve();
+      }));
+      try { await Promise.race([(async () => {
       const room = rooms.get(id);
       if (!room) throw new Error(`no group chat with id ${id}`);
       room.stopped = false;
-      emitRoom(id, { type: "message_added", message: { seq: room.seq++, speaker: { kind: "human" }, text } });
+      emit( { type: "message_added", message: { seq: room.seq++, speaker: { kind: "human" }, text } });
 
       const lower = text.toLowerCase();
       const all = room.participants.map((p) => p.id);
@@ -204,23 +255,23 @@ function demoBackend(): Backend {
 
       for (const target of targets) {
         if (room.stopped) {
-          emitRoom(id, { type: "stopped" });
+          emit( { type: "stopped" });
           break;
         }
         const p = room.participants.find((x) => x.id === target);
         if (!p) continue;
-        emitRoom(id, { type: "turn_started", id: p.id });
+        emit( { type: "turn_started", id: p.id });
         if (p.backend.kind === "agent") {
-          await sleep(600);
+          await sleep(600); if (!active) return;
           for (const word of "I'll look at the project first.".split(" ")) {
-            await sleep(25);
-            emitRoom(id, { type: "delta", id: p.id, text: word + " " });
+            await sleep(25); if (!active) return;
+            emit( { type: "delta", id: p.id, text: word + " " });
           }
           for (const step of ["Reading README.md", "Running: ls src", "Reading src/App.tsx"]) {
-            emitRoom(id, { type: "activity", id: p.id, text: step });
-            await sleep(600);
+            emit( { type: "activity", id: p.id, text: step });
+            await sleep(600); if (!active) return;
           }
-          emitRoom(id, { type: "delta", id: p.id, text: "\n\n" });
+          emit( { type: "delta", id: p.id, text: "\n\n" });
           // Preview only: a bot set to ask first proposes one edit and one
           // command, so the approval cards and changes list can be seen.
           if (p.access === "ask") {
@@ -233,12 +284,12 @@ function demoBackend(): Backend {
             ];
             for (const { action, change } of proposals) {
               const request = `ask-${++askCount}`;
-              emitRoom(id, { type: "activity", id: p.id, text: `Waiting for approval: ${action.title}` });
-              emitRoom(id, { type: "approval_requested", id: p.id, request, action });
+              emit( { type: "activity", id: p.id, text: `Waiting for approval: ${action.title}` });
+              emit( { type: "approval_requested", id: p.id, request, action });
               const approved = await new Promise<boolean>((answer) => asks.set(request, answer));
-              emitRoom(id, { type: "approval_resolved", id: p.id, request, approved });
-              if (approved && change) emitRoom(id, { type: "changed", id: p.id, change });
-              await sleep(300);
+              emit( { type: "approval_resolved", id: p.id, request, approved });
+              if (approved && change) emit( { type: "changed", id: p.id, change });
+              await sleep(300); if (!active) return;
             }
           }
         }
@@ -250,17 +301,27 @@ function demoBackend(): Backend {
           "```sh\ncd ~/Downloads/apex-deck\nnpm run tauri dev\n```",
         ].join("\n\n");
         for (const piece of reply.match(/\S+\s*/g) ?? []) {
-          await sleep(25);
-          emitRoom(id, { type: "delta", id: p.id, text: piece });
+          await sleep(25); if (!active) return;
+          emit( { type: "delta", id: p.id, text: piece });
         }
-        if (p.backend.kind === "agent") emitRoom(id, { type: "usage", id: p.id, input_tokens: 1840, output_tokens: 26 });
-        emitRoom(id, { type: "message_added", message: { seq: room.seq++, speaker: { kind: "bot", id: p.id }, text: reply } });
+        if (p.backend.kind === "agent") {
+          emit( { type: "usage", id: p.id, input_tokens: 1840, output_tokens: 26 });
+          reportContext(id, p, 2_400);
+          if (p.backend.tool === "claude_code" || p.backend.tool === "codex") {
+            planUsed[p.backend.tool] = Math.min(100, planUsed[p.backend.tool] + 1);
+            reportPlan(id, p.backend.tool);
+          }
+        }
+        emit( { type: "message_added", message: { seq: room.seq++, speaker: { kind: "bot", id: p.id }, text: reply } });
       }
-      emitRoom(id, { type: "idle" });
+      emit( { type: "idle" });
+      })(), cancelled]); }
+      finally { active = false; cancellations.delete(id); }
     },
     roomStop: async (id) => {
       const room = rooms.get(id);
       if (room) room.stopped = true;
+      cancellations.get(id)?.();
       // Whatever is waiting on a yes or no is refused.
       for (const answer of asks.values()) answer(false);
       asks.clear();
@@ -284,6 +345,7 @@ function demoBackend(): Backend {
       }
       room.participants.push(participant);
       saveRoom(id);
+      setTimeout(() => reportMeters(id, [participant]), 50);
     },
     roomUpdateParticipant: async (id, participant) => {
       const room = rooms.get(id);
@@ -320,6 +382,8 @@ function demoBackend(): Backend {
       const summary = `Preview summary of ${upto} messages. The desktop app asks ${by.display_name} to write the real one.`;
       room.compaction = { summary, upto };
       saveRoom(id);
+      // The summary is far smaller than what it replaces.
+      for (const p of room.participants) contextUsed.set(`${id}:${p.id}`, 9_000);
       emitRoom(id, { type: "compacted", id: by.id, summary, upto });
     },
     roomClose: async (id) => {

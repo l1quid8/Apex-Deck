@@ -23,16 +23,20 @@
 
 use std::time::Duration;
 
-use apex_core::{Access, ActionKind, Approver, Decision, Progress, ProgressSink, ProposedAction, Reply};
+use apex_core::{Access, ActionKind, Approver, Decision, PlanUsage, Progress, ProgressSink, ProposedAction, Reply};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
-use crate::events::{EventReader, OutputFormat};
+use crate::events::{codex_plan, EventReader, OutputFormat};
 use crate::report;
 
 /// How long the server may take to answer a setup request.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long to wait for the plan's limits after a turn. They are a nicety,
+/// so the turn does not wait on them for long.
+const LIMITS_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) const ARGS: &[&str] = &["app-server"];
 
@@ -130,6 +134,11 @@ pub(crate) fn turn_start(thread: &str, prompt: &str, effort: Option<&str>) -> Va
     json!({ "method": "turn/start", "id": 2, "params": params })
 }
 
+/// Ask for the account's plan limits. It costs no quota.
+pub(crate) fn rate_limits_read(id: u64) -> Value {
+    json!({ "method": "account/rateLimits/read", "id": id })
+}
+
 async fn send(stdin: &mut ChildStdin, message: &Value) -> std::io::Result<()> {
     let mut line = message.to_string();
     line.push('\n');
@@ -140,6 +149,10 @@ async fn send(stdin: &mut ChildStdin, message: &Value) -> std::io::Result<()> {
 /// Read until the answer to request `id` arrives. Notifications that come
 /// first are passed over; none of them matter before the turn starts.
 async fn answer(lines: &mut Lines<BufReader<ChildStdout>>, id: u64) -> Result<Value, String> {
+    answer_within(lines, id, SETUP_TIMEOUT).await
+}
+
+async fn answer_within(lines: &mut Lines<BufReader<ChildStdout>>, id: u64, limit: Duration) -> Result<Value, String> {
     let wait = async {
         loop {
             match lines.next_line().await {
@@ -157,9 +170,9 @@ async fn answer(lines: &mut Lines<BufReader<ChildStdout>>, id: u64) -> Result<Va
             }
         }
     };
-    match tokio::time::timeout(SETUP_TIMEOUT, wait).await {
+    match tokio::time::timeout(limit, wait).await {
         Ok(result) => result,
-        Err(_) => Err(format!("no answer within {} seconds", SETUP_TIMEOUT.as_secs())),
+        Err(_) => Err(format!("no answer within {} seconds", limit.as_secs())),
     }
 }
 
@@ -184,16 +197,7 @@ pub(crate) async fn run(
 
     let unavailable = |what: &str, why: String| TurnError::Unavailable(format!("{what}: {why}"));
 
-    let hello = json!({
-        "method": "initialize",
-        "id": 0,
-        "params": { "clientInfo": { "name": "apex_deck", "title": "Apex Deck", "version": env!("CARGO_PKG_VERSION") } }
-    });
-    send(&mut stdin, &hello).await.map_err(|e| unavailable("could not start the app server", e.to_string()))?;
-    answer(&mut lines, 0).await.map_err(|e| unavailable("the app server did not start", e))?;
-    send(&mut stdin, &json!({ "method": "initialized", "params": {} }))
-        .await
-        .map_err(|e| unavailable("the app server went away", e.to_string()))?;
+    initialize(&mut stdin, &mut lines).await.map_err(TurnError::Unavailable)?;
 
     send(&mut stdin, &thread_start(&turn))
         .await
@@ -246,6 +250,15 @@ pub(crate) async fn run(
         report(reader.push(&format!("{line}\n")), on_progress);
     }
 
+    // The turn has used some of the plan; read where it stands now.
+    if send(&mut stdin, &rate_limits_read(3)).await.is_ok() {
+        if let Ok(result) = answer_within(&mut lines, 3, LIMITS_TIMEOUT).await {
+            if let Some(plan) = codex_plan(&result["rateLimits"], false) {
+                on_progress(Progress::Plan(&plan));
+            }
+        }
+    }
+
     // Closing its input tells the server to exit; do not wait long for it.
     drop(stdin);
     if tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
@@ -261,6 +274,41 @@ pub(crate) async fn run(
             output_tokens: outcome.output_tokens,
         }),
     }
+}
+
+/// The handshake every conversation with the server starts with.
+async fn initialize(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStdout>>) -> Result<(), String> {
+    let hello = json!({
+        "method": "initialize",
+        "id": 0,
+        "params": { "clientInfo": { "name": "apex_deck", "title": "Apex Deck", "version": env!("CARGO_PKG_VERSION") } }
+    });
+    send(stdin, &hello).await.map_err(|e| format!("could not start the app server: {e}"))?;
+    answer(lines, 0).await.map_err(|e| format!("the app server did not start: {e}"))?;
+    send(stdin, &json!({ "method": "initialized", "params": {} }))
+        .await
+        .map_err(|e| format!("the app server went away: {e}"))
+}
+
+/// Read the account's plan limits without starting a turn. `child` must
+/// have been started with `ARGS` and all three standard streams piped.
+pub(crate) async fn read_plan(mut child: Child) -> Result<PlanUsage, String> {
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    tokio::spawn(async move {
+        let mut sink = Vec::new();
+        let _ = stderr.read_to_end(&mut sink).await;
+    });
+    let mut lines = BufReader::new(stdout).lines();
+    initialize(&mut stdin, &mut lines).await?;
+    send(&mut stdin, &rate_limits_read(1)).await.map_err(|e| format!("the app server went away: {e}"))?;
+    let result = answer_within(&mut lines, 1, SETUP_TIMEOUT).await;
+    drop(stdin);
+    if tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
+        let _ = child.kill().await;
+    }
+    codex_plan(&result?["rateLimits"], false).ok_or_else(|| "the answer had no rate limits".to_string())
 }
 
 fn ended_early(reader: EventReader) -> String {
@@ -314,6 +362,11 @@ mod tests {
         assert!(proposal("item/tool/requestUserInput", &json!({}), &reader).is_none());
         assert_eq!(approval_response(&json!(7), Decision::Approve), json!({ "id": 7, "result": { "decision": "accept" } }));
         assert_eq!(approval_response(&json!("a"), Decision::Reject), json!({ "id": "a", "result": { "decision": "decline" } }));
+    }
+
+    #[test]
+    fn rate_limits_are_read_with_no_params() {
+        assert_eq!(rate_limits_read(3), json!({ "method": "account/rateLimits/read", "id": 3 }));
     }
 
     #[test]

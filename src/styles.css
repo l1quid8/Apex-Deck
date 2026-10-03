@@ -631,6 +631,33 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .identicon.working i.on { animation: none; }
 }
+/* The battery (battery.ts): each cell is drawn at its own strength, in the
+   agent's colour or in red on a side that is running low. */
+.identicon.battery i {
+  background: color-mix(in srgb, var(--c, var(--who)) var(--a), transparent);
+}
+.identicon.battery.low,
+.identicon.battery.critical {
+  border-color: color-mix(in srgb, var(--danger) 70%, transparent);
+}
+.identicon.battery.critical {
+  animation: battery-critical 1.6s ease-in-out infinite;
+}
+@keyframes battery-critical {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 0%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 35%, transparent); }
+}
+/* A side refilling after /compact or a plan reset, bottom row first. */
+.identicon.battery i.refill {
+  animation: battery-refill 420ms ease-out backwards;
+}
+@keyframes battery-refill {
+  from { background: color-mix(in srgb, var(--who) 16%, transparent); transform: scale(0.6); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .identicon.battery.critical,
+  .identicon.battery i.refill { animation: none; }
+}
 .bubble.writing {
   opacity: 0.8;
 }
@@ -737,8 +764,73 @@ textarea {
   .working-dots i { animation: none; opacity: 0.8; }
 }
 
-.chip-tokens::before {
+.chip-levels::before {
   content: "· ";
+}
+.chip-levels {
+  font-variant-numeric: tabular-nums;
+}
+.chip-sep {
+  margin: 0 4px;
+  opacity: 0.6;
+}
+.usage-low {
+  color: var(--danger);
+}
+/* The usage card under a chip, opened by hovering or focusing it. */
+.chip-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.usage-card {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  gap: 6px;
+  min-width: 260px;
+  max-width: 340px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  font-size: 12px;
+}
+/* Bridges the gap so moving the pointer down to the card keeps it open. */
+.usage-card::before {
+  content: "";
+  position: absolute;
+  inset: -7px 0 auto;
+  height: 7px;
+}
+.usage-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 8px;
+}
+.usage-label {
+  color: var(--muted);
+}
+.usage-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.usage-compact {
+  justify-self: start;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.notice.low-context {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.notice.low-context button {
+  padding: 2px 10px;
+  font-size: 12px;
 }
 .notice {
   margin: 0;
@@ -1493,3 +1585,10 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 }
 
 .appearance-controls { display: flex; align-items: center; gap: 12px; }
+
+.thread-name-input { min-width: 0; width: 160px; max-width: 100%; padding: 3px 6px; font: inherit; }
+.pane-title[role="button"], .pane-row-title[role="button"] { cursor: text; }
+.composer-actions { display: flex; flex-direction: column; gap: 6px; }
+.queued-messages { padding: 8px 0; font-size: 12px; }
+.queued-message { display: flex; gap: 6px; align-items: start; margin-top: 6px; opacity: .75; }
+.queued-message textarea { min-height: 40px; font-size: 12px; }

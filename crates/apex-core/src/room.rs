@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use futures::{FutureExt, pin_mut};
 
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -9,8 +10,8 @@ use async_trait::async_trait;
 
 use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedAction};
 use crate::mention::{parse_mentions, MentionTarget};
-use crate::participant::{Participant, ParticipantError, Progress, Reply, TurnRequest};
-use crate::types::{Message, ParticipantConfig, ParticipantId, Speaker};
+use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
+use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker};
 use crate::view::{render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
@@ -65,6 +66,12 @@ pub enum RoomEvent {
     Changed { id: ParticipantId, change: FileChange },
     /// How many tokens a finished turn used, when the backend reports it.
     Usage { id: ParticipantId, input_tokens: Option<u64>, output_tokens: Option<u64> },
+    /// How full a participant's context window is, from its latest request.
+    ContextUsage { id: ParticipantId, used_tokens: u64, window_tokens: u64 },
+    /// How much of a provider account's plan is used. Shared by every agent
+    /// on that provider. With `partial`, windows not listed keep their last
+    /// value.
+    PlanUsage { provider: AgentTool, windows: Vec<PlanWindow>, partial: bool },
     /// A participant chose not to reply.
     Passed { id: ParticipantId },
     /// A participant could not reply.
@@ -86,7 +93,22 @@ fn progress_event(id: &ParticipantId, update: Progress<'_>) -> RoomEvent {
         Progress::Text(text) => RoomEvent::Delta { id: id.clone(), text: text.to_string() },
         Progress::Activity(text) => RoomEvent::Activity { id: id.clone(), text: text.to_string() },
         Progress::Change(change) => RoomEvent::Changed { id: id.clone(), change: change.clone() },
+        Progress::Context(use_) => {
+            RoomEvent::ContextUsage { id: id.clone(), used_tokens: use_.used_tokens, window_tokens: use_.window_tokens }
+        }
+        Progress::Plan(plan) => plan_event(plan),
     }
+}
+
+impl RoomEvent {
+    /// The event that reports `plan`, for plan usage read outside a turn.
+    pub fn plan(plan: &crate::types::PlanUsage) -> Self {
+        plan_event(plan)
+    }
+}
+
+fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
+    RoomEvent::PlanUsage { provider: plan.provider, windows: plan.windows.clone(), partial: plan.partial }
 }
 
 /// Puts a participant's proposal in front of the person and waits for
@@ -281,7 +303,7 @@ impl Room {
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
-        let outcome = summarizer.respond_with_progress(request, &progress).await;
+        let outcome = Self::interruptible(summarizer, request, self.stop.clone(), &progress, &crate::approval::NoApprover).await;
         if self.stopped() {
             on_event(RoomEvent::Stopped);
             return Ok(());
@@ -411,6 +433,30 @@ impl Room {
     }
 
     /// Run one wave of turns. Returns the participants the replies addressed,
+    /// Drop the provider future promptly on Stop. Its child is kill-on-drop.
+    /// Preserve streamed text so a replacement model can see the unfinished work.
+    async fn interruptible(
+        participant: &dyn Participant, request: TurnRequest,
+        stop: Arc<AtomicBool>, progress: ProgressSink<'_>, approver: &dyn Approver,
+    ) -> Result<Reply, ParticipantError> {
+        let partial = Mutex::new(String::new());
+        let capture = |update: Progress<'_>| {
+            if let Progress::Text(text) = update { partial.lock().unwrap().push_str(text); }
+            progress(update);
+        };
+        let response = participant.respond_with_approvals(request, &capture, approver).fuse();
+        let cancelled = async {
+            while !stop.load(Ordering::SeqCst) {
+                futures_timer::Delay::new(std::time::Duration::from_millis(25)).await;
+            }
+        }.fuse();
+        pin_mut!(response, cancelled);
+        futures::select_biased! {
+            _ = cancelled => Ok(Reply::text(format!("{}\n\n[Interrupted]", partial.lock().unwrap().trim()).trim().to_string())),
+            result = response => result,
+        }
+    }
+
     /// or `None` if the room was stopped.
     async fn run_wave(
         &mut self,
@@ -437,8 +483,9 @@ impl Room {
                 on_event(RoomEvent::TurnStarted { id: id.clone() });
                 let progress = |update: Progress<'_>| on_event(progress_event(id, update));
                 let approver = RoomApprover { desk: &self.desk, id, on_event };
-                let outcome = participant.respond_with_approvals(request, &progress, &approver).await;
+                let outcome = Self::interruptible(participant.as_ref(), request, self.stop.clone(), &progress, &approver).await;
                 if self.stopped() {
+                    if let Ok(reply) = outcome { if !reply.text.trim().is_empty() && reply.text != "[Interrupted]" { self.push(Speaker::Bot(id.clone()), reply.text, on_event); } }
                     return None;
                 }
                 note(self.settle(id, shown, outcome, on_event));
@@ -453,14 +500,18 @@ impl Room {
                 on_event(RoomEvent::TurnStarted { id: id.clone() });
             }
             let desk: &ApprovalDesk = &self.desk;
+            let stop = &self.stop;
             let outcomes = join_all(jobs.into_iter().map(|(id, participant, request)| async move {
                 let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
                 let approver = RoomApprover { desk, id: &id, on_event };
-                let outcome = participant.respond_with_approvals(request, &progress, &approver).await;
+                let outcome = Self::interruptible(participant.as_ref(), request, stop.clone(), &progress, &approver).await;
                 (id, outcome)
             }))
             .await;
             if self.stopped() {
+                for (id, outcome) in outcomes {
+                    if let Ok(reply) = outcome { if !reply.text.trim().is_empty() && reply.text != "[Interrupted]" { self.push(Speaker::Bot(id), reply.text, on_event); } }
+                }
                 return None;
             }
             for (id, outcome) in outcomes {

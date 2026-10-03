@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use apex_core::{ActionKind, FileChange, ProposedAction};
+use apex_core::{ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction};
 use serde_json::Value;
 
 /// How a tool's standard output should be read.
@@ -40,6 +40,10 @@ pub(crate) enum Step {
     Activity(String),
     /// A file the tool has just changed.
     Change(FileChange),
+    /// How full the context window was on the latest request.
+    Context(ContextUse),
+    /// How much of the account's plan is used.
+    Plan(PlanUsage),
 }
 
 /// What a finished stream amounted to.
@@ -85,6 +89,9 @@ pub(crate) struct EventReader {
     last_error: Option<String>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    /// Claude Code: the input of the turn's latest request and the model
+    /// that took it. The context window is only named at the end.
+    last_request: Option<(u64, String)>,
 }
 
 impl EventReader {
@@ -105,6 +112,7 @@ impl EventReader {
             last_error: None,
             input_tokens: None,
             output_tokens: None,
+            last_request: None,
         }
     }
 
@@ -222,6 +230,9 @@ impl EventReader {
                 }
             }
             Some("assistant") => {
+                if own {
+                    self.note_claude_request(&event["message"]);
+                }
                 let Some(blocks) = event["message"]["content"].as_array() else { return };
                 for block in blocks {
                     match block["type"].as_str() {
@@ -283,9 +294,38 @@ impl EventReader {
                     self.input_tokens = Some(input + cached);
                 }
                 self.output_tokens = count("output_tokens").or(self.output_tokens);
+                if let Some(context) = self.claude_context(&event["modelUsage"]) {
+                    steps.push(Step::Context(context));
+                }
+            }
+            Some("rate_limit_event") => {
+                if let Some(plan) = claude_plan(&event["rate_limit_info"]) {
+                    steps.push(Step::Plan(plan));
+                }
             }
             _ => {}
         }
+    }
+
+    /// Remember what one request of the turn was given. The result's totals
+    /// add up every request of a turn, so they overstate how full the
+    /// window is; the last request alone says that.
+    fn note_claude_request(&mut self, message: &Value) {
+        let usage = &message["usage"];
+        let Some(input) = usage["input_tokens"].as_u64() else { return };
+        let cached = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0) + usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+        let model = message["model"].as_str().unwrap_or("").to_string();
+        self.last_request = Some((input + cached, model));
+    }
+
+    /// How full the window was on the turn's last request. The window is
+    /// that of the model that took it, or of the only model used.
+    fn claude_context(&self, models: &Value) -> Option<ContextUse> {
+        let (used, model) = self.last_request.as_ref()?;
+        let models = models.as_object()?;
+        let entry = models.get(model).or_else(|| if models.len() == 1 { models.values().next() } else { None })?;
+        let window = entry["contextWindow"].as_u64().filter(|w| *w > 0)?;
+        Some(ContextUse { used_tokens: *used, window_tokens: window })
     }
 
     fn claude_activity(&self, tool: &str, input: &Value) -> String {
@@ -480,9 +520,24 @@ impl EventReader {
             Some("thread/tokenUsage/updated") => {
                 // One thread is one turn here, so the thread total is the
                 // turn's total.
-                let total = &params["tokenUsage"]["total"];
+                let usage = &params["tokenUsage"];
+                let total = &usage["total"];
                 self.input_tokens = total["inputTokens"].as_u64().or(self.input_tokens);
                 self.output_tokens = total["outputTokens"].as_u64().or(self.output_tokens);
+                // How full the window is comes from the latest request, not the total.
+                let last = &usage["last"];
+                let used = last["totalTokens"]
+                    .as_u64()
+                    .or_else(|| Some(last["inputTokens"].as_u64()? + last["outputTokens"].as_u64().unwrap_or(0)));
+                if let (Some(used), Some(window)) = (used, usage["modelContextWindow"].as_u64().filter(|w| *w > 0)) {
+                    steps.push(Step::Context(ContextUse { used_tokens: used, window_tokens: window }));
+                }
+            }
+            Some("account/rateLimits/updated") => {
+                // Updates are sparse: a window left out has not changed.
+                if let Some(plan) = codex_plan(&params["rateLimits"], false) {
+                    steps.push(Step::Plan(plan));
+                }
             }
             Some("error") => {
                 // Retries are reported as errors too; only the last word counts.
@@ -551,6 +606,59 @@ impl EventReader {
     }
 }
 
+/// Claude Code's plan usage from a `rate_limit_event`. Utilization is a
+/// fraction of the window. `None` when no window gives a figure.
+pub(crate) fn claude_plan(info: &Value) -> Option<PlanUsage> {
+    let minutes = |name: &str| match name {
+        "five_hour" => Some(300),
+        "seven_day" | "seven_day_opus" | "seven_day_sonnet" => Some(10_080),
+        _ => None,
+    };
+    let window = |name: &str, value: &Value| {
+        let used = value["utilization"].as_f64()?;
+        Some(PlanWindow {
+            name: name.to_string(),
+            used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u32,
+            window_minutes: minutes(name),
+            resets_at: value["resetsAt"].as_u64(),
+        })
+    };
+    let mut windows: Vec<PlanWindow> = info["unifiedWindows"]
+        .as_object()
+        .map(|all| all.iter().filter_map(|(name, value)| window(name, value)).collect())
+        .unwrap_or_default();
+    // Without the list of windows, the event may still give the one it is about.
+    if windows.is_empty() {
+        windows.extend(info["rateLimitType"].as_str().and_then(|name| window(name, info)));
+    }
+    (!windows.is_empty()).then(|| PlanUsage { provider: AgentTool::ClaudeCode, windows, partial: false })
+}
+
+/// Codex's plan usage from a rate limit snapshot. A missing window is
+/// left out; with `partial` that means it has not changed.
+pub(crate) fn codex_plan(snapshot: &Value, partial: bool) -> Option<PlanUsage> {
+    if !snapshot.is_object() {
+        return None;
+    }
+    let windows: Vec<PlanWindow> = ["primary", "secondary"]
+        .iter()
+        .filter_map(|name| {
+            let window = &snapshot[*name];
+            let used = window["usedPercent"].as_f64()?;
+            Some(PlanWindow {
+                name: name.to_string(),
+                used_percent: used.round().clamp(0.0, 100.0) as u32,
+                window_minutes: window["windowDurationMins"].as_u64(),
+                resets_at: window["resetsAt"].as_u64(),
+            })
+        })
+        .collect();
+    if partial && windows.is_empty() {
+        return None;
+    }
+    Some(PlanUsage { provider: AgentTool::Codex, windows, partial })
+}
+
 /// The message of an app server error, with its detail when the message
 /// alone says little (a retry notice, for example).
 fn server_error(error: &Value) -> Option<String> {
@@ -595,6 +703,7 @@ fn clip(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn read(format: OutputFormat, chunks: &[&str]) -> (Vec<Step>, Outcome) {
         let mut reader = EventReader::new(format, Some("/work/project".into()));
@@ -882,5 +991,138 @@ mod tests {
         assert_eq!(reader.short_path("/work/project-two/a.rs"), "/work/project-two/a.rs");
         assert_eq!(reader.short_path("/work/project"), "/work/project");
         assert_eq!(reader.short_path("relative.rs"), "relative.rs");
+    }
+
+    // ------------------------------------------------------------- meters
+
+    fn meters(steps: &[Step]) -> (Vec<ContextUse>, Vec<PlanUsage>) {
+        let context = steps.iter().filter_map(|s| if let Step::Context(c) = s { Some(*c) } else { None }).collect();
+        let plans = steps.iter().filter_map(|s| if let Step::Plan(p) = s { Some(p.clone()) } else { None }).collect();
+        (context, plans)
+    }
+
+    fn window(name: &str, used: u32, minutes: Option<u64>, resets: Option<u64>) -> PlanWindow {
+        PlanWindow { name: name.into(), used_percent: used, window_minutes: minutes, resets_at: resets }
+    }
+
+    // Printed by Claude Code on this machine, trimmed to the fields read.
+    const CLAUDE_RATE_LIMIT: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1791063000,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.65,"resetsAt":1791063000},"seven_day":{"utilization":0.58,"resetsAt":1791396000}}}}"#;
+
+    #[test]
+    fn claude_rate_limit_events_give_every_window_as_a_percent() {
+        let (steps, _) = read(OutputFormat::ClaudeStream, &[CLAUDE_RATE_LIMIT, "\n"]);
+        let (context, plans) = meters(&steps);
+        assert!(context.is_empty());
+        assert_eq!(
+            plans,
+            [PlanUsage {
+                provider: AgentTool::ClaudeCode,
+                windows: vec![
+                    window("five_hour", 65, Some(300), Some(1791063000)),
+                    window("seven_day", 58, Some(10_080), Some(1791396000)),
+                ],
+                partial: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_claude_rate_limit_event_without_figures_says_nothing() {
+        let bare = json!({ "status": "allowed", "resetsAt": 1, "rateLimitType": "five_hour" });
+        assert_eq!(claude_plan(&bare), None);
+        assert_eq!(claude_plan(&Value::Null), None);
+        // Only the window the event is about, when the list is missing.
+        let single = json!({ "rateLimitType": "five_hour", "utilization": 0.2, "resetsAt": 9 });
+        assert_eq!(claude_plan(&single).unwrap().windows, [window("five_hour", 20, Some(300), Some(9))]);
+        // A window without a figure is left out; an unknown name has no length.
+        let mixed = json!({ "unifiedWindows": { "five_hour": { "resetsAt": 1 }, "other": { "utilization": 1.0 } } });
+        assert_eq!(claude_plan(&mixed).unwrap().windows, [window("other", 100, None, None)]);
+    }
+
+    #[test]
+    fn claude_context_is_the_last_requests_input_against_its_models_window() {
+        // Two requests in one turn. The result adds them up; the window is
+        // filled by the last one only.
+        let turn = r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a"}}],"usage":{"input_tokens":9,"cache_creation_input_tokens":9750,"cache_read_input_tokens":16490,"output_tokens":4}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":20,"cache_creation_input_tokens":300,"cache_read_input_tokens":26240,"output_tokens":2}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"helper"}],"usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}},"parent_tool_use_id":"t1"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":29,"cache_creation_input_tokens":10050,"cache_read_input_tokens":42730,"output_tokens":6},"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":29,"outputTokens":6,"cacheReadInputTokens":42730,"cacheCreationInputTokens":10050,"contextWindow":200000,"maxOutputTokens":32000}}}
+"#;
+        let (steps, outcome) = read(OutputFormat::ClaudeStream, &[turn]);
+        let (context, _) = meters(&steps);
+        assert_eq!(context, [ContextUse { used_tokens: 26_560, window_tokens: 200_000 }]);
+        // The token totals still count the whole turn.
+        assert_eq!(outcome.input_tokens, Some(52_809));
+    }
+
+    #[test]
+    fn claude_context_is_unknown_without_a_window_or_a_request() {
+        let no_window = r#"{"type":"assistant","message":{"model":"m","content":[],"usage":{"input_tokens":10}},"parent_tool_use_id":null}
+{"type":"result","is_error":false,"result":"","modelUsage":{"m":{"inputTokens":10}}}
+"#;
+        assert!(meters(&read(OutputFormat::ClaudeStream, &[no_window]).0).0.is_empty());
+        let no_request = r#"{"type":"result","is_error":false,"result":"","modelUsage":{"m":{"contextWindow":200000}}}
+"#;
+        assert!(meters(&read(OutputFormat::ClaudeStream, &[no_request]).0).0.is_empty());
+        // Several models and none matching the request: no guess.
+        let ambiguous = r#"{"type":"assistant","message":{"model":"x","content":[],"usage":{"input_tokens":10}},"parent_tool_use_id":null}
+{"type":"result","is_error":false,"result":"","modelUsage":{"a":{"contextWindow":200000},"b":{"contextWindow":1000000}}}
+"#;
+        assert!(meters(&read(OutputFormat::ClaudeStream, &[ambiguous]).0).0.is_empty());
+        // One model under another name is the one that was used.
+        let renamed = r#"{"type":"assistant","message":{"model":"x","content":[],"usage":{"input_tokens":10}},"parent_tool_use_id":null}
+{"type":"result","is_error":false,"result":"","modelUsage":{"x[1m]":{"contextWindow":1000000}}}
+"#;
+        assert_eq!(meters(&read(OutputFormat::ClaudeStream, &[renamed]).0).0, [ContextUse { used_tokens: 10, window_tokens: 1_000_000 }]);
+    }
+
+    // Answered by `codex app-server` on this machine.
+    const CODEX_RATE_LIMITS: &str = r#"{"limitId":"codex","limitName":null,"primary":{"usedPercent":15,"windowDurationMins":10080,"resetsAt":1791580627},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"planType":"prolite","rateLimitReachedType":null}"#;
+
+    #[test]
+    fn codex_rate_limits_read_gives_the_windows_it_has() {
+        let snapshot: Value = serde_json::from_str(CODEX_RATE_LIMITS).unwrap();
+        assert_eq!(
+            codex_plan(&snapshot, false),
+            Some(PlanUsage { provider: AgentTool::Codex, windows: vec![window("primary", 15, Some(10_080), Some(1791580627))], partial: false })
+        );
+        let both = json!({ "primary": { "usedPercent": 40, "windowDurationMins": 300, "resetsAt": 5 }, "secondary": { "usedPercent": 19 } });
+        assert_eq!(
+            codex_plan(&both, false).unwrap().windows,
+            [window("primary", 40, Some(300), Some(5)), window("secondary", 19, None, None)]
+        );
+        // A full read with no windows says the plan reports none.
+        assert_eq!(codex_plan(&json!({ "primary": null, "secondary": null }), false).unwrap().windows, []);
+        assert_eq!(codex_plan(&Value::Null, false), None);
+    }
+
+    #[test]
+    fn codex_rate_limit_updates_replace_the_snapshot_including_null_windows() {
+        let update = format!("{{\"method\":\"account/rateLimits/updated\",\"params\":{{\"rateLimits\":{CODEX_RATE_LIMITS}}}}}\n");
+        let empty = "{\"method\":\"account/rateLimits/updated\",\"params\":{\"rateLimits\":{\"primary\":null,\"secondary\":null}}}\n";
+        let (steps, _) = read(OutputFormat::CodexServer, &[&update, empty]);
+        let (_, plans) = meters(&steps);
+        // Null windows clear previously known values; never retain a stale quota.
+        assert_eq!(
+            plans,
+            [PlanUsage { provider: AgentTool::Codex, windows: vec![window("primary", 15, Some(10_080), Some(1791580627))], partial: false }, PlanUsage { provider: AgentTool::Codex, windows: vec![], partial: false }]
+        );
+    }
+
+    #[test]
+    fn codex_context_is_the_last_request_against_the_models_window() {
+        let usage = r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"t","turnId":"u","tokenUsage":{"total":{"inputTokens":90000,"cachedInputTokens":60000,"outputTokens":900,"reasoningOutputTokens":300,"totalTokens":90900},"last":{"inputTokens":31000,"cachedInputTokens":30000,"outputTokens":400,"reasoningOutputTokens":100,"totalTokens":31400},"modelContextWindow":258400}}}
+{"method":"thread/tokenUsage/updated","params":{"threadId":"t","turnId":"u","tokenUsage":{"total":{"inputTokens":1,"outputTokens":1},"last":{"inputTokens":1,"outputTokens":1},"modelContextWindow":null}}}
+{"method":"thread/tokenUsage/updated","params":{"threadId":"t","turnId":"u","tokenUsage":{"total":{"inputTokens":1,"outputTokens":1},"last":{"inputTokens":500,"outputTokens":20},"modelContextWindow":1000}}}
+"#;
+        let (steps, outcome) = read(OutputFormat::CodexServer, &[usage]);
+        let (context, _) = meters(&steps);
+        // The middle update has no window and gives no figure; the last one
+        // has no total and is added up from its parts.
+        assert_eq!(
+            context,
+            [ContextUse { used_tokens: 31_400, window_tokens: 258_400 }, ContextUse { used_tokens: 520, window_tokens: 1000 }]
+        );
+        assert_eq!(outcome.input_tokens, Some(1));
     }
 }

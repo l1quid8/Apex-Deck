@@ -143,6 +143,17 @@ async fn cli_that_hangs_is_stopped_at_the_timeout() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn cli_that_keeps_printing_outlasts_the_timeout() {
+    // Each line restarts the clock, so a turn longer than the limit is fine
+    // as long as the tool never goes quiet for that long.
+    let script = "for i in 1 2 3 4 5 6; do echo $i; sleep 0.1; done";
+    let bot = CliParticipant::new(config("cli", sh(script))).with_timeout(Duration::from_millis(350));
+    let (result, _) = ask(&bot, "hi").await;
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn cli_handles_a_prompt_larger_than_the_pipe_buffer() {
     // `cat` echoes while we are still writing; this would deadlock if the
     // prompt were written before reading began.
@@ -495,7 +506,7 @@ async fn work(
         .respond_with_progress(request("hi"), &|update| match update {
             Progress::Text(piece) => text.lock().unwrap().push_str(piece),
             Progress::Activity(line) => activity.lock().unwrap().push(line.to_string()),
-            Progress::Change(_) => {}
+            _ => {}
         })
         .await;
     (result, text.into_inner().unwrap(), activity.into_inner().unwrap())
@@ -734,7 +745,7 @@ async fn work_asking(
             &|update| match update {
                 Progress::Text(piece) => text.lock().unwrap().push_str(piece),
                 Progress::Change(change) => changed.lock().unwrap().push(change.clone()),
-                Progress::Activity(_) => {}
+                _ => {}
             },
             approver,
         )

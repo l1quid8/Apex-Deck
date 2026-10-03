@@ -6,12 +6,15 @@ import { registerRoom } from "./hub";
 import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups } from "./models";
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
-import { Avatar } from "./Avatar";
+import { Avatar, type Refills } from "./Avatar";
+import { contextLevel, contextLine, isLow, percent, planLevel, planLine, type Levels } from "./battery";
+import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention } from "./attention";
 import { ApprovalCard, ChangesPanel, type MadeChange } from "./Approvals";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
+import { TurnQueue, type QueuedMessage } from "./turnQueue";
 import { replyText, type ReplyQuote } from "./reply";
 import type {
   Access,
@@ -48,7 +51,13 @@ interface Props {
 type Notice = { key: number; text: string; tone: "info" | "error" };
 /** Where `/compact` cut in: the models see `summary` instead of the messages above it. */
 type Summary = { by: string | null; summary: string; upto: number };
-type Entry = { kind: "message"; message: Message } | { kind: "notice"; notice: Notice } | { kind: "summary"; summary: Summary };
+/** An agent's context has just dropped to the low mark; shown once under its reply. */
+type LowContext = { key: number; id: string; left: number };
+type Entry =
+  | { kind: "message"; message: Message }
+  | { kind: "notice"; notice: Notice }
+  | { kind: "summary"; summary: Summary }
+  | { kind: "low"; low: LowContext };
 
 
 /** The @handle the room will match: lower-case letters, digits, dash, underscore, dot. */
@@ -247,17 +256,21 @@ interface TokenUse {
   turns: number;
 }
 
-/** A count short enough for a chip: 950, 1.8k, 23k, 1.2M. */
-export function compactCount(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
-  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
-}
-
 function tokenDetail(use: TokenUse): string {
   const turns = use.turns === 1 ? "1 turn" : `${use.turns} turns`;
   return `${use.input.toLocaleString()} in, ${use.output.toLocaleString()} out over ${turns} since the app opened. Input includes the conversation and files the tool re-read from its cache.`;
+}
+
+/** The provider whose plan an agent draws on, if it reports one. */
+function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
+  const b = config?.backend;
+  return b?.kind === "agent" && (b.tool === "claude_code" || b.tool === "codex") ? b.tool : null;
+}
+
+/** Tokens the latest request filled, against the window. */
+interface ContextFill {
+  used: number;
+  window: number;
 }
 
 function describe(config: ParticipantConfig): string {
@@ -281,6 +294,14 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const [now, setNow] = useState(() => Date.now());
   /** Tokens each participant has used in this chat since the app opened. */
   const [used, setUsed] = useState<Record<string, TokenUse>>({});
+  /** How full each agent's context window was on its latest request. Missing
+   *  means unknown: not reported yet, or refilled by /compact since. */
+  const [contextFill, setContextFill] = useState<Record<string, ContextFill>>({});
+  /** Goes up on each /compact, to play the left side's refill. */
+  const [compactions, setCompactions] = useState(0);
+  const plans = usePlans();
+  /** The chip whose usage card is open. */
+  const [card, setCard] = useState<string | null>(null);
   /** What each bot has proposed and is waiting on a yes or no for. */
   const [asks, setAsks] = useState<Record<string, { request: string; action: ProposedAction }[]>>({});
   /** Files the bots have changed since this chat was opened. */
@@ -288,6 +309,8 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const [showChanges, setShowChanges] = useState(false);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState("");
+  const [queued, setQueued] = useState<QueuedMessage[]>([]);
+  const [queuePaused, setQueuePaused] = useState(false);
   const [reply, setReply] = useState<ReplyQuote | null>(null);
   const [adding, setAdding] = useState(false);
   const installed = (preset: Preset) => !preset.agent || agents.some((a) => a.key === preset.agent!.detectKey && a.found);
@@ -316,6 +339,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   // What happened in the round of replies now running, to decide when it
   // ends whether the chat wants attention. See afterRound in attention.ts.
   const round = useRef<{ failed: string[]; lastReply: string | null; stopped: boolean }>({ failed: [], lastReply: null, stopped: false });
+  /** Agents whose context is at or under the low mark, so the notice shows
+   *  once per crossing; and notices waiting for the agent's reply to land. */
+  const lowContext = useRef(new Set<string>());
+  const pendingLow = useRef(new Map<string, number>());
 
   const availableProfiles = profiles.filter((p) => providerEnabled(providerForConfig(p), disabledProviders));
 
@@ -328,6 +355,12 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   }
   const appearance = (id: string) => identities.current.get(id) ?? legacyAppearance(id);
   const color = (id: string) => appearance(id).color;
+
+  const forgetContext = () => {
+    setContextFill({});
+    lowContext.current.clear();
+    pendingLow.current.clear();
+  };
 
   const notify = (message: string, tone: Notice["tone"] = "info") =>
     setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone } }]);
@@ -345,6 +378,13 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             setDrafts(({ [id]: _done, ...rest }) => rest);
             setWorking(({ [id]: _done, ...rest }) => rest);
             round.current.lastReply = event.message.text;
+            const left = pendingLow.current.get(id);
+            pendingLow.current.delete(id);
+            if (left !== undefined) {
+              const low: Entry = { kind: "low", low: { key: noticeKey.current++, id, left } };
+              setEntries((list) => [...list, { kind: "message", message: event.message }, low]);
+              break;
+            }
           } else {
             // The person has just written: a new round, and nothing is waiting on them.
             round.current = { failed: [], lastReply: null, stopped: false };
@@ -390,6 +430,21 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             return { ...u, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1 } };
           });
           break;
+        case "context_usage": {
+          const fill = { used: event.used_tokens, window: event.window_tokens };
+          const level = contextLevel(fill);
+          const low = isLow(level);
+          // The notice goes under the reply this figure belongs to, which
+          // lands just after it.
+          if (low && !lowContext.current.has(event.id)) pendingLow.current.set(event.id, percent(level ?? 0));
+          if (low) lowContext.current.add(event.id);
+          else {
+            lowContext.current.delete(event.id);
+            pendingLow.current.delete(event.id);
+          }
+          setContextFill((all) => ({ ...all, [event.id]: fill }));
+          break;
+        }
         case "passed":
           setDrafts(({ [event.id]: _gone, ...rest }) => rest);
           setWorking(({ [event.id]: _gone, ...rest }) => rest);
@@ -408,6 +463,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
           setEntries((list) => [...list, { kind: "summary", summary: { by: event.id, summary: event.summary, upto: event.upto } }]);
+          // Every model now sees the summary instead, so how full each window
+          // is stays unknown until its next turn says.
+          forgetContext();
+          setCompactions((n) => n + 1);
           break;
         case "stopped":
           setDrafts({});
@@ -541,6 +600,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       .then(() => {
         setEntries([]);
         setUsed({});
+        forgetContext();
         notify("Chat cleared. The models start fresh; participants are kept.");
       })
       .catch((error) => notify(`Could not clear the chat: ${String(error)}`, "error"));
@@ -552,29 +612,40 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     setText("");
     setReply(null);
     setBusy(true);
-    backend
-      .roomCompact(pane.id)
-      .catch((error) => notify(`Could not compact the chat: ${String(error)}`, "error"))
-      .finally(() => {
-        setBusy(false);
-        setDrafts({});
-        setWorking({});
-      });
+    turnQueue.send("/compact");
   };
 
-  const send = () => {
-    const body = text.trim();
-    if (!body || busy || !ready || participants.length === 0) return;
-    if (body === "/clear") return clearChat();
-    if (body === "/compact") return compactChat();
-    const message = replyText(body, reply);
-    setText("");
-    setReply(null);
+  const dispatch = useRef<(message: string) => Promise<void>>(async () => {});
+  dispatch.current = async (message) => {
     setBusy(true);
-    backend.roomPost(pane.id, message).catch((error) => {
-      notify(`Could not send: ${String(error)}`, "error");
-      setBusy(false);
-    });
+    try {
+      if (message === "/compact") await backend.roomCompact(pane.id);
+      else if (message === "/clear") {
+        await backend.roomClear(pane.id); setEntries([]); setUsed({}); forgetContext();
+      }
+      else await backend.roomPost(pane.id, message);
+    } catch (error) {
+      // Compaction failures return through the command without a Failed
+      // room event. Remove their transient draft and activity as well.
+      setDrafts({}); setWorking({}); setAsks({});
+      throw error;
+    } finally { setBusy(false); }
+  };
+  const [turnQueue] = useState(() => new TurnQueue(
+    (message) => dispatch.current(message),
+    () => backend.roomStop(pane.id),
+    setQueued,
+    (error) => { notify(`Could not send: ${String(error)}. Queued messages are paused.`, "error"); setQueuePaused(true); },
+  ));
+  const send = (steer = false) => {
+    const body = text.trim();
+    if (!body || !ready || participants.length === 0) return;
+    if (!busy && !turnQueue.active && body === "/clear") return clearChat();
+    if (!busy && !turnQueue.active && body === "/compact") return compactChat();
+    const message = replyText(body, reply);
+    setText(""); setReply(null);
+    if (steer) { setQueuePaused(false); void turnQueue.steer(message); }
+    else turnQueue.send(message);
   };
 
   const mention = (id: string) => {
@@ -645,6 +716,52 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       return { ...d, model, effort: known && !known.includes(d.effort) ? "" : d.effort };
     });
 
+  // Battery levels: context is each agent's own, the plan its provider's.
+  const configOf = (id: string) => participants.find((p) => p.id === id);
+  const levelsFor = (id: string): Levels => {
+    const provider = planProvider(configOf(id));
+    return { context: contextLevel(contextFill[id]), plan: provider ? planLevel(plans[provider]?.windows, Date.now() / 1000) : null };
+  };
+  const refillsFor = (id: string): Refills => {
+    const provider = planProvider(configOf(id));
+    return { context: compactions, plan: provider ? (plans[provider]?.resets ?? 0) : 0 };
+  };
+  /** Only each agent's newest reply shows live levels; older ones stay as they were drawn. */
+  const newestReply = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.kind === "message" && entry.message.speaker.kind === "bot") newestReply.set(entry.message.speaker.id, entry.message.seq);
+  }
+  const canCompact = ready && !busy && participants.length > 0;
+
+  /** The usage card for a chip: context, plan, session tokens, and a way to compact. */
+  const usageCard = (p: ParticipantConfig) => {
+    const fill = contextFill[p.id];
+    const provider = planProvider(p);
+    const windows = provider ? plans[provider]?.windows : undefined;
+    const plan = windows ? planLine(windows, new Date()) : null;
+    const reports = p.backend.kind === "agent" && p.backend.tool !== "gemini";
+    const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
+    return (
+      <div className="usage-card" role="group" aria-label={`Usage for ${p.display_name}`}>
+        <div className="usage-row">
+          <span className="usage-label">Context</span>
+          <span className={isLow(contextLevel(fill)) ? "usage-low" : undefined}>{fill ? contextLine(fill) : reports ? "Not reported yet. The next reply says." : "Not reported by this provider"}</span>
+        </div>
+        <div className="usage-row">
+          <span className="usage-label">Plan</span>
+          <span className={isLow(provider ? planLevel(windows, Date.now() / 1000) : null) ? "usage-low" : undefined}>
+            {plan ?? (!provider ? "Not reported by this provider" : provider === "claude_code" ? "Known after a Claude Code reply" : "Not reported yet")}
+          </span>
+        </div>
+        {provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
+        <p className="usage-note">{used[p.id] ? tokenDetail(used[p.id]) : "No tokens used in this chat yet."}</p>
+        <button className="ghost usage-compact" onClick={() => { setCard(null); compactChat(); }} disabled={!canCompact} title="Summarize earlier turns so every model starts from the summary">
+          Compact now
+        </button>
+      </div>
+    );
+  };
+
   const accessNote = preset.agent?.enforcesAccess
     ? "Enforced with the tool's own permission settings."
     : "Stated to the model as an instruction. Not enforced.";
@@ -653,15 +770,28 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     <div className="chat">
       <div className="chat-bar">
         <div className="chips">
-          {!profileMode && participants.map((p) => (
-            <span className="chip" key={p.id} style={{ borderColor: color(p.id) }}>
+          {!profileMode && participants.map((p) => {
+            const levels = levelsFor(p.id);
+            return (
+            <span
+              className="chip-wrap"
+              key={p.id}
+              onMouseEnter={() => setCard(p.id)}
+              onMouseLeave={() => setCard((open) => (open === p.id ? null : open))}
+              onFocus={() => setCard(p.id)}
+              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCard((open) => (open === p.id ? null : open)); }}
+              onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
+            >
+            <span className="chip" style={{ borderColor: color(p.id) }}>
               <button className="chip-name" onClick={() => mention(p.id)} title={`Mention @${p.id}`}>
-                <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} />
+                <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
                 {p.display_name}
                 <span className="chip-meta">{describe(p)}</span>
-                {used[p.id] && (
-                  <span className="chip-meta chip-tokens" title={tokenDetail(used[p.id])}>
-                    {compactCount(used[p.id].input + used[p.id].output)} tokens
+                {(levels.context !== null || levels.plan !== null) && (
+                  <span className="chip-meta chip-levels">
+                    {levels.context !== null && <span className={isLow(levels.context) ? "usage-low" : undefined} title="Context left">{percent(levels.context)}%</span>}
+                    {levels.context !== null && levels.plan !== null && <span className="chip-sep" aria-hidden="true">|</span>}
+                    {levels.plan !== null && <span className={isLow(levels.plan) ? "usage-low" : undefined} title="Plan left">{percent(levels.plan)}%</span>}
                   </span>
                 )}
               </button>
@@ -673,7 +803,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
                 ×
               </button>
             </span>
-          ))}
+            {card === p.id && usageCard(p)}
+            </span>
+            );
+          })}
           <button
             className="ghost"
             onClick={() => {
@@ -892,6 +1025,11 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}`}>
               {entry.notice.text}
             </p>
+          ) : entry.kind === "low" ? (
+            <p key={`l${entry.low.key}`} className="notice low-context">
+              <span>{names.get(entry.low.id) ?? entry.low.id} is down to {entry.low.left}% context. Compacting summarizes earlier turns and refills it.</span>
+              <button className="ghost" onClick={compactChat} disabled={!canCompact}>Compact</button>
+            </p>
           ) : entry.kind === "summary" ? (
             <details key={`s${entry.summary.upto}`} className="compacted">
               <summary>
@@ -905,7 +1043,11 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             </div>
           ) : (
             <div key={`m${entry.message.seq}`} className="bot-row">
-              <Avatar seed={appearance(entry.message.speaker.id).seed} color={color(entry.message.speaker.id)} />
+              <Avatar
+                seed={appearance(entry.message.speaker.id).seed}
+                color={color(entry.message.speaker.id)}
+                {...(newestReply.get(entry.message.speaker.id) === entry.message.seq ? { levels: levelsFor(entry.message.speaker.id), refills: refillsFor(entry.message.speaker.id) } : {})}
+              />
               <div className="bubble bot completed">
                 <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
@@ -928,7 +1070,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           const hidden = steps.length - shown.length;
           return (
             <div key={`d${id}`} className="bot-row">
-              <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} />
+              <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
               <div className="bubble bot writing" aria-busy="true">
                 <span className="speaker" style={{ color: color(id) }}>
                   {names.get(id) ?? id}
@@ -978,6 +1120,14 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
 
       {!profileMode && <div className="composer">
         <div className="composer-input">
+        {queued.length > 0 && <div className="queued-messages" aria-label="Queued messages">
+          <span className="muted">{queuePaused ? "Queue paused" : "Queued for the next turn"}</span>
+          {queued.map(item => <div className="queued-message" key={item.id}>
+            <textarea aria-label={`Queued message ${item.id}`} rows={2} value={item.text} onChange={e => turnQueue.edit(item.id, e.target.value)} />
+            <button className="icon" aria-label="Remove queued message" onClick={() => turnQueue.remove(item.id)}>×</button>
+          </div>)}
+          {queuePaused && <button className="ghost" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume queue</button>}
+        </div>}
         {reply && <div className="quote-preview">
           <div className="quote-preview-copy"><span className="speaker">{reply.name}</span><blockquote>{reply.text}</blockquote></div>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
@@ -990,21 +1140,23 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              send();
+              send(e.metaKey || e.ctrlKey);
             }
           }}
           rows={2}
           placeholder={participants.length === 0 ? "Add a model to start" : "Message the room. @name picks who answers."}
           disabled={!ready || participants.length === 0}
         />
-        <div className="composer-hint"><span>{busy ? "Models are responding…" : "@name to mention · @all for everyone · /compact to summarize · /clear to start fresh"}</span><span>Enter to send · Shift + Enter for a new line</span></div>
+        <div className="composer-hint"><span>{busy ? "Models are responding…" : "@name to mention · @all for everyone · /compact to summarize · /clear to start fresh"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
         </div>
         {busy ? (
-          <button className="danger" onClick={() => backend.roomStop(pane.id)}>
-            Stop
-          </button>
+          <div className="composer-actions">
+            <button className="primary" onClick={() => send()} disabled={!text.trim()}>Queue</button>
+            <button className="ghost" onClick={() => send(true)} disabled={!text.trim()} title="Interrupt the current reply and send now. @name chooses who answers.">Steer</button>
+            <button className="danger" onClick={() => { setQueuePaused(true); void turnQueue.halt(); }}>Stop</button>
+          </div>
         ) : (
-          <button className="primary" onClick={send} disabled={!ready || !text.trim() || participants.length === 0}>
+          <button className="primary" onClick={() => send()} disabled={!ready || !text.trim() || participants.length === 0}>
             <DeckIcon name="send" size={18} /> Send
           </button>
         )}
