@@ -138,7 +138,9 @@ impl Approver for RoomApprover<'_> {
         if self.desk.always_allowed(self.id, &action) {
             eprintln!("[apex-deck] answered without a card (always allowed): {}", action.title);
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
-            return Decision::ApproveAlways;
+            // A plain yes: the thread's saved rule answered, so no tool is
+            // told to remember anything, and removing the rule takes it back.
+            return Decision::Approve;
         }
         let remembered = action.clone();
         let (request, answer) = self.desk.open_for(self.id.clone());
@@ -791,7 +793,7 @@ mod approver_tests {
         assert!(desk.resolve("ask-1", Decision::ApproveAlways));
         assert_eq!(futures::executor::block_on(first), Decision::ApproveAlways);
         let second = approver.decide(action()).now_or_never();
-        assert_eq!(second, Some(Decision::ApproveAlways), "answered without waiting");
+        assert_eq!(second, Some(Decision::Approve), "answered without waiting, as a plain yes so no tool is told to remember it");
         assert_eq!(desk.waiting(), 0, "no second card");
         let events = events.into_inner().unwrap();
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },

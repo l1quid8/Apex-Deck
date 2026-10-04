@@ -90,11 +90,14 @@ pub(crate) fn proposal(method: &str, params: &Value, reader: &EventReader) -> Op
     match method {
         "item/commandExecution/requestApproval" => {
             let command = params["command"].as_str().unwrap_or("(command not given)");
-            let detail = match reason {
-                Some(reason) => format!("{command}\n\n{reason}"),
-                None => command.to_string(),
+            // The reason goes in the title. An Always allow rule matches a
+            // command's detail, so it then covers this command whatever
+            // Codex says about it, and never a different command.
+            let title = match reason {
+                Some(reason) => format!("Run a command · {}", reason.split_whitespace().collect::<Vec<_>>().join(" ")),
+                None => "Run a command".to_string(),
             };
-            Some(ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail, expires_at: None, risky: false })
+            Some(ProposedAction { kind: ActionKind::Command, title, detail: command.to_string(), expires_at: None, risky: false })
         }
         "item/fileChange/requestApproval" => {
             let (title, detail) = params["itemId"]
@@ -117,11 +120,13 @@ pub(crate) fn approval_response(id: &Value, decision: Decision) -> Value {
 }
 
 /// MCP approval is an elicitation, not a command approval. "Always allow"
-/// also sends Codex's own "always" choice, for tools that remember it.
+/// tells Codex to remember the choice for its session only. Each turn is a
+/// fresh session, so the thread's saved list stays the one lasting record
+/// and Remove in thread details really takes it back.
 fn mcp_response(id: &Value, decision: Decision) -> Value {
     let mut result = json!({"action": if decision.approved() {"accept"} else {"decline"},
         "content": if decision.approved() {json!({})} else {Value::Null}});
-    if decision == Decision::ApproveAlways { result["_meta"] = json!({"persist": "always"}); }
+    if decision == Decision::ApproveAlways { result["_meta"] = json!({"persist": "session"}); }
     json!({"id":id,"result":result})
 }
 
@@ -556,6 +561,21 @@ fn ended_early(reader: EventReader) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_codex_command_rule_covers_that_command_whatever_the_reason_and_nothing_longer() {
+        let reader = EventReader::new(OutputFormat::CodexServer, None);
+        let ask = |command: &str, reason: &str| {
+            proposal("item/commandExecution/requestApproval", &json!({ "command": command, "reason": reason }), &reader).unwrap()
+        };
+        let null = apex_core::ParticipantId::new("null");
+        let rule = apex_core::AllowedRule::new(&null, &ask("cargo test", "needs network"));
+        assert!(rule.covers(&null, &ask("cargo test", "wants to write to target/")), "a different reason is the same command");
+        assert!(rule.covers(&null, &ask("cargo test", "")), "no reason at all");
+        assert!(!rule.covers(&null, &ask("cargo test\n\nrm -rf ~", "needs network")), "a longer command asks again");
+        assert!(!rule.covers(&null, &ask("cargo test --release", "needs network")));
+        assert_eq!(ask("ls", "line one\n  line two").title, "Run a command · line one line two");
+    }
+
+    #[test]
     fn codex_high_risk_marks_the_card_risky() {
         let ask = json!({"serverName":"computer-use", "mode":"form", "message":"Allow Codex to use Terminal?",
             "requestedSchema":{"type":"object","properties":{}}, "_meta":{"codex_approval_kind":"app_approval","riskLevel":"high"}});
@@ -613,9 +633,10 @@ mod tests {
     }
 
     #[test]
-    fn always_allow_sends_codexs_persist_choice_and_nothing_else_does() {
+    fn always_allow_asks_codex_to_remember_only_for_its_session() {
         let always = mcp_response(&json!(9), Decision::ApproveAlways);
-        assert_eq!(always, json!({"id":9,"result":{"action":"accept","content":{},"_meta":{"persist":"always"}}}));
+        assert_eq!(always, json!({"id":9,"result":{"action":"accept","content":{},"_meta":{"persist":"session"}}}));
+        assert!(!always.to_string().contains("\"always\""), "nothing Codex keeps after the turn");
         let once = mcp_response(&json!(9), Decision::Approve);
         assert_eq!(once, json!({"id":9,"result":{"action":"accept","content":{}}}));
         let deny = mcp_response(&json!(9), Decision::Reject);
@@ -684,7 +705,7 @@ mod tests {
         reader.push("{\"method\":\"item/started\",\"params\":{\"item\":{\"type\":\"fileChange\",\"id\":\"i1\",\"changes\":[{\"path\":\"/work/a.rs\",\"kind\":\"update\",\"diff\":\"-x\\n+y\\n\"}]}}}\n");
 
         let command = proposal("item/commandExecution/requestApproval", &json!({ "itemId": "i0", "command": "cargo test", "reason": "needs network" }), &reader).unwrap();
-        assert_eq!((command.kind, command.title.as_str(), command.detail.as_str()), (ActionKind::Command, "Run a command", "cargo test\n\nneeds network"));
+        assert_eq!((command.kind, command.title.as_str(), command.detail.as_str()), (ActionKind::Command, "Run a command · needs network", "cargo test"));
 
         let edit = proposal("item/fileChange/requestApproval", &json!({ "itemId": "i1" }), &reader).unwrap();
         assert_eq!((edit.kind, edit.title.as_str(), edit.detail.as_str()), (ActionKind::Edit, "Edit a.rs", "a.rs\n-x\n+y\n"));
