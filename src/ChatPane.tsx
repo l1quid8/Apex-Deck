@@ -3,7 +3,7 @@ import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { composerCopy, joinNames, replyingVerb } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { findTrigger, insertAt } from "./composerMenu";
@@ -422,6 +422,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const composer = useRef<HTMLDivElement>(null);
+  // Grow the message box with its text, up to the CSS max-height.
+  useLayoutEffect(() => {
+    const box = input.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${box.scrollHeight + box.offsetHeight - box.clientHeight}px`;
+  }, [text]);
   const filePicker = useRef<HTMLInputElement>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const saving = attached.some((a) => !a.path && !a.error);
@@ -1606,7 +1613,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
               send(e.metaKey || e.ctrlKey);
             }
           }}
-          rows={2}
+          rows={1}
           placeholder={copy.placeholder}
           disabled={!ready || participants.length === 0}
         />

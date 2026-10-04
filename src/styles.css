@@ -881,9 +881,12 @@ textarea {
 .composer textarea {
   width: 100%;
   resize: none;
-  padding: 12px 14px;
-  min-height: 76px;
+  padding: 10px 14px;
+  min-height: 0;
 }
+.composer-field > textarea { max-height: 200px; overflow-y: auto; }
+.composer .composer-hint { display: none; }
+.composer:focus-within .composer-hint { display: flex; }
 
 @media (max-width: 720px) {
   .titlebar { flex-wrap: wrap; }
@@ -947,7 +950,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .empty .eyebrow { font-size: 9px; }
 .composer-input { flex: 1; min-width: 0; }
 .composer-hint { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; color: var(--muted); font-size: 11px; }
-.composer > button { min-height: 40px; margin-top: 18px; }
+.composer > button { min-height: 40px; }
 .chip button:hover { background: #ffffff09; }
 .chip button:focus-visible { outline-offset: -3px; }
 .agent-library .empty { margin: 8px 0 0; border: 1px dashed var(--line); border-radius: 14px; width: 100%; max-width: none; padding: 48px 24px; }
@@ -1865,7 +1868,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 .composer-status-who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-status-who strong { font-weight: 650; }
 .composer-status-time { font-family: var(--mono, ui-monospace, monospace); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.composer-actions { align-items: center; align-self: flex-end; margin-bottom: 26px; }
+.composer-actions { align-items: center; align-self: flex-end; }
 .composer-actions kbd { font-family: var(--mono, ui-monospace, monospace); font-size: 10px; opacity: .75; background: none; border: 0; padding: 0; }
 .composer-steer { white-space: nowrap; }
 
@@ -1876,3 +1879,16 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 .allowed-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .allowed-copy > span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .allowed-copy strong { font-weight: 650; }
+
+/* Composer: one rounded box holding +, text, and Send, all on one line. */
+.composer { padding: 10px 16px; align-items: flex-end; }
+.composer-field { align-items: flex-end; gap: 4px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+.composer-field:focus-within { border-color: var(--accent); }
+.composer-field > textarea { border: 0; background: transparent; box-shadow: none; outline: none; padding: 8px 6px; line-height: 20px; }
+.composer-plus { width: 36px; height: 36px; flex: none; }
+.composer-actions { align-self: flex-end; margin-bottom: 0; }
+.composer-actions > button, .composer > button { min-height: 46px; height: 46px; border-radius: 12px; }
+.composer-input { position: relative; }
+/* Hint floats below the box so it never pushes Send out of line. */
+.composer:focus-within { padding-bottom: 28px; }
+.composer:focus-within .composer-hint { position: absolute; top: 100%; left: 0; right: 0; margin-top: 6px; }
