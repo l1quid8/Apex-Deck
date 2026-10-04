@@ -30,13 +30,16 @@ interface CardProps {
   deadline?: string | null;
   /** Called once with the person's answer. `always` stops the same thing being asked again. */
   onDecide: (approve: boolean, always: boolean) => void;
+  /** The request id and the bot that asked, put on the card so the thread can find it on screen. */
+  request?: string;
+  by?: string;
 }
 
 /**
  * Something a bot wants to do, with the whole of it on show and a yes or
  * no to give. The bot's turn waits until one is chosen.
  */
-export function ApprovalCard({ action, deadline = null, onDecide }: CardProps) {
+export function ApprovalCard({ action, deadline = null, onDecide, request, by }: CardProps) {
   const [answered, setAnswered] = useState<Answer | null>(null);
   const decide = (answer: Answer) => {
     if (answered !== null) return;
@@ -45,7 +48,7 @@ export function ApprovalCard({ action, deadline = null, onDecide }: CardProps) {
     onDecide(approve, always);
   };
   return (
-    <div className="approval" role="group" aria-label={`Allow or deny: ${action.title}`}>
+    <div className="approval" role="group" aria-label={`Allow or deny: ${action.title}`} data-request={request} data-by={by} data-answered={answered !== null ? "" : undefined}>
       <div className="approval-head">
         <span className="approval-kind">{action.kind === "edit" ? "Wants to change a file" : action.kind === "command" ? "Wants to run a command" : action.kind === "tool" ? "Wants to call an MCP tool" : "Wants permission"}</span>
         <strong>{action.title}</strong>
@@ -53,7 +56,7 @@ export function ApprovalCard({ action, deadline = null, onDecide }: CardProps) {
       {action.kind === "edit" ? <Diff text={action.detail} /> : <pre className="approval-detail">{action.detail}</pre>}
       <div className="approval-actions">
         {APPROVAL_CHOICES.map((answer) => (
-          <button key={answer} className={answer === "once" ? "primary" : answer === "deny" ? "danger" : "ghost"} onClick={() => decide(answer)} disabled={answered !== null}>
+          <button key={answer} data-answer={answer} className={answer === "once" ? "primary" : answer === "deny" ? "danger" : "ghost"} onClick={() => decide(answer)} disabled={answered !== null}>
             {answered === answer ? ANSWER_LABEL[answer].done : ANSWER_LABEL[answer].ask}
           </button>
         ))}

@@ -112,3 +112,26 @@ export function workingFor(startedAt: number, now: number): string {
   const minutes = Math.floor((now - startedAt) / 60_000);
   return minutes >= 1 ? `Working ${minutes}m` : "Working";
 }
+
+/** The status line in parts: who is replying, then who is waiting for you. Empty groups are left out. */
+export function statusParts<T>(replying: T[], waiting: T[]): { who: T[]; verb: string }[] {
+  const parts: { who: T[]; verb: string }[] = [];
+  if (replying.length > 0) parts.push({ who: replying, verb: replyingVerb(replying.length) });
+  if (waiting.length > 0) parts.push({ who: waiting, verb: waitingVerb(waiting.length) });
+  return parts;
+}
+
+/** The Stop button's words. It names only bots that are replying: "Stop Jigga". */
+export function stopLabel(names: string[]): string {
+  if (names.length === 0) return "Stop";
+  return names.length <= 2 ? `Stop ${joinNames(names)}` : `Stop ${names.length} bots`;
+}
+
+/**
+ * Who Stop stops. With nobody waiting on a card it stops everything, as it
+ * always has (that also stops /compact). Otherwise it stops only the bots
+ * that are replying, so a card you have not answered stays up.
+ */
+export function stopTargets(replying: string[], waiting: string[]): string[] | "all" {
+  return waiting.length === 0 ? "all" : replying;
+}

@@ -1,6 +1,6 @@
 import type { AllowedRule, ThreadStatus, ToolServer } from "./types";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
-import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, replyingVerb, threadStatusOf, type BotProgress } from "./composerStatus";
+import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, statusParts, stopLabel, stopTargets, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -30,7 +30,7 @@ import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
-import { isAtBottom, newPill } from "./transcriptPlace";
+import { cardsOutOfView, isAtBottom, newPill, owners, waitingLine, type CardBox } from "./transcriptPlace";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
   Access,
@@ -426,6 +426,30 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const stuck = useRef(true);
   /** Bot replies that arrived while you were scrolled up. */
   const [unread, setUnread] = useState(0);
+  /** Open approval cards wholly out of view, oldest first. */
+  const [cardsAway, setCardsAway] = useState<CardBox[]>([]);
+  /** Find the open cards on screen and note which are out of view. */
+  const measureCards = () => {
+    const el = scroller.current;
+    if (!el || el.clientHeight === 0) return;
+    const view = el.getBoundingClientRect();
+    const boxes = [...el.querySelectorAll<HTMLElement>(".approval[data-request]:not([data-answered])")].map((card) => {
+      const box = card.getBoundingClientRect();
+      return { by: card.dataset.by ?? "", request: card.dataset.request ?? "", top: box.top, bottom: box.bottom };
+    });
+    const away = cardsOutOfView(boxes, view.top, view.bottom);
+    setCardsAway((old) => (old.map((c) => c.request).join("\n") === away.map((c) => c.request).join("\n") ? old : away));
+  };
+  /** Bring a card to the middle of the view and put focus on its Allow once. */
+  const showCard = (request: string) => {
+    const el = scroller.current;
+    const card = el?.querySelector<HTMLElement>(`.approval[data-request="${CSS.escape(request)}"]`);
+    if (!el || !card) return;
+    const box = card.getBoundingClientRect();
+    const view = el.getBoundingClientRect();
+    el.scrollTop += box.top - view.top - Math.max(12, (el.clientHeight - box.height) / 2);
+    card.querySelector<HTMLButtonElement>('button[data-answer="once"]')?.focus({ preventScroll: true });
+  };
   const filePicker = useRef<HTMLInputElement>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const saving = attached.some((a) => !a.path && !a.error);
@@ -457,9 +481,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   }
   const appearance = (id: string) => identities.current.get(id) ?? legacyAppearance(id);
   const color = (id: string) => appearance(id).color;
-  // Who is replying right now, for the line above the composer.
-  const replying = participants.filter(p => working[p.id]);
-  const replyingSince = replying.length ? Math.min(...replying.map(p => working[p.id].startedAt)) : 0;
+  // Who is at work right now, for the line above the composer: bots still
+  // replying, and bots stopped on an approval card waiting for you.
+  const active = participants.filter((p) => working[p.id] || asks[p.id]?.length);
+  const waitingNow = active.filter((p) => asks[p.id]?.length);
+  const replyingNow = active.filter((p) => !asks[p.id]?.length);
+  const activeSince = active.length ? Math.min(...active.map((p) => working[p.id]?.startedAt ?? now)) : 0;
   const copy = composerCopy(busy, participants.length === 0);
 
   const forgetContext = () => {
@@ -655,6 +682,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     // A hidden pane cannot scroll; the resize when it is shown settles it.
     if (!el || el.clientHeight === 0) return;
     if (stuck.current) el.scrollTop = el.scrollHeight;
+    measureCards();
   };
   // Before paint, so following the bottom never flickers.
   useLayoutEffect(() => settle.current(), [entries, drafts, asks]);
@@ -672,6 +700,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     if (!el || el.clientHeight === 0) return;
     stuck.current = isAtBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
     if (stuck.current) setUnread(0);
+    measureCards();
   };
   const jumpToLatest = () => {
     stuck.current = true;
@@ -789,6 +818,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     }, 150);
     return () => { alive = false; clearTimeout(timer); };
   }, [text, ready, busy, pane.id]);
+  /** Stop: only the bots that are replying, unless nobody is waiting on a card. */
+  const stopReplying = () => {
+    const targets = stopTargets(replyingNow.map((p) => p.id), waitingNow.map((p) => p.id));
+    if (targets === "all") void turnQueue.halt();
+    else targets.forEach((id) => void turnQueue.halt(id));
+  };
   const forkAt = (title: string, upto: number | null) => {
     if (!onFork) return notify("Forking is available in workspace threads.", "error");
     return onFork(title, upto)
@@ -1553,6 +1588,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
                 {(asks[id] ?? []).map((ask) => (
                   <ApprovalCard
                     key={ask.request}
+                    request={ask.request}
+                    by={id}
                     action={ask.action}
                     deadline={deadlineNote(ask.action.expires_at, now)}
                     onDecide={(approve, always) => {
@@ -1574,8 +1611,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           );
         })}
       </div>}
-      {!profileMode && unread > 0 && <div className="transcript-pills">
-        <button type="button" className="transcript-pill" onClick={jumpToLatest}>{newPill(unread)}</button>
+      {!profileMode && (unread > 0 || cardsAway.length > 0) && <div className="transcript-pills">
+        {cardsAway.length > 0 && <button type="button" className="transcript-pill" onClick={() => showCard(cardsAway[0].request)}>
+          <span className="pill-dot" aria-hidden="true" />
+          {waitingLine(owners(cardsAway).map((id) => names.get(id) ?? id))} · Show
+        </button>}
+        {unread > 0 && <button type="button" className="transcript-pill" onClick={jumpToLatest}>{newPill(unread)}</button>}
       </div>}
       </div>
 
@@ -1585,16 +1626,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
-        {busy && replying.length > 0 && <div className="composer-status" role="status">
+        {busy && active.length > 0 && <div className="composer-status" role="status">
           <span className="composer-status-dots" aria-hidden="true"><i /><i /><i /></span>
           <span className="composer-status-who">
-            {replying.map((p, index) => <span key={p.id}>
-              {index > 0 && (index === replying.length - 1 ? " and " : ", ")}
-              <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
-            </span>)} {replyingVerb(replying.length)}
+            {statusParts(replyingNow, waitingNow).map((part, partIndex) => <span key={part.verb}>
+              {partIndex > 0 && " · "}
+              {part.who.map((p, index) => <span key={p.id}>
+                {index > 0 && (index === part.who.length - 1 ? " and " : ", ")}
+                <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
+              </span>)} {part.verb}
+            </span>)}
           </span>
-          <span className="composer-status-time" aria-label={`for ${elapsed(now - replyingSince)}`}>{elapsed(now - replyingSince)}</span>
-          <button className="danger small" aria-label={`Stop ${joinNames(replying.map(p => p.display_name))}`} onClick={() => void turnQueue.halt()}>Stop</button>
+          <span className="composer-status-time" aria-label={`for ${elapsed(now - activeSince)}`}>{elapsed(now - activeSince)}</span>
+          {replyingNow.length > 0 && <button className="danger small" aria-label={`Stop ${joinNames(replyingNow.map((p) => p.display_name))}`} onClick={stopReplying}>{stopLabel(replyingNow.map((p) => p.display_name))}</button>}
         </div>}
         {queued.length > 0 && <details className="queued-messages" aria-label="Queued messages" open>
           <summary>{queuePaused ? "Paused" : "Queued"} ({queued.length}) · {queued[0].to.map(id => names.get(id) ?? id).join(", ")}: “{queued[0].text.slice(0, 65)}”</summary>
@@ -1669,7 +1713,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         <div className="composer-actions">
           {busy && <button className="ghost composer-steer" onClick={() => send(true)} disabled={!ready || !text.trim() || saving} title="Send to the busy model you mentioned now">Steer <kbd>⌘↵</kbd></button>}
           <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}>{busy ? <>Queue <kbd>↵</kbd></> : <><DeckIcon name="send" size={18} /> Send</>}</button>
-          {busy && replying.length > 1 && <details className="turn-controls"><summary aria-label="Turn controls">⋯</summary><div className="turn-controls-menu">
+          {busy && (active.length > 1 || waitingNow.length > 0) && <details className="turn-controls"><summary aria-label="Turn controls">⋯</summary><div className="turn-controls-menu">
             {participants.filter(p => turnQueue.state[p.id] === "working").map(p => <div key={p.id}>
               <button className="ghost small" disabled={!text.trim()} onClick={() => { const message = text; setText(""); void turnQueue.steer(p.id, message); }}>Steer {p.display_name}</button>
               <button className="ghost small" onClick={() => void turnQueue.halt(p.id)}>Stop {p.display_name}</button>

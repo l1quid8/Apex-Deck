@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, replyingVerb, threadStatusOf, waitingVerb, workingFor } from "../src/composerStatus.ts";
+import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, replyingVerb, statusParts, stopLabel, stopTargets, threadStatusOf, waitingVerb, workingFor } from "../src/composerStatus.ts";
 
 test("names join the way a sentence would", () => {
   assert.equal(joinNames([]), "");
@@ -105,4 +105,23 @@ test("a terminal's head says how long it has been working", () => {
 test("the waiting verb agrees with the count", () => {
   assert.equal(waitingVerb(1), "is waiting for you");
   assert.equal(waitingVerb(2), "are waiting for you");
+});
+
+test("the status line splits who is replying from who is waiting", () => {
+  assert.deepEqual(statusParts(["Jigga"], ["Null"]), [{ who: ["Jigga"], verb: "is replying" }, { who: ["Null"], verb: "is waiting for you" }]);
+  assert.deepEqual(statusParts([], ["Null", "Ada"]), [{ who: ["Null", "Ada"], verb: "are waiting for you" }]);
+  assert.deepEqual(statusParts(["Jigga", "Ada"], []), [{ who: ["Jigga", "Ada"], verb: "are replying" }]);
+  assert.deepEqual(statusParts([], []), []);
+});
+
+test("Stop names only the bots that are replying", () => {
+  assert.equal(stopLabel(["Jigga"]), "Stop Jigga");
+  assert.equal(stopLabel(["Jigga", "Ada"]), "Stop Jigga and Ada");
+  assert.equal(stopLabel(["Jigga", "Ada", "Null"]), "Stop 3 bots");
+});
+
+test("Stop leaves a waiting card up, and stops everything when nobody waits", () => {
+  assert.deepEqual(stopTargets(["jigga"], ["null"]), ["jigga"]);
+  assert.equal(stopTargets(["jigga", "ada"], []), "all");
+  assert.deepEqual(stopTargets([], ["null"]), []);
 });
