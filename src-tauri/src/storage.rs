@@ -27,6 +27,11 @@ impl Store {
         self.root.join("rooms").join(format!("{name}.json"))
     }
 
+    /// A thread's artifacts, beside its file: "<hex id>.artifacts.json".
+    fn artifacts_path(&self, id: &str) -> PathBuf {
+        self.room_path(id).with_extension("artifacts.json")
+    }
+
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<Option<T>, String> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -90,6 +95,15 @@ impl Store {
         self.write(&self.room_path(id), room)
     }
 
+    /// Artifacts opened from a thread's replies. The frontend owns their shape (src/artifacts.ts).
+    pub fn artifacts(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        self.read(&self.artifacts_path(id))
+    }
+
+    pub fn save_artifacts(&self, id: &str, artifacts: &serde_json::Value) -> Result<(), String> {
+        self.write(&self.artifacts_path(id), artifacts)
+    }
+
     /// Reserve a new room id while serializing writes; never overwrite a thread.
     pub fn fork_room(&self, source: &str, target: &str, upto: Option<usize>, cwd: Option<String>) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
@@ -111,16 +125,25 @@ impl Store {
             let _ = std::fs::remove_file(&path);
             return Err(format!("Could not save fork: {e}"));
         }
+        // A fork keeps the thread's artifacts. Copied directly: the write lock is already held.
+        match std::fs::copy(self.artifacts_path(source), self.artifacts_path(target)) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("Could not copy the thread's artifacts: {e}")),
+        }
         std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
     }
 
     pub fn delete_room(&self, id: &str) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
-        match std::fs::remove_file(self.room_path(id)) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("Could not delete chat: {e}")),
+        for path in [self.room_path(id), self.artifacts_path(id)] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("Could not delete chat: {e}")),
+            }
         }
+        Ok(())
     }
 }
 
@@ -188,6 +211,39 @@ mod tests {
         assert_eq!(reopened.folder(), root.as_path());
         std::fs::write(root.join("settings.json"), "broken").unwrap();
         assert!(reopened.settings().is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn artifacts_live_beside_their_thread_follow_forks_and_go_with_it() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        assert!(store.artifacts("chat-1").unwrap().is_none());
+        let artifacts = serde_json::json!({"version":1,"artifacts":[{"id":"a","title":"Page","kind":"html","versions":[{"source":"<p>hi</p>","by":"ada","seq":3,"at":1}]}]});
+        store.save_artifacts("chat-1", &artifacts).unwrap();
+        assert_eq!(Store::new(root.clone()).artifacts("chat-1").unwrap().unwrap(), artifacts);
+
+        let mut room = Room::new(vec![], RoomOptions::default());
+        room.post_human("saved", &|_| {}).await;
+        store.save_room("chat-1", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.fork_room("chat-1", "chat-2", None, None).unwrap();
+        assert_eq!(store.artifacts("chat-2").unwrap().unwrap(), artifacts);
+
+        store.delete_room("chat-1").unwrap();
+        assert!(store.artifacts("chat-1").unwrap().is_none());
+        assert!(store.artifacts("chat-2").unwrap().is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_artifacts_file_is_reported_not_emptied() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        store.save_artifacts("chat-1", &serde_json::json!({"version":1,"artifacts":[]})).unwrap();
+        let path = store.artifacts_path("chat-1");
+        std::fs::write(&path, "broken").unwrap();
+        assert!(store.artifacts("chat-1").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken");
         std::fs::remove_dir_all(root).unwrap();
     }
 

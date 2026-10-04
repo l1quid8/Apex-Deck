@@ -22,6 +22,13 @@ export interface Backend {
   /** settings.json, beside the session file; settings.ts reads it. */
   settingsLoad(): Promise<unknown>;
   settingsSave(settings: unknown): Promise<void>;
+  /** A thread's artifacts file, beside the thread; artifacts.ts reads it. Null when there is none. */
+  artifactsLoad(room: string): Promise<unknown>;
+  artifactsSave(room: string, artifacts: unknown): Promise<void>;
+  /** Ask where to save an artifact and write it there. Null when you cancel. */
+  artifactSave(name: string, contents: string): Promise<string | null>;
+  /** Write an artifact to the exports folder and open it in its default app. It runs outside the sandbox there. */
+  artifactOpenExternal(name: string, contents: string): Promise<void>;
   /** The folder saved data lives in. */
   dataFolder(): Promise<string>;
   /** Whether each environment variable is set, as the app sees it. Never its value. */
@@ -114,6 +121,17 @@ async function tauriBackend(): Promise<Backend> {
     sessionSave: (session) => invoke("session_save", { session }),
     settingsLoad: () => invoke<unknown>("settings_load"),
     settingsSave: (settings) => invoke("settings_save", { settings }),
+    artifactsLoad: (room) => invoke<unknown>("artifacts_load", { room }),
+    artifactsSave: (room, artifacts) => invoke("artifacts_save", { room, artifacts }),
+    artifactSave: async (name, contents) => {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const path = await save({ defaultPath: name });
+      return path ? invoke<string>("artifact_export", { name, contents, path }) : null;
+    },
+    artifactOpenExternal: async (name, contents) => {
+      const path = await invoke<string>("artifact_export", { name, contents, path: null });
+      await invoke("open_target", { target: path, cwd: null, reveal: false });
+    },
     dataFolder: () => invoke<string>("data_folder"),
     envPresent: (names) => invoke<boolean[]>("env_present", { names }),
     previewProbe: (address) => invoke<PreviewProbe>("preview_probe", { address }),
@@ -477,6 +495,21 @@ function demoBackend(): Backend {
     sessionSave: async (session) => { localStorage.setItem("apex-deck.demo.session.v1", JSON.stringify(session)); },
     settingsLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.settings.v1") ?? "null"),
     settingsSave: async (settings) => { localStorage.setItem("apex-deck.demo.settings.v1", JSON.stringify(settings)); },
+    artifactsLoad: async (room) => JSON.parse(localStorage.getItem(`apex-deck.demo.artifacts.${room}`) ?? "null"),
+    artifactsSave: async (room, artifacts) => { localStorage.setItem(`apex-deck.demo.artifacts.${room}`, JSON.stringify(artifacts)); },
+    artifactSave: async (name, contents) => {
+      const url = URL.createObjectURL(new Blob([contents]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return name;
+    },
+    artifactOpenExternal: async (name, contents) => {
+      const type = name.endsWith(".svg") ? "image/svg+xml" : name.endsWith(".md") ? "text/plain" : "text/html";
+      window.open(URL.createObjectURL(new Blob([contents], { type })), "_blank", "noopener");
+    },
     // A browser can't read another site's headers, so a few well-known sites
     // stand in for "refused", and anything that fails to fetch is unreachable.
     previewProbe: async (address) => {
@@ -681,6 +714,8 @@ function demoBackend(): Backend {
       delete fork.allowed;
       delete fork.usage;
       localStorage.setItem(`apex-deck.demo.room.${target}`, JSON.stringify(fork));
+      const artifacts = localStorage.getItem(`apex-deck.demo.artifacts.${source}`);
+      if (artifacts) localStorage.setItem(`apex-deck.demo.artifacts.${target}`, artifacts);
     },
     roomUnpin: async (id, index) => {
       const room = rooms.get(id);
@@ -721,6 +756,7 @@ function demoBackend(): Backend {
     roomDelete: async (id) => {
       rooms.delete(id);
       localStorage.removeItem(`apex-deck.demo.room.${id}`);
+      localStorage.removeItem(`apex-deck.demo.artifacts.${id}`);
     },
     onRoomEvent: async (cb) => {
       roomListeners.add(cb);

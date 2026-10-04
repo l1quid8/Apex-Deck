@@ -1,0 +1,7 @@
+# Artifacts panel: checks
+
+Plan: `docs/superpowers/plans/2026-10-04-artifacts-panel.md`, run 2026-10-04.
+
+- Tests: 299 frontend (18 new across artifacts, line diff and the sandboxed document), 273 Rust (3 new: the artifacts file beside its thread, copied on fork, deleted with it; a damaged file reported, not emptied; safe export names).
+- Browser preview (stand-in backend): only HTML blocks in finished bot replies get Open as artifact (sh and js blocks don't); opening one shows v1 with "Showing v1" on its block and "Artifacts · 1" in the thread bar; a later block's menu offers "New version of Welcome email / Becomes v2" and makes v2; Show and Showing labels follow the version arrows; Changes shows − then + lines, and v1 says there is nothing to compare; a `fetch` to example.com from the artifact printed BLOCKED; clicking a link inside it put the artifact back with the note in the foot; full window covers the deck below the title bar and Esc returns; the panel covers the transcript in a narrow thread and sits beside it in a wide one; versions survive a reload; a damaged artifacts file shows "Artifacts couldn't be read, so changes here won't be saved." and is left as it was.
+- Not yet done: the same pass by hand in the desktop app with a real bot, including checking from the inspector that the artifact frame has no `__TAURI_INTERNALS__` (plan Task 9, step 2). The Preview pane's release-build check (`docs/preview-embedding-check.md`) found none for a framed page with a stricter-than-needed sandbox; the artifact frame's sandbox is stricter still.

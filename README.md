@@ -130,6 +130,12 @@ edges.
   options** opens the full form. It overlays
   the conversation in narrow windows. Pins stay above the conversation in a
   collapsible strip, with full text wrapping when expanded.
+- **Artifacts.** On a bot's reply, **Open as artifact** on an HTML, SVG or
+  Markdown code block shows it rendered in a panel beside the thread,
+  sandboxed: it can't reach your files, the network or the app. Later blocks
+  can become new versions; Source and Changes show the text and what
+  changed, and the panel can go full window. Saved with the thread, copied
+  when it is forked.
 - **Changes.** `/diff` opens Changes in thread details, comparing the workspace
   against the thread's starting snapshot and grouping files by reported editor.
   **Ask for review ▾** in its head attaches the whole change as one patch file

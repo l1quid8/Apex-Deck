@@ -1,6 +1,9 @@
 import { ReplyPolicyPicker, REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, Speaker, ThreadStatus, ToolServer } from "./types";
+import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
+import { ArtifactsPanel, DEFAULT_VIEW, type PanelView } from "./ArtifactsPanel";
+import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindOf, pickVersion, readArtifacts, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls } from "./previewAddress";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, statusParts, stopLabel, stopTargets, threadStatusOf, type BotProgress } from "./composerStatus";
@@ -316,6 +319,9 @@ const STARTERS = [
   { name: "Planner", note: "Breaks the work into steps.", persona: "You are the planner. Break the request into small, ordered steps and name the files each one touches.", access: "read" as Access },
   { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
 ];
+
+/** Below this width the artifacts panel covers the conversation instead of sitting beside it. */
+const NARROW_PX = 760;
 
 export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
@@ -1117,6 +1123,88 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     else exportAs("markdown");
   }, [menuRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Artifacts: code from replies, opened on request, saved beside the thread.
+  // A file that can't be read is never written over. See artifacts.ts.
+  const [artifacts, setArtifacts] = useState<ArtifactFile>(EMPTY_ARTIFACTS);
+  const [artifactsLoaded, setArtifactsLoaded] = useState(false);
+  const [artifactProblem, setArtifactProblem] = useState("");
+  const [panel, setPanel] = useState<PanelView | null>(null);
+  const artifactsReadable = useRef(false);
+  const artifactSaves = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => {
+    if (profileMode) return;
+    let live = true;
+    artifactsReadable.current = false;
+    setArtifactsLoaded(false);
+    backend.artifactsLoad(pane.id).then(
+      (raw) => {
+        if (!live) return;
+        setArtifacts(readArtifacts(raw));
+        artifactsReadable.current = true;
+        setArtifactProblem("");
+        setArtifactsLoaded(true);
+      },
+      () => {
+        if (!live) return;
+        setArtifactProblem("Artifacts couldn't be read, so changes here won't be saved.");
+        setArtifactsLoaded(true);
+      },
+    );
+    return () => { live = false; };
+  }, [backend, pane.id, profileMode]);
+
+  const changeArtifacts = (next: ArtifactFile) => {
+    setArtifacts(next);
+    if (!artifactsReadable.current) return;
+    artifactSaves.current = artifactSaves.current
+      .then(() => backend.artifactsSave(pane.id, next))
+      .then(() => setArtifactProblem(""), (error) => setArtifactProblem(`Couldn't save artifacts: ${String(error)}`));
+  };
+
+  const showVersion = (artifactId: string, n: number) => setPanel((view) => ({ ...(view ?? DEFAULT_VIEW), artifactId, n, list: false }));
+
+  /** A person chose what to do with a code block in a finished reply. */
+  const openFromCode = (message: { seq: number; speaker: Speaker }, code: { language: string; text: string }, choice: CodeChoice) => {
+    if (choice.kind === "show") {
+      showVersion(choice.artifactId, choice.n);
+      return;
+    }
+    const version = { source: code.text, by: message.speaker.kind === "bot" ? message.speaker.id : null, seq: message.seq, at: Date.now() };
+    if (choice.kind === "version") {
+      const added = addVersion(artifacts, choice.artifactId, version);
+      if (added.n === 0) return;
+      changeArtifacts(added.file);
+      showVersion(choice.artifactId, added.n);
+      return;
+    }
+    const kind = kindOf(code.language, code.text);
+    if (!kind || code.text.length > MAX_SOURCE) return;
+    const added = addArtifact(artifacts, `art-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, kind, version);
+    changeArtifacts(added.file);
+    showVersion(added.artifact.id, 1);
+  };
+
+  const shownVersion = panel && !panel.list ? pickVersion(artifacts, panel.artifactId, panel.n) : null;
+  /** The control for a code block in a finished bot reply, or nothing. */
+  const artifactAction = (message: { seq: number; speaker: Speaker }, code: { language: string; text: string }) => {
+    if (!artifactsLoaded) return null;
+    const choices = codeChoices(artifacts, message.seq, code.language, code.text);
+    if (!choices) return null;
+    const showing = Boolean(shownVersion && choices.opened && shownVersion.artifact.id === choices.opened.artifactId && shownVersion.version.n === choices.opened.n);
+    return <ArtifactButton choices={choices} showing={showing} onChoose={(choice) => openFromCode(message, code, choice)} />;
+  };
+
+  // In a narrow thread the panel covers the conversation.
+  const chatBody = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const element = chatBody.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => setNarrow(entry.contentRect.width < NARROW_PX));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   // The newest local server address a bot mentioned, for the chip in the pane
   // head. Only finished replies are messages; text still streaming is not, so
   // a half-written address never makes a chip.
@@ -1777,7 +1865,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
 
 
-        {!profileMode && <div className="thread-counts">{changes.length > 0 && <button className="ghost small" onClick={() => { details?.show("changes"); loadDiff(); }}>Changes · {new Set(changes.map(c => c.change.path)).size}</button>}</div>}
+        {!profileMode && <div className="thread-counts">{artifacts.artifacts.length > 0 && <button className={panel ? "ghost small on" : "ghost small"} aria-pressed={panel !== null} onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>Artifacts · {artifacts.artifacts.length}</button>}{changes.length > 0 && <button className="ghost small" onClick={() => { details?.show("changes"); loadDiff(); }}>Changes · {new Set(changes.map(c => c.change.path)).size}</button>}</div>}
       </div>
 
       {!profileMode && pins.length > 0 && pinControls}
@@ -1805,7 +1893,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </article>)}
       </div>}
 
-      <div className="chat-body">
+      <div className="chat-body" ref={chatBody}>
       {!profileMode && <div className="transcript" ref={scroller} onScroll={() => { setPicked(null); onTranscriptScroll(); }}
         onMouseUp={() => requestAnimationFrame(pickSelection)} onKeyUp={(e) => e.shiftKey && pickSelection()}
         onMouseDown={(e) => { if (!(e.target as Element).closest(".selection-actions")) setPicked(null); }}>
@@ -1865,7 +1953,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
-                <Markdown text={entry.message.text} onOpen={openTarget} />
+                <Markdown text={entry.message.text} onOpen={openTarget} codeAction={(code) => artifactAction(entry.message, code)} />
                 {messageActions(entry.message)}
               </div>
             </div>
@@ -1939,6 +2027,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </button>}
         {unread > 0 && <button type="button" className="transcript-pill" onClick={jumpToLatest}>{newPill(unread)}</button>}
       </div>}
+      {!profileMode && panel && narrow && !panel.full && <button type="button" className="artifacts-backdrop" aria-label="Close artifacts" onClick={() => setPanel(null)} />}
+      {!profileMode && panel && (
+        <ArtifactsPanel
+          file={artifacts}
+          view={panel}
+          onView={setPanel}
+          onClose={() => setPanel(null)}
+          overlay={narrow}
+          nameOf={(id) => names.get(id) ?? id}
+          colorOf={color}
+          onOpenLink={openTarget}
+          backend={backend}
+          problem={artifactProblem}
+        />
+      )}
       </div>
 
       {!profileMode && <div className="composer" ref={composer}

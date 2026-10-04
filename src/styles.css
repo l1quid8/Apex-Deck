@@ -2221,3 +2221,49 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .preview.full-window { position: fixed; top: var(--deck-top, 0px); left: 0; right: 0; bottom: 0; z-index: 35; background: var(--bg); }
 /* A local server a terminal printed or a bot mentioned; opens it in a Preview beside that pane. */
 .server-chip { flex: none; padding: 0 8px; border-radius: 999px; background: transparent; color: var(--brand-cyan); font: 11px/20px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* A code block's controls: Open as artifact (and its menu) beside Copy. */
+.md-code-actions { display: flex; align-items: center; gap: 2px; }
+.md-code:has(.artifact-menu) { overflow: visible; }
+.artifact-shown.on { color: var(--accent); }
+.artifact-choice { position: relative; display: inline-flex; }
+.artifact-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; width: 260px; padding: 4px; display: flex; flex-direction: column; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 32px #0007; }
+.md-code-head .artifact-menu button { display: flex; flex-direction: column; align-items: flex-start; width: 100%; padding: 6px 10px; border-radius: 6px; color: var(--text); font-size: 12px; text-align: left; }
+.md-code-head .artifact-menu button:hover, .md-code-head .artifact-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.artifact-menu small { font-size: 11px; color: var(--muted); }
+
+/* Artifacts: code from replies, opened on request, beside the conversation. */
+.artifacts-panel { flex: none; width: min(440px, 46%); min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--panel); }
+.artifacts-panel.overlay { position: absolute; top: 0; right: 0; bottom: 0; z-index: 30; width: min(440px, 100%); box-shadow: -12px 0 32px #0005; }
+.artifacts-backdrop { position: absolute; inset: 0; z-index: 29; border: 0; border-radius: 0; background: #0003; }
+.artifacts-panel.full-window { position: fixed; top: var(--deck-top, 0px); left: 0; right: 0; bottom: 0; z-index: 35; width: auto; border: 0; box-shadow: none; background: var(--bg); }
+.artifacts-head { display: flex; align-items: flex-start; gap: 6px; padding: 12px 8px 12px 16px; border-bottom: 1px solid var(--line); }
+.artifacts-head > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.artifacts-title { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; margin-left: -6px; font-weight: 600; background: transparent; border-color: transparent; }
+.artifacts-meta { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.artifacts-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); }
+.artifacts-tabs { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+.artifacts-tabs button { padding: 2px 10px; font-size: 12px; background: transparent; border-color: transparent; color: var(--muted); }
+.artifacts-tabs button[aria-selected="true"] { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+.artifacts-version { min-width: 22px; text-align: center; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.artifacts-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--line); }
+.artifacts-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.artifacts-body iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+.artifact-doc { padding: 16px 20px; }
+.artifact-source, .artifact-changes { flex: 1; margin: 0; padding: 10px 0; box-sizing: border-box; background: #0b1016; color: #d5dde6; font: 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.artifact-source .line, .artifact-changes .line { display: flex; white-space: pre; }
+.artifact-source .n { width: 34px; flex: none; padding-right: 12px; text-align: right; color: #5b6875; user-select: none; }
+.artifact-changes .sign { width: 22px; flex: none; text-align: center; user-select: none; }
+.artifact-changes .line.add { color: #86efac; background: rgba(34, 197, 94, 0.12); }
+.artifact-changes .line.del { color: #fca5a5; background: rgba(239, 68, 68, 0.12); }
+.artifact-changes .line.same { color: var(--muted); }
+.artifact-changes .gap { display: block; padding: 2px 22px; color: var(--muted); }
+.artifacts-foot { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.artifacts-empty { margin: auto; padding: 24px; max-width: 32ch; text-align: center; color: var(--muted); }
+.artifacts-list { padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+.artifacts-list button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 10px; text-align: left; background: transparent; border-color: transparent; }
+.artifacts-list button:hover { background: var(--panel-2); }
+.artifacts-list button[aria-current="true"] { background: var(--panel-2); border-color: var(--line); }
+.artifacts-kind { width: 30px; height: 30px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+.artifacts-row { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.thread-counts .on { border-color: var(--accent); color: var(--text); }
