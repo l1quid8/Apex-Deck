@@ -12,7 +12,13 @@ edges.
 ## What works in 0.1
 
 - **Workspaces.** Add project folders. Each one keeps its own set of panes,
-  and panes keep running when you switch to another workspace.
+  and panes keep running when you switch to another workspace. A
+  workspace's ⋯ menu renames it, shows its folder in Finder, or removes it
+  from the list. Removing never deletes anything: its threads stay saved,
+  **Undo** brings it straight back for 8 seconds, and later it comes back
+  when you add the same folder again or choose it under **Removed · Show**
+  at the foot of the rail. Its terminals end; if one is working or waiting
+  for you, or one of its threads is replying, it asks first.
 - **Terminal panes.** Real terminals in the workspace folder. Launch a plain
   shell, or any coding agent Apex Deck finds installed (the list is in
   `src-tauri/src/agents.rs`).
@@ -28,6 +34,12 @@ edges.
   **Delete thread…** in its ⋯ menu; it asks once, and **Undo** brings it back
   for 8 seconds. A terminal that is working or waiting for you asks before it
   closes.
+- **Quitting.** Closing the window, ⌘W, ⌘Q and Quit in the app menu ask
+  first while a coding agent's terminal is open, a shell is working or
+  waiting for you, or a bot is replying or waiting on an approval. The
+  question lists up to five of them. Threads and their messages are saved;
+  replies in progress are not. Quit from the Dock, logging out and shutting
+  down don't ask.
 - **Adding panes.** **+ New terminal** and **+ New thread** open a menu over
   the deck: type to filter, Enter opens, Escape closes. Tools that aren't
   installed are listed last, with a link to hide them in Providers.
@@ -170,7 +182,7 @@ Keyboard shortcuts (on Windows and Linux, use Ctrl+Shift instead of ⌘):
 | ⌘[ ⌘] | Previous or next pane |
 | ⌘⇧Enter | Maximize or restore the focused pane |
 
-⌘W is left to macOS, which closes the window with it.
+⌘W is left to macOS, which closes the window with it; like ⌘Q, that asks first while agents are running.
 
 Use **Providers** in the top bar to hide tools you do not use. Toggle any provider,
 choose **Hide uninstalled tools**, or **Enable all** to restore the list. Choices are
@@ -199,8 +211,9 @@ On macOS the native app stores them in
 `~/Library/Application Support/dev.apexdeck.app/saved-chats-v1/` using atomic file replacements.
 Workspace folders previously remembered by the app are migrated on first launch.
 Running model turns and terminal processes are not restarted automatically.
-Use **Delete thread** to remove a saved conversation. Switching sections or quitting
-the application keeps your chats. Browser demo data is stored separately in browser storage.
+Use **Delete thread** to remove a saved conversation. Switching sections, removing a
+workspace from the list or quitting the application keeps your chats. Browser demo data
+is stored separately in browser storage.
 
 ## Adding models to a group chat
 

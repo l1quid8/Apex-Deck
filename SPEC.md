@@ -20,6 +20,10 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | Drag the line between panes to resize; drag a pane by its title bar to move or swap it | done (thread layouts are saved; terminals are not restored, so neither is their layout) |
 | Keyboard shortcuts for sections, new panes, the next alert, moving between panes and maximizing | done (⌘W is left to the macOS window menu) |
 | Close a thread without deleting it; confirmed delete with undo; confirm before closing a busy terminal | done |
+| Remove a workspace from the list without deleting its threads: asks while something runs, undo, Removed · Show, adding the folder again brings it back | done |
+| Rename a workspace; reveal its folder in Finder | done |
+| Ask before quitting while agent terminals, busy shells or replying bots are running | done (logout and shutdown never ask) |
+| Section tabs centred in the title bar; the active workspace row has no accent bar | done |
 | Tabs within a workspace | later |
 | Restore open panes after restart | later |
 | One git worktree per agent pane so agents do not collide | later |
