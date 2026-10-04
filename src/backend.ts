@@ -19,6 +19,13 @@ export interface Backend {
   startupFolders(): Promise<string[]>;
   sessionLoad(): Promise<AppSession | null>;
   sessionSave(session: AppSession): Promise<void>;
+  /** settings.json, beside the session file; settings.ts reads it. */
+  settingsLoad(): Promise<unknown>;
+  settingsSave(settings: unknown): Promise<void>;
+  /** The folder saved data lives in. */
+  dataFolder(): Promise<string>;
+  /** Whether each environment variable is set, as the app sees it. Never its value. */
+  envPresent(names: string[]): Promise<boolean[]>;
 
   ptySpawn(o: { id: string; agent?: string; cwd?: string; cols: number; rows: number }): Promise<void>;
   ptyWrite(id: string, data: string): Promise<void>;
@@ -103,6 +110,10 @@ async function tauriBackend(): Promise<Backend> {
     startupFolders: () => invoke<string[]>("startup_folders"),
     sessionLoad: () => invoke<AppSession | null>("session_load"),
     sessionSave: (session) => invoke("session_save", { session }),
+    settingsLoad: () => invoke<unknown>("settings_load"),
+    settingsSave: (settings) => invoke("settings_save", { settings }),
+    dataFolder: () => invoke<string>("data_folder"),
+    envPresent: (names) => invoke<boolean[]>("env_present", { names }),
     pickFolder: async () => {
       const picked = await open({ directory: true, multiple: false, title: "Add a workspace folder" });
       return typeof picked === "string" ? picked : null;
@@ -459,6 +470,10 @@ function demoBackend(): Backend {
     startupFolders: async () => [],
     sessionLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.session.v1") ?? "null"),
     sessionSave: async (session) => { localStorage.setItem("apex-deck.demo.session.v1", JSON.stringify(session)); },
+    settingsLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.settings.v1") ?? "null"),
+    settingsSave: async (settings) => { localStorage.setItem("apex-deck.demo.settings.v1", JSON.stringify(settings)); },
+    dataFolder: async () => "Browser storage (preview mode)",
+    envPresent: async (names) => names.map(() => false),
 
     ptySpawn: async ({ id, agent }) => {
       const what = agent ? `${agent} (browser demo)` : "shell (browser demo)";

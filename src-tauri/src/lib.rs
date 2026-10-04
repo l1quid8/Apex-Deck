@@ -708,6 +708,34 @@ fn session_save(store: State<'_, Store>, session: serde_json::Value) -> Result<(
 }
 
 #[tauri::command]
+fn settings_load(store: State<'_, Store>) -> Result<Option<serde_json::Value>, String> {
+    store.settings()
+}
+
+#[tauri::command]
+fn settings_save(store: State<'_, Store>, settings: serde_json::Value) -> Result<(), String> {
+    store.save_settings(&settings)
+}
+
+#[tauri::command]
+fn data_folder(store: State<'_, Store>) -> String {
+    store.folder().to_string_lossy().into_owned()
+}
+
+/// Whether each named environment variable is set and not empty, as this app
+/// sees it. Only yes or no comes back, never a value.
+#[tauri::command]
+fn env_present(names: Vec<String>) -> Vec<bool> {
+    names.iter().map(|name| env_is_set(name)).collect()
+}
+
+fn env_is_set(name: &str) -> bool {
+    let valid = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    valid && std::env::var_os(name).is_some_and(|v| !v.is_empty())
+}
+
+#[tauri::command]
 fn room_delete(state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<(), String> {
     let handle = state.handle(&id).ok();
     room_close(state, id.clone());
@@ -857,6 +885,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             session_load,
             session_save,
+            settings_load,
+            settings_save,
+            data_folder,
+            env_present,
             room_delete,
             startup_folders,
             agents_detect,
@@ -1048,6 +1080,16 @@ mod tests {
             assert!(store.room("room").unwrap().is_none());
         });
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn env_check_reports_only_whether_a_valid_name_is_set() {
+        std::env::set_var("APEX_DECK_TEST_KEY", "secret");
+        std::env::set_var("APEX_DECK_TEST_EMPTY", "");
+        assert_eq!(
+            env_present(vec!["APEX_DECK_TEST_KEY".into(), "APEX_DECK_TEST_EMPTY".into(), "APEX_DECK_TEST_MISSING".into(), "BAD NAME".into(), "".into()]),
+            vec![true, false, false, false, false]
+        );
     }
 
     #[test]

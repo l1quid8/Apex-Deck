@@ -55,7 +55,7 @@ edges.
   down don't ask.
 - **Adding panes.** **+ New terminal** and **+ New thread** open a menu over
   the deck: type to filter, Enter opens, Escape closes. Tools that aren't
-  installed are listed last, with a link to hide them in Providers.
+  installed are listed last, with a link to hide them in Settings.
 - **Attention.** A pane that wants you is marked wherever you are in the
   app: an amber dot when it is waiting on you, red when something failed,
   cyan when there is a result you have not seen. The Code and Threads tabs
@@ -249,13 +249,24 @@ Keyboard shortcuts (on Windows and Linux, use Ctrl+Shift instead of ⌘):
 | ⌘J | Go to the most urgent item that wants attention |
 | ⌘[ ⌘] | Previous or next pane |
 | ⌘⇧Enter | Maximize or restore the focused pane |
+| ⌘, | Settings |
 
 ⌘W is left to macOS, which closes the window with it; like ⌘Q, that asks first while agents are running.
 
-Use **Providers** in the top bar to hide tools you do not use. Toggle any provider,
-choose **Hide uninstalled tools**, or **Enable all** to restore the list. Choices are
-saved across restarts and apply to new terminal and bot selections in all three
-sections. Existing profiles, conversations and running terminals are kept.
+**Settings** (the gear in the top bar, or ⌘,) holds app-wide choices. They are saved
+in `settings.json`, beside the session file, and General shows that folder.
+
+- **General:** where data is saved, the version, and **Clear** for the model names
+  the bot form remembers.
+- **Providers:** hide tools you do not use, choose **Hide uninstalled tools**, or
+  **Enable all**. This applies to new terminal and bot selections in all three
+  sections; existing profiles, conversations and running terminals are kept. Below,
+  **API keys** lists the variable names your saved agents read keys from and whether
+  the app can see each one. Only yes or no is checked, never the value.
+- **New threads:** who answers, model-to-model rounds and the access new bots start
+  at. Threads you already have keep their own settings.
+- **Terminal:** font size and scrollback. Open terminals update straight away.
+- **Shortcuts:** the list above.
 
 Thread commands:
 
@@ -336,9 +347,13 @@ line and nothing else.
 the tool printed it. If the tool is not signed in, the message says how to
 sign in. The full output goes to the app's log.
 
-**Changing a participant.** Click the pencil on its chip to change its
-model, effort, access or persona. It keeps its @handle and its place in the
-conversation.
+**Changing a participant.** Click its header chip to pick a model and reasoning
+level, then Apply. These settings are saved for this thread only. A reply
+already in progress finishes with its original settings; a dot marks the
+change until that reply finishes, and the next reply uses the new settings.
+Reasoning choices follow the selected model. For access or persona, choose
+Edit from the bot’s menu in thread details. Its @handle and conversation stay
+intact.
 
 **Access.** There are four levels:
 

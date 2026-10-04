@@ -68,6 +68,20 @@ impl Store {
         self.write(&self.root.join("session.json"), session)
     }
 
+    /// App-wide settings, beside the session file. The frontend owns their shape.
+    pub fn settings(&self) -> Result<Option<serde_json::Value>, String> {
+        self.read(&self.root.join("settings.json"))
+    }
+
+    pub fn save_settings(&self, settings: &serde_json::Value) -> Result<(), String> {
+        self.write(&self.root.join("settings.json"), settings)
+    }
+
+    /// The folder every saved file lives in.
+    pub fn folder(&self) -> &Path {
+        &self.root
+    }
+
     pub fn room(&self, id: &str) -> Result<Option<SavedRoom>, String> {
         self.read(&self.room_path(id))
     }
@@ -158,6 +172,22 @@ mod tests {
         assert_eq!(fork.cwd.as_deref(), Some("/tmp"));
         assert!(store.fork_room("src", "dst", Some(0), None).is_err());
         assert_eq!(store.room("dst").unwrap().unwrap().snapshot.transcript.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_are_saved_beside_the_session_and_kept_apart_from_it() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        assert!(store.settings().unwrap().is_none());
+        store.save_session(&serde_json::json!({"version":1})).unwrap();
+        store.save_settings(&serde_json::json!({"version":1,"terminal":{"fontSize":15}})).unwrap();
+        let reopened = Store::new(root.clone());
+        assert_eq!(reopened.settings().unwrap().unwrap()["terminal"]["fontSize"], 15);
+        assert_eq!(reopened.session().unwrap().unwrap(), serde_json::json!({"version":1}));
+        assert_eq!(reopened.folder(), root.as_path());
+        std::fs::write(root.join("settings.json"), "broken").unwrap();
+        assert!(reopened.settings().is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

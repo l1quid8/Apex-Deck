@@ -79,7 +79,7 @@ export function NewMenu({ section, label, disabled, agents, disabledProviders, h
             ) : (
               <div key={item.key} className="new-menu-missing">
                 <span>{item.label} · not installed</span>
-                <button className="link" onClick={() => { close(false); onManageProviders(); }}>Hide in Providers</button>
+                <button className="link" onClick={() => { close(false); onManageProviders(); }}>Hide in Settings</button>
               </div>
             ),
           )}

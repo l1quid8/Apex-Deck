@@ -12,6 +12,7 @@ import { ThreadDetails, type DetailsHost } from "./ThreadDetails";
 import type { Backend } from "./backend";
 import { providerEnabled, providerForConfig } from "./providers";
 import { registerRoom } from "./hub";
+import { rememberModel, rememberedModels } from "./modelMemory";
 import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups } from "./models";
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
@@ -79,6 +80,10 @@ interface Props {
   /** Fork or Export chosen in the pane's ⋯ menu; `n` goes up on each choice. */
   menuRequest?: { action: "fork" | "export"; n: number };
   disabledProviders: string[];
+  /** Settings › New threads: what a thread never saved before starts with. */
+  newThread?: RoomOptions;
+  /** Settings › New threads: the access the add-bot form starts at. */
+  newBotAccess?: Access;
   details?: DetailsHost;
 }
 
@@ -171,32 +176,6 @@ export const PRESETS: Preset[] = [
 
 const AGENT_LABEL: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI" };
 
-const MODELS_KEY = "apex-deck.models.v1";
-
-/** Model names typed before, per preset, so they are offered again. */
-function rememberedModels(): Partial<Record<PresetKey, string[]>> {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(MODELS_KEY) ?? "{}");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function rememberModel(preset: PresetKey, model: string) {
-  if (!model) return;
-  try {
-    const all = rememberedModels();
-    const list = all[preset] ?? [];
-    if (!list.includes(model)) {
-      all[preset] = [model, ...list].slice(0, 12);
-      localStorage.setItem(MODELS_KEY, JSON.stringify(all));
-    }
-  } catch {
-    // Storage can be unavailable; the name is then simply not remembered.
-  }
-}
-
 interface Draft {
   appearance?: AgentAppearance;
   name: string;
@@ -212,9 +191,11 @@ interface Draft {
   access: Access;
 }
 
-function emptyDraft(preset: PresetKey): Draft {
+/** `access` is the default from settings; a tool that can't ask first gets Read only. */
+function emptyDraft(preset: PresetKey, access: Access = "read"): Draft {
   const found = PRESETS.find((p) => p.key === preset);
-  return { name: "", preset, model: "", effort: "", baseUrl: found?.api?.baseUrl ?? "", keyEnv: "", command: "", persona: "", access: "read" };
+  const allowed = access === "ask" && !found?.agent?.enforcesAccess ? "read" : access;
+  return { name: "", preset, model: "", effort: "", baseUrl: found?.api?.baseUrl ?? "", keyEnv: "", command: "", persona: "", access: allowed };
 }
 
 /** Put an argument back into command-line form, quoting it if it has spaces. */
@@ -315,9 +296,12 @@ const STARTERS = [
   { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
 ];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", profileMode = false, details }: Props) {
+  // Read when a thread is first made, so changing settings never restarts an open one.
+  const defaults = useRef({ newThread, newBotAccess });
+  defaults.current = { newThread, newBotAccess };
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
-  const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
+  const [options, setOptions] = useState<RoomOptions>(newThread);
   const [entries, setEntries] = useState<Entry[]>([]);
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
@@ -429,7 +413,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // Start on the first agent that is installed, or on local models.
   const availablePresets = PRESETS.filter((p) => providerEnabled(p.key, disabledProviders));
   const firstPreset = (availablePresets.find((p) => p.agent && installed(p)) ?? availablePresets[0] ?? PRESETS[0]).key;
-  const [draft, setDraft] = useState<Draft>(() => emptyDraft(firstPreset));
+  const [draft, setDraft] = useState<Draft>(() => emptyDraft(firstPreset, newBotAccess));
   const [apiModels, setApiModels] = useState<string[]>([]);
   const [modelNote, setModelNote] = useState("");
   /** What each coding agent reports it can use, asked once per tool. */
@@ -715,7 +699,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       }
     });
     backend
-      .roomCreate(pane.id, pane.sample ? SAMPLE_BOTS : [], { policy: "mention", max_bot_hops: 3 }, cwd)
+      .roomCreate(pane.id, pane.sample ? SAMPLE_BOTS : [], defaults.current.newThread, cwd)
       .then((saved) => {
         if (!alive) return;
         setChanges((saved.changes ?? []).map((c) => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
@@ -827,7 +811,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   }, [focused, adding, ready]);
 
   const closeForm = (preset: PresetKey) => {
-    setDraft(emptyDraft(preset));
+    setDraft(emptyDraft(preset, defaults.current.newBotAccess));
     setFormError("");
     setAdding(false);
     setEditing(null);
@@ -1342,7 +1326,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   function openNewForm() {
     details?.show("form");
     if (preset.api?.autoLoad && apiModels.length === 0) loadModels(draft.baseUrl, draft.keyEnv);
-    if (!providerEnabled(draft.preset, disabledProviders)) setDraft(emptyDraft(firstPreset));
+    if (!providerEnabled(draft.preset, disabledProviders)) setDraft(emptyDraft(firstPreset, defaults.current.newBotAccess));
     setEditing(null);
     setAdding(true);
   }

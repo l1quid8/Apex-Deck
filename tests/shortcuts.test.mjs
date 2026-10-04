@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cyclePane, shortcutFor } from "../src/shortcuts.ts";
+import { cyclePane, shortcutFor, shortcutList } from "../src/shortcuts.ts";
 
 const press = (code, mods = {}) => ({ code, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...mods });
 
@@ -41,4 +41,19 @@ test("cycling panes wraps round and starts at an end when nothing is focused", (
   assert.equal(cyclePane(["a", "b"], null, 1), "a");
   assert.equal(cyclePane(["a", "b"], "gone", -1), "b");
   assert.equal(cyclePane([], "a", 1), null);
+});
+
+test("⌘, opens settings", () => {
+  assert.deepEqual(shortcutFor(press("Comma", { metaKey: true }), true), { kind: "settings" });
+  assert.deepEqual(shortcutFor(press("Comma", { ctrlKey: true, shiftKey: true }), false), { kind: "settings" });
+});
+
+test("the list shown in settings comes from the same table the keys use", () => {
+  const mac = shortcutList(true);
+  assert.deepEqual(mac.find((s) => s.label === "New thread"), { label: "New thread", keys: "⌘N" });
+  assert.deepEqual(mac.find((s) => s.label === "Maximize or restore pane"), { label: "Maximize or restore pane", keys: "⌘⇧↩" });
+  assert.deepEqual(mac.find((s) => s.label === "Settings"), { label: "Settings", keys: "⌘," });
+  assert.deepEqual(shortcutList(false).find((s) => s.label === "Next pane"), { label: "Next pane", keys: "Ctrl+Shift+]" });
+  // Every listed deck shortcut really fires.
+  for (const s of mac.filter((s) => !s.composer)) assert.ok(s.keys.startsWith("⌘"), s.label);
 });

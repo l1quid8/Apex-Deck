@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
-import { ProviderSettings } from "./ProviderSettings";
+import { SettingsPage, type SettingsSection } from "./SettingsPage";
+import { DEFAULT_SETTINGS, readSettings, type AppSettings } from "./settings";
 import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { DetailsHost } from "./ThreadDetails";
@@ -76,8 +77,14 @@ export function App() {
   /** What each thread reports: its head's words, and who is replying or stopped on a card. */
   const [threadStatus, setThreadStatus] = useState<Record<string, ThreadStatus>>({});
   const onThreadStatus = useCallback((paneId: string, status: ThreadStatus) => setThreadStatus((all) => (JSON.stringify(all[paneId]) === JSON.stringify(status) ? all : { ...all, [paneId]: status })), []);
-  const [disabledProviders, setDisabledProviders] = useState<string[]>([]);
-  const [managingProviders, setManagingProviders] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const disabledProviders = settings.disabledProviders;
+  /** The settings section shown, or null while the deck is. */
+  const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
+  /** False until settings.json has been read, so a file that can't be read is never overwritten. */
+  const settingsRead = useRef(false);
+  const settingsQueue = useRef<Promise<void>>(Promise.resolve());
+  const closeSettings = useCallback(() => setSettingsOpen(null), []);
   const [profiles, setProfiles] = useState<ParticipantConfig[]>([]);
   const [storageError, setStorageError] = useState("");
   const saveQueue = useRef(Promise.resolve());
@@ -192,7 +199,15 @@ export function App() {
       const found = await b.detectAgents().catch(() => []);
       const folders = await b.startupFolders().catch(() => []);
       const saved = await b.sessionLoad();
+      const savedSettings = await b.settingsLoad().then((raw) => ({ raw }), (error) => ({ error }));
       if (!alive) return;
+      if ("raw" in savedSettings) {
+        setSettings(readSettings(savedSettings.raw, saved?.disabledProviders));
+        settingsRead.current = true;
+      } else {
+        setSettings(readSettings(null, saved?.disabledProviders));
+        setStorageError(`Could not read settings: ${String(savedSettings.error)}. Defaults are in use and the file has been kept.`);
+      }
       setAgents(found);
       const known = saved?.workspaces ?? loadWorkspaces();
       setWorkspaces(known);
@@ -200,7 +215,6 @@ export function App() {
       restored.current = new Set(loaded.filter((p) => p.kind === "terminal").map((p) => p.id));
       setPanes(loaded);
       setProfiles(saved?.profiles ?? []);
-      setDisabledProviders(saved?.disabledProviders ?? []);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
       setDetailsOpen(saved?.threadDetailsOpen ?? false);
@@ -229,11 +243,18 @@ export function App() {
   useEffect(() => {
     if (!backend) return;
     saveWorkspaces(workspaces);
-    const session: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map((w) => w.id)), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
+    const session: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map((w) => w.id)), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed]);
+  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed]);
+
+  // settings.json, beside the session file. Written in order, like the session.
+  useEffect(() => {
+    if (!backend || !settingsRead.current) return;
+    settingsQueue.current = settingsQueue.current.catch(() => {}).then(() => backend.settingsSave(settings));
+    settingsQueue.current.catch((error) => setStorageError(`Could not save settings: ${String(error)}`));
+  }, [backend, settings]);
 
   // The workspace in view is always a listed one: removing it moves on to the first listed.
   useEffect(() => {
@@ -605,6 +626,9 @@ export function App() {
     if (!action || question) return;
     event.preventDefault();
     event.stopPropagation();
+    if (action.kind === "settings") { setSettingsOpen((open) => (open ? null : "general")); return; }
+    // Any other deck shortcut is about the deck, so it closes settings first.
+    setSettingsOpen(null);
     if (action.kind === "section") { setSection(action.section); setPicking(false); setMaximized(null); }
     else if (action.kind === "new_terminal") { if (current) { setSection("code"); setNewMenuRequest((n) => n + 1); } }
     else if (action.kind === "new_thread") { if (current) addPane("chat", "Group chat"); }
@@ -717,7 +741,6 @@ export function App() {
         </div>
         <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
-        <button className="ghost" onClick={() => setManagingProviders((open) => !open)} aria-expanded={managingProviders}>Providers</button>
         {(
           <div className="layout-presets" role="group" aria-label="Arrange panes">
             <button onClick={() => arrange("grid")} disabled={section === "agents" || visiblePanes.length < 2} title="Even grid" aria-label="Arrange as an even grid">
@@ -741,14 +764,14 @@ export function App() {
           hasPanes={visiblePanes.length > 0}
           onShowPicker={() => setPicking(true)}
           onPick={(item) => addPane(item.kind, item.kind === "chat" ? "Group chat" : item.label, item.agent)}
-          onManageProviders={() => setManagingProviders(true)}
+          onManageProviders={() => setSettingsOpen("providers")}
           openRequest={newMenuRequest}
         />}
+        <button className={settingsOpen ? "icon active" : "icon"} onClick={() => setSettingsOpen((open) => (open ? null : "general"))} aria-label="Settings" title="Settings (⌘,)" aria-pressed={!!settingsOpen}><DeckIcon name="settings" /></button>
         {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
         </div>
       </header>
 
-      {managingProviders && <ProviderSettings agents={agents} disabled={disabledProviders} onChange={setDisabledProviders} onClose={() => setManagingProviders(false)} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       <div className="body" ref={bodyRef}>
         {railOpen && (
@@ -891,9 +914,9 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
+                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}
                   </div>
                 </section>
@@ -908,6 +931,8 @@ export function App() {
           <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} aria-label="Thread details">
           </aside>
         </>}
+        {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}
+        {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
       {(undoable || undoableRemove) && (

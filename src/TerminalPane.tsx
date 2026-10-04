@@ -34,6 +34,9 @@ interface Props {
   onClose: (paneId: string) => void;
   /** A new run of output began at `startedAt` (ms since the epoch), for the head's "Working 4m". */
   onRunStart?: (paneId: string, startedAt: number) => void;
+  /** From Settings › Terminal. Open terminals take a change straight away. */
+  fontSize?: number;
+  scrollback?: number;
 }
 
 /** The text on the terminal's screen, for judging whether it is waiting. */
@@ -55,7 +58,9 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onSignal, onClose, onRunStart }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onSignal, onClose, onRunStart, fontSize = 13, scrollback = 5000 }: Props) {
+  /** Fit the terminal to its pane and tell the program its new size. Set up with the terminal below. */
+  const refit = useRef<() => void>(() => {});
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   /** Where the program is, for the bar at the foot of the pane. */
@@ -72,9 +77,9 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
 
     const term = new Terminal({
       fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-      fontSize: 13,
+      fontSize,
       cursorBlink: true,
-      scrollback: 5000,
+      scrollback,
       theme: THEME,
     });
     const fit = new FitAddon();
@@ -193,11 +198,12 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     });
 
     // A pane that is hidden has no size; skip fitting until it is shown.
-    const observer = new ResizeObserver(() => {
+    refit.current = () => {
       if (!hasSize()) return;
       fit.fit();
       if (current.state === "running") backend.ptyResize(ptyId(), term.cols, term.rows).catch(() => {});
-    });
+    };
+    const observer = new ResizeObserver(() => refit.current());
     observer.observe(element);
 
     // A terminal restored from the last session never starts by itself.
@@ -219,6 +225,15 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     // The terminal lives as long as the pane; its inputs do not change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
+
+  // Settings › Terminal. A new font size changes how many cells fit, so refit.
+  useEffect(() => {
+    const term = terminal.current;
+    if (!term || (term.options.fontSize === fontSize && term.options.scrollback === scrollback)) return;
+    term.options.fontSize = fontSize;
+    term.options.scrollback = scrollback;
+    refit.current();
+  }, [fontSize, scrollback]);
 
   // The ⋯ menu's Start again. Ignored while the program runs.
   useEffect(() => {
