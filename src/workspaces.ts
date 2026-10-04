@@ -11,6 +11,11 @@ export function shownWorkspaces(list: Workspace[]): Workspace[] {
   return list.filter((w) => !w.hidden);
 }
 
+/** Workspaces removed from the list, for the rail's Removed line. */
+export function hiddenWorkspaces(list: Workspace[]): Workspace[] {
+  return list.filter((w) => w.hidden);
+}
+
 /** Remove a workspace from the list, or bring it back. */
 export function setHidden(list: Workspace[], id: string, hidden: boolean): Workspace[] {
   return list.map((w) => (w.id === id ? { ...w, hidden } : w));

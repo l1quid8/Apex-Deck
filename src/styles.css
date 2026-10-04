@@ -1896,3 +1896,10 @@ div.ws-name { cursor: pointer; border: 1px solid transparent; border-radius: 6px
 div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ws-name .ws-label { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
 .rail .pane-menu { min-width: 168px; }
+
+/* Now tier, stage 1: the Removed line sits at the foot of the rail. */
+.rail { display: flex; flex-direction: column; }
+.rail > * { flex-shrink: 0; }
+.rail-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 8px 0; color: var(--muted); font-size: 11px; }
+.rail-foot button { padding: 2px 6px; font-size: 11px; }
+.rail-foot .pane-menu { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }

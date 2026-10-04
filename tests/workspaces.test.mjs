@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeAfter, addFolders, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "../src/workspaces.ts";
+import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "../src/workspaces.ts";
 import { loadedThreads, savedThreads } from "../src/closing.ts";
 
 const ws = (id, extra = {}) => ({ id, name: id, path: `/code/${id}`, ...extra });
@@ -79,4 +79,10 @@ test("only the same folder brings a removed workspace back", () => {
   const out = addFolders(list, ["", "/other/w"], () => `n${++n}`, lastPart);
   assert.deepEqual(out.ids, ["n1", "n2"]);
   assert.deepEqual(out.list.filter((w) => w.hidden).map((w) => w.id), ["sample", "w"]);
+});
+
+test("the Removed line lists removed workspaces in their list order", () => {
+  const list = setHidden(setHidden([ws("a"), ws("b"), ws("c")], "c", true), "a", true);
+  assert.deepEqual(hiddenWorkspaces(list).map((w) => w.id), ["a", "c"]);
+  assert.deepEqual(hiddenWorkspaces([ws("a")]), []);
 });

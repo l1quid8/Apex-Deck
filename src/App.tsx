@@ -20,7 +20,7 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, removeCounts, removeQuestion, savedThreads } from "./closing";
-import { activeAfter, addFolders, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
+import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -58,6 +58,8 @@ export function folderName(path: string): string {
 const layoutKey = (workspace: string | null, section: AppSection) => `${workspace ?? ""}:${section}`;
 
 const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
+/** The `paneMenu` id of the rail's Removed · Show menu. */
+const REMOVED_MENU = "removed-workspaces";
 
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
@@ -284,7 +286,16 @@ export function App() {
     setMaximized(null);
   };
   const shownList = shownWorkspaces(workspaces);
+  const hiddenList = hiddenWorkspaces(workspaces);
   const current = shownList.find((w) => w.id === activeWorkspace) ?? null;
+
+  /** Put a removed workspace back on the list and show it. Its threads come back closed. */
+  const bringBack = (id: string) => {
+    setPaneMenu(null);
+    setWorkspaces((list) => setHidden(list, id, false));
+    setActiveWorkspace(id);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-workspace="${id}"]`)?.focus());
+  };
 
   const addWorkspace = async () => {
     if (!backend) return;
@@ -701,6 +712,22 @@ export function App() {
                 </div>
               );
             })}
+            {hiddenList.length > 0 && (
+              <div className="rail-foot">
+                <span>Removed ({hiddenList.length})</span>
+                <span aria-hidden="true">·</span>
+                <span className="pane-menu-wrap">
+                  <button className="ghost" onClick={(event) => toggleMenu(REMOVED_MENU, event)} aria-label="Show removed workspaces" aria-haspopup="menu" aria-expanded={paneMenu === REMOVED_MENU}>Show</button>
+                  {paneMenu === REMOVED_MENU && (
+                    <span className="pane-menu" role="menu" aria-label="Removed workspaces">
+                      {hiddenList.map((workspace) => (
+                        <button key={workspace.id} role="menuitem" title={workspace.path || workspace.name} onClick={() => bringBack(workspace.id)}>{workspace.name}</button>
+                      ))}
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
           </aside>
         )}
 
