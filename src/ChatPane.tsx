@@ -1229,20 +1229,6 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       </div>
 
       {!profileMode && <div className="composer">
-        <ComposerMenu ref={composerMenu} participants={participants} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
-          if (item.kind === "command" && item.command) {
-            const draft = text;
-            runCommand(item.command);
-            setText(trigger ? text.slice(trigger.end) : draft);
-          } else if (item.kind === "command" && !trigger && text.trim()) {
-            runCommand({ name: "pin", fact: text.trim() });
-          } else {
-            const next = insertAt(text, trigger, caret, `${item.label} `);
-            setText(next.text); setCaret(next.caret);
-            requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
-          }
-          input.current?.focus();
-        }} />
         <div className="composer-input">
         {queued.length > 0 && <div className="queued-messages" aria-label="Queued messages">
           <span className="muted">{queuePaused ? "Queue paused" : "Queued for the next turn"}</span>
@@ -1262,6 +1248,21 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           <div className="quote-preview-copy"><span className="speaker">{reply.name}</span><blockquote>{reply.text}</blockquote></div>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
         </div>}
+        <div className="composer-field">
+        <ComposerMenu ref={composerMenu} participants={participants} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          if (item.kind === "command" && item.command) {
+            const draft = text;
+            runCommand(item.command);
+            setText(trigger ? text.slice(trigger.end) : draft);
+          } else if (item.kind === "command" && !trigger && text.trim()) {
+            runCommand({ name: "pin", fact: text.trim() });
+          } else {
+            const next = insertAt(text, trigger, caret, `${item.label} `);
+            setText(next.text); setCaret(next.caret);
+            requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
+          }
+          input.current?.focus();
+        }} />
         <textarea
           ref={input}
           aria-label="Message the room"
@@ -1279,6 +1280,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           placeholder={participants.length === 0 ? "Add a model to start" : "Message the room. @name picks who answers."}
           disabled={!ready || participants.length === 0}
         />
+        </div>
         <div className="composer-hint"><span>{busy ? "Models are responding…" : "+ for mentions and commands"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
         </div>
         {busy ? (

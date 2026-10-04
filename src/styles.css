@@ -869,6 +869,7 @@ textarea {
 }
 
 .composer {
+  position: relative;
   display: flex;
   gap: 12px;
   padding: 16px;
@@ -1643,9 +1644,11 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 @container (max-width: 850px) { .thread-chat .chip-meta:not(.chip-levels) { display: none; } }
 @container (max-width: 480px) { .thread-chat .chip-levels { display: none; } }
 
-.composer-tools { position: relative; align-self: flex-end; }
+.composer-field { display: flex; align-items: center; gap: 8px; }
+.composer-tools { flex: none; }
+.composer-field textarea { flex: 1; min-width: 0; }
 .composer-plus { font-size: 24px; width: 34px; height: 34px; }
-.composer-menu { position: absolute; bottom: calc(100% + 12px); left: 0; width: min(320px, 75vw); padding: 8px; background: var(--panel, #202124); border: 1px solid var(--border, #444); border-radius: 10px; box-shadow: 0 8px 28px #0005; z-index: 30; }
+.composer-menu { position: absolute; bottom: calc(100% + 6px); left: 16px; width: min(320px, calc(100% - 32px)); padding: 8px; background: var(--panel, #202124); border: 1px solid var(--border, #444); border-radius: 10px; box-shadow: 0 8px 28px #0005; z-index: 30; }
 .composer-menu input { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
 .composer-menu [role="listbox"] { max-height: 300px; overflow-y: auto; }
 .composer-menu [role="option"] { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 9px 8px; background: transparent; border: 0; text-align: left; }
