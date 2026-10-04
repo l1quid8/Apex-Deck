@@ -48,6 +48,11 @@ pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressS
 /// Where and how command-line participants run.
 #[derive(Debug, Clone, Default)]
 pub struct BuildContext {
+    /// Deck's own executable, which Codex runs as an approval hook before
+    /// each MCP call (`--codex-hook`). `None` leaves Codex on the slower
+    /// MCP inventory policy.
+    pub codex_hook: Option<PathBuf>,
+
     /// The folder tools are started in, normally the workspace folder.
     pub cwd: Option<PathBuf>,
     /// The PATH used to find and run tools. `None` keeps the app's own.

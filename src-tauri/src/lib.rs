@@ -230,6 +230,8 @@ fn room_create(
     let saved = store.room(&id)?;
     let cwd = saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd);
     let context = BuildContext {
+        codex_hook: if cfg!(unix) { std::env::current_exe().ok() } else { None },
+
         cwd: cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from),
         path: agents::login_path(),
     };

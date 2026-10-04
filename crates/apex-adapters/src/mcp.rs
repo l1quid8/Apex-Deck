@@ -63,6 +63,15 @@ pub(crate) fn menu_names(servers: &[Value], plugins: &Value) -> Vec<String> {
     names.into_iter().filter(|name| !name.trim().is_empty()).collect()
 }
 
+/// What every Codex turn sets, with or without the inventory: ChatGPT apps
+/// ask, and the person, not an automatic reviewer, answers. With Deck's
+/// hook in place this is the whole policy.
+pub(crate) fn base_policy() -> Value {
+    json!({"approvals_reviewer":"user",
+        "apps._default.default_tools_approval_mode":"prompt",
+        "apps._default.approvals_reviewer":"user"})
+}
+
 /// Overrides only approval policy, never transport or enabled state. All
 /// catalog tools prompt at the CLI boundary; Deck releases ordinary reads.
 /// Exact tool overrides defeat pre-existing per-tool `approve` settings.
@@ -75,9 +84,7 @@ pub(crate) fn codex_policy(servers: &[Value]) -> Result<Value, String> {
         }
         Ok(part)
     }
-    let mut config = json!({"approvals_reviewer":"user",
-        "apps._default.default_tools_approval_mode":"prompt",
-        "apps._default.approvals_reviewer":"user"});
+    let mut config = base_policy();
     for server in servers {
         let name = key(server["name"].as_str().ok_or("MCP inventory has no server name")?)?;
         if failed(server) {

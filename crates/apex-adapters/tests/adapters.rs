@@ -170,7 +170,7 @@ async fn cli_runs_in_the_workspace_folder() {
     let dir = std::env::temp_dir().join(format!("apex-deck-cwd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let real = std::fs::canonicalize(&dir).unwrap();
-    let context = BuildContext { cwd: Some(dir.clone()), path: None };
+    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; pwd -P"))).with_context(&context);
     let (result, _) = ask(&bot, "where are you?").await;
     assert_eq!(result.unwrap().text, real.to_string_lossy());
@@ -180,7 +180,7 @@ async fn cli_runs_in_the_workspace_folder() {
 #[cfg(unix)]
 #[tokio::test]
 async fn cli_reports_a_workspace_folder_that_no_longer_exists() {
-    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None };
+    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None };
     let bot = CliParticipant::new(config("cli", sh("echo hi"))).with_context(&context);
     let (result, _) = ask(&bot, "hi").await;
     match result {
@@ -208,7 +208,7 @@ async fn cli_finds_the_program_on_the_path_it_is_given() {
     assert!(matches!(missing, Err(ParticipantError::NotConfigured(_))), "{missing:?}");
 
     let path = format!("{}:/usr/bin:/bin", dir.to_string_lossy());
-    let context = BuildContext { cwd: None, path: Some(path) };
+    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None };
     let bot = CliParticipant::new(config("cli", backend)).with_context(&context);
     let (found, _) = ask(&bot, "hi").await;
     assert_eq!(found.unwrap().text, "found-on-custom-path");
@@ -246,7 +246,7 @@ async fn codex_agent_refuses_exec_even_when_model_effort_and_access_are_configur
     let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: Some("some-model".into()) });
     cfg.access = Access::Edits;
     cfg.effort = Some("high".into());
-    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())) };
+    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None };
     let bot = build(cfg, &context);
     let (result, _) = ask(bot.as_ref(), "hey, testing").await;
     assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
@@ -486,7 +486,7 @@ fn fake_tool(tag: &str, name: &str, script: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 fn context_in(dir: &std::path::Path) -> BuildContext {
-    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())) }
+    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None }
 }
 
 /// Run one turn the way the room does and collect text and activity.
@@ -1023,6 +1023,7 @@ const FAKE_MCP_CODEX: &str = r#"#!/bin/sh
 while IFS= read -r line; do
  case "$line" in
  *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
+ *'"hooks/list"'*) echo '{"id":120,"error":{"code":-32601,"message":"Method not found"}}' ;;
  *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[{"name":"probe","tools":{"place_order":{"name":"place_order"},"get_balance":{"name":"get_balance"}}}],"nextCursor":null}}' ;;
  *'"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
  *'"thread/start"'*)
@@ -1076,4 +1077,167 @@ async fn server_discovery_uses_the_supplied_cli_path() {
     let result = apex_adapters::claude_tool_servers(None, Some(dir.to_string_lossy().into_owned())).await;
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(result.unwrap(), ["path-test"]);
+}
+
+/// A stand-in for `codex app-server` with Deck's hook. It lists the hook
+/// with `trust` until Deck writes the trust, refuses the MCP inventory (the
+/// hook makes it unnecessary), and for each MCP call runs the hook command
+/// through `sh -c`, the way Codex does, with Deck's socket in its
+/// environment. `order` says whether Codex's own approval request comes
+/// before the hook, after it, or not at all.
+#[cfg(unix)]
+const FAKE_CODEX_HOOKED: &str = r#"#!/bin/sh
+printf '%s\n' "$@" > "DIR/args"
+listed=first
+hook() {
+ printf '{"session_id":"thread-hook","hook_event_name":"PreToolUse","tool_name":"mcp__probe__%s","tool_input":{"quantity":"0.001"}}' "$1" | sh -c "$(cat "DIR/hook-command")" | grep -q '"deny"' && return 1
+ return 0
+}
+codex_asks() {
+ echo "{\"method\":\"item/started\",\"params\":{\"item\":{\"type\":\"mcpToolCall\",\"id\":\"call-$1\",\"server\":\"probe\",\"tool\":\"$1\",\"arguments\":{\"quantity\":\"0.001\"}}}}"
+ echo '{"method":"mcpServer/elicitation/request","id":"approval-1","params":{"threadId":"thread-hook","serverName":"probe","mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{"quantity":"0.001"}},"requestedSchema":{"type":"object","properties":{}}}}'
+ IFS= read -r answer
+ echo "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"mcpToolCall\",\"id\":\"call-$1\"}}}"
+ case "$answer" in *'"action":"accept"'*) return 0 ;; *) return 1 ;; esac
+}
+while IFS= read -r line; do
+ case "$line" in
+ *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
+ *'"method":"hooks/list"'*)
+  if [ "$listed" = first ]; then cat <<'EOF'
+LISTED_FIRST
+EOF
+  else cat <<'EOF'
+LISTED_TRUSTED
+EOF
+  fi ;;
+ *'"method":"config/batchWrite"'*) printf '%s\n' "$line" > "DIR/trust"; listed=trusted; echo '{"id":121,"result":{}}' ;;
+ *'"mcpServerStatus/list"'*) echo '{"id":10,"error":{"message":"the hook makes the inventory unnecessary"}}' ;;
+ *'"method":"thread/start"'*) printf '%s\n' "$line" > "DIR/thread"; echo '{"id":1,"result":{"thread":{"id":"thread-hook"}}}' ;;
+ *'"method":"turn/start"'*)
+  for tool in get_balance place_order place_order; do
+   case ORDER in
+   hook-only) hook $tool ;;
+   hook-first) hook $tool && codex_asks $tool ;;
+   codex-first) codex_asks $tool && hook $tool ;;
+   esac && allowed=$((allowed+1)) || denied=$((denied+1))
+  done
+  echo "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"agentMessage\",\"id\":\"reply\",\"text\":\"allowed=${allowed:-0} denied=${denied:-0}\"}}}"
+  echo '{"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}' ;;
+ *'"account/rateLimits/read"'*) echo '{"id":3,"result":{}}' ;;
+ esac
+done
+"#;
+
+/// A fake Codex that supports the hook, and a context whose helper is the
+/// real one, installed under a folder with a space the way
+/// `/Applications/Apex Deck.app` is.
+#[cfg(unix)]
+fn hooked(tag: &str, trust: &str, order: &str) -> (std::path::PathBuf, BuildContext) {
+    let dir = fake_tool(tag, "codex", "#!/bin/sh\n");
+    let app = dir.join("Apex Deck");
+    std::fs::create_dir_all(&app).unwrap();
+    let helper = app.join("apex-deck");
+    let _ = std::fs::remove_file(&helper);
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_apex-deck-codex-hook"), &helper).unwrap();
+    let command = apex_adapters::codex_hook_command(&helper);
+    std::fs::write(dir.join("hook-command"), &command).unwrap();
+    let listing = |id: u64, trust: &str| serde_json::json!({"id": id, "result": {"data": [{"cwd": "/", "hooks": [{
+        "key": "/<session-flags>/config.toml:pre_tool_use:0:0", "source": "sessionFlags", "eventName": "preToolUse",
+        "handlerType": "command", "command": command, "matcher": "^mcp__", "timeoutSec": 600, "enabled": true,
+        "currentHash": "sha256:fake", "trustStatus": trust}]}]}}).to_string();
+    let script = FAKE_CODEX_HOOKED
+        .replace("DIR", &dir.to_string_lossy())
+        .replace("ORDER", order)
+        .replace("LISTED_FIRST", &listing(120, trust))
+        .replace("LISTED_TRUSTED", &listing(122, "trusted"));
+    std::fs::write(dir.join("codex"), script).unwrap();
+    let context = BuildContext { codex_hook: Some(helper), ..context_in(&dir) };
+    (dir, context)
+}
+
+/// Run one turn with someone to ask, collecting the activity lines.
+async fn work_hooked(participant: &dyn Participant, approver: &dyn Approver) -> (Result<apex_core::Reply, ParticipantError>, Vec<String>) {
+    use apex_core::Progress;
+    let activity = Mutex::new(Vec::new());
+    let result = participant
+        .respond_with_approvals(request("hi"), &|update| if let Progress::Activity(line) = update { activity.lock().unwrap().push(line.to_string()) }, approver)
+        .await;
+    (result, activity.into_inner().unwrap())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_hook_lets_reads_through_and_asks_before_each_risky_call_without_the_inventory() {
+    use apex_core::AgentTool;
+    let (dir, context) = hooked("codex-hook", "trusted", "hook-only");
+    for access in [Access::Read, Access::Ask, Access::Edits, Access::Full] {
+        let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: None });
+        cfg.access = access;
+        let no = Fixed::new(Decision::Reject);
+        let (result, activity) = work_hooked(build(cfg, &context).as_ref(), &no).await;
+        assert_eq!(result.unwrap().text, "allowed=1 denied=2");
+        let asked = no.asked.lock().unwrap();
+        assert_eq!(asked.len(), 2);
+        for action in asked.iter() {
+            assert_eq!((action.kind, action.title.as_str()), (ActionKind::Tool, "probe: place_order"));
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&action.detail).unwrap(), serde_json::json!({"quantity": "0.001"}));
+        }
+        assert_eq!(activity[0], "Starting Codex", "no inventory wait: {activity:?}");
+    }
+    let args = std::fs::read_to_string(dir.join("args")).unwrap();
+    assert!(args.contains(r#"hooks.PreToolUse=[{matcher="^mcp__""#), "{args}");
+    let thread = std::fs::read_to_string(dir.join("thread")).unwrap();
+    assert!(thread.contains(r#""approvals_reviewer":"user""#) && !thread.contains("mcp_servers."), "{thread}");
+    assert!(!dir.join("trust").exists(), "a trusted hook is not written again");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_hook_is_trusted_once_through_codex_settings() {
+    use apex_core::AgentTool;
+    let (dir, context) = hooked("codex-hook-trust", "untrusted", "hook-only");
+    let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context);
+    let (result, activity) = work_hooked(bot.as_ref(), &Fixed::new(Decision::Reject)).await;
+    assert_eq!(result.unwrap().text, "allowed=1 denied=2");
+    assert_eq!(activity[..2], ["Turning on Apex Deck's approval hook in Codex", "Starting Codex"]);
+    let trust: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("trust")).unwrap()).unwrap();
+    assert_eq!(trust["params"]["edits"], serde_json::json!([{
+        "keyPath": "hooks.state.\"/<session-flags>/config.toml:pre_tool_use:0:0\".trusted_hash",
+        "value": "sha256:fake", "mergeStrategy": "replace"
+    }]));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_asks_once_per_risky_call_when_both_the_hook_and_codex_ask() {
+    use apex_core::AgentTool;
+    for order in ["hook-first", "codex-first"] {
+        let (dir, context) = hooked(&format!("codex-hook-{order}"), "trusted", order);
+        let yes = Fixed::new(Decision::Approve);
+        let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context);
+        let (result, _) = work_hooked(bot.as_ref(), &yes).await;
+        assert_eq!(result.unwrap().text, "allowed=3 denied=0", "{order}");
+        assert_eq!(yes.asked.lock().unwrap().len(), 2, "{order}: one card per risky call");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_without_the_hook_falls_back_to_the_inventory_policy() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("codex-no-hooks", "codex", FAKE_MCP_CODEX);
+    // An older Codex that has no hooks/list, then a helper that has gone.
+    for helper in [std::path::PathBuf::from(env!("CARGO_BIN_EXE_apex-deck-codex-hook")), dir.join("no-such-helper")] {
+        let context = BuildContext { codex_hook: Some(helper), ..context_in(&dir) };
+        let no = Fixed::new(Decision::Reject);
+        let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context);
+        let (result, activity) = work_hooked(bot.as_ref(), &no).await;
+        assert_eq!(result.unwrap().text, "allowed=1 denied=2");
+        assert_eq!(activity[0], "Checking MCP tool approval policies");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }

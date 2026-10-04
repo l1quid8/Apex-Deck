@@ -18,6 +18,7 @@ use crate::ansi::AnsiStripper;
 use crate::events::{EventReader, OutputFormat};
 use crate::codex_server::{self, TurnError};
 use crate::presets::{agent_command, clean_effort, clean_model, output_format};
+use crate::codex_hook;
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 
 /// How long a turn may go without any sign of life before the tool is
@@ -38,17 +39,19 @@ pub struct CliParticipant {
     timeout: Duration,
     cwd: Option<PathBuf>,
     path: Option<String>,
+    codex_hook: Option<PathBuf>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None }
     }
 
     /// Run the tool in the folder, and with the PATH, given by `context`.
     pub fn with_context(mut self, context: &BuildContext) -> Self {
         self.cwd = context.cwd.clone();
         self.path = context.path.clone();
+        self.codex_hook = context.codex_hook.clone();
         self
     }
 
@@ -74,8 +77,15 @@ impl CliParticipant {
     /// Start `program` in the workspace folder with every standard stream
     /// connected to us.
     fn start(&self, program: &str, args: &[String]) -> Result<Child, ParticipantError> {
+        self.start_with(program, args, &[])
+    }
+
+    /// `start`, with extra environment variables for the program.
+    fn start_with(&self, program: &str, args: &[String], env: &[(&str, std::ffi::OsString)]) -> Result<Child, ParticipantError> {
         let mut command = Command::new(program);
         command.args(args);
+        command.envs(env.iter().map(|(name, value)| (*name, value)));
+
         // Keep colour codes and progress animations out of the reply.
         command.env("NO_COLOR", "1").env("TERM", "dumb");
         if let Some(path) = &self.path {
@@ -116,8 +126,18 @@ impl CliParticipant {
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
         let program = "codex";
-        let args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
-        let child = self.start(program, &args)?;
+        let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
+        // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
+        // has gone would make Codex run every tool unasked, so check first.
+        let hook = self.codex_hook.as_deref().filter(|helper| helper.is_file()).and_then(|helper| {
+            codex_hook::Hook::bind(helper).map_err(|e| eprintln!("[apex-deck] Codex approval hook unavailable: {e}")).ok()
+        });
+        let mut env = Vec::new();
+        if let Some(hook) = &hook {
+            args.extend(["-c".to_string(), hook.flag()]);
+            env.push((codex_hook::SOCKET_ENV, hook.socket().into_os_string()));
+        }
+        let child = self.start_with(program, &args, &env)?;
         let effort = clean_effort(self.config.effort.as_deref());
         let turn = codex_server::Turn {
             model: clean_model(model),
@@ -125,7 +145,7 @@ impl CliParticipant {
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
         };
-        match codex_server::run(child, turn, prompt, on_progress, approver).await {
+        match codex_server::run(child, turn, prompt, on_progress, approver, hook.as_ref()).await {
             Ok(reply) => Ok(reply),
             Err(TurnError::Unavailable(why)) => {
                 Err(ParticipantError::Failed(format!("Codex app server unavailable ({why}); this turn did not run because MCP approvals require it.")))
@@ -438,7 +458,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, args, format) = self.command_line()?;

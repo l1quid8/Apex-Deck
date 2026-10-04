@@ -20,6 +20,10 @@
 //! MCP approvals require this two-way path. If it cannot be started, the
 //! turn is refused rather than falling back to an unprotected exec turn.
 
+//!
+//! Deck's hook (`codex_hook.rs`) asks about every MCP call. Without it the
+//! turn first lists every MCP tool to set "prompt" on each (`mcp.rs`).
+
 use std::time::Duration;
 use std::collections::HashMap;
 
@@ -30,6 +34,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 
 use crate::events::{codex_plan, EventReader, OutputFormat};
 use crate::report;
+use crate::codex_hook::{hook_state, hooks_list, next_call, serve, trust_edit, Gates, Hook, HookState, McpCall};
 
 /// How long the server may take to answer a setup request.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -120,19 +125,65 @@ fn mcp_response(id: &Value, decision: Decision) -> Value {
 
 /// Bind the CLI's approval to the exact in-flight call, never its prose
 /// description or a display-name summary. Ambiguous or missing calls reject.
-fn mcp_proposal(params: &Value, pending: &HashMap<String, Value>) -> Option<(ProposedAction, bool)> {
+fn mcp_call(params: &Value, pending: &HashMap<String, Value>) -> Option<McpCall> {
     if params["_meta"]["codex_approval_kind"] != "mcp_tool_call" { return None; }
     let server = params["serverName"].as_str()?;
     let arguments = params["_meta"].get("tool_params")?;
     let mut matches = pending.values().filter(|item| item["server"] == server && &item["arguments"] == arguments);
     let item = matches.next()?;
     if matches.next().is_some() { return None; }
-    let tool = item["tool"].as_str()?;
-    Some((crate::mcp::action(server, tool, arguments), crate::mcp::needs_approval(tool)))
+    Some(McpCall { server: server.to_string(), tool: item["tool"].as_str()?.to_string(), arguments: arguments.clone() })
 }
 
 /// The id of `plugin/list`, which is sent alongside the MCP inventory.
 const PLUGINS: u64 = 110;
+/// Request ids for the hook check, clear of the others.
+const HOOKS_LIST: u64 = 120;
+const TRUST_WRITE: u64 = 121;
+const HOOKS_RELIST: u64 = 122;
+
+/// Send one setup request and wait for its answer.
+async fn request(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStdout>>, message: &Value) -> Result<Value, String> {
+    send(stdin, message).await.map_err(|e| format!("the app server went away: {e}"))?;
+    answer(lines, message["id"].as_u64().unwrap_or_default()).await
+}
+
+/// Make sure Codex will run Deck's hook this turn, trusting it when it is
+/// new or the app has moved. False means the turn uses the inventory
+/// policy instead: a Codex without hooks, hooks switched off, or trust
+/// that did not take.
+async fn hook_ready(
+    stdin: &mut ChildStdin,
+    lines: &mut Lines<BufReader<ChildStdout>>,
+    cwd: Option<&str>,
+    command: &str,
+    on_progress: ProgressSink<'_>,
+) -> bool {
+    let hash = match request(stdin, lines, &hooks_list(HOOKS_LIST, cwd)).await.map(|listed| hook_state(&listed, command)) {
+        Ok(HookState::Trusted) => return true,
+        Ok(HookState::Untrusted { hash }) => hash,
+        Ok(HookState::Missing) => {
+            eprintln!("[apex-deck] Codex did not list Deck's approval hook; using the MCP inventory");
+            return false;
+        }
+        Err(why) => {
+            eprintln!("[apex-deck] Codex hooks unavailable ({why}); using the MCP inventory");
+            return false;
+        }
+    };
+    on_progress(Progress::Activity("Turning on Apex Deck's approval hook in Codex"));
+    if let Err(why) = request(stdin, lines, &trust_edit(TRUST_WRITE, &hash)).await {
+        eprintln!("[apex-deck] couldn't trust Deck's approval hook ({why}); using the MCP inventory");
+        return false;
+    }
+    let listed = request(stdin, lines, &hooks_list(HOOKS_RELIST, cwd)).await;
+    let trusted = matches!(listed.map(|listed| hook_state(&listed, command)), Ok(HookState::Trusted));
+    if !trusted {
+        eprintln!("[apex-deck] Deck's approval hook is still not trusted; using the MCP inventory");
+    }
+    trusted
+}
+
 
 /// The approval policy for every MCP tool, and the names for the `!` menu.
 /// Plugins only feed the menu, so they are asked for alongside the first
@@ -253,6 +304,7 @@ pub(crate) async fn run(
     prompt: &str,
     on_progress: ProgressSink<'_>,
     approver: &dyn Approver,
+    hook: Option<&Hook>,
 ) -> Result<Reply, TurnError> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -268,12 +320,22 @@ pub(crate) async fn run(
 
     initialize(&mut stdin, &mut lines).await.map_err(TurnError::Unavailable)?;
 
-    on_progress(Progress::Activity("Checking MCP tool approval policies"));
-    let (policy, menu) = mcp_inventory(&mut stdin, &mut lines).await.map_err(TurnError::Failed)?;
-    // Without the plugins the list would be short, so keep the last one.
-    if let Ok(servers) = &menu {
-        on_progress(Progress::ToolServers(servers));
-    }
+    let hooked = match hook {
+        Some(hook) => hook_ready(&mut stdin, &mut lines, turn.cwd.as_deref(), &hook.command, on_progress).await,
+        None => false,
+    };
+    let policy = if hooked {
+        // The hook asks about every MCP call, so no tool list is needed.
+        crate::mcp::base_policy()
+    } else {
+        on_progress(Progress::Activity("Checking MCP tool approval policies"));
+        let (policy, menu) = mcp_inventory(&mut stdin, &mut lines).await.map_err(TurnError::Failed)?;
+        // Without the plugins the list would be short, so keep the last one.
+        if let Ok(servers) = &menu {
+            on_progress(Progress::ToolServers(servers));
+        }
+        policy
+    };
     on_progress(Progress::Activity("Starting Codex"));
     let mut start = thread_start(&turn);
     start["params"]["config"] = policy;
@@ -292,8 +354,23 @@ pub(crate) async fn run(
 
     let mut reader = EventReader::new(OutputFormat::CodexServer, turn.cwd.clone());
     let mut pending_mcp = HashMap::new();
+    let mut gates = Gates::default();
+    let mut listening = hook;
     while !reader.turn_over() {
-        let line = match lines.next_line().await {
+        let next = tokio::select! {
+            next = lines.next_line() => next,
+            call = next_call(listening) => {
+                match call {
+                    Ok(stream) => serve(stream, &mut gates, approver, on_progress).await,
+                    Err(e) => {
+                        eprintln!("[apex-deck] Codex approval hook stopped listening: {e}");
+                        listening = None;
+                    }
+                }
+                continue;
+            }
+        };
+        let line = match next {
             Ok(Some(line)) => line,
             Ok(None) => return Err(TurnError::Failed(ended_early(reader))),
             Err(e) => return Err(TurnError::Failed(format!("reading output failed: {e}"))),
@@ -316,11 +393,17 @@ pub(crate) async fn run(
                         let params = &message["params"];
                         let decision = if params["threadId"] != thread {
                             Decision::Reject
-                        } else if let Some((action, risky)) = mcp_proposal(params, &pending_mcp) {
-                            if risky {
-                                on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
-                                approver.decide(action).await
-                            } else { Decision::Approve }
+                        } else if let Some(call) = mcp_call(params, &pending_mcp) {
+                            match gates.at_codex(&call) {
+                                Some(decision) => decision,
+                                None => {
+                                    let action = call.action();
+                                    on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
+                                    let decision = approver.decide(action).await;
+                                    gates.answered_at_codex(call, decision);
+                                    decision
+                                }
+                            }
                         } else { Decision::Reject };
                         send(&mut stdin, &mcp_response(id, decision)).await
                             .map_err(|_| TurnError::Failed("Could not deliver MCP approval".into()))?;
@@ -427,14 +510,14 @@ mod tests {
         let params = json!({"serverName":"probe", "_meta":{"codex_approval_kind":"mcp_tool_call", "tool_params":{"quantity":"0.001"}}});
         let call = json!({"server":"probe", "tool":"post: read", "arguments":{"quantity":"0.001"}});
         let mut pending = HashMap::from([("c1".to_string(),call.clone())]);
-        let (action, risky) = mcp_proposal(&params, &pending).unwrap();
-        assert!(risky, "use exact tool name, not title punctuation");
-        assert_eq!(action.title,"probe: post: read");
+        let resolved = mcp_call(&params, &pending).unwrap();
+        assert!(resolved.risky(), "use exact tool name, not title punctuation");
+        assert_eq!(resolved.action().title,"probe: post: read");
         let mut different = params.clone(); different["_meta"]["tool_params"]["quantity"]=json!("1000");
-        assert!(mcp_proposal(&different,&pending).is_none());
+        assert!(mcp_call(&different,&pending).is_none());
         pending.insert("c2".into(),call);
-        assert!(mcp_proposal(&params,&pending).is_none());
-        assert!(mcp_proposal(&json!({"serverName":"probe","mode":"form"}),&pending).is_none());
+        assert!(mcp_call(&params,&pending).is_none());
+        assert!(mcp_call(&json!({"serverName":"probe","mode":"form"}),&pending).is_none());
         let accepted=mcp_response(&json!(1),Decision::Approve);
         assert_eq!(accepted["result"],json!({"action":"accept","content":{}}));
         assert!(!accepted.to_string().contains("persist"));
