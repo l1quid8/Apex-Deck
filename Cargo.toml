@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/apex-core", "crates/apex-adapters", "src-tauri"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/l1quid8/apex-deck"
