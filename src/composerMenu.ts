@@ -1,4 +1,5 @@
-import { normalizeServer, proseMask, serverToken } from "./serverRequests.ts";
+import type { ToolServer } from "./types.ts";
+import { normalizeServer, proseMask } from "./serverRequests.ts";
 import type { Command } from "./commands";
 
 /** What the composer's "+" menu offers. Typing `/` at the start of the
@@ -42,14 +43,14 @@ export function findTrigger(text: string, caret: number): Trigger | null {
 }
 
 /** Items for a trigger, or everything when the menu was opened with "+". */
-export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: {agent: string; name: string}[] = []): MenuItem[] {
+export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: (ToolServer & {agent: string})[] = []): MenuItem[] {
   const mentions: MenuItem[] = [
     { kind: "mention", id: "all", label: "@all", detail: "Everyone answers" },
     ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
   ];
   if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, ...mentions, ...COMMANDS];
   const q = trigger.query;
-  if (trigger.kind === "server") return servers.filter(s => normalizeServer(s.name).startsWith(normalizeServer(q))).map(s => ({kind: "server", agent: s.agent, label: `!${serverToken(s.name)}`, detail: people.find(p => p.id === s.agent)?.display_name ?? s.agent}));
+  if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
   if (trigger.kind === "command") return COMMANDS.filter((c) => c.key.startsWith(q));
   return mentions.filter((m) => m.kind === "mention" && (m.id.toLowerCase().startsWith(q) || m.detail.toLowerCase().startsWith(q)));
 }

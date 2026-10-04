@@ -187,3 +187,15 @@ fn change_records_shape() {
     let record = apex_core::ChangeRecord { by: ParticipantId::new("a"), path: "x.rs".into(), added: 1, removed: 2, seq: 3 };
     assert_eq!(to_value(&record).unwrap(), json!({ "by": "a", "path": "x.rs", "added": 1, "removed": 2, "seq": 3 }));
 }
+
+#[test]
+fn tool_server_event_carries_canonical_tokens_and_aliases() {
+    let event = RoomEvent::ToolServers {
+        id: ParticipantId::new("null"),
+        servers: vec![apex_core::server_request::ToolServer {
+            token: "computer-use".into(), label: "Computer Use".into(), aliases: vec!["cua_repl".into()],
+        }],
+    };
+    assert_eq!(to_value(event).unwrap(), json!({"type":"tool_servers", "id":"null",
+        "servers":[{"token":"computer-use", "label":"Computer Use", "aliases":["cua_repl"]}]}));
+}

@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { composerCopy, joinNames, replyingVerb } from "./composerStatus";
 import { slug } from "./slug";
@@ -836,7 +837,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     return () => { live = false; unlisten?.(); };
   }, [backend]);
 
-  const [serverLists, setServerLists] = useState<Record<string, string[]>>({});
+  const [serverLists, setServerLists] = useState<Record<string, ToolServer[]>>({});
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [serverTargets, setServerTargets] = useState<string[]>([]);
   useEffect(() => {
@@ -1552,7 +1553,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           </div>)}
         </div>}
         <div className="composer-field">
-          <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(name => ({agent, name})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
             if (item.kind === "command" && item.command) {
               const draft = text;

@@ -39,7 +39,7 @@ struct RoomHandle {
 
 #[derive(Default)]
 struct AppState {
-    tool_servers: Mutex<HashMap<String, Vec<String>>>,
+    tool_servers: Mutex<HashMap<String, Vec<apex_core::server_request::ToolServer>>>,
     ptys: PtyManager,
     rooms: Mutex<HashMap<String, RoomHandle>>,
 }
@@ -115,7 +115,7 @@ fn startup_folders() -> Vec<String> {
 }
 
 #[tauri::command]
-async fn list_tool_servers(state: State<'_, AppState>, room: String, agent: String) -> Result<Vec<String>, String> {
+async fn list_tool_servers(state: State<'_, AppState>, room: String, agent: String) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
     let key = format!("{room}:{agent}");
     if let Some(names) = state.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned() { return Ok(names); }
     let handle = state.handle(&room)?;

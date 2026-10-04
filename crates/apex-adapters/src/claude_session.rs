@@ -84,7 +84,7 @@ pub(crate) async fn run(
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
             if message["type"] == "system" && message["subtype"] == "init" {
                 if let Some(servers) = message["mcp_servers"].as_array() {
-                    let names: Vec<String> = servers.iter().filter_map(|s| s["name"].as_str().map(str::to_owned)).collect();
+                    let names: Vec<apex_core::server_request::ToolServer> = servers.iter().filter_map(|s| s["name"].as_str().map(|name| name.to_owned().into())).collect();
                     on_progress(Progress::ToolServers(&names));
                 }
             }
@@ -158,12 +158,12 @@ mod tests {
 }
 
 /// Names of Claude's connected MCP servers, without running a turn.
-pub async fn list_servers(cwd: Option<String>, path: Option<String>) -> Result<Vec<String>, String> {
+pub async fn list_servers(cwd: Option<String>, path: Option<String>) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
     let mut command = tokio::process::Command::new("claude");
     if let Some(path) = path { command.env("PATH", path); }
     command.args(["mcp", "list"]).stdin(std::process::Stdio::null()).kill_on_drop(true);
     if let Some(cwd) = cwd { command.current_dir(cwd); }
     let output = command.output().await.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
     if !output.status.success() { return Err("Couldn't list Claude tool servers".into()); }
-    Ok(crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout)))
+    Ok(crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout)).into_iter().map(Into::into).collect())
 }

@@ -677,7 +677,7 @@ done
 "#;
 
 /// Run one turn and collect its activity and the tool server lists it reported.
-async fn work_with_servers(participant: &dyn Participant) -> (Result<apex_core::Reply, ParticipantError>, Vec<String>, Vec<Vec<String>>) {
+async fn work_with_servers(participant: &dyn Participant) -> (Result<apex_core::Reply, ParticipantError>, Vec<String>, Vec<Vec<apex_core::server_request::ToolServer>>) {
     use apex_core::Progress;
     let activity = Mutex::new(Vec::new());
     let servers = Mutex::new(Vec::new());
@@ -700,7 +700,7 @@ async fn codex_lists_plugins_alongside_the_mcp_inventory_for_the_menu() {
     let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context_in(&dir));
     let (result, activity, servers) = work_with_servers(bot.as_ref()).await;
     assert_eq!(result.unwrap().text, "done");
-    assert_eq!(servers, [["design", "probe"]]);
+    assert_eq!(servers.iter().map(|list| list.iter().map(|entry| entry.token.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(), [["design", "probe"]]);
     assert_eq!(activity[..2], ["Checking MCP tool approval policies", "Starting Codex"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -1076,7 +1076,7 @@ async fn server_discovery_uses_the_supplied_cli_path() {
     std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
     let result = apex_adapters::claude_tool_servers(None, Some(dir.to_string_lossy().into_owned())).await;
     std::fs::remove_dir_all(&dir).unwrap();
-    assert_eq!(result.unwrap(), ["path-test"]);
+    assert_eq!(result.unwrap().iter().map(|entry| entry.token.as_str()).collect::<Vec<_>>(), ["path-test"]);
 }
 
 /// A stand-in for `codex app-server` with Deck's hook. It lists the hook
@@ -1238,6 +1238,28 @@ async fn codex_without_the_hook_falls_back_to_the_inventory_policy() {
         let (result, activity) = work_hooked(bot.as_ref(), &no).await;
         assert_eq!(result.unwrap().text, "allowed=1 denied=2");
         assert_eq!(activity[0], "Checking MCP tool approval policies");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn computer_use_app_permission_is_separate_from_an_outer_tool_approval() {
+    use apex_core::AgentTool;
+    let script = FAKE_MCP_CODEX
+        .replace(r#""_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{"quantity":"0.001"}}"#,
+            r#""message":"Allow Computer Use to use Apex Deck?","_meta":{"codex_approval_kind":"mcp_tool_call","connector_id":"computer-use","tool_params":{"app":"dev.apexdeck.app"}}"#)
+        .replace(r#""arguments\":{\"quantity\":\"0.001\"}"#,
+            r#""arguments\":{\"app\":\"dev.apexdeck.app\"}"#);
+    let dir = fake_tool("codex-app-permission", "codex", &script);
+    for decision in [Decision::Approve, Decision::Reject] {
+        let approver = Fixed::new(decision);
+        let bot = build(config("null",Backend::Agent{tool:AgentTool::Codex,model:None}), &context_in(&dir));
+        let (result, _, _) = work_asking(bot.as_ref(), &approver).await;
+        assert_eq!(result.unwrap().text, if decision == Decision::Approve {"allowed=3 denied=0"} else {"allowed=0 denied=3"});
+        let asked = approver.asked.lock().unwrap();
+        assert_eq!(asked.len(), 3, "even a read call must ask before app access");
+        assert!(asked.iter().all(|a| a.kind == ActionKind::Other && a.detail.contains("dev.apexdeck.app")));
     }
     std::fs::remove_dir_all(dir).unwrap();
 }

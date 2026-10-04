@@ -1,10 +1,11 @@
+import type { ToolServer } from "./types";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { menuItems, type MenuItem, type Trigger } from "./composerMenu";
 
 export type ComposerMenuHandle = { key: (event: React.KeyboardEvent) => boolean };
 export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   participants: { id: string; display_name: string }[];
-  servers: {agent: string; name: string}[];
+  servers: (ToolServer & {agent: string})[];
   serverStatus?: string;
   trigger: Trigger | null;
   choose: (item: MenuItem, trigger: Trigger | null) => void;

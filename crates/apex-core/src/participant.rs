@@ -60,7 +60,7 @@ pub type DeltaSink<'a> = &'a (dyn for<'s> Fn(&'s str) + Send + Sync);
 /// Something a participant reports while it works on a reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress<'a> {
-    ToolServers(&'a [String]),
+    ToolServers(&'a [crate::server_request::ToolServer]),
     /// A piece of the reply.
     Text(&'a str),
     /// What the participant is doing right now, such as reading a file or

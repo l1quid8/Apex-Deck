@@ -1,4 +1,22 @@
 //! Explicit server requests; never changes which servers are enabled.
+/// One addressable server, plugin, or app. Aliases are shared by the menu and validation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolServer {
+ pub token: String,
+ pub label: String,
+ pub aliases: Vec<String>,
+}
+impl From<String> for ToolServer {
+ fn from(name: String) -> Self {
+  Self { token: name.to_lowercase().split_whitespace().collect::<Vec<_>>().join("-"), label: name.clone(), aliases: vec![name] }
+ }
+}
+impl ToolServer {
+ pub fn matches(&self, name: &str) -> bool {
+  let key = normalize(name);
+  std::iter::once(&self.token).chain(self.aliases.iter()).any(|alias| normalize(alias) == key)
+ }
+}
 pub fn normalize(name: &str) -> String {
  name.to_lowercase().chars().filter(|c| !matches!(c, '-' | '_' | '.') && !c.is_whitespace()).collect()
 }
@@ -27,11 +45,11 @@ pub fn parse_server_requests(text: &str) -> Vec<String> {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct Resolved { pub matched: Vec<String>, pub unknown: Vec<String> }
-pub fn resolve(names: &[String], known: &[String]) -> Resolved {
+pub fn resolve(names: &[String], known: &[ToolServer]) -> Resolved {
  let mut result = Resolved { matched: vec![], unknown: vec![] };
  for name in names {
-  if let Some(server) = known.iter().find(|s| normalize(s) == normalize(name)) {
-   if !result.matched.contains(server) { result.matched.push(server.clone()); }
+  if let Some(server) = known.iter().find(|s| s.matches(name)) {
+   if !result.matched.contains(&server.token) { result.matched.push(server.token.clone()); }
   } else { result.unknown.push(name.clone()); }
  }
  result

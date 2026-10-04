@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types";
 // Everything the UI needs from the desktop shell goes through this
 // interface. Inside the desktop app it calls the Rust commands. In a plain
 // browser (npm run dev without Tauri) it falls back to a small stand-in so
@@ -10,7 +11,7 @@ type Unlisten = () => void;
 export interface Backend {
   /** True when running in a browser with no desktop shell behind it. */
   demo: boolean;
-  listToolServers(room: string, agent: string): Promise<string[]>;
+  listToolServers(room: string, agent: string): Promise<ToolServer[]>;
   detectAgents(): Promise<AgentInfo[]>;
   pickFolder(): Promise<string | null>;
   /** Folders passed on the command line when the app was started. */
@@ -80,7 +81,7 @@ async function tauriBackend(): Promise<Backend> {
 
   return {
     demo: false,
-    listToolServers: (room, agent) => invoke<string[]>("list_tool_servers", { room, agent }),
+    listToolServers: (room, agent) => invoke<ToolServer[]>("list_tool_servers", { room, agent }),
     detectAgents: () => invoke<AgentInfo[]>("agents_detect"),
     startupFolders: () => invoke<string[]>("startup_folders"),
     sessionLoad: () => invoke<AppSession | null>("session_load"),
@@ -308,7 +309,7 @@ function demoBackend(): Backend {
 
   return {
     demo: true,
-    listToolServers: async () => ["x-mcp", "hyperliquid", "computer-use"],
+    listToolServers: async () => ["x-mcp", "hyperliquid", "computer-use"].map(token => ({token, label: token, aliases: []})),
     detectAgents: async () => [
       { key: "claude", label: "Claude Code", program: "claude", found: true },
       { key: "codex", label: "Codex", program: "codex", found: true },

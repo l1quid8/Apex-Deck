@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.ts";
 export const normalizeServer = (name: string) => name.toLowerCase().replace(/[-_.\s]/g, '');
 export const serverToken = (name: string) => name.toLowerCase().replace(/\s+/g, '-');
 /** Preserve offsets while hiding Markdown code and escaped characters. */
@@ -29,11 +30,11 @@ export function parseServerRequests(text: string): {name:string;start:number;end
   }
   return found;
 }
-export function resolveServerRequests(names: string[], known: string[]) {
+export function resolveServerRequests(names: string[], known: ToolServer[]) {
   const matched: string[] = [], unknown: string[] = [];
   for (const name of names) {
-    const match = known.find(x => normalizeServer(x) === normalizeServer(name));
-    if (match) { if (!matched.includes(match)) matched.push(match); } else unknown.push(name);
+    const match = known.find(x => [x.token, ...x.aliases].some(alias => normalizeServer(alias) === normalizeServer(name)));
+    if (match) { if (!matched.includes(match.token)) matched.push(match.token); } else unknown.push(name);
   }
   return {matched,unknown};
 }

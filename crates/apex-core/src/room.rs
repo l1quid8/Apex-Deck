@@ -48,7 +48,7 @@ impl Default for RoomOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RoomEvent {
-    ToolServers { id: ParticipantId, servers: Vec<String> },
+    ToolServers { id: ParticipantId, servers: Vec<crate::server_request::ToolServer> },
     /// A message was added to the transcript.
     MessageAdded { message: Message },
     /// The participant holding the workspace edit reservation changed.
