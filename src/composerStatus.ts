@@ -11,6 +11,11 @@ export function replyingVerb(count: number): string {
   return count === 1 ? "is replying" : "are replying";
 }
 
+/** The verb after the names of bots stopped on an approval card. */
+export function waitingVerb(count: number): string {
+  return count === 1 ? "is waiting for you" : "are waiting for you";
+}
+
 /** What the composer says Enter will do, so the placeholder and hint never disagree. */
 export function composerCopy(busy: boolean, empty: boolean): { placeholder: string; hint: string } {
   if (empty) return { placeholder: "Add a model to start", hint: "↵ send · ⇧↵ new line" };

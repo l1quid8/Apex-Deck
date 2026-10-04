@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, replyingVerb, threadStatusOf, workingFor } from "../src/composerStatus.ts";
+import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, replyingVerb, threadStatusOf, waitingVerb, workingFor } from "../src/composerStatus.ts";
 
 test("names join the way a sentence would", () => {
   assert.equal(joinNames([]), "");
@@ -100,4 +100,9 @@ test("a terminal's head says how long it has been working", () => {
   assert.equal(workingFor(0, 59_999), "Working");
   assert.equal(workingFor(0, 60_000), "Working 1m");
   assert.equal(workingFor(0, 4 * 60_000 + 30_000), "Working 4m");
+});
+
+test("the waiting verb agrees with the count", () => {
+  assert.equal(waitingVerb(1), "is waiting for you");
+  assert.equal(waitingVerb(2), "are waiting for you");
 });
