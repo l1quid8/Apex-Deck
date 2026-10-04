@@ -76,6 +76,7 @@ version = "0.1.0"
 dependencies = [
  "apex-adapters",
  "apex-core",
+ "futures",
  "portable-pty",
  "serde",
  "serde_json",

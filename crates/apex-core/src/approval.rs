@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use crate::ParticipantId;
 use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
 
@@ -71,7 +72,7 @@ impl Approver for NoApprover {
 /// Proposals waiting for an answer.
 #[derive(Default)]
 pub struct ApprovalDesk {
-    waiting: Mutex<HashMap<String, oneshot::Sender<Decision>>>,
+    waiting: Mutex<HashMap<String, (Option<ParticipantId>, oneshot::Sender<Decision>)>>,
     next: AtomicU64,
 }
 
@@ -80,9 +81,17 @@ impl ApprovalDesk {
     /// will arrive. If the desk is dropped first, the answer is an error,
     /// which callers treat as a rejection.
     pub fn open(&self) -> (String, oneshot::Receiver<Decision>) {
+        self.open_owned(None)
+    }
+
+    pub fn open_for(&self, participant: ParticipantId) -> (String, oneshot::Receiver<Decision>) {
+        self.open_owned(Some(participant))
+    }
+
+    fn open_owned(&self, owner: Option<ParticipantId>) -> (String, oneshot::Receiver<Decision>) {
         let id = format!("ask-{}", self.next.fetch_add(1, Ordering::SeqCst) + 1);
         let (sender, receiver) = oneshot::channel();
-        self.waiting.lock().unwrap().insert(id.clone(), sender);
+        self.waiting.lock().unwrap().insert(id.clone(), (owner, sender));
         (id, receiver)
     }
 
@@ -90,7 +99,7 @@ impl ApprovalDesk {
     /// is waiting, for example because it was already answered.
     pub fn resolve(&self, request: &str, decision: Decision) -> bool {
         match self.waiting.lock().unwrap().remove(request) {
-            Some(sender) => sender.send(decision).is_ok(),
+            Some((_, sender)) => sender.send(decision).is_ok(),
             None => false,
         }
     }
@@ -100,10 +109,19 @@ impl ApprovalDesk {
     pub fn reject_all(&self) -> usize {
         let waiting: Vec<_> = self.waiting.lock().unwrap().drain().collect();
         let count = waiting.len();
-        for (_, sender) in waiting {
+        for (_, (_, sender)) in waiting {
             let _ = sender.send(Decision::Reject);
         }
         count
+    }
+
+    pub fn reject_for(&self, participant: &ParticipantId) -> usize {
+        let mut waiting = self.waiting.lock().unwrap();
+        let requests: Vec<_> = waiting.iter().filter(|(_, (owner, _))| owner.as_ref() == Some(participant)).map(|(id, _)| id.clone()).collect();
+        for request in &requests {
+            if let Some((_, sender)) = waiting.remove(request) { let _ = sender.send(Decision::Reject); }
+        }
+        requests.len()
     }
 
     pub fn waiting(&self) -> usize {

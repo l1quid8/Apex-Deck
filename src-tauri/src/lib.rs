@@ -16,18 +16,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use apex_adapters::BuildContext;
-use apex_core::{Access, AgentTool, ModelChoice, ParticipantConfig, ParticipantId, Room, RoomEvent, RoomOptions, RoomSnapshot};
+use apex_core::{Access, AgentTool, ModelChoice, ParticipantConfig, ParticipantId, Room, ConcurrentRoom, TurnBatch, RoomEvent, RoomOptions, RoomSnapshot};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use pty::{PtyManager, SpawnOptions};
 use storage::{SavedRoom, Store};
 
+#[derive(Clone)]
 struct RoomHandle {
-    room: Arc<tokio::sync::Mutex<Room>>,
+    room: Arc<futures::lock::Mutex<Room>>,
+    runtime: ConcurrentRoom,
+    checkpoint: Arc<Mutex<SavedRoom>>,
+    deleted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     /// Actions the room's participants have proposed and are waiting on.
-    /// Reached without the room's lock, which a running turn holds.
+    /// Reached without the transcript lock while a provider is running.
     approvals: Arc<apex_core::ApprovalDesk>,
     /// Where this room's command-line participants run.
     context: BuildContext,
@@ -40,7 +44,15 @@ struct AppState {
 }
 
 impl AppState {
-    fn room(&self, id: &str) -> Result<Arc<tokio::sync::Mutex<Room>>, String> {
+    fn handle(&self, id: &str) -> Result<RoomHandle, String> {
+        self.rooms.lock().unwrap().get(id).cloned().ok_or_else(|| format!("no group chat with id {id}"))
+    }
+
+    fn require_idle(&self, id: &str) -> Result<(), String> {
+        if self.handle(id)?.runtime.busy() { Err("wait for the models to finish first".into()) } else { Ok(()) }
+    }
+
+    fn room(&self, id: &str) -> Result<Arc<futures::lock::Mutex<Room>>, String> {
         self.rooms
             .lock()
             .unwrap()
@@ -223,71 +235,134 @@ fn room_create(
     store.save_room(&id, &SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
     let stop = room.stop_handle();
     let approvals = room.approvals_handle();
+    let runtime = ConcurrentRoom::new(room);
+    let checkpoint = Arc::new(Mutex::new(SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
     state
         .rooms
         .lock()
         .unwrap()
-        .insert(id, RoomHandle { room: Arc::new(tokio::sync::Mutex::new(room)), stop, approvals, context });
+        .insert(id, RoomHandle { room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, approvals, context });
     Ok(snapshot)
 }
 
-/// Send a human message and let the room answer. Returns when the room is
-/// idle again; replies arrive as `room-event` events while it runs.
-#[tauri::command]
-async fn room_post(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    store: State<'_, Store>,
-    id: String,
-    text: String,
-) -> Result<(), String> {
-    let room = state.room(&id)?;
-    let mut room = room.lock().await;
-    if room.baseline().is_none() {
-        if let Some(cwd) = state.room_context(&id)?.cwd {
-            if let Ok(Ok(tree)) = tokio::task::spawn_blocking(move || changes::snapshot(&cwd)).await {
-                room.set_baseline(tree);
+/// One shared checkpoint for all running chains. Completed messages are saved
+/// before emission; a failed write cancels work and is reported to the caller.
+fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent) -> Result<(), String> {
+    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. }) { return Ok(()); }
+    let mut checkpoint = handle.checkpoint.lock().unwrap();
+    if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
+    match event {
+        RoomEvent::MessageAdded { message } => checkpoint.snapshot.transcript.push(message.clone()),
+        RoomEvent::Changed { id, change } => {
+            let seq = checkpoint.snapshot.transcript.len();
+            checkpoint.snapshot.changes.push(apex_core::ChangeRecord { by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
+        }
+        _ => {}
+    }
+    store.save_room(id, &checkpoint)
+}
+
+fn turn_sink<'a>(app: &'a AppHandle, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
+    move |event| {
+        // The desktop emits room-wide Idle only after the final snapshot
+        // (including cursors) is saved by run_batch.
+        if matches!(event, RoomEvent::Idle) { return; }
+        if let Err(why) = persist_event(handle, &app.state::<Store>(), id, &event) {
+            *error.lock().unwrap() = Some(why.clone());
+            handle.runtime.stop(None);
+            handle.approvals.reject_all();
+            let _ = app.emit("room-event", RoomEventPayload { room: id, event: RoomEvent::Failed { id: ParticipantId::new("storage"), error: why } });
+            return;
+        }
+        if !handle.deleted.load(Ordering::SeqCst) {
+            let _ = app.emit("room-event", RoomEventPayload { room: id, event });
+        }
+    }
+}
+
+async fn prepare_post(app: &AppHandle, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>) -> Result<TurnBatch, String> {
+    {
+        let mut room = handle.room.lock().await;
+        if room.baseline().is_none() {
+            if let Some(cwd) = handle.context.cwd.clone() {
+                if let Ok(Ok(tree)) = tokio::task::spawn_blocking(move || changes::snapshot(&cwd)).await { room.set_baseline(tree); }
             }
         }
     }
-    let cwd = state.room_context(&id)?.cwd.map(|p| p.to_string_lossy().into_owned());
-    let checkpoint = Mutex::new(SavedRoom { cwd, snapshot: room.snapshot() });
-    let save_error = Mutex::new(None);
-    let stop = room.stop_handle();
-    room.post_human(&text, &|event| {
-        // Save each completed message before showing it, including the human
-        // message while a model is still running. Partial streams are transient.
-        if let RoomEvent::MessageAdded { message } = &event {
-            let mut saved = checkpoint.lock().unwrap();
-            saved.snapshot.transcript.push(message.clone());
-            if let Err(error) = store.save_room(&id, &saved) {
-                *save_error.lock().unwrap() = Some(error);
-                stop.store(true, Ordering::SeqCst);
-            }
-        }
-        if let RoomEvent::Changed { id: by, change } = &event {
-            let mut saved = checkpoint.lock().unwrap();
-            let seq = saved.snapshot.transcript.len();
-            saved.snapshot.changes.push(apex_core::ChangeRecord { by: by.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
-            let _ = store.save_room(&id, &saved);
-        }
+    let error = Mutex::new(None);
+    let batch = handle.runtime.begin_post(text, targets, &turn_sink(app, id, handle, &error)).await?;
+    if let Some(why) = error.into_inner().unwrap() { return Err(why); }
+    checkpoint_room(handle, &app.state::<Store>(), id).await?;
+    Ok(batch)
+}
 
-        let _ = app.emit("room-event", RoomEventPayload { room: &id, event });
-    }).await;
-    let mut saved = checkpoint.into_inner().unwrap();
-    saved.snapshot = room.snapshot();
-    store.save_room(&id, &saved)?;
-    if let Some(error) = save_error.into_inner().unwrap() { return Err(error); }
+async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
+    let room = handle.room.lock().await;
+    let mut checkpoint = handle.checkpoint.lock().unwrap();
+    if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
+    checkpoint.snapshot = room.snapshot();
+    store.save_room(id, &checkpoint)
+}
+
+async fn run_batch(app: &AppHandle, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
+    let error = Mutex::new(None);
+    handle.runtime.run(batch, &turn_sink(app, id, handle, &error)).await;
+    checkpoint_room(handle, &app.state::<Store>(), id).await?;
+    if let Some(why) = error.into_inner().unwrap() { return Err(why); }
+    let _room = handle.room.lock().await;
+    if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
+        let _ = app.emit("room-event", RoomEventPayload { room: id, event: RoomEvent::Idle });
+    }
     Ok(())
 }
 
-/// Ask a room to stop after the turn in progress.
+/// Compatibility command for the existing UI; resolves when this chain ends.
 #[tauri::command]
-fn room_stop(state: State<'_, AppState>, id: String) {
-    if let Some(handle) = state.rooms.lock().unwrap().get(&id) {
-        handle.stop.store(true, Ordering::SeqCst);
-        // A turn waiting on a yes or no would otherwise wait for ever.
-        handle.approvals.reject_all();
+async fn room_post(app: AppHandle, state: State<'_, AppState>, id: String, text: String) -> Result<(), String> {
+    let handle = state.handle(&id)?;
+    let batch = prepare_post(&app, &id, &handle, &text, None).await?;
+    run_batch(&app, &id, &handle, batch).await
+}
+
+#[tauri::command]
+async fn room_targets(state: State<'_, AppState>, id: String, text: String) -> Result<Vec<ParticipantId>, String> {
+    Ok(state.handle(&id)?.runtime.targets(&text).await)
+}
+
+/// Saves the human message once, then runs targets in the background.
+#[tauri::command]
+async fn room_post_to(app: AppHandle, state: State<'_, AppState>, id: String, text: String, targets: Vec<ParticipantId>) -> Result<(), String> {
+    let handle = state.handle(&id)?;
+    let batch = prepare_post(&app, &id, &handle, &text, Some(targets)).await?;
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = run_batch(&app, &id, &handle, batch).await {
+            let _ = app.emit("room-event", RoomEventPayload { room: &id, event: RoomEvent::Failed { id: ParticipantId::new("storage"), error } });
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn room_turn(app: AppHandle, state: State<'_, AppState>, id: String, participant: ParticipantId) -> Result<(), String> {
+    let handle = state.handle(&id)?;
+    let batch = handle.runtime.begin_turn(participant).await?;
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = run_batch(&app, &id, &handle, batch).await {
+            let _ = app.emit("room-event", RoomEventPayload { room: &id, event: RoomEvent::Failed { id: ParticipantId::new("storage"), error } });
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn room_stop(state: State<'_, AppState>, id: String, participant: Option<ParticipantId>) {
+    if let Ok(handle) = state.handle(&id) {
+        handle.runtime.stop(participant.as_ref());
+        if let Some(participant) = participant { handle.approvals.reject_for(&participant); }
+        else {
+            handle.stop.store(true, Ordering::SeqCst);
+            handle.approvals.reject_all();
+        }
     }
 }
 
@@ -314,7 +389,13 @@ async fn room_set_options(
     id: String,
     options: RoomOptions,
 ) -> Result<(), String> {
-    state.room(&id)?.lock().await.set_options(options);
+    state.require_idle(&id)?;
+    {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        state.require_idle(&id)?;
+        room.set_options(options);
+    }
     save_room(&state, &store, &id).await
 }
 
@@ -326,10 +407,16 @@ async fn room_add_participant(
     id: String,
     participant: ParticipantConfig,
 ) -> Result<(), String> {
+    state.require_idle(&id)?;
     let name = participant.id.clone();
     let context = state.room_context(&id)?;
     read_plans(&app, &id, std::slice::from_ref(&participant), &context);
-    let changed = state.room(&id)?.lock().await.add_participant(apex_adapters::build(participant, &context));
+    let changed = {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        state.require_idle(&id)?;
+        room.add_participant(apex_adapters::build(participant, &context))
+    };
     if changed {
         save_room(&state, &store, &id).await
     } else {
@@ -347,10 +434,16 @@ async fn room_update_participant(
     id: String,
     participant: ParticipantConfig,
 ) -> Result<(), String> {
+    state.require_idle(&id)?;
     let name = participant.id.clone();
     let context = state.room_context(&id)?;
     read_plans(&app, &id, std::slice::from_ref(&participant), &context);
-    let changed = state.room(&id)?.lock().await.replace_participant(apex_adapters::build(participant, &context));
+    let changed = {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        state.require_idle(&id)?;
+        room.replace_participant(apex_adapters::build(participant, &context))
+    };
     if changed {
         save_room(&state, &store, &id).await
     } else {
@@ -365,20 +458,31 @@ async fn room_remove_participant(
     id: String,
     participant: ParticipantId,
 ) -> Result<(), String> {
-    state.room(&id)?.lock().await.remove_participant(&participant);
+    state.require_idle(&id)?;
+    {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        state.require_idle(&id)?;
+        room.remove_participant(&participant);
+    }
     save_room(&state, &store, &id).await
 }
 
 /// Empty a chat's transcript, keeping its participants and settings.
 #[tauri::command]
 async fn room_clear(state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<(), String> {
-    state.room(&id)?.lock().await.clear();
+    state.require_idle(&id)?;
+    {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        state.require_idle(&id)?;
+        room.clear();
+    }
     save_room(&state, &store, &id).await
 }
 
 /// Pin a fact for every model in this chat. Returns the pins now in place.
-/// While models are working this waits for the room, so the pin applies
-/// from the next turn.
+/// A new pin applies from each participant's next request.
 #[tauri::command]
 async fn room_pin(state: State<'_, AppState>, store: State<'_, Store>, id: String, fact: String) -> Result<Vec<String>, String> {
     let pins = {
@@ -408,10 +512,12 @@ async fn room_unpin(state: State<'_, AppState>, store: State<'_, Store>, id: Str
 /// when the summary is saved; its progress arrives as `room-event` events.
 #[tauri::command]
 async fn room_compact(app: AppHandle, state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<(), String> {
+    state.require_idle(&id)?;
     let context = state.room_context(&id)?;
     {
         let room = state.room(&id)?;
         let mut room = room.lock().await;
+        state.require_idle(&id)?;
         let mut config = room.summarizer().ok_or("add a participant before compacting")?;
         // Writing a summary needs no edits or commands.
         config.access = Access::Read;
@@ -427,6 +533,7 @@ async fn room_compact(app: AppHandle, state: State<'_, AppState>, store: State<'
 #[tauri::command]
 fn room_close(state: State<'_, AppState>, id: String) {
     if let Some(handle) = state.rooms.lock().unwrap().remove(&id) {
+        handle.runtime.stop(None);
         handle.stop.store(true, Ordering::SeqCst);
         handle.approvals.reject_all();
     }
@@ -540,8 +647,20 @@ fn session_save(store: State<'_, Store>, session: serde_json::Value) -> Result<(
 
 #[tauri::command]
 fn room_delete(state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<(), String> {
+    let handle = state.handle(&id).ok();
     room_close(state, id.clone());
-    store.delete_room(&id)
+    match handle {
+        Some(handle) => delete_checkpoint(&handle, &store, &id),
+        None => store.delete_room(&id),
+    }
+}
+
+fn delete_checkpoint(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
+    let _checkpoint = handle.checkpoint.lock().unwrap();
+    // Serialize the deletion with every event and snapshot save, so an
+    // interrupted task cannot recreate a room after it has been deleted.
+    handle.deleted.store(true, Ordering::SeqCst);
+    store.delete_room(id)
 }
 
 /// Save an exported thread in the Downloads folder. Returns where it went.
@@ -618,10 +737,7 @@ async fn room_fork(state: State<'_, AppState>, store: State<'_, Store>, source: 
 }
 
 async fn save_room(state: &AppState, store: &Store, id: &str) -> Result<(), String> {
-    let cwd = state.room_context(id)?.cwd.map(|p| p.to_string_lossy().into_owned());
-    let room = state.room(id)?;
-    let room = room.lock().await;
-    store.save_room(id, &SavedRoom { cwd, snapshot: room.snapshot() })
+    checkpoint_room(&state.handle(id)?, store, id).await
 }
 
 // ---------------------------------------------------------------- app
@@ -653,6 +769,9 @@ pub fn run() {
             copy_attachment,
             room_create,
             room_post,
+            room_targets,
+            room_post_to,
+            room_turn,
             room_stop,
             room_decide,
             room_set_options,
@@ -680,7 +799,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{folders_from_args, open_command, resolve_target, OpenTarget};
+    use super::*;
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -722,6 +841,51 @@ mod tests {
         assert!(resolve_target("javascript://alert(1)", None).is_err());
         assert!(resolve_target("ssh://host/x", Some(&cwd)).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn checkpoint_fixture(name: &str) -> (RoomHandle, Store, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("apex-checkpoint-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let runtime = ConcurrentRoom::new(Room::new(vec![
+            Arc::new(apex_core::testing::ScriptedParticipant::new("null", &["null answer"])),
+            Arc::new(apex_core::testing::ScriptedParticipant::new("jigga", &["jigga answer"])),
+        ], RoomOptions::default()));
+        let room = runtime.room();
+        let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
+        let handle = RoomHandle { stop: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
+            checkpoint: Arc::new(Mutex::new(SavedRoom { cwd: None, snapshot })), deleted: Arc::default() };
+        (handle, Store::new(path.clone()), path)
+    }
+
+    #[test]
+    fn concurrent_checkpoints_keep_both_chains_and_restore_all_messages() {
+        let (handle, store, path) = checkpoint_fixture("concurrent");
+        let sink = |event| persist_event(&handle, &store, "room", &event).unwrap();
+        futures::executor::block_on(async {
+            let null = handle.runtime.begin_post("@null work", None, &sink).await.unwrap();
+            let jigga = handle.runtime.begin_post("@jigga plan", None, &sink).await.unwrap();
+            futures::join!(handle.runtime.run(null, &sink), handle.runtime.run(jigga, &sink));
+            checkpoint_room(&handle, &store, "room").await.unwrap();
+            let saved = store.room("room").unwrap().unwrap();
+            assert_eq!(saved.snapshot.transcript, handle.room.lock().await.snapshot().transcript);
+            assert_eq!(saved.snapshot.transcript.len(), 4);
+            assert_eq!(saved.snapshot.cursors.len(), 2);
+        });
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn deleted_chat_cannot_be_recreated_by_a_late_turn_save() {
+        let (handle, store, path) = checkpoint_fixture("delete");
+        let sink = |event| persist_event(&handle, &store, "room", &event).unwrap();
+        futures::executor::block_on(async {
+            let batch = handle.runtime.begin_post("@null work", None, &sink).await.unwrap();
+            delete_checkpoint(&handle, &store, "room").unwrap();
+            handle.runtime.run(batch, &sink).await;
+            checkpoint_room(&handle, &store, "room").await.unwrap();
+            assert!(store.room("room").unwrap().is_none());
+        });
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -40,3 +40,43 @@ test('literal command text cannot become compaction without explicit kind', asyn
   q.resume(); await tick();
   assert.deepEqual(sent, [{text:'/clear',kind:'message'}, {text:'/compact',kind:'compact'}]);
 });
+
+test('participant queues let idle Jigga start while Null works', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async text => [text.includes('jigga') ? 'jigga' : 'null'], async (text, to) => sent.push({text,to}), async () => {}, () => {});
+  await q.send('@null first'); await q.send('@null later'); await q.send('@jigga plan');
+  assert.deepEqual(sent.map(x=>x.text), ['@null first', '@jigga plan']);
+  q.idle('null'); await tick();
+  assert.deepEqual(sent.map(x=>x.text), ['@null first', '@jigga plan', '@null later']);
+});
+
+test('steering and stopping Null preserve Jigga and its queue', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [], stops = [];
+  let q;
+  q = new ParticipantQueues(async text => [text.includes('jigga') ? 'jigga' : 'null'], async text => {sent.push(text)}, async id => {stops.push(id); q.idle(id)}, () => {});
+  await q.send('@null first'); await q.send('@jigga first'); await q.send('@jigga later');
+  await q.steer('null', '@null steer'); await tick();
+  assert.deepEqual(stops, ['null']); assert.equal(q.state.jigga, 'working');
+  assert.equal(q.items[0].text, '@jigga later'); assert.ok(sent.includes('@null steer'));
+  await q.halt('null'); assert.equal(q.items[0].text, '@jigga later');
+});
+
+test('failure pauses only the failed participant', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async text => [text.includes('jigga') ? 'jigga' : 'null'], async text => {sent.push(text); if(text==='@null fail') throw Error('offline')}, async()=>{}, ()=>{});
+  await q.send('@null fail'); await q.send('@null later'); await q.send('@jigga plan');
+  assert.deepEqual(sent, ['@null fail', '@jigga plan']); assert.equal(q.items.length, 1);
+});
+
+test('compaction waits for all models and blocks new participant turns until settled', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = []; let release;
+  const q = new ParticipantQueues(async text => [text.includes('jigga') ? 'jigga' : 'null'], async (text, _to, kind) => { sent.push(text); if(kind==='compact') await new Promise(r=>release=r); }, async()=>{}, ()=>{});
+  await q.send('@null first'); await q.send('/compact','compact');
+  q.idle('null'); await tick();
+  await q.send('@jigga later'); assert.deepEqual(sent, ['@null first', '/compact']);
+  release(); await tick(); assert.deepEqual(sent, ['@null first', '/compact', '@jigga later']);
+});

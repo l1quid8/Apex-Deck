@@ -50,6 +50,8 @@ impl Default for RoomOptions {
 pub enum RoomEvent {
     /// A message was added to the transcript.
     MessageAdded { message: Message },
+    /// The participant holding the workspace edit reservation changed.
+    EditorChanged { id: Option<ParticipantId> },
     /// A participant started writing.
     TurnStarted { id: ParticipantId },
     /// A piece of a reply that is still being written.
@@ -84,11 +86,13 @@ pub enum RoomEvent {
     Stopped,
     /// The room finished handling the human message.
     Idle,
+    /// This participant has released its turn slot.
+    ParticipantIdle { id: ParticipantId },
 }
 
 type EventSink<'a> = &'a (dyn Fn(RoomEvent) + Send + Sync);
 
-fn progress_event(id: &ParticipantId, update: Progress<'_>) -> RoomEvent {
+pub(crate) fn progress_event(id: &ParticipantId, update: Progress<'_>) -> RoomEvent {
     match update {
         Progress::Text(text) => RoomEvent::Delta { id: id.clone(), text: text.to_string() },
         Progress::Activity(text) => RoomEvent::Activity { id: id.clone(), text: text.to_string() },
@@ -113,16 +117,16 @@ fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
 
 /// Puts a participant's proposal in front of the person and waits for
 /// their answer.
-struct RoomApprover<'a> {
-    desk: &'a ApprovalDesk,
-    id: &'a ParticipantId,
-    on_event: EventSink<'a>,
+pub(crate) struct RoomApprover<'a> {
+    pub(crate) desk: &'a ApprovalDesk,
+    pub(crate) id: &'a ParticipantId,
+    pub(crate) on_event: EventSink<'a>,
 }
 
 #[async_trait]
 impl Approver for RoomApprover<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
-        let (request, answer) = self.desk.open();
+        let (request, answer) = self.desk.open_for(self.id.clone());
         (self.on_event)(RoomEvent::ApprovalRequested { id: self.id.clone(), request: request.clone(), action });
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = answer.await.unwrap_or(Decision::Reject);
@@ -264,6 +268,8 @@ impl Room {
         }
     }
 
+    pub(crate) fn record_changes(&mut self, changes: Vec<ChangeRecord>) { self.changes.extend(changes); }
+
     pub fn baseline(&self) -> Option<&str> {
         self.baseline.as_deref()
     }
@@ -386,7 +392,7 @@ impl Room {
         let outsider = ParticipantId::new("");
         let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
-        let request = TurnRequest { system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new() };
+        let request = TurnRequest { access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new() };
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
@@ -422,7 +428,7 @@ impl Room {
         Arc::clone(&self.stop)
     }
 
-    fn has(&self, id: &ParticipantId) -> bool {
+    pub(crate) fn has(&self, id: &ParticipantId) -> bool {
         self.roster.iter().any(|p| &p.config().id == id)
     }
 
@@ -434,13 +440,13 @@ impl Room {
         self.stop.load(Ordering::SeqCst)
     }
 
-    fn push(&mut self, speaker: Speaker, text: String, on_event: EventSink<'_>) {
+    pub(crate) fn push(&mut self, speaker: Speaker, text: String, on_event: EventSink<'_>) {
         let message = Message { seq: self.transcript.len(), speaker, text };
         self.transcript.push(message.clone());
         on_event(RoomEvent::MessageAdded { message });
     }
 
-    fn targets_for_human(&mut self, text: &str) -> Vec<ParticipantId> {
+    pub fn resolve_targets(&self, text: &str) -> Vec<ParticipantId> {
         let configs = self.configs();
         let targets = match parse_mentions(text, &configs) {
             MentionTarget::Everyone => self.all_ids(),
@@ -458,11 +464,20 @@ impl Room {
                 }
             },
         };
+        targets
+    }
+
+    pub(crate) fn remember_targets(&mut self, targets: Vec<ParticipantId>) {
+        self.last_targets = targets;
+    }
+
+    pub(crate) fn targets_for_human(&mut self, text: &str) -> Vec<ParticipantId> {
+        let targets = self.resolve_targets(text);
         self.last_targets = targets.clone();
         targets
     }
 
-    fn request_for(&self, id: &ParticipantId) -> Option<(Arc<dyn Participant>, TurnRequest)> {
+    pub(crate) fn request_for(&self, id: &ParticipantId) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let participant = self.roster.iter().find(|p| &p.config().id == id)?.clone();
         let configs = self.configs();
         // What the summary covers counts as seen.
@@ -474,6 +489,7 @@ impl Room {
             .cloned()
             .collect();
         let request = TurnRequest {
+            access: Some(participant.config().access),
             system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins),
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
@@ -482,7 +498,7 @@ impl Room {
     }
 
     /// Record the outcome of one turn. Returns the ids this reply addressed.
-    fn settle(
+    pub(crate) fn settle(
         &mut self,
         id: &ParticipantId,
         shown: usize,
@@ -522,7 +538,7 @@ impl Room {
     /// Run one wave of turns. Returns the participants the replies addressed,
     /// Drop the provider future promptly on Stop. Its child is kill-on-drop.
     /// Preserve streamed text so a replacement model can see the unfinished work.
-    async fn interruptible(
+    pub(crate) async fn interruptible(
         participant: &dyn Participant, request: TurnRequest,
         stop: Arc<AtomicBool>, progress: ProgressSink<'_>, approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {

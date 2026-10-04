@@ -118,6 +118,8 @@ export interface Message {
 export type RoomEvent =
   | { type: "message_added"; message: Message }
   | { type: "turn_started"; id: string }
+  | { type: "participant_idle"; id: string }
+  | { type: "editor_changed"; id: string | null }
   | { type: "delta"; id: string; text: string }
   /** What a participant is doing mid-turn, such as reading a file. */
   | { type: "activity"; id: string; text: string }

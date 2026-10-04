@@ -146,6 +146,20 @@ mod tests {
     }
 
     #[test]
+    fn configured_mcp_servers_and_plugins_are_not_disabled() {
+        for tool in [AgentTool::ClaudeCode, AgentTool::Codex, AgentTool::Gemini] {
+            for access in [Access::Read, Access::Ask, Access::Edits, Access::Full] {
+                let (_, args) = agent_command(tool, None, None, access);
+                for arg in args {
+                    assert!(!arg.contains("mcp"), "unexpected MCP override: {arg}");
+                    assert!(!arg.contains("features.plugins=false"));
+                    assert!(!arg.contains("features.apps=false"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn claude_code_commands() {
         assert_eq!(
             line(AgentTool::ClaudeCode, None, Access::Read),

@@ -10,6 +10,7 @@
 //! live in `apex-adapters`.
 
 mod approval;
+mod concurrent;
 mod mention;
 mod participant;
 mod room;
@@ -17,6 +18,7 @@ pub mod testing;
 mod types;
 mod view;
 
+pub use concurrent::{ConcurrentRoom, TurnBatch};
 pub use approval::{ActionKind, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
 pub use mention::{handle_for, parse_mentions, MentionTarget};
 pub use participant::{

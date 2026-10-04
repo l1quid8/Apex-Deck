@@ -1661,3 +1661,17 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .attachment img { height: 100%; width: auto; max-width: 120px; object-fit: cover; }
 .attachment-name { padding: 0 28px 0 10px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment > button { position: absolute; top: 2px; right: 2px; background: #000a; border-radius: 4px; }
+
+/* Per-participant turns keep the composer compact at every activity level. */
+.composer-actions { flex-direction: row; align-items: flex-start; position: relative; }
+.queued-messages { padding: 5px 8px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; }
+.queued-messages > summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queued-message { align-items: center; }
+.recipient-hint { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.participant-status { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--muted); }
+.participant-status.thinking, .participant-status.writing { background: #92b0c9; }
+.participant-status.tool { background: #cbb079; }
+.editor-badge { font-size: 10px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; }
+.turn-controls > summary { cursor: pointer; list-style: none; padding: 9px; }
+.turn-controls-menu { position: absolute; right: 0; bottom: 100%; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px; min-width: 180px; }
+.turn-controls-menu > div { display: flex; flex-direction: column; }

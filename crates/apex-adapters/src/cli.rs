@@ -422,6 +422,17 @@ impl Participant for CliParticipant {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
+        // Rebuild both CLI launch paths with the scheduler's effective access.
+        // Arbitrary custom commands cannot enforce a scoped read-only turn.
+        if request.access.is_some_and(|access| access != self.config.access) {
+            if matches!(self.config.backend, Backend::Cli { .. }) {
+                return Err(ParticipantError::Failed("custom CLI cannot enforce read-only access while another participant edits".into()));
+            }
+            let mut config = self.config.clone();
+            config.access = request.access.unwrap();
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone() };
+            return scoped.respond_with_approvals(request, on_progress, approver).await;
+        }
         let (program, args, format) = self.command_line()?;
         let program = program.as_str();
         let prompt = render_prompt(&request.system, &request.turns);

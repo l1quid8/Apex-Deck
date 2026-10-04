@@ -20,7 +20,7 @@ import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from ".
 import { DiffPanel } from "./DiffPanel";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
-import { TurnQueue, type QueuedMessage, type TurnKind } from "./turnQueue";
+import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
@@ -354,8 +354,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
   const composerMenu = useRef<ComposerMenuHandle>(null);
-  const [queued, setQueued] = useState<QueuedMessage[]>([]);
+  const [queued, setQueued] = useState<ParticipantMessage[]>([]);
   const [queuePaused, setQueuePaused] = useState(false);
+  const [editor, setEditor] = useState<string | null>(null);
+  const [recipients, setRecipients] = useState<string[]>([]);
   const [reply, setReply] = useState<ReplyQuote | null>(null);
   const [adding, setAdding] = useState(false);
   const installed = (preset: Preset) => !preset.agent || agents.some((a) => a.key === preset.agent!.detectKey && a.found);
@@ -442,7 +444,17 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           }
           setEntries((list) => [...list, { kind: "message", message: event.message }]);
           break;
+        case "editor_changed":
+          setEditor(event.id);
+          break;
+        case "participant_idle":
+          setDrafts(({ [event.id]: _done, ...rest }) => rest);
+          setWorking(({ [event.id]: _done, ...rest }) => rest);
+          setAsks(({ [event.id]: _done, ...rest }) => rest);
+          turnQueue.idle(event.id);
+          break;
         case "turn_started":
+          turnQueue.started(event.id);
           setDrafts((d) => ({ ...d, [event.id]: "" }));
           setNow(Date.now());
           setWorking((w) => ({ ...w, [event.id]: { startedAt: Date.now(), steps: [], phase: "thinking" } }));
@@ -501,6 +513,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           notify(`${nameOf(event.id)} had nothing to add.`);
           break;
         case "failed":
+          turnQueue.error(event.id);
           setDrafts(({ [event.id]: _gone, ...rest }) => rest);
           setWorking(({ [event.id]: _gone, ...rest }) => rest);
           round.current.failed.push(nameOf(event.id));
@@ -525,12 +538,13 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           notify("Stopped.");
           break;
         case "idle": {
+          if (turnQueue.active) break;
           if (showChangesRef.current) refreshDiff.current();
           // A round the person stopped themselves needs no flag.
           const wants = round.current.stopped ? null : afterRound(round.current.failed, round.current.lastReply);
           if (wants) signal.current?.(pane.id, wants.kind, wants.note);
           round.current = { failed: [], lastReply: null, stopped: false };
-          setBusy(false);
+          setBusy(turnQueue.active);
           setDrafts({});
           setWorking({});
           setAsks({});
@@ -665,28 +679,30 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     setText("");
     setReply(null);
     setBusy(true);
-    turnQueue.send("/compact", "compact");
+    void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
   };
 
-  const dispatch = useRef<(message: string, kind: TurnKind) => Promise<void>>(async () => {});
-  dispatch.current = async (message, kind) => {
-    setBusy(true);
-    try {
-      if (kind === "compact") await backend.roomCompact(pane.id);
-      else await backend.roomPost(pane.id, message);
-    } catch (error) {
-      // Compaction failures return through the command without a Failed
-      // room event. Remove their transient draft and activity as well.
-      setDrafts({}); setWorking({}); setAsks({});
-      throw error;
-    } finally { setBusy(false); }
+  const dispatch = useRef<(message: string, to: string[], kind: TurnKind) => Promise<void>>(async () => {});
+  dispatch.current = async (message, to, kind) => {
+    if (kind === "compact") {
+      try { await backend.roomCompact(pane.id); }
+      finally { to.forEach(id => turnQueue.idle(id)); }
+    } else await backend.roomPostTo(pane.id, message, to);
   };
-  const [turnQueue] = useState(() => new TurnQueue(
-    (message, kind) => dispatch.current(message, kind),
-    () => backend.roomStop(pane.id),
-    setQueued,
-    (error) => { notify(`Could not send: ${String(error)}. Queued messages are paused.`, "error"); setQueuePaused(true); },
+  const [turnQueue] = useState(() => new ParticipantQueues(
+    message => backend.roomTargets(pane.id, message),
+    (message, to, kind) => dispatch.current(message, to, kind),
+    id => backend.roomStop(pane.id, id),
+    items => { setQueued(items); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },
+    error => { notify(`Could not send: ${String(error)}. Affected queues are paused.`, "error"); },
   ));
+  useEffect(() => {
+    let alive = true;
+    const timer = setTimeout(() => {
+      if (ready && busy) void backend.roomTargets(pane.id, text).then(ids => { if (alive) setRecipients(ids); }).catch(() => {});
+    }, 150);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [text, ready, busy, pane.id]);
   const forkAt = (title: string, upto: number | null) => {
     if (!onFork) return notify("Forking is available in workspace threads.", "error");
     return onFork(title, upto)
@@ -785,8 +801,13 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     setText(""); setReply(null);
     attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
     setAttached([]);
-    if (steer) { setQueuePaused(false); void turnQueue.steer(message); }
-    else turnQueue.send(message);
+    if (steer) {
+      void backend.roomTargets(pane.id, message).then(async ids => {
+        const target = ids.find(id => turnQueue.state[id] === "working");
+        if (target) await turnQueue.steer(target, message);
+        else await turnQueue.send(message);
+      }).catch(error => notify(String(error), "error"));
+    } else void turnQueue.send(message).catch(error => notify(String(error), "error"));
   };
 
   const mention = (id: string) => {
@@ -1129,7 +1150,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             <span className="chip" style={{ borderColor: color(p.id) }}>
               <button className="chip-name" onClick={() => mention(p.id)} title={`Mention @${p.id}`}>
                 <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
+                <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
                 {p.display_name}
+                {queued.some(item => item.to.includes(p.id)) && <span className="chip-meta">{queued.filter(item => item.to.includes(p.id)).length} queued</span>}
+                {editor === p.id && <span className="editor-badge">editing</span>}
                 <span className="chip-meta chip-description">{describe(p)}</span>
                 {(levels.context !== null || levels.plan !== null) && (
                   <span className="chip-meta chip-levels">
@@ -1284,9 +1308,10 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
-        {queued.length > 0 && <div className="queued-messages" aria-label="Queued messages">
-          <span className="muted">{queuePaused ? "Queue paused" : "Queued for the next turn"}</span>
+        {queued.length > 0 && <details className="queued-messages" aria-label="Queued messages">
+          <summary>{queuePaused ? "Paused" : "Queued"} ({queued.length}) · {queued[0].to.map(id => names.get(id) ?? id).join(", ")}: “{queued[0].text.slice(0, 65)}”</summary>
           {queued.map(item => <div className="queued-message" key={item.id}>
+            <span>{item.to.map(id => names.get(id) ?? id).join(", ")}</span>
             <textarea aria-label={`Queued message ${item.id}`} rows={2} defaultValue={item.text} onBlur={e => {
               if (e.target.value === item.text) return;
               const parsed = parseQueueEdit(e.target.value);
@@ -1297,7 +1322,8 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
             <button className="icon" aria-label="Remove queued message" onClick={() => turnQueue.remove(item.id)}>×</button>
           </div>)}
           {queuePaused && <button className="ghost" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume queue</button>}
-        </div>}
+        </details>}
+        {busy && <div className="recipient-hint">To {recipients.map(id => names.get(id) ?? id).join(", ")} · {recipients.some(id => turnQueue.state[id] === "working") ? "queued (busy)" : "starts now"}</div>}
         {reply && <div className="quote-preview">
           <div className="quote-preview-copy"><span className="speaker">{reply.name}</span><blockquote>{reply.text}</blockquote></div>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
@@ -1348,19 +1374,18 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           disabled={!ready || participants.length === 0}
         />
         </div>
-        <div className="composer-hint"><span>{busy ? "Models are responding…" : "+ for photos, mentions and commands"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
+        <div className="composer-hint"><span>Enter sends · ⌘Enter steers the busy model you mentioned</span><span>Shift + Enter for a new line</span></div>
         </div>
-        {busy ? (
-          <div className="composer-actions">
-            <button className="primary" onClick={() => send()} disabled={(!text.trim() && !sendable.length) || saving}>Queue</button>
-            <button className="ghost" onClick={() => send(true)} disabled={(!text.trim() && !sendable.length) || saving} title="Interrupt the current reply and send now. @name chooses who answers.">Steer</button>
-            <button className="danger" onClick={() => { setQueuePaused(true); void turnQueue.halt(); }}>Stop</button>
-          </div>
-        ) : (
-          <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}>
-            <DeckIcon name="send" size={18} /> Send
-          </button>
-        )}
+        <div className="composer-actions">
+          <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><DeckIcon name="send" size={18} /> Send</button>
+          {busy && <details className="turn-controls"><summary aria-label="Turn controls">⋯</summary><div className="turn-controls-menu">
+            {participants.filter(p => turnQueue.state[p.id] === "working").map(p => <div key={p.id}>
+              <button className="ghost small" disabled={!text.trim()} onClick={() => { const message = text; setText(""); void turnQueue.steer(p.id, message); }}>Steer {p.display_name}</button>
+              <button className="ghost small" onClick={() => void turnQueue.halt(p.id)}>Stop {p.display_name}</button>
+            </div>)}
+            <button className="ghost small" onClick={() => void turnQueue.halt()}>Stop all</button>
+          </div></details>}
+        </div>
       </div>}
     </div>
   );

@@ -34,7 +34,10 @@ export interface Backend {
    *  taken from `cwd`. With `reveal`, show the file in its folder instead. */
   openTarget(target: string, cwd: string | null, reveal: boolean): Promise<void>;
   roomPost(id: string, text: string): Promise<void>;
-  roomStop(id: string): Promise<void>;
+  roomTargets(id: string, text: string): Promise<string[]>;
+  roomPostTo(id: string, text: string, targets: string[]): Promise<void>;
+  roomTurn(id: string, participant: string): Promise<void>;
+  roomStop(id: string, participant?: string): Promise<void>;
   /** Answer an action a bot proposed, named by the `request` from its event. */
   roomDecide(id: string, request: string, approve: boolean): Promise<void>;
   roomSetOptions(id: string, options: RoomOptions): Promise<void>;
@@ -104,7 +107,10 @@ async function tauriBackend(): Promise<Backend> {
       if (nudge) await main.requestUserAttention(UserAttentionType.Informational).catch(() => {});
     },
     roomPost: (id, text) => invoke("room_post", { id, text }),
-    roomStop: (id) => invoke("room_stop", { id }),
+    roomTargets: (id, text) => invoke("room_targets", { id, text }),
+    roomPostTo: (id, text, targets) => invoke("room_post_to", { id, text, targets }),
+    roomTurn: (id, participant) => invoke("room_turn", { id, participant }),
+    roomStop: (id, participant) => invoke("room_stop", { id, participant: participant ?? null }),
     roomDecide: (id, request, approve) => invoke("room_decide", { id, request, approve }),
     roomSetOptions: (id, options) => invoke("room_set_options", { id, options }),
     roomAddParticipant: (id, participant) => invoke("room_add_participant", { id, participant }),
@@ -191,6 +197,113 @@ function demoBackend(): Backend {
     if (participants.some((p) => p.backend.kind === "agent" && p.backend.tool === "codex")) reportPlan(room, "codex");
   };
 
+  const editors = new Map<string, string>();
+  const askOwners = new Map<string, string>();
+  const targetsFor = (id: string, text: string): string[] => {
+    const room = rooms.get(id);
+    if (!room) throw new Error(`no group chat with id ${id}`);
+    const named = room.participants.filter(p => text.toLowerCase().match(/@[a-z0-9_-]+/g)?.includes(`@${p.id.toLowerCase()}`)).map(p => p.id);
+    const all = room.participants.map(p => p.id);
+    return /@(all|everyone)\b/i.test(text) || (!named.length && room.options.policy !== "mention") ? all : named.length ? named : room.last.length ? room.last : all.slice(0,1);
+  };
+  const runPreview = async (id: string, participant: string) => {
+      const key = `${id}:${participant}`;
+      let active = true;
+      const partials = new Map<string, string>();
+      const emit = (event: RoomEvent) => {
+        if (!active) return;
+        if (event.type === "delta") partials.set(event.id, (partials.get(event.id) ?? "") + event.text);
+        if (event.type === "message_added" && event.message.speaker.kind === "bot") partials.delete(event.message.speaker.id);
+        emitRoom(id, event);
+      };
+      const cancelled = new Promise<void>(resolve => cancellations.set(key, () => {
+        const room = rooms.get(id);
+        for (const [bot, text] of partials) if (text.trim() && room) emit({type: "message_added", message: {seq: room.seq++, speaker: {kind:"bot", id:bot}, text: text.trim() + "\n\n[Interrupted]"}});
+        active = false; resolve();
+      }));
+      try { await Promise.race([(async () => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      for (const target of [participant]) {
+        const configured = room.participants.find((x) => x.id === target);
+        if (!configured) continue;
+        const ownsEditor = configured.access !== "read" && !editors.has(id);
+        if (ownsEditor) { editors.set(id, target); emit({type: "editor_changed", id: target}); }
+        const p = {...configured, access: ownsEditor ? configured.access : "read" as const};
+        emit( { type: "turn_started", id: p.id });
+        if (p.backend.kind === "agent") {
+          await sleep(600); if (!active) return;
+          for (const word of "I'll look at the project first.".split(" ")) {
+            await sleep(25); if (!active) return;
+            emit( { type: "delta", id: p.id, text: word + " " });
+          }
+          for (const step of ["Reading README.md", "Running: ls src", "Reading src/App.tsx"]) {
+            emit( { type: "activity", id: p.id, text: step });
+            await sleep(600); if (!active) return;
+          }
+          emit( { type: "delta", id: p.id, text: "\n\n" });
+          // Preview only: a bot set to ask first proposes one edit and one
+          // command, so the approval cards and changes list can be seen.
+          if (p.access === "ask") {
+            const proposals: { action: ProposedAction; change?: FileChange }[] = [
+              {
+                action: { kind: "edit", title: "Edit README.md", detail: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n" },
+                change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
+              },
+              { action: { kind: "command", title: "Run a command", detail: "npm run build" } },
+            ];
+            for (const { action, change } of proposals) {
+              const request = `ask-${++askCount}`;
+              emit( { type: "activity", id: p.id, text: `Waiting for approval: ${action.title}` });
+              emit( { type: "approval_requested", id: p.id, request, action });
+              askOwners.set(request, key);
+              const approved = await new Promise<boolean>((answer) => asks.set(request, answer));
+              asks.delete(request); askOwners.delete(request);
+              emit( { type: "approval_resolved", id: p.id, request, approved });
+              if (approved && change) emit( { type: "changed", id: p.id, change });
+              await sleep(300); if (!active) return;
+            }
+          }
+        }
+        const reply = [
+          `## Preview reply from ${p.display_name}`,
+          "This is **preview mode**: the desktop app sends your message to the *real* model. See [README.md](README.md) or `npm run tauri dev`.",
+          "1. Steps appear while a bot works\n2. Text is written live\n   - nested point with `code`\n3. The final reply replaces the draft",
+          "| Tool | Live text |\n|---|---|\n| Claude Code | yes |\n| Codex | yes |",
+          "```sh\ncd ~/Downloads/apex-deck\nnpm run tauri dev\n```",
+        ].join("\n\n");
+        for (const piece of reply.match(/\S+\s*/g) ?? []) {
+          await sleep(25); if (!active) return;
+          emit( { type: "delta", id: p.id, text: piece });
+        }
+        if (p.backend.kind === "agent") {
+          emit( { type: "usage", id: p.id, input_tokens: 1840, output_tokens: 26 });
+          reportContext(id, p, 2_400);
+          if (p.backend.tool === "claude_code" || p.backend.tool === "codex") {
+            planUsed[p.backend.tool] = Math.min(100, planUsed[p.backend.tool] + 1);
+            reportPlan(id, p.backend.tool);
+          }
+        }
+        emit( { type: "message_added", message: { seq: room.seq++, speaker: { kind: "bot", id: p.id }, text: reply } });
+      }
+      })(), cancelled]); }
+      finally {
+        active = false; cancellations.delete(key);
+        if (editors.get(id) === participant) { editors.delete(id); emitRoom(id, {type: "editor_changed", id: null}); }
+        emitRoom(id, {type: "participant_idle", id: participant});
+        if (![...cancellations.keys()].some(key => key.startsWith(`${id}:`))) emitRoom(id, {type: "idle"});
+      }
+    };
+
+  const postPreview = async (id: string, text: string, targets: string[]) => {
+    const room = rooms.get(id);
+    if (!room) throw new Error(`no group chat with id ${id}`);
+    if (targets.some(target => !room.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
+    room.last = targets;
+    emitRoom(id, {type: "message_added", message: {seq: room.seq++, speaker: {kind: "human"}, text}});
+    await Promise.all(targets.map(target => runPreview(id, target)));
+  };
+
   return {
     demo: true,
     detectAgents: async () => [
@@ -248,108 +361,16 @@ function demoBackend(): Backend {
       if (/^https?:/.test(target)) window.open(target, "_blank", "noopener");
       else throw new Error("files cannot be opened in the browser demo");
     },
-    roomPost: async (id, text) => {
-      let active = true;
-      const partials = new Map<string, string>();
-      const emit = (event: RoomEvent) => {
-        if (!active) return;
-        if (event.type === "delta") partials.set(event.id, (partials.get(event.id) ?? "") + event.text);
-        if (event.type === "message_added" && event.message.speaker.kind === "bot") partials.delete(event.message.speaker.id);
-        emitRoom(id, event);
-      };
-      const cancelled = new Promise<void>(resolve => cancellations.set(id, () => {
-        const room = rooms.get(id);
-        for (const [bot, text] of partials) if (text.trim() && room) emit({type: "message_added", message: {seq: room.seq++, speaker: {kind:"bot", id:bot}, text: text.trim() + "\n\n[Interrupted]"}});
-        emit({type: "stopped"}); emit({type: "idle"}); active = false; resolve();
-      }));
-      try { await Promise.race([(async () => {
-      const room = rooms.get(id);
-      if (!room) throw new Error(`no group chat with id ${id}`);
-      room.stopped = false;
-      emit( { type: "message_added", message: { seq: room.seq++, speaker: { kind: "human" }, text } });
-
-      const lower = text.toLowerCase();
-      const all = room.participants.map((p) => p.id);
-      const named = room.participants.filter((p) => lower.includes(`@${p.id.toLowerCase()}`)).map((p) => p.id);
-      let targets: string[];
-      if (/@(all|everyone)\b/.test(lower)) targets = all;
-      else if (named.length) targets = named;
-      else if (room.options.policy !== "mention") targets = all;
-      else targets = room.last.length ? room.last : all.slice(0, 1);
-      room.last = targets;
-
-      for (const target of targets) {
-        if (room.stopped) {
-          emit( { type: "stopped" });
-          break;
-        }
-        const p = room.participants.find((x) => x.id === target);
-        if (!p) continue;
-        emit( { type: "turn_started", id: p.id });
-        if (p.backend.kind === "agent") {
-          await sleep(600); if (!active) return;
-          for (const word of "I'll look at the project first.".split(" ")) {
-            await sleep(25); if (!active) return;
-            emit( { type: "delta", id: p.id, text: word + " " });
-          }
-          for (const step of ["Reading README.md", "Running: ls src", "Reading src/App.tsx"]) {
-            emit( { type: "activity", id: p.id, text: step });
-            await sleep(600); if (!active) return;
-          }
-          emit( { type: "delta", id: p.id, text: "\n\n" });
-          // Preview only: a bot set to ask first proposes one edit and one
-          // command, so the approval cards and changes list can be seen.
-          if (p.access === "ask") {
-            const proposals: { action: ProposedAction; change?: FileChange }[] = [
-              {
-                action: { kind: "edit", title: "Edit README.md", detail: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n" },
-                change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
-              },
-              { action: { kind: "command", title: "Run a command", detail: "npm run build" } },
-            ];
-            for (const { action, change } of proposals) {
-              const request = `ask-${++askCount}`;
-              emit( { type: "activity", id: p.id, text: `Waiting for approval: ${action.title}` });
-              emit( { type: "approval_requested", id: p.id, request, action });
-              const approved = await new Promise<boolean>((answer) => asks.set(request, answer));
-              emit( { type: "approval_resolved", id: p.id, request, approved });
-              if (approved && change) emit( { type: "changed", id: p.id, change });
-              await sleep(300); if (!active) return;
-            }
-          }
-        }
-        const reply = [
-          `## Preview reply from ${p.display_name}`,
-          "This is **preview mode**: the desktop app sends your message to the *real* model. See [README.md](README.md) or `npm run tauri dev`.",
-          "1. Steps appear while a bot works\n2. Text is written live\n   - nested point with `code`\n3. The final reply replaces the draft",
-          "| Tool | Live text |\n|---|---|\n| Claude Code | yes |\n| Codex | yes |",
-          "```sh\ncd ~/Downloads/apex-deck\nnpm run tauri dev\n```",
-        ].join("\n\n");
-        for (const piece of reply.match(/\S+\s*/g) ?? []) {
-          await sleep(25); if (!active) return;
-          emit( { type: "delta", id: p.id, text: piece });
-        }
-        if (p.backend.kind === "agent") {
-          emit( { type: "usage", id: p.id, input_tokens: 1840, output_tokens: 26 });
-          reportContext(id, p, 2_400);
-          if (p.backend.tool === "claude_code" || p.backend.tool === "codex") {
-            planUsed[p.backend.tool] = Math.min(100, planUsed[p.backend.tool] + 1);
-            reportPlan(id, p.backend.tool);
-          }
-        }
-        emit( { type: "message_added", message: { seq: room.seq++, speaker: { kind: "bot", id: p.id }, text: reply } });
-      }
-      emit( { type: "idle" });
-      })(), cancelled]); }
-      finally { active = false; cancellations.delete(id); }
+    roomTargets: async (id, text) => targetsFor(id, text),
+    roomPost: async (id, text) => postPreview(id, text, targetsFor(id, text)),
+    roomPostTo: async (id, text, targets) => {
+      if (!rooms.has(id) || targets.some(target => !rooms.get(id)!.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
+      void postPreview(id, text, targets).catch(error => emitRoom(id, {type: "failed", id: "storage", error: String(error)}));
     },
-    roomStop: async (id) => {
-      const room = rooms.get(id);
-      if (room) room.stopped = true;
-      cancellations.get(id)?.();
-      // Whatever is waiting on a yes or no is refused.
-      for (const answer of asks.values()) answer(false);
-      asks.clear();
+    roomTurn: async (id, participant) => { void runPreview(id, participant); },
+    roomStop: async (id, participant) => {
+      for (const [key, cancel] of cancellations) if (key === `${id}:${participant}` || (!participant && key.startsWith(`${id}:`))) cancel();
+      for (const [request, owner] of askOwners) if (owner === `${id}:${participant}` || (!participant && owner.startsWith(`${id}:`))) asks.get(request)?.(false);
     },
     roomDecide: async (_id, request, approve) => {
       const answer = asks.get(request);

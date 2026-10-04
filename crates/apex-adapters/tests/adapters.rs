@@ -24,6 +24,7 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
 
 fn request(text: &str) -> TurnRequest {
     TurnRequest {
+                access: None,
         system: "You are a test bot.".into(),
         turns: vec![ViewTurn { role: Role::User, content: format!("[Human]: {text}") }],
         unseen: vec![],
@@ -681,6 +682,7 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
     let result = bot
         .respond(
             TurnRequest {
+                access: None,
                 system: "You are a test bot.".into(),
                 turns: vec![ViewTurn { role: Role::User, content: "[Human]: please fail".into() }],
                 unseen: vec![],
@@ -859,4 +861,70 @@ async fn time_spent_waiting_for_an_answer_does_not_count_against_the_turn() {
     let (result, _, _) = work_asking(&bot, &Slow).await;
     assert_eq!(result.unwrap().text, "Created hello.txt.");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn per_turn_read_access_rebuilds_codex_exec_sandbox_without_changing_profile() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("codex-turn-access", "codex", "#!/bin/sh\n[ \"$1\" = app-server ] && exit 2\nprintf 'args:%s ' \"$@\"\ncat >/dev/null\n");
+    let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: None });
+    cfg.access = Access::Full;
+    let bot = build(cfg, &context_in(&dir));
+    let mut turn = request("read only"); turn.access = Some(Access::Read);
+    let reply = bot.respond(turn, &|_| {}).await.unwrap();
+    assert!(reply.text.contains("args:--sandbox args:read-only"), "{}", reply.text);
+    assert_eq!(bot.config().access, Access::Full);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn per_turn_read_access_reaches_codex_app_server_sandbox() {
+    use apex_core::AgentTool;
+    let script = r#"#!/bin/sh
+while IFS= read -r line; do
+case "$line" in
+*'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
+*'"method":"thread/start"'*)
+ case "$line" in *'"sandbox":"read-only"'*) ;; *) echo 'wrong sandbox' >&2; exit 2 ;; esac
+ echo '{"id":1,"result":{"thread":{"id":"thread-access"}}}' ;;
+*'"method":"turn/start"'*)
+ echo '{"id":2,"result":{}}'
+ echo '{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"r","text":"read-only confirmed"}}}'
+ echo '{"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}' ;;
+esac
+done
+"#;
+    let dir = fake_tool("codex-turn-server-access", "codex", script);
+    let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: None }); cfg.access = Access::Full;
+    let bot = build(cfg, &context_in(&dir));
+    let mut turn = request("read only"); turn.access = Some(Access::Read);
+    let reply = bot.respond(turn, &|_| {}).await.unwrap();
+    assert_eq!(reply.text, "read-only confirmed");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn per_turn_read_access_rebuilds_claude_tool_permissions() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("claude-turn-access", "claude", "#!/bin/sh\nprintf 'args:%s ' \"$@\"\ncat >/dev/null\n");
+    let mut cfg = config("jigga", Backend::Agent { tool: AgentTool::ClaudeCode, model: None }); cfg.access = Access::Full;
+    let bot = build(cfg, &context_in(&dir));
+    let mut turn = request("read only"); turn.access = Some(Access::Read);
+    let reply = bot.respond(turn, &|_| {}).await.unwrap();
+    assert!(reply.text.contains("args:--disallowedTools args:Edit,Write,NotebookEdit,Bash"), "{}", reply.text);
+    assert!(!reply.text.contains("bypassPermissions"), "{}", reply.text);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn custom_cli_is_refused_when_another_editor_requires_a_read_only_turn() {
+    let mut cfg = config("custom", Backend::Cli { program: "sh".into(), args: vec!["-c".into(), "printf unsafe".into()] });
+    cfg.access = Access::Full;
+    let bot = build(cfg, &BuildContext::default());
+    let mut turn = request("read only"); turn.access = Some(Access::Read);
+    let error = bot.respond(turn, &|_| panic!("custom command must not start")).await.unwrap_err();
+    assert!(error.to_string().contains("cannot enforce read-only access"));
 }

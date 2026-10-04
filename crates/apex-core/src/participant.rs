@@ -7,6 +7,8 @@ use crate::view::ViewTurn;
 /// What a participant is given when it is asked to speak.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnRequest {
+    /// Effective workspace access for this turn, enforced by coding adapters.
+    pub access: Option<crate::Access>,
     /// Instructions that tell the model who it is and who else is present.
     pub system: String,
     /// The whole transcript from this participant's point of view.
