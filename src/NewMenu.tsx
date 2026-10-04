@@ -60,7 +60,7 @@ export function NewMenu({ section, label, disabled, agents, disabledProviders, h
         {label}
       </button>
       {open && (
-        <div className="new-menu-list" role="menu" aria-label={label}
+        <div className="new-menu-list" role="menu" aria-label="New"
           onKeyDown={(event) => {
             if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
             else if (event.key === "ArrowDown") { event.preventDefault(); setActive((i) => Math.min(i + 1, choosable.length - 1)); }

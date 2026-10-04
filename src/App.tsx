@@ -864,7 +864,7 @@ export function App() {
         {section === "agents" && <button className="primary" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
         {section !== "agents" && <NewMenu
           section={section}
-          label={section === "threads" ? "+ New thread" : "+ New terminal"}
+          label="+ New ▾"
           disabled={!current}
           agents={agents}
           disabledProviders={disabledProviders}
