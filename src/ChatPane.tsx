@@ -1099,17 +1099,22 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
               <option value="round_robin">Everyone in turn</option>
             </select>
           </label>
-          <label title="How many rounds of models answering each other are allowed after one of your messages">
-            Model-to-model rounds
-            <input
-              type="number"
-              min={0}
-              max={10}
-              value={options.max_bot_hops}
-              disabled={!ready || busy}
-              onChange={(e) => changeOptions({ ...options, max_bot_hops: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
-            />
-          </label>
+          <div className="stepper-field" title="How many rounds of models answering each other are allowed after one of your messages">
+            <span id={`rounds-${pane.id}`}>Model-to-model rounds</span>
+            <span className="stepper">
+              <button type="button" aria-label="Fewer rounds" disabled={!ready || busy || options.max_bot_hops <= 0} onClick={() => changeOptions({ ...options, max_bot_hops: Math.max(0, options.max_bot_hops - 1) })}>−</button>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                aria-labelledby={`rounds-${pane.id}`}
+                value={options.max_bot_hops}
+                disabled={!ready || busy}
+                onChange={(e) => changeOptions({ ...options, max_bot_hops: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
+              />
+              <button type="button" aria-label="More rounds" disabled={!ready || busy || options.max_bot_hops >= 10} onClick={() => changeOptions({ ...options, max_bot_hops: Math.min(10, options.max_bot_hops + 1) })}>+</button>
+            </span>
+          </div>
         </div>);
   const pinControls = (pins.length > 0 ? <details className="pins" aria-label="Pinned for every model">
         <summary className="pins-label">Pinned <span>({pins.length})</span></summary>

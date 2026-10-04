@@ -169,6 +169,8 @@ export interface Pane {
   title: string;
   /** Agent key for terminal panes; undefined means a plain shell. */
   agent?: string;
+  /** A thread taken off the deck. It stays saved and listed in the rail. */
+  closed?: boolean;
 }
 
 export interface Workspace {

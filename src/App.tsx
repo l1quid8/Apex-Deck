@@ -16,6 +16,8 @@ import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, ty
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { label, summarize, type Attention, type Signal } from "./attention";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
+import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, savedThreads } from "./closing";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -75,6 +77,17 @@ export function App() {
   const [resizing, setResizing] = useState(false);
   const gridArea = useRef<HTMLDivElement>(null);
   const [picking, setPicking] = useState(false);
+  /** A question waiting for Cancel or go ahead. */
+  const [question, setQuestion] = useState<Question | null>(null);
+  /** Threads deleted but still inside their undo time, by pane id. */
+  const [deleting, setDeleting] = useState<Set<string>>(new Set());
+  const deleteTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  /** The latest delete, offered for undo. */
+  const [undoable, setUndoable] = useState<{ id: string; title: string } | null>(null);
+  /** The pane whose ⋯ menu is open. */
+  const [paneMenu, setPaneMenu] = useState<string | null>(null);
+  /** Bumped to start renaming a thread from its ⋯ menu. */
+  const [renameRequests, setRenameRequests] = useState<Record<string, number>>({});
   const [railOpen, setRailOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
@@ -139,7 +152,7 @@ export function App() {
       setAgents(found);
       const known = saved?.workspaces ?? loadWorkspaces();
       setWorkspaces(known);
-      setPanes((saved?.panes ?? []).filter((p) => p.kind === "chat" && known.some((w) => w.id === p.workspaceId)));
+      setPanes(loadedThreads(saved?.panes ?? [], known.map((w) => w.id)));
       setProfiles(saved?.profiles ?? []);
       setDisabledProviders(saved?.disabledProviders ?? []);
       setSection(saved?.section ?? "threads");
@@ -178,7 +191,7 @@ export function App() {
     saveWorkspaces(workspaces);
     // Terminals are not restored, so only the arrangement of threads is kept.
     const kept = Object.fromEntries(Object.entries(layouts).filter(([key]) => key.endsWith(":threads") && workspaces.some((w) => key === layoutKey(w.id, "threads"))));
-    const session: AppSession = { version: 1, workspaces, panes: panes.filter((p) => p.kind === "chat"), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: kept, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
+    const session: AppSession = { version: 1, workspaces, panes: savedThreads(panes), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: kept, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
@@ -209,7 +222,7 @@ export function App() {
     return Date.now() - last < WORKING_WINDOW_MS ? "working" : "idle";
   };
 
-  const visiblePanes = useMemo(() => panes.filter((p) => p.workspaceId === activeWorkspace && (section === "code" ? p.kind === "terminal" : section === "threads" && p.kind === "chat")), [panes, activeWorkspace, section]);
+  const visiblePanes = useMemo(() => openPanes(panes, deleting).filter((p) => p.workspaceId === activeWorkspace && (section === "code" ? p.kind === "terminal" : section === "threads" && p.kind === "chat")), [panes, deleting, activeWorkspace, section]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
 
   // The arrangement of the panes in view. Panes that were added or closed
@@ -264,6 +277,10 @@ export function App() {
   };
 
   const removeWorkspace = async (id: string) => {
+    for (const pane of panes.filter((p) => p.workspaceId === id)) {
+      clearTimeout(deleteTimers.current.get(pane.id));
+      deleteTimers.current.delete(pane.id);
+    }
     try {
       for (const pane of panes.filter((p) => p.workspaceId === id && p.kind === "chat")) await backend?.roomDelete(pane.id);
     } catch (error) { setStorageError(String(error)); return; }
@@ -362,17 +379,76 @@ export function App() {
     threads: summarize(attentionItems.filter((i) => i.where === "Threads").map((i) => i.signal)),
   };
 
-  const closePane = async (id: string) => {
-    if (panes.find((p) => p.id === id)?.kind === "chat") {
-      try { await backend?.roomDelete(id); } catch (error) { setStorageError(String(error)); return; }
-    }
-    setPanes((list) => list.filter((p) => p.id !== id));
-    lastOutput.current.delete(id);
+  /** Take a pane off the deck. */
+  const takeOff = (id: string) => {
     if (maximized === id) setMaximized(null);
     if (focusedPane === id) setFocusedPane(null);
   };
 
+  /** × on a pane head. It never deletes: a thread is closed and stays in the rail. */
+  const closePane = (id: string) => {
+    const pane = panes.find((p) => p.id === id);
+    if (!pane) return;
+    if (pane.kind === "chat") {
+      setPanes((list) => list.map((p) => (p.id === id ? { ...p, closed: true } : p)));
+      takeOff(id);
+      return;
+    }
+    const end = () => {
+      setPanes((list) => list.filter((p) => p.id !== id));
+      lastOutput.current.delete(id);
+      takeOff(id);
+    };
+    const status = statusOf(pane);
+    if (closeNeedsConfirm(pane.kind, status)) setQuestion({ ...closeQuestion(pane.title, status), onConfirm: end });
+    else end();
+  };
+
+  /** Delete a thread once the undo time runs out. Quitting before then keeps it. */
+  const deleteThread = (pane: Pane) => {
+    setQuestion({
+      title: `Delete ${pane.title}?`,
+      body: "Its messages and pins are removed.",
+      action: "Delete thread",
+      onConfirm: () => {
+        setDeleting((set) => new Set(set).add(pane.id));
+        takeOff(pane.id);
+        setUndoable({ id: pane.id, title: pane.title });
+        deleteTimers.current.set(pane.id, setTimeout(async () => {
+          deleteTimers.current.delete(pane.id);
+          try {
+            await backend?.roomDelete(pane.id);
+            setPanes((list) => list.filter((p) => p.id !== pane.id));
+          } catch (error) {
+            setStorageError(`Could not delete ${pane.title}: ${String(error)}`);
+          }
+          setDeleting((set) => { const next = new Set(set); next.delete(pane.id); return next; });
+          setUndoable((u) => (u?.id === pane.id ? null : u));
+        }, UNDO_MS));
+      },
+    });
+  };
+
+  const undoDelete = () => {
+    if (!undoable) return;
+    clearTimeout(deleteTimers.current.get(undoable.id));
+    deleteTimers.current.delete(undoable.id);
+    setDeleting((set) => { const next = new Set(set); next.delete(undoable.id); return next; });
+    setUndoable(null);
+  };
+
+  // The ⋯ menu closes on a click elsewhere or Escape.
+  useEffect(() => {
+    if (!paneMenu) return;
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".pane-menu-wrap")) setPaneMenu(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") setPaneMenu(null); };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key); };
+  }, [paneMenu]);
+
   const focusPane = (pane: Pane) => {
+    if (pane.closed) setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, closed: false } : p)));
     setActiveWorkspace(pane.workspaceId);
     setSection(pane.kind === "chat" ? "threads" : "code");
     setPicking(false);
@@ -467,7 +543,7 @@ export function App() {
             </div>
             {workspaces.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
             {workspaces.map((workspace) => {
-              const own = panes.filter((p) => p.workspaceId === workspace.id && p.kind === (section === "code" ? "terminal" : "chat"));
+              const own = panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && p.kind === (section === "code" ? "terminal" : "chat"));
               return (
                 <div key={workspace.id} className="ws">
                   <div className={`ws-row ${workspace.id === activeWorkspace ? "active" : ""}`}>
@@ -485,7 +561,7 @@ export function App() {
                     </button>
                   </div>
                   {own.map((pane) => (
-                    <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane ? "focused" : ""}`} onClick={() => focusPane(pane)}>
+                    <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}>
                       <span className={`dot ${statusOf(pane)}`} title={statusOf(pane)} />
                       <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} />
                       {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note}>{label(attention[pane.id].kind)}</span>}
@@ -530,14 +606,28 @@ export function App() {
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={maximized || visiblePanes.length < 2 ? undefined : "Drag onto another pane to move it"}>
                     <span className={`dot ${status}`} title={status} />
-                    {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} /> : <span className="pane-title">{pane.title}</span>}
+                    {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} /> : <span className="pane-title">{pane.title}</span>}
                     <span className="pane-folder">{workspace?.name}</span>
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
                       {maximized === pane.id ? "▣" : "□"}
                     </button>
-                    <button className="icon small" onClick={() => closePane(pane.id)} aria-label={pane.kind === "chat" ? "Delete thread" : "Close pane"} title={pane.kind === "chat" ? "Delete this saved thread" : "Close (ends what is running in it)"}>
+                    {pane.kind === "chat" && (
+                      <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
+                        <button className="icon small" onClick={() => setPaneMenu((open) => (open === pane.id ? null : pane.id))} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
+                          ⋯
+                        </button>
+                        {paneMenu === pane.id && (
+                          <span className="pane-menu" role="menu">
+                            <button role="menuitem" onClick={() => { setPaneMenu(null); setRenameRequests((all) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 })); }}>Rename</button>
+                            <span className="pane-menu-sep" role="separator" />
+                            <button role="menuitem" className="danger-text" onClick={() => { setPaneMenu(null); deleteThread(pane); }}>Delete thread…</button>
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    <button className="icon small" onClick={() => closePane(pane.id)} aria-label={`Close ${pane.title}`} title={pane.kind === "chat" ? "Close (the thread stays in the list)" : "Close"}>
                       ×
                     </button>
                   </div>
@@ -562,6 +652,13 @@ export function App() {
           </aside>
         </>}
       </div>
+      {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
+      {undoable && (
+        <div className="toast" role="status">
+          <span>{undoable.title} deleted.</span>
+          <button onClick={undoDelete}>Undo</button>
+        </div>
+      )}
     </div>
   );
 }

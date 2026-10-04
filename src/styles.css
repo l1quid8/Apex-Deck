@@ -1675,3 +1675,84 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .turn-controls > summary { cursor: pointer; list-style: none; padding: 9px; }
 .turn-controls-menu { position: absolute; right: 0; bottom: 100%; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px; min-width: 180px; }
 .turn-controls-menu > div { display: flex; flex-direction: column; }
+
+/* UI review, stage 1: closing, deleting and the rounds stepper. */
+.pane-row.closed .pane-row-title { color: var(--muted); }
+.pane-menu-wrap { position: relative; display: inline-flex; }
+.pane-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 45;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.pane-menu button {
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.pane-menu button:hover:not(:disabled), .pane-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.pane-menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.danger-text { color: var(--danger); }
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 12, 0.6);
+}
+.confirm {
+  width: min(380px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.confirm p { margin: 0; font-size: 12px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 8px 8px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.stepper-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.stepper { display: inline-flex; align-items: stretch; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--bg); }
+.stepper button { border: 0; border-radius: 0; padding: 0; width: 28px; min-height: 28px; background: var(--panel-2); }
+.stepper button:first-child { border-right: 1px solid var(--line); }
+.stepper button:last-child { border-left: 1px solid var(--line); }
+.chat-options .stepper input {
+  width: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.stepper input::-webkit-outer-spin-button, .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
