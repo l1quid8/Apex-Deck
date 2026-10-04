@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Diff } from "./Approvals";
+import { Diff } from "./ApprovalCard";
 import { groupDiff } from "./diffGroups";
 import type { ThreadDiff } from "./types";
 

@@ -20,7 +20,7 @@ import { contextLevel, contextLine, isLow, percent, planLevel, planLine, type Le
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention } from "./attention";
-import { ApprovalCard, type MadeChange } from "./Approvals";
+import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { describeRule } from "./allowedRules";
 import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { DiffPanel } from "./DiffPanel";

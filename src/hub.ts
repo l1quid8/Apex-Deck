@@ -1,6 +1,7 @@
 // One listener per event type for the whole app, fanned out by id. Panes
 // register here instead of each adding its own global listener.
 
+import { recordApproval } from "./approvals";
 import type { Backend } from "./backend";
 import { recordPlan } from "./plans";
 import type { RoomEvent } from "./types";
@@ -19,6 +20,9 @@ export async function startHub(backend: Backend): Promise<void> {
   await backend.onRoomEvent((room, event) => {
     // A provider's plan is the same in every chat, so it is kept app-wide.
     if (event.type === "plan_usage") recordPlan(event.provider, event.windows, event.partial);
+    // So are open approval cards, and the store hears first, so a thread
+    // reading it while handling this event sees the card already.
+    recordApproval(room, event);
     rooms.get(room)?.(event);
   });
 }

@@ -16,6 +16,8 @@ export interface Signal {
   note: string;
   /** When it was raised, in milliseconds since the epoch. */
   at: number;
+  /** A flag looking at the pane does not clear. Only open approval cards set it; see approvals.ts. */
+  blocking?: boolean;
 }
 
 const ORDER: Attention[] = ["needs_input", "failed", "done"];
