@@ -815,7 +815,7 @@ async fn codex_app_server_asks_before_a_command_when_access_is_ask_first() {
     assert_eq!(result.unwrap().text, "Two files here. effort=default refused=no");
     assert_eq!(
         *yes.asked.lock().unwrap(),
-        [ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "(command not given)".into() }]
+        [ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "(command not given)".into(), expires_at: None, risky: false }]
     );
 
     let no = Fixed::new(Decision::Reject);
@@ -870,7 +870,7 @@ async fn claude_code_asks_before_writing_when_access_is_ask_first() {
     assert_eq!((reply.input_tokens, reply.output_tokens), (Some(10), Some(4)));
     assert_eq!(
         *yes.asked.lock().unwrap(),
-        [ProposedAction { kind: ActionKind::Edit, title: "Write hello.txt".into(), detail: "+hi\n".into() }]
+        [ProposedAction { kind: ActionKind::Edit, title: "Write hello.txt".into(), detail: "+hi\n".into(), expires_at: None, risky: false }]
     );
     assert_eq!(changed, [FileChange { path: "hello.txt".into(), diff: "+hi\n".into(), added: 1, removed: 0 }]);
 
@@ -1012,6 +1012,7 @@ async fn claude_mcp_reads_proceed_but_each_risky_call_asks_at_every_access_level
         for action in asked.iter() {
             assert_eq!(action.kind, ActionKind::Tool);
             assert_eq!(action.title, "probe: place_order");
+            assert!(action.risky, "place_order can spend money");
             assert_eq!(serde_json::from_str::<serde_json::Value>(&action.detail).unwrap(), serde_json::json!({"quantity":"0.001", "nested":{"symbol":"ZEC"}}));
         }
     }
@@ -1056,7 +1057,7 @@ async fn codex_mcp_reads_proceed_but_each_risky_call_asks_at_every_access_level(
         let (result, _, _) = work_asking(build(cfg, &context_in(&dir)).as_ref(), &no).await;
         assert_eq!(result.unwrap().text, "allowed=1 denied=2");
         let asked=no.asked.lock().unwrap();assert_eq!(asked.len(),2);
-        assert!(asked.iter().all(|a| a.kind==ActionKind::Tool && a.title=="probe: place_order"));
+        assert!(asked.iter().all(|a| a.kind==ActionKind::Tool && a.title=="probe: place_order" && a.risky));
     }
     // No approval transport to the person: risky calls reject, reads proceed.
     let bot=build(config("null",Backend::Agent{tool:AgentTool::Codex,model:None}),&context_in(&dir));

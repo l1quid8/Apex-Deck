@@ -12,22 +12,47 @@ edges.
 ## What works in 0.1
 
 - **Workspaces.** Add project folders. Each one keeps its own set of panes,
-  and panes keep running when you switch to another workspace.
+  and panes keep running when you switch to another workspace. A
+  workspace's ⋯ menu renames it, shows its folder in Finder, or removes it
+  from the list. Removing never deletes anything: its threads stay saved,
+  **Undo** brings it straight back for 8 seconds, and later it comes back
+  when you add the same folder again or choose it under **Removed · Show**
+  at the foot of the rail. Its terminals end; if one is working or waiting
+  for you, or one of its threads is replying, it asks first.
 - **Terminal panes.** Real terminals in the workspace folder. Launch a plain
   shell, or any coding agent Apex Deck finds installed (the list is in
-  `src-tauri/src/agents.rs`).
+  `src-tauri/src/agents.rs`). A second terminal of the same tool in a
+  workspace is numbered ("Codex 2"); double-click a name, or focus it and
+  press F2, to rename it. When the program sets its own title, such as
+  Claude Code's "Writing tests for auth", it shows muted after the name in
+  the pane head, the rail and the attention list. When the program ends, the
+  pane keeps its output and a bar at the foot says how and when it ended,
+  with **Start Codex again** and **Close**; a program that ends with an
+  error is flagged Failed. A terminal's ⋯ menu has **Rename**, **Start
+  again**, **Copy folder path** and **Close**.
+- **Terminals after a restart.** Terminals and their arrangement in Code are
+  saved with your threads, as a name and a tool only. After a restart they
+  come back **Stopped**, never started: choose **Start Codex** to run it
+  again. Earlier output isn't kept, and a tool that is no longer installed
+  can't be started.
 - **Layout.** Panes can be arranged any way you like. Drag the line between
   two panes to resize them. Drag a pane by its title bar onto the side of
   another to put it there, or onto the middle to swap the two. Three
   buttons give a ready-made arrangement: an even grid, a large pane on top,
   or a large pane on the left. Rearranging never restarts a terminal. Each
   pane can be maximized and restored or closed, and its head says what it is
-  doing: Working, Idle or Exited for a terminal, and how many bots a thread
+  doing: Working, Idle, Exited or Stopped for a terminal, and how many bots a thread
   has. Closing a thread only takes it off the deck: it stays saved and listed
-  in the rail, and clicking it opens it again. To delete a thread, use
-  **Delete thread…** in its ⋯ menu; it asks once, and **Undo** brings it back
-  for 8 seconds. A terminal that is working or waiting for you asks before it
+  in the rail, and clicking it opens it again. A thread's ⋯ menu has
+  **Rename**, **Fork**, **Export** and **Delete thread…**; deleting asks
+  once, and **Undo** brings it back for 8 seconds. A terminal that is working or waiting for you asks before it
   closes.
+- **Quitting.** Closing the window, ⌘W, ⌘Q and Quit in the app menu ask
+  first while a coding agent's terminal is open, a shell is working or
+  waiting for you, or a bot is replying or waiting on an approval. The
+  question lists up to five of them. Threads and their messages are saved;
+  replies in progress are not. Quit from the Dock, logging out and shutting
+  down don't ask.
 - **Adding panes.** **+ New terminal** and **+ New thread** open a menu over
   the deck: type to filter, Enter opens, Escape closes. Tools that aren't
   installed are listed last, with a link to hide them in Providers.
@@ -44,7 +69,22 @@ edges.
   long run of output ends while you are looking at something else. For
   terminals this is a judgement from what is on screen, so it can be wrong
   either way. Looking at a pane clears its flag; a waiting terminal keeps
-  its flag until you type in it.
+  its flag until you type in it, and a thread whose bot is stopped on an
+  approval card keeps its flag until you answer the card ("Null wants
+  approval: Run npm test · +1 more").
+  - **Answering from the list.** A command, or an edit of 20 changed lines
+    or fewer, can be answered right in the attention list with **Allow
+    once** or **Deny**; anything bigger shows **Open to answer**. Always
+    allow is only offered on the card itself. Codex tool calls that its
+    hook denies by itself say so: "Denied automatically in 6m".
+  - **Mark ready as seen** clears every Ready flag at once. The dock badge
+    counts only what needs you or failed. An approval left waiting for 2
+    minutes while Apex Deck is in the background bounces the dock once.
+  - **Pane heads** say what is happening: "Null · Running: npm test ·
+    1m 12s", "2 replying · Null: Editing src/App.tsx", and for a terminal
+    "Working 4m". A command-line bot that has said nothing for 5 minutes
+    reads "Quiet 6m · stops at 15m", since such turns stop after 15 minutes
+    of silence.
 - **Group chat.** One conversation with any number of models. Each
   participant is reached through one of three backends, and you can mix them
   in the same chat:
@@ -60,10 +100,20 @@ edges.
   limit you set, and there is a stop button.
 - **Approvals.** Set a Claude Code or Codex participant to "Ask first" and
   it stops before every file edit and every command. The chat shows what it
-  wants to do, with the change drawn as added and removed lines, and an
-  Approve and a Reject button. Nothing happens until you choose, the pane is
-  flagged as waiting on you, and the time you take does not count against
-  the reply's time limit. Stop rejects whatever is waiting.
+  wants to do, with the change drawn as added and removed lines, and **Allow
+  once**, **Always allow** and **Deny**. Nothing happens until you choose, the
+  pane is flagged as waiting on you, and the time you take does not count
+  against the reply's time limit. Stop rejects whatever is waiting.
+- **Always allow.** It saves a rule with the thread, so that bot may do the
+  same thing again in this thread without a card: a tool with any arguments,
+  that exact command, edits with the same title (one file, or any edit of the
+  same number of files), or the same permission question. The card says what
+  the rule would cover before you choose: always on cards that can spend money
+  or publish, and while Always allow is hovered or focused on the others.
+  Thread details lists each rule with the date it was allowed; **Remove** takes
+  it back at once and the bot asks again next time. Codex is only told to
+  remember a choice for its own session, which ends with the turn, so the
+  thread's list is the only lasting record.
 - **Thread details.** The right sidebar shows the focused thread, or the
   thread on screen you looked at last, and holds its bots, reply policy,
   rounds and Changes. Each bot is one row with its context (`ctx`) and plan
@@ -75,6 +125,11 @@ edges.
   collapsible strip, with full text wrapping when expanded.
 - **Changes.** `/diff` opens Changes in thread details, comparing the workspace
   against the thread's starting snapshot and grouping files by reported editor.
+  **Ask for review ▾** in its head attaches the whole change as one patch file
+  (`review-since-start-<n>.patch`) and fills the composer with "@name Review
+  this change." for the bot you pick; it never sends. Over 2,000 lines it
+  offers one file per patch. Bots that can't open the attachments folder (API
+  models and scripted bots) say "Can't read attachments".
 - **Composer tools.** Click + for mentions and commands, or type `/` or `@`
   to filter the menu. Arrows select; Enter or Tab picks. Mentions insert at the
   cursor. Commands without arguments run while preserving your draft.
@@ -93,6 +148,28 @@ edges.
 - **Thread names.** Double-click a thread's title in its header or sidebar
   to rename it. Enter saves; Escape cancels. Focus a title and press Enter
   or F2 to rename with the keyboard.
+- **Reading while bots work.** The transcript follows new replies only
+  while you are at its bottom. Scrolled up, it keeps your place and shows
+  "3 new · Jump to latest", and "Null is waiting for you · Show" when an
+  approval card is out of view. Coming back to a thread, a hairline "New
+  since you looked" marks where the replies you missed begin; it is saved
+  with the thread and clears when you send.
+- **Who gets your message.** A line above the message box always says who
+  your message goes to and why: "To Null · last addressed", "To Jigga · you
+  mentioned", "To everyone · everyone at once", with "queued (busy)" when
+  they are at work. Its reason opens Room. An empty room offers example
+  messages built from a real handle, and before the first message the hint
+  teaches @all.
+- **Try again and Let them answer.** A bot's failure notice has **Try
+  again**, which runs that bot once more on the conversation as it is
+  without reposting anything. When the round limit cuts bots off, the
+  notice says who was asked next ("Jigga asked Null next.") and offers
+  **Let Null answer**, which buys exactly one reply.
+- **Quotes and message actions.** Quoting a reply no longer adds its bot's
+  handle when you @mention someone yourself, and **Send to ▾** hands the
+  quote to another bot or to everyone. Every message, yours included, has
+  Quote, Copy and Fork from here; in a pane under 360px wide they fold into
+  one ⋯.
 - **Queue and steer.** While models reply, Enter queues your message for
   the next turn. You can edit or remove queued messages. Steer (or
   Command/Ctrl+Enter) interrupts the current turn and sends immediately;
@@ -101,8 +178,11 @@ edges.
   app restarts. Steering currently starts a new turn for all providers,
   including Codex; its native `turn/steer` protocol is not wired in.
 - **Avatar batteries.** The left half shows context remaining, the right
-  half the provider account's plan remaining. Usage cards show reset times,
-  other plan windows and session token totals, with a Compact now button.
+  half the provider account's plan remaining. A low side gets a thin outline;
+  a critical one a thicker outline and the word "low". The cells keep the
+  agent's colour, because red means something failed. Usage cards show reset
+  times, other plan windows and the bot's token totals for this thread, with
+  a Compact now button.
   Unknown readings draw full without inventing a percentage. Claude Code
   reports plan usage during replies; Codex also reports it when joining.
   Plan readings are shared across agents using the same provider account.
@@ -112,7 +192,7 @@ edges.
   selections; your choices are saved across restarts.
 - **Live activity and token counts.** See replies in progress and activity
   status lines, with steps from Claude Code and Codex and per-participant
-  token counts for the chat.
+  token counts for the thread, saved with it.
 
 ## Requirements
 
@@ -170,7 +250,7 @@ Keyboard shortcuts (on Windows and Linux, use Ctrl+Shift instead of ⌘):
 | ⌘[ ⌘] | Previous or next pane |
 | ⌘⇧Enter | Maximize or restore the focused pane |
 
-⌘W is left to macOS, which closes the window with it.
+⌘W is left to macOS, which closes the window with it; like ⌘Q, that asks first while agents are running.
 
 Use **Providers** in the top bar to hide tools you do not use. Toggle any provider,
 choose **Hide uninstalled tools**, or **Enable all** to restore the list. Choices are
@@ -198,9 +278,12 @@ Chats, participants, options and completed messages are saved automatically.
 On macOS the native app stores them in
 `~/Library/Application Support/dev.apexdeck.app/saved-chats-v1/` using atomic file replacements.
 Workspace folders previously remembered by the app are migrated on first launch.
-Running model turns and terminal processes are not restarted automatically.
-Use **Delete thread** to remove a saved conversation. Switching sections or quitting
-the application keeps your chats. Browser demo data is stored separately in browser storage.
+Running model turns and terminal processes are not restarted automatically:
+terminals and their Code layout are saved as names and tools only, and come
+back Stopped until you start them.
+Use **Delete thread** to remove a saved conversation. Switching sections, removing a
+workspace from the list or quitting the application keeps your chats. Browser demo data
+is stored separately in browser storage.
 
 ## Adding models to a group chat
 
@@ -237,8 +320,9 @@ mistaken for a finished message: it lists the steps taken so far (the file
 being read, the command being run), shows the text written so far in a
 dimmer colour, and ends with a moving status line that says whether the bot
 is thinking, working or writing and for how long. When the turn ends the
-bubble is replaced by the final reply, and the bot's chip shows the tokens
-it has used in this chat; hover for the split between input and output.
+bubble is replaced by the final reply. Hover the bot's chip for the tokens it
+has used in this thread, split into input and output. The totals are saved
+with the thread; `/clear` keeps them and a fork starts at zero.
 
 Claude Code is run in its event mode (`--output-format stream-json`). Codex
 is run through its app server (`codex app-server`), the same interface its
@@ -273,8 +357,9 @@ the level is only stated to the model as an instruction.
 Configured MCP servers and plugins stay enabled for Claude Code and Codex.
 Ordinary read tools run without a card. MCP tool names containing trading or
 publishing terms (including order, transfer, cancel, post, send, and delete)
-require Approve or Reject every time, even at Full access. The card shows the
-server, tool name, and complete JSON arguments; approval is for that call only.
+ask every time, even at Full access, unless you chose Always allow for that
+tool in this thread. Their cards say "can spend money or publish" and show the
+server, tool name, and complete JSON arguments; Allow once is for that call only.
 Stopping that participant rejects its pending approvals. Some read names, such
 as `get_open_orders`, also match and ask.
 

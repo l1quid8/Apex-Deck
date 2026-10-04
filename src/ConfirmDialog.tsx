@@ -3,6 +3,8 @@ import { useEffect, useRef } from "react";
 export interface Question {
   title: string;
   body: string;
+  /** Short lines under the body, such as what is still running. */
+  rows?: string[];
   /** The words on the button that goes ahead. */
   action: string;
   onConfirm: () => void;
@@ -26,9 +28,14 @@ export function ConfirmDialog({ question, onCancel }: { question: Question; onCa
   }, []);
   return (
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
-      <div className="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+      <div className="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby={question.rows?.length ? "confirm-body confirm-rows" : "confirm-body"}>
         <strong id="confirm-title">{question.title}</strong>
         <p id="confirm-body" className="muted">{question.body}</p>
+        {question.rows && question.rows.length > 0 && (
+          <ul id="confirm-rows" className="confirm-rows">
+            {question.rows.map((row, index) => <li key={index}>{row}</li>)}
+          </ul>
+        )}
         <div className="confirm-actions">
           <button ref={cancel} onClick={onCancel}>Cancel</button>
           <button className="danger" onClick={() => { onCancel(); question.onConfirm(); }}>{question.action}</button>

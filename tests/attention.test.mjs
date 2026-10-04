@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Burst, afterRound, ago, label, summarize, urgency, waitingFor, workspaceFlag } from "../src/attention.ts";
+import { Burst, QUIET_MS, afterRound, ago, badgeCount, clearReady, label, seenFlags, summarize, urgency, waitingFor, withApprovals, withPaneSignal, workspaceFlag } from "../src/attention.ts";
 
 test("an approval menu under a question is waiting for approval", () => {
   const screen = `
@@ -142,4 +142,73 @@ test("a workspace pill says which section an alert is in when it is not this one
   assert.equal(workspaceFlag([code, thread], "Threads").worst, "needs_input");
   assert.equal(workspaceFlag([code], "Threads").title, "1 wants attention: 1 in Code");
   assert.equal(workspaceFlag([code, thread], "Code").title, "2 want attention: 1 in Code, 1 in Threads");
+});
+
+test("a blocking flag stays until its approvals clear it", () => {
+  const blocking = { kind: "needs_input", note: "Null wants approval: Run npm test", at: 100, blocking: true };
+  let flags = withApprovals({}, "t", blocking);
+  assert.deepEqual(flags.t, blocking);
+  assert.equal(seenFlags(flags, "t", false), flags, "looking at the thread doesn't settle it");
+  assert.equal(withPaneSignal(flags, "t", { kind: "done", note: "New reply", at: 200 }), flags, "a new reply doesn't replace it");
+  flags = withApprovals(flags, "t", { ...blocking, note: "Null wants approval: Run npm test · +1 more" });
+  assert.equal(flags.t.at, 100, "a second card keeps the oldest card's time");
+  assert.equal(flags.t.note, "Null wants approval: Run npm test · +1 more");
+  assert.equal(withApprovals(flags, "t", { ...flags.t }), flags, "the same flag again changes nothing");
+  assert.deepEqual(withApprovals(flags, "t", null), {}, "the last answer clears it");
+});
+
+test("sending a message while a bot waits on a card keeps its flag", () => {
+  const flags = withApprovals({}, "t", { kind: "needs_input", note: "Null wants approval: Run npm test", at: 1, blocking: true });
+  // A human message makes the thread clear its own flag (ChatPane, message_added).
+  assert.equal(withPaneSignal(flags, "t", null), flags);
+});
+
+test("approvals never clear a flag they did not raise", () => {
+  const question = { kind: "needs_input", note: "Asked you a question", at: 5 };
+  const flags = withPaneSignal({}, "t", question);
+  assert.equal(withApprovals(flags, "t", null), flags);
+  assert.deepEqual(seenFlags(flags, "t", false), {}, "a question stays non-blocking: looking settles it");
+});
+
+test("a pane's own flags behave as before", () => {
+  const ready = { kind: "done", note: "New reply", at: 1 };
+  let flags = withPaneSignal({}, "a", ready);
+  assert.equal(withPaneSignal(flags, "a", { ...ready, at: 9 }), flags, "the same flag again keeps its time");
+  flags = withPaneSignal(flags, "a", { kind: "failed", note: "Null could not reply", at: 10 });
+  assert.equal(flags.a.kind, "failed");
+  assert.deepEqual(withPaneSignal(flags, "a", null), {});
+  assert.equal(withPaneSignal({}, "a", null).a, undefined);
+  const waiting = { kind: "needs_input", note: "Waiting for approval", at: 3 };
+  assert.equal(seenFlags({ term: waiting }, "term", true).term, waiting, "a waiting terminal keeps its flag");
+  assert.deepEqual(seenFlags({ term: waiting }, "term", false), {});
+  assert.deepEqual(seenFlags({}, "none", false), {});
+});
+
+test("Mark ready as seen clears Ready and nothing else", () => {
+  const flags = {
+    a: { kind: "done", note: "New reply", at: 1 },
+    b: { kind: "needs_input", note: "Null wants approval: Run npm test", at: 2, blocking: true },
+    c: { kind: "failed", note: "Null could not reply", at: 3 },
+    d: { kind: "done", note: "Finished working", at: 4 },
+  };
+  assert.deepEqual(Object.keys(clearReady(flags)), ["b", "c"]);
+  const none = { b: flags.b };
+  assert.equal(clearReady(none), none, "nothing to clear changes nothing");
+});
+
+test("the dock badge counts Needs you and Failed, not Ready", () => {
+  const at = 0;
+  assert.equal(badgeCount([]), 0);
+  assert.equal(badgeCount([{ kind: "done", note: "", at }, { kind: "needs_input", note: "", at }, { kind: "failed", note: "", at }]), 2);
+  assert.equal(badgeCount([{ kind: "done", note: "", at }]), 0);
+});
+
+test("a run of output starts with the first output after a quiet gap", () => {
+  const run = new Burst();
+  assert.equal(run.runStartedAt(), 0);
+  run.output(1000, 10);
+  run.output(1500, 10);
+  assert.equal(run.runStartedAt(), 1000);
+  run.output(1500 + QUIET_MS + 1, 10);
+  assert.equal(run.runStartedAt(), 1500 + QUIET_MS + 1);
 });

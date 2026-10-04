@@ -16,6 +16,8 @@ export interface Signal {
   note: string;
   /** When it was raised, in milliseconds since the epoch. */
   at: number;
+  /** A flag looking at the pane does not clear. Only open approval cards set it; see approvals.ts. */
+  blocking?: boolean;
 }
 
 const ORDER: Attention[] = ["needs_input", "failed", "done"];
@@ -104,6 +106,11 @@ export class Burst {
     this.lastTypedAt = now;
   }
 
+  /** When the current run of output began, in milliseconds; 0 before any output. */
+  runStartedAt(): number {
+    return this.startedAt;
+  }
+
   /** The terminal has gone quiet. Was the run that just ended real work? */
   finishedWork(): boolean {
     if (this.lastOutputAt === 0) return false;
@@ -132,6 +139,55 @@ export function afterRound(failed: string[], lastReply: string | null): Omit<Sig
   // Closing quotes, brackets and emphasis marks may follow the question mark.
   const asks = /\?["'”’)\]*_`\s]*$/.test(lastReply.trim());
   return asks ? { kind: "needs_input", note: "Asked you a question" } : { kind: "done", note: "New reply" };
+}
+
+// ------------------------------------------------------------------- flags
+
+/** Flags by pane id. */
+export type Flags = Record<string, Signal>;
+
+function without(flags: Flags, paneId: string): Flags {
+  const { [paneId]: _gone, ...rest } = flags;
+  return rest;
+}
+
+/**
+ * A pane raises (`signal`) or clears (`null`) its own flag. A blocking
+ * flag belongs to the pane's open approvals, so nothing else the pane says
+ * replaces or clears it: only `withApprovals` does.
+ */
+export function withPaneSignal(flags: Flags, paneId: string, signal: Signal | null): Flags {
+  const old = flags[paneId];
+  if (old?.blocking) return flags;
+  if (!signal) return old ? without(flags, paneId) : flags;
+  if (old && old.kind === signal.kind && old.note === signal.note) return flags;
+  return { ...flags, [paneId]: signal };
+}
+
+/** A thread's open approvals raise their blocking flag, or clear it (`null`) once the last card is answered. */
+export function withApprovals(flags: Flags, paneId: string, signal: Signal | null): Flags {
+  const old = flags[paneId];
+  if (!signal) return old?.blocking ? without(flags, paneId) : flags;
+  if (old?.blocking && old.kind === signal.kind && old.note === signal.note && old.at === signal.at) return flags;
+  return { ...flags, [paneId]: { ...signal, blocking: true } };
+}
+
+/** Looking at a pane settles its flag, except a blocking one and a terminal still waiting on an answer. */
+export function seenFlags(flags: Flags, paneId: string, terminal: boolean): Flags {
+  const flag = flags[paneId];
+  if (!flag || flag.blocking || (flag.kind === "needs_input" && terminal)) return flags;
+  return without(flags, paneId);
+}
+
+/** Every flag except Ready, as Mark ready as seen leaves them. */
+export function clearReady(flags: Flags): Flags {
+  const kept = Object.fromEntries(Object.entries(flags).filter(([, signal]) => signal.kind !== "done"));
+  return Object.keys(kept).length === Object.keys(flags).length ? flags : kept;
+}
+
+/** The number on the dock icon: what needs you or failed. Ready shows only in the title bar and rail. */
+export function badgeCount(signals: readonly Signal[]): number {
+  return signals.filter((signal) => signal.kind !== "done").length;
 }
 
 // ----------------------------------------------------------------- summary

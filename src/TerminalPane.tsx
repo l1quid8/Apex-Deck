@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -6,6 +6,8 @@ import "@xterm/xterm/css/xterm.css";
 import { Burst, QUIET_MS, waitingFor, type Attention } from "./attention";
 import type { Backend } from "./backend";
 import { registerPty } from "./hub";
+import { STOPPED, canStart, exitBar, exitLine, exitSignal, exited, ptyIdFor, started, startedAgainLine, stoppedNotice, type TerminalRun } from "./terminalRun";
+import { TitleThrottle, cleanTitle } from "./terminalTitle";
 import type { Pane } from "./types";
 
 interface Props {
@@ -13,10 +15,25 @@ interface Props {
   cwd: string;
   backend: Backend;
   focused: boolean;
+  /** False for a terminal restored from the last session: it waits, Stopped, for you to start it. */
+  startOnMount: boolean;
+  /** False when the pane's tool is no longer on this computer; Start is then turned off. */
+  installed: boolean;
+  /** The tool's own name, such as "Codex", for "Codex isn't installed." */
+  toolLabel: string;
+  /** Bumped by the ⋯ menu's Start again. */
+  startRequest?: number;
   onActivity: (paneId: string) => void;
-  onExit: (paneId: string) => void;
+  /** Told each time the program starts or ends. */
+  onRun: (paneId: string, run: TerminalRun) => void;
+  /** The title the program gives itself, cleaned; "" when it has none or has ended. */
+  onTitle: (paneId: string, title: string) => void;
   /** Raise or clear (with `null`) this pane's request for attention. */
   onSignal: (paneId: string, kind: Attention | null, note?: string) => void;
+  /** Close the pane, from the bar shown once the program has ended. */
+  onClose: (paneId: string) => void;
+  /** A new run of output began at `startedAt` (ms since the epoch), for the head's "Working 4m". */
+  onRunStart?: (paneId: string, startedAt: number) => void;
 }
 
 /** The text on the terminal's screen, for judging whether it is waiting. */
@@ -38,12 +55,16 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, onActivity, onExit, onSignal }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onSignal, onClose, onRunStart }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
-  // Keep the latest callbacks without restarting the terminal when they change.
-  const callbacks = useRef({ onActivity, onExit, onSignal });
-  callbacks.current = { onActivity, onExit, onSignal };
+  /** Where the program is, for the bar at the foot of the pane. */
+  const [run, setRun] = useState<TerminalRun>(STOPPED);
+  // Keep the latest callbacks and folder without restarting the terminal when they change.
+  const latest = useRef({ onActivity, onRun, onTitle, onSignal, onRunStart, cwd, installed });
+  latest.current = { onActivity, onRun, onTitle, onSignal, onRunStart, cwd, installed };
+  /** Starts the program, or starts it again once it has ended. Set up with the terminal below. */
+  const start = useRef<() => void>(() => {});
 
   useEffect(() => {
     const element = host.current;
@@ -70,62 +91,128 @@ export function TerminalPane({ pane, cwd, backend, focused, onActivity, onExit, 
     const burst = new Burst();
     let quiet: ReturnType<typeof setTimeout> | undefined;
     let waiting = false;
+    let reportedRun = 0;
     const settle = () => {
       const reason = waitingFor(screenText(term));
       if (reason) {
         waiting = true;
-        callbacks.current.onSignal(pane.id, "needs_input", reason);
+        latest.current.onSignal(pane.id, "needs_input", reason);
       } else {
         // Whatever it was waiting for has been answered.
-        if (waiting) callbacks.current.onSignal(pane.id, null);
+        if (waiting) latest.current.onSignal(pane.id, null);
         waiting = false;
-        if (burst.finishedWork()) callbacks.current.onSignal(pane.id, "done", "Finished working");
+        if (burst.finishedWork()) latest.current.onSignal(pane.id, "done", "Finished working");
       }
     };
 
-    const unregister = registerPty(pane.id, {
-      onData: (data) => {
-        term.write(data);
-        callbacks.current.onActivity(pane.id);
-        burst.output(Date.now(), data.length);
-        clearTimeout(quiet);
-        quiet = setTimeout(settle, QUIET_MS);
-      },
-      onExit: (code) => {
-        const detail = code === null ? "" : ` with code ${code}`;
-        term.write(`\r\n\x1b[2m[process exited${detail}]\x1b[0m\r\n`);
-        clearTimeout(quiet);
-        callbacks.current.onExit(pane.id);
-        if (code !== null && code !== 0) callbacks.current.onSignal(pane.id, "failed", `Exited with code ${code}`);
-      },
-    });
+    // Each start runs under its own PTY id, "<pane id>:<generation>". The
+    // desktop side forgets a PTY by id when its program exits
+    // (src-tauri/src/pty.rs), so reusing an id would let the old program's
+    // exit end the new one. See terminalRun.ts.
+    let current: TerminalRun = STOPPED;
+    let unregister = () => {};
 
-    backend
-      .ptySpawn({ id: pane.id, agent: pane.agent, cwd: cwd || undefined, cols: term.cols, rows: term.rows })
-      .catch((error) => term.write(`\x1b[31mCould not start: ${String(error)}\x1b[0m\r\n`));
+    // The title the program gives itself (OSC 0 or 2), cleaned, at most four
+    // times a second, and only while it runs. See terminalTitle.ts.
+    const throttle = new TitleThrottle();
+    let titleTimer: ReturnType<typeof setTimeout> | undefined;
+    const titled = term.onTitleChange((raw) => {
+      if (current.state !== "running") return;
+      clearTimeout(titleTimer);
+      const now = Date.now();
+      const shown = throttle.offer(cleanTitle(raw), now);
+      if (shown !== null) latest.current.onTitle(pane.id, shown);
+      else titleTimer = setTimeout(() => {
+        const held = throttle.flush(Date.now());
+        if (held !== null && current.state === "running") latest.current.onTitle(pane.id, held);
+      }, throttle.wait(now));
+    });
+    const report = (next: TerminalRun) => {
+      current = next;
+      setRun(next);
+      latest.current.onRun(pane.id, next);
+    };
+    const ptyId = () => ptyIdFor(pane.id, current.generation);
+
+    start.current = () => {
+      if (!canStart(current) || !latest.current.installed) return;
+      const again = current.generation > 0;
+      const next = started(current, Date.now());
+      const id = ptyIdFor(pane.id, next.generation);
+      unregister();
+      unregister = registerPty(id, {
+        onData: (data) => {
+          term.write(data);
+          latest.current.onActivity(pane.id);
+          burst.output(Date.now(), data.length);
+          // A new run of output: the pane head times it from here.
+          const runStart = burst.runStartedAt();
+          if (runStart !== reportedRun) {
+            reportedRun = runStart;
+            latest.current.onRunStart?.(pane.id, runStart);
+          }
+          clearTimeout(quiet);
+          quiet = setTimeout(settle, QUIET_MS);
+        },
+        onExit: (code) => {
+          const ended = exited(current, next.generation, code, Date.now());
+          if (ended === current) return;
+          clearTimeout(quiet);
+          // The title belonged to the program that just ended.
+          clearTimeout(titleTimer);
+          latest.current.onTitle(pane.id, "");
+          term.write(exitLine(code, ended.at));
+          report(ended);
+          const failed = exitSignal(code);
+          if (failed) latest.current.onSignal(pane.id, failed.kind, failed.note);
+          else if (waiting) latest.current.onSignal(pane.id, null);
+          waiting = false;
+        },
+      });
+      // Starting again deals with whatever the last run was flagged for.
+      latest.current.onSignal(pane.id, null);
+      waiting = false;
+      if (again) term.write(startedAgainLine(next.at));
+      report(next);
+      if (hasSize()) fit.fit();
+      backend
+        .ptySpawn({ id, agent: pane.agent, cwd: latest.current.cwd || undefined, cols: term.cols, rows: term.rows })
+        .catch((error) => {
+          term.write(`\x1b[31mCould not start: ${String(error)}\x1b[0m\r\n`);
+          report(exited(current, next.generation, null, Date.now()));
+        });
+    };
 
     const typed = term.onData((data) => {
-      backend.ptyWrite(pane.id, data).catch(() => {});
+      if (current.state !== "running") return;
+      backend.ptyWrite(ptyId(), data).catch(() => {});
       // Typing here means the person is dealing with it.
       burst.typed(Date.now());
       waiting = false;
-      callbacks.current.onSignal(pane.id, null);
+      latest.current.onSignal(pane.id, null);
     });
 
     // A pane that is hidden has no size; skip fitting until it is shown.
     const observer = new ResizeObserver(() => {
       if (!hasSize()) return;
       fit.fit();
-      backend.ptyResize(pane.id, term.cols, term.rows).catch(() => {});
+      if (current.state === "running") backend.ptyResize(ptyId(), term.cols, term.rows).catch(() => {});
     });
     observer.observe(element);
+
+    // A terminal restored from the last session never starts by itself.
+    if (startOnMount) start.current();
+    else report(STOPPED);
 
     return () => {
       observer.disconnect();
       clearTimeout(quiet);
+      clearTimeout(titleTimer);
+      titled.dispose();
       typed.dispose();
       unregister();
-      backend.ptyKill(pane.id).catch(() => {});
+      if (current.state === "running") backend.ptyKill(ptyId()).catch(() => {});
+      start.current = () => {};
       term.dispose();
       terminal.current = null;
     };
@@ -133,9 +220,36 @@ export function TerminalPane({ pane, cwd, backend, focused, onActivity, onExit, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
 
+  // The ⋯ menu's Start again. Ignored while the program runs.
+  useEffect(() => {
+    if (startRequest) start.current();
+  }, [startRequest]);
+
   useEffect(() => {
     if (focused) terminal.current?.focus();
   }, [focused]);
 
-  return <div className="terminal-host" ref={host} />;
+  const bar = run.state === "exited" ? exitBar(run, pane.title) : null;
+  const notice = run.state === "stopped" ? stoppedNotice(pane.title, toolLabel, installed) : null;
+  return (
+    <div className="terminal">
+      <div className="terminal-host" ref={host} />
+      {notice && (
+        <div className="terminal-stopped" role="status">
+          <p>{notice.text}</p>
+          <div className="terminal-stopped-actions">
+            <button className="primary" disabled={!installed} onClick={() => start.current()}>{notice.start}</button>
+            <button onClick={() => onClose(pane.id)}>Close</button>
+          </div>
+        </div>
+      )}
+      {bar && (
+        <div className="terminal-bar" role="status">
+          <span className="terminal-bar-text">{bar.text}</span>
+          <button className="primary" disabled={!installed} onClick={() => start.current()}>{bar.start}</button>
+          <button onClick={() => onClose(pane.id)}>Close</button>
+        </div>
+      )}
+    </div>
+  );
 }

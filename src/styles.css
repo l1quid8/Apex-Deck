@@ -252,10 +252,12 @@ textarea {
 .ws-row {
   display: flex;
   align-items: center;
+  border: 1px solid transparent;
   border-radius: 6px;
 }
 .ws-row.active {
   background: var(--panel-2);
+  border-color: var(--line);
 }
 .ws-name {
   flex: 1;
@@ -351,6 +353,10 @@ textarea {
   font-weight: 600;
 }
 .pane-folder {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--muted);
   font-size: 12px;
 }
@@ -631,21 +637,38 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .identicon.working i.on { animation: none; }
 }
-/* The battery (battery.ts): each cell is drawn at its own strength, in the
-   agent's colour or in red on a side that is running low. */
+/* The battery (battery.ts): each cell is drawn at its own strength, always
+   in the agent's colour. Low is not a failure, so it never borrows the
+   danger colour: a low side gets a hairline outline, and a critical one a
+   thicker outline and the word "low". */
+.identicon.battery {
+  position: relative;
+}
 .identicon.battery i {
-  background: color-mix(in srgb, var(--c, var(--who)) var(--a), transparent);
+  background: color-mix(in srgb, var(--who) var(--a), transparent);
 }
-.identicon.battery.low,
+.identicon.battery.low {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 70%, transparent);
+}
 .identicon.battery.critical {
-  border-color: color-mix(in srgb, var(--danger) 70%, transparent);
+  box-shadow: 0 0 0 2px var(--text);
 }
-.identicon.battery.critical {
-  animation: battery-critical 1.6s ease-in-out infinite;
+.identicon-low {
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  transform: translateX(-50%);
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 12px;
 }
-@keyframes battery-critical {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 0%, transparent); }
-  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 35%, transparent); }
+/* A chip's 21px avatar is too small for the word; the chip says "low" beside it. */
+.identicon-sm .identicon-low {
+  display: none;
 }
 /* A side refilling after /compact or a plan reset, bottom row first. */
 .identicon.battery i.refill {
@@ -655,7 +678,6 @@ textarea {
   from { background: color-mix(in srgb, var(--who) 16%, transparent); transform: scale(0.6); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .identicon.battery.critical,
   .identicon.battery i.refill { animation: none; }
 }
 .bubble.writing {
@@ -929,12 +951,11 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .welcome-logo { margin-bottom: 28px; }
 .picker > .primary { margin-top: 26px; padding: 11px 18px; }
 .welcome-capabilities { display: flex; justify-content: center; gap: 24px; margin-top: 48px; color: var(--muted); font: 10px ui-monospace, monospace; letter-spacing: 0.06em; }
-.ws-row.active { box-shadow: inset 2px 0 var(--accent); background: #17251f; }
 .ws-name { padding: 10px; gap: 10px; }
 .ws-name > svg { flex-shrink: 0; color: var(--muted); }
 .ws-label { overflow: hidden; text-overflow: ellipsis; }
-.ws-row > .icon { opacity: 0; }
-.ws-row:hover > .icon, .ws-row:focus-within > .icon { opacity: 1; }
+.ws-row > .pane-menu-wrap > .icon { opacity: 0; }
+.ws-row:hover > .pane-menu-wrap > .icon, .ws-row:focus-within > .pane-menu-wrap > .icon, .ws-row .icon[aria-expanded="true"] { opacity: 1; }
 .pane-row { border-radius: 6px; }
 .pane-row.focused { background: #ffffff05; }
 .pane-title, .pane-folder { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -956,18 +977,17 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .agent-library .empty { margin: 8px 0 0; border: 1px dashed var(--line); border-radius: 14px; width: 100%; max-width: none; padding: 48px 24px; }
 @media (max-width: 1050px) {
   .titlebar { gap: 8px; }
-  .titlebar > .badge { display: none; }
+  .titlebar .badge { display: none; }
   .section-navigation { margin-left: 4px; }
   .section-button { padding: 7px 10px; }
-  .titlebar > .ghost { font-size: 11px; }
+  .titlebar-end > .ghost { font-size: 11px; }
   .rail { width: 200px; }
 }
 @media (max-width: 720px) {
   .titlebar { padding: 10px; }
-  .titlebar > button.ghost[title] { display: none; }
+  .titlebar-end > button.ghost[title] { display: none; }
   .section-navigation { order: 5; width: 100%; justify-content: center; }
   .section-button { flex: 1; justify-content: center; }
-  .titlebar > .spacer { min-width: 0; }
   .rail { width: 160px; padding: 14px 8px; }
   .canvas { padding: 8px; }
   .picker { padding: 24px 16px; }
@@ -983,7 +1003,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   .rail { width: 128px; }
   .rail-head { padding-left: 2px; padding-right: 2px; font-size: 9px; }
   .ws-name { font-size: 11px; gap: 5px; padding: 8px 5px; }
-  .ws-row > .icon { opacity: 1; }
+  .ws-row > .pane-menu-wrap > .icon { opacity: 1; }
   .pane-row { padding-left: 10px; font-size: 11px; }
   .chat-options select { max-width: 100%; }
   .chat-bar { padding: 10px; }
@@ -1343,8 +1363,8 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   left: 0;
   top: calc(100% + 8px);
   z-index: 40;
-  width: min(380px, 80vw);
-  max-height: 60vh;
+  width: min(440px, calc(100vw - 32px));
+  max-height: 70vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -1354,19 +1374,59 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   border-radius: 10px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
 }
-.attention-list button {
+.attention-list .attention-row {
   display: flex;
   align-items: center;
   gap: 12px;
+  width: 100%;
   border: 0;
   background: transparent;
   text-align: left;
   padding: 9px 10px;
   border-radius: 7px;
 }
-.attention-list button:hover {
+.attention-list button.attention-row:hover {
   background: color-mix(in srgb, var(--text) 7%, transparent);
 }
+.attention-row > .ghost.small {
+  flex: none;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.attention-item.expanded {
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+/* An approval answered in place. Neutral panel and hairline, no coloured bar. */
+.answer-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 10px 10px 29px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.answer-strip.empty { color: var(--muted); font-size: 12px; }
+.answer-kind { font-size: 11px; font-weight: 600; color: var(--warn); }
+.answer-command {
+  display: block;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.answer-summary { font-size: 12px; font-variant-numeric: tabular-nums; }
+.answer-strip .diff { max-height: 200px; border: 1px solid var(--line); border-radius: 8px; }
+.answer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.answer-actions button { padding: 5px 10px; font-size: 12px; }
+.answer-next { color: var(--muted); font-size: 12px; }
 .attention-what,
 .attention-where {
   display: flex;
@@ -1398,8 +1458,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 
 /* Completed responses reserve space on the right for the quote action. */
 .bubble.bot.completed { position: relative; padding-right: 54px; }
-.quote-reply-icon { position: absolute; right: 10px; top: 10px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; background: transparent; color: var(--muted); }
-.quote-reply-icon:hover, .quote-reply-icon:focus-visible { color: var(--text); background: var(--panel); }
 .quote-preview { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--line); background: var(--panel-2); border-radius: var(--radius); }
 .quote-preview-copy { flex: 1; min-width: 0; }
 .quote-preview-copy .speaker { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; }
@@ -1408,6 +1466,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 
 /* The conversation, with the list of changes beside it when open. */
 .chat-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1474,6 +1533,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .approval-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px 12px;
 }
@@ -1485,6 +1545,19 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   margin-left: auto;
   color: var(--muted);
   font-size: 12px;
+}
+/* What Always allow covers: always on risky cards, on hover or focus otherwise. */
+.approval-scope {
+  margin: 0;
+  padding: 0 12px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+.approval-deadline {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 .working-line.asking {
   color: var(--warn);
@@ -1614,9 +1687,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .diff-file-row .path { flex: 1; overflow-wrap: anywhere; }
 
 .bubble.human { position: relative; }
-.fork-message-icon { opacity: 0; }
-.bubble.bot .fork-message-icon { right: 44px; }
-.bubble:hover .fork-message-icon, .bubble:focus-within .fork-message-icon { opacity: 1; }
 
 /* One app-level details rail; pane components stay mounted when it docks. */
 .body { position: relative; }
@@ -1672,7 +1742,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .queued-messages { padding: 5px 8px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; }
 .queued-messages > summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queued-message { align-items: center; }
-.recipient-hint { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .participant-status { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--muted); }
 .participant-status.thinking, .participant-status.writing { background: #92b0c9; }
 .participant-status.tool { background: #cbb079; }
@@ -1840,7 +1909,8 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
 .quick-add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .quick-add-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .quick-add .form-error { margin: 0; }
-.attention-foot { display: flex; justify-content: space-between; gap: 12px; padding: 6px 10px 4px; margin-top: 2px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.attention-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 6px 10px 4px; margin-top: 2px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.attention-foot button { padding: 3px 8px; font-size: 11px; }
 kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--bg); }
 
 /* UI review, stage 4: Agents starters and the sample thread. */
@@ -1854,7 +1924,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 .new-menu > .primary, .attention-button { white-space: nowrap; }
 /* Between the wrapped phone layout and a full window the title bar is tight: keep the mark, drop the name. */
 @media (max-width: 960px) and (min-width: 721px) {
-  .titlebar > .brand { font-size: 0; gap: 0; }
+  .titlebar-start > .brand { font-size: 0; gap: 0; }
 }
 
 /* Board 06: who is replying, and Queue and Steer side by side. */
@@ -1892,3 +1962,122 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 /* Hint floats below the box so it never pushes Send out of line. */
 .composer:focus-within { padding-bottom: 28px; }
 .composer:focus-within .composer-hint { position: absolute; top: 100%; left: 0; right: 0; margin-top: 6px; }
+.allowed-copy > .allowed-what { color: var(--text); }
+.allowed-copy > .allowed-what.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.allowed-copy > .allowed-when { font-size: 11px; }
+.allowed-removed { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; padding: 7px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 12px; }
+.allowed-removed > span { color: var(--text); }
+
+/* Now tier, stage 1: toasts stack, so a delete's Undo and a removal's Undo can show at once. */
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.toasts > .toast { position: static; transform: none; }
+
+/* Now tier, stage 1: a workspace row is a div so its name can be renamed in place. */
+div.ws-name { cursor: pointer; border: 1px solid transparent; border-radius: 6px; }
+div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ws-name .ws-label { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
+.rail .pane-menu { min-width: 168px; }
+
+/* Now tier, stage 1: the Removed line sits at the foot of the rail. */
+.rail { display: flex; flex-direction: column; }
+.rail > * { flex-shrink: 0; }
+.rail-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 8px 0; color: var(--muted); font-size: 11px; }
+.rail-foot button { padding: 2px 6px; font-size: 11px; }
+.rail-foot .pane-menu { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
+
+/* Now tier, stage 1: what is still running, under the quit question. */
+.confirm-rows { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.confirm-rows li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* Now tier, stage 1: the section tabs sit at the centre of the title bar. The
+   two sides take equal room while both fit, and shift aside rather than overlap. */
+.titlebar-start, .titlebar-end { display: flex; align-items: center; gap: 10px; flex: 1 1 0; min-width: max-content; }
+.titlebar-end { justify-content: flex-end; }
+.titlebar-start > .attention { margin-left: auto; }
+@media (min-width: 1051px) {
+  .titlebar > .section-navigation { margin-left: 0; }
+}
+/* Narrower, there's no room for three balanced groups: the tabs follow the brand. */
+@media (max-width: 1050px) {
+  .titlebar-start, .titlebar-end { flex: none; min-width: 0; gap: 8px; }
+  .titlebar-end { margin-left: auto; }
+  .titlebar-start > .attention { margin-left: 0; }
+}
+
+/* A command-line bot that has said nothing for a while: muted, not alarming. */
+.working-line.quiet { color: var(--muted); }
+.working-line.quiet .working-dots i { background: var(--muted); }
+
+/* Now 3.1: pills that keep your place while bots stream. */
+.transcript-pills { position: absolute; left: 0; right: 0; bottom: 12px; z-index: 5; display: flex; justify-content: center; gap: 8px; padding: 0 12px; pointer-events: none; }
+.transcript-pill { pointer-events: auto; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
+.transcript-pill:hover:not(:disabled) { background: var(--panel-2); }
+.pill-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+
+/* Now 3.1: "New since you looked", a hairline with no colour. */
+.unseen-divider { display: flex; align-items: center; gap: 10px; align-self: stretch; color: var(--muted); font-size: 11px; }
+.unseen-divider::before, .unseen-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+
+/* Now 3.2: who gets your message, and why. */
+.recipient-line { margin: 0 0 4px 2px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link-button { padding: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; cursor: pointer; }
+.link-button:hover:not(:disabled) { background: none; color: var(--text); text-decoration-color: currentColor; }
+.example-rows { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-top: 16px; }
+.example-row { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--muted); font-size: 12px; text-align: left; }
+.example-row:hover:not(:disabled) { color: var(--text); }
+
+/* Now 3.3: Try again and Let them answer on notices. */
+.notice.with-action { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 10px; text-align: center; }
+.notice.with-action button { padding: 2px 10px; font-size: 12px; color: var(--text); }
+
+/* Now 3.4: hand a quote to another bot. The menu opens upward from the composer. */
+.hand-off { flex: none; }
+.hand-off > button { padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+.hand-off-menu { top: auto; bottom: calc(100% + 6px); }
+/* Now 3.4: Quote, Copy and Fork on every message; one ⋯ in a narrow pane. */
+.message-actions { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: row-reverse; align-items: center; gap: 2px; }
+.msg-action, .msg-more { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.msg-action:hover:not(:disabled), .msg-action:focus-visible, .msg-more:hover:not(:disabled), .msg-more:focus-visible { color: var(--text); background: var(--panel); }
+.bubble .msg-action { opacity: 0; }
+.bubble.bot .msg-action.quote, .bubble:hover .msg-action, .bubble:focus-within .msg-action { opacity: 1; }
+.bubble.human:has(.msg-more) { padding-right: 44px; }
+.copied { font-size: 11px; color: var(--text); }
+
+/* Now tier, stage 4: terminals. A terminal pane is its screen plus, once
+   its program has ended, a bar at the foot. Neutral panel, hairline border. */
+.terminal { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.terminal > .terminal-host { min-height: 0; }
+.terminal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
+/* In a narrow pane the buttons drop below the words rather than squeezing them. */
+.terminal-bar-text { flex: 1 1 26ch; min-width: 0; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.terminal-bar button { padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+/* A terminal restored from the last session, before it is started. */
+.terminal-stopped { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; background: var(--panel); }
+.terminal-stopped p { margin: 0; max-width: 42ch; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.terminal-stopped-actions { display: flex; gap: 8px; }
+/* What a terminal's program says it is doing, after its name. Muted, and the first thing to shrink. */
+.program-title { min-width: 0; color: var(--muted); font-weight: 400; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pane-head .pane-title { flex: 0 1 auto; min-width: 4ch; }
+.pane-head .program-title { flex: 0 100 auto; font-size: 12px; }
+.pane-row-title:has(+ .program-title) { flex: 0 1 auto; }
+.pane-row .program-title { flex: 1 1 0; font-size: 12px; }
+
+/* Ask for review (DiffPanel): opens under the Changes head, in the sidebar's flow so it is never clipped. */
+.review-menu { display: flex; flex-direction: column; margin: 8px 0 4px; padding: 4px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45); }
+.review-line { margin: 0; padding: 6px 10px 5px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.review-split { display: flex; align-items: center; gap: 8px; padding: 4px 10px 6px; font-size: 12px; }
+.review-bot { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 10px; background: transparent; border-color: transparent; font-size: 12px; text-align: left; }
+.review-bot:hover:not(:disabled), .review-bot:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.review-bot-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.review-bot-name strong { font-weight: 650; }
+.review-bot-note { flex: none; color: var(--muted); font-size: 11px; }

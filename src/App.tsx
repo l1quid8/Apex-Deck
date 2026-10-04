@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
 import { ProviderSettings } from "./ProviderSettings";
@@ -13,14 +13,20 @@ import { AgentsSection } from "./AgentsSection";
 import { DeckIcon } from "./DeckIcon";
 import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
-import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
+import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
+import { nextTitle, programTitle } from "./terminalTitle";
+import { paneMenuItems, type PaneMenuAction } from "./paneMenu";
+import { grid, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
-import { label, summarize, urgency, workspaceFlag, type Attention, type Signal } from "./attention";
+import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, savedThreads } from "./closing";
-import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, Workspace } from "./types";
+import { workingFor } from "./composerStatus";
+import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, quitQuestion, removeCounts, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
+import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
+import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A pane counts as working if it produced output this recently. */
@@ -57,6 +63,8 @@ export function folderName(path: string): string {
 const layoutKey = (workspace: string | null, section: AppSection) => `${workspace ?? ""}:${section}`;
 
 const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
+/** The `paneMenu` id of the rail's Removed · Show menu. */
+const REMOVED_MENU = "removed-workspaces";
 
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
@@ -65,9 +73,9 @@ export function App() {
   useEffect(() => { if (section !== "agents") setLastDeck(section); }, [section]);
   /** Bumped by the title bar's + New agent button. */
   const [newAgentRequest, setNewAgentRequest] = useState(0);
-  /** What each thread's head says: "2 bots", "2 bots · replying". */
-  const [threadStatus, setThreadStatus] = useState<Record<string, string>>({});
-  const onThreadStatus = useCallback((paneId: string, text: string) => setThreadStatus((all) => (all[paneId] === text ? all : { ...all, [paneId]: text })), []);
+  /** What each thread reports: its head's words, and who is replying or stopped on a card. */
+  const [threadStatus, setThreadStatus] = useState<Record<string, ThreadStatus>>({});
+  const onThreadStatus = useCallback((paneId: string, status: ThreadStatus) => setThreadStatus((all) => (JSON.stringify(all[paneId]) === JSON.stringify(status) ? all : { ...all, [paneId]: status })), []);
   const [disabledProviders, setDisabledProviders] = useState<string[]>([]);
   const [managingProviders, setManagingProviders] = useState(false);
   const [profiles, setProfiles] = useState<ParticipantConfig[]>([]);
@@ -78,6 +86,10 @@ export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>(loadWorkspaces);
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
   const [panes, setPanes] = useState<Pane[]>([]);
+  /** Where you stopped reading each thread, saved with it for "New since you looked". */
+  const onThreadSeen = useCallback((paneId: string, seq: number) => setPanes((list) => (
+    list.some((p) => p.id === paneId && p.lastSeenSeq !== seq) ? list.map((p) => (p.id === paneId ? { ...p, lastSeenSeq: seq } : p)) : list
+  )), []);
   const [focusedPane, setFocusedPane] = useState<string | null>(null);
   /** Threads in the order they were last focused, most recent first. */
   const [recentThreads, setRecentThreads] = useState<string[]>([]);
@@ -96,12 +108,19 @@ export function App() {
   const deleteTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   /** The latest delete, offered for undo. */
   const [undoable, setUndoable] = useState<{ id: string; title: string } | null>(null);
+  /** The latest workspace removed from the list, offered for undo with the threads that were open. */
+  const [undoableRemove, setUndoableRemove] = useState<{ id: string; name: string; reopen: string[] } | null>(null);
+  const removeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   /** The pane whose ⋯ menu is open. */
   const [paneMenu, setPaneMenu] = useState<string | null>(null);
   /** Bumped by ⌘T to open the + New menu. */
   const [newMenuRequest, setNewMenuRequest] = useState(0);
   /** Bumped to start renaming a thread from its ⋯ menu. */
   const [renameRequests, setRenameRequests] = useState<Record<string, number>>({});
+  /** Bumped to start a terminal again from its ⋯ menu. */
+  const [startRequests, setStartRequests] = useState<Record<string, number>>({});
+  /** Fork or Export chosen in a thread's ⋯ menu; `n` goes up on each choice. */
+  const [threadRequests, setThreadRequests] = useState<Record<string, { action: "fork" | "export"; n: number }>>({});
   const [railOpen, setRailOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
@@ -122,7 +141,7 @@ export function App() {
     if (target) setDetailsCollapsed(old => ({ ...old, [target]: false }));
     setDetailsOpen(true);
   };
-  const detailsHostBase = { slot: detailsSlot, open: detailsOpen && section === "threads", collapsed: detailsCollapsed,
+  const detailsHostBase = { slot: detailsSlot, open: detailsOpen && section === "threads", overlay: overlayDetails, collapsed: detailsCollapsed,
     toggle: (target: DetailsSection) => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
   useEffect(() => {
     const body = bodyRef.current;
@@ -151,11 +170,20 @@ export function App() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [detailsOpen, section, overlayDetails]);
-  const [exited, setExited] = useState<Set<string>>(new Set());
-  const [, setTick] = useState(0);
+  /** Where each terminal's program is: stopped, running or exited. TerminalPane reports it. */
+  const [runs, setRuns] = useState<Record<string, TerminalRun>>({});
+  /** The title each terminal's program gives itself, cleaned. TerminalPane reports it. */
+  const [programTitles, setProgramTitles] = useState<Record<string, string>>({});
+  const [tick, setTick] = useState(0);
   /** Panes that want attention, by pane id. */
   const [attention, setAttention] = useState<Record<string, Signal>>({});
   const lastOutput = useRef(new Map<string, number>());
+  /** Terminals read back from the session file. They wait, Stopped, until started. */
+  const restored = useRef(new Set<string>());
+  /** When each terminal's current run of output began, for "Working 4m". */
+  const runStart = useRef(new Map<string, number>());
+  /** Every open approval card, app-wide (approvals.ts). */
+  const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
 
   useEffect(() => {
     let alive = true;
@@ -168,30 +196,26 @@ export function App() {
       setAgents(found);
       const known = saved?.workspaces ?? loadWorkspaces();
       setWorkspaces(known);
-      setPanes(loadedThreads(saved?.panes ?? [], known.map((w) => w.id)));
+      const loaded = loadedPanes(saved?.panes ?? [], known.map((w) => w.id));
+      restored.current = new Set(loaded.filter((p) => p.kind === "terminal").map((p) => p.id));
+      setPanes(loaded);
       setProfiles(saved?.profiles ?? []);
       setDisabledProviders(saved?.disabledProviders ?? []);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
       setDetailsOpen(saved?.threadDetailsOpen ?? false);
       setDetailsCollapsed(saved?.threadDetailsCollapsed ?? {});
-      // A layout that cannot be read is dropped and rebuilt from the panes.
-      const arranged: Record<string, LayoutNode> = {};
-      for (const [key, value] of Object.entries(saved?.layouts ?? {})) {
-        const tree = validate(value);
-        if (tree) arranged[key] = tree;
-      }
-      setLayouts(arranged);
+      // A layout that cannot be read is dropped and rebuilt from the panes,
+      // and panes that didn't load are taken out of the rest.
+      setLayouts(restoredLayouts(saved?.layouts, loaded));
       setActiveWorkspace(saved?.activeWorkspace ?? known[0]?.id ?? null);
       setFocusedPane(saved?.focusedPane ?? null);
       if (folders.length > 0) {
-        // Open folders named on the command line, reusing any already listed.
-        const added = folders
-          .filter((path) => !known.some((w) => w.path === path))
-          .map((path) => ({ id: newId("ws"), name: folderName(path), path }));
-        const all = [...known, ...added];
-        setWorkspaces(all);
-        setActiveWorkspace(all.find((w) => w.path === folders[0])?.id ?? null);
+        // Open folders named on the command line, reusing any already listed
+        // and bringing back any removed from the list.
+        const { list, ids } = addFolders(known, folders, () => newId("ws"), folderName);
+        setWorkspaces(list);
+        setActiveWorkspace(ids[0] ?? null);
       }
       setBackend(b);
     }).catch((error) => {
@@ -205,17 +229,16 @@ export function App() {
   useEffect(() => {
     if (!backend) return;
     saveWorkspaces(workspaces);
-    // Terminals are not restored, so only the arrangement of threads is kept.
-    const kept = Object.fromEntries(Object.entries(layouts).filter(([key]) => key.endsWith(":threads") && workspaces.some((w) => key === layoutKey(w.id, "threads"))));
-    const session: AppSession = { version: 1, workspaces, panes: savedThreads(panes), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: kept, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
+    const session: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map((w) => w.id)), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
   }, [backend, workspaces, panes, profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed]);
 
+  // The workspace in view is always a listed one: removing it moves on to the first listed.
   useEffect(() => {
-    if (activeWorkspace && workspaces.some((w) => w.id === activeWorkspace)) return;
-    setActiveWorkspace(workspaces[0]?.id ?? null);
+    const next = activeAfter(workspaces, activeWorkspace);
+    if (next !== activeWorkspace) setActiveWorkspace(next);
   }, [workspaces, activeWorkspace]);
 
   // Re-render once a second so status dots fall back to idle.
@@ -227,17 +250,32 @@ export function App() {
   const onActivity = useCallback((paneId: string) => {
     lastOutput.current.set(paneId, Date.now());
   }, []);
-  const onExit = useCallback((paneId: string) => {
-    setExited((set) => new Set(set).add(paneId));
+  const onRun = useCallback((paneId: string, run: TerminalRun) => {
+    setRuns((all) => (all[paneId] === run ? all : { ...all, [paneId]: run }));
+  }, []);
+  const onTitle = useCallback((paneId: string, title: string) => {
+    setProgramTitles((all) => ((all[paneId] ?? "") === title ? all : { ...all, [paneId]: title }));
+  }, []);
+  /** What a terminal's program says it is doing, shown muted after its name; "" for threads and when it only repeats a name. */
+  const programOf = (pane: Pane): string => {
+    if (pane.kind !== "terminal") return "";
+    const tool = agents.find((a) => a.key === pane.agent);
+    return programTitle(programTitles[pane.id] ?? "", [pane.title, tool?.label ?? "", tool?.program ?? ""]);
+  };
+  const onRunStart = useCallback((paneId: string, startedAt: number) => {
+    runStart.current.set(paneId, startedAt);
   }, []);
 
   const statusOf = (pane: Pane): PaneStatus => {
+    const working = Date.now() - (lastOutput.current.get(pane.id) ?? 0) < WORKING_WINDOW_MS;
+    // A stopped or exited terminal reads "exited": it never asks before closing.
+    if (pane.kind === "terminal") return terminalStatus(runs[pane.id], attention[pane.id]?.kind ?? null, working);
     if (attention[pane.id]) return attention[pane.id].kind;
-    if (exited.has(pane.id)) return "exited";
-    const last = lastOutput.current.get(pane.id) ?? 0;
-    return Date.now() - last < WORKING_WINDOW_MS ? "working" : "idle";
+    return working ? "working" : "idle";
   };
 
+  /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
+  const listed = useMemo(() => listedPanes(panes, workspaces), [panes, workspaces]);
   const visiblePanes = useMemo(() => openPanes(panes, deleting).filter((p) => p.workspaceId === activeWorkspace && (section === "code" ? p.kind === "terminal" : section === "threads" && p.kind === "chat")), [panes, deleting, activeWorkspace, section]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
   useEffect(() => {
@@ -278,37 +316,68 @@ export function App() {
     if (preset !== "grid") setLayout(preset);
     setMaximized(null);
   };
-  const current = workspaces.find((w) => w.id === activeWorkspace) ?? null;
+  const shownList = shownWorkspaces(workspaces);
+  const hiddenList = hiddenWorkspaces(workspaces);
+  const current = shownList.find((w) => w.id === activeWorkspace) ?? null;
+
+  /** Put a removed workspace back on the list and show it. Its threads come back closed. */
+  const bringBack = (id: string) => {
+    setPaneMenu(null);
+    setWorkspaces((list) => setHidden(list, id, false));
+    setActiveWorkspace(id);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-workspace="${id}"]`)?.focus());
+  };
 
   const addWorkspace = async () => {
     if (!backend) return;
-    let path = "";
-    let name = "";
     if (backend.demo) {
-      name = `workspace-${workspaces.length + 1}`;
-    } else {
-      const picked = await backend.pickFolder();
-      if (!picked) return;
-      const existing = workspaces.find((w) => w.path === picked);
-      if (existing) return setActiveWorkspace(existing.id);
-      path = picked;
-      name = folderName(picked);
+      // The preview has no folders to pick, so every workspace is new.
+      const workspace = { id: newId("ws"), name: `workspace-${workspaces.length + 1}`, path: "" };
+      setWorkspaces((list) => [...list, workspace]);
+      setActiveWorkspace(workspace.id);
+      return;
     }
-    const workspace = { id: newId("ws"), name, path };
-    setWorkspaces((list) => [...list, workspace]);
-    setActiveWorkspace(workspace.id);
+    const picked = await backend.pickFolder();
+    if (!picked) return;
+    // A folder already listed is reused; one removed from the list comes back.
+    const { list, ids } = addFolders(workspaces, [picked], () => newId("ws"), folderName);
+    setWorkspaces(list);
+    setActiveWorkspace(ids[0]);
   };
 
-  const removeWorkspace = async (id: string) => {
-    for (const pane of panes.filter((p) => p.workspaceId === id)) {
-      clearTimeout(deleteTimers.current.get(pane.id));
-      deleteTimers.current.delete(pane.id);
-    }
-    try {
-      for (const pane of panes.filter((p) => p.workspaceId === id && p.kind === "chat")) await backend?.roomDelete(pane.id);
-    } catch (error) { setStorageError(String(error)); return; }
-    setPanes((list) => list.filter((p) => p.workspaceId !== id));
-    setWorkspaces((list) => list.filter((w) => w.id !== id));
+  /** Take a workspace off the list. Nothing is deleted: its threads stay saved
+   *  and closed, and its terminals end. Asks first only while something in it runs. */
+  const removeWorkspace = (workspace: Workspace) => {
+    const own = panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id));
+    const counts = removeCounts(
+      own.filter((p) => p.kind === "terminal").map((p) => statusOf(p)),
+      own.filter((p) => p.kind === "chat").map((p) => threadStatus[p.id]),
+    );
+    const reopen = openThreadIds(own, workspace.id);
+    const remove = () => {
+      for (const pane of own) if (pane.kind === "terminal") lastOutput.current.delete(pane.id);
+      setPanes((list) => removeWorkspacePanes(list, workspace.id));
+      setWorkspaces((list) => setHidden(list, workspace.id, true));
+      setFocusedPane((id) => (id && own.some((p) => p.id === id) ? null : id));
+      setMaximized((id) => (id && own.some((p) => p.id === id) ? null : id));
+      clearTimeout(removeTimer.current);
+      setUndoableRemove({ id: workspace.id, name: workspace.name, reopen });
+      removeTimer.current = setTimeout(() => setUndoableRemove((u) => (u?.id === workspace.id ? null : u)), UNDO_MS);
+    };
+    const asked = removeQuestion(workspace.name, counts);
+    if (asked) setQuestion({ ...asked, onConfirm: remove });
+    else remove();
+  };
+
+  /** Undo a removal: the row and its threads come back. Its terminals can't. */
+  const undoRemove = () => {
+    if (!undoableRemove) return;
+    clearTimeout(removeTimer.current);
+    const { id, reopen } = undoableRemove;
+    setWorkspaces((list) => setHidden(list, id, false));
+    setPanes((list) => reopenThreads(list, reopen));
+    setActiveWorkspace(id);
+    setUndoableRemove(null);
   };
 
   /** A workspace with no folder and a thread of two scripted bots, to try a room without keys. */
@@ -327,7 +396,9 @@ export function App() {
 
   const addPane = (kind: Pane["kind"], title: string, agent?: string) => {
     if (!activeWorkspace) return;
-    const pane: Pane = { id: newId("pane"), workspaceId: activeWorkspace, kind, title, agent };
+    // A second terminal of the same name in a workspace is numbered: "Codex 2".
+    const name = kind === "terminal" ? nextTitle(title, panes.filter((p) => p.workspaceId === activeWorkspace && p.kind === "terminal").map((p) => p.title)) : title;
+    const pane: Pane = { id: newId("pane"), workspaceId: activeWorkspace, kind, title: name, agent };
     setPanes((list) => [...list, pane]);
     setFocusedPane(pane.id);
     setSection(kind === "chat" ? "threads" : "code");
@@ -355,20 +426,16 @@ export function App() {
 
   const onSignal = useCallback((paneId: string, kind: Attention | null, note = "") => {
     if (kind && watched.current(paneId) && !(kind === "needs_input" && kindOf.current(paneId) === "terminal")) return;
-    setAttention((all) => {
-      if (!kind) {
-        if (!all[paneId]) return all;
-        const { [paneId]: _cleared, ...rest } = all;
-        return rest;
-      }
-      const old = all[paneId];
-      if (old && old.kind === kind && old.note === note) return all;
-      return { ...all, [paneId]: { kind, note, at: Date.now() } };
-    });
+    setAttention((all) => withPaneSignal(all, paneId, kind ? { kind, note, at: Date.now() } : null));
   }, []);
 
+  // A thread's open approval cards flag it until the last one is answered,
+  // whether or not it is being looked at. See approvals.ts.
+  const onApprovals = useCallback((paneId: string, signal: Signal | null) => setAttention((all) => withApprovals(all, paneId, signal)), []);
+
   // Looking at a pane settles its flag. A terminal that is still waiting on
-  // an answer keeps its flag until something is typed into it.
+  // an answer keeps its flag until something is typed into it, and a thread
+  // stopped on an approval card keeps its flag until the card is answered.
   const [windowFocus, setWindowFocus] = useState(0);
   useEffect(() => {
     const seen = () => setWindowFocus((n) => n + 1);
@@ -377,37 +444,50 @@ export function App() {
   }, []);
   useEffect(() => {
     if (!focusedPane || !watched.current(focusedPane)) return;
-    setAttention((all) => {
-      const flag = all[focusedPane];
-      if (!flag || (flag.kind === "needs_input" && kindOf.current(focusedPane) === "terminal")) return all;
-      const { [focusedPane]: _seen, ...rest } = all;
-      return rest;
-    });
+    setAttention((all) => seenFlags(all, focusedPane, kindOf.current(focusedPane) === "terminal"));
   }, [focusedPane, activeWorkspace, section, picking, maximized, windowFocus, attention]);
 
-  // Flags for panes that no longer exist are dropped, and the app's icon
-  // shows how many are left. A new flag raised while the app is in the
-  // background also draws the eye to the icon.
+  // Flags for panes that no longer exist, or whose workspace was removed
+  // from the list, are dropped, and the app's icon shows how many are left.
+  // A new flag raised while the app is in the background also draws the
+  // eye to the icon.
   const flagged = useRef(0);
   useEffect(() => {
-    const live = Object.keys(attention).filter((id) => panes.some((p) => p.id === id));
+    const live = Object.keys(attention).filter((id) => listed.some((p) => p.id === id));
     if (live.length !== Object.keys(attention).length) {
-      setAttention((all) => Object.fromEntries(Object.entries(all).filter(([id]) => panes.some((p) => p.id === id))));
+      setAttention((all) => Object.fromEntries(Object.entries(all).filter(([id]) => listed.some((p) => p.id === id))));
       return;
     }
-    const grew = live.length > flagged.current;
-    flagged.current = live.length;
-    backend?.flagAttention(live.length, grew && !document.hasFocus()).catch(() => {});
-  }, [attention, panes, backend]);
+    // The icon counts what needs you or failed; Ready shows only in the title bar and rail.
+    const urgent = badgeCount(live.map((id) => attention[id]));
+    const grew = urgent > flagged.current;
+    flagged.current = urgent;
+    backend?.flagAttention(urgent, grew && !document.hasFocus()).catch(() => {});
+  }, [attention, listed, backend]);
 
-  const attentionItems: AttentionItem[] = panes
+  // An approval left waiting for 2 minutes while the window is in the
+  // background asks for Critical attention, once per card. Ready flags and
+  // terminal flags never escalate.
+  const escalated = useRef(new Set<string>());
+  useEffect(() => {
+    if (!backend) return;
+    const threads = listed.filter((p) => p.kind === "chat" && attention[p.id]?.blocking).map((p) => openCards(p.id, approvalState));
+    const due = dueEscalations(threads, escalated.current, document.hasFocus(), Date.now());
+    if (due.length === 0) return;
+    for (const card of due) escalated.current.add(escalationKey(card));
+    backend.requestCriticalAttention().catch(() => {});
+  }, [tick, attention, approvalState, listed, backend]);
+
+  const attentionItems: AttentionItem[] = listed
     .filter((pane) => attention[pane.id])
     .map((pane) => ({
       paneId: pane.id,
       title: pane.title,
       workspace: workspaces.find((w) => w.id === pane.workspaceId)?.name ?? "",
       where: pane.kind === "chat" ? "Threads" : "Code",
+      program: programOf(pane),
       signal: attention[pane.id],
+      cards: pane.kind === "chat" ? openCards(pane.id, approvalState) : undefined,
     }));
   const sectionFlags = {
     code: summarize(attentionItems.filter((i) => i.where === "Code").map((i) => i.signal)),
@@ -432,6 +512,9 @@ export function App() {
     const end = () => {
       setPanes((list) => list.filter((p) => p.id !== id));
       lastOutput.current.delete(id);
+      runStart.current.delete(id);
+      setRuns(({ [id]: _ended, ...rest }) => rest);
+      setProgramTitles(({ [id]: _gone, ...rest }) => rest);
       takeOff(id);
     };
     const status = statusOf(pane);
@@ -472,15 +555,39 @@ export function App() {
     setUndoable(null);
   };
 
-  // The ⋯ menu closes on a click elsewhere or Escape.
+  // A ⋯ menu closes on a click elsewhere or Escape. Escape puts focus back on
+  // the button that opened it.
+  const menuOpener = useRef<HTMLElement | null>(null);
+  const toggleMenu = (id: string, event: ReactMouseEvent<HTMLElement>) => {
+    menuOpener.current = event.currentTarget;
+    setPaneMenu((open) => (open === id ? null : id));
+  };
   useEffect(() => {
     if (!paneMenu) return;
     const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".pane-menu-wrap")) setPaneMenu(null); };
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape") setPaneMenu(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { setPaneMenu(null); menuOpener.current?.focus(); } };
     window.addEventListener("mousedown", away);
     window.addEventListener("keydown", key);
     return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key); };
   }, [paneMenu]);
+
+  /** Show a workspace's folder in Finder. */
+  const revealWorkspace = (workspace: Workspace) => {
+    backend?.openTarget(workspace.path, null, true).catch((error) => setStorageError(`Could not show ${workspace.name} in Finder: ${String(error)}`));
+  };
+
+  /** Run what was chosen in a pane's ⋯ menu. */
+  const runPaneMenu = (pane: Pane, action: PaneMenuAction) => {
+    const bump = (all: Record<string, number>) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 });
+    if (action === "rename") setRenameRequests(bump);
+    else if (action === "start") setStartRequests(bump);
+    else if (action === "copy_path") {
+      const path = workspaces.find((w) => w.id === pane.workspaceId)?.path;
+      if (path) navigator.clipboard?.writeText(path).catch(() => {});
+    } else if (action === "close") closePane(pane.id);
+    else if (action === "fork" || action === "export") setThreadRequests((all) => ({ ...all, [pane.id]: { action, n: (all[pane.id]?.n ?? 0) + 1 } }));
+    else if (action === "delete") deleteThread(pane);
+  };
 
   const focusPane = (pane: Pane) => {
     if (pane.closed) setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, closed: false } : p)));
@@ -517,6 +624,35 @@ export function App() {
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
   }, []);
+
+  /** Quit once the last save has landed, or after a second if it hangs. */
+  const quitNow = () => {
+    if (!backend) return;
+    void Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]).then(() => backend.quitApp());
+  };
+
+  // Asked to quit: the window's close button, ⌘W, ⌘Q or Quit in the app menu.
+  // The desktop shell holds the quit until this answers (see quit.rs).
+  const onQuitRequest = useRef<(request: number) => void>(() => {});
+  onQuitRequest.current = (request) => {
+    if (!backend) return;
+    void backend.quitHeard(request).catch(() => {});
+    const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
+    const busy = stillRunning(
+      listed.filter((p) => p.kind === "terminal").map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
+      listed.filter((p) => p.kind === "chat" && !deleting.has(p.id)).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
+    );
+    const asked = quitQuestion(busy);
+    if (asked) setQuestion({ ...asked, onConfirm: quitNow });
+    else quitNow();
+  };
+  useEffect(() => {
+    if (!backend) return;
+    let stop: (() => void) | undefined;
+    let live = true;
+    backend.onQuitRequested((request) => onQuitRequest.current(request)).then((unlisten) => (live ? (stop = unlisten) : unlisten()));
+    return () => { live = false; stop?.(); };
+  }, [backend]);
 
   if (!backend) return (
     <div className="loading">
@@ -561,6 +697,8 @@ export function App() {
   return (
     <div className="app">
       <header className="titlebar">
+        {/* Three groups: the two sides take equal room, so the section tabs sit at the centre. */}
+        <div className="titlebar-start">
         <button className="icon" onClick={() => setRailOpen((open) => !open)} aria-label={railOpen ? "Hide workspaces" : "Show workspaces"} title={railOpen ? "Hide workspaces" : "Show workspaces"}>
           <DeckIcon name="sidebar" />
         </button>
@@ -569,10 +707,16 @@ export function App() {
           Apex Deck
         </span>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
+        {/* Just left of the tabs: it grows away from them, so neither the tabs nor the right-hand controls move. */}
+        <AttentionMenu
+          items={attentionItems}
+          onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }}
+          onDecide={(room, request, approve) => backend.roomDecide(room, request, approve, false)}
+          onMarkReadySeen={() => setAttention(clearReady)}
+        />
+        </div>
         <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />
-        {/* Before the spacer, so growing never moves the controls on the right. */}
-        <AttentionMenu items={attentionItems} onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }} />
-        <span className="spacer" />
+        <div className="titlebar-end">
         <button className="ghost" onClick={() => setManagingProviders((open) => !open)} aria-expanded={managingProviders}>Providers</button>
         {(
           <div className="layout-presets" role="group" aria-label="Arrange panes">
@@ -601,6 +745,7 @@ export function App() {
           openRequest={newMenuRequest}
         />}
         {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
+        </div>
       </header>
 
       {managingProviders && <ProviderSettings agents={agents} disabled={disabledProviders} onChange={setDisabledProviders} onClose={() => setManagingProviders(false)} />}
@@ -614,36 +759,71 @@ export function App() {
                 +
               </button>
             </div>
-            {workspaces.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
-            {workspaces.map((workspace) => {
+            {shownList.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
+            {shownList.map((workspace) => {
               const own = section === "agents" ? [] : panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && p.kind === (section === "code" ? "terminal" : "chat"));
+              const inside = panes
+                .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
+                .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
+              const flag = workspaceFlag(inside, section === "code" ? "Code" : section === "threads" ? "Threads" : null);
+              const openWorkspace = () => { setActiveWorkspace(workspace.id); if (section === "agents") setSection(lastDeck); };
+              const rename = () => setRenameRequests((all) => ({ ...all, [workspace.id]: (all[workspace.id] ?? 0) + 1 }));
               return (
                 <div key={workspace.id} className="ws">
                   <div className={`ws-row ${workspace.id === activeWorkspace ? "active" : ""}`}>
-                    <button className="ws-name" onClick={() => { setActiveWorkspace(workspace.id); if (section === "agents") setSection(lastDeck); }} title={workspace.path || workspace.name}>
-                      <DeckIcon name="folder" size={16} /><span className="ws-label">{workspace.name}</span>
-                      {(() => {
-                        const inside = panes
-                          .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
-                          .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
-                        const flag = workspaceFlag(inside, section === "code" ? "Code" : section === "threads" ? "Threads" : null);
-                        return flag ? <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span> : null;
-                      })()}
-                    </button>
-                    <button className="icon small" onClick={() => removeWorkspace(workspace.id)} aria-label={`Remove ${workspace.name}`} title="Remove from list (closes its panes, keeps the folder)">
-                      ×
-                    </button>
+                    {/* A div, not a button, so the name inside can be renamed in place (as pane rows do). */}
+                    <div role="button" tabIndex={0} data-workspace={workspace.id} className="ws-name" title={workspace.path || workspace.name}
+                      aria-label={[workspace.name, flag?.title].filter(Boolean).join(", ")}
+                      onClick={openWorkspace}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openWorkspace(); }
+                        else if (event.key === "F2") { event.preventDefault(); rename(); }
+                      }}>
+                      <DeckIcon name="folder" size={16} />
+                      <ThreadName className="ws-label" title={workspace.name} label="Workspace name" tooltip={workspace.path || workspace.name} renameRequest={renameRequests[workspace.id]} onRename={(name) => setWorkspaces((list) => renameWorkspace(list, workspace.id, name))} />
+                      {flag && <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span>}
+                    </div>
+                    <span className="pane-menu-wrap">
+                      <button className="icon small" onClick={(event) => toggleMenu(workspace.id, event)} aria-label={`More for ${workspace.name}`} aria-haspopup="menu" aria-expanded={paneMenu === workspace.id} title="More">
+                        ⋯
+                      </button>
+                      {paneMenu === workspace.id && (
+                        <span className="pane-menu" role="menu">
+                          <button role="menuitem" onClick={() => { setPaneMenu(null); rename(); }}>Rename</button>
+                          <button role="menuitem" disabled={!workspace.path} title={workspace.path ? undefined : "This workspace has no folder"} onClick={() => { setPaneMenu(null); revealWorkspace(workspace); }}>Reveal in Finder</button>
+                          <span className="pane-menu-sep" role="separator" />
+                          <button role="menuitem" className="danger-text" onClick={() => { setPaneMenu(null); removeWorkspace(workspace); }}>Remove from list…</button>
+                        </span>
+                      )}
+                    </span>
                   </div>
                   {own.map((pane) => (
                     <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}>
                       <span className={`dot ${statusOf(pane)}`} title={statusOf(pane)} />
-                      <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} />
+                      <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} label={pane.kind === "chat" ? "Thread name" : "Terminal name"} />
+                      {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
                       {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note}>{label(attention[pane.id].kind)}</span>}
                     </div>
                   ))}
                 </div>
               );
             })}
+            {hiddenList.length > 0 && (
+              <div className="rail-foot">
+                <span>Removed ({hiddenList.length})</span>
+                <span aria-hidden="true">·</span>
+                <span className="pane-menu-wrap">
+                  <button className="ghost" onClick={(event) => toggleMenu(REMOVED_MENU, event)} aria-label="Show removed workspaces" aria-haspopup="menu" aria-expanded={paneMenu === REMOVED_MENU}>Show</button>
+                  {paneMenu === REMOVED_MENU && (
+                    <span className="pane-menu" role="menu" aria-label="Removed workspaces">
+                      {hiddenList.map((workspace) => (
+                        <button key={workspace.id} role="menuitem" title={workspace.path || workspace.name} onClick={() => bringBack(workspace.id)}>{workspace.name}</button>
+                      ))}
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
           </aside>
         )}
 
@@ -668,7 +848,7 @@ export function App() {
           {/* Every pane of every workspace stays mounted so its session keeps
               running. Panes outside the current view are only hidden. */}
           <div ref={gridArea} className={`grid ${resizing || paneDrag.dragging ? "adjusting" : ""}`} style={{ display: section !== "agents" && current && !picking && visiblePanes.length > 0 ? "block" : "none" }}>
-            {panes.map((pane) => {
+            {listed.map((pane) => {
               const visible = shown.some((p) => p.id === pane.id);
               const rect = maximized === pane.id ? FULL : placed.get(pane.id);
               const status = statusOf(pane);
@@ -682,36 +862,38 @@ export function App() {
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
-                    {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} /> : <span className="pane-title">{pane.title}</span>}
-                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id] ?? "" : status === "working" ? "Working" : status === "exited" ? "Exited" : "Idle"}</span>}
-                    {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
+                    <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} label={pane.kind === "chat" ? "Thread name" : "Terminal name"} />
+                    {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
+                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}</span>}
+                    {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
                       {maximized === pane.id ? "▣" : "□"}
                     </button>
-                    {pane.kind === "chat" && (
-                      <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
-                        <button className="icon small" onClick={() => setPaneMenu((open) => (open === pane.id ? null : pane.id))} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
-                          ⋯
-                        </button>
-                        {paneMenu === pane.id && (
-                          <span className="pane-menu" role="menu">
-                            <button role="menuitem" onClick={() => { setPaneMenu(null); setRenameRequests((all) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 })); }}>Rename</button>
-                            <span className="pane-menu-sep" role="separator" />
-                            <button role="menuitem" className="danger-text" onClick={() => { setPaneMenu(null); deleteThread(pane); }}>Delete thread…</button>
-                          </span>
-                        )}
-                      </span>
-                    )}
+                    <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
+                      <button className="icon small" onClick={(event) => toggleMenu(pane.id, event)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
+                        ⋯
+                      </button>
+                      {paneMenu === pane.id && (
+                        <span className="pane-menu" role="menu">
+                          {paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, agents), tool: toolName(pane.agent, agents), folder: workspace?.path ?? "" }).map((item) => (
+                            <Fragment key={item.action}>
+                              {item.separated && <span className="pane-menu-sep" role="separator" />}
+                              <button role="menuitem" className={item.danger ? "danger-text" : undefined} disabled={item.disabled} title={item.reason || undefined} onClick={() => { setPaneMenu(null); runPaneMenu(pane, item.action); }}>{item.label}</button>
+                            </Fragment>
+                          ))}
+                        </span>
+                      )}
+                    </span>
                     <button className="icon small" onClick={() => closePane(pane.id)} aria-label={`Close ${pane.title}`} title={pane.kind === "chat" ? "Close (the thread stays in the list)" : "Close"}>
                       ×
                     </button>
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} />
+                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}
                   </div>
                 </section>
@@ -728,10 +910,20 @@ export function App() {
         </>}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
-      {undoable && (
-        <div className="toast" role="status">
-          <span>{undoable.title} deleted.</span>
-          <button onClick={undoDelete}>Undo</button>
+      {(undoable || undoableRemove) && (
+        <div className="toasts">
+          {undoable && (
+            <div className="toast" role="status">
+              <span>{undoable.title} deleted.</span>
+              <button onClick={undoDelete}>Undo</button>
+            </div>
+          )}
+          {undoableRemove && (
+            <div className="toast" role="status">
+              <span>{undoableRemove.name} removed.</span>
+              <button onClick={undoRemove}>Undo</button>
+            </div>
+          )}
         </div>
       )}
     </div>

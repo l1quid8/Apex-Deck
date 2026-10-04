@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedAction};
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
-use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker};
+use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker, TokenTotals};
 use crate::view::{pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
@@ -81,8 +81,13 @@ pub enum RoomEvent {
     Passed { id: ParticipantId },
     /// A participant could not reply.
     Failed { id: ParticipantId, error: String },
-    /// Bots kept addressing each other and the room cut them off.
-    HopLimitReached { limit: usize },
+    /// Bots kept addressing each other and the room cut them off. `next`
+    /// lists who the last replies addressed, so the person can let them answer.
+    HopLimitReached {
+        limit: usize,
+        #[serde(default)]
+        next: Vec<ParticipantId>,
+    },
     /// The models now see `summary` in place of the first `upto` messages.
     Compacted { id: ParticipantId, summary: String, upto: usize },
     /// The human pressed stop.
@@ -133,7 +138,9 @@ impl Approver for RoomApprover<'_> {
         if self.desk.always_allowed(self.id, &action) {
             eprintln!("[apex-deck] answered without a card (always allowed): {}", action.title);
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
-            return Decision::ApproveAlways;
+            // A plain yes: the thread's saved rule answered, so no tool is
+            // told to remember anything, and removing the rule takes it back.
+            return Decision::Approve;
         }
         let remembered = action.clone();
         let (request, answer) = self.desk.open_for(self.id.clone());
@@ -216,6 +223,10 @@ pub struct RoomSnapshot {
     /// What the person chose "Always allow" for. A fork starts without it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed: Vec<crate::AllowedRule>,
+    /// Tokens each participant has used in this thread. `/clear` keeps
+    /// them; a fork starts without them.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub usage: HashMap<ParticipantId, TokenTotals>,
 }
 
 impl RoomSnapshot {
@@ -233,6 +244,7 @@ impl RoomSnapshot {
             changes: self.changes.iter().filter(|c| c.seq < upto).cloned().collect(),
             baseline: self.baseline.clone(),
             allowed: Vec::new(),
+            usage: HashMap::new(),
         }
     }
 }
@@ -248,6 +260,8 @@ pub struct Room {
     pins: Vec<String>,
     changes: Vec<ChangeRecord>,
     baseline: Option<String>,
+    /// Tokens each participant has used in this thread.
+    usage: HashMap<ParticipantId, TokenTotals>,
     options: RoomOptions,
     stop: Arc<AtomicBool>,
     /// Actions participants have proposed and are waiting on.
@@ -273,6 +287,7 @@ impl Room {
             changes: self.changes.clone(),
             baseline: self.baseline.clone(),
             allowed: self.desk.allowed(),
+            usage: self.usage.clone(),
         }
     }
 
@@ -289,6 +304,7 @@ impl Room {
             pins: snapshot.pins,
             changes: snapshot.changes,
             baseline: snapshot.baseline,
+            usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(desk),
         }
@@ -304,6 +320,7 @@ impl Room {
             pins: Vec::new(),
             changes: Vec::new(),
             baseline: None,
+            usage: HashMap::new(),
             options,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
@@ -311,6 +328,11 @@ impl Room {
     }
 
     pub(crate) fn record_changes(&mut self, changes: Vec<ChangeRecord>) { self.changes.extend(changes); }
+
+    /// Tokens each participant has used in this thread.
+    pub fn usage(&self) -> &HashMap<ParticipantId, TokenTotals> {
+        &self.usage
+    }
 
     pub fn baseline(&self) -> Option<&str> {
         self.baseline.as_deref()
@@ -445,6 +467,7 @@ impl Room {
         }
         let reply = outcome.map_err(|error| error.to_string())?;
         if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
+            self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens);
             on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens });
         }
         let summary = reply.text.trim();
@@ -558,6 +581,7 @@ impl Room {
             }
             Ok(reply) => {
                 if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
+                    self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens);
                     on_event(RoomEvent::Usage {
                         id: id.clone(),
                         input_tokens: reply.input_tokens,
@@ -720,7 +744,7 @@ impl Room {
                 break;
             }
             if hops >= self.options.max_bot_hops {
-                on_event(RoomEvent::HopLimitReached { limit: self.options.max_bot_hops });
+                on_event(RoomEvent::HopLimitReached { limit: self.options.max_bot_hops, next: targets.clone() });
                 break;
             }
             hops += 1;
@@ -740,7 +764,7 @@ mod approver_tests {
     use std::sync::Mutex;
 
     fn action() -> ProposedAction {
-        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() }
+        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into(), expires_at: None, risky: false }
     }
 
     #[test]
@@ -786,7 +810,7 @@ mod approver_tests {
         assert!(desk.resolve("ask-1", Decision::ApproveAlways));
         assert_eq!(futures::executor::block_on(first), Decision::ApproveAlways);
         let second = approver.decide(action()).now_or_never();
-        assert_eq!(second, Some(Decision::ApproveAlways), "answered without waiting");
+        assert_eq!(second, Some(Decision::Approve), "answered without waiting, as a plain yes so no tool is told to remember it");
         assert_eq!(desk.waiting(), 0, "no second card");
         let events = events.into_inner().unwrap();
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },

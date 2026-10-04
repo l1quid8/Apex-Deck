@@ -16,12 +16,19 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | Terminal panes backed by real pseudo-terminals in the workspace folder | done |
 | Launch through the user's login shell so PATH matches their terminal | done |
 | Layout presets (even grid, large pane on top or left), maximize and restore, close | done |
-| Status dot per pane: working (recent output), idle, exited | done |
-| Drag the line between panes to resize; drag a pane by its title bar to move or swap it | done (thread layouts are saved; terminals are not restored, so neither is their layout) |
+| Status dot per pane: working (recent output), idle, exited (or stopped, for a terminal restored after a restart) | done |
+| Drag the line between panes to resize; drag a pane by its title bar to move or swap it | done (thread and terminal layouts are saved; panes that didn't load are dropped from them) |
 | Keyboard shortcuts for sections, new panes, the next alert, moving between panes and maximizing | done (⌘W is left to the macOS window menu) |
 | Close a thread without deleting it; confirmed delete with undo; confirm before closing a busy terminal | done |
+| Terminal names: a second pane of a tool is numbered ("Codex 2"), renamed in place, with the program's own title muted after the name | done |
+| A terminal whose program ended keeps its output and offers Start again; a non-zero exit is flagged Failed | done |
+| ⋯ menus on every pane: terminals (Rename, Start again, Copy folder path, Close) and threads (Rename, Fork, Export, Delete thread…) | done |
+| Remove a workspace from the list without deleting its threads: asks while something runs, undo, Removed · Show, adding the folder again brings it back | done |
+| Rename a workspace; reveal its folder in Finder | done |
+| Ask before quitting while agent terminals, busy shells or replying bots are running | done (logout and shutdown never ask) |
+| Section tabs centred in the title bar; the active workspace row has no accent bar | done |
 | Tabs within a workspace | later |
-| Restore open panes after restart | later |
+| Restore open panes after restart | done (terminals come back Stopped and are never started on launch; earlier output isn't kept. Start all and resume flags such as `--continue` are later) |
 | One git worktree per agent pane so agents do not collide | later |
 
 ## 2. Group chat
@@ -48,17 +55,23 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | A reply in progress is shown as a draft with its steps, a thinking, working or writing status and elapsed time, so it is not mistaken for the final message | done |
 | Persona and access level per participant | done (access is enforced for Claude Code and Codex, advisory otherwise) |
 | "Ask first" access: a bot proposes each edit and command, and waits for Approve or Reject in the chat | done for Claude Code (checked against the real tool) and Codex (checked against its message format and a stand-in server only) |
+| Always allow: a rule saved with the thread; the card says what it covers, thread details shows when it was given, Remove takes it back | done (a later match is a plain yes; Codex is told to remember it for its session only) |
 | Changes in thread details: workspace diff with added and removed lines, grouped by reported editor | done (thread baseline and edit records saved) |
+| Ask for review: attach the thread's change as a patch for a bot, with a request in the composer | done (never sends; one file per patch over 2,000 lines) |
 | Anthropic-format API adapter | next |
 | Saved bots (reuse a participant across chats) | done (Agents profiles, with saved appearance) |
-| Per-participant token meter | done for Claude Code, Codex and API models (totals since the app opened; not saved) |
+| Per-participant token meter | done for Claude Code, Codex and API models (totals for each thread, saved with it; /clear keeps them, a fork starts at zero) |
 | Session resume for command-line tools (send only unseen messages) | next (the room already tracks unseen messages) |
 | Moderator policy: a cheap model picks who answers | later |
 | Shared summary when the transcript gets long | done (`/compact`, persisted summary) |
 | Cancel a reply that is in flight | done (Stop cancels promptly; streamed partial text is retained) |
 | Rename group chats | done (header and sidebar; saved with the session) |
+| Hold your place while bots stream; "New since you looked"; a pill for an out-of-view approval card | done |
+| Recipient line: who gets your message and why; examples in an empty room | done |
+| Try again after a failure; Let them answer after the round limit (room_turn with a hop budget) | done |
+| Quotes follow your own @mention; Send to ▾; Copy and Quote on every message | done |
 | Queue added context or steer to another model | done (editable in-memory queue; Steer interrupts and starts a new turn, `@handle` selects the recipient) |
-| Context and provider plan avatar meters | implemented (preview and real Codex desktop readings checked; successful Claude context check blocked by session quota) |
+| Context and provider plan avatar meters | implemented (preview and real Codex desktop readings checked; successful Claude context check blocked by session quota); low readings get an outline and the word "low", never the Failed red |
 
 **Access levels.** Read only, Ask first, Can edit files, Full access. Claude
 Code and Codex participants get the tool's own permission settings, so the
@@ -75,6 +88,11 @@ app server sends `requestApproval` requests, answered accept or decline.
 Waiting does not count against the turn's time limit. Stop and closing the
 chat reject everything that is waiting. Code: `crates/apex-core/src/approval.rs`,
 `crates/apex-adapters/src/claude_session.rs`, `codex_server.rs`.
+Always allow saves an `AllowedRule` (with the date and whether the card was
+risky) on the room snapshot. A later match is answered as a plain yes, and
+Codex is sent `persist: "session"` at most, so removing the rule in thread
+details takes it back. A Codex command rule matches the command alone, not
+the reason Codex gives for it.
 
 ## 3. Status board
 
@@ -88,7 +106,9 @@ chat reject everything that is waiting. Code: `crates/apex-core/src/approval.rs`
 | Terminals flag a prompt that is waiting for an answer, and work that finished while you were elsewhere | done (a judgement from what is on screen and how output arrived; the rules and their tests are in `src/attention.ts`. The approval-prompt pattern has not been checked against a live agent prompt) |
 | The app's icon shows the count, and draws the eye once when something is flagged in the background | done (not yet seen on a real Mac) |
 | The list also shows what is working and idle | later |
-| System notification and sound when something needs you | later |
+| System notification and sound when something needs you | later (an approval left waiting 2 minutes in the background bounces the dock once) |
+| Approval flags stay until answered; answer routine approvals from the list; Mark ready as seen; dock badge counts only Needs you and Failed | done |
+| Pane heads say what each bot or terminal is doing, with a quiet warning before the 15-minute silence limit | done |
 
 ## 4. Side panel
 

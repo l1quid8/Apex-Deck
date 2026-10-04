@@ -5,11 +5,11 @@
 // Each side drains from the top.
 
 import type { IdenticonCell } from "./identicon";
-import type { PlanWindow } from "./types";
+import type { PlanWindow, TokenTotals } from "./types";
 
-/** At or under this much left, a side turns red. */
+/** At or under this much left, a side reads low: the shell gets a hairline outline. */
 export const LOW = 0.2;
-/** At or under this much left, the shell pulses. */
+/** At or under this much left, the outline thickens and the avatar says "low". */
 export const CRITICAL = 0.08;
 /** Lit cells above the level stay faintly visible so the agent is recognisable. */
 export const GHOST = 0.16;
@@ -28,10 +28,8 @@ export interface BatteryCell extends IdenticonCell {
   side: Side;
   /** How much of this cell's row is below the level, 0 to 1. */
   fill: number;
-  /** How strongly the cell is drawn, 0 to 1. */
+  /** How strongly the cell is drawn, 0 to 1. Always in the agent's colour. */
   alpha: number;
-  /** The cell carries charge on a side that is running low. */
-  red: boolean;
 }
 
 /** Levels are 0 to 1. `null` means unknown, which is drawn full. */
@@ -103,11 +101,13 @@ export function batteryCells(cells: IdenticonCell[], levels: Levels): BatteryCel
     let alpha: number;
     if (cell.on) alpha = fill >= 1 ? 1 : fill > 0 ? PARTIAL_MIN + (1 - PARTIAL_MIN) * fill : GHOST;
     else alpha = fill > 0 ? TINT : BLANK;
-    return { ...cell, side, fill, alpha, red: cell.on && fill > 0 && isLow(level) };
+    return { ...cell, side, fill, alpha };
   });
 }
 
-/** What the shell shows: red when either side is low, pulsing when critical. */
+/** What the shell shows: a hairline outline when either side is low, a
+ *  thicker outline and the word "low" when critical. Low is not a failure,
+ *  so it never uses the danger colour. */
 export function shellState(levels: Levels): "ok" | "low" | "critical" {
   const lowest = Math.min(levels.context ?? 1, levels.plan ?? 1);
   if (isCritical(lowest)) return "critical";
@@ -132,6 +132,13 @@ export function shortCount(n: number): string {
 export function contextLine(use: { used: number; window: number }): string {
   const level = contextLevel(use) ?? 0;
   return `${percent(level)}% left · ${shortCount(Math.max(0, use.window - use.used))} of ${shortCount(use.window)} tokens`;
+}
+
+/** The usage card's token sentence for one bot. The totals are saved with the thread. */
+export function tokenLine(use: TokenTotals | undefined): string {
+  if (!use || use.turns === 0) return "No tokens used in this thread yet.";
+  const turns = use.turns === 1 ? "1 turn" : `${use.turns} turns`;
+  return `${use.input.toLocaleString()} in, ${use.output.toLocaleString()} out over ${turns} in this thread. Input includes the conversation and files the tool re-read from its cache.`;
 }
 
 /** What a plan window is called: "5-hour", "weekly". */

@@ -5,7 +5,7 @@ use apex_core::testing::ScriptedParticipant;
 use apex_core::{
     Access, ActionKind, AgentTool, Approver, Backend, ContextUse, Decision, DeltaSink, FileChange, Participant, ParticipantConfig,
     ParticipantError, ParticipantId, PlanUsage, PlanWindow, Progress, ProgressSink, ProposedAction, Reply, Role, Room, RoomEvent,
-    RoomOptions, Speaker, TurnPolicy, TurnRequest,
+    RoomOptions, Speaker, TokenTotals, TurnPolicy, TurnRequest,
 };
 use futures::executor::block_on;
 
@@ -159,7 +159,7 @@ fn bots_that_keep_pinging_each_other_are_cut_off() {
 
     // One answer to the human, then two rounds of bots answering bots.
     assert_eq!(lines(&room), ["human: @opus go", "opus: @grok 1", "grok: @opus 2", "opus: @grok 3"]);
-    assert!(events.contains(&RoomEvent::HopLimitReached { limit: 2 }));
+    assert!(events.contains(&RoomEvent::HopLimitReached { limit: 2, next: vec![ParticipantId::new("grok")] }));
     assert_eq!(events.last(), Some(&RoomEvent::Idle));
 }
 
@@ -172,7 +172,7 @@ fn zero_hops_means_bots_never_trigger_each_other() {
     let events = say(&mut room, "@opus go");
 
     assert_eq!(lines(&room), ["human: @opus go", "opus: @grok over to you"]);
-    assert!(events.contains(&RoomEvent::HopLimitReached { limit: 0 }));
+    assert!(events.contains(&RoomEvent::HopLimitReached { limit: 0, next: vec![ParticipantId::new("grok")] }));
     assert!(grok.requests().is_empty());
 }
 
@@ -509,7 +509,7 @@ impl Participant for AskingBot {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
-        let action = ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-a\n+b\n".into() };
+        let action = ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-a\n+b\n".into(), expires_at: None, risky: false };
         match approver.decide(action).await {
             Decision::Approve | Decision::ApproveAlways => {
                 on_progress(Progress::Change(&FileChange::new("a.txt", "-a\n+b\n")));
@@ -565,7 +565,7 @@ fn say_and_answer(room: &mut Room, approve: Option<bool>) -> Vec<RoomEvent> {
 fn a_proposed_action_is_shown_and_the_turn_waits_for_the_answer() {
     let (mut room, id) = asking_room();
     let events = say_and_answer(&mut room, Some(true));
-    let action = ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-a\n+b\n".into() };
+    let action = ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-a\n+b\n".into(), expires_at: None, risky: false };
     let about: Vec<&RoomEvent> = events
         .iter()
         .filter(|e| matches!(e, RoomEvent::ApprovalRequested { .. } | RoomEvent::ApprovalResolved { .. } | RoomEvent::Changed { .. }))
@@ -753,4 +753,34 @@ fn server_requests_reach_prompt_and_survive_fork_and_restore() {
     assert_eq!(restored.transcript()[0].servers, vec!["x-mcp"]);
     say(&mut chat, "wow! good work");
     assert!(!null.requests()[1].system.contains("The human asked you to use these MCP servers, apps, or installed plugins:"));
+}
+
+#[test]
+fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
+    let id = ParticipantId::new("worker");
+    let config = ParticipantConfig {
+        id: id.clone(),
+        display_name: "worker".into(),
+        backend: Backend::Scripted { lines: vec![] },
+        persona: String::new(),
+        access: Access::Read,
+        effort: None,
+        appearance: None,
+    };
+    let quiet = bot("quiet", &["hello", "again"]);
+    let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(WorkingBot(config.clone())), quiet.clone()];
+    let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: 0 });
+    say(&mut room, "go");
+    say(&mut room, "again");
+    assert_eq!(room.usage().get(&id), Some(&TokenTotals { input: 240, output: 14, turns: 2 }));
+    assert!(room.usage().get(&ParticipantId::new("quiet")).is_none(), "a bot that reports nothing has no totals");
+
+    let snapshot = room.snapshot();
+    let saved = serde_json::to_value(&snapshot).unwrap();
+    let reopened = Room::restore(vec![Arc::new(WorkingBot(config))], serde_json::from_value(saved).unwrap());
+    assert_eq!(reopened.usage(), room.usage(), "totals survive a restart");
+
+    room.clear();
+    assert_eq!(room.usage().get(&id).map(|t| t.turns), Some(2), "/clear keeps what the thread has spent");
+    assert!(snapshot.fork(1).usage.is_empty(), "a fork starts at zero");
 }

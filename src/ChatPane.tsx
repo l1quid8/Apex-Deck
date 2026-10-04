@@ -1,9 +1,9 @@
-import type { AllowedRule, ToolServer } from "./types";
+import type { AllowedRule, ThreadStatus, ToolServer } from "./types";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
-import { composerCopy, joinNames, replyingVerb } from "./composerStatus";
+import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, statusParts, stopLabel, stopTargets, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { findTrigger, insertAt } from "./composerMenu";
@@ -16,19 +16,24 @@ import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, effortLabel, effortsFor, find
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
 import { Avatar, type Refills } from "./Avatar";
-import { contextLevel, contextLine, isLow, percent, planLevel, planLine, type Levels } from "./battery";
+import { contextLevel, contextLine, isLow, percent, planLevel, planLine, tokenLine, type Levels } from "./battery";
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
-import { afterRound, type Attention } from "./attention";
-import { ApprovalCard, type MadeChange } from "./Approvals";
-import { describeRule } from "./allowedRules";
+import { afterRound, type Attention, type Signal } from "./attention";
+import { ApprovalCard, type MadeChange } from "./ApprovalCard";
+import { approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
+import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
 import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { DiffPanel } from "./DiffPanel";
+import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
-import { replyText, type ReplyQuote } from "./reply";
+import { foldsMessageActions, handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
+import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
+import { exampleRows, hasMention, recipientLine, showsRecipientLine } from "./recipients";
+import { askerOf, hopNotice, letLabel, liveActions, retryFor, stillHere, type NoticeAction } from "./noticeActions";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
   Access,
@@ -39,11 +44,11 @@ import type {
   Pane,
   ParticipantBackend,
   ParticipantConfig,
-  ProposedAction,
   RoomEvent,
   RoomOptions,
   TurnPolicy,
   ThreadDiff,
+  TokenTotals,
 } from "./types";
 
 interface Props {
@@ -56,22 +61,29 @@ interface Props {
   focused: boolean;
   /** The workspace's name, for the details sidebar heading. */
   workspaceName?: string;
-  /** What the pane head says about this thread, such as "2 bots · replying". */
-  onStatus?: (paneId: string, text: string) => void;
+  /** What the thread reports to App: the pane head's words, and who is replying or waiting on a card. */
+  onStatus?: (paneId: string, status: ThreadStatus) => void;
+  /** Save where you stopped reading: the seq of the newest message you saw at the bottom, or -1 after /clear. */
+  onSeen?: (paneId: string, seq: number) => void;
   /** Agents only: bumped to open the new agent form. */
   addRequest?: number;
   onActivity: (paneId: string) => void;
   /** Raise or clear (with `null`) this chat's request for attention. */
   onSignal?: (paneId: string, kind: Attention | null, note?: string) => void;
+  /** Raise (with the flag) or clear (with `null`) this chat's blocking flag for its open approval cards. */
+  onApprovals?: (paneId: string, signal: Signal | null) => void;
   profiles: ParticipantConfig[];
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
   onFork?: (title: string, upto: number | null) => Promise<string>;
+  /** Fork or Export chosen in the pane's ⋯ menu; `n` goes up on each choice. */
+  menuRequest?: { action: "fork" | "export"; n: number };
   disabledProviders: string[];
   details?: DetailsHost;
 }
 
-type Notice = { key: number; text: string; tone: "info" | "error" };
+/** A line in the transcript from the app. `action` adds Try again or Let them answer. */
+type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction };
 /** Where `/compact` cut in: the models see `summary` instead of the messages above it. */
 type Summary = { by: string | null; summary: string; upto: number };
 /** An agent's context has just dropped to the low mark; shown once under its reply. */
@@ -257,6 +269,8 @@ interface TurnProgress {
 }
 
 const MAX_STEPS_SHOWN = 4;
+/** How long Copy reads "Copied". */
+const COPIED_MS = 1500;
 
 function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   if (phase === "tool") return "Working";
@@ -264,24 +278,6 @@ function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   return "Thinking";
 }
 
-/** Time since a turn began: 8s, 1m 05s. */
-export function elapsed(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-}
-
-/** Running token totals for one participant. */
-interface TokenUse {
-  input: number;
-  output: number;
-  turns: number;
-}
-
-function tokenDetail(use: TokenUse): string {
-  const turns = use.turns === 1 ? "1 turn" : `${use.turns} turns`;
-  return `${use.input.toLocaleString()} in, ${use.output.toLocaleString()} out over ${turns} since the app opened. Input includes the conversation and files the tool re-read from its cache.`;
-}
 
 /** The provider whose plan an agent draws on, if it reports one. */
 function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
@@ -319,12 +315,21 @@ const STARTERS = [
   { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
 ];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
   const [pins, setPins] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<AllowedRule[]>([]);
+  /** "Removed. Null asks again next time.", shown for a moment after Remove. */
+  const [removedNote, setRemovedNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!removedNote) return;
+    const timer = setTimeout(() => setRemovedNote(null), REMOVED_NOTE_MS);
+    return () => clearTimeout(timer);
+  }, [removedNote]);
   const [unpinning, setUnpinning] = useState(false);
   const unpinPending = useRef(false);
   const removePin = (index: number) => {
@@ -340,8 +345,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const [working, setWorking] = useState<Record<string, TurnProgress>>({});
   /** The clock, ticking once a second while any turn runs, for "12s". */
   const [now, setNow] = useState(() => Date.now());
-  /** Tokens each participant has used in this chat since the app opened. */
-  const [used, setUsed] = useState<Record<string, TokenUse>>({});
+  /** Tokens each participant has used in this thread, saved with it. */
+  const [used, setUsed] = useState<Record<string, TokenTotals>>({});
   /** How full each agent's context window was on its latest request. Missing
    *  means unknown: not reported yet, or refilled by /compact since. */
   const [contextFill, setContextFill] = useState<Record<string, ContextFill>>({});
@@ -350,8 +355,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const plans = usePlans();
   /** The chip whose usage card is open. */
   const [card, setCard] = useState<string | null>(null);
-  /** What each bot has proposed and is waiting on a yes or no for. */
-  const [asks, setAsks] = useState<Record<string, { request: string; action: ProposedAction }[]>>({});
+  /** What each bot has proposed and is waiting on a yes or no for, from the app-wide store (approvals.ts). */
+  const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
+  const roomCards = openCards(pane.id, approvalState);
+  const asks = useMemo(() => cardsByBot(roomCards), [roomCards]);
   /** Files the bots have changed since this chat was opened. */
   const [changes, setChanges] = useState<MadeChange[]>([]);
   const showChanges = Boolean(details?.open && details.target === pane.id && !details.collapsed.changes);
@@ -377,8 +384,24 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const [queued, setQueued] = useState<ParticipantMessage[]>([]);
   const [queuePaused, setQueuePaused] = useState(false);
   const [editor, setEditor] = useState<string | null>(null);
-  const [recipients, setRecipients] = useState<string[]>([]);
   const [reply, setReply] = useState<ReplyQuote | null>(null);
+  /** Whether the quote's Send to ▾ menu is open. */
+  const [handOffOpen, setHandOffOpen] = useState(false);
+  const handOffButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (!reply) setHandOffOpen(false); }, [reply]);
+  useEffect(() => {
+    if (!handOffOpen) return;
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".hand-off")) setHandOffOpen(false); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setHandOffOpen(false);
+      handOffButton.current?.focus();
+    };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key, true); };
+  }, [handOffOpen]);
   const [adding, setAdding] = useState(false);
   /** Where the quick add menu is open: under the empty thread's button, or in the sidebar. */
   const [quickAdd, setQuickAdd] = useState<"empty" | "details" | null>(null);
@@ -417,6 +440,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const [ready, setReady] = useState(profileMode);
 
   useEffect(() => { if (profileMode) setParticipants(profiles); }, [profiles, profileMode]);
+  /** The window has focus; a thread counts as watched only then. */
+  const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
+  useEffect(() => {
+    const on = () => setWindowFocused(true);
+    const off = () => setWindowFocused(false);
+    window.addEventListener("focus", on);
+    window.addEventListener("blur", off);
+    return () => { window.removeEventListener("focus", on); window.removeEventListener("blur", off); };
+  }, []);
+  const watching = focused && windowFocused && ready && !profileMode;
+  const watchingRef = useRef(watching);
+  watchingRef.current = watching;
 
   const noticeKey = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
@@ -429,6 +464,59 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     box.style.height = "auto";
     box.style.height = `${box.scrollHeight + box.offsetHeight - box.clientHeight}px`;
   }, [text]);
+  /** Whether the transcript sat at its bottom when it was last scrolled. New
+   *  content follows only then; scrolled up, the transcript keeps your place. */
+  const stuck = useRef(true);
+  /** Bot replies that arrived while you were scrolled up. */
+  const [unread, setUnread] = useState(0);
+  /** The chat's root element; its pane's size decides what fits. */
+  const root = useRef<HTMLDivElement>(null);
+  /** False in a pane under 260px tall, where the recipient line is hidden. */
+  const [lineFits, setLineFits] = useState(true);
+  /** True in a pane under 360px wide, where message actions fold into one ⋯. */
+  const [foldActions, setFoldActions] = useState(false);
+  useEffect(() => {
+    const paneBox = root.current?.closest<HTMLElement>(".pane");
+    if (!paneBox) return;
+    const observer = new ResizeObserver(() => {
+      // A hidden pane measures nothing; keep what it had.
+      if (paneBox.offsetWidth === 0 && paneBox.offsetHeight === 0) return;
+      setLineFits(showsRecipientLine(paneBox.offsetHeight));
+      setFoldActions(foldsMessageActions(paneBox.offsetWidth));
+    });
+    observer.observe(paneBox);
+    return () => observer.disconnect();
+  }, []);
+  /** Open approval cards wholly out of view, oldest first. */
+  const [cardsAway, setCardsAway] = useState<CardBox[]>([]);
+  /** Find the open cards on screen and note which are out of view. */
+  const measureCards = () => {
+    const el = scroller.current;
+    if (!el || el.clientHeight === 0) return;
+    const view = el.getBoundingClientRect();
+    const boxes = [...el.querySelectorAll<HTMLElement>(".approval[data-request]:not([data-answered])")].map((card) => {
+      const box = card.getBoundingClientRect();
+      return { by: card.dataset.by ?? "", request: card.dataset.request ?? "", top: box.top, bottom: box.bottom };
+    });
+    const away = cardsOutOfView(boxes, view.top, view.bottom);
+    setCardsAway((old) => (old.map((c) => c.request).join("\n") === away.map((c) => c.request).join("\n") ? old : away));
+  };
+  /** Bring a card to the middle of the view and put focus on its Allow once. */
+  const showCard = (request: string) => {
+    const el = scroller.current;
+    const card = el?.querySelector<HTMLElement>(`.approval[data-request="${CSS.escape(request)}"]`);
+    if (!el || !card) return;
+    const box = card.getBoundingClientRect();
+    const view = el.getBoundingClientRect();
+    el.scrollTop += box.top - view.top - Math.max(12, (el.clientHeight - box.height) / 2);
+    card.querySelector<HTMLButtonElement>('button[data-answer="once"]')?.focus({ preventScroll: true });
+  };
+  /** "New since you looked" sits above the message with this seq. */
+  const [dividerAt, setDividerAt] = useState<number | null>(null);
+  /** Set when the thread opens with replies you missed, until the view has moved to the divider. */
+  const opening = useRef(false);
+  /** The newest message seen at the bottom, as last saved. */
+  const lastSeenRef = useRef(pane.lastSeenSeq);
   const filePicker = useRef<HTMLInputElement>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const saving = attached.some((a) => !a.path && !a.error);
@@ -437,9 +525,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   activity.current = onActivity;
   const signal = useRef(onSignal);
   signal.current = onSignal;
+  const approvals = useRef(onApprovals);
+  approvals.current = onApprovals;
   // What happened in the round of replies now running, to decide when it
   // ends whether the chat wants attention. See afterRound in attention.ts.
   const round = useRef<{ failed: string[]; lastReply: string | null; stopped: boolean }>({ failed: [], lastReply: null, stopped: false });
+  /** When each bot was last heard from in its turn, for the quiet warning. See heardFrom. */
+  const heard = useRef(new Map<string, number>());
   /** Agents whose context is at or under the low mark, so the notice shows
    *  once per crossing; and notices waiting for the agent's reply to land. */
   const lowContext = useRef(new Set<string>());
@@ -456,10 +548,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   }
   const appearance = (id: string) => identities.current.get(id) ?? legacyAppearance(id);
   const color = (id: string) => appearance(id).color;
-  // Who is replying right now, for the line above the composer.
-  const replying = participants.filter(p => working[p.id]);
-  const replyingSince = replying.length ? Math.min(...replying.map(p => working[p.id].startedAt)) : 0;
-  const copy = composerCopy(busy, participants.length === 0);
+  // Who is at work right now, for the line above the composer: bots still
+  // replying, and bots stopped on an approval card waiting for you.
+  const active = participants.filter((p) => working[p.id] || asks[p.id]?.length);
+  const waitingNow = active.filter((p) => asks[p.id]?.length);
+  const replyingNow = active.filter((p) => !asks[p.id]?.length);
+  const activeSince = active.length ? Math.min(...active.map((p) => working[p.id]?.startedAt ?? now)) : 0;
+  /** You have written in this thread, so the room may have someone you addressed last. */
+  const addressedBefore = messagesOf(entries).some((m) => m.speaker.kind === "human");
+  const copy = composerCopy(busy, participants.length === 0, { firstMessage: participants.length >= 2 && !addressedBefore, quoting: Boolean(reply) });
+  /** Who a quote will lead with right now, for its Send to ▾ button. */
+  const quoteTo = reply ? quoteLead(text.trim(), reply, participants.map((p) => p.id)) : null;
 
   const forgetContext = () => {
     setContextFill({});
@@ -467,20 +566,25 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     pendingLow.current.clear();
   };
 
-  const notify = (message: string, tone: Notice["tone"] = "info") =>
-    setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone } }]);
+  const notify = (message: string, tone: Notice["tone"] = "info", action?: NoticeAction) =>
+    setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone, ...(action ? { action } : {}) } }]);
 
   useEffect(() => {
     if (profileMode) return;
     let alive = true;
     const nameOf = (id: string) => namesRef.current.get(id) ?? id;
+    /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
+    const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()));
     const unregister = registerRoom(pane.id, (event: RoomEvent) => {
       activity.current(pane.id);
+      const heardId = heardFrom(event);
+      if (heardId) heard.current.set(heardId, Date.now());
       if (event.type === "tool_servers") { setServerErrors(errors => { const next = {...errors}; delete next[event.id]; return next; }); setServerLists(lists => ({...lists, [event.id]: event.servers})); return; }
       switch (event.type) {
         case "message_added":
           if (event.message.speaker.kind === "bot") {
             const id = event.message.speaker.id;
+            if (!stuck.current) setUnread((n) => n + 1);
             setDrafts(({ [id]: _done, ...rest }) => rest);
             setWorking(({ [id]: _done, ...rest }) => rest);
             round.current.lastReply = event.message.text;
@@ -504,8 +608,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         case "participant_idle":
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
-          setAsks(({ [event.id]: _done, ...rest }) => rest);
+          reportApprovals();
           turnQueue.idle(event.id);
+          heard.current.delete(event.id);
           break;
         case "turn_started":
           turnQueue.started(event.id);
@@ -524,18 +629,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           });
           break;
         case "approval_requested":
-          setAsks((all) => ({ ...all, [event.id]: [...(all[event.id] ?? []), { request: event.request, action: event.action }] }));
-          // The turn is stuck until the person answers, wherever they are looking.
-          signal.current?.(pane.id, "needs_input", `${nameOf(event.id)} wants approval: ${event.action.title}`);
-          break;
         case "approval_resolved":
-          setAsks((all) => {
-            const left = (all[event.id] ?? []).filter((ask) => ask.request !== event.request);
-            const { [event.id]: _settled, ...others } = all;
-            const next = left.length > 0 ? { ...others, [event.id]: left } : others;
-            if (Object.keys(next).length === 0) signal.current?.(pane.id, null);
-            return next;
-          });
+          // The turn is stuck until the person answers, wherever they are
+          // looking, so the flag is blocking until the last card is answered.
+          reportApprovals();
           break;
         case "changed":
           setChanges((list) => [...list, { seq: list.length, by: event.id, change: event.change }]);
@@ -574,11 +671,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           setDrafts(({ [event.id]: _gone, ...rest }) => rest);
           setWorking(({ [event.id]: _gone, ...rest }) => rest);
           round.current.failed.push(nameOf(event.id));
-          notify(`${nameOf(event.id)} could not reply: ${event.error}`, "error");
+          notify(`${nameOf(event.id)} could not reply: ${event.error}`, "error", retryFor(event.id, [...namesRef.current.keys()]) ?? undefined);
           break;
-        case "hop_limit_reached":
-          notify(`Stopped after ${event.limit} rounds of models answering each other.`);
+        case "hop_limit_reached": {
+          const roster = [...namesRef.current.keys()];
+          const action: NoticeAction | undefined = event.next.length > 0 ? { kind: "let", ids: event.next } : undefined;
+          // Read the asker from the newest list: its reply may have landed in this same tick.
+          setEntries((list) => {
+            const asker = askerOf(messagesOf(list), event.next, roster);
+            const text = hopNotice(event.limit, asker && nameOf(asker), event.next.map(nameOf));
+            return [...list, { kind: "notice", notice: { key: noticeKey.current++, text, tone: "info", ...(action ? { action } : {}) } }];
+          });
           break;
+        }
         case "compacted":
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
@@ -595,6 +700,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           notify("Stopped.");
           break;
         case "idle": {
+          reportApprovals();
           if (turnQueue.active) break;
           if (showChangesRef.current) refreshDiff.current();
           // A round the person stopped themselves needs no flag.
@@ -604,7 +710,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           setBusy(turnQueue.active);
           setDrafts({});
           setWorking({});
-          setAsks({});
           break;
         }
       }
@@ -618,16 +723,27 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         setOptions(saved.options);
         setPins(saved.pins ?? []);
         setAllowed(saved.allowed ?? []);
+        setUsed(saved.usage ?? {});
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
         setEntries(restored);
+        // Open at "New since you looked" when replies came in after you last looked.
+        const seen = seenList(saved.transcript);
+        const from = firstUnseen(seen, lastSeenRef.current);
+        setDividerAt(from);
+        if (from !== null) {
+          opening.current = true;
+          setUnread(unseenCount(seen, from));
+        }
         setReady(true);
       })
       .catch((error) => notify(`Could not create the chat: ${String(error)}`, "error"));
     return () => {
       alive = false;
       unregister();
+      forgetRoom(pane.id);
+      approvals.current?.(pane.id, null);
       backend.roomClose(pane.id).catch(() => {});
     };
     // The room lives as long as the pane.
@@ -647,10 +763,64 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     backend.openTarget(target, cwd || null, reveal).catch((error) => notify(`Could not open ${target}: ${String(error)}`, "error"));
   };
 
+  /** Bring the transcript to where it should be after anything changed in it. */
+  const settle = useRef(() => {});
+  settle.current = () => {
+    const el = scroller.current;
+    // A hidden pane cannot scroll; the resize when it is shown settles it.
+    if (!el || el.clientHeight === 0) return;
+    const mark = opening.current ? el.querySelector<HTMLElement>(".unseen-divider") : null;
+    if (mark) {
+      // A thread with replies you missed opens at its divider, just below the top.
+      opening.current = false;
+      el.scrollTop += mark.getBoundingClientRect().top - el.getBoundingClientRect().top - 12;
+      stuck.current = isAtBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+      if (stuck.current) setUnread(0);
+    } else if (stuck.current) el.scrollTop = el.scrollHeight;
+    measureCards();
+  };
+  // Before paint, so following the bottom never flickers.
+  useLayoutEffect(() => settle.current(), [entries, drafts, asks, dividerAt]);
+  // Showing the pane, or a composer that grows, changes the transcript's
+  // height without any scrolling: stay at the bottom if you were there.
   useEffect(() => {
     const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [entries, drafts, asks]);
+    if (!el) return;
+    const observer = new ResizeObserver(() => settle.current());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [profileMode]);
+  /** While you watch the bottom of the thread, everything in it counts as seen. */
+  const markSeen = useRef(() => {});
+  markSeen.current = () => {
+    if (!watchingRef.current || !stuck.current) return;
+    const next = seenMark(seenList(messagesOf(entriesRef.current)), lastSeenRef.current);
+    if (next === null) return;
+    lastSeenRef.current = next;
+    onSeen?.(pane.id, next);
+  };
+  // Coming back to the thread marks where the replies you missed begin.
+  const wasWatching = useRef(false);
+  useEffect(() => {
+    if (watching && !wasWatching.current) {
+      const from = firstUnseen(seenList(messagesOf(entriesRef.current)), lastSeenRef.current);
+      if (from !== null) setDividerAt(from);
+    }
+    wasWatching.current = watching;
+  }, [watching]);
+  useEffect(() => markSeen.current(), [entries, watching]);
+  const onTranscriptScroll = () => {
+    const el = scroller.current;
+    if (!el || el.clientHeight === 0) return;
+    stuck.current = isAtBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+    if (stuck.current) { setUnread(0); markSeen.current(); }
+    measureCards();
+  };
+  const jumpToLatest = () => {
+    stuck.current = true;
+    setUnread(0);
+    settle.current();
+  };
 
   useEffect(() => {
     if (focused && !adding && ready) input.current?.focus();
@@ -725,7 +895,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       .roomClear(pane.id)
       .then(() => {
         setEntries([]);
-        setUsed({});
+        setDividerAt(null);
+        // Messages count from 0 again; nothing in the cleared thread is new.
+        lastSeenRef.current = -1;
+        onSeen?.(pane.id, -1);
         forgetContext();
         notify("Chat cleared. The models start fresh; participants are kept.");
       })
@@ -741,36 +914,123 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
   };
 
-  const dispatch = useRef<(message: string, to: string[], kind: TurnKind) => Promise<void>>(async () => {});
-  dispatch.current = async (message, to, kind) => {
+  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
+  dispatch.current = async (message, to, kind, hops) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
-    } else await backend.roomPostTo(pane.id, message, to);
+    } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
+    else await backend.roomPostTo(pane.id, message, to);
   };
   const [turnQueue] = useState(() => new ParticipantQueues(
     message => backend.roomTargets(pane.id, message),
-    (message, to, kind) => dispatch.current(message, to, kind),
+    (message, to, kind, hops) => dispatch.current(message, to, kind, hops),
     id => backend.roomStop(pane.id, id),
-    items => { setQueued(items); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },
+    // A one-off turn has no text to show or edit, so the queue line leaves it out.
+    items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused.`, "error"); },
   ));
-  useEffect(() => {
-    let alive = true;
-    const timer = setTimeout(() => {
-      if (ready && busy) void backend.roomTargets(pane.id, text).then(ids => { if (alive) setRecipients(ids); }).catch(() => {});
-    }, 150);
-    return () => { alive = false; clearTimeout(timer); };
-  }, [text, ready, busy, pane.id]);
+  /** Stop: only the bots that are replying, unless nobody is waiting on a card. */
+  const stopReplying = () => {
+    const targets = stopTargets(replyingNow.map((p) => p.id), waitingNow.map((p) => p.id));
+    if (targets === "all") void turnQueue.halt();
+    else targets.forEach((id) => void turnQueue.halt(id));
+  };
+  /** Notices whose button you pressed; each works once. */
+  const usedActions = useRef(new Set<number>());
+  const [usedKeys, setUsedKeys] = useState<ReadonlySet<number>>(() => new Set());
+  const liveKeys = liveActions(entries.map((entry) => ({
+    key: entry.kind === "notice" && entry.notice.action ? entry.notice.key : null,
+    human: entry.kind === "message" && entry.message.speaker.kind === "human",
+  })), usedKeys);
+  /** Try again or Let them answer: run those bots once on the transcript as it is. */
+  const noticeButton = (key: number, action: NoticeAction) => {
+    const ids = stillHere(action, participants.map((p) => p.id));
+    if (ids.length === 0 || !liveKeys.has(key)) return null;
+    const label = action.kind === "retry" ? "Try again" : letLabel(ids.map((id) => names.get(id) ?? id));
+    return <button type="button" className="ghost small" disabled={ids.some((id) => working[id])} onClick={() => {
+      if (usedActions.current.has(key)) return;
+      usedActions.current.add(key);
+      setUsedKeys(new Set(usedActions.current));
+      // Let them answer buys exactly one reply each; Try again keeps the room's round limit.
+      turnQueue.turn(ids, action.kind === "let" ? 0 : null);
+    }}>{label}</button>;
+  };
   const forkAt = (title: string, upto: number | null) => {
     if (!onFork) return notify("Forking is available in workspace threads.", "error");
     return onFork(title, upto)
       .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
       .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
   };
-  const forkButton = (seq: number) => onFork && <button className="quote-reply-icon fork-message-icon" aria-label="Fork from here" title="Fork from here" onClick={() => forkAt(`${pane.title} (fork)`, seq + 1)}>
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2"/><circle cx="11" cy="2.5" r="1.2"/></svg>
-  </button>;
+  const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2"/><circle cx="11" cy="2.5" r="1.2"/></svg>;
+  /** The message whose Copy reads "Copied" for a moment, by seq. */
+  const [copied, setCopied] = useState<number | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+  /** Put a message's markdown on the clipboard. */
+  const copyMessage = (message: Message) => {
+    if (!navigator.clipboard) return notify("Could not copy: the clipboard isn't available here.", "error");
+    navigator.clipboard.writeText(message.text)
+      .then(() => {
+        setCopied(message.seq);
+        clearTimeout(copiedTimer.current);
+        copiedTimer.current = setTimeout(() => setCopied(null), COPIED_MS);
+      })
+      .catch((error) => notify(`Could not copy: ${String(error)}`, "error"));
+  };
+  /** The message whose ⋯ menu is open, by seq. */
+  const [messageMenu, setMessageMenu] = useState<number | null>(null);
+  useEffect(() => {
+    if (messageMenu === null) return;
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".message-more")) setMessageMenu(null); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      scroller.current?.querySelector<HTMLButtonElement>(`[data-message-more="${messageMenu}"]`)?.focus();
+      setMessageMenu(null);
+    };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key, true); };
+  }, [messageMenu]);
+  /** Quote, Copy and Fork on a message; one ⋯ menu instead in a pane under 360px wide. */
+  const messageActions = (message: Message) => {
+    const quote = () => { setReply(quoteFor(message, (id) => names.get(id) ?? id)); input.current?.focus(); };
+    const copy = () => copyMessage(message);
+    const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
+    const copiedHere = copied === message.seq;
+    if (foldActions) return <span className="message-actions">
+      <span className="pane-menu-wrap message-more">
+        <button type="button" className="msg-more" data-message-more={message.seq} aria-label="Message actions" aria-haspopup="menu" aria-expanded={messageMenu === message.seq} onClick={() => setMessageMenu((open) => (open === message.seq ? null : message.seq))}>
+          {copiedHere ? <span className="copied">Copied</span> : "⋯"}
+        </button>
+        {messageMenu === message.seq && <span className="pane-menu" role="menu">
+          <button role="menuitem" onClick={() => { setMessageMenu(null); quote(); }}>Quote</button>
+          <button role="menuitem" onClick={() => { setMessageMenu(null); copy(); }}>Copy</button>
+          {onFork && <button role="menuitem" onClick={() => { setMessageMenu(null); fork(); }}>Fork from here</button>}
+        </span>}
+      </span>
+    </span>;
+    return <span className="message-actions">
+      <button type="button" className="msg-action quote" title="Quote" onClick={quote}
+        aria-label={message.speaker.kind === "bot" ? `Quote response from ${names.get(message.speaker.id) ?? message.speaker.id}` : "Quote your message"}>
+        <DeckIcon name="reply" size={18} />
+      </button>
+      <button type="button" className="msg-action copy" title="Copy" aria-label={copiedHere ? "Copied" : "Copy message"} onClick={copy}>
+        {copiedHere ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}
+      </button>
+      {onFork && <button type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>}
+    </span>;
+  };
+  /** Save the thread to Downloads as Markdown or JSON, then show the file. */
+  const exportAs = (format: "markdown" | "json") => {
+    const at = new Date();
+    const thread: ThreadExport = { title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries) };
+    const contents = format === "json" ? exportJson(thread, at) : exportMarkdown(thread, at);
+    backend.exportThread(exportFileName(pane.title, format, at), contents)
+      .then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } })
+      .catch((error) => notify(`Could not export: ${String(error)}`, "error"));
+  };
   /** Commands run locally and never reach the models. */
   const runCommand = (command: Command) => {
     switch (command.name) {
@@ -790,15 +1050,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           .finally(() => { unpinPending.current = false; setUnpinning(false); });
       case "fork":
         setText(""); return void forkAt(command.title || `${pane.title} (fork)`, null);
-      case "export": {
-        setText("");
-        const at = new Date();
-        const thread: ThreadExport = { title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries) };
-        const contents = command.format === "json" ? exportJson(thread, at) : exportMarkdown(thread, at);
-        return void backend.exportThread(exportFileName(pane.title, command.format, at), contents)
-          .then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } })
-          .catch((error) => notify(`Could not export: ${String(error)}`, "error"));
-      }
+      case "export":
+        setText(""); return exportAs(command.format);
 
       case "diff":
         setText(""); details?.show("changes"); loadDiff(); return;
@@ -807,6 +1060,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
 
     }
   };
+  // Fork or Export chosen in the pane's ⋯ menu.
+  const lastMenu = useRef(menuRequest?.n ?? 0);
+  useEffect(() => {
+    if (!menuRequest || menuRequest.n === lastMenu.current) return;
+    lastMenu.current = menuRequest.n;
+    if (menuRequest.action === "fork") void forkAt(`${pane.title} (fork)`, null);
+    else exportAs("markdown");
+  }, [menuRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Save each file as soon as it is attached, so sending never waits. */
   const track = (name: string, preview: string | undefined, save: () => Promise<string>) => {
@@ -826,6 +1087,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       const preview = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
       track(name, preview, async () => backend.saveAttachment(pane.id, name, new Uint8Array(await file.arrayBuffer())));
     }
+    input.current?.focus();
+  };
+  /** Ask for review: attach the thread's change as a patch for `id` and fill
+   *  the composer with the request. It never sends. */
+  const askForReview = (id: string, split: boolean) => {
+    const files = diff?.files ?? [];
+    const whole = reviewPatch(files);
+    const parts = split ? reviewPatches(files) : whole ? [whole] : [];
+    if (parts.length === 0) return;
+    const taken = [...messagesOf(entries).filter((m) => m.speaker.kind === "human").map((m) => m.text), ...attached.map((a) => a.name)];
+    const fileNames = reviewFileNames(nextReviewNumber(taken), parts.length);
+    parts.forEach((text, i) => track(fileNames[i], undefined, () => backend.saveAttachment(pane.id, fileNames[i], new TextEncoder().encode(text))));
+    setText((draft) => reviewDraft(id, draft));
+    // In a narrow window the sidebar covers the composer; get it out of the way.
+    if (details?.overlay) details.close();
     input.current?.focus();
   };
   const unattach = (id: string) => setAttached((list) => {
@@ -853,12 +1129,25 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const [serverLists, setServerLists] = useState<Record<string, ToolServer[]>>({});
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [serverTargets, setServerTargets] = useState<string[]>([]);
+  /** The text `serverTargets` was worked out for, so the recipient line never mixes a new draft with an old answer. */
+  const [targetsText, setTargetsText] = useState("");
   useEffect(() => {
     if (!ready || !participants.length) return;
     let live = true;
-    backend.roomTargets(pane.id, text).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
+    // Ask about the message as it will be sent, with a quote's leading handle.
+    const outgoing = reply ? replyText(text, reply, participants.map((p) => p.id)) : text;
+    // A slower answer for older text is ignored once the text has changed.
+    backend.roomTargets(pane.id, outgoing).then(ids => { if (live) { setServerTargets(ids); setTargetsText(outgoing); } }).catch(() => {});
     return () => { live = false; };
-  }, [backend, pane.id, text, ready, participants]);
+  }, [backend, pane.id, text, reply, ready, participants]);
+  const recipient = recipientLine({
+    targets: serverTargets,
+    roster: participants.map((p) => ({ id: p.id, name: p.display_name })),
+    policy: options.policy,
+    mentioned: hasMention(targetsText, participants.map((p) => p.id)),
+    addressedBefore,
+    busy: participants.filter((p) => working[p.id]).map((p) => p.id),
+  });
   const serverMenuOpen = findTrigger(text, caret)?.kind === "server";
   useEffect(() => {
     if (!ready) return;
@@ -883,7 +1172,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
     if (participants.length === 0) return;
-    const message = withAttachments(parsed.text && replyText(postable(parsed.text), reply), sendable.map((a) => a.path!));
+    // Sending takes you to the bottom, where your message and the replies land,
+    // and clears "New since you looked".
+    stuck.current = true;
+    setUnread(0);
+    setDividerAt(null);
+    const message = withAttachments(parsed.text && replyText(postable(parsed.text), reply, participants.map((p) => p.id)), sendable.map((a) => a.path!));
     setText(""); setReply(null);
     attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
     setAttached([]);
@@ -896,6 +1190,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     } else void turnQueue.send(message).catch(error => notify(String(error), "error"));
   };
 
+  /** Put an example in the composer without sending it. */
+  const insertExample = (example: string) => {
+    const next = text.trim() ? `${text.trimEnd()} ${example}` : example;
+    setText(next);
+    setCaret(next.length);
+    requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.length, next.length); });
+  };
   const mention = (id: string) => {
     setText((t) => (t && !t.endsWith(" ") ? `${t} @${id} ` : `${t}@${id} `));
     input.current?.focus();
@@ -964,9 +1265,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       return { ...d, model, effort: known && !known.includes(d.effort) ? "" : d.effort };
     });
 
-  // The pane head shows the number of bots, and whether any is replying.
-  const statusText = profileMode ? "" : `${participants.length === 0 ? "No bots yet" : participants.length === 1 ? "1 bot" : `${participants.length} bots`}${Object.keys(working).length > 0 ? " · replying" : ""}`;
-  useEffect(() => { if (!profileMode) onStatus?.(pane.id, statusText); }, [statusText]);
+  // The pane head's words (see headLine), and who is replying or stopped on a card, for App.
+  const headBots: BotProgress[] = participants
+    .filter((p) => working[p.id] && !asks[p.id]?.length)
+    .map((p) => ({
+      name: p.display_name,
+      doing: doingNow(working[p.id]),
+      startedAt: working[p.id].startedAt,
+      heardAt: isCommandLine(p.backend) ? heard.current.get(p.id) ?? working[p.id].startedAt : null,
+    }));
+  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now) };
+  const statusKey = JSON.stringify(status);
+  useEffect(() => { if (!profileMode) onStatus?.(pane.id, status); }, [statusKey]);
   // The title bar's + New agent opens the form here.
   useEffect(() => { if (profileMode && addRequest) openNewForm(); }, [addRequest]);
 
@@ -1016,7 +1326,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           </span>
         </div>
         {provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
-        <p className="usage-note">{used[p.id] ? tokenDetail(used[p.id]) : "No tokens used in this chat yet."}</p>
+        <p className="usage-note">{tokenLine(used[p.id])}</p>
         <button className="ghost usage-compact" onClick={() => { setCard(null); compactChat(); }} disabled={!canCompact} title="Summarize earlier turns so every model starts from the summary">
           Compact now
         </button>
@@ -1277,7 +1587,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           <label>
             Who answers
             <select disabled={!ready || busy} value={options.policy} onChange={(e) => changeOptions({ ...options, policy: e.target.value as TurnPolicy })}>
-              <option value="mention">Only who I @mention</option>
+              <option value="mention">Whoever I addressed last</option>
               <option value="everyone">Everyone at once</option>
               <option value="round_robin">Everyone in turn</option>
             </select>
@@ -1337,21 +1647,28 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       <details className="details-bot-usage"><summary>Usage</summary>{usageCard(p)}</details>
     </article>;
   })}{adding && !editing ? addButton : quickAddButton("details", false)}{savedPicker}</>;
-  const allowedList = allowed.length === 0
-    ? <p className="muted allowed-empty">Nothing yet. Choose Always allow on an approval card and it shows here, so you can take it back.</p>
-    : <ul className="allowed-list" aria-label="Always allowed">
-      {allowed.map((rule) => <li key={`${rule.by}\u001f${rule.kind}\u001f${rule.what}`}>
-        <span className="allowed-copy">
-          <strong style={{ color: color(rule.by) }}>{names.get(rule.by) ?? rule.by}</strong>
-          <span className={rule.kind === "command" ? "mono" : undefined} title={rule.what}>{describeRule(rule)}</span>
-        </span>
-        <button className="ghost small" aria-label={`Stop always allowing ${describeRule(rule)} for ${names.get(rule.by) ?? rule.by}`}
-          onClick={() => backend.roomForgetAllowed(pane.id, rule).catch((error) => notify(`Could not remove it: ${String(error)}`, "error"))}>Remove</button>
-      </li>)}
-    </ul>;
+  /** Take an Always allow back. The bot asks again next time. */
+  const forgetRule = (rule: AllowedRule) => backend.roomForgetAllowed(pane.id, rule)
+    .then(() => setRemovedNote(removedLine(names.get(rule.by) ?? rule.by)))
+    .catch((error) => notify(`Could not remove it: ${String(error)}`, "error"));
+  const allowedList = <>
+    {allowed.length === 0
+      ? <p className="muted allowed-empty">Nothing yet. Choose Always allow on an approval card and it shows here, so you can take it back.</p>
+      : <ul className="allowed-list" aria-label="Always allowed">
+        {allowed.map((rule) => <li key={`${rule.by}\u001f${rule.kind}\u001f${rule.what}`}>
+          <span className="allowed-copy">
+            <strong style={{ color: color(rule.by) }}>{names.get(rule.by) ?? rule.by}</strong>
+            <span className={`allowed-what${rule.kind === "command" || rule.kind === "tool" ? " mono" : ""}`} title={rule.what}>{describeRule(rule)}</span>
+            <span className="allowed-when">{allowedLine(rule, new Date())}</span>
+          </span>
+          <button className="ghost small" aria-label={`Stop always allowing ${describeRule(rule)} for ${names.get(rule.by) ?? rule.by}`} onClick={() => void forgetRule(rule)}>Remove</button>
+        </li>)}
+      </ul>}
+    {removedNote && <p className="allowed-removed" role="status"><span aria-hidden="true">✓</span>{removedNote}</p>}
+  </>;
   return (
-    <div className={`chat ${profileMode ? "" : "thread-chat"}`}>
-      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
+    <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
+      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} />} />, details.slot)}
       <div className="chat-bar">
         <div className="chips">
           {!profileMode && participants.map((p) => {
@@ -1423,7 +1740,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       </div>}
 
       <div className="chat-body">
-      {!profileMode && <div className="transcript" ref={scroller}>
+      {!profileMode && <div className="transcript" ref={scroller} onScroll={onTranscriptScroll}>
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
           <div className="empty">
             <div className="empty-emblem"><DeckIcon name="chat" size={26} /></div>
@@ -1435,12 +1752,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
                 : "Type a message below. Use @name to pick who answers, or @all for everyone."}
             </p>
             {participants.length === 0 && quickAddButton("empty", true)}
+            {participants.length > 0 && <div className="example-rows" aria-label="Examples">
+              {exampleRows(participants.map((p) => p.id)).map((row) => (
+                <button key={row.text} type="button" className="example-row" onClick={() => insertExample(row.text)}>{row.label}</button>
+              ))}
+            </div>}
           </div>
         )}
-        {entries.map((entry) =>
-          entry.kind === "notice" ? (
-            <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}`}>
-              {entry.notice.text}
+        {entries.flatMap((entry) => {
+          const item = entry.kind === "notice" ? (
+            <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}${entry.notice.action ? " with-action" : ""}`}>
+              <span>{entry.notice.text}</span>
+              {entry.notice.action && noticeButton(entry.notice.key, entry.notice.action)}
             </p>
           ) : entry.kind === "low" ? (
             <p key={`l${entry.low.key}`} className="notice low-context">
@@ -1457,7 +1780,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           ) : entry.message.speaker.kind === "human" ? (
             <div key={`m${entry.message.seq}`} className="bubble human">
               <RichText text={entry.message.text} onOpen={openTarget} />
-              {forkButton(entry.message.seq)}
+              {messageActions(entry.message)}
             </div>
           ) : (
             <div key={`m${entry.message.seq}`} className="bot-row">
@@ -1471,22 +1794,23 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
                 <Markdown text={entry.message.text} onOpen={openTarget} />
-                <button className="quote-reply-icon" aria-label={`Quote response from ${names.get(entry.message.speaker.id) ?? entry.message.speaker.id}`} onClick={() => {
-                  if (entry.message.speaker.kind !== "bot") return;
-                  setReply({ id: entry.message.speaker.id, name: names.get(entry.message.speaker.id) ?? entry.message.speaker.id, text: entry.message.text });
-                  input.current?.focus();
-                }}><DeckIcon name="reply" size={18} /></button>
-                {forkButton(entry.message.seq)}
+                {messageActions(entry.message)}
               </div>
             </div>
-          ),
-        )}
+          );
+          // "New since you looked" goes above the first reply you have not seen.
+          return entry.kind === "message" && entry.message.seq === dividerAt
+            ? [<div key={`u${entry.message.seq}`} className="unseen-divider" role="separator" aria-label="New since you looked"><span>New since you looked</span></div>, item]
+            : [item];
+        })}
         {Object.entries(drafts).map(([id, partial]) => {
           const turn = working[id];
           const steps = turn?.steps ?? [];
           // Long turns take many steps; the latest few say where it is.
           const shown = steps.slice(-MAX_STEPS_SHOWN);
           const hidden = steps.length - shown.length;
+          const config = configOf(id);
+          const quiet = turn && !asks[id]?.length && config && isCommandLine(config.backend) ? quietLine(heard.current.get(id) ?? turn.startedAt, now) : null;
           return (
             <div key={`d${id}`} className="bot-row">
               <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
@@ -1512,25 +1836,36 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
                 {(asks[id] ?? []).map((ask) => (
                   <ApprovalCard
                     key={ask.request}
+                    request={ask.request}
+                    by={id}
                     action={ask.action}
+                    name={names.get(id) ?? id}
+                    deadline={deadlineNote(ask.action.expires_at, now)}
                     onDecide={(approve, always) => {
                       backend.roomDecide(pane.id, ask.request, approve, always).catch((error) => notify(`Could not send your answer: ${String(error)}`, "error"));
                     }}
                   />
                 ))}
-                <div className={`working-line ${asks[id]?.length ? "asking" : ""}`} role="status">
+                <div className={`working-line ${asks[id]?.length ? "asking" : quiet ? "quiet" : ""}`} role="status">
                   <span className="working-dots" aria-hidden="true">
                     <i />
                     <i />
                     <i />
                   </span>
-                  <span>{asks[id]?.length ? "Waiting for you" : phaseLabel(turn?.phase)}</span>
-                  {turn && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
+                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? phaseLabel(turn?.phase)}</span>
+                  {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
                 </div>
               </div>
             </div>
           );
         })}
+      </div>}
+      {!profileMode && (unread > 0 || cardsAway.length > 0) && <div className="transcript-pills">
+        {cardsAway.length > 0 && <button type="button" className="transcript-pill" onClick={() => showCard(cardsAway[0].request)}>
+          <span className="pill-dot" aria-hidden="true" />
+          {waitingLine(owners(cardsAway).map((id) => names.get(id) ?? id))} · Show
+        </button>}
+        {unread > 0 && <button type="button" className="transcript-pill" onClick={jumpToLatest}>{newPill(unread)}</button>}
       </div>}
       </div>
 
@@ -1540,16 +1875,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
-        {busy && replying.length > 0 && <div className="composer-status" role="status">
+        {busy && active.length > 0 && <div className="composer-status" role="status">
           <span className="composer-status-dots" aria-hidden="true"><i /><i /><i /></span>
           <span className="composer-status-who">
-            {replying.map((p, index) => <span key={p.id}>
-              {index > 0 && (index === replying.length - 1 ? " and " : ", ")}
-              <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
-            </span>)} {replyingVerb(replying.length)}
+            {statusParts(replyingNow, waitingNow).map((part, partIndex) => <span key={part.verb}>
+              {partIndex > 0 && " · "}
+              {part.who.map((p, index) => <span key={p.id}>
+                {index > 0 && (index === part.who.length - 1 ? " and " : ", ")}
+                <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
+              </span>)} {part.verb}
+            </span>)}
           </span>
-          <span className="composer-status-time" aria-label={`for ${elapsed(now - replyingSince)}`}>{elapsed(now - replyingSince)}</span>
-          <button className="danger small" aria-label={`Stop ${joinNames(replying.map(p => p.display_name))}`} onClick={() => void turnQueue.halt()}>Stop</button>
+          <span className="composer-status-time" aria-label={`for ${elapsed(now - activeSince)}`}>{elapsed(now - activeSince)}</span>
+          {replyingNow.length > 0 && <button className="danger small" aria-label={`Stop ${joinNames(replyingNow.map((p) => p.display_name))}`} onClick={stopReplying}>{stopLabel(replyingNow.map((p) => p.display_name))}</button>}
         </div>}
         {queued.length > 0 && <details className="queued-messages" aria-label="Queued messages" open>
           <summary>{queuePaused ? "Paused" : "Queued"} ({queued.length}) · {queued[0].to.map(id => names.get(id) ?? id).join(", ")}: “{queued[0].text.slice(0, 65)}”</summary>
@@ -1566,9 +1904,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           </div>)}
           {queuePaused && <button className="ghost" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume queue</button>}
         </details>}
-        {busy && recipients.length > 0 && <div className="recipient-hint">To {recipients.map(id => names.get(id) ?? id).join(", ")} · {recipients.some(id => turnQueue.state[id] === "working") ? "queued (busy)" : "starts now"}</div>}
         {reply && <div className="quote-preview">
-          <div className="quote-preview-copy"><span className="speaker">{reply.name}</span><blockquote>{reply.text}</blockquote></div>
+          <div className="quote-preview-copy"><span className="speaker">{reply.id ? `Quoting ${reply.name}` : "Quoting your message"}</span><blockquote>{reply.text}</blockquote></div>
+          <span className="pane-menu-wrap hand-off">
+            <button ref={handOffButton} type="button" className="ghost small" aria-haspopup="menu" aria-expanded={handOffOpen} onClick={() => setHandOffOpen((open) => !open)}>
+              {handOffLabel(quoteTo, (id) => names.get(id) ?? id)} ▾
+            </button>
+            {handOffOpen && <span className="pane-menu hand-off-menu" role="menu">
+              {handOffChoices(quoteTo, participants.map((p) => ({ id: p.id, name: p.display_name }))).map((choice) => (
+                <button role="menuitem" key={choice.to} onClick={() => { setReply((quote) => (quote ? { ...quote, to: choice.to } : quote)); setHandOffOpen(false); input.current?.focus(); }}>{choice.label}</button>
+              ))}
+            </span>}
+          </span>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
         </div>}
         {attached.length > 0 && <div className="attachments" aria-label="Attachments">
@@ -1576,6 +1923,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
             {a.preview ? <img src={a.preview} alt={a.name} /> : <span className="attachment-name">{a.name}</span>}
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
+        </div>}
+        {recipient && lineFits && <div className="recipient-line">
+          To {recipient.to} · <button type="button" className="link-button" title="Change who answers by default" onClick={() => details?.show("room")}>{recipient.reason}</button>{recipient.queued && " · queued (busy)"}
         </div>}
         <div className="composer-field">
           <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
@@ -1619,12 +1969,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         />
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
-        <div className="composer-hint"><span>@ who answers · ! which tools · {copy.hint}</span></div>
+        <div className="composer-hint"><span>{copy.hint}</span></div>
         </div>
         <div className="composer-actions">
           {busy && <button className="ghost composer-steer" onClick={() => send(true)} disabled={!ready || !text.trim() || saving} title="Send to the busy model you mentioned now">Steer <kbd>⌘↵</kbd></button>}
           <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}>{busy ? <>Queue <kbd>↵</kbd></> : <><DeckIcon name="send" size={18} /> Send</>}</button>
-          {busy && replying.length > 1 && <details className="turn-controls"><summary aria-label="Turn controls">⋯</summary><div className="turn-controls-menu">
+          {busy && (active.length > 1 || waitingNow.length > 0) && <details className="turn-controls"><summary aria-label="Turn controls">⋯</summary><div className="turn-controls-menu">
             {participants.filter(p => turnQueue.state[p.id] === "working").map(p => <div key={p.id}>
               <button className="ghost small" disabled={!text.trim()} onClick={() => { const message = text; setText(""); void turnQueue.steer(p.id, message); }}>Steer {p.display_name}</button>
               <button className="ghost small" onClick={() => void turnQueue.halt(p.id)}>Stop {p.display_name}</button>

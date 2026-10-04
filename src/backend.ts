@@ -5,7 +5,7 @@ import type { ToolServer } from "./types";
 // the UI can be worked on without building the app.
 
 import { ruleFor, sameRule } from "./allowedRules";
-import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
 
@@ -39,10 +39,14 @@ export interface Backend {
   roomPost(id: string, text: string): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
   roomPostTo(id: string, text: string, targets: string[]): Promise<void>;
-  roomTurn(id: string, participant: string): Promise<void>;
+  /** Run participants on the transcript as it is, one after another, without
+   *  posting anything. `hops` caps the rounds of bots answering bots that may
+   *  follow: null keeps the room's limit, 0 buys exactly one reply each. */
+  roomTurn(id: string, participants: string[], hops: number | null): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
-  /** Answer an action a bot proposed, named by the `request` from its event. */
-  /** `always` stops the same thing being asked again in this thread until the app quits. */
+  /** Answer an action a bot proposed, named by the `request` from its event.
+   *  `always` saves a rule with the thread, so the same thing isn't asked again
+   *  until it is removed in thread details. */
   roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
   roomSetOptions(id: string, options: RoomOptions): Promise<void>;
   /** Stop always allowing something, so its card shows again. */
@@ -71,9 +75,18 @@ export interface Backend {
   roomClose(id: string): Promise<void>;
   roomDelete(id: string): Promise<void>;
   onRoomEvent(cb: (room: string, event: RoomEvent) => void): Promise<Unlisten>;
-  /** Show on the app's icon how many panes want attention. With `nudge`,
+  /** Show on the app's icon how many panes need you or failed (Ready is left out). With `nudge`,
    *  also draw the eye to the icon once, for when the app is in the background. */
   flagAttention(count: number, nudge: boolean): Promise<void>;
+  /** Ask for Critical attention (on macOS the dock bounces until the window is focused), for an approval left waiting. */
+  requestCriticalAttention(): Promise<void>;
+  /** The window's close button, ⌘W, ⌘Q or Quit in the app menu was used.
+   *  Answer with `quitHeard` at once, then `quitApp` to go ahead. */
+  onQuitRequested(cb: (request: number) => void): Promise<Unlisten>;
+  /** Tell the desktop shell the window got quit request `request`, so it waits for the person. */
+  quitHeard(request: number): Promise<void>;
+  /** Quit now, ending every terminal. Nothing asks again. */
+  quitApp(): Promise<void>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -113,10 +126,15 @@ async function tauriBackend(): Promise<Backend> {
       await main.setBadgeCount(count > 0 ? count : undefined).catch(() => {});
       if (nudge) await main.requestUserAttention(UserAttentionType.Informational).catch(() => {});
     },
+    requestCriticalAttention: async () => {
+      const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
+      // Not available on every system; the app works without it.
+      await getCurrentWindow().requestUserAttention(UserAttentionType.Critical).catch(() => {});
+    },
     roomPost: (id, text) => invoke("room_post", { id, text }),
     roomTargets: (id, text) => invoke("room_targets", { id, text }),
     roomPostTo: (id, text, targets) => invoke("room_post_to", { id, text, targets }),
-    roomTurn: (id, participant) => invoke("room_turn", { id, participant }),
+    roomTurn: (id, participants, hops) => invoke("room_turn", { id, participants, hops }),
     roomStop: (id, participant) => invoke("room_stop", { id, participant: participant ?? null }),
     roomDecide: (id, request, approve, always = false) => invoke("room_decide", { id, request, approve, always }),
     roomSetOptions: (id, options) => invoke("room_set_options", { id, options }),
@@ -142,6 +160,9 @@ async function tauriBackend(): Promise<Backend> {
     roomClose: (id) => invoke("room_close", { id }),
     roomDelete: (id) => invoke("room_delete", { id }),
     onRoomEvent: (cb) => listen<{ room: string; event: RoomEvent }>("room-event", (e) => cb(e.payload.room, e.payload.event)),
+    onQuitRequested: (cb) => listen<number>("quit-requested", (e) => cb(e.payload)),
+    quitHeard: (request) => invoke("quit_heard", { request }),
+    quitApp: () => invoke("quit_app"),
   };
 }
 
@@ -149,8 +170,15 @@ async function tauriBackend(): Promise<Backend> {
  *  participants answer with a canned line. Nothing here talks to a model. */
 function demoBackend(): Backend {
   const dataListeners = new Set<(id: string, data: string) => void>();
+  const exitListeners = new Set<(id: string, code: number | null) => void>();
+  /** Preview terminals whose pretend program has ended or been killed. */
+  const endedPtys = new Set<string>();
+  const emitExit = (id: string, code: number | null) => {
+    endedPtys.add(id);
+    exitListeners.forEach((cb) => cb(id, code));
+  };
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
-  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; seq: number; stopped: boolean; last: string[] }>();
+  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; usage?: Record<string, TokenTotals>; seq: number; stopped: boolean; last: string[] }>();
   const cancellations = new Map<string, () => void>();
   const emitData = (id: string, data: string) => dataListeners.forEach((cb) => cb(id, data));
   const saveRoom = (id: string) => {
@@ -162,6 +190,15 @@ function demoBackend(): Backend {
       rooms.get(id)?.transcript.push(event.message);
       saveRoom(id);
     }
+    // Like the desktop app, each bot's token totals are saved with the thread.
+    if (event.type === "usage") {
+      const room = rooms.get(id);
+      if (room) {
+        const before = room.usage?.[event.id] ?? { input: 0, output: 0, turns: 0 };
+        room.usage = { ...room.usage, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1 } };
+        saveRoom(id);
+      }
+    }
     roomListeners.forEach((cb) => cb(id, event));
   };
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -169,6 +206,8 @@ function demoBackend(): Backend {
   /** Proposals waiting for a yes or no, by request id. */
   const asks = new Map<string, (approve: boolean, always?: boolean) => void>();
   let askCount = 0;
+  /** Codex's hook denies a call nobody answered after this long (HELPER_DEADLINE in codex_hook.rs). */
+  const HOOK_DEADLINE_MS = 570_000;
 
   // Preview only: made-up meter readings so the identicon battery can be
   // seen. Claude Code agents start nearly out of context (18% left), Codex
@@ -207,6 +246,14 @@ function demoBackend(): Backend {
 
   const editors = new Map<string, string>();
   const askOwners = new Map<string, string>();
+  /** Preview only: bots that already failed on purpose for a message, so Try again succeeds. */
+  const failedOnce = new Set<string>();
+  /** End a room's running preview turns and turn down their open cards, as the
+   *  native room_stop (one participant) and room_close (everyone) do. */
+  const stopPreview = (id: string, participant?: string) => {
+    for (const [key, cancel] of cancellations) if (key === `${id}:${participant}` || (!participant && key.startsWith(`${id}:`))) cancel();
+    for (const [request, owner] of askOwners) if (owner === `${id}:${participant}` || (!participant && owner.startsWith(`${id}:`))) asks.get(request)?.(false);
+  };
   const targetsFor = (id: string, text: string): string[] => {
     const room = rooms.get(id);
     if (!room) throw new Error(`no group chat with id ${id}`);
@@ -214,9 +261,13 @@ function demoBackend(): Backend {
     const all = room.participants.map(p => p.id);
     return /@(all|everyone)\b/i.test(text) || (!named.length && room.options.policy !== "mention") ? all : named.length ? named : room.last.length ? room.last : all.slice(0,1);
   };
-  const runPreview = async (id: string, participant: string) => {
+  /** One participant's turn. Resolves with the bots its reply addressed, so
+   *  runChain can follow them the way the native room does. */
+  const runPreview = async (id: string, participant: string): Promise<string[]> => {
       const key = `${id}:${participant}`;
       let active = true;
+      let stopped = false;
+      let addressed: string[] = [];
       const partials = new Map<string, string>();
       const emit = (event: RoomEvent) => {
         if (!active) return;
@@ -227,7 +278,7 @@ function demoBackend(): Backend {
       const cancelled = new Promise<void>(resolve => cancellations.set(key, () => {
         const room = rooms.get(id);
         for (const [bot, text] of partials) if (text.trim() && room) emit({type: "message_added", message: {seq: room.seq++, speaker: {kind:"bot", id:bot}, text: text.trim() + "\n\n[Interrupted]"}});
-        active = false; resolve();
+        stopped = true; active = false; resolve();
       }));
       try { await Promise.race([(async () => {
       const room = rooms.get(id);
@@ -238,7 +289,17 @@ function demoBackend(): Backend {
         const ownsEditor = configured.access !== "read" && !editors.has(id);
         if (ownsEditor) { editors.set(id, target); emit({type: "editor_changed", id: target}); }
         const p = {...configured, access: ownsEditor ? configured.access : "read" as const};
+        const lastHuman = [...room.transcript].reverse().find((m) => m.speaker.kind === "human");
         emit( { type: "turn_started", id: p.id });
+        // Preview only: "fail" in your message makes each addressed bot fail
+        // once, so Try again can be seen.
+        const failKey = `${id}:${p.id}:${lastHuman?.seq}`;
+        if (lastHuman && /\bfail\b/i.test(lastHuman.text) && !failedOnce.has(failKey)) {
+          failedOnce.add(failKey);
+          await sleep(400); if (!active) return [];
+          emit({ type: "failed", id: p.id, error: "Preview: this bot failed on purpose. Try again runs it once more." });
+          continue;
+        }
         if (p.backend.kind === "agent") {
           await sleep(600); if (!active) return;
           for (const word of "I'll look at the project first.".split(" ")) {
@@ -249,31 +310,37 @@ function demoBackend(): Backend {
             emit( { type: "activity", id: p.id, text: step });
             await sleep(600); if (!active) return;
           }
+          // Preview only: a message with "stall" in it leaves the bot silent
+          // for six minutes, so the quiet warning can be seen.
+          const said = [...room.transcript].reverse().find((m) => m.speaker.kind === "human")?.text ?? "";
+          if (/\bstall\b/i.test(said)) {
+            emit( { type: "activity", id: p.id, text: "Running: sleep 360" });
+            await sleep(6 * 60_000); if (!active) return;
+          }
           emit( { type: "delta", id: p.id, text: "\n\n" });
-          // Preview only: a bot set to ask first proposes one edit and one
-          // command, so the approval cards and changes list can be seen.
+          // Preview only: a bot set to ask first proposes an edit, then a
+          // command and an MCP tool call together (as a model calling two
+          // tools at once does), then a tool's own permission question, so
+          // the approval cards, the attention list and the changes list can
+          // be seen. Like Codex's hook, the tool call is denied by itself if
+          // nobody answers within 570 seconds.
           if (p.access === "ask") {
-            const proposals: { action: ProposedAction; change?: FileChange }[] = [
-              {
-                action: { kind: "edit", title: "Edit README.md", detail: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n" },
-                change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
-              },
-              { action: { kind: "command", title: "Run a command", detail: "npm run build" } },
-              { action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl" } },
-            ];
-            for (const { action, change } of proposals) {
+            const ask = async ({ action: proposed, change }: { action: ProposedAction; change?: FileChange }) => {
+              const action = proposed.kind === "tool" ? { ...proposed, expires_at: Date.now() + HOOK_DEADLINE_MS } : proposed;
               const room = rooms.get(id);
               const rule = ruleFor(p.id, action);
               if (room?.allowed?.some(r => sameRule(r, rule))) {
                 emit( { type: "activity", id: p.id, text: `Always allowed: ${action.title}` });
                 if (change) emit( { type: "changed", id: p.id, change });
-                continue;
+                return;
               }
               const request = `ask-${++askCount}`;
               emit( { type: "activity", id: p.id, text: `Waiting for approval: ${action.title}` });
               emit( { type: "approval_requested", id: p.id, request, action });
               askOwners.set(request, key);
+              const expiry = action.expires_at ? setTimeout(() => asks.get(request)?.(false), action.expires_at - Date.now()) : undefined;
               const [approved, always] = await new Promise<[boolean, boolean]>((answer) => asks.set(request, (yes, forever = false) => answer([yes, forever])));
+              clearTimeout(expiry);
               asks.delete(request); askOwners.delete(request);
               emit( { type: "approval_resolved", id: p.id, request, approved });
               if (approved && always && room) {
@@ -282,23 +349,52 @@ function demoBackend(): Backend {
                 emit( { type: "allowed_changed", allowed: room.allowed });
               }
               if (approved && change) emit( { type: "changed", id: p.id, change });
+            };
+            const steps: { action: ProposedAction; change?: FileChange }[][] = [
+              [{
+                action: { kind: "edit", title: "Edit README.md", detail: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n" },
+                change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
+              }],
+              [
+                { action: { kind: "command", title: "Run a command", detail: "npm test -- --run auth" } },
+                { action: { kind: "tool", title: "x-mcp: post_tweet", detail: "{\n  \"text\": \"Apex Deck preview\"\n}", risky: true } },
+              ],
+              [{ action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl" } }],
+            ];
+            for (const step of steps) {
+              await Promise.all(step.map(ask));
               await sleep(300); if (!active) return;
             }
           }
         }
-        const reply = [
+        let reply = [
           `## Preview reply from ${p.display_name}`,
           "This is **preview mode**: the desktop app sends your message to the *real* model. See [README.md](README.md) or `npm run tauri dev`.",
           "1. Steps appear while a bot works\n2. Text is written live\n   - nested point with `code`\n3. The final reply replaces the draft",
           "| Tool | Live text |\n|---|---|\n| Claude Code | yes |\n| Codex | yes |",
           "```sh\ncd ~/Downloads/apex-deck\nnpm run tauri dev\n```",
         ].join("\n\n");
+        // Preview only: "relay" in your message makes each bot hand over to the
+        // next one in the room ("relay all": to everyone else), so the round
+        // limit and Let them answer can be seen.
+        if (lastHuman && /\brelay\b/i.test(lastHuman.text) && room.participants.length > 1) {
+          const others = room.participants.filter((x) => x.id !== p.id);
+          const next = room.participants[(room.participants.findIndex((x) => x.id === p.id) + 1) % room.participants.length];
+          const everyone = /\brelay all\b/i.test(lastHuman.text);
+          reply += everyone ? "\n\n@all your turn." : `\n\n@${next.id} your turn.`;
+          addressed = everyone ? others.map((x) => x.id) : [next.id];
+        }
         for (const piece of reply.match(/\S+\s*/g) ?? []) {
           await sleep(25); if (!active) return;
           emit( { type: "delta", id: p.id, text: piece });
         }
         if (p.backend.kind === "agent") {
           emit( { type: "usage", id: p.id, input_tokens: 1840, output_tokens: 26 });
+          // Preview only: a message with "drain" in it leaves this bot at 5%
+          // context, so the critical battery can be seen.
+          const asked = room.transcript.filter((m) => m.speaker.kind === "human").at(-1)?.text ?? "";
+          const size = WINDOWS[p.backend.tool];
+          if (size && /\bdrain\b/i.test(asked)) contextUsed.set(`${id}:${p.id}`, Math.round(size * 0.95) - 2_400);
           reportContext(id, p, 2_400);
           if (p.backend.tool === "claude_code" || p.backend.tool === "codex") {
             planUsed[p.backend.tool] = Math.min(100, planUsed[p.backend.tool] + 1);
@@ -312,9 +408,35 @@ function demoBackend(): Backend {
         active = false; cancellations.delete(key);
         if (editors.get(id) === participant) { editors.delete(id); emitRoom(id, {type: "editor_changed", id: null}); }
         emitRoom(id, {type: "participant_idle", id: participant});
-        if (![...cancellations.keys()].some(key => key.startsWith(`${id}:`))) emitRoom(id, {type: "idle"});
       }
+      return stopped ? [] : addressed;
     };
+
+  /** Rooms with chains of turns running; a room is idle when its last chain ends. */
+  const chains = new Map<string, number>();
+  /** Run `first`, then whoever the replies address, up to `limit` rounds of
+   *  bots answering bots, like ConcurrentRoom::run. */
+  const runChain = async (id: string, first: string[], sequential: boolean, limit: number) => {
+    chains.set(id, (chains.get(id) ?? 0) + 1);
+    try {
+      let wave = first;
+      let inTurn = sequential;
+      for (let hops = 0; wave.length > 0; hops++) {
+        const replies: string[][] = [];
+        if (inTurn) for (const target of wave) replies.push(await runPreview(id, target));
+        else replies.push(...await Promise.all(wave.map((target) => runPreview(id, target))));
+        const next = [...new Set(replies.flat())].filter((target) => rooms.get(id)?.participants.some((p) => p.id === target));
+        if (next.length === 0) break;
+        if (hops >= limit) { emitRoom(id, { type: "hop_limit_reached", limit, next }); break; }
+        wave = next;
+        inTurn = true;
+      }
+    } finally {
+      const left = (chains.get(id) ?? 1) - 1;
+      if (left > 0) chains.set(id, left);
+      else { chains.delete(id); emitRoom(id, { type: "idle" }); }
+    }
+  };
 
   const postPreview = async (id: string, text: string, targets: string[]) => {
     const room = rooms.get(id);
@@ -322,7 +444,7 @@ function demoBackend(): Backend {
     if (targets.some(target => !room.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
     room.last = targets;
     emitRoom(id, {type: "message_added", message: {seq: room.seq++, speaker: {kind: "human"}, text}});
-    await Promise.all(targets.map(target => runPreview(id, target)));
+    await runChain(id, targets, room.options.policy === "round_robin", room.options.max_bot_hops);
   };
 
   return {
@@ -340,12 +462,16 @@ function demoBackend(): Backend {
 
     ptySpawn: async ({ id, agent }) => {
       const what = agent ? `${agent} (browser demo)` : "shell (browser demo)";
-      setTimeout(() => emitData(id, `\x1b[2m${what}: keys are echoed, nothing runs.\x1b[0m\r\n$ `), 30);
+      // Agents name what they are doing in the terminal's title, as Claude Code does.
+      const title = agent ? "\x1b]0;\u2733 Reading the project\x07" : "";
+      setTimeout(() => emitData(id, `${title}\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, title, exit or fail.\x1b[0m\r\n$ `), 30);
     },
     ptyWrite: async (id, data) => {
+      if (endedPtys.has(id)) throw new Error(`no terminal with id ${id}`);
       emitData(id, data.replace(/\r/g, "\r\n$ ").replace(/\x7f/g, "\b \b"));
-      // Preview only: typing "ask" then Enter shows an approval prompt, and
-      // "work" prints for a few seconds, so the attention states can be seen.
+      // Preview only: typing "ask" then Enter shows an approval prompt, "work"
+      // prints for a few seconds and "long" for 90 seconds, so the attention
+      // states and working times can be seen.
       typedSoFar.set(id, ((typedSoFar.get(id) ?? "") + data).slice(-12));
       const line = typedSoFar.get(id) ?? "";
       if (line.endsWith("ask\r")) setTimeout(() => emitData(id, "\r\n Do you want to create hello.txt?\r\n \u276f 1. Yes\r\n   2. No\r\n"), 300);
@@ -353,14 +479,34 @@ function demoBackend(): Backend {
         for (let i = 1; i <= 40; i++) setTimeout(() => emitData(id, `\r\ncompiling module ${i} of 40 ...`), 2000 + i * 100);
         setTimeout(() => emitData(id, "\r\nFinished.\r\n$ "), 6200);
       }
+      if (line.endsWith("long\r")) {
+        for (let i = 1; i <= 180; i++) setTimeout(() => emitData(id, `\r\nstep ${i} of 180 ...`), i * 500);
+        setTimeout(() => emitData(id, "\r\nFinished.\r\n$ "), 181 * 500);
+      }
+      // "title" retitles the terminal 20 times a second, as a spinner does, so
+      // the four-a-second limit can be seen; it settles on the last title.
+      if (line.endsWith("title\r")) {
+        const frames = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f";
+        for (let i = 0; i < 20; i++) setTimeout(() => emitData(id, `\x1b]0;${frames[i % frames.length]} Writing tests for auth (${i + 1} of 20)\x07`), i * 50);
+        setTimeout(() => emitData(id, "\x1b]0;\u2733 Writing tests for auth\x07"), 1100);
+      }
+      // "exit" ends the pretend program cleanly. "fail" ends it with code 1
+      // two seconds later, so you can look away and see the Failed flag.
+      if (line.endsWith("exit\r")) setTimeout(() => emitExit(id, 0), 100);
+      if (line.endsWith("fail\r")) setTimeout(() => emitExit(id, 1), 2000);
     },
     ptyResize: async () => {},
-    ptyKill: async () => {},
+    ptyKill: async (id) => {
+      endedPtys.add(id);
+    },
     onPtyData: async (cb) => {
       dataListeners.add(cb);
       return () => dataListeners.delete(cb);
     },
-    onPtyExit: async () => () => {},
+    onPtyExit: async (cb) => {
+      exitListeners.add(cb);
+      return () => exitListeners.delete(cb);
+    },
 
     roomCreate: async (id, participants, options) => {
       const saved = JSON.parse(localStorage.getItem(`apex-deck.demo.room.${id}`) ?? "null");
@@ -369,7 +515,7 @@ function demoBackend(): Backend {
       rooms.set(id, room);
       saveRoom(id);
       setTimeout(() => reportMeters(id, room.participants), 50);
-      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [], allowed: room.allowed ?? [] };
+      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [], allowed: room.allowed ?? [], usage: room.usage ?? {} };
     },
     apiModels: async (baseUrl) => {
       if (baseUrl.includes("11434")) return ["llama3", "qwen2.5-coder"];
@@ -378,6 +524,10 @@ function demoBackend(): Backend {
     agentModels: async () => [],
     flagAttention: async (count) => {
       document.title = count > 0 ? `(${count}) Apex Deck` : "Apex Deck";
+    },
+    // The browser has no dock; the console says what the desktop app would do.
+    requestCriticalAttention: async () => {
+      console.info("[preview] Critical attention requested");
     },
     openTarget: async (target) => {
       if (/^https?:/.test(target)) window.open(target, "_blank", "noopener");
@@ -389,11 +539,13 @@ function demoBackend(): Backend {
       if (!rooms.has(id) || targets.some(target => !rooms.get(id)!.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
       void postPreview(id, text, targets).catch(error => emitRoom(id, {type: "failed", id: "storage", error: String(error)}));
     },
-    roomTurn: async (id, participant) => { void runPreview(id, participant); },
-    roomStop: async (id, participant) => {
-      for (const [key, cancel] of cancellations) if (key === `${id}:${participant}` || (!participant && key.startsWith(`${id}:`))) cancel();
-      for (const [request, owner] of askOwners) if (owner === `${id}:${participant}` || (!participant && owner.startsWith(`${id}:`))) asks.get(request)?.(false);
+    roomTurn: async (id, participants, hops) => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      if (participants.some((target) => !room.participants.some((p) => p.id === target))) throw new Error("that participant is no longer in this room");
+      void runChain(id, [...new Set(participants)], true, hops ?? room.options.max_bot_hops);
     },
+    roomStop: async (id, participant) => stopPreview(id, participant),
     roomDecide: async (_id, request, approve, always = false) => {
       const answer = asks.get(request);
       if (!answer) throw new Error("that request is no longer waiting for an answer");
@@ -440,14 +592,18 @@ function demoBackend(): Backend {
       const room = rooms.get(id);
       const [first, second] = room?.participants ?? [];
       const patch = "--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1,2 +1,2 @@\n-const title = \"Deck\";\n+const title = \"Apex Deck\";\n export default App;\n";
-      return {
-        note: "Preview: these changes are made up. The desktop app reads them from git.",
-        files: [
-          { path: "src/App.tsx", added: 1, removed: 1, patch, by: first ? [first.id] : [] },
-          { path: "README.md", added: 3, removed: 0, patch: "+## Commands\n+\n+/pin, /diff, /fork, /export\n", by: [first, second].filter(Boolean).map((p) => p.id) },
-          { path: "package-lock.json", added: 12, removed: 4, patch: "", by: [] },
-        ],
-      };
+      const files = [
+        { path: "src/App.tsx", added: 1, removed: 1, patch, by: first ? [first.id] : [] },
+        { path: "README.md", added: 3, removed: 0, patch: "+## Commands\n+\n+/pin, /diff, /fork, /export\n", by: [first, second].filter(Boolean).map((p) => p.id) },
+        { path: "package-lock.json", added: 12, removed: 4, patch: "", by: [] },
+      ];
+      // Preview only: after a message with "big diff" in it, a 2,400-line
+      // file joins the list, so Ask for review's "One file per patch" can be seen.
+      if (room?.transcript.some((m) => m.speaker.kind === "human" && /big diff/i.test(m.text))) {
+        files.push({ path: "dist/bundle.js", added: 2400, removed: 0, by: [],
+          patch: "--- a/dist/bundle.js\n+++ b/dist/bundle.js\n@@ -0,0 +1,2400 @@\n" + Array.from({ length: 2400 }, (_, i) => `+line ${i + 1}\n`).join("") });
+      }
+      return { note: "Preview: these changes are made up. The desktop app reads them from git.", files };
     },
 
     exportThread: async (fileName, contents) => {
@@ -487,6 +643,9 @@ function demoBackend(): Backend {
       if (fork.changes) fork.changes = fork.changes.filter((change: { seq: number }) => change.seq < cutoff);
       fork.seq = cutoff;
       fork.stopped = false;
+      // As in the desktop app, a fork starts without the source's Always allow rules and token totals.
+      delete fork.allowed;
+      delete fork.usage;
       localStorage.setItem(`apex-deck.demo.room.${target}`, JSON.stringify(fork));
     },
     roomUnpin: async (id, index) => {
@@ -522,6 +681,7 @@ function demoBackend(): Backend {
       emitRoom(id, { type: "compacted", id: by.id, summary, upto });
     },
     roomClose: async (id) => {
+      stopPreview(id);
       rooms.delete(id);
     },
     roomDelete: async (id) => {
@@ -532,6 +692,17 @@ function demoBackend(): Backend {
       roomListeners.add(cb);
       return () => roomListeners.delete(cb);
     },
+    // The browser has no window to close or app to quit. To see the question
+    // in the preview, run apexDeckPreviewQuit() in the developer console.
+    onQuitRequested: async (cb) => {
+      const page = window as unknown as { apexDeckPreviewQuit?: () => void };
+      let request = 0;
+      const ask = () => cb(++request);
+      page.apexDeckPreviewQuit = ask;
+      return () => { if (page.apexDeckPreviewQuit === ask) delete page.apexDeckPreviewQuit; };
+    },
+    quitHeard: async () => {},
+    quitApp: async () => { console.info("Preview: the desktop app would quit now."); },
   };
 }
 

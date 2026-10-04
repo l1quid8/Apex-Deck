@@ -4,11 +4,13 @@
 //! - `pty-data`   `{ id, data }`   terminal output
 //! - `pty-exit`   `{ id, code }`   the program in a terminal ended
 //! - `room-event` `{ room, event }` something happened in a group chat
+//! - `quit-requested` `request` the window or app was asked to close; answer with `quit_heard`
 
 mod agents;
 mod export;
 mod changes;
 mod pty;
+mod quit;
 mod storage;
 
 use std::collections::HashMap;
@@ -266,7 +268,7 @@ fn room_create(
 /// One shared checkpoint for all running chains. Completed messages are saved
 /// before emission; a failed write cancels work and is reported to the caller.
 fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent) -> Result<(), String> {
-    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. }) { return Ok(()); }
+    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. } | RoomEvent::Usage { .. }) { return Ok(()); }
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
     match event {
@@ -276,6 +278,10 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
             checkpoint.snapshot.changes.push(apex_core::ChangeRecord { by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
         }
         RoomEvent::AllowedChanged { allowed } => checkpoint.snapshot.allowed = allowed.clone(),
+        // The room adds these up too; a full checkpoint replaces this copy
+        // with the room's, so nothing is counted twice. Saving each one now
+        // keeps the totals if the app quits before the chain ends.
+        RoomEvent::Usage { id, input_tokens, output_tokens } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add(*input_tokens, *output_tokens),
         _ => {}
     }
     store.save_room(id, &checkpoint)
@@ -376,10 +382,14 @@ async fn room_post_to(app: AppHandle, state: State<'_, AppState>, id: String, te
     Ok(())
 }
 
+/// Run participants on the transcript as it is, one after another, without
+/// posting anything (Try again, Let them answer). `hops` caps the bot-to-bot
+/// rounds that may follow: `None` keeps the room's limit, `Some(0)` buys
+/// exactly one reply each.
 #[tauri::command]
-async fn room_turn(app: AppHandle, state: State<'_, AppState>, id: String, participant: ParticipantId) -> Result<(), String> {
+async fn room_turn(app: AppHandle, state: State<'_, AppState>, id: String, participants: Vec<ParticipantId>, hops: Option<usize>) -> Result<(), String> {
     let handle = state.handle(&id)?;
-    let batch = handle.runtime.begin_turn(participant).await?;
+    let batch = handle.runtime.begin_turn(participants, hops).await?;
     tauri::async_runtime::spawn(async move {
         if let Err(error) = run_batch(&app, &id, &handle, batch).await {
             let _ = app.emit("room-event", RoomEventPayload { room: &id, event: RoomEvent::Failed { id: ParticipantId::new("storage"), error } });
@@ -792,17 +802,57 @@ async fn save_room(state: &AppState, store: &Store, id: &str) -> Result<(), Stri
     checkpoint_room(&state.handle(id)?, store, id).await
 }
 
+// ---------------------------------------------------------------- quitting
+
+/// Ask the window about quit request `request`, and let the quit through if
+/// the window hasn't said it got it within `quit::ANSWER_TIME`.
+fn ask_to_quit(app: &AppHandle, request: u64) {
+    let _ = app.emit("quit-requested", request);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(quit::ANSWER_TIME);
+        let gate = app.state::<quit::QuitGate>();
+        if gate.unanswered(request) {
+            gate.confirm();
+            app.exit(0);
+        }
+    });
+}
+
+/// The window got quit request `request` and is asking the person.
+#[tauri::command]
+fn quit_heard(gate: State<'_, quit::QuitGate>, request: u64) {
+    gate.heard(request);
+}
+
+/// Quit now: the person chose to, or nothing was running. Every terminal
+/// ends on the way out (`RunEvent::Exit`).
+#[tauri::command]
+fn quit_app(app: AppHandle, gate: State<'_, quit::QuitGate>) {
+    gate.confirm();
+    app.exit(0);
+}
+
 // ---------------------------------------------------------------- app
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(quit::QuitGate::default())
         .setup(|app| {
             let root = app.path().app_data_dir()?.join("saved-chats-v1");
             app.manage(Store::new(root));
             apex_adapters::allow_reading(&app.path().app_data_dir()?.join("attachments"));
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == quit::QUIT_MENU_ID {
+                match app.state::<quit::QuitGate>().request(None) {
+                    Some(request) => ask_to_quit(app, request),
+                    None => app.exit(0),
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             session_load,
@@ -840,19 +890,50 @@ pub fn run() {
             api_models,
             agent_models,
             open_target,
-        ])
+            quit_heard,
+            quit_app,
+        ]);
+    // The system Quit item ends the app without asking; Deck's own asks first.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(|handle| quit::app_menu(handle));
+    builder
         .build(tauri::generate_context!())
         .expect("error while building Apex Deck")
-        .run(|app, event| {
-            // Do not leave agents running after the window is gone.
-            if let tauri::RunEvent::Exit = event {
-                app.state::<AppState>().ptys.kill_all();
+        .run(|app, event| match event {
+            // The close button and ⌘W.
+            tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::CloseRequested { api, .. }, .. } => {
+                if let Some(request) = app.state::<quit::QuitGate>().request(None) {
+                    api.prevent_close();
+                    ask_to_quit(app, request);
+                }
             }
+            // The last window going away (no code), or an exit with a code, which is never held.
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                if let Some(request) = app.state::<quit::QuitGate>().request(code) {
+                    api.prevent_exit();
+                    ask_to_quit(app, request);
+                }
+            }
+            // Do not leave agents running after the window is gone.
+            tauri::RunEvent::Exit => app.state::<AppState>().ptys.kill_all(),
+            _ => {}
         });
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn token_totals_are_saved_as_each_turn_reports_them() {
+        let (handle, store, path) = checkpoint_fixture("usage");
+        let null = ParticipantId::new("null");
+        for (input, output) in [(Some(100), Some(5)), (Some(20), None)] {
+            persist_event(&handle, &store, "room", &RoomEvent::Usage { id: null.clone(), input_tokens: input, output_tokens: output }).unwrap();
+        }
+        let saved = store.room("room").unwrap().unwrap().snapshot;
+        assert_eq!(saved.usage.get(&null), Some(&apex_core::TokenTotals { input: 120, output: 5, turns: 2 }));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     use super::*;
 
     #[cfg(target_os = "macos")]
@@ -931,7 +1012,7 @@ mod tests {
     #[test]
     fn always_allowed_list_is_saved_and_survives_reopening() {
         let (handle, store, path) = checkpoint_fixture("allowed");
-        let run = |cmd: &str| apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        let run = |cmd: &str| apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None, risky: false };
         let null = ParticipantId::new("null");
         futures::executor::block_on(async {
             let desk = handle.room.lock().await.approvals_handle();

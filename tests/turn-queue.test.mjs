@@ -80,3 +80,28 @@ test('compaction waits for all models and blocks new participant turns until set
   await q.send('@jigga later'); assert.deepEqual(sent, ['@null first', '/compact']);
   release(); await tick(); assert.deepEqual(sent, ['@null first', '/compact', '@jigga later']);
 });
+
+test('trying again runs the failed bot first, then what was queued for it', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async () => ['null'], async (text, _to, kind, hops) => { sent.push({ text, kind, hops }); }, async () => {}, () => {});
+  await q.send('@null first');
+  q.error('null'); q.idle('null');
+  await q.send('@null later');
+  assert.deepEqual(sent.map(s => s.text), ['@null first'], 'the failure paused Null');
+  q.turn(['null'], null); await tick();
+  assert.deepEqual(sent.slice(1), [{ text: '', kind: 'turn', hops: null }]);
+  q.idle('null'); await tick();
+  assert.deepEqual(sent.map(s => s.text), ['@null first', '', '@null later']);
+});
+
+test('a turn for several bots waits until every one is free, then posts once', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async text => [text.includes('jigga') ? 'jigga' : 'null'], async (_text, to, kind, hops) => { sent.push({ to, kind, hops }); }, async () => {}, () => {});
+  await q.send('@jigga plan');
+  q.turn(['null', 'jigga'], 0); await tick();
+  assert.deepEqual(sent.map(s => s.kind), ['message']);
+  q.idle('jigga'); await tick();
+  assert.deepEqual(sent.at(-1), { to: ['null', 'jigga'], kind: 'turn', hops: 0 });
+});

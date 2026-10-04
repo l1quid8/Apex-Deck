@@ -118,15 +118,16 @@ fn room_event_shapes() {
         to_value(RoomEvent::Usage { id: id.clone(), input_tokens: Some(10), output_tokens: None }).unwrap(),
         json!({ "type": "usage", "id": "opus", "input_tokens": 10, "output_tokens": null })
     );
-    let action = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "ls".into() };
+    let action = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "ls".into(), expires_at: None, risky: false };
     assert_eq!(
         to_value(RoomEvent::ApprovalRequested { id: id.clone(), request: "ask-1".into(), action }).unwrap(),
-        json!({ "type": "approval_requested", "id": "opus", "request": "ask-1", "action": { "kind": "command", "title": "Run a command", "detail": "ls" } })
+        json!({ "type": "approval_requested", "id": "opus", "request": "ask-1", "action": { "kind": "command", "title": "Run a command", "detail": "ls", "risky": false } })
     );
-    let rule = apex_core::AllowedRule::new(&id, &apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into() });
+    let mut rule = apex_core::AllowedRule::new(&id, &apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into(), expires_at: None, risky: false });
+    rule.allowed_at = 1_791_100_800;
     assert_eq!(
         to_value(RoomEvent::AllowedChanged { allowed: vec![rule] }).unwrap(),
-        json!({ "type": "allowed_changed", "allowed": [{ "by": "opus", "kind": "command", "title": "Run a command", "what": "npm test" }] })
+        json!({ "type": "allowed_changed", "allowed": [{ "by": "opus", "kind": "command", "title": "Run a command", "what": "npm test", "allowed_at": 1791100800, "risky": false }] })
     );
     assert_eq!(
         to_value(RoomEvent::ApprovalResolved { id: id.clone(), request: "ask-1".into(), approved: false }).unwrap(),
@@ -142,7 +143,10 @@ fn room_event_shapes() {
         to_value(RoomEvent::Failed { id, error: "boom".into() }).unwrap(),
         json!({ "type": "failed", "id": "opus", "error": "boom" })
     );
-    assert_eq!(to_value(RoomEvent::HopLimitReached { limit: 3 }).unwrap(), json!({ "type": "hop_limit_reached", "limit": 3 }));
+    assert_eq!(
+        to_value(RoomEvent::HopLimitReached { limit: 3, next: vec![ParticipantId::new("null")] }).unwrap(),
+        json!({ "type": "hop_limit_reached", "limit": 3, "next": ["null"] })
+    );
     assert_eq!(
         to_value(RoomEvent::Compacted { id: ParticipantId::new("opus"), summary: "s".into(), upto: 4 }).unwrap(),
         json!({ "type": "compacted", "id": "opus", "summary": "s", "upto": 4 })
@@ -185,6 +189,7 @@ fn old_snapshots_without_pins_still_load() {
     assert!(snapshot.pins.is_empty());
     assert!(snapshot.changes.is_empty());
     assert!(snapshot.baseline.is_none());
+    assert!(snapshot.usage.is_empty());
 }
 
 #[test]
@@ -203,4 +208,68 @@ fn tool_server_event_carries_canonical_tokens_and_aliases() {
     };
     assert_eq!(to_value(event).unwrap(), json!({"type":"tool_servers", "id":"null",
         "servers":[{"token":"computer-use", "label":"Computer Use", "aliases":["cua_repl"]}]}));
+}
+
+#[test]
+fn a_card_from_codexs_hook_says_when_it_is_denied() {
+    let mut action = apex_core::ProposedAction {
+        kind: apex_core::ActionKind::Tool,
+        title: "x-mcp: post_tweet".into(),
+        detail: "{}".into(),
+        expires_at: None,
+        risky: false,
+    };
+    assert_eq!(to_value(&action).unwrap(), json!({ "kind": "tool", "title": "x-mcp: post_tweet", "detail": "{}", "risky": false }), "no deadline, no field");
+    action.expires_at = Some(1_791_100_000_000);
+    assert_eq!(
+        to_value(RoomEvent::ApprovalRequested { id: ParticipantId::new("null"), request: "ask-2".into(), action }).unwrap(),
+        json!({ "type": "approval_requested", "id": "null", "request": "ask-2",
+                "action": { "kind": "tool", "title": "x-mcp: post_tweet", "detail": "{}", "expires_at": 1_791_100_000_000u64, "risky": false } })
+    );
+    let older: apex_core::ProposedAction = serde_json::from_value(json!({ "kind": "command", "title": "Run a command", "detail": "ls" })).unwrap();
+    assert_eq!(older.expires_at, None, "JSON without the field still reads");
+}
+
+#[test]
+fn proposed_actions_say_whether_they_are_risky() {
+    let risky = apex_core::ProposedAction { kind: apex_core::ActionKind::Tool, title: "x-mcp: post_tweet".into(), detail: "{}".into(), expires_at: None, risky: true };
+    assert_eq!(
+        to_value(&risky).unwrap(),
+        json!({ "kind": "tool", "title": "x-mcp: post_tweet", "detail": "{}", "risky": true })
+    );
+    // Actions written before `risky` existed read as not risky.
+    let old: apex_core::ProposedAction =
+        serde_json::from_value(json!({ "kind": "command", "title": "Run a command", "detail": "ls" })).unwrap();
+    assert!(!old.risky);
+}
+
+#[test]
+fn rules_saved_before_dates_and_risk_still_load_and_match() {
+    let old: Vec<apex_core::AllowedRule> = serde_json::from_value(json!([
+        { "by": "null", "kind": "tool", "title": "x-mcp: post_tweet", "what": "x-mcp: post_tweet" },
+        { "by": "null", "kind": "command", "title": "Run a command", "what": "npm test" }
+    ]))
+    .unwrap();
+    assert_eq!((old[0].allowed_at, old[0].risky), (0, true), "only risky tools ever reached a card");
+    assert_eq!((old[1].allowed_at, old[1].risky), (0, false));
+    let null = ParticipantId::new("null");
+    let run = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into(), expires_at: None, risky: false };
+    assert!(old[1].covers(&null, &run), "an old rule still answers");
+    let desk = apex_core::ApprovalDesk::default();
+    desk.set_allowed(old.clone());
+    assert!(desk.forget(&old[1]), "Remove still works on an old rule");
+    assert!(!desk.always_allowed(&null, &run));
+}
+
+#[test]
+fn token_totals_are_saved_per_bot() {
+    let mut snapshot: apex_core::RoomSnapshot = serde_json::from_value(
+        json!({ "participants": [], "transcript": [], "options": { "policy": "mention", "max_bot_hops": 3 } }),
+    )
+    .unwrap();
+    assert!(to_value(&snapshot).unwrap().get("usage").is_none(), "nothing written until a bot reports");
+    let mut totals = apex_core::TokenTotals::default();
+    totals.add(Some(1840), None);
+    snapshot.usage.insert(ParticipantId::new("opus"), totals);
+    assert_eq!(to_value(&snapshot).unwrap()["usage"], json!({ "opus": { "input": 1840, "output": 0, "turns": 1 } }));
 }
