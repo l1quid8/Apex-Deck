@@ -46,17 +46,34 @@ pub struct ProposedAction {
     pub detail: String,
 }
 
-impl ProposedAction {
-    /// What an "Always allow" covers: the same tool on the same app, the
-    /// same command, or edits to the same file. A tool's arguments are left
-    /// out, so it isn't asked about again; an app or a command is kept, so
-    /// allowing one doesn't allow another.
-    pub fn remember_key(&self) -> String {
-        let what = match self.kind {
-            ActionKind::Tool | ActionKind::Edit => &self.title,
-            ActionKind::Command | ActionKind::Other => &self.detail,
+/// Something the person chose "Always allow" for. Saved with the thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllowedRule {
+    /// The bot it applies to.
+    pub by: ParticipantId,
+    pub kind: ActionKind,
+    /// The card's title when it was allowed, for the list in thread details.
+    pub title: String,
+    /// What it covers: the same tool (its title, without the arguments), the
+    /// same command, edits to the same file, or the same permission question,
+    /// which for Computer Use names the app. Allowing one app or command
+    /// doesn't allow another.
+    pub what: String,
+}
+
+impl AllowedRule {
+    pub fn new(by: &ParticipantId, action: &ProposedAction) -> Self {
+        let what = match action.kind {
+            ActionKind::Tool | ActionKind::Edit => &action.title,
+            ActionKind::Command | ActionKind::Other => &action.detail,
         };
-        format!("{:?}\u{1f}{what}", self.kind)
+        Self { by: by.clone(), kind: action.kind, title: action.title.clone(), what: what.clone() }
+    }
+
+    /// Whether this rule covers `action` from `by`. The title is only a label.
+    pub fn covers(&self, by: &ParticipantId, action: &ProposedAction) -> bool {
+        let other = Self::new(by, action);
+        (&self.by, self.kind, &self.what) == (&other.by, other.kind, &other.what)
     }
 }
 
@@ -100,19 +117,40 @@ impl Approver for NoApprover {
 pub struct ApprovalDesk {
     waiting: Mutex<HashMap<String, (Option<ParticipantId>, oneshot::Sender<Decision>)>>,
     next: AtomicU64,
-    /// "Always allow" answers, by participant and [`ProposedAction::remember_key`].
-    always: Mutex<std::collections::HashSet<(Option<ParticipantId>, String)>>,
+    /// "Always allow" answers, oldest first.
+    always: Mutex<Vec<AllowedRule>>,
 }
 
 impl ApprovalDesk {
     /// Whether the person already chose "Always allow" for this.
-    pub fn always_allowed(&self, participant: Option<&ParticipantId>, action: &ProposedAction) -> bool {
-        self.always.lock().unwrap().contains(&(participant.cloned(), action.remember_key()))
+    pub fn always_allowed(&self, participant: &ParticipantId, action: &ProposedAction) -> bool {
+        self.always.lock().unwrap().iter().any(|rule| rule.covers(participant, action))
     }
 
-    /// Don't ask again about this.
-    pub fn allow_always(&self, participant: Option<&ParticipantId>, action: &ProposedAction) {
-        self.always.lock().unwrap().insert((participant.cloned(), action.remember_key()));
+    /// Don't ask again about this. Returns false if it was already allowed.
+    pub fn allow_always(&self, participant: &ParticipantId, action: &ProposedAction) -> bool {
+        let mut rules = self.always.lock().unwrap();
+        if rules.iter().any(|rule| rule.covers(participant, action)) { return false; }
+        rules.push(AllowedRule::new(participant, action));
+        true
+    }
+
+    /// Everything allowed so far, oldest first.
+    pub fn allowed(&self) -> Vec<AllowedRule> {
+        self.always.lock().unwrap().clone()
+    }
+
+    /// Replace the list, as when a saved thread is opened.
+    pub fn set_allowed(&self, rules: Vec<AllowedRule>) {
+        *self.always.lock().unwrap() = rules;
+    }
+
+    /// Ask again about this. Returns false if it wasn't in the list.
+    pub fn forget(&self, rule: &AllowedRule) -> bool {
+        let mut rules = self.always.lock().unwrap();
+        let before = rules.len();
+        rules.retain(|r| (&r.by, r.kind, &r.what) != (&rule.by, rule.kind, &rule.what));
+        rules.len() != before
     }
 
     /// Register a new proposal. Returns its id and the place its answer
@@ -243,15 +281,35 @@ mod tests {
         let app = |name: &str| ProposedAction { kind: ActionKind::Other, title: "cua_repl asks permission".into(), detail: format!("Allow Computer Use to use \"{name}\"?") };
         let order = |qty: u32| ProposedAction { kind: ActionKind::Tool, title: "robinhood: place_order".into(), detail: format!("{{\"qty\":{qty}}}") };
         let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
-        desk.allow_always(Some(&bot), &app("Brave Browser"));
-        desk.allow_always(Some(&bot), &order(1));
-        desk.allow_always(Some(&bot), &run("npm test"));
-        assert!(desk.always_allowed(Some(&bot), &app("Brave Browser")));
-        assert!(!desk.always_allowed(Some(&bot), &app("Calculator")), "another app asks again");
-        assert!(desk.always_allowed(Some(&bot), &order(5)), "the same tool with other arguments");
-        assert!(desk.always_allowed(Some(&bot), &run("npm test")));
-        assert!(!desk.always_allowed(Some(&bot), &run("rm -rf build")), "another command asks again");
-        assert!(!desk.always_allowed(Some(&other_bot), &app("Brave Browser")), "another bot asks again");
+        assert!(desk.allow_always(&bot, &app("Brave Browser")));
+        assert!(!desk.allow_always(&bot, &app("Brave Browser")), "already allowed");
+        desk.allow_always(&bot, &order(1));
+        desk.allow_always(&bot, &run("npm test"));
+        assert!(desk.always_allowed(&bot, &app("Brave Browser")));
+        assert!(!desk.always_allowed(&bot, &app("Calculator")), "another app asks again");
+        assert!(desk.always_allowed(&bot, &order(5)), "the same tool with other arguments");
+        assert!(desk.always_allowed(&bot, &run("npm test")));
+        assert!(!desk.always_allowed(&bot, &run("rm -rf build")), "another command asks again");
+        assert!(!desk.always_allowed(&other_bot, &app("Brave Browser")), "another bot asks again");
+    }
+
+    #[test]
+    fn allowed_rules_can_be_listed_restored_and_forgotten() {
+        let desk = ApprovalDesk::default();
+        let bot = ParticipantId::new("codex");
+        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        desk.allow_always(&bot, &run("npm test"));
+        desk.allow_always(&bot, &run("cargo test"));
+        let saved = desk.allowed();
+        assert_eq!(saved.iter().map(|r| r.what.as_str()).collect::<Vec<_>>(), ["npm test", "cargo test"]);
+
+        let reopened = ApprovalDesk::default();
+        reopened.set_allowed(saved.clone());
+        assert!(reopened.always_allowed(&bot, &run("cargo test")), "survives a restart");
+        assert!(reopened.forget(&saved[0]));
+        assert!(!reopened.forget(&saved[0]), "already gone");
+        assert!(!reopened.always_allowed(&bot, &run("npm test")), "asks again once removed");
+        assert!(reopened.always_allowed(&bot, &run("cargo test")));
     }
 
     #[test]

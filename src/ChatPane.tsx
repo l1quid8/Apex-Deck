@@ -1,4 +1,4 @@
-import type { ToolServer } from "./types";
+import type { AllowedRule, ToolServer } from "./types";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { composerCopy, joinNames, replyingVerb } from "./composerStatus";
 import { slug } from "./slug";
@@ -21,6 +21,7 @@ import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention } from "./attention";
 import { ApprovalCard, type MadeChange } from "./Approvals";
+import { describeRule } from "./allowedRules";
 import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { DiffPanel } from "./DiffPanel";
 import { RichText } from "./RichText";
@@ -323,6 +324,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
   const [pins, setPins] = useState<string[]>([]);
+  const [allowed, setAllowed] = useState<AllowedRule[]>([]);
   const [unpinning, setUnpinning] = useState(false);
   const unpinPending = useRef(false);
   const removePin = (index: number) => {
@@ -531,6 +533,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         case "changed":
           setChanges((list) => [...list, { seq: list.length, by: event.id, change: event.change }]);
           break;
+        case "allowed_changed":
+          setAllowed(event.allowed);
+          break;
         case "usage":
           setUsed((u) => {
             const before = u[event.id] ?? { input: 0, output: 0, turns: 0 };
@@ -605,6 +610,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         setParticipants(saved.participants);
         setOptions(saved.options);
         setPins(saved.pins ?? []);
+        setAllowed(saved.allowed ?? []);
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
@@ -1324,9 +1330,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       <details className="details-bot-usage"><summary>Usage</summary>{usageCard(p)}</details>
     </article>;
   })}{adding && !editing ? addButton : quickAddButton("details", false)}{savedPicker}</>;
+  const allowedList = allowed.length === 0
+    ? <p className="muted allowed-empty">Nothing yet. Choose Always allow on an approval card and it shows here, so you can take it back.</p>
+    : <ul className="allowed-list" aria-label="Always allowed">
+      {allowed.map((rule) => <li key={`${rule.by}\u001f${rule.kind}\u001f${rule.what}`}>
+        <span className="allowed-copy">
+          <strong style={{ color: color(rule.by) }}>{names.get(rule.by) ?? rule.by}</strong>
+          <span className={rule.kind === "command" ? "mono" : undefined} title={rule.what}>{describeRule(rule)}</span>
+        </span>
+        <button className="ghost small" aria-label={`Stop always allowing ${describeRule(rule)} for ${names.get(rule.by) ?? rule.by}`}
+          onClick={() => backend.roomForgetAllowed(pane.id, rule).catch((error) => notify(`Could not remove it: ${String(error)}`, "error"))}>Remove</button>
+      </li>)}
+    </ul>;
   return (
     <div className={`chat ${profileMode ? "" : "thread-chat"}`}>
-      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
+      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
       <div className="chat-bar">
         <div className="chips">
           {!profileMode && participants.map((p) => {

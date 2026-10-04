@@ -266,7 +266,7 @@ fn room_create(
 /// One shared checkpoint for all running chains. Completed messages are saved
 /// before emission; a failed write cancels work and is reported to the caller.
 fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent) -> Result<(), String> {
-    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. }) { return Ok(()); }
+    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. }) { return Ok(()); }
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
     match event {
@@ -275,6 +275,7 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
             let seq = checkpoint.snapshot.transcript.len();
             checkpoint.snapshot.changes.push(apex_core::ChangeRecord { by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
         }
+        RoomEvent::AllowedChanged { allowed } => checkpoint.snapshot.allowed = allowed.clone(),
         _ => {}
     }
     store.save_room(id, &checkpoint)
@@ -417,6 +418,18 @@ fn room_decide(state: State<'_, AppState>, id: String, request: String, approve:
     } else {
         Err("that request is no longer waiting for an answer".to_string())
     }
+}
+
+/// Stop always allowing something, so its card shows again. Saved at once.
+#[tauri::command]
+fn room_forget_allowed(app: AppHandle, state: State<'_, AppState>, store: State<'_, Store>, id: String, rule: apex_core::AllowedRule) -> Result<(), String> {
+    let rooms = state.rooms.lock().unwrap();
+    let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
+    if !handle.approvals.forget(&rule) { return Err("that was no longer always allowed".to_string()); }
+    let event = RoomEvent::AllowedChanged { allowed: handle.approvals.allowed() };
+    persist_event(handle, &store, &id, &event)?;
+    let _ = app.emit("room-event", RoomEventPayload { room: &id, event });
+    Ok(())
 }
 
 #[tauri::command]
@@ -814,6 +827,7 @@ pub fn run() {
             room_turn,
             room_stop,
             room_decide,
+            room_forget_allowed,
             room_set_options,
             room_add_participant,
             room_update_participant,
@@ -910,6 +924,33 @@ mod tests {
             assert_eq!(saved.snapshot.transcript, handle.room.lock().await.snapshot().transcript);
             assert_eq!(saved.snapshot.transcript.len(), 4);
             assert_eq!(saved.snapshot.cursors.len(), 2);
+        });
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn always_allowed_list_is_saved_and_survives_reopening() {
+        let (handle, store, path) = checkpoint_fixture("allowed");
+        let run = |cmd: &str| apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        let null = ParticipantId::new("null");
+        futures::executor::block_on(async {
+            let desk = handle.room.lock().await.approvals_handle();
+            desk.allow_always(&null, &run("npm test"));
+            persist_event(&handle, &store, "room", &RoomEvent::AllowedChanged { allowed: desk.allowed() }).unwrap();
+            assert_eq!(store.room("room").unwrap().unwrap().snapshot.allowed, desk.allowed(), "saved as soon as it changes");
+
+            checkpoint_room(&handle, &store, "room").await.unwrap();
+            let saved = store.room("room").unwrap().unwrap().snapshot;
+            assert_eq!(saved.allowed.len(), 1, "a full checkpoint keeps it too");
+
+            let reopened = Room::restore(vec![Arc::new(apex_core::testing::ScriptedParticipant::new("null", &["hi"]))], saved);
+            assert!(reopened.approvals_handle().always_allowed(&null, &run("npm test")), "still allowed after a restart");
+            assert!(!reopened.approvals_handle().always_allowed(&null, &run("rm -rf /")));
+
+            let rule = desk.allowed()[0].clone();
+            assert!(desk.forget(&rule));
+            persist_event(&handle, &store, "room", &RoomEvent::AllowedChanged { allowed: desk.allowed() }).unwrap();
+            assert!(store.room("room").unwrap().unwrap().snapshot.allowed.is_empty(), "removing it is saved");
         });
         std::fs::remove_dir_all(path).unwrap();
     }

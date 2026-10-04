@@ -65,6 +65,8 @@ pub enum RoomEvent {
     ApprovalRequested { id: ParticipantId, request: String, action: ProposedAction },
     /// A proposed action was answered.
     ApprovalResolved { id: ParticipantId, request: String, approved: bool },
+    /// The thread's "Always allow" list changed. It is the whole list.
+    AllowedChanged { allowed: Vec<crate::AllowedRule> },
     /// A participant changed a file.
     Changed { id: ParticipantId, change: FileChange },
     /// How many tokens a finished turn used, when the backend reports it.
@@ -128,7 +130,7 @@ pub(crate) struct RoomApprover<'a> {
 #[async_trait]
 impl Approver for RoomApprover<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
-        if self.desk.always_allowed(Some(self.id), &action) {
+        if self.desk.always_allowed(self.id, &action) {
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
             return Decision::ApproveAlways;
         }
@@ -139,7 +141,9 @@ impl Approver for RoomApprover<'_> {
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = answer.await.unwrap_or(Decision::Reject);
         card.settle(decision.approved());
-        if decision == Decision::ApproveAlways { self.desk.allow_always(Some(self.id), &remembered); }
+        if decision == Decision::ApproveAlways && self.desk.allow_always(self.id, &remembered) {
+            (self.on_event)(RoomEvent::AllowedChanged { allowed: self.desk.allowed() });
+        }
         decision
     }
 }
@@ -207,6 +211,9 @@ pub struct RoomSnapshot {
     /// Where the folder stood when the chat began, as the app recorded it. Opaque to the room.
     #[serde(default)]
     pub baseline: Option<String>,
+    /// What the person chose "Always allow" for. A fork starts without it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<crate::AllowedRule>,
 }
 
 impl RoomSnapshot {
@@ -223,6 +230,7 @@ impl RoomSnapshot {
             pins: self.pins.clone(),
             changes: self.changes.iter().filter(|c| c.seq < upto).cloned().collect(),
             baseline: self.baseline.clone(),
+            allowed: Vec::new(),
         }
     }
 }
@@ -262,10 +270,13 @@ impl Room {
             pins: self.pins.clone(),
             changes: self.changes.clone(),
             baseline: self.baseline.clone(),
+            allowed: self.desk.allowed(),
         }
     }
 
     pub fn restore(roster: Vec<Arc<dyn Participant>>, snapshot: RoomSnapshot) -> Self {
+        let desk = ApprovalDesk::default();
+        desk.set_allowed(snapshot.allowed);
         Self {
             roster,
             transcript: snapshot.transcript,
@@ -277,7 +288,7 @@ impl Room {
             changes: snapshot.changes,
             baseline: snapshot.baseline,
             stop: Arc::new(AtomicBool::new(false)),
-            desk: Arc::new(ApprovalDesk::default()),
+            desk: Arc::new(desk),
         }
     }
 
@@ -776,6 +787,7 @@ mod approver_tests {
         assert_eq!(second, Some(Decision::ApproveAlways), "answered without waiting");
         assert_eq!(desk.waiting(), 0, "no second card");
         let events = events.into_inner().unwrap();
-        assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. }, RoomEvent::Activity { .. }]), "{events:?}");
+        assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },
+            RoomEvent::AllowedChanged { allowed }, RoomEvent::Activity { .. }] if allowed.len() == 1), "{events:?}");
     }
 }

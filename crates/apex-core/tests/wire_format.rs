@@ -123,6 +123,11 @@ fn room_event_shapes() {
         to_value(RoomEvent::ApprovalRequested { id: id.clone(), request: "ask-1".into(), action }).unwrap(),
         json!({ "type": "approval_requested", "id": "opus", "request": "ask-1", "action": { "kind": "command", "title": "Run a command", "detail": "ls" } })
     );
+    let rule = apex_core::AllowedRule::new(&id, &apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into() });
+    assert_eq!(
+        to_value(RoomEvent::AllowedChanged { allowed: vec![rule] }).unwrap(),
+        json!({ "type": "allowed_changed", "allowed": [{ "by": "opus", "kind": "command", "title": "Run a command", "what": "npm test" }] })
+    );
     assert_eq!(
         to_value(RoomEvent::ApprovalResolved { id: id.clone(), request: "ask-1".into(), approved: false }).unwrap(),
         json!({ "type": "approval_resolved", "id": "opus", "request": "ask-1", "approved": false })

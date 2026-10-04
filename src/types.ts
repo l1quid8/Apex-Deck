@@ -80,6 +80,19 @@ export interface RoomSnapshot {
   transcript: Message[];
   /** The summary the models see in place of the first `upto` messages, after `/compact`. */
   compaction?: Compaction | null;
+  /** What the person chose "Always allow" for. */
+  allowed?: AllowedRule[];
+}
+
+/** Something a bot may do without asking, because the person chose "Always allow". */
+export interface AllowedRule {
+  /** The bot it applies to. */
+  by: string;
+  kind: ProposedAction["kind"];
+  /** The card's title when it was allowed. */
+  title: string;
+  /** What it covers: a tool's title, a command, a file's edit title, or a permission question. */
+  what: string;
 }
 
 export interface Compaction {
@@ -129,6 +142,8 @@ export type RoomEvent =
   /** A bot wants to do something. Its turn waits for `roomDecide` with this `request`. */
   | { type: "approval_requested"; id: string; request: string; action: ProposedAction }
   | { type: "approval_resolved"; id: string; request: string; approved: boolean }
+  /** The thread's whole "Always allow" list, after it changed. */
+  | { type: "allowed_changed"; allowed: AllowedRule[] }
   /** A bot changed a file. */
   | { type: "changed"; id: string; change: FileChange }
   /** Tokens a finished turn used, when the backend reports them. */
