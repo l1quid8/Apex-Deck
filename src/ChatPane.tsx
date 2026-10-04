@@ -58,6 +58,11 @@ import type {
   TokenTotals,
 } from "./types";
 
+// Keep lengthy replies full-width, with their actions below the bubble.
+function bottomMessageActions(text: string): boolean {
+  return text.length > 500 || text.split("\n").length > 6;
+}
+
 interface Props {
   pane: Pane;
   /** The workspace folder. Command-line participants run here. */
@@ -1939,12 +1944,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <Markdown text={entry.summary.summary} onOpen={openTarget} />
             </details>
           ) : entry.message.speaker.kind === "human" ? (
-            <div key={`m${entry.message.seq}`} className="bubble human" data-seq={entry.message.seq}>
-              <RichText text={entry.message.text} onOpen={openTarget} />
+            <div key={`m${entry.message.seq}`} className={`message-row human-row${bottomMessageActions(entry.message.text) ? " actions-bottom" : ""}`} data-seq={entry.message.seq}>
               {messageActions(entry.message)}
+              <div className="bubble human">
+                <RichText text={entry.message.text} onOpen={openTarget} />
+              </div>
             </div>
           ) : (
-            <div key={`m${entry.message.seq}`} className="bot-row">
+            <div key={`m${entry.message.seq}`} className={`bot-row message-row${bottomMessageActions(entry.message.text) ? " actions-bottom" : ""}`}>
               <Avatar
                 seed={appearance(entry.message.speaker.id).seed}
                 color={color(entry.message.speaker.id)}
@@ -1955,8 +1962,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
                 <Markdown text={entry.message.text} onOpen={openTarget} codeAction={(code) => artifactAction(entry.message, code)} />
-                {messageActions(entry.message)}
               </div>
+              {messageActions(entry.message)}
             </div>
           );
           // "New since you looked" goes above the first reply you have not seen.

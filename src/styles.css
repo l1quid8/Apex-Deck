@@ -1446,8 +1446,8 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   .dot.needs_input { animation: none; }
 }
 
-/* Completed responses reserve space on the right for the quote action. */
-.bubble.bot.completed { position: relative; padding-right: 54px; }
+/* Anchor message menus to completed responses. */
+.bubble.bot.completed { position: relative; }
 .quote-preview { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--line); background: var(--panel-2); border-radius: var(--radius); }
 .quote-preview-copy { flex: 1; min-width: 0; }
 .quote-preview-copy .speaker { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; }
@@ -2045,12 +2045,22 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .hand-off > button { padding: 3px 8px; font-size: 12px; white-space: nowrap; }
 .hand-off-menu { top: auto; bottom: calc(100% + 6px); }
 /* Now 3.4: Quote, Copy and Fork on every message; one ⋯ in a narrow pane. */
-.message-actions { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: row-reverse; align-items: center; gap: 2px; }
+.message-row { display: flex; align-items: flex-start; gap: 8px; }
+.message-row.actions-bottom { display: grid; grid-template-columns: minmax(0, 1fr); }
+.human-row.actions-bottom > .bubble { grid-column: 1; grid-row: 1; }
+.human-row.actions-bottom > .message-actions { grid-column: 1; grid-row: 2; justify-self: start; padding-top: 0; }
+.bot-row.actions-bottom { grid-template-columns: auto minmax(0, 1fr); }
+.bot-row.actions-bottom > .identicon { grid-column: 1; grid-row: 1; }
+.bot-row.actions-bottom > .bubble { grid-column: 2; grid-row: 1; }
+.bot-row.actions-bottom > .message-actions { grid-column: 2; grid-row: 2; justify-self: end; padding-top: 0; }
+.human-row { align-self: flex-end; max-width: 85%; }
+.message-row > .bubble { min-width: 0; max-width: none; }
+.message-actions { flex: none; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 2px; padding-top: 8px; }
+.message-more > .pane-menu { left: 0; right: auto; }
 .msg-action, .msg-more { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .msg-action:hover:not(:disabled), .msg-action:focus-visible, .msg-more:hover:not(:disabled), .msg-more:focus-visible { color: var(--text); background: var(--panel); }
-.bubble .msg-action { opacity: 0; }
-.bubble.bot .msg-action.quote, .bubble:hover .msg-action, .bubble:focus-within .msg-action { opacity: 1; }
-.bubble.human:has(.msg-more) { padding-right: 44px; }
+.message-row .msg-action { opacity: 0; }
+.bot-row .msg-action.quote, .message-row:hover .msg-action, .message-row:focus-within .msg-action { opacity: 1; }
 .copied { font-size: 11px; color: var(--text); }
 
 /* Now tier, stage 4: terminals. A terminal pane is its screen plus, once
