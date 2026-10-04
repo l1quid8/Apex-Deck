@@ -119,3 +119,9 @@ test("an exited terminal never counts, even with a Failed flag", () => {
   ], []);
   assert.deepEqual(running.map((r) => [r.name, r.state]), [["Claude Code", "idle"], ["Gemini CLI", "idle"], ["Terminal", "waiting"], ["Terminal", "working"]]);
 });
+
+test("a thread keeps where you stopped reading; older files load without it", () => {
+  assert.equal(savedThreads([chat("a", { lastSeenSeq: 7 })])[0].lastSeenSeq, 7);
+  assert.equal(loadedThreads([chat("a", { lastSeenSeq: 7 })], ["w"])[0].lastSeenSeq, 7);
+  assert.equal(loadedThreads([chat("a")], ["w"])[0].lastSeenSeq, undefined);
+});

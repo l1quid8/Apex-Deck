@@ -83,6 +83,10 @@ export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>(loadWorkspaces);
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
   const [panes, setPanes] = useState<Pane[]>([]);
+  /** Where you stopped reading each thread, saved with it for "New since you looked". */
+  const onThreadSeen = useCallback((paneId: string, seq: number) => setPanes((list) => (
+    list.some((p) => p.id === paneId && p.lastSeenSeq !== seq) ? list.map((p) => (p.id === paneId ? { ...p, lastSeenSeq: seq } : p)) : list
+  )), []);
   const [focusedPane, setFocusedPane] = useState<string | null>(null);
   /** Threads in the order they were last focused, most recent first. */
   const [recentThreads, setRecentThreads] = useState<string[]>([]);
@@ -850,7 +854,7 @@ export function App() {
                     {pane.kind === "terminal" ? (
                       <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} onRun={onRun} />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
+                      <ChatPane onStatus={onThreadStatus} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}
                   </div>
                 </section>

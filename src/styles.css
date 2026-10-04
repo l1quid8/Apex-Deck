@@ -1984,3 +1984,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .transcript-pill { pointer-events: auto; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
 .transcript-pill:hover:not(:disabled) { background: var(--panel-2); }
 .pill-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+
+/* Now 3.1: "New since you looked", a hairline with no colour. */
+.unseen-divider { display: flex; align-items: center; gap: 10px; align-self: stretch; color: var(--muted); font-size: 11px; }
+.unseen-divider::before, .unseen-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }

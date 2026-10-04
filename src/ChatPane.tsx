@@ -30,7 +30,7 @@ import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
-import { cardsOutOfView, isAtBottom, newPill, owners, waitingLine, type CardBox } from "./transcriptPlace";
+import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
   Access,
@@ -59,6 +59,8 @@ interface Props {
   workspaceName?: string;
   /** What the thread reports to App: the pane head's words, and who is replying or waiting on a card. */
   onStatus?: (paneId: string, status: ThreadStatus) => void;
+  /** Save where you stopped reading: the seq of the newest message you saw at the bottom, or -1 after /clear. */
+  onSeen?: (paneId: string, seq: number) => void;
   /** Agents only: bumped to open the new agent form. */
   addRequest?: number;
   onActivity: (paneId: string) => void;
@@ -316,10 +318,12 @@ const STARTERS = [
   { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
 ];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
   const [pins, setPins] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<AllowedRule[]>([]);
   const [unpinning, setUnpinning] = useState(false);
@@ -416,6 +420,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const [ready, setReady] = useState(profileMode);
 
   useEffect(() => { if (profileMode) setParticipants(profiles); }, [profiles, profileMode]);
+  /** The window has focus; a thread counts as watched only then. */
+  const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
+  useEffect(() => {
+    const on = () => setWindowFocused(true);
+    const off = () => setWindowFocused(false);
+    window.addEventListener("focus", on);
+    window.addEventListener("blur", off);
+    return () => { window.removeEventListener("focus", on); window.removeEventListener("blur", off); };
+  }, []);
+  const watching = focused && windowFocused && ready && !profileMode;
+  const watchingRef = useRef(watching);
+  watchingRef.current = watching;
 
   const noticeKey = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
@@ -450,6 +466,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     el.scrollTop += box.top - view.top - Math.max(12, (el.clientHeight - box.height) / 2);
     card.querySelector<HTMLButtonElement>('button[data-answer="once"]')?.focus({ preventScroll: true });
   };
+  /** "New since you looked" sits above the message with this seq. */
+  const [dividerAt, setDividerAt] = useState<number | null>(null);
+  /** Set when the thread opens with replies you missed, until the view has moved to the divider. */
+  const opening = useRef(false);
+  /** The newest message seen at the bottom, as last saved. */
+  const lastSeenRef = useRef(pane.lastSeenSeq);
   const filePicker = useRef<HTMLInputElement>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const saving = attached.some((a) => !a.path && !a.error);
@@ -648,6 +670,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
         setEntries(restored);
+        // Open at "New since you looked" when replies came in after you last looked.
+        const seen = seenList(saved.transcript);
+        const from = firstUnseen(seen, lastSeenRef.current);
+        setDividerAt(from);
+        if (from !== null) {
+          opening.current = true;
+          setUnread(unseenCount(seen, from));
+        }
         setReady(true);
       })
       .catch((error) => notify(`Could not create the chat: ${String(error)}`, "error"));
@@ -681,11 +711,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     const el = scroller.current;
     // A hidden pane cannot scroll; the resize when it is shown settles it.
     if (!el || el.clientHeight === 0) return;
-    if (stuck.current) el.scrollTop = el.scrollHeight;
+    const mark = opening.current ? el.querySelector<HTMLElement>(".unseen-divider") : null;
+    if (mark) {
+      // A thread with replies you missed opens at its divider, just below the top.
+      opening.current = false;
+      el.scrollTop += mark.getBoundingClientRect().top - el.getBoundingClientRect().top - 12;
+      stuck.current = isAtBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+      if (stuck.current) setUnread(0);
+    } else if (stuck.current) el.scrollTop = el.scrollHeight;
     measureCards();
   };
   // Before paint, so following the bottom never flickers.
-  useLayoutEffect(() => settle.current(), [entries, drafts, asks]);
+  useLayoutEffect(() => settle.current(), [entries, drafts, asks, dividerAt]);
   // Showing the pane, or a composer that grows, changes the transcript's
   // height without any scrolling: stay at the bottom if you were there.
   useEffect(() => {
@@ -695,11 +732,30 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     observer.observe(el);
     return () => observer.disconnect();
   }, [profileMode]);
+  /** While you watch the bottom of the thread, everything in it counts as seen. */
+  const markSeen = useRef(() => {});
+  markSeen.current = () => {
+    if (!watchingRef.current || !stuck.current) return;
+    const next = seenMark(seenList(messagesOf(entriesRef.current)), lastSeenRef.current);
+    if (next === null) return;
+    lastSeenRef.current = next;
+    onSeen?.(pane.id, next);
+  };
+  // Coming back to the thread marks where the replies you missed begin.
+  const wasWatching = useRef(false);
+  useEffect(() => {
+    if (watching && !wasWatching.current) {
+      const from = firstUnseen(seenList(messagesOf(entriesRef.current)), lastSeenRef.current);
+      if (from !== null) setDividerAt(from);
+    }
+    wasWatching.current = watching;
+  }, [watching]);
+  useEffect(() => markSeen.current(), [entries, watching]);
   const onTranscriptScroll = () => {
     const el = scroller.current;
     if (!el || el.clientHeight === 0) return;
     stuck.current = isAtBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
-    if (stuck.current) setUnread(0);
+    if (stuck.current) { setUnread(0); markSeen.current(); }
     measureCards();
   };
   const jumpToLatest = () => {
@@ -781,6 +837,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       .roomClear(pane.id)
       .then(() => {
         setEntries([]);
+        setDividerAt(null);
+        // Messages count from 0 again; nothing in the cleared thread is new.
+        lastSeenRef.current = -1;
+        onSeen?.(pane.id, -1);
         setUsed({});
         forgetContext();
         notify("Chat cleared. The models start fresh; participants are kept.");
@@ -945,9 +1005,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
     if (participants.length === 0) return;
-    // Sending takes you to the bottom, where your message and the replies land.
+    // Sending takes you to the bottom, where your message and the replies land,
+    // and clears "New since you looked".
     stuck.current = true;
     setUnread(0);
+    setDividerAt(null);
     const message = withAttachments(parsed.text && replyText(postable(parsed.text), reply), sendable.map((a) => a.path!));
     setText(""); setReply(null);
     attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
@@ -1511,8 +1573,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
             {participants.length === 0 && quickAddButton("empty", true)}
           </div>
         )}
-        {entries.map((entry) =>
-          entry.kind === "notice" ? (
+        {entries.flatMap((entry) => {
+          const item = entry.kind === "notice" ? (
             <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}`}>
               {entry.notice.text}
             </p>
@@ -1553,8 +1615,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
                 {forkButton(entry.message.seq)}
               </div>
             </div>
-          ),
-        )}
+          );
+          // "New since you looked" goes above the first reply you have not seen.
+          return entry.kind === "message" && entry.message.seq === dividerAt
+            ? [<div key={`u${entry.message.seq}`} className="unseen-divider" role="separator" aria-label="New since you looked"><span>New since you looked</span></div>, item]
+            : [item];
+        })}
         {Object.entries(drafts).map(([id, partial]) => {
           const turn = working[id];
           const steps = turn?.steps ?? [];

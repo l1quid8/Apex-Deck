@@ -48,3 +48,42 @@ export function owners(cards: CardBox[]): string[] {
 export function waitingLine(names: string[]): string {
   return `${joinNames(names)} ${waitingVerb(names.length)}`;
 }
+
+/** A message as the "New since you looked" divider sees it. */
+export interface SeenMessage {
+  seq: number;
+  /** Your own messages never count as new. */
+  bot: boolean;
+}
+
+/** Read transcript messages for the divider. */
+export function seenList(messages: { seq: number; speaker: { kind: string } }[]): SeenMessage[] {
+  return messages.map((m) => ({ seq: m.seq, bot: m.speaker.kind === "bot" }));
+}
+
+/**
+ * Where "New since you looked" goes: the seq of the first bot message after
+ * `lastSeen`, the newest message you saw at the bottom of the thread. Null
+ * when nothing is new, and when there is no mark (threads saved before marks
+ * existed, or a mark that is not a number). A mark past the newest message
+ * means the thread was cleared since (messages count from 0 again), so all
+ * of it is new.
+ */
+export function firstUnseen(messages: SeenMessage[], lastSeen: unknown): number | null {
+  if (typeof lastSeen !== "number" || !Number.isFinite(lastSeen)) return null;
+  const newest = messages.length > 0 ? messages[messages.length - 1].seq : -1;
+  const mark = lastSeen > newest ? -1 : lastSeen;
+  return messages.find((m) => m.bot && m.seq > mark)?.seq ?? null;
+}
+
+/** How many bot messages are at or after `from`, for the pill when a thread opens at its divider. */
+export function unseenCount(messages: SeenMessage[], from: number | null): number {
+  return from === null ? 0 : messages.filter((m) => m.bot && m.seq >= from).length;
+}
+
+/** The mark to save while you watch the bottom of a thread: the newest message's seq, or null when the saved mark already says so. */
+export function seenMark(messages: SeenMessage[], saved: number | undefined): number | null {
+  if (messages.length === 0) return null;
+  const newest = messages[messages.length - 1].seq;
+  return newest === saved ? null : newest;
+}

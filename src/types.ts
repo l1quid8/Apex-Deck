@@ -193,6 +193,9 @@ export interface Pane {
   closed?: boolean;
   /** A sample thread: its room starts with scripted bots. */
   sample?: boolean;
+  /** The seq of the newest message you saw at the bottom of this thread, or
+   *  -1 after /clear. Missing in sessions saved before it existed: no divider. */
+  lastSeenSeq?: number;
 }
 
 /** What a thread reports to App through ChatPane's `onStatus`. */
