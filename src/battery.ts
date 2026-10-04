@@ -161,6 +161,14 @@ export function resetLabel(resetsAt: number, now: Date): string {
   return sameDay ? time : `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
 }
 
+/** Short countdown to a reset: "2h14m", "3d4h", "12m". */
+export function countdown(resetsAt: number, nowSeconds: number): string {
+  const m = Math.max(0, Math.round((resetsAt - nowSeconds) / 60));
+  if (m >= 1440) return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60)}h`;
+  if (m >= 60) return `${Math.floor(m / 60)}h${m % 60}m`;
+  return `${m}m`;
+}
+
 /** "64% left · resets 3:00 PM · weekly 81%" */
 export function planLine(windows: PlanWindow[], now: Date): string | null {
   const nowSeconds = now.getTime() / 1000;
@@ -189,4 +197,10 @@ export function hasReset(known: PlanWindow[] | undefined, windows: PlanWindow[])
     const before = known.find((k) => k.name === w.name);
     return before?.resets_at != null && w.resets_at != null && w.resets_at > before.resets_at && w.used_percent < before.used_percent;
   });
+}
+
+/** Full reset date and time: "Oct 4, 3:00 PM". */
+export function resetDate(resetsAt: number): string {
+  const at = new Date(resetsAt * 1000);
+  return `${at.toLocaleDateString([], { month: "short", day: "numeric" })}, ${at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }

@@ -19,7 +19,7 @@ import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, effortLabel, effortsFor, find
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
 import { Avatar, type Refills } from "./Avatar";
-import { contextLevel, contextLine, isLow, percent, planLevel, planLine, tokenLine, type Levels } from "./battery";
+import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, tokenLine, windowLabel, type Levels } from "./battery";
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention, type Signal } from "./attention";
@@ -261,6 +261,22 @@ function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   return "Thinking";
 }
 
+
+const contextKey = (pane: string) => `apex-deck.context.${pane}`;
+
+/** The context readings last saved for a pane, or none. */
+function savedContext(pane: string): Record<string, ContextFill> {
+  try {
+    return JSON.parse(localStorage.getItem(contextKey(pane)) ?? "{}") ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function saveContext(pane: string, fill: Record<string, ContextFill>) {
+  if (Object.keys(fill).length) localStorage.setItem(contextKey(pane), JSON.stringify(fill));
+  else localStorage.removeItem(contextKey(pane));
+}
 
 /** The provider whose plan an agent draws on, if it reports one. */
 function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
@@ -549,6 +565,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** Who a quote will lead with right now, for its Send to ▾ button. */
   const quoteTo = reply ? quoteLead(text.trim(), reply, participants.map((p) => p.id)) : null;
 
+  // Keep the last context reading so the meters show it straight after a restart.
+  const contextLoaded = useRef(false);
+  useEffect(() => {
+    if (contextLoaded.current) saveContext(pane.id, contextFill);
+  }, [pane.id, contextFill]);
+
   const forgetContext = () => {
     setContextFill({});
     lowContext.current.clear();
@@ -715,6 +737,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         setPins(saved.pins ?? []);
         setAllowed(saved.allowed ?? []);
         setUsed(saved.usage ?? {});
+        setContextFill(savedContext(pane.id));
+        contextLoaded.current = true;
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
@@ -1650,7 +1674,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   </>;
   return (
     <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} save={async config => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null) => <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{level !== null && <span style={{ width: `${percent(level)}%` }} className={isLow(level) ? "low" : undefined} />}</span>{level === null ? "—" : `${percent(level)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context left")}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async config => {
         await backend.roomUpdateParticipant(pane.id, config);
         setParticipants(list => list.map(p => p.id === config.id ? config : p));
         if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));

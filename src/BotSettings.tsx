@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
 import type { ModelChoice, ParticipantConfig } from './types';
@@ -12,8 +12,12 @@ interface Props {
   backend: Backend;
   save: (config: ParticipantConfig) => Promise<void>;
   close: () => void;
+  /** The bot's avatar, shown beside its name. */
+  avatar?: ReactNode;
+  /** Context and plan bars, shown under the name. */
+  meters?: ReactNode;
 }
-export function BotSettings({ config, anchor, backend, save, close }: Props) {
+export function BotSettings({ config, anchor, backend, save, close, avatar, meters }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const [model, setModel] = useState('model' in config.backend ? config.backend.model ?? '' : '');
@@ -46,8 +50,7 @@ export function BotSettings({ config, anchor, backend, save, close }: Props) {
   const supportedEffort = efforts.includes(effort) ? effort : '';
   const note = findModel(groups, model)?.note;
   return createPortal(<div ref={root} className="bot-settings" style={position} role="dialog" aria-label={`Settings for ${config.display_name}`}>
-    <strong>{config.display_name}</strong>
-    <p className="muted">Applies to the next reply in this thread.</p>
+    <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
     <fieldset disabled={saving}>
       <label>Model<Picker name="quick-bot-model" value={model} onChange={setModel} groups={groups.map(g => ({ label: g.label, options: g.models.map(m => ({ value: m.id, text: m.label ? `${m.id} · ${m.label}` : m.id })) }))} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>
       <label>Reasoning<select aria-label="Reasoning" value={supportedEffort} disabled={efforts.length === 0} onChange={e => setEffort(e.target.value)}><option value="">{efforts.length ? 'Provider default' : 'Not supported'}</option>{efforts.map(e => <option key={e} value={e}>{effortLabel(e)}</option>)}</select></label>
