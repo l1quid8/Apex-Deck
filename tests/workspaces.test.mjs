@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeAfter, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "../src/workspaces.ts";
+import { activeAfter, addFolders, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "../src/workspaces.ts";
 import { loadedThreads, savedThreads } from "../src/closing.ts";
 
 const ws = (id, extra = {}) => ({ id, name: id, path: `/code/${id}`, ...extra });
@@ -52,4 +52,31 @@ test("renaming a workspace changes only its name, and an empty name is ignored",
   const list = [ws("w"), ws("v")];
   assert.deepEqual(renameWorkspace(list, "w", "  Apex  "), [{ ...ws("w"), name: "Apex" }, ws("v")]);
   assert.equal(renameWorkspace(list, "w", "   "), list);
+});
+
+const lastPart = (path) => path.split("/").filter(Boolean).pop() ?? "workspace";
+
+test("adding a folder that is already listed reuses it", () => {
+  const list = [ws("w")];
+  const out = addFolders(list, ["/code/w"], () => "new", lastPart);
+  assert.deepEqual(out.ids, ["w"]);
+  assert.equal(out.list, list);
+});
+
+test("adding a folder that was removed brings it back instead of adding it twice", () => {
+  const list = setHidden([ws("w"), ws("v")], "w", true);
+  const out = addFolders(list, ["/code/w", "/code/new"], () => "n1", lastPart);
+  assert.deepEqual(out.ids, ["w", "n1"]);
+  assert.deepEqual(shownWorkspaces(out.list).map((w) => w.id), ["w", "v", "n1"]);
+  assert.equal(out.list.find((w) => w.id === "n1").name, "new");
+});
+
+test("only the same folder brings a removed workspace back", () => {
+  // A folderless workspace (the sample thread, every preview workspace) and
+  // another folder with the same name must not match.
+  const list = setHidden(setHidden([{ id: "sample", name: "Sample", path: "" }, ws("w")], "sample", true), "w", true);
+  let n = 0;
+  const out = addFolders(list, ["", "/other/w"], () => `n${++n}`, lastPart);
+  assert.deepEqual(out.ids, ["n1", "n2"]);
+  assert.deepEqual(out.list.filter((w) => w.hidden).map((w) => w.id), ["sample", "w"]);
 });

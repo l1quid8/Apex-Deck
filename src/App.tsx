@@ -20,7 +20,7 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, removeCounts, removeQuestion, savedThreads } from "./closing";
-import { activeAfter, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
+import { activeAfter, addFolders, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -189,13 +189,11 @@ export function App() {
       setActiveWorkspace(saved?.activeWorkspace ?? known[0]?.id ?? null);
       setFocusedPane(saved?.focusedPane ?? null);
       if (folders.length > 0) {
-        // Open folders named on the command line, reusing any already listed.
-        const added = folders
-          .filter((path) => !known.some((w) => w.path === path))
-          .map((path) => ({ id: newId("ws"), name: folderName(path), path }));
-        const all = [...known, ...added];
-        setWorkspaces(all);
-        setActiveWorkspace(all.find((w) => w.path === folders[0])?.id ?? null);
+        // Open folders named on the command line, reusing any already listed
+        // and bringing back any removed from the list.
+        const { list, ids } = addFolders(known, folders, () => newId("ws"), folderName);
+        setWorkspaces(list);
+        setActiveWorkspace(ids[0] ?? null);
       }
       setBackend(b);
     }).catch((error) => {
@@ -290,21 +288,19 @@ export function App() {
 
   const addWorkspace = async () => {
     if (!backend) return;
-    let path = "";
-    let name = "";
     if (backend.demo) {
-      name = `workspace-${workspaces.length + 1}`;
-    } else {
-      const picked = await backend.pickFolder();
-      if (!picked) return;
-      const existing = workspaces.find((w) => w.path === picked);
-      if (existing) return setActiveWorkspace(existing.id);
-      path = picked;
-      name = folderName(picked);
+      // The preview has no folders to pick, so every workspace is new.
+      const workspace = { id: newId("ws"), name: `workspace-${workspaces.length + 1}`, path: "" };
+      setWorkspaces((list) => [...list, workspace]);
+      setActiveWorkspace(workspace.id);
+      return;
     }
-    const workspace = { id: newId("ws"), name, path };
-    setWorkspaces((list) => [...list, workspace]);
-    setActiveWorkspace(workspace.id);
+    const picked = await backend.pickFolder();
+    if (!picked) return;
+    // A folder already listed is reused; one removed from the list comes back.
+    const { list, ids } = addFolders(workspaces, [picked], () => newId("ws"), folderName);
+    setWorkspaces(list);
+    setActiveWorkspace(ids[0]);
   };
 
   /** Take a workspace off the list. Nothing is deleted: its threads stay saved

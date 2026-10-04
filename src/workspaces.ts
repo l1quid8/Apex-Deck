@@ -51,3 +51,26 @@ export function renameWorkspace(list: Workspace[], id: string, name: string): Wo
   if (!trimmed) return list;
   return list.map((w) => (w.id === id ? { ...w, name: trimmed } : w));
 }
+
+/**
+ * Add folders to the list. A folder already listed is reused, and one
+ * removed from the list comes back instead of being added twice. An empty
+ * path (a workspace with no folder) never matches. Returns the new list and
+ * the workspace id for each path, in order.
+ */
+export function addFolders(list: Workspace[], paths: string[], makeId: () => string, nameOf: (path: string) => string): { list: Workspace[]; ids: string[] } {
+  let next = list;
+  const ids: string[] = [];
+  for (const path of paths) {
+    const existing = path ? next.find((w) => w.path === path) : undefined;
+    if (existing) {
+      if (existing.hidden) next = setHidden(next, existing.id, false);
+      ids.push(existing.id);
+    } else {
+      const workspace: Workspace = { id: makeId(), name: nameOf(path), path };
+      next = [...next, workspace];
+      ids.push(workspace.id);
+    }
+  }
+  return { list: next, ids };
+}
