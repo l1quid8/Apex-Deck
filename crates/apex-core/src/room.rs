@@ -48,6 +48,7 @@ impl Default for RoomOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RoomEvent {
+    ToolServers { id: ParticipantId, servers: Vec<crate::server_request::ToolServer> },
     /// A message was added to the transcript.
     MessageAdded { message: Message },
     /// The participant holding the workspace edit reservation changed.
@@ -64,6 +65,8 @@ pub enum RoomEvent {
     ApprovalRequested { id: ParticipantId, request: String, action: ProposedAction },
     /// A proposed action was answered.
     ApprovalResolved { id: ParticipantId, request: String, approved: bool },
+    /// The thread's "Always allow" list changed. It is the whole list.
+    AllowedChanged { allowed: Vec<crate::AllowedRule> },
     /// A participant changed a file.
     Changed { id: ParticipantId, change: FileChange },
     /// How many tokens a finished turn used, when the backend reports it.
@@ -94,6 +97,7 @@ type EventSink<'a> = &'a (dyn Fn(RoomEvent) + Send + Sync);
 
 pub(crate) fn progress_event(id: &ParticipantId, update: Progress<'_>) -> RoomEvent {
     match update {
+        Progress::ToolServers(servers) => RoomEvent::ToolServers { id: id.clone(), servers: servers.to_vec() },
         Progress::Text(text) => RoomEvent::Delta { id: id.clone(), text: text.to_string() },
         Progress::Activity(text) => RoomEvent::Activity { id: id.clone(), text: text.to_string() },
         Progress::Change(change) => RoomEvent::Changed { id: id.clone(), change: change.clone() },
@@ -126,16 +130,47 @@ pub(crate) struct RoomApprover<'a> {
 #[async_trait]
 impl Approver for RoomApprover<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
+        if self.desk.always_allowed(self.id, &action) {
+            eprintln!("[apex-deck] answered without a card (always allowed): {}", action.title);
+            (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
+            return Decision::ApproveAlways;
+        }
+        let remembered = action.clone();
         let (request, answer) = self.desk.open_for(self.id.clone());
         (self.on_event)(RoomEvent::ApprovalRequested { id: self.id.clone(), request: request.clone(), action });
+        let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = answer.await.unwrap_or(Decision::Reject);
-        (self.on_event)(RoomEvent::ApprovalResolved {
-            id: self.id.clone(),
-            request,
-            approved: decision == Decision::Approve,
-        });
+        eprintln!("[apex-deck] card answered: {decision:?}: {}", remembered.title);
+        card.settle(decision.approved());
+        if decision == Decision::ApproveAlways && self.desk.allow_always(self.id, &remembered) {
+            (self.on_event)(RoomEvent::AllowedChanged { allowed: self.desk.allowed() });
+        }
         decision
+    }
+}
+
+/// A proposal on screen. If the wait for it is abandoned, as when the tool
+/// that asked stops waiting, it is taken down and shown as refused.
+struct Card<'a, 'b> {
+    approver: &'a RoomApprover<'b>,
+    request: Option<String>,
+}
+
+impl Card<'_, '_> {
+    fn settle(&mut self, approved: bool) {
+        if let Some(request) = self.request.take() {
+            (self.approver.on_event)(RoomEvent::ApprovalResolved { id: self.approver.id.clone(), request, approved });
+        }
+    }
+}
+
+impl Drop for Card<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(request) = &self.request {
+            self.approver.desk.withdraw(request);
+        }
+        self.settle(false);
     }
 }
 
@@ -178,6 +213,9 @@ pub struct RoomSnapshot {
     /// Where the folder stood when the chat began, as the app recorded it. Opaque to the room.
     #[serde(default)]
     pub baseline: Option<String>,
+    /// What the person chose "Always allow" for. A fork starts without it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<crate::AllowedRule>,
 }
 
 impl RoomSnapshot {
@@ -194,6 +232,7 @@ impl RoomSnapshot {
             pins: self.pins.clone(),
             changes: self.changes.iter().filter(|c| c.seq < upto).cloned().collect(),
             baseline: self.baseline.clone(),
+            allowed: Vec::new(),
         }
     }
 }
@@ -233,10 +272,13 @@ impl Room {
             pins: self.pins.clone(),
             changes: self.changes.clone(),
             baseline: self.baseline.clone(),
+            allowed: self.desk.allowed(),
         }
     }
 
     pub fn restore(roster: Vec<Arc<dyn Participant>>, snapshot: RoomSnapshot) -> Self {
+        let desk = ApprovalDesk::default();
+        desk.set_allowed(snapshot.allowed);
         Self {
             roster,
             transcript: snapshot.transcript,
@@ -248,7 +290,7 @@ impl Room {
             changes: snapshot.changes,
             baseline: snapshot.baseline,
             stop: Arc::new(AtomicBool::new(false)),
-            desk: Arc::new(ApprovalDesk::default()),
+            desk: Arc::new(desk),
         }
     }
 
@@ -441,7 +483,8 @@ impl Room {
     }
 
     pub(crate) fn push(&mut self, speaker: Speaker, text: String, on_event: EventSink<'_>) {
-        let message = Message { seq: self.transcript.len(), speaker, text };
+        let servers = if speaker == Speaker::Human { crate::server_request::parse_server_requests(&text) } else { vec![] };
+        let message = Message { servers, seq: self.transcript.len(), speaker, text };
         self.transcript.push(message.clone());
         on_event(RoomEvent::MessageAdded { message });
     }
@@ -490,7 +533,9 @@ impl Room {
             .collect();
         let request = TurnRequest {
             access: Some(participant.config().access),
-            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins),
+            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
+                crate::server_request::prompt_section(&m.text)
+            }).unwrap_or_default(),
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
         };
@@ -684,5 +729,67 @@ impl Room {
             sequential = true;
         }
         on_event(RoomEvent::Idle);
+    }
+}
+
+#[cfg(test)]
+mod approver_tests {
+    use super::*;
+    use crate::approval::ActionKind;
+    use futures::FutureExt;
+    use std::sync::Mutex;
+
+    fn action() -> ProposedAction {
+        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() }
+    }
+
+    #[test]
+    fn a_card_whose_wait_is_abandoned_is_taken_down() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| events.lock().unwrap().push(event);
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let mut waiting = approver.decide(action());
+        assert!(waiting.as_mut().now_or_never().is_none(), "nobody has answered");
+        assert_eq!(desk.waiting(), 1);
+        drop(waiting);
+        assert_eq!(desk.waiting(), 0, "the card is gone");
+        let events = events.into_inner().unwrap();
+        assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: false, .. }]), "{events:?}");
+    }
+
+    #[test]
+    fn an_answered_card_is_settled_once() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| events.lock().unwrap().push(event);
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let mut waiting = approver.decide(action());
+        assert!(waiting.as_mut().now_or_never().is_none());
+        assert!(desk.resolve("ask-1", Decision::Approve));
+        assert_eq!(futures::executor::block_on(waiting), Decision::Approve);
+        let events = events.into_inner().unwrap();
+        assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. }]), "{events:?}");
+    }
+
+    #[test]
+    fn always_allow_skips_the_card_next_time() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| events.lock().unwrap().push(event);
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let mut first = approver.decide(action());
+        assert!(first.as_mut().now_or_never().is_none());
+        assert!(desk.resolve("ask-1", Decision::ApproveAlways));
+        assert_eq!(futures::executor::block_on(first), Decision::ApproveAlways);
+        let second = approver.decide(action()).now_or_never();
+        assert_eq!(second, Some(Decision::ApproveAlways), "answered without waiting");
+        assert_eq!(desk.waiting(), 0, "no second card");
+        let events = events.into_inner().unwrap();
+        assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },
+            RoomEvent::AllowedChanged { allowed }, RoomEvent::Activity { .. }] if allowed.len() == 1), "{events:?}");
     }
 }

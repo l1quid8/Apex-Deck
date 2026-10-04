@@ -12,7 +12,9 @@ mod catalog;
 mod claude_session;
 mod cli;
 mod codex_server;
+mod codex_hook;
 mod events;
+mod mcp;
 mod openai;
 mod presets;
 
@@ -23,6 +25,8 @@ use apex_core::testing::ScriptedParticipant;
 use apex_core::{AgentTool, Backend, Participant, ParticipantConfig, PlanUsage};
 
 pub use catalog::{codex_models_from_cache, installed_models};
+pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_ARG as CODEX_HOOK_ARG};
+
 pub use cli::CliParticipant;
 pub use openai::{list_models, OpenAiCompatParticipant};
 pub use presets::{agent_command, allow_reading};
@@ -44,6 +48,11 @@ pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressS
 /// Where and how command-line participants run.
 #[derive(Debug, Clone, Default)]
 pub struct BuildContext {
+    /// Deck's own executable, which Codex runs as an approval hook before
+    /// each MCP call (`--codex-hook`). `None` leaves Codex on the slower
+    /// MCP inventory policy.
+    pub codex_hook: Option<PathBuf>,
+
     /// The folder tools are started in, normally the workspace folder.
     pub cwd: Option<PathBuf>,
     /// The PATH used to find and run tools. `None` keeps the app's own.
@@ -147,3 +156,6 @@ mod tests {
         assert_eq!(chunks.push(&[b'a', 0xff, b'b']), "a\u{fffd}b");
     }
 }
+
+pub use codex_server::list_servers as codex_tool_servers;
+pub use claude_session::list_servers as claude_tool_servers;

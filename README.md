@@ -270,11 +270,28 @@ settings, so it is enforced by the tool. "Ask first" is offered for those
 two only, because it needs the tool to stop and wait. For the other presets
 the level is only stated to the model as an instruction.
 
-How "Ask first" was checked: with Claude Code against the real tool
-(approving wrote the file and listed the change, rejecting left the file
-alone). With Codex only against its published message format and a stand-in
-server, because Codex needs a sign-in to run a turn. If Codex behaves
-differently on your Mac, the chat shows its error.
+Configured MCP servers and plugins stay enabled for Claude Code and Codex.
+Ordinary read tools run without a card. MCP tool names containing trading or
+publishing terms (including order, transfer, cancel, post, send, and delete)
+require Approve or Reject every time, even at Full access. The card shows the
+server, tool name, and complete JSON arguments; approval is for that call only.
+Stopping that participant rejects its pending approvals. Some read names, such
+as `get_open_orders`, also match and ask.
+
+**Codex approvals.** Deck adds a `PreToolUse` hook at launch on supported Unix Codex app servers (tested with Codex 0.160.0). It runs Deck itself (`apex-deck --codex-hook`) before each MCP call. Reads go through; trading and publishing tool names get the same approval card as Claude, even if a tool was configured to auto-approve. Codex turns no longer need a tool inventory on this path.
+
+Deck checks that Codex lists its exact hook as trusted before starting a turn. On first use, or when the helper command changes, it trusts only that hook through Codex's settings API, adding:
+
+```toml
+[hooks.state."/<session-flags>/config.toml:pre_tool_use:0:0"]
+trusted_hash = "sha256:…"
+```
+
+The hook is passed only when Deck launches Codex; these trust lines alone add no hook to Codex in a terminal. The helper denies a call if it cannot get Deck's answer within 9.5 minutes, before Codex's 10-minute hook limit. An abandoned wait removes its card. If hooks are unavailable, the helper is missing, trust fails, or the platform is Windows, Deck falls back to listing all MCP tools and overriding their approval policies. If that inventory fails, the turn is refused. Deck never falls back to `codex exec`.
+
+These MCP approvals cover Claude Code and Codex agent presets, not custom CLI commands or Gemini. Hook mode discovers the `!` menu's server names separately, when panes or menus open, using the cached list.
+
+How "Ask first" was checked: Claude Code against the real tool (approving wrote the file and listed the change; rejecting left the file alone). Codex hook coverage and deny behavior were checked against real app-server probe turns; adapter tests cover read calls, repeated risky calls, both gate orders, trust, and inventory fallback. Two real adapter smoke turns checked the bundled helper and trust reuse. Native desktop approval-card checks are still pending.
 
 **API keys.** For "Other API", enter the *name* of an environment variable
 that holds your key. The key itself is never written to disk by Apex Deck; it
@@ -352,3 +369,5 @@ Anthropic-format API adapter.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Type `!` in a thread composer to suggest the addressed participant’s tool servers. For example, `@null !x-mcp read my recent posts`. Enter inserts the highlighted server; names match without case, hyphens, underscores, dots or spaces. A known typo stays unsent. If discovery is unavailable, messages can still send. Servers remain enabled by default and write-tool approval rules still apply. Claude suggestions become available after its first turn.

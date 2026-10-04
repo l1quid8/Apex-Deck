@@ -1,15 +1,18 @@
+import type { ToolServer } from "./types";
 // Everything the UI needs from the desktop shell goes through this
 // interface. Inside the desktop app it calls the Rust commands. In a plain
 // browser (npm run dev without Tauri) it falls back to a small stand-in so
 // the UI can be worked on without building the app.
 
-import type { AgentInfo, AgentTool, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff } from "./types";
+import { ruleFor, sameRule } from "./allowedRules";
+import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff } from "./types";
 
 type Unlisten = () => void;
 
 export interface Backend {
   /** True when running in a browser with no desktop shell behind it. */
   demo: boolean;
+  listToolServers(room: string, agent: string): Promise<ToolServer[]>;
   detectAgents(): Promise<AgentInfo[]>;
   pickFolder(): Promise<string | null>;
   /** Folders passed on the command line when the app was started. */
@@ -39,8 +42,11 @@ export interface Backend {
   roomTurn(id: string, participant: string): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
   /** Answer an action a bot proposed, named by the `request` from its event. */
-  roomDecide(id: string, request: string, approve: boolean): Promise<void>;
+  /** `always` stops the same thing being asked again in this thread until the app quits. */
+  roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
   roomSetOptions(id: string, options: RoomOptions): Promise<void>;
+  /** Stop always allowing something, so its card shows again. */
+  roomForgetAllowed(id: string, rule: AllowedRule): Promise<void>;
   roomAddParticipant(id: string, participant: ParticipantConfig): Promise<void>;
   /** Replace the settings of a participant that is already in the chat. */
   roomUpdateParticipant(id: string, participant: ParticipantConfig): Promise<void>;
@@ -79,6 +85,7 @@ async function tauriBackend(): Promise<Backend> {
 
   return {
     demo: false,
+    listToolServers: (room, agent) => invoke<ToolServer[]>("list_tool_servers", { room, agent }),
     detectAgents: () => invoke<AgentInfo[]>("agents_detect"),
     startupFolders: () => invoke<string[]>("startup_folders"),
     sessionLoad: () => invoke<AppSession | null>("session_load"),
@@ -111,8 +118,9 @@ async function tauriBackend(): Promise<Backend> {
     roomPostTo: (id, text, targets) => invoke("room_post_to", { id, text, targets }),
     roomTurn: (id, participant) => invoke("room_turn", { id, participant }),
     roomStop: (id, participant) => invoke("room_stop", { id, participant: participant ?? null }),
-    roomDecide: (id, request, approve) => invoke("room_decide", { id, request, approve }),
+    roomDecide: (id, request, approve, always = false) => invoke("room_decide", { id, request, approve, always }),
     roomSetOptions: (id, options) => invoke("room_set_options", { id, options }),
+    roomForgetAllowed: (id, rule) => invoke("room_forget_allowed", { id, rule }),
     roomAddParticipant: (id, participant) => invoke("room_add_participant", { id, participant }),
     roomUpdateParticipant: (id, participant) => invoke("room_update_participant", { id, participant }),
     roomRemoveParticipant: (id, participant) => invoke("room_remove_participant", { id, participant }),
@@ -142,7 +150,7 @@ async function tauriBackend(): Promise<Backend> {
 function demoBackend(): Backend {
   const dataListeners = new Set<(id: string, data: string) => void>();
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
-  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; seq: number; stopped: boolean; last: string[] }>();
+  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; seq: number; stopped: boolean; last: string[] }>();
   const cancellations = new Map<string, () => void>();
   const emitData = (id: string, data: string) => dataListeners.forEach((cb) => cb(id, data));
   const saveRoom = (id: string) => {
@@ -159,7 +167,7 @@ function demoBackend(): Backend {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const typedSoFar = new Map<string, string>();
   /** Proposals waiting for a yes or no, by request id. */
-  const asks = new Map<string, (approve: boolean) => void>();
+  const asks = new Map<string, (approve: boolean, always?: boolean) => void>();
   let askCount = 0;
 
   // Preview only: made-up meter readings so the identicon battery can be
@@ -251,15 +259,28 @@ function demoBackend(): Backend {
                 change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
               },
               { action: { kind: "command", title: "Run a command", detail: "npm run build" } },
+              { action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl" } },
             ];
             for (const { action, change } of proposals) {
+              const room = rooms.get(id);
+              const rule = ruleFor(p.id, action);
+              if (room?.allowed?.some(r => sameRule(r, rule))) {
+                emit( { type: "activity", id: p.id, text: `Always allowed: ${action.title}` });
+                if (change) emit( { type: "changed", id: p.id, change });
+                continue;
+              }
               const request = `ask-${++askCount}`;
               emit( { type: "activity", id: p.id, text: `Waiting for approval: ${action.title}` });
               emit( { type: "approval_requested", id: p.id, request, action });
               askOwners.set(request, key);
-              const approved = await new Promise<boolean>((answer) => asks.set(request, answer));
+              const [approved, always] = await new Promise<[boolean, boolean]>((answer) => asks.set(request, (yes, forever = false) => answer([yes, forever])));
               asks.delete(request); askOwners.delete(request);
               emit( { type: "approval_resolved", id: p.id, request, approved });
+              if (approved && always && room) {
+                room.allowed = [...(room.allowed ?? []), rule];
+                saveRoom(id);
+                emit( { type: "allowed_changed", allowed: room.allowed });
+              }
               if (approved && change) emit( { type: "changed", id: p.id, change });
               await sleep(300); if (!active) return;
             }
@@ -306,6 +327,7 @@ function demoBackend(): Backend {
 
   return {
     demo: true,
+    listToolServers: async () => ["x-mcp", "hyperliquid", "computer-use"].map(token => ({token, label: token, aliases: []})),
     detectAgents: async () => [
       { key: "claude", label: "Claude Code", program: "claude", found: true },
       { key: "codex", label: "Codex", program: "codex", found: true },
@@ -347,7 +369,7 @@ function demoBackend(): Backend {
       rooms.set(id, room);
       saveRoom(id);
       setTimeout(() => reportMeters(id, room.participants), 50);
-      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [] };
+      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [], allowed: room.allowed ?? [] };
     },
     apiModels: async (baseUrl) => {
       if (baseUrl.includes("11434")) return ["llama3", "qwen2.5-coder"];
@@ -372,11 +394,18 @@ function demoBackend(): Backend {
       for (const [key, cancel] of cancellations) if (key === `${id}:${participant}` || (!participant && key.startsWith(`${id}:`))) cancel();
       for (const [request, owner] of askOwners) if (owner === `${id}:${participant}` || (!participant && owner.startsWith(`${id}:`))) asks.get(request)?.(false);
     },
-    roomDecide: async (_id, request, approve) => {
+    roomDecide: async (_id, request, approve, always = false) => {
       const answer = asks.get(request);
       if (!answer) throw new Error("that request is no longer waiting for an answer");
       asks.delete(request);
-      answer(approve);
+      answer(approve, always);
+    },
+    roomForgetAllowed: async (id, rule) => {
+      const room = rooms.get(id);
+      if (!room?.allowed?.some(r => sameRule(r, rule))) throw new Error("that was no longer always allowed");
+      room.allowed = room.allowed.filter(r => !sameRule(r, rule));
+      saveRoom(id);
+      emitRoom(id, { type: "allowed_changed", allowed: room.allowed });
     },
     roomSetOptions: async (id, options) => {
       const room = rooms.get(id);

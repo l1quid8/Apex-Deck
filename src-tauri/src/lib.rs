@@ -39,6 +39,7 @@ struct RoomHandle {
 
 #[derive(Default)]
 struct AppState {
+    tool_servers: Mutex<HashMap<String, Vec<apex_core::server_request::ToolServer>>>,
     ptys: PtyManager,
     rooms: Mutex<HashMap<String, RoomHandle>>,
 }
@@ -111,6 +112,21 @@ fn folders_from_args(args: impl Iterator<Item = String>) -> Vec<String> {
 #[tauri::command]
 fn startup_folders() -> Vec<String> {
     folders_from_args(std::env::args().skip(1))
+}
+
+#[tauri::command]
+async fn list_tool_servers(state: State<'_, AppState>, room: String, agent: String) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    let key = format!("{room}:{agent}");
+    if let Some(names) = state.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned() { return Ok(names); }
+    let handle = state.handle(&room)?;
+    let config = handle.room.lock().await.configs().into_iter().find(|p| p.id.as_str() == agent).ok_or("Unknown participant")?;
+    let names = match config.backend {
+        apex_core::Backend::Agent { tool: AgentTool::Codex, .. } => tokio::time::timeout(std::time::Duration::from_secs(30), apex_adapters::codex_tool_servers(handle.context.cwd.clone().map(|p| p.to_string_lossy().into_owned()), handle.context.path.clone())).await.map_err(|_| "Couldn't list tool servers: timed out")??,
+        apex_core::Backend::Agent { tool: AgentTool::ClaudeCode, .. } => tokio::time::timeout(std::time::Duration::from_secs(60), apex_adapters::claude_tool_servers(handle.context.cwd.clone().map(|p| p.to_string_lossy().into_owned()), handle.context.path.clone())).await.map_err(|_| "Couldn't list tool servers: timed out")??,
+        _ => Vec::new(),
+    };
+    if !names.is_empty() { state.tool_servers.lock().unwrap().insert(key, names.clone()); }
+    Ok(names)
 }
 
 // ---------------------------------------------------------------- terminals
@@ -214,6 +230,8 @@ fn room_create(
     let saved = store.room(&id)?;
     let cwd = saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd);
     let context = BuildContext {
+        codex_hook: if cfg!(unix) { std::env::current_exe().ok() } else { None },
+
         cwd: cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from),
         path: agents::login_path(),
     };
@@ -248,7 +266,7 @@ fn room_create(
 /// One shared checkpoint for all running chains. Completed messages are saved
 /// before emission; a failed write cancels work and is reported to the caller.
 fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent) -> Result<(), String> {
-    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. }) { return Ok(()); }
+    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. }) { return Ok(()); }
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
     match event {
@@ -257,6 +275,7 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
             let seq = checkpoint.snapshot.transcript.len();
             checkpoint.snapshot.changes.push(apex_core::ChangeRecord { by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
         }
+        RoomEvent::AllowedChanged { allowed } => checkpoint.snapshot.allowed = allowed.clone(),
         _ => {}
     }
     store.save_room(id, &checkpoint)
@@ -267,6 +286,9 @@ fn turn_sink<'a>(app: &'a AppHandle, id: &'a str, handle: &'a RoomHandle, error:
         // The desktop emits room-wide Idle only after the final snapshot
         // (including cursors) is saved by run_batch.
         if matches!(event, RoomEvent::Idle) { return; }
+        if let RoomEvent::ToolServers { id: agent, servers } = &event {
+            app.state::<AppState>().tool_servers.lock().unwrap().insert(format!("{id}:{}", agent.as_str()), servers.clone());
+        }
         if let Err(why) = persist_event(handle, &app.state::<Store>(), id, &event) {
             *error.lock().unwrap() = Some(why.clone());
             handle.runtime.stop(None);
@@ -287,6 +309,18 @@ async fn prepare_post(app: &AppHandle, id: &str, handle: &RoomHandle, text: &str
             if let Some(cwd) = handle.context.cwd.clone() {
                 if let Ok(Ok(tree)) = tokio::task::spawn_blocking(move || changes::snapshot(&cwd)).await { room.set_baseline(tree); }
             }
+        }
+    }
+    let requested = apex_core::server_request::parse_server_requests(text);
+    if !requested.is_empty() {
+        let recipients = match &targets { Some(ids) => ids.clone(), None => handle.runtime.targets(text).await };
+        let state = app.state::<AppState>();
+        let cache = state.tool_servers.lock().unwrap();
+        let lists: Option<Vec<_>> = recipients.iter().map(|agent| cache.get(&format!("{id}:{}", agent.as_str()))).collect();
+        if let Some(lists) = lists {
+            let known = lists.into_iter().flatten().cloned().collect::<Vec<_>>();
+            let unknown = apex_core::server_request::resolve(&requested, &known).unknown;
+            if !unknown.is_empty() { return Err(format!("No tool server called \"{}\" for the addressed models", unknown[0])); }
         }
     }
     let error = Mutex::new(None);
@@ -371,15 +405,31 @@ fn room_stop(state: State<'_, AppState>, id: String, participant: Option<Partici
 /// was settled another way (by stop, say) is an error the interface can
 /// ignore.
 #[tauri::command]
-fn room_decide(state: State<'_, AppState>, id: String, request: String, approve: bool) -> Result<(), String> {
+fn room_decide(state: State<'_, AppState>, id: String, request: String, approve: bool, always: Option<bool>) -> Result<(), String> {
     let rooms = state.rooms.lock().unwrap();
     let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
-    let decision = if approve { apex_core::Decision::Approve } else { apex_core::Decision::Reject };
+    let decision = match (approve, always.unwrap_or(false)) {
+        (false, _) => apex_core::Decision::Reject,
+        (true, false) => apex_core::Decision::Approve,
+        (true, true) => apex_core::Decision::ApproveAlways,
+    };
     if handle.approvals.resolve(&request, decision) {
         Ok(())
     } else {
         Err("that request is no longer waiting for an answer".to_string())
     }
+}
+
+/// Stop always allowing something, so its card shows again. Saved at once.
+#[tauri::command]
+fn room_forget_allowed(app: AppHandle, state: State<'_, AppState>, store: State<'_, Store>, id: String, rule: apex_core::AllowedRule) -> Result<(), String> {
+    let rooms = state.rooms.lock().unwrap();
+    let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
+    if !handle.approvals.forget(&rule) { return Err("that was no longer always allowed".to_string()); }
+    let event = RoomEvent::AllowedChanged { allowed: handle.approvals.allowed() };
+    persist_event(handle, &store, &id, &event)?;
+    let _ = app.emit("room-event", RoomEventPayload { room: &id, event });
+    Ok(())
 }
 
 #[tauri::command]
@@ -418,6 +468,7 @@ async fn room_add_participant(
         room.add_participant(apex_adapters::build(participant, &context))
     };
     if changed {
+        state.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
         save_room(&state, &store, &id).await
     } else {
         Err(format!("a participant with the id `{name}` is already in this chat"))
@@ -445,6 +496,7 @@ async fn room_update_participant(
         room.replace_participant(apex_adapters::build(participant, &context))
     };
     if changed {
+        state.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
         save_room(&state, &store, &id).await
     } else {
         Err(format!("no participant with the id `{name}` is in this chat"))
@@ -758,6 +810,7 @@ pub fn run() {
             room_delete,
             startup_folders,
             agents_detect,
+            list_tool_servers,
             pty_spawn,
             pty_write,
             pty_resize,
@@ -774,6 +827,7 @@ pub fn run() {
             room_turn,
             room_stop,
             room_decide,
+            room_forget_allowed,
             room_set_options,
             room_add_participant,
             room_update_participant,
@@ -870,6 +924,33 @@ mod tests {
             assert_eq!(saved.snapshot.transcript, handle.room.lock().await.snapshot().transcript);
             assert_eq!(saved.snapshot.transcript.len(), 4);
             assert_eq!(saved.snapshot.cursors.len(), 2);
+        });
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn always_allowed_list_is_saved_and_survives_reopening() {
+        let (handle, store, path) = checkpoint_fixture("allowed");
+        let run = |cmd: &str| apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        let null = ParticipantId::new("null");
+        futures::executor::block_on(async {
+            let desk = handle.room.lock().await.approvals_handle();
+            desk.allow_always(&null, &run("npm test"));
+            persist_event(&handle, &store, "room", &RoomEvent::AllowedChanged { allowed: desk.allowed() }).unwrap();
+            assert_eq!(store.room("room").unwrap().unwrap().snapshot.allowed, desk.allowed(), "saved as soon as it changes");
+
+            checkpoint_room(&handle, &store, "room").await.unwrap();
+            let saved = store.room("room").unwrap().unwrap().snapshot;
+            assert_eq!(saved.allowed.len(), 1, "a full checkpoint keeps it too");
+
+            let reopened = Room::restore(vec![Arc::new(apex_core::testing::ScriptedParticipant::new("null", &["hi"]))], saved);
+            assert!(reopened.approvals_handle().always_allowed(&null, &run("npm test")), "still allowed after a restart");
+            assert!(!reopened.approvals_handle().always_allowed(&null, &run("rm -rf /")));
+
+            let rule = desk.allowed()[0].clone();
+            assert!(desk.forget(&rule));
+            persist_event(&handle, &store, "room", &RoomEvent::AllowedChanged { allowed: desk.allowed() }).unwrap();
+            assert!(store.room("room").unwrap().unwrap().snapshot.allowed.is_empty(), "removing it is saved");
         });
         std::fs::remove_dir_all(path).unwrap();
     }

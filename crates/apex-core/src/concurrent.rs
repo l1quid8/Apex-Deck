@@ -319,7 +319,8 @@ impl ConcurrentRoom {
             config.access = Access::Read;
             let room = self.room.lock().await;
             request.system = crate::view::system_prompt(&config, &room.configs())
-                + &crate::view::pinned_section(room.pins());
+                + &crate::view::pinned_section(room.pins())
+                + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default();
         }
         sink(RoomEvent::TurnStarted {
             id: ticket.id.clone(),

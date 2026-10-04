@@ -1,3 +1,4 @@
+export interface ToolServer { token: string; label: string; aliases: string[] }
 // These shapes mirror the Rust types in crates/apex-core. The test file
 // crates/apex-core/tests/wire_format.rs pins the JSON on the Rust side.
 
@@ -6,7 +7,7 @@ export type Access = "read" | "ask" | "edits" | "full";
 
 /** Something a bot wants to do and is waiting for a yes or no on. */
 export interface ProposedAction {
-  kind: "edit" | "command" | "other";
+  kind: "edit" | "command" | "tool" | "other";
   /** One line, such as "Edit src/main.rs". */
   title: string;
   /** The diff, the command, or the tool's arguments. */
@@ -79,6 +80,19 @@ export interface RoomSnapshot {
   transcript: Message[];
   /** The summary the models see in place of the first `upto` messages, after `/compact`. */
   compaction?: Compaction | null;
+  /** What the person chose "Always allow" for. */
+  allowed?: AllowedRule[];
+}
+
+/** Something a bot may do without asking, because the person chose "Always allow". */
+export interface AllowedRule {
+  /** The bot it applies to. */
+  by: string;
+  kind: ProposedAction["kind"];
+  /** The card's title when it was allowed. */
+  title: string;
+  /** What it covers: a tool's title, a command, a file's edit title, or a permission question. */
+  what: string;
 }
 
 export interface Compaction {
@@ -110,6 +124,7 @@ export interface AppSession {
 export type Speaker = { kind: "human" } | { kind: "bot"; id: string };
 
 export interface Message {
+  servers?: string[];
   seq: number;
   speaker: Speaker;
   text: string;
@@ -120,12 +135,15 @@ export type RoomEvent =
   | { type: "turn_started"; id: string }
   | { type: "participant_idle"; id: string }
   | { type: "editor_changed"; id: string | null }
+  | { type: "tool_servers"; id: string; servers: ToolServer[] }
   | { type: "delta"; id: string; text: string }
   /** What a participant is doing mid-turn, such as reading a file. */
   | { type: "activity"; id: string; text: string }
   /** A bot wants to do something. Its turn waits for `roomDecide` with this `request`. */
   | { type: "approval_requested"; id: string; request: string; action: ProposedAction }
   | { type: "approval_resolved"; id: string; request: string; approved: boolean }
+  /** The thread's whole "Always allow" list, after it changed. */
+  | { type: "allowed_changed"; allowed: AllowedRule[] }
   /** A bot changed a file. */
   | { type: "changed"; id: string; change: FileChange }
   /** Tokens a finished turn used, when the backend reports them. */

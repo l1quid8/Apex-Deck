@@ -1,3 +1,4 @@
+import { parseServerRequests } from "./serverRequests";
 import { useEffect, useState, type ReactNode } from "react";
 
 interface Props {
@@ -52,10 +53,19 @@ export function RichText({ text, onOpen }: Props) {
   }, [menu]);
 
   const parts: ReactNode[] = [];
+  const serverSpans = parseServerRequests(text);
+  const prose = (start: number, end: number) => {
+    const out: ReactNode[] = []; let pos = start;
+    for (const token of serverSpans.filter(s => s.start >= start && s.end <= end)) {
+      out.push(text.slice(pos, token.start), <span className="server-chip" key={`server:${token.start}`}>{text.slice(token.start, token.end)}</span>);
+      pos = token.end;
+    }
+    out.push(text.slice(pos, end)); return out;
+  };
   let last = 0;
   for (const match of text.matchAll(LINK)) {
     const start = match.index ?? 0;
-    if (start > last) parts.push(text.slice(last, start));
+    if (start > last) parts.push(...prose(last, start));
     const target = match[2] ?? match[3];
     const label = match[1] ?? match[3];
     parts.push(
@@ -82,7 +92,7 @@ export function RichText({ text, onOpen }: Props) {
     );
     last = start + match[0].length;
   }
-  if (last < text.length) parts.push(text.slice(last));
+  if (last < text.length) parts.push(...prose(last, text.length));
 
   const copy = (value: string) => {
     navigator.clipboard?.writeText(value).catch(() => {});

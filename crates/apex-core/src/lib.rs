@@ -19,7 +19,7 @@ mod types;
 mod view;
 
 pub use concurrent::{ConcurrentRoom, TurnBatch};
-pub use approval::{ActionKind, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
+pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
 pub use mention::{handle_for, parse_mentions, MentionTarget};
 pub use participant::{
     DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
@@ -30,3 +30,5 @@ pub use types::{
     PlanWindow, Speaker,
 };
 pub use view::{render_prompt, render_view, render_view_after, system_prompt, Role, ViewTurn, PASS_TOKEN};
+
+pub mod server_request;

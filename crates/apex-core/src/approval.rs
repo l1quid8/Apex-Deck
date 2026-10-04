@@ -30,6 +30,8 @@ pub enum ActionKind {
     Edit,
     /// Run a command. The detail is the command line.
     Command,
+    /// An MCP tool call. The detail is its complete JSON arguments.
+    Tool,
     /// Anything else a tool asks permission for.
     Other,
 }
@@ -44,11 +46,52 @@ pub struct ProposedAction {
     pub detail: String,
 }
 
+/// Something the person chose "Always allow" for. Saved with the thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllowedRule {
+    /// The bot it applies to.
+    pub by: ParticipantId,
+    pub kind: ActionKind,
+    /// The card's title when it was allowed, for the list in thread details.
+    pub title: String,
+    /// What it covers: the same tool (its title, without the arguments), the
+    /// same command, edits to the same file, or the same permission question,
+    /// which for Computer Use names the app. Allowing one app or command
+    /// doesn't allow another.
+    pub what: String,
+}
+
+impl AllowedRule {
+    pub fn new(by: &ParticipantId, action: &ProposedAction) -> Self {
+        let what = match action.kind {
+            ActionKind::Tool | ActionKind::Edit => &action.title,
+            ActionKind::Command | ActionKind::Other => &action.detail,
+        };
+        Self { by: by.clone(), kind: action.kind, title: action.title.clone(), what: what.clone() }
+    }
+
+    /// Whether this rule covers `action` from `by`. The title is only a label.
+    pub fn covers(&self, by: &ParticipantId, action: &ProposedAction) -> bool {
+        let other = Self::new(by, action);
+        (&self.by, self.kind, &self.what) == (&other.by, other.kind, &other.what)
+    }
+}
+
 /// The person's answer to a proposed action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Approve,
+    /// Approve, and don't ask again about the same thing in this thread
+    /// until the app quits. Tools that can remember it themselves are told too.
+    ApproveAlways,
     Reject,
+}
+
+impl Decision {
+    /// Whether the action goes ahead, once or always.
+    pub fn approved(self) -> bool {
+        self != Decision::Reject
+    }
 }
 
 /// Gets the person's answer to a proposed action. Backends call this and
@@ -74,9 +117,42 @@ impl Approver for NoApprover {
 pub struct ApprovalDesk {
     waiting: Mutex<HashMap<String, (Option<ParticipantId>, oneshot::Sender<Decision>)>>,
     next: AtomicU64,
+    /// "Always allow" answers, oldest first.
+    always: Mutex<Vec<AllowedRule>>,
 }
 
 impl ApprovalDesk {
+    /// Whether the person already chose "Always allow" for this.
+    pub fn always_allowed(&self, participant: &ParticipantId, action: &ProposedAction) -> bool {
+        self.always.lock().unwrap().iter().any(|rule| rule.covers(participant, action))
+    }
+
+    /// Don't ask again about this. Returns false if it was already allowed.
+    pub fn allow_always(&self, participant: &ParticipantId, action: &ProposedAction) -> bool {
+        let mut rules = self.always.lock().unwrap();
+        if rules.iter().any(|rule| rule.covers(participant, action)) { return false; }
+        rules.push(AllowedRule::new(participant, action));
+        true
+    }
+
+    /// Everything allowed so far, oldest first.
+    pub fn allowed(&self) -> Vec<AllowedRule> {
+        self.always.lock().unwrap().clone()
+    }
+
+    /// Replace the list, as when a saved thread is opened.
+    pub fn set_allowed(&self, rules: Vec<AllowedRule>) {
+        *self.always.lock().unwrap() = rules;
+    }
+
+    /// Ask again about this. Returns false if it wasn't in the list.
+    pub fn forget(&self, rule: &AllowedRule) -> bool {
+        let mut rules = self.always.lock().unwrap();
+        let before = rules.len();
+        rules.retain(|r| (&r.by, r.kind, &r.what) != (&rule.by, rule.kind, &rule.what));
+        rules.len() != before
+    }
+
     /// Register a new proposal. Returns its id and the place its answer
     /// will arrive. If the desk is dropped first, the answer is an error,
     /// which callers treat as a rejection.
@@ -102,6 +178,12 @@ impl ApprovalDesk {
             Some((_, sender)) => sender.send(decision).is_ok(),
             None => false,
         }
+    }
+
+    /// Take a proposal down without an answer, as when the tool that asked
+    /// stopped waiting. Returns false if it was already answered.
+    pub fn withdraw(&self, request: &str) -> bool {
+        self.waiting.lock().unwrap().remove(request).is_some()
     }
 
     /// Reject everything that is waiting, as when the person presses stop.
@@ -192,10 +274,59 @@ mod tests {
     }
 
     #[test]
+    fn always_allow_covers_the_same_thing_and_nothing_else() {
+        let desk = ApprovalDesk::default();
+        let bot = ParticipantId::new("codex");
+        let other_bot = ParticipantId::new("claude");
+        let app = |name: &str| ProposedAction { kind: ActionKind::Other, title: "cua_repl asks permission".into(), detail: format!("Allow Computer Use to use \"{name}\"?") };
+        let order = |qty: u32| ProposedAction { kind: ActionKind::Tool, title: "robinhood: place_order".into(), detail: format!("{{\"qty\":{qty}}}") };
+        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        assert!(desk.allow_always(&bot, &app("Brave Browser")));
+        assert!(!desk.allow_always(&bot, &app("Brave Browser")), "already allowed");
+        desk.allow_always(&bot, &order(1));
+        desk.allow_always(&bot, &run("npm test"));
+        assert!(desk.always_allowed(&bot, &app("Brave Browser")));
+        assert!(!desk.always_allowed(&bot, &app("Calculator")), "another app asks again");
+        assert!(desk.always_allowed(&bot, &order(5)), "the same tool with other arguments");
+        assert!(desk.always_allowed(&bot, &run("npm test")));
+        assert!(!desk.always_allowed(&bot, &run("rm -rf build")), "another command asks again");
+        assert!(!desk.always_allowed(&other_bot, &app("Brave Browser")), "another bot asks again");
+    }
+
+    #[test]
+    fn allowed_rules_can_be_listed_restored_and_forgotten() {
+        let desk = ApprovalDesk::default();
+        let bot = ParticipantId::new("codex");
+        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        desk.allow_always(&bot, &run("npm test"));
+        desk.allow_always(&bot, &run("cargo test"));
+        let saved = desk.allowed();
+        assert_eq!(saved.iter().map(|r| r.what.as_str()).collect::<Vec<_>>(), ["npm test", "cargo test"]);
+
+        let reopened = ApprovalDesk::default();
+        reopened.set_allowed(saved.clone());
+        assert!(reopened.always_allowed(&bot, &run("cargo test")), "survives a restart");
+        assert!(reopened.forget(&saved[0]));
+        assert!(!reopened.forget(&saved[0]), "already gone");
+        assert!(!reopened.always_allowed(&bot, &run("npm test")), "asks again once removed");
+        assert!(reopened.always_allowed(&bot, &run("cargo test")));
+    }
+
+    #[test]
     fn a_change_counts_its_added_and_removed_lines() {
         let change = FileChange::new("src/a.rs", "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+more\n");
         assert_eq!((change.added, change.removed), (2, 1));
         let unknown = FileChange::new("b.rs", "");
         assert_eq!((unknown.added, unknown.removed), (0, 0));
     }
+    #[test]
+    fn a_withdrawn_proposal_cannot_be_answered() {
+        let desk = ApprovalDesk::default();
+        let (request, _answer) = desk.open();
+        assert!(desk.withdraw(&request));
+        assert!(!desk.withdraw(&request), "already gone");
+        assert!(!desk.resolve(&request, Decision::Approve));
+        assert_eq!(desk.waiting(), 0);
+    }
+
 }

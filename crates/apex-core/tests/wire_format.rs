@@ -94,8 +94,8 @@ fn room_options_shape() {
 #[test]
 fn room_event_shapes() {
     let id = ParticipantId::new("opus");
-    let human = Message { seq: 0, speaker: Speaker::Human, text: "hi".into() };
-    let bot = Message { seq: 1, speaker: Speaker::Bot(id.clone()), text: "hello".into() };
+    let human = Message { servers: vec![], seq: 0, speaker: Speaker::Human, text: "hi".into() };
+    let bot = Message { servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "hello".into() };
 
     assert_eq!(
         to_value(RoomEvent::MessageAdded { message: human }).unwrap(),
@@ -122,6 +122,11 @@ fn room_event_shapes() {
     assert_eq!(
         to_value(RoomEvent::ApprovalRequested { id: id.clone(), request: "ask-1".into(), action }).unwrap(),
         json!({ "type": "approval_requested", "id": "opus", "request": "ask-1", "action": { "kind": "command", "title": "Run a command", "detail": "ls" } })
+    );
+    let rule = apex_core::AllowedRule::new(&id, &apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into() });
+    assert_eq!(
+        to_value(RoomEvent::AllowedChanged { allowed: vec![rule] }).unwrap(),
+        json!({ "type": "allowed_changed", "allowed": [{ "by": "opus", "kind": "command", "title": "Run a command", "what": "npm test" }] })
     );
     assert_eq!(
         to_value(RoomEvent::ApprovalResolved { id: id.clone(), request: "ask-1".into(), approved: false }).unwrap(),
@@ -186,4 +191,16 @@ fn old_snapshots_without_pins_still_load() {
 fn change_records_shape() {
     let record = apex_core::ChangeRecord { by: ParticipantId::new("a"), path: "x.rs".into(), added: 1, removed: 2, seq: 3 };
     assert_eq!(to_value(&record).unwrap(), json!({ "by": "a", "path": "x.rs", "added": 1, "removed": 2, "seq": 3 }));
+}
+
+#[test]
+fn tool_server_event_carries_canonical_tokens_and_aliases() {
+    let event = RoomEvent::ToolServers {
+        id: ParticipantId::new("null"),
+        servers: vec![apex_core::server_request::ToolServer {
+            token: "computer-use".into(), label: "Computer Use".into(), aliases: vec!["cua_repl".into()],
+        }],
+    };
+    assert_eq!(to_value(event).unwrap(), json!({"type":"tool_servers", "id":"null",
+        "servers":[{"token":"computer-use", "label":"Computer Use", "aliases":["cua_repl"]}]}));
 }

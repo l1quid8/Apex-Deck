@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use apex_core::{
-    render_prompt, Access, AgentTool, Approver, Backend, Decision, DeltaSink, NoApprover, Participant,
+    render_prompt, AgentTool, Approver, Backend, Decision, DeltaSink, NoApprover, Participant,
     ParticipantConfig, ParticipantError, Progress, ProgressSink, ProposedAction, Reply, TurnRequest,
 };
 use async_trait::async_trait;
@@ -18,6 +18,7 @@ use crate::ansi::AnsiStripper;
 use crate::events::{EventReader, OutputFormat};
 use crate::codex_server::{self, TurnError};
 use crate::presets::{agent_command, clean_effort, clean_model, output_format};
+use crate::codex_hook;
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 
 /// How long a turn may go without any sign of life before the tool is
@@ -38,17 +39,19 @@ pub struct CliParticipant {
     timeout: Duration,
     cwd: Option<PathBuf>,
     path: Option<String>,
+    codex_hook: Option<PathBuf>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None }
     }
 
     /// Run the tool in the folder, and with the PATH, given by `context`.
     pub fn with_context(mut self, context: &BuildContext) -> Self {
         self.cwd = context.cwd.clone();
         self.path = context.path.clone();
+        self.codex_hook = context.codex_hook.clone();
         self
     }
 
@@ -74,8 +77,15 @@ impl CliParticipant {
     /// Start `program` in the workspace folder with every standard stream
     /// connected to us.
     fn start(&self, program: &str, args: &[String]) -> Result<Child, ParticipantError> {
+        self.start_with(program, args, &[])
+    }
+
+    /// `start`, with extra environment variables for the program.
+    fn start_with(&self, program: &str, args: &[String], env: &[(&str, std::ffi::OsString)]) -> Result<Child, ParticipantError> {
         let mut command = Command::new(program);
         command.args(args);
+        command.envs(env.iter().map(|(name, value)| (*name, value)));
+
         // Keep colour codes and progress animations out of the reply.
         command.env("NO_COLOR", "1").env("TERM", "dumb");
         if let Some(path) = &self.path {
@@ -106,19 +116,28 @@ impl CliParticipant {
     }
 
     /// A Codex turn through its app server, which reports the reply as it
-    /// is written. `Ok(None)` means the app server could not be used and
-    /// nothing was asked of the model, so the caller should run the turn
-    /// the plain way instead.
+    /// is written. An unavailable server refuses the turn: exec cannot
+    /// enforce Deck MCP approval cards.
     async fn run_codex_server(
         &self,
         model: Option<&str>,
         prompt: &str,
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
-    ) -> Result<Option<Reply>, ParticipantError> {
+    ) -> Result<Reply, ParticipantError> {
         let program = "codex";
-        let args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
-        let child = self.start(program, &args)?;
+        let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
+        // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
+        // has gone would make Codex run every tool unasked, so check first.
+        let hook = self.codex_hook.as_deref().filter(|helper| helper.is_file()).and_then(|helper| {
+            codex_hook::Hook::bind(helper).map_err(|e| eprintln!("[apex-deck] Codex approval hook unavailable: {e}")).ok()
+        });
+        let mut env = Vec::new();
+        if let Some(hook) = &hook {
+            args.extend(["-c".to_string(), hook.flag()]);
+            env.push((codex_hook::SOCKET_ENV, hook.socket().into_os_string()));
+        }
+        let child = self.start_with(program, &args, &env)?;
         let effort = clean_effort(self.config.effort.as_deref());
         let turn = codex_server::Turn {
             model: clean_model(model),
@@ -126,11 +145,10 @@ impl CliParticipant {
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
         };
-        match codex_server::run(child, turn, prompt, on_progress, approver).await {
-            Ok(reply) => Ok(Some(reply)),
+        match codex_server::run(child, turn, prompt, on_progress, approver, hook.as_ref()).await {
+            Ok(reply) => Ok(reply),
             Err(TurnError::Unavailable(why)) => {
-                eprintln!("[apex-deck] Codex app server not used ({why}); running `codex exec` instead");
-                Ok(None)
+                Err(ParticipantError::Failed(format!("Codex app server unavailable ({why}); this turn did not run because MCP approvals require it.")))
             }
             Err(TurnError::Failed(why)) => {
                 eprintln!("[apex-deck] `{program}` turn failed: {why}");
@@ -379,11 +397,21 @@ struct Timed<'a> {
 #[async_trait]
 impl Approver for Timed<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
+        /// Restarts the quiet clock however the wait ends, including when
+        /// it is abandoned.
+        struct Asking<'a> {
+            asking: &'a AtomicBool,
+            last_heard: &'a Mutex<Instant>,
+        }
+        impl Drop for Asking<'_> {
+            fn drop(&mut self) {
+                *self.last_heard.lock().unwrap() = Instant::now();
+                self.asking.store(false, Ordering::SeqCst);
+            }
+        }
         self.asking.store(true, Ordering::SeqCst);
-        let decision = self.inner.decide(action).await;
-        *self.last_heard.lock().unwrap() = Instant::now();
-        self.asking.store(false, Ordering::SeqCst);
-        decision
+        let _asking = Asking { asking: self.asking, last_heard: self.last_heard };
+        self.inner.decide(action).await
     }
 }
 
@@ -430,7 +458,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, args, format) = self.command_line()?;
@@ -447,11 +475,9 @@ impl Participant for CliParticipant {
         let turn = async {
             // Codex writes its reply live only through its app server.
             if let Backend::Agent { tool: AgentTool::Codex, model } = &self.config.backend {
-                if let Some(reply) = self.run_codex_server(model.as_deref(), &prompt, on_progress, &approver).await? {
-                    return Ok(reply);
-                }
+                return self.run_codex_server(model.as_deref(), &prompt, on_progress, &approver).await;
             }
-            if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) && self.config.access == Access::Ask {
+            if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
                 return self.run_claude_asking(program, &args, &prompt, on_progress, &approver).await;
             }
             self.run(program, &args, format, prompt, on_progress).await
@@ -539,4 +565,25 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         assert!(sign_in_hint("mytool", "please log in first").is_some());
         assert!(sign_in_hint("claude", "usage limit reached").is_none());
     }
+    #[test]
+    fn an_abandoned_question_restarts_the_quiet_clock() {
+        use super::{AtomicBool, Duration, Instant, Mutex, Ordering, Timed};
+        use apex_core::{ActionKind, Approver, Decision, ProposedAction};
+        use futures::FutureExt;
+        struct Never;
+        #[async_trait::async_trait]
+        impl Approver for Never {
+            async fn decide(&self, _: ProposedAction) -> Decision { std::future::pending().await }
+        }
+        let last_heard = Mutex::new(Instant::now() - Duration::from_secs(60));
+        let asking = AtomicBool::new(false);
+        let timed = Timed { inner: &Never, last_heard: &last_heard, asking: &asking };
+        let mut waiting = timed.decide(ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() });
+        assert!(waiting.as_mut().now_or_never().is_none());
+        assert!(asking.load(Ordering::SeqCst));
+        drop(waiting);
+        assert!(!asking.load(Ordering::SeqCst), "the quiet clock runs again");
+        assert!(last_heard.lock().unwrap().elapsed() < Duration::from_secs(5));
+    }
+
 }

@@ -17,11 +17,15 @@
 //! The server is started fresh for each turn and stopped when the turn
 //! ends, the same as every other command-line participant.
 //!
-//! The app server is marked experimental by Codex. If it cannot be started
-//! or does not get as far as a thread, the caller falls back to
-//! `codex exec`, which gives the same reply without the live text.
+//! MCP approvals require this two-way path. If it cannot be started, the
+//! turn is refused rather than falling back to an unprotected exec turn.
+
+//!
+//! Deck's hook (`codex_hook.rs`) asks about every MCP call. Without it the
+//! turn first lists every MCP tool to set "prompt" on each (`mcp.rs`).
 
 use std::time::Duration;
+use std::collections::HashMap;
 
 use apex_core::{Access, ActionKind, Approver, Decision, PlanUsage, Progress, ProgressSink, ProposedAction, Reply};
 use serde_json::{json, Value};
@@ -30,6 +34,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 
 use crate::events::{codex_plan, EventReader, OutputFormat};
 use crate::report;
+use crate::codex_hook::{hook_state, hooks_list, next_call, serve, trust_edit, Gates, Hook, HookState, McpCall};
 
 /// How long the server may take to answer a setup request.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -66,12 +71,14 @@ fn sandbox(access: Access) -> &'static str {
 }
 
 /// When Codex stops to ask. "untrusted" asks before every edit and every
-/// command it does not know to be harmless; "never" leaves the sandbox as
-/// the only limit.
-fn approval_policy(access: Access) -> &'static str {
+/// command it does not know to be harmless. Other access levels keep MCP
+/// elicitation enabled without asking for local sandbox escalations.
+fn approval_policy(access: Access) -> Value {
     match access {
-        Access::Ask => "untrusted",
-        Access::Read | Access::Edits | Access::Full => "never",
+        Access::Ask => json!("untrusted"),
+        Access::Read | Access::Edits | Access::Full => json!({"granular": {
+            "mcp_elicitations": true, "rules": false, "sandbox_approval": false
+        }}),
     }
 }
 
@@ -102,11 +109,141 @@ pub(crate) fn proposal(method: &str, params: &Value, reader: &EventReader) -> Op
 
 pub(crate) fn approval_response(id: &Value, decision: Decision) -> Value {
     let decision = match decision {
-        Decision::Approve => "accept",
+        Decision::Approve | Decision::ApproveAlways => "accept",
         // The edit or command is skipped and the turn carries on.
         Decision::Reject => "decline",
     };
     json!({ "id": id, "result": { "decision": decision } })
+}
+
+/// MCP approval is an elicitation, not a command approval. "Always allow"
+/// also sends Codex's own "always" choice, for tools that remember it.
+fn mcp_response(id: &Value, decision: Decision) -> Value {
+    let mut result = json!({"action": if decision.approved() {"accept"} else {"decline"},
+        "content": if decision.approved() {json!({})} else {Value::Null}});
+    if decision == Decision::ApproveAlways { result["_meta"] = json!({"persist": "always"}); }
+    json!({"id":id,"result":result})
+}
+
+/// Bind the CLI's approval to the exact in-flight call, never its prose
+/// description or a display-name summary. Ambiguous or missing calls reject.
+fn mcp_call(params: &Value, pending: &HashMap<String, Value>) -> Option<McpCall> {
+    if params["_meta"]["codex_approval_kind"] != "mcp_tool_call" { return None; }
+    let server = params["serverName"].as_str()?;
+    let arguments = params["_meta"].get("tool_params")?;
+    let mut matches = pending.values().filter(|item| item["server"] == server && &item["arguments"] == arguments);
+    let item = matches.next()?;
+    if matches.next().is_some() { return None; }
+    Some(McpCall { server: server.to_string(), tool: item["tool"].as_str()?.to_string(), arguments: arguments.clone() })
+}
+
+/// A server's own question that is not a tool call, such as Computer Use
+/// asking to control an app. It is shown only when it can be answered with
+/// a bare accept: a form that asks for nothing required. Computer Use tags
+/// its nested app permission as a tool call, but its app arguments differ
+/// from the enclosing JavaScript call. It must get a separate human decision,
+/// never reuse the hook's decision. Other unmatched tool approvals reject.
+fn mcp_question(params: &Value) -> Option<ProposedAction> {
+    let meta = &params["_meta"];
+    let app = if meta["codex_approval_kind"] == "mcp_tool_call" {
+        if meta["connector_id"] != "computer-use" { return None; }
+        Some(meta["tool_params"]["app"].as_str().filter(|app| !app.trim().is_empty())?)
+    } else { None };
+    if !matches!(params["mode"].as_str(), None | Some("form")) || params.get("url").is_some() { return None; }
+    let schema = &params["requestedSchema"];
+    if schema["required"].as_array().is_some_and(|required| !required.is_empty()) { return None; }
+    let server = params["serverName"].as_str().filter(|name| !name.is_empty())?;
+    let message = params["message"].as_str().filter(|text| !text.trim().is_empty())?;
+    let detail = match app {
+        Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
+        None => message.to_string(),
+    };
+    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail })
+}
+
+
+/// The id of `plugin/list`, which is sent alongside the MCP inventory.
+const PLUGINS: u64 = 110;
+/// Request ids for the hook check, clear of the others.
+const HOOKS_LIST: u64 = 120;
+const TRUST_WRITE: u64 = 121;
+const HOOKS_RELIST: u64 = 122;
+
+/// Send one setup request and wait for its answer.
+async fn request(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStdout>>, message: &Value) -> Result<Value, String> {
+    send(stdin, message).await.map_err(|e| format!("the app server went away: {e}"))?;
+    answer(lines, message["id"].as_u64().unwrap_or_default()).await
+}
+
+/// Make sure Codex will run Deck's hook this turn, trusting it when it is
+/// new or the app has moved. False means the turn uses the inventory
+/// policy instead: a Codex without hooks, hooks switched off, or trust
+/// that did not take.
+async fn hook_ready(
+    stdin: &mut ChildStdin,
+    lines: &mut Lines<BufReader<ChildStdout>>,
+    cwd: Option<&str>,
+    command: &str,
+    on_progress: ProgressSink<'_>,
+) -> bool {
+    let hash = match request(stdin, lines, &hooks_list(HOOKS_LIST, cwd)).await.map(|listed| hook_state(&listed, command)) {
+        Ok(HookState::Trusted) => return true,
+        Ok(HookState::Untrusted { hash }) => hash,
+        Ok(HookState::Missing) => {
+            eprintln!("[apex-deck] Codex did not list Deck's approval hook; using the MCP inventory");
+            return false;
+        }
+        Err(why) => {
+            eprintln!("[apex-deck] Codex hooks unavailable ({why}); using the MCP inventory");
+            return false;
+        }
+    };
+    on_progress(Progress::Activity("Turning on Apex Deck's approval hook in Codex"));
+    if let Err(why) = request(stdin, lines, &trust_edit(TRUST_WRITE, &hash)).await {
+        eprintln!("[apex-deck] couldn't trust Deck's approval hook ({why}); using the MCP inventory");
+        return false;
+    }
+    let listed = request(stdin, lines, &hooks_list(HOOKS_RELIST, cwd)).await;
+    let trusted = matches!(listed.map(|listed| hook_state(&listed, command)), Ok(HookState::Trusted));
+    if !trusted {
+        eprintln!("[apex-deck] Deck's approval hook is still not trusted; using the MCP inventory");
+    }
+    trusted
+}
+
+
+/// The approval policy for every MCP tool, and the names for the `!` menu.
+/// Plugins only feed the menu, so they are asked for alongside the first
+/// inventory page and a failure there does not stop the turn.
+async fn mcp_inventory(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStdout>>) -> Result<(Value, Result<Vec<apex_core::server_request::ToolServer>, String>), String> {
+    send(stdin, &json!({"id":PLUGINS,"method":"plugin/list","params":{}})).await
+        .map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
+    let mut plugins = Err("no answer".to_string());
+    let mut servers = Vec::new();
+    let mut cursor = Value::Null;
+    let mut cursors = std::collections::HashSet::new();
+    for page in 0..100u64 {
+        let id = 10 + page;
+        send(stdin, &json!({"id":id,"method":"mcpServerStatus/list", "params":{
+            "detail":"toolsAndAuthOnly", "limit":100, "cursor":cursor
+        }})).await.map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
+        let with_plugins = [id, PLUGINS];
+        let mut replies = answers(lines, if page == 0 { &with_plugins } else { &with_plugins[..1] }, SETUP_TIMEOUT).await;
+        if page == 0 { plugins = replies.pop().expect("one answer per request"); }
+        let result = replies.pop().expect("one answer per request")
+            .map_err(|_| "Couldn't list Codex MCP servers; this turn did not run.".to_string())?;
+        let data = result["data"].as_array().ok_or("Codex MCP inventory had no server list")?;
+        servers.extend(data.iter().cloned());
+        cursor = result["nextCursor"].clone();
+        if cursor.is_null() {
+            let policy = crate::mcp::codex_policy(&servers)?;
+            let menu = plugins.map(|plugins| crate::mcp::menu_names(&servers, &plugins))
+                .map_err(|e| format!("Couldn't list Codex plugins: {e}"));
+            return Ok((policy, menu));
+        }
+        if !cursor.is_string() || !cursors.insert(cursor.to_string()) { return Err("Invalid Codex MCP inventory cursor".into()); }
+    }
+    Err("Codex MCP inventory exceeded its page limit".into())
 }
 
 pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
@@ -153,27 +290,37 @@ async fn answer(lines: &mut Lines<BufReader<ChildStdout>>, id: u64) -> Result<Va
 }
 
 async fn answer_within(lines: &mut Lines<BufReader<ChildStdout>>, id: u64, limit: Duration) -> Result<Value, String> {
+    answers(lines, &[id], limit).await.pop().expect("one answer per request")
+}
+
+/// Read until every request in `ids` is answered, giving one result per id
+/// in the same order. The server works on requests side by side, so ones
+/// sent together can be answered in any order.
+async fn answers(lines: &mut Lines<BufReader<ChildStdout>>, ids: &[u64], limit: Duration) -> Vec<Result<Value, String>> {
+    let mut got: Vec<Option<Result<Value, String>>> = vec![None; ids.len()];
     let wait = async {
-        loop {
+        while got.iter().any(Option::is_none) {
             match lines.next_line().await {
                 Ok(Some(line)) => {
                     let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
-                    if message["id"].as_u64() == Some(id) && message.get("method").is_none() {
-                        return match message.get("error") {
-                            Some(error) => Err(error["message"].as_str().unwrap_or("request refused").to_string()),
-                            None => Ok(message["result"].clone()),
-                        };
-                    }
+                    if message.get("method").is_some() { continue; }
+                    let Some(slot) = message["id"].as_u64().and_then(|id| ids.iter().position(|&want| want == id)) else { continue };
+                    got[slot] = Some(match message.get("error") {
+                        Some(error) => Err(error["message"].as_str().unwrap_or("request refused").to_string()),
+                        None => Ok(message["result"].clone()),
+                    });
                 }
                 Ok(None) => return Err("it stopped before answering".to_string()),
                 Err(e) => return Err(format!("its output could not be read: {e}")),
             }
         }
+        Ok(())
     };
-    match tokio::time::timeout(limit, wait).await {
-        Ok(result) => result,
-        Err(_) => Err(format!("no answer within {} seconds", limit.as_secs())),
-    }
+    let why = match tokio::time::timeout(limit, wait).await {
+        Ok(ended) => ended.err(),
+        Err(_) => Some(format!("no answer within {} seconds", limit.as_secs())),
+    };
+    got.into_iter().map(|slot| slot.unwrap_or_else(|| Err(why.clone().unwrap_or_default()))).collect()
 }
 
 /// Run one turn. `child` must have been started with `ARGS` and all three
@@ -184,6 +331,7 @@ pub(crate) async fn run(
     prompt: &str,
     on_progress: ProgressSink<'_>,
     approver: &dyn Approver,
+    hook: Option<&Hook>,
 ) -> Result<Reply, TurnError> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -199,7 +347,26 @@ pub(crate) async fn run(
 
     initialize(&mut stdin, &mut lines).await.map_err(TurnError::Unavailable)?;
 
-    send(&mut stdin, &thread_start(&turn))
+    let hooked = match hook {
+        Some(hook) => hook_ready(&mut stdin, &mut lines, turn.cwd.as_deref(), &hook.command, on_progress).await,
+        None => false,
+    };
+    let policy = if hooked {
+        // The hook asks about every MCP call, so no tool list is needed.
+        crate::mcp::base_policy()
+    } else {
+        on_progress(Progress::Activity("Checking MCP tool approval policies"));
+        let (policy, menu) = mcp_inventory(&mut stdin, &mut lines).await.map_err(TurnError::Failed)?;
+        // Without the plugins the list would be short, so keep the last one.
+        if let Ok(servers) = &menu {
+            on_progress(Progress::ToolServers(servers));
+        }
+        policy
+    };
+    on_progress(Progress::Activity("Starting Codex"));
+    let mut start = thread_start(&turn);
+    start["params"]["config"] = policy;
+    send(&mut stdin, &start)
         .await
         .map_err(|e| unavailable("the app server went away", e.to_string()))?;
     let started = answer(&mut lines, 1).await.map_err(|e| unavailable("could not start a thread", e))?;
@@ -213,19 +380,74 @@ pub(crate) async fn run(
         .map_err(|e| TurnError::Failed(format!("could not send the message: {e}")))?;
 
     let mut reader = EventReader::new(OutputFormat::CodexServer, turn.cwd.clone());
+    let mut pending_mcp = HashMap::new();
+    let mut gates = Gates::default();
+    let mut listening = hook;
     while !reader.turn_over() {
-        let line = match lines.next_line().await {
+        let next = tokio::select! {
+            next = lines.next_line() => next,
+            call = next_call(listening) => {
+                match call {
+                    Ok(stream) => serve(stream, &mut gates, approver, on_progress).await,
+                    Err(e) => {
+                        eprintln!("[apex-deck] Codex approval hook stopped listening: {e}");
+                        listening = None;
+                    }
+                }
+                continue;
+            }
+        };
+        let line = match next {
             Ok(Some(line)) => line,
             Ok(None) => return Err(TurnError::Failed(ended_early(reader))),
             Err(e) => return Err(TurnError::Failed(format!("reading output failed: {e}"))),
         };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
+            let item = &message["params"]["item"];
+            if message["method"] == "item/started" && item["type"] == "mcpToolCall" {
+                if let Some(id) = item["id"].as_str() { pending_mcp.insert(id.to_string(), item.clone()); }
+            }
+            if message["method"] == "item/completed" {
+                if let Some(id) = item["id"].as_str() { pending_mcp.remove(id); }
+            }
             let id = message.get("id").filter(|id| !id.is_null());
             match (id, message.get("method")) {
                 // The server is asking us something. Requests to approve an
                 // edit or a command go to the person. Anything else cannot
                 // be answered here, and is refused rather than left to hang.
                 (Some(id), Some(method)) => {
+                    if method == "mcpServer/elicitation/request" {
+                        let params = &message["params"];
+                        // Only the fields that decide which buttons the card shows.
+                        let meta = &params["_meta"];
+                        eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
+                            params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
+                        let decision = if params["threadId"] != thread {
+                            Decision::Reject
+                        } else if let Some(action) = mcp_question(params) {
+                            // App access is a separate decision even if its arguments
+                            // happen to match a read that the hook already allowed.
+                            on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
+                            approver.decide(action).await
+                        } else if let Some(call) = mcp_call(params, &pending_mcp) {
+                            match gates.at_codex(&call) {
+                                Some(decision) => decision,
+                                None => {
+                                    let action = call.action();
+                                    on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
+                                    let decision = approver.decide(action).await;
+                                    gates.answered_at_codex(call, decision);
+                                    decision
+                                }
+                            }
+                        } else {
+                            eprintln!("[apex-deck] declined MCP question: {params}");
+                            Decision::Reject
+                        };
+                        send(&mut stdin, &mcp_response(id, decision)).await
+                            .map_err(|_| TurnError::Failed("Could not deliver MCP approval".into()))?;
+                        continue;
+                    }
                     let reply = match proposal(method.as_str().unwrap_or(""), &message["params"], &reader) {
                         Some(action) => {
                             on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
@@ -281,7 +503,7 @@ async fn initialize(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStd
     let hello = json!({
         "method": "initialize",
         "id": 0,
-        "params": { "clientInfo": { "name": "apex_deck", "title": "Apex Deck", "version": env!("CARGO_PKG_VERSION") } }
+        "params": { "clientInfo": { "name": "apex_deck", "title": "Apex Deck", "version": env!("CARGO_PKG_VERSION") }, "capabilities":{"experimentalApi":true} }
     });
     send(stdin, &hello).await.map_err(|e| format!("could not start the app server: {e}"))?;
     answer(lines, 0).await.map_err(|e| format!("the app server did not start: {e}"))?;
@@ -323,12 +545,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mcp_approval_binds_exact_arguments_and_rejects_ambiguous_or_unrelated_forms() {
+        let params = json!({"serverName":"probe", "_meta":{"codex_approval_kind":"mcp_tool_call", "tool_params":{"quantity":"0.001"}}});
+        let call = json!({"server":"probe", "tool":"post: read", "arguments":{"quantity":"0.001"}});
+        let mut pending = HashMap::from([("c1".to_string(),call.clone())]);
+        let resolved = mcp_call(&params, &pending).unwrap();
+        assert!(resolved.risky(), "use exact tool name, not title punctuation");
+        assert_eq!(resolved.action().title,"probe: post: read");
+        let mut different = params.clone(); different["_meta"]["tool_params"]["quantity"]=json!("1000");
+        assert!(mcp_call(&different,&pending).is_none());
+        pending.insert("c2".into(),call);
+        assert!(mcp_call(&params,&pending).is_none());
+        assert!(mcp_call(&json!({"serverName":"probe","mode":"form"}),&pending).is_none());
+        let accepted=mcp_response(&json!(1),Decision::Approve);
+        assert_eq!(accepted["result"],json!({"action":"accept","content":{}}));
+        assert!(!accepted.to_string().contains("persist"));
+        assert_eq!(mcp_response(&json!(1),Decision::Reject)["result"]["action"],"decline");
+    }
+
+    #[test]
+    fn other_mcp_questions_reach_the_person_only_when_a_bare_accept_answers_them() {
+        let ask = json!({"serverName":"computer-use", "mode":"form", "message":"Allow Codex to use Apex Deck?",
+            "requestedSchema":{"type":"object","properties":{}}, "_meta":{"codex_approval_kind":"app_approval"}});
+        let action = mcp_question(&ask).unwrap();
+        assert_eq!(action.kind, ActionKind::Other);
+        assert_eq!(action.title, "computer-use asks permission");
+        assert_eq!(action.detail, "Allow Codex to use Apex Deck?");
+        let mut no_meta = ask.clone(); no_meta.as_object_mut().unwrap().remove("_meta");
+        assert!(mcp_question(&no_meta).is_some());
+        let mut tool = ask.clone(); tool["_meta"]["codex_approval_kind"] = json!("mcp_tool_call");
+        assert!(mcp_question(&tool).is_none(), "tool calls must bind to an in-flight call");
+        let mut url = ask.clone(); url["mode"] = json!("url"); url["url"] = json!("https://example.com");
+        assert!(mcp_question(&url).is_none());
+        let mut needs_input = ask.clone();
+        needs_input["requestedSchema"] = json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"]});
+        assert!(mcp_question(&needs_input).is_none());
+        let mut silent = ask.clone(); silent["message"] = json!(" ");
+        assert!(mcp_question(&silent).is_none());
+    }
+
+    #[test]
+    fn always_allow_sends_codexs_persist_choice_and_nothing_else_does() {
+        let always = mcp_response(&json!(9), Decision::ApproveAlways);
+        assert_eq!(always, json!({"id":9,"result":{"action":"accept","content":{},"_meta":{"persist":"always"}}}));
+        let once = mcp_response(&json!(9), Decision::Approve);
+        assert_eq!(once, json!({"id":9,"result":{"action":"accept","content":{}}}));
+        let deny = mcp_response(&json!(9), Decision::Reject);
+        assert_eq!(deny, json!({"id":9,"result":{"action":"decline","content":null}}));
+    }
+
+    #[test]
+    fn nested_computer_use_app_permission_reaches_its_own_card() {
+        // Shape emitted by @oai/sky computer-use-policy.js through node_repl.
+        let ask = json!({"serverName":"node_repl", "mode":"form",
+            "message":"Allow Computer Use to use \"Apex Deck\"?",
+            "requestedSchema":{"type":"object","properties":{}},
+            "_meta":{"codex_approval_kind":"mcp_tool_call","connector_id":"computer-use",
+                "connector_name":"Computer Use","tool_name":"get_app_state",
+                "tool_params":{"app":"dev.apexdeck.app"},"persist":["session","always"]}});
+        let pending = HashMap::from([("c1".to_string(), json!({"server":"node_repl","tool":"js",
+            "arguments":{"code":"await cua.getApp(\"Apex Deck\")"}}))]);
+        assert!(mcp_call(&ask, &pending).is_none());
+        let action = mcp_question(&ask).expect("nested app permission needs a separate user decision");
+        assert!(action.detail.starts_with("Allow Computer Use to use \"Apex Deck\"?"));
+        assert!(action.detail.contains("dev.apexdeck.app"), "show exact target as well as server prose");
+        assert!(!mcp_response(&json!(7), Decision::Approve).to_string().contains("persist"));
+        let mut unrelated = ask.clone(); unrelated["_meta"]["connector_id"] = json!("trading");
+        assert!(mcp_question(&unrelated).is_none());
+        let mut missing_target = ask.clone(); missing_target["_meta"]["tool_params"] = json!({});
+        assert!(mcp_question(&missing_target).is_none());
+        let mut form = ask.clone(); form["requestedSchema"]["required"] = json!(["choice"]);
+        assert!(mcp_question(&form).is_none());
+    }
+
+    #[test]
+    fn full_access_keeps_mcp_approval_transport_enabled() {
+        let turn = Turn { model: None, effort: None, access: Access::Full, cwd: None };
+        let policy = thread_start(&turn)["params"]["approvalPolicy"].clone();
+        assert_eq!(policy["granular"]["mcp_elicitations"], true);
+        assert_eq!(policy["granular"]["sandbox_approval"], false);
+        assert_eq!(thread_start(&turn)["params"]["sandbox"], "danger-full-access");
+    }
+
+    #[test]
     fn thread_start_carries_access_model_and_folder() {
         let turn = Turn { model: Some("m"), effort: None, access: Access::Edits, cwd: Some("/work".into()) };
         assert_eq!(
             thread_start(&turn),
             json!({ "method": "thread/start", "id": 1, "params": {
-                "approvalPolicy": "never", "sandbox": "workspace-write", "ephemeral": true, "model": "m", "cwd": "/work"
+                "approvalPolicy": approval_policy(Access::Edits), "sandbox": "workspace-write", "ephemeral": true, "model": "m", "cwd": "/work"
             } })
         );
         let asking = Turn { model: None, effort: None, access: Access::Ask, cwd: None };
@@ -339,7 +644,7 @@ mod tests {
         let bare = Turn { model: None, effort: None, access: Access::Read, cwd: None };
         assert_eq!(
             thread_start(&bare)["params"],
-            json!({ "approvalPolicy": "never", "sandbox": "read-only", "ephemeral": true })
+            json!({ "approvalPolicy": approval_policy(Access::Read), "sandbox": "read-only", "ephemeral": true })
         );
         let full = Turn { model: None, effort: None, access: Access::Full, cwd: None };
         assert_eq!(thread_start(&full)["params"]["sandbox"], "danger-full-access");
@@ -379,4 +684,21 @@ mod tests {
         );
         assert!(turn_start("t1", "hello", None)["params"].get("effort").is_none());
     }
+}
+
+pub async fn list_servers(cwd: Option<String>, path: Option<String>) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    use std::process::Stdio;
+    let mut command = tokio::process::Command::new("codex");
+    if let Some(path) = path { command.env("PATH", path); }
+    command.args(ARGS).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    if let Some(cwd) = cwd { command.current_dir(cwd); }
+    let mut child = command.spawn().map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let result = async {
+        initialize(&mut stdin, &mut lines).await?;
+        mcp_inventory(&mut stdin, &mut lines).await.and_then(|(_, names)| names)
+    }.await;
+    let _ = child.kill().await;
+    result
 }

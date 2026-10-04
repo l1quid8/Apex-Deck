@@ -25,11 +25,6 @@ use tokio::process::{Child, ChildStdin};
 use crate::events::{EventReader, OutputFormat};
 use crate::report;
 
-/// The flags that turn on the two-way mode. They follow `-p` and the event
-/// output flags; see `presets.rs`.
-pub(crate) const ASK_ARGS: &[&str] =
-    &["--input-format", "stream-json", "--permission-mode", "default", "--permission-prompt-tool", "stdio"];
-
 pub(crate) fn user_message(prompt: &str) -> Value {
     json!({ "type": "user", "message": { "role": "user", "content": prompt } })
 }
@@ -38,7 +33,7 @@ pub(crate) fn user_message(prompt: &str) -> Value {
 /// input back, which is where a client could change it; we pass it through.
 pub(crate) fn permission_response(request_id: &Value, input: &Value, decision: Decision) -> Value {
     let response = match decision {
-        Decision::Approve => json!({ "behavior": "allow", "updatedInput": input }),
+        Decision::Approve | Decision::ApproveAlways => json!({ "behavior": "allow", "updatedInput": input }),
         Decision::Reject => json!({ "behavior": "deny", "message": "The person reading the chat rejected this action." }),
     };
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
@@ -87,13 +82,24 @@ pub(crate) async fn run(
     while !reader.turn_over() {
         let Some(line) = lines.next_line().await? else { break };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
+            if message["type"] == "system" && message["subtype"] == "init" {
+                if let Some(servers) = message["mcp_servers"].as_array() {
+                    let names: Vec<apex_core::server_request::ToolServer> = servers.iter().filter_map(|s| s["name"].as_str().map(|name| name.to_owned().into())).collect();
+                    on_progress(Progress::ToolServers(&names));
+                }
+            }
             if message["type"] == "control_request" {
                 let request = &message["request"];
                 let reply = if request["subtype"] == "can_use_tool" {
                     let tool = request["tool_name"].as_str().unwrap_or("a tool");
                     let action = reader.claude_action(tool, &request["input"]);
-                    on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
-                    let decision = approver.decide(action).await;
+                    let decision = match crate::mcp::claude_tool(tool) {
+                        Some((_, name)) if !crate::mcp::needs_approval(name) => Decision::Approve,
+                        _ => {
+                            on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
+                            approver.decide(action).await
+                        },
+                    };
                     permission_response(&message["request_id"], &request["input"], decision)
                 } else {
                     // Something else it wants from its host. Say so plainly
@@ -149,4 +155,15 @@ mod tests {
     fn the_prompt_is_sent_as_a_user_message() {
         assert_eq!(user_message("hello"), json!({ "type": "user", "message": { "role": "user", "content": "hello" } }));
     }
+}
+
+/// Names of Claude's connected MCP servers, without running a turn.
+pub async fn list_servers(cwd: Option<String>, path: Option<String>) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+    let mut command = tokio::process::Command::new("claude");
+    if let Some(path) = path { command.env("PATH", path); }
+    command.args(["mcp", "list"]).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    if let Some(cwd) = cwd { command.current_dir(cwd); }
+    let output = command.output().await.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+    if !output.status.success() { return Err("Couldn't list Claude tool servers".into()); }
+    Ok(crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout)).into_iter().map(Into::into).collect())
 }
