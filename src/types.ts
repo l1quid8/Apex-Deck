@@ -193,6 +193,16 @@ export interface Pane {
   sample?: boolean;
 }
 
+/** What a thread reports to App through ChatPane's `onStatus`. */
+export interface ThreadStatus {
+  /** The muted words in the pane head when no flag shows, e.g. "2 bots · replying". */
+  text: string;
+  /** Display names of bots producing a reply right now (not counting ones stopped on a card). */
+  replying: string[];
+  /** Display names of bots stopped on an open approval card. */
+  waiting: string[];
+}
+
 export interface Workspace {
   id: string;
   name: string;

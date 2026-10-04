@@ -1,6 +1,6 @@
-import type { AllowedRule, ToolServer } from "./types";
+import type { AllowedRule, ThreadStatus, ToolServer } from "./types";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
-import { composerCopy, joinNames, replyingVerb } from "./composerStatus";
+import { composerCopy, joinNames, replyingVerb, threadStatusOf } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -56,8 +56,8 @@ interface Props {
   focused: boolean;
   /** The workspace's name, for the details sidebar heading. */
   workspaceName?: string;
-  /** What the pane head says about this thread, such as "2 bots · replying". */
-  onStatus?: (paneId: string, text: string) => void;
+  /** What the thread reports to App: the pane head's words, and who is replying or waiting on a card. */
+  onStatus?: (paneId: string, status: ThreadStatus) => void;
   /** Agents only: bumped to open the new agent form. */
   addRequest?: number;
   onActivity: (paneId: string) => void;
@@ -957,9 +957,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       return { ...d, model, effort: known && !known.includes(d.effort) ? "" : d.effort };
     });
 
-  // The pane head shows the number of bots, and whether any is replying.
-  const statusText = profileMode ? "" : `${participants.length === 0 ? "No bots yet" : participants.length === 1 ? "1 bot" : `${participants.length} bots`}${Object.keys(working).length > 0 ? " · replying" : ""}`;
-  useEffect(() => { if (!profileMode) onStatus?.(pane.id, statusText); }, [statusText]);
+  // The pane head's words, and who is replying or stopped on a card, for App.
+  const status = threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0));
+  const statusKey = JSON.stringify(status);
+  useEffect(() => { if (!profileMode) onStatus?.(pane.id, status); }, [statusKey]);
   // The title bar's + New agent opens the form here.
   useEffect(() => { if (profileMode && addRequest) openNewForm(); }, [addRequest]);
 

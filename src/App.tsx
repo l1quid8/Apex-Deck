@@ -20,7 +20,7 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, savedThreads } from "./closing";
-import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, Workspace } from "./types";
+import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
 /** A pane counts as working if it produced output this recently. */
@@ -65,9 +65,9 @@ export function App() {
   useEffect(() => { if (section !== "agents") setLastDeck(section); }, [section]);
   /** Bumped by the title bar's + New agent button. */
   const [newAgentRequest, setNewAgentRequest] = useState(0);
-  /** What each thread's head says: "2 bots", "2 bots · replying". */
-  const [threadStatus, setThreadStatus] = useState<Record<string, string>>({});
-  const onThreadStatus = useCallback((paneId: string, text: string) => setThreadStatus((all) => (all[paneId] === text ? all : { ...all, [paneId]: text })), []);
+  /** What each thread reports: its head's words, and who is replying or stopped on a card. */
+  const [threadStatus, setThreadStatus] = useState<Record<string, ThreadStatus>>({});
+  const onThreadStatus = useCallback((paneId: string, status: ThreadStatus) => setThreadStatus((all) => (JSON.stringify(all[paneId]) === JSON.stringify(status) ? all : { ...all, [paneId]: status })), []);
   const [disabledProviders, setDisabledProviders] = useState<string[]>([]);
   const [managingProviders, setManagingProviders] = useState(false);
   const [profiles, setProfiles] = useState<ParticipantConfig[]>([]);
@@ -683,7 +683,7 @@ export function App() {
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
                     {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} /> : <span className="pane-title">{pane.title}</span>}
-                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id] ?? "" : status === "working" ? "Working" : status === "exited" ? "Exited" : "Idle"}</span>}
+                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : status === "working" ? "Working" : status === "exited" ? "Exited" : "Idle"}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
