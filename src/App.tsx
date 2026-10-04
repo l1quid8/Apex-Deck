@@ -19,6 +19,7 @@ import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withAppro
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, quitQuestion, removeCounts, removeQuestion, savedThreads, stillRunning } from "./closing";
 import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
@@ -163,6 +164,8 @@ export function App() {
   /** Panes that want attention, by pane id. */
   const [attention, setAttention] = useState<Record<string, Signal>>({});
   const lastOutput = useRef(new Map<string, number>());
+  /** When each terminal's current run of output began, for "Working 4m". */
+  const runStart = useRef(new Map<string, number>());
   /** Every open approval card, app-wide (approvals.ts). */
   const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
 
@@ -237,6 +240,9 @@ export function App() {
   }, []);
   const onExit = useCallback((paneId: string) => {
     setExited((set) => new Set(set).add(paneId));
+  }, []);
+  const onRun = useCallback((paneId: string, startedAt: number) => {
+    runStart.current.set(paneId, startedAt);
   }, []);
 
   const statusOf = (pane: Pane): PaneStatus => {
@@ -481,6 +487,7 @@ export function App() {
     const end = () => {
       setPanes((list) => list.filter((p) => p.id !== id));
       lastOutput.current.delete(id);
+      runStart.current.delete(id);
       takeOff(id);
     };
     const status = statusOf(pane);
@@ -815,7 +822,7 @@ export function App() {
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
                     {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} /> : <span className="pane-title">{pane.title}</span>}
-                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : status === "working" ? "Working" : status === "exited" ? "Exited" : "Idle"}</span>}
+                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : status === "exited" ? "Exited" : "Idle"}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
@@ -841,7 +848,7 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} onRun={onRun} />
                     ) : (
                       <ChatPane onStatus={onThreadStatus} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}

@@ -17,6 +17,8 @@ interface Props {
   onExit: (paneId: string) => void;
   /** Raise or clear (with `null`) this pane's request for attention. */
   onSignal: (paneId: string, kind: Attention | null, note?: string) => void;
+  /** A new run of output began at `startedAt` (ms since the epoch), for the head's "Working 4m". */
+  onRun?: (paneId: string, startedAt: number) => void;
 }
 
 /** The text on the terminal's screen, for judging whether it is waiting. */
@@ -38,12 +40,12 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, onActivity, onExit, onSignal }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, onActivity, onExit, onSignal, onRun }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   // Keep the latest callbacks without restarting the terminal when they change.
-  const callbacks = useRef({ onActivity, onExit, onSignal });
-  callbacks.current = { onActivity, onExit, onSignal };
+  const callbacks = useRef({ onActivity, onExit, onSignal, onRun });
+  callbacks.current = { onActivity, onExit, onSignal, onRun };
 
   useEffect(() => {
     const element = host.current;
@@ -70,6 +72,7 @@ export function TerminalPane({ pane, cwd, backend, focused, onActivity, onExit, 
     const burst = new Burst();
     let quiet: ReturnType<typeof setTimeout> | undefined;
     let waiting = false;
+    let reportedRun = 0;
     const settle = () => {
       const reason = waitingFor(screenText(term));
       if (reason) {
@@ -88,6 +91,12 @@ export function TerminalPane({ pane, cwd, backend, focused, onActivity, onExit, 
         term.write(data);
         callbacks.current.onActivity(pane.id);
         burst.output(Date.now(), data.length);
+        // A new run of output: the pane head times it from here.
+        const run = burst.runStartedAt();
+        if (run !== reportedRun) {
+          reportedRun = run;
+          callbacks.current.onRun?.(pane.id, run);
+        }
         clearTimeout(quiet);
         quiet = setTimeout(settle, QUIET_MS);
       },

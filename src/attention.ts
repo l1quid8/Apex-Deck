@@ -106,6 +106,11 @@ export class Burst {
     this.lastTypedAt = now;
   }
 
+  /** When the current run of output began, in milliseconds; 0 before any output. */
+  runStartedAt(): number {
+    return this.startedAt;
+  }
+
   /** The terminal has gone quiet. Was the run that just ended real work? */
   finishedWork(): boolean {
     if (this.lastOutputAt === 0) return false;

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Burst, afterRound, ago, badgeCount, clearReady, label, seenFlags, summarize, urgency, waitingFor, withApprovals, withPaneSignal, workspaceFlag } from "../src/attention.ts";
+import { Burst, QUIET_MS, afterRound, ago, badgeCount, clearReady, label, seenFlags, summarize, urgency, waitingFor, withApprovals, withPaneSignal, workspaceFlag } from "../src/attention.ts";
 
 test("an approval menu under a question is waiting for approval", () => {
   const screen = `
@@ -201,4 +201,14 @@ test("the dock badge counts Needs you and Failed, not Ready", () => {
   assert.equal(badgeCount([]), 0);
   assert.equal(badgeCount([{ kind: "done", note: "", at }, { kind: "needs_input", note: "", at }, { kind: "failed", note: "", at }]), 2);
   assert.equal(badgeCount([{ kind: "done", note: "", at }]), 0);
+});
+
+test("a run of output starts with the first output after a quiet gap", () => {
+  const run = new Burst();
+  assert.equal(run.runStartedAt(), 0);
+  run.output(1000, 10);
+  run.output(1500, 10);
+  assert.equal(run.runStartedAt(), 1000);
+  run.output(1500 + QUIET_MS + 1, 10);
+  assert.equal(run.runStartedAt(), 1500 + QUIET_MS + 1);
 });

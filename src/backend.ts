@@ -274,6 +274,13 @@ function demoBackend(): Backend {
             emit( { type: "activity", id: p.id, text: step });
             await sleep(600); if (!active) return;
           }
+          // Preview only: a message with "stall" in it leaves the bot silent
+          // for six minutes, so the quiet warning can be seen.
+          const said = [...room.transcript].reverse().find((m) => m.speaker.kind === "human")?.text ?? "";
+          if (/\bstall\b/i.test(said)) {
+            emit( { type: "activity", id: p.id, text: "Running: sleep 360" });
+            await sleep(6 * 60_000); if (!active) return;
+          }
           emit( { type: "delta", id: p.id, text: "\n\n" });
           // Preview only: a bot set to ask first proposes an edit, then a
           // command and an MCP tool call together (as a model calling two
@@ -382,14 +389,19 @@ function demoBackend(): Backend {
     },
     ptyWrite: async (id, data) => {
       emitData(id, data.replace(/\r/g, "\r\n$ ").replace(/\x7f/g, "\b \b"));
-      // Preview only: typing "ask" then Enter shows an approval prompt, and
-      // "work" prints for a few seconds, so the attention states can be seen.
+      // Preview only: typing "ask" then Enter shows an approval prompt, "work"
+      // prints for a few seconds and "long" for 90 seconds, so the attention
+      // states and working times can be seen.
       typedSoFar.set(id, ((typedSoFar.get(id) ?? "") + data).slice(-12));
       const line = typedSoFar.get(id) ?? "";
       if (line.endsWith("ask\r")) setTimeout(() => emitData(id, "\r\n Do you want to create hello.txt?\r\n \u276f 1. Yes\r\n   2. No\r\n"), 300);
       if (line.endsWith("work\r")) {
         for (let i = 1; i <= 40; i++) setTimeout(() => emitData(id, `\r\ncompiling module ${i} of 40 ...`), 2000 + i * 100);
         setTimeout(() => emitData(id, "\r\nFinished.\r\n$ "), 6200);
+      }
+      if (line.endsWith("long\r")) {
+        for (let i = 1; i <= 180; i++) setTimeout(() => emitData(id, `\r\nstep ${i} of 180 ...`), i * 500);
+        setTimeout(() => emitData(id, "\r\nFinished.\r\n$ "), 181 * 500);
       }
     },
     ptyResize: async () => {},

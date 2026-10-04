@@ -1,6 +1,6 @@
 import type { AllowedRule, ThreadStatus, ToolServer } from "./types";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
-import { composerCopy, joinNames, replyingVerb, threadStatusOf } from "./composerStatus";
+import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, replyingVerb, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -266,12 +266,6 @@ function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   return "Thinking";
 }
 
-/** Time since a turn began: 8s, 1m 05s. */
-export function elapsed(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-}
 
 /** Running token totals for one participant. */
 interface TokenUse {
@@ -439,6 +433,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   // What happened in the round of replies now running, to decide when it
   // ends whether the chat wants attention. See afterRound in attention.ts.
   const round = useRef<{ failed: string[]; lastReply: string | null; stopped: boolean }>({ failed: [], lastReply: null, stopped: false });
+  /** When each bot was last heard from in its turn, for the quiet warning. See heardFrom. */
+  const heard = useRef(new Map<string, number>());
   /** Agents whose context is at or under the low mark, so the notice shows
    *  once per crossing; and notices waiting for the agent's reply to land. */
   const lowContext = useRef(new Set<string>());
@@ -477,6 +473,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()));
     const unregister = registerRoom(pane.id, (event: RoomEvent) => {
       activity.current(pane.id);
+      const heardId = heardFrom(event);
+      if (heardId) heard.current.set(heardId, Date.now());
       if (event.type === "tool_servers") { setServerErrors(errors => { const next = {...errors}; delete next[event.id]; return next; }); setServerLists(lists => ({...lists, [event.id]: event.servers})); return; }
       switch (event.type) {
         case "message_added":
@@ -507,6 +505,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           setWorking(({ [event.id]: _done, ...rest }) => rest);
           reportApprovals();
           turnQueue.idle(event.id);
+          heard.current.delete(event.id);
           break;
         case "turn_started":
           turnQueue.started(event.id);
@@ -959,8 +958,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       return { ...d, model, effort: known && !known.includes(d.effort) ? "" : d.effort };
     });
 
-  // The pane head's words, and who is replying or stopped on a card, for App.
-  const status = threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0));
+  // The pane head's words (see headLine), and who is replying or stopped on a card, for App.
+  const headBots: BotProgress[] = participants
+    .filter((p) => working[p.id] && !asks[p.id]?.length)
+    .map((p) => ({
+      name: p.display_name,
+      doing: doingNow(working[p.id]),
+      startedAt: working[p.id].startedAt,
+      heardAt: isCommandLine(p.backend) ? heard.current.get(p.id) ?? working[p.id].startedAt : null,
+    }));
+  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now) };
   const statusKey = JSON.stringify(status);
   useEffect(() => { if (!profileMode) onStatus?.(pane.id, status); }, [statusKey]);
   // The title bar's + New agent opens the form here.
@@ -1483,6 +1490,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           // Long turns take many steps; the latest few say where it is.
           const shown = steps.slice(-MAX_STEPS_SHOWN);
           const hidden = steps.length - shown.length;
+          const config = configOf(id);
+          const quiet = turn && !asks[id]?.length && config && isCommandLine(config.backend) ? quietLine(heard.current.get(id) ?? turn.startedAt, now) : null;
           return (
             <div key={`d${id}`} className="bot-row">
               <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
@@ -1515,14 +1524,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
                     }}
                   />
                 ))}
-                <div className={`working-line ${asks[id]?.length ? "asking" : ""}`} role="status">
+                <div className={`working-line ${asks[id]?.length ? "asking" : quiet ? "quiet" : ""}`} role="status">
                   <span className="working-dots" aria-hidden="true">
                     <i />
                     <i />
                     <i />
                   </span>
-                  <span>{asks[id]?.length ? "Waiting for you" : phaseLabel(turn?.phase)}</span>
-                  {turn && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
+                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? phaseLabel(turn?.phase)}</span>
+                  {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
                 </div>
               </div>
             </div>

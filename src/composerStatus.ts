@@ -1,4 +1,4 @@
-import type { ThreadStatus } from "./types";
+import type { ParticipantBackend, RoomEvent, ThreadStatus } from "./types";
 
 /** "Opus", "Opus and Codex", "Opus, Codex and Gemini". */
 export function joinNames(names: string[]): string {
@@ -30,4 +30,80 @@ export function threadStatusOf(bots: { id: string; display_name: string }[], wor
     replying: bots.filter((bot) => working.includes(bot.id) && !asking.includes(bot.id)).map((bot) => bot.display_name),
     waiting: bots.filter((bot) => asking.includes(bot.id)).map((bot) => bot.display_name),
   };
+}
+
+/** Time since a turn began: 8s, 1m 05s. */
+export function elapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+/** After this long with nothing heard, a command-line bot reads as quiet. */
+export const QUIET_AFTER_MS = 5 * 60_000;
+/** Command-line turns stop after this many minutes of silence (TURN_TIMEOUT in crates/apex-adapters/src/cli.rs). */
+export const SILENCE_LIMIT_MINUTES = 15;
+
+/** Whether a bot runs as a command-line tool, which the silence limit applies to. */
+export function isCommandLine(backend: ParticipantBackend): boolean {
+  return backend.kind === "agent" || backend.kind === "cli";
+}
+
+const HEARD = new Set<RoomEvent["type"]>(["turn_started", "delta", "activity", "changed", "context_usage", "tool_servers", "approval_resolved"]);
+
+/**
+ * The bot an event shows is alive, as the silence limit counts it: any
+ * update from its turn, or an answer to its card (waiting on a card never
+ * counts as silence). Null for every other event.
+ */
+export function heardFrom(event: RoomEvent): string | null {
+  if (!HEARD.has(event.type) || !("id" in event) || typeof event.id !== "string") return null;
+  return event.id;
+}
+
+/** What a bot is doing now: its latest step while it uses a tool, else Thinking or Writing. A step saying it waits for approval is over once that is answered. */
+export function doingNow(turn: { phase: "thinking" | "tool" | "writing"; steps: readonly string[] }): string {
+  const step = turn.steps[turn.steps.length - 1];
+  if (turn.phase === "tool" && step && !step.startsWith("Waiting for approval: ")) return step;
+  return turn.phase === "tool" ? "Working" : turn.phase === "writing" ? "Writing" : "Thinking";
+}
+
+/** "Quiet 6m · stops at 15m", once a command-line bot has said nothing for 5 minutes. Null before then, and for other bots (`since` null). */
+export function quietLine(since: number | null, now: number): string | null {
+  if (since === null || now - since < QUIET_AFTER_MS) return null;
+  return `Quiet ${Math.floor((now - since) / 60_000)}m · stops at ${SILENCE_LIMIT_MINUTES}m`;
+}
+
+/** One bot producing a reply, as the pane head describes it. */
+export interface BotProgress {
+  name: string;
+  /** From doingNow. */
+  doing: string;
+  /** When its turn started, in milliseconds since the epoch. */
+  startedAt: number;
+  /** When it was last heard from, for command-line bots; null for others. */
+  heardAt: number | null;
+}
+
+/**
+ * The muted words in a thread's pane head when no flag shows
+ * (ThreadStatus.text): "Null · Running: npm test · 1m 12s" for one bot at
+ * work, "2 replying · Null: Editing src/App.tsx" for more, and the number
+ * of bots otherwise. A quiet command-line bot is named first, with its
+ * warning in place of its step.
+ */
+export function headLine(bots: number, replying: readonly BotProgress[], now: number): string {
+  if (replying.length === 0) return bots === 0 ? "No bots yet" : bots === 1 ? "1 bot" : `${bots} bots`;
+  if (replying.length === 1) {
+    const bot = replying[0];
+    return `${bot.name} · ${quietLine(bot.heardAt, now) ?? `${bot.doing} · ${elapsed(now - bot.startedAt)}`}`;
+  }
+  const named = replying.find((bot) => quietLine(bot.heardAt, now) !== null) ?? replying[0];
+  return `${replying.length} replying · ${named.name}: ${quietLine(named.heardAt, now) ?? named.doing}`;
+}
+
+/** A terminal's head while output keeps coming: "Working", then "Working 4m" once a run passes a minute. */
+export function workingFor(startedAt: number, now: number): string {
+  const minutes = Math.floor((now - startedAt) / 60_000);
+  return minutes >= 1 ? `Working ${minutes}m` : "Working";
 }

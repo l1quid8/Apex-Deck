@@ -353,6 +353,10 @@ textarea {
   font-weight: 600;
 }
 .pane-folder {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--muted);
   font-size: 12px;
 }
@@ -1969,3 +1973,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   .titlebar-end { margin-left: auto; }
   .titlebar-start > .attention { margin-left: 0; }
 }
+
+/* A command-line bot that has said nothing for a while: muted, not alarming. */
+.working-line.quiet { color: var(--muted); }
+.working-line.quiet .working-dots i { background: var(--muted); }
