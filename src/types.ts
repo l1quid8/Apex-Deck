@@ -97,6 +97,10 @@ export interface AllowedRule {
   title: string;
   /** What it covers: a tool's title, a command, a file's edit title, or a permission question. */
   what: string;
+  /** When it was allowed, in Unix seconds. 0 or missing for rules saved before Deck recorded it. */
+  allowed_at?: number;
+  /** The card it came from could spend money or publish. */
+  risky?: boolean;
 }
 
 export interface Compaction {

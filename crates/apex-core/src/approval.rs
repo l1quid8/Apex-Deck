@@ -59,6 +59,7 @@ pub struct ProposedAction {
 
 /// Something the person chose "Always allow" for. Saved with the thread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "SavedRule")]
 pub struct AllowedRule {
     /// The bot it applies to.
     pub by: ParticipantId,
@@ -70,21 +71,64 @@ pub struct AllowedRule {
     /// which for Computer Use names the app. Allowing one app or command
     /// doesn't allow another.
     pub what: String,
+    /// When it was allowed, in Unix seconds. 0 for rules saved before Deck
+    /// recorded it.
+    pub allowed_at: u64,
+    /// The card it came from could spend money or publish.
+    pub risky: bool,
+}
+
+/// A rule as it is read from a saved thread. Rules saved before this
+/// version have no `allowed_at` or `risky`.
+#[derive(Deserialize)]
+struct SavedRule {
+    by: ParticipantId,
+    kind: ActionKind,
+    title: String,
+    what: String,
+    #[serde(default)]
+    allowed_at: u64,
+    risky: Option<bool>,
+}
+
+impl From<SavedRule> for AllowedRule {
+    fn from(saved: SavedRule) -> Self {
+        // Before `risky` was saved, the only MCP tools that reached a card
+        // were ones that can spend money or publish, so a saved tool rule
+        // was always one of them.
+        let risky = saved.risky.unwrap_or(saved.kind == ActionKind::Tool);
+        Self { by: saved.by, kind: saved.kind, title: saved.title, what: saved.what, allowed_at: saved.allowed_at, risky }
+    }
+}
+
+/// What a rule made from `action` covers. See `AllowedRule::what`.
+fn scope(action: &ProposedAction) -> &str {
+    match action.kind {
+        ActionKind::Tool | ActionKind::Edit => &action.title,
+        ActionKind::Command | ActionKind::Other => &action.detail,
+    }
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 impl AllowedRule {
     pub fn new(by: &ParticipantId, action: &ProposedAction) -> Self {
-        let what = match action.kind {
-            ActionKind::Tool | ActionKind::Edit => &action.title,
-            ActionKind::Command | ActionKind::Other => &action.detail,
-        };
-        Self { by: by.clone(), kind: action.kind, title: action.title.clone(), what: what.clone() }
+        Self {
+            by: by.clone(),
+            kind: action.kind,
+            title: action.title.clone(),
+            what: scope(action).to_string(),
+            allowed_at: now_seconds(),
+            risky: action.risky,
+        }
     }
 
-    /// Whether this rule covers `action` from `by`. The title is only a label.
+    /// Whether this rule covers `action` from `by`. The title, the date and
+    /// the risk are only labels.
     pub fn covers(&self, by: &ParticipantId, action: &ProposedAction) -> bool {
-        let other = Self::new(by, action);
-        (&self.by, self.kind, &self.what) == (&other.by, other.kind, &other.what)
+        &self.by == by && self.kind == action.kind && self.what == scope(action)
     }
 }
 
@@ -92,8 +136,11 @@ impl AllowedRule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Approve,
-    /// Approve, and don't ask again about the same thing in this thread
-    /// until the app quits. Tools that can remember it themselves are told too.
+    /// Approve, and don't ask again about the same thing in this thread. The
+    /// rule is saved with the thread and lasts until the person removes it
+    /// in thread details. Codex is told to remember it only for its own
+    /// session, which ends with the turn, so the saved list is the only
+    /// lasting record.
     ApproveAlways,
     Reject,
 }
@@ -249,6 +296,20 @@ impl FileChange {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rule_records_when_it_was_allowed_and_whether_it_was_risky() {
+        let bot = ParticipantId::new("null");
+        let tweet = ProposedAction { kind: ActionKind::Tool, title: "x-mcp: post_tweet".into(), detail: "{}".into(), expires_at: None, risky: true };
+        let before = now_seconds();
+        let rule = AllowedRule::new(&bot, &tweet);
+        assert!(rule.allowed_at >= before && rule.allowed_at <= now_seconds());
+        assert!(rule.risky);
+        let mut older = rule.clone();
+        older.allowed_at = 0;
+        older.risky = false;
+        assert!(older.covers(&bot, &tweet), "the date and the risk are labels, not part of the match");
+    }
+
     use super::*;
     use futures::executor::block_on;
 

@@ -123,10 +123,11 @@ fn room_event_shapes() {
         to_value(RoomEvent::ApprovalRequested { id: id.clone(), request: "ask-1".into(), action }).unwrap(),
         json!({ "type": "approval_requested", "id": "opus", "request": "ask-1", "action": { "kind": "command", "title": "Run a command", "detail": "ls", "risky": false } })
     );
-    let rule = apex_core::AllowedRule::new(&id, &apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into(), expires_at: None, risky: false });
+    let mut rule = apex_core::AllowedRule::new(&id, &apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into(), expires_at: None, risky: false });
+    rule.allowed_at = 1_791_100_800;
     assert_eq!(
         to_value(RoomEvent::AllowedChanged { allowed: vec![rule] }).unwrap(),
-        json!({ "type": "allowed_changed", "allowed": [{ "by": "opus", "kind": "command", "title": "Run a command", "what": "npm test" }] })
+        json!({ "type": "allowed_changed", "allowed": [{ "by": "opus", "kind": "command", "title": "Run a command", "what": "npm test", "allowed_at": 1791100800, "risky": false }] })
     );
     assert_eq!(
         to_value(RoomEvent::ApprovalResolved { id: id.clone(), request: "ask-1".into(), approved: false }).unwrap(),
@@ -239,4 +240,22 @@ fn proposed_actions_say_whether_they_are_risky() {
     let old: apex_core::ProposedAction =
         serde_json::from_value(json!({ "kind": "command", "title": "Run a command", "detail": "ls" })).unwrap();
     assert!(!old.risky);
+}
+
+#[test]
+fn rules_saved_before_dates_and_risk_still_load_and_match() {
+    let old: Vec<apex_core::AllowedRule> = serde_json::from_value(json!([
+        { "by": "null", "kind": "tool", "title": "x-mcp: post_tweet", "what": "x-mcp: post_tweet" },
+        { "by": "null", "kind": "command", "title": "Run a command", "what": "npm test" }
+    ]))
+    .unwrap();
+    assert_eq!((old[0].allowed_at, old[0].risky), (0, true), "only risky tools ever reached a card");
+    assert_eq!((old[1].allowed_at, old[1].risky), (0, false));
+    let null = ParticipantId::new("null");
+    let run = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into(), expires_at: None, risky: false };
+    assert!(old[1].covers(&null, &run), "an old rule still answers");
+    let desk = apex_core::ApprovalDesk::default();
+    desk.set_allowed(old.clone());
+    assert!(desk.forget(&old[1]), "Remove still works on an old rule");
+    assert!(!desk.always_allowed(&null, &run));
 }
