@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBackend, type Backend } from "./backend";
 import { ProviderSettings } from "./ProviderSettings";
 import { providerEnabled } from "./providers";
-import { detailsOverlay, type DetailsSection } from "./detailsLayout";
+import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { DetailsHost } from "./ThreadDetails";
 import { ThreadName } from "./ThreadName";
 import { ChatPane } from "./ChatPane";
@@ -11,6 +11,7 @@ import { startHub } from "./hub";
 import { SectionNavigation } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { DeckIcon } from "./DeckIcon";
+import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
@@ -69,6 +70,8 @@ export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
   const [panes, setPanes] = useState<Pane[]>([]);
   const [focusedPane, setFocusedPane] = useState<string | null>(null);
+  /** Threads in the order they were last focused, most recent first. */
+  const [recentThreads, setRecentThreads] = useState<string[]>([]);
   const [maximized, setMaximized] = useState<string | null>(null);
   const [layout, setLayout] = useState<Layout>("top");
   /** How the panes of each workspace section are arranged. */
@@ -97,6 +100,8 @@ export function App() {
   const canvasRef = useRef<HTMLElement>(null);
   const detailsToggle = useRef<HTMLButtonElement>(null);
   const focusDetails = useRef(false);
+  /** Whether a thread is on screen for the sidebar; read by the Escape handler. */
+  const detailsTargetRef = useRef<string | null>(null);
   const pendingSection = useRef<DetailsSection | undefined>(undefined);
   const overlayDetails = detailsOverlay(availableWidth);
   const closeDetails = () => { setDetailsOpen(false); detailsToggle.current?.focus(); };
@@ -106,8 +111,8 @@ export function App() {
     if (target) setDetailsCollapsed(old => ({ ...old, [target]: false }));
     setDetailsOpen(true);
   };
-  const detailsHost: DetailsHost = { slot: detailsSlot, open: detailsOpen && section === "threads", collapsed: detailsCollapsed,
-    toggle: target => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
+  const detailsHostBase = { slot: detailsSlot, open: detailsOpen && section === "threads", collapsed: detailsCollapsed,
+    toggle: (target: DetailsSection) => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
@@ -130,7 +135,7 @@ export function App() {
     }
   }, [detailsOpen, detailsSlot, detailsCollapsed]);
   useEffect(() => {
-    if (!detailsOpen || section !== "threads" || !overlayDetails) return;
+    if (!detailsOpen || section !== "threads" || !overlayDetails || !detailsTargetRef.current) return;
     const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); closeDetails(); } };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
@@ -224,6 +229,13 @@ export function App() {
 
   const visiblePanes = useMemo(() => openPanes(panes, deleting).filter((p) => p.workspaceId === activeWorkspace && (section === "code" ? p.kind === "terminal" : section === "threads" && p.kind === "chat")), [panes, deleting, activeWorkspace, section]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
+  useEffect(() => {
+    if (focusedPane && panes.some((p) => p.id === focusedPane && p.kind === "chat")) setRecentThreads((recent) => (recent[0] === focusedPane ? recent : noteFocus(recent, focusedPane)));
+  }, [focusedPane, panes]);
+  /** The thread the details sidebar shows; null when no thread is on screen. */
+  const detailsTarget = section === "threads" && !picking ? detailsThread(focusedPane, shown.filter((p) => p.kind === "chat").map((p) => p.id), recentThreads) : null;
+  detailsTargetRef.current = detailsTarget;
+  const detailsHost: DetailsHost = { ...detailsHostBase, target: detailsTarget };
 
   // The arrangement of the panes in view. Panes that were added or closed
   // since it was last stored are worked in here, so it always matches.
@@ -525,9 +537,17 @@ export function App() {
             </button>
           </div>
         )}
-        {section !== "agents" && <button className="primary" onClick={() => setPicking(true)} disabled={!current}>
-          {section === "threads" ? "+ New thread" : "+ New terminal"}
-        </button>}
+        {section !== "agents" && <NewMenu
+          section={section}
+          label={section === "threads" ? "+ New thread" : "+ New terminal"}
+          disabled={!current}
+          agents={agents}
+          disabledProviders={disabledProviders}
+          hasPanes={visiblePanes.length > 0}
+          onShowPicker={() => setPicking(true)}
+          onPick={(item) => addPane(item.kind, item.kind === "chat" ? "Group chat" : item.label, item.agent)}
+          onManageProviders={() => setManagingProviders(true)}
+        />}
         {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
       </header>
 
@@ -637,7 +657,7 @@ export function App() {
                     {pane.kind === "terminal" ? (
                       <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} />
                     ) : (
-                      <ChatPane details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} />
+                      <ChatPane details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} />
                     )}
                   </div>
                 </section>
@@ -647,10 +667,9 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
         </main>
-        {section === "threads" && detailsOpen && <>
+        {section === "threads" && detailsOpen && detailsTarget && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close thread details overlay" onClick={closeDetails} />}
           <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} aria-label="Thread details">
-            {!(section === "threads" && !picking && shown.some(p => p.kind === "chat" && p.id === focusedPane)) && <p className="muted details-empty">Select a thread to see its bots and changes.</p>}
           </aside>
         </>}
       </div>

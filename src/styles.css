@@ -1758,3 +1758,80 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   -moz-appearance: textfield;
 }
 .stepper input::-webkit-outer-spin-button, .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* UI review, stage 3: one compact row per bot in thread details. */
+.details-bot { border: 0; border-radius: 6px; padding: 6px 4px; margin-bottom: 4px; }
+.details-bot:hover { background: #ffffff05; }
+.details-bot-row { display: flex; align-items: flex-start; gap: 10px; }
+.details-bot-copy { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 1px; }
+.details-bot-copy strong { font-size: 12px; font-weight: 650; }
+.details-bot-copy .muted { font-size: 11px; overflow-wrap: anywhere; }
+.bot-meters { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 3px; }
+.bot-meter { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bot-meter-track { display: inline-flex; width: 30px; height: 4px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.bot-meter-track > span { border-radius: 999px; background: var(--muted); }
+.bot-meter-track > span.low { background: var(--text); }
+.details-bot-usage { margin: 2px 0 0 38px; font-size: 11px; color: var(--muted); }
+.details-bot-usage > summary { cursor: pointer; width: fit-content; padding: 2px 0; }
+.details-bot-usage[open] > summary { color: var(--text); }
+
+/* UI review, stage 3: + New as a menu over the deck. */
+.new-menu { position: relative; }
+.new-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 40;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.new-menu-filter { margin-bottom: 3px; padding: 7px 10px; font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.new-menu-list > button { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 0; background: transparent; text-align: left; font-size: 12px; }
+.new-menu-list > button strong { font-weight: 600; }
+.new-menu-list > button span { color: var(--muted); font-size: 11px; }
+.new-menu-list > button .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.new-menu-list > button.active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.new-menu-enter { margin-left: auto; }
+.new-menu-missing { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); margin-top: 3px; }
+button.link { padding: 0; border: 0; background: transparent; color: var(--brand-cyan); font-size: 11px; }
+button.link:hover:not(:disabled) { text-decoration: underline; }
+.new-menu-foot { display: flex; justify-content: space-between; padding: 5px 10px 3px; border-top: 1px solid var(--line); margin-top: 3px; font-size: 11px; color: var(--muted); }
+.new-menu-empty { margin: 4px 10px; font-size: 12px; }
+
+/* UI review, stage 3: add a bot from a menu at the button. */
+.quick-add-wrap { position: relative; display: inline-flex; }
+.quick-add {
+  position: absolute;
+  top: calc(100% + 8px);
+  z-index: 35;
+  width: min(330px, 86vw);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  text-align: left;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.quick-add-wrap.empty .quick-add { left: 50%; transform: translateX(-50%); }
+.quick-add-wrap.details .quick-add { left: 0; width: min(296px, 86vw); }
+.quick-add label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); min-width: 0; }
+.quick-add label input, .quick-add label select { font-size: 12px; color: var(--text); min-width: 0; width: 100%; }
+.quick-add-label { font-size: 11px; color: var(--muted); }
+.quick-add-saved { display: flex; flex-wrap: wrap; gap: 6px; }
+.quick-add-chip { padding: 3px 10px; border-radius: 999px; background: var(--panel); font-size: 12px; }
+.quick-add-tools { display: flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.quick-add-tools button { flex: 1; padding: 4px 6px; border: 1px solid transparent; background: transparent; font-size: 12px; color: var(--muted); }
+.quick-add-tools button.on { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+.quick-add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.quick-add-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.quick-add .form-error { margin: 0; }

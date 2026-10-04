@@ -1,3 +1,5 @@
+import { slug } from "./slug";
+import { nameForModel, uniqueName } from "./quickAdd";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
@@ -48,6 +50,8 @@ interface Props {
   agents: AgentInfo[];
   backend: Backend;
   focused: boolean;
+  /** The workspace's name, for the details sidebar heading. */
+  workspaceName?: string;
   onActivity: (paneId: string) => void;
   /** Raise or clear (with `null`) this chat's request for attention. */
   onSignal?: (paneId: string, kind: Attention | null, note?: string) => void;
@@ -78,15 +82,7 @@ function compactionOf(entries: Entry[]) {
   return summary?.kind === "summary" ? { upto: summary.summary.upto, summary: summary.summary.summary } : null;
 }
 
-/** The @handle the room will match: lower-case letters, digits, dash, underscore, dot. */
-export function slug(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^\p{L}\p{N}\-_.]/gu, "")
-    .replace(/\.+$/, "");
-}
+export { slug };
 
 /** Split a command line into arguments, honouring single and double quotes. */
 export function splitArgs(line: string): string[] {
@@ -300,7 +296,7 @@ function describe(config: ParticipantConfig): string {
   return "Scripted";
 }
 
-export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -334,7 +330,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const [asks, setAsks] = useState<Record<string, { request: string; action: ProposedAction }[]>>({});
   /** Files the bots have changed since this chat was opened. */
   const [changes, setChanges] = useState<MadeChange[]>([]);
-  const showChanges = Boolean(details?.open && focused && !details.collapsed.changes);
+  const showChanges = Boolean(details?.open && details.target === pane.id && !details.collapsed.changes);
   const showChangesRef = useRef(false);
   showChangesRef.current = showChanges;
   const [diff, setDiff] = useState<ThreadDiff | null>(null);
@@ -360,6 +356,28 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const [recipients, setRecipients] = useState<string[]>([]);
   const [reply, setReply] = useState<ReplyQuote | null>(null);
   const [adding, setAdding] = useState(false);
+  /** Where the quick add menu is open: under the empty thread's button, or in the sidebar. */
+  const [quickAdd, setQuickAdd] = useState<"empty" | "details" | null>(null);
+  /** True once the person types a name, so choosing a model stops renaming the bot. */
+  const nameTouched = useRef(false);
+  useEffect(() => {
+    if (!quickAdd) return;
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".quick-add-wrap")) setQuickAdd(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); setQuickAdd(null); } };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key, true); };
+  }, [quickAdd]);
+  /** The bot whose ⋯ menu is open in the details sidebar. */
+  const [botMenu, setBotMenu] = useState<string | null>(null);
+  useEffect(() => {
+    if (!botMenu) return;
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".pane-menu-wrap")) setBotMenu(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") setBotMenu(null); };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key); };
+  }, [botMenu]);
   const installed = (preset: Preset) => !preset.agent || agents.some((a) => a.key === preset.agent!.detectKey && a.found);
   // Start on the first agent that is installed, or on local models.
   const availablePresets = PRESETS.filter((p) => providerEnabled(p.key, disabledProviders));
@@ -629,6 +647,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       }
       if (config.backend.kind === "agent" && config.backend.model) rememberModel(draft.preset, config.backend.model);
       closeForm(draft.preset);
+      return true;
     } catch (error) {
       setFormError(String(error));
     }
@@ -878,6 +897,14 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       return { ...d, model, effort: known && !known.includes(d.effort) ? "" : d.effort };
     });
 
+  // In the quick add menu the name follows the model until the person types one.
+  useEffect(() => {
+    if (!quickAdd || nameTouched.current) return;
+    const tool = preset.agent?.tool ?? preset.key;
+    const name = uniqueName(nameForModel(tool, preset.label, draft.model), participants.map((p) => p.id), slug);
+    if (name !== draft.name) set("name", name);
+  }, [quickAdd, draft.preset, draft.model, participants]);
+
   // Battery levels: context is each agent's own, the plan its provider's.
   const configOf = (id: string) => participants.find((p) => p.id === id);
   const levelsFor = (id: string): Levels => {
@@ -1079,13 +1106,80 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           </button>
         </form>
       ));
+  const addSaved = async (config: ParticipantConfig) => {
+    try {
+      await backend.roomAddParticipant(pane.id, config);
+      setParticipants((list) => [...list, config]);
+      return true;
+    } catch (error) { notify(`Could not add the agent: ${String(error)}`, "error"); return false; }
+  };
+  const openQuickAdd = (where: "empty" | "details") => {
+    if (quickAdd === where) return setQuickAdd(null);
+    nameTouched.current = false;
+    setEditing(null);
+    setAdding(false);
+    setFormError("");
+    const start = providerEnabled(draft.preset, disabledProviders) && installed(preset) ? draft.preset : firstPreset;
+    setDraft({ ...emptyDraft(start), access: draft.access });
+    const startPreset = PRESETS.find((p) => p.key === start);
+    if (startPreset?.api?.autoLoad) loadModels(startPreset.api.baseUrl, "");
+    setQuickAdd(where);
+  };
+  /** Up to three tools for the quick menu: installed coding agents, then local models. */
+  const quickTools = availablePresets.filter((p) => (p.agent && installed(p)) || p.key === "ollama").slice(0, 3);
+  const quickAddMenu = (
+    <form className="quick-add" aria-label="Add a bot" onSubmit={async (e) => { e.preventDefault(); if (await saveParticipant()) setQuickAdd(null); }}>
+      {availableProfiles.some((p) => !participants.some((own) => own.id === p.id)) && <>
+        <span className="quick-add-label">Saved agents</span>
+        <div className="quick-add-saved">
+          {availableProfiles.filter((p) => !participants.some((own) => own.id === p.id)).map((p) => (
+            <button type="button" key={p.id} className="quick-add-chip" style={{ borderColor: (p.appearance ?? legacyAppearance(p.id)).color }} onClick={async () => { if (await addSaved(p)) setQuickAdd(null); }}>{p.display_name}</button>
+          ))}
+        </div>
+        <span className="quick-add-label">Or a new bot</span>
+      </>}
+      <div className="quick-add-tools" role="radiogroup" aria-label="Tool">
+        {quickTools.map((p) => <button type="button" role="radio" aria-checked={draft.preset === p.key} key={p.key} className={draft.preset === p.key ? "on" : undefined} onClick={() => choosePreset(p.key)}>{p.label.replace(/\s*\(.*\)$/, "")}</button>)}
+        <button type="button" onClick={() => { setQuickAdd(null); details?.show("form"); setAdding(true); }}>More…</button>
+      </div>
+      <div className="quick-add-grid">
+        <label>Model
+          {preset.agent ? (
+            <Picker key={`quick-model:${draft.preset}`} name="quick-model" value={draft.model} onChange={setAgentModel} groups={modelChoices} emptyLabel="Default" customLabel="Type another model name…" customPlaceholder="Exact model name" />
+          ) : (
+            <><input name="quick-model" list={`quick-models-${pane.id}`} value={draft.model} onChange={(e) => set("model", e.target.value)} placeholder="e.g. llama3" />
+              <datalist id={`quick-models-${pane.id}`}>{apiModels.map((m) => <option key={m} value={m} />)}</datalist></>
+          )}
+        </label>
+        <label>Access
+          <select name="quick-access" value={draft.access} onChange={(e) => set("access", e.target.value as Access)}>
+            <option value="read">Read only</option>
+            {preset.agent?.enforcesAccess && <option value="ask">Ask first</option>}
+            <option value="edits">Can edit files</option>
+            <option value="full">Full access</option>
+          </select>
+        </label>
+      </div>
+      <label>Name
+        <input name="quick-name" value={draft.name} onChange={(e) => { nameTouched.current = true; set("name", e.target.value); }} placeholder="e.g. Opus" />
+        {draft.name && <span className="hint">Mention as @{slug(draft.name)}</span>}
+      </label>
+      {formError && <p className="form-error">{formError}</p>}
+      <div className="quick-add-foot">
+        <button type="button" className="ghost" onClick={() => { setQuickAdd(null); details?.show("form"); setAdding(true); }}>More options</button>
+        <button className="primary" type="submit">Add to chat</button>
+      </div>
+    </form>
+  );
+  const quickAddButton = (where: "empty" | "details", primary: boolean) => (
+    <span className={`quick-add-wrap ${where}`}>
+      <button className={primary ? "primary" : "ghost"} disabled={!ready || availablePresets.length === 0} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={() => openQuickAdd(where)}>+ Add model</button>
+      {quickAdd === where && quickAddMenu}
+    </span>
+  );
   const savedPicker = (availableProfiles.length > 0 && <select aria-label="Add a saved agent" value="" disabled={!ready || busy} onChange={async (e) => {
           const config = availableProfiles.find((p) => p.id === e.target.value);
-          if (!config) return;
-          try {
-            await backend.roomAddParticipant(pane.id, config);
-            setParticipants((list) => [...list, config]);
-          } catch (error) { notify(`Could not add the agent: ${String(error)}`, "error"); }
+          if (config) await addSaved(config);
         }}>
           <option value="">Add a saved agent…</option>
           {availableProfiles.map((p) => <option key={p.id} value={p.id} disabled={participants.some((own) => own.id === p.id)}>{p.display_name}</option>)}
@@ -1125,19 +1219,38 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         </div>)}
         </div>
       </details> : <p className="muted">No pinned facts. Add one with /pin.</p>);
-  const botControls = <>{participants.map(p => <article className="details-bot" key={p.id}>
-    <div className="details-bot-title"><Avatar seed={appearance(p.id).seed} color={color(p.id)} levels={levelsFor(p.id)} refills={refillsFor(p.id)} working={Boolean(working[p.id]) && !asks[p.id]?.length} /><strong>{p.display_name}</strong></div>
-    <p className="muted">{describe(p)}</p><p>{p.access === "read" ? "Read only" : p.access === "ask" ? "Ask first" : p.access === "edits" ? "Can edit files" : "Full access"}</p>
-    {usageCard(p)}
-    <div className="details-actions">
-      <button className="ghost small" disabled={busy} aria-label={`Change settings for ${p.display_name}`} onClick={() => { details?.show("form"); startEditing(p); }}>Edit</button>
-      <button className="ghost small" disabled={busy} aria-label={`Save ${p.display_name} to Agents`} onClick={() => onProfilesChange([...profiles.filter(profile => profile.id !== p.id), p])}>Save to Agents</button>
-      <button className="ghost small" disabled={busy} aria-label={`Remove ${p.display_name}`} onClick={() => removeParticipant(p.id)}>Remove</button>
-    </div>
-  </article>)}{addButton}{savedPicker}</>;
+  const accessLabel = (access: Access) => access === "read" ? "Read only" : access === "ask" ? "Ask first" : access === "edits" ? "Can edit files" : "Full access";
+  /** A small labelled bar for a context or plan reading. */
+  const meter = (name: string, level: number | null) => level === null ? null : <span className="bot-meter" title={name === "ctx" ? "Context left" : "Plan left"}>
+    {name}<span className="bot-meter-track" aria-hidden="true"><span style={{ width: `${percent(level)}%` }} className={isLow(level) ? "low" : undefined} /></span>
+    {percent(level)}%{isLow(level) && <span className="usage-low"> low</span>}
+  </span>;
+  const botControls = <>{participants.map(p => {
+    const levels = levelsFor(p.id);
+    return <article className="details-bot" key={p.id}>
+      <div className="details-bot-row">
+        <Avatar seed={appearance(p.id).seed} color={color(p.id)} levels={levels} refills={refillsFor(p.id)} working={Boolean(working[p.id]) && !asks[p.id]?.length} />
+        <div className="details-bot-copy">
+          <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
+          <span className="muted">{describe(p).replace(" · asks first", "")} · {accessLabel(p.access)}</span>
+          {(levels.context !== null || levels.plan !== null) && <span className="bot-meters">{meter("ctx", levels.context)}{meter("plan", levels.plan)}</span>}
+        </div>
+        <span className="pane-menu-wrap">
+          <button className="icon small" aria-label={`Actions for ${p.display_name}`} aria-haspopup="menu" aria-expanded={botMenu === p.id} onClick={() => setBotMenu(open => open === p.id ? null : p.id)}>⋯</button>
+          {botMenu === p.id && <span className="pane-menu" role="menu">
+            <button role="menuitem" disabled={busy} aria-label={`Change settings for ${p.display_name}`} onClick={() => { setBotMenu(null); details?.show("form"); startEditing(p); }}>Edit</button>
+            <button role="menuitem" disabled={busy} aria-label={`Save ${p.display_name} to Agents`} onClick={() => { setBotMenu(null); onProfilesChange([...profiles.filter(profile => profile.id !== p.id), p]); }}>Save to Agents</button>
+            <span className="pane-menu-sep" role="separator" />
+            <button role="menuitem" className="danger-text" disabled={busy} aria-label={`Remove ${p.display_name}`} onClick={() => { setBotMenu(null); removeParticipant(p.id); }}>Remove</button>
+          </span>}
+        </span>
+      </div>
+      <details className="details-bot-usage"><summary>Usage</summary>{usageCard(p)}</details>
+    </article>;
+  })}{adding && !editing ? addButton : quickAddButton("details", false)}{savedPicker}</>;
   return (
     <div className={`chat ${profileMode ? "" : "thread-chat"}`}>
-      {!profileMode && focused && details?.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} bots={botControls} form={modelForm} room={roomControls} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
+      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
       <div className="chat-bar">
         <div className="chips">
           {!profileMode && participants.map((p) => {
@@ -1207,7 +1320,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
                 ? "Add two or more models, then ask them something. Each one sees the whole conversation."
                 : "Type a message below. Use @name to pick who answers, or @all for everyone."}
             </p>
-            {participants.length === 0 && <button className="primary" disabled={!ready} onClick={() => { details?.show("form"); setAdding(true); }}>+ Add model</button>}
+            {participants.length === 0 && quickAddButton("empty", true)}
           </div>
         )}
         {entries.map((entry) =>
