@@ -74,6 +74,13 @@ export interface Backend {
   /** Show on the app's icon how many panes want attention. With `nudge`,
    *  also draw the eye to the icon once, for when the app is in the background. */
   flagAttention(count: number, nudge: boolean): Promise<void>;
+  /** The window's close button, ⌘W, ⌘Q or Quit in the app menu was used.
+   *  Answer with `quitHeard` at once, then `quitApp` to go ahead. */
+  onQuitRequested(cb: (request: number) => void): Promise<Unlisten>;
+  /** Tell the desktop shell the window got quit request `request`, so it waits for the person. */
+  quitHeard(request: number): Promise<void>;
+  /** Quit now, ending every terminal. Nothing asks again. */
+  quitApp(): Promise<void>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -142,6 +149,9 @@ async function tauriBackend(): Promise<Backend> {
     roomClose: (id) => invoke("room_close", { id }),
     roomDelete: (id) => invoke("room_delete", { id }),
     onRoomEvent: (cb) => listen<{ room: string; event: RoomEvent }>("room-event", (e) => cb(e.payload.room, e.payload.event)),
+    onQuitRequested: (cb) => listen<number>("quit-requested", (e) => cb(e.payload)),
+    quitHeard: (request) => invoke("quit_heard", { request }),
+    quitApp: () => invoke("quit_app"),
   };
 }
 
@@ -536,6 +546,17 @@ function demoBackend(): Backend {
       roomListeners.add(cb);
       return () => roomListeners.delete(cb);
     },
+    // The browser has no window to close or app to quit. To see the question
+    // in the preview, run apexDeckPreviewQuit() in the developer console.
+    onQuitRequested: async (cb) => {
+      const page = window as unknown as { apexDeckPreviewQuit?: () => void };
+      let request = 0;
+      const ask = () => cb(++request);
+      page.apexDeckPreviewQuit = ask;
+      return () => { if (page.apexDeckPreviewQuit === ask) delete page.apexDeckPreviewQuit; };
+    },
+    quitHeard: async () => {},
+    quitApp: async () => { console.info("Preview: the desktop app would quit now."); },
   };
 }
 

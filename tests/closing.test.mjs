@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, removeCounts, removeQuestion, savedThreads } from "../src/closing.ts";
+import { closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, quitQuestion, removeCounts, removeQuestion, savedThreads, stillRunning } from "../src/closing.ts";
 
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
 const term = (id, extra = {}) => ({ id, workspaceId: "w", kind: "terminal", title: id, ...extra });
@@ -74,4 +74,48 @@ test("a thread with a bot on a card counts as waiting, even while another bot re
     removeCounts(["working", "needs_input", "idle"], [status(["Jigga"], ["Null"]), status(["Ada"]), status([]), undefined]),
     { working: 1, waiting: 1, replying: 1, asking: 1, threads: 4 },
   );
+});
+
+const terminal = (title, agent, status, exited = false) => ({ title, workspace: "apex-deck", agent, exited, status });
+const thread = (title, replying, waiting = []) => ({ title, workspace: "apex-deck", status: { text: "", replying, waiting } });
+const QUIT_BODY = "Quitting ends them and anything they're running. Threads and their messages are saved; replies in progress are not.";
+
+test("nothing running quits at once", () => {
+  assert.equal(quitQuestion(stillRunning([terminal("Terminal", false, "idle")], [thread("Fix login", []), { title: "New", workspace: "w", status: undefined }])), null);
+});
+
+test("the quit question names what is still running, most urgent first", () => {
+  const asked = quitQuestion(stillRunning([terminal("Codex", true, "working")], [thread("Fix login", ["Jigga"], ["Null"])]));
+  assert.equal(asked.title, "3 agents are still running.");
+  assert.equal(asked.body, QUIT_BODY);
+  assert.deepEqual(asked.rows, ["Null in Fix login · apex-deck · Waiting for you", "Codex · apex-deck · Working", "Jigga in Fix login · apex-deck · Replying"]);
+  assert.equal(asked.action, "Quit and end them");
+});
+
+test("one thing running: named when it waits, counted when it works", () => {
+  assert.equal(quitQuestion(stillRunning([], [thread("Fix login", [], ["Null"])])).title, "Null is waiting for you.");
+  assert.equal(quitQuestion(stillRunning([terminal("Codex", true, "needs_input")], [])).title, "Codex is waiting for you.");
+  assert.equal(quitQuestion(stillRunning([terminal("Codex", true, "working")], [])).title, "1 agent is still running.");
+});
+
+test("at most five rows, then how many more", () => {
+  const codex = (n) => terminal(`Codex ${n}`, true, "working");
+  assert.equal(quitQuestion(stillRunning([1, 2, 3, 4, 5].map(codex), [])).rows.length, 5);
+  const rows = quitQuestion(stillRunning([1, 2, 3, 4, 5, 6, 7].map(codex), [])).rows;
+  assert.equal(rows.length, 6);
+  assert.equal(rows[5], "and 2 more");
+});
+
+test("an exited terminal never counts, even with a Failed flag", () => {
+  // An idle agent still counts; an idle or finished shell doesn't.
+  const running = stillRunning([
+    terminal("Codex", true, "failed", true),
+    terminal("Claude Code", true, "idle"),
+    terminal("Gemini CLI", true, "done"),
+    terminal("Terminal", false, "done"),
+    terminal("Terminal", false, "idle"),
+    terminal("Terminal", false, "needs_input"),
+    terminal("Terminal", false, "working"),
+  ], []);
+  assert.deepEqual(running.map((r) => [r.name, r.state]), [["Claude Code", "idle"], ["Gemini CLI", "idle"], ["Terminal", "waiting"], ["Terminal", "working"]]);
 });

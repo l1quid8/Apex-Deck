@@ -1903,3 +1903,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .rail-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 8px 0; color: var(--muted); font-size: 11px; }
 .rail-foot button { padding: 2px 6px; font-size: 11px; }
 .rail-foot .pane-menu { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
+
+/* Now tier, stage 1: what is still running, under the quit question. */
+.confirm-rows { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.confirm-rows li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

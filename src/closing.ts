@@ -104,3 +104,83 @@ export function removeQuestion(name: string, counts: RemoveCounts): { title: str
   ].filter(Boolean).join(" ");
   return { title: `Remove ${name} from the list?`, body, action: "Remove from list" };
 }
+
+// ------------------------------------------------------------- quitting
+
+/** A terminal pane when the app is asked to quit. */
+export interface TerminalNow {
+  title: string;
+  workspace: string;
+  /** Runs a coding agent rather than a plain shell. */
+  agent: boolean;
+  /** Its program has ended. Read this, not `status`: a failed exit shows as "failed". */
+  exited: boolean;
+  status: PaneStatus;
+}
+
+/** A thread when the app is asked to quit. `status` is missing until it has reported. */
+export interface ThreadNow {
+  title: string;
+  workspace: string;
+  status: ThreadStatus | undefined;
+}
+
+/** Something still running when the app is asked to quit. */
+export interface Running {
+  /** The bare name: "Codex", "Null". */
+  name: string;
+  /** The thread a bot is in; empty for a terminal. */
+  thread: string;
+  workspace: string;
+  state: "working" | "replying" | "waiting" | "idle";
+}
+
+/** How many running things the quit question lists before "and n more". */
+export const QUIT_ROWS = 5;
+
+/**
+ * What quitting would end: every agent terminal that hasn't exited, a plain
+ * shell only while it is working or waiting, and every bot replying or
+ * stopped on a card.
+ */
+export function stillRunning(terminals: TerminalNow[], threads: ThreadNow[]): Running[] {
+  const out: Running[] = [];
+  for (const t of terminals) {
+    if (t.exited) continue;
+    const state = t.status === "needs_input" ? "waiting" : t.status === "working" ? "working" : "idle";
+    // A shell sitting at its prompt has nothing to lose.
+    if (!t.agent && state === "idle") continue;
+    out.push({ name: t.title, thread: "", workspace: t.workspace, state });
+  }
+  for (const t of threads) {
+    for (const name of t.status?.waiting ?? []) out.push({ name, thread: t.title, workspace: t.workspace, state: "waiting" });
+    for (const name of t.status?.replying ?? []) out.push({ name, thread: t.title, workspace: t.workspace, state: "replying" });
+  }
+  return out;
+}
+
+const STATE_WORDS: Record<Running["state"], string> = { waiting: "Waiting for you", working: "Working", replying: "Replying", idle: "Idle" };
+const STATE_ORDER: Running["state"][] = ["waiting", "working", "replying", "idle"];
+
+/**
+ * The question asked before quitting, or `null` to quit at once because
+ * nothing is running. Rows are most urgent first, at most QUIT_ROWS of them,
+ * then "and n more".
+ */
+export function quitQuestion(busy: Running[]): { title: string; body: string; rows: string[]; action: string } | null {
+  if (busy.length === 0) return null;
+  const sorted = [...busy].sort((a, b) => STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state));
+  const rows = sorted
+    .slice(0, QUIT_ROWS)
+    .map((r) => [r.thread ? `${r.name} in ${r.thread}` : r.name, r.workspace, STATE_WORDS[r.state]].filter(Boolean).join(" · "));
+  if (sorted.length > QUIT_ROWS) rows.push(`and ${sorted.length - QUIT_ROWS} more`);
+  const title = busy.length === 1 && busy[0].state === "waiting"
+    ? `${busy[0].name} is waiting for you.`
+    : busy.length === 1 ? "1 agent is still running." : `${busy.length} agents are still running.`;
+  return {
+    title,
+    body: "Quitting ends them and anything they're running. Threads and their messages are saved; replies in progress are not.",
+    rows,
+    action: "Quit and end them",
+  };
+}

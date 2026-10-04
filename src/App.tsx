@@ -19,7 +19,7 @@ import { label, summarize, urgency, workspaceFlag, type Attention, type Signal }
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, removeCounts, removeQuestion, savedThreads } from "./closing";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, quitQuestion, removeCounts, removeQuestion, savedThreads, stillRunning } from "./closing";
 import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
@@ -567,6 +567,35 @@ export function App() {
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
   }, []);
+
+  /** Quit once the last save has landed, or after a second if it hangs. */
+  const quitNow = () => {
+    if (!backend) return;
+    void Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]).then(() => backend.quitApp());
+  };
+
+  // Asked to quit: the window's close button, ⌘W, ⌘Q or Quit in the app menu.
+  // The desktop shell holds the quit until this answers (see quit.rs).
+  const onQuitRequest = useRef<(request: number) => void>(() => {});
+  onQuitRequest.current = (request) => {
+    if (!backend) return;
+    void backend.quitHeard(request).catch(() => {});
+    const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
+    const busy = stillRunning(
+      listed.filter((p) => p.kind === "terminal").map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: exited.has(p.id), status: statusOf(p) })),
+      listed.filter((p) => p.kind === "chat" && !deleting.has(p.id)).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
+    );
+    const asked = quitQuestion(busy);
+    if (asked) setQuestion({ ...asked, onConfirm: quitNow });
+    else quitNow();
+  };
+  useEffect(() => {
+    if (!backend) return;
+    let stop: (() => void) | undefined;
+    let live = true;
+    backend.onQuitRequested((request) => onQuitRequest.current(request)).then((unlisten) => (live ? (stop = unlisten) : unlisten()));
+    return () => { live = false; stop?.(); };
+  }, [backend]);
 
   if (!backend) return (
     <div className="loading">
