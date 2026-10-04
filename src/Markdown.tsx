@@ -7,6 +7,8 @@ interface Props {
   text: string;
   /** Open a file, folder or web address a link points at. */
   onOpen: (target: string, reveal?: boolean) => void;
+  /** Extra controls for a code block's header, beside Copy. */
+  codeAction?: (code: { language: string; text: string }) => ReactNode;
 }
 
 /**
@@ -16,13 +18,13 @@ interface Props {
  * Links are left to RichText, so they behave the same here as everywhere
  * else in the chat.
  */
-export function Markdown({ text, onOpen }: Props) {
+export function Markdown({ text, onOpen, codeAction }: Props) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const inline = (source: string) => <InlineText source={source} onOpen={onOpen} />;
   return (
     <div className="md">
       {blocks.map((block, i) => (
-        <BlockView key={i} block={block} inline={inline} />
+        <BlockView key={i} block={block} inline={inline} codeAction={codeAction} />
       ))}
     </div>
   );
@@ -47,7 +49,7 @@ function InlineText({ source, onOpen }: { source: string; onOpen: Props["onOpen"
   return <>{spans.map(draw)}</>;
 }
 
-function BlockView({ block, inline }: { block: Block; inline: (source: string) => ReactNode }) {
+function BlockView({ block, inline, codeAction }: { block: Block; inline: (source: string) => ReactNode; codeAction?: Props["codeAction"] }) {
   switch (block.kind) {
     case "paragraph":
       return <p>{inline(block.text)}</p>;
@@ -58,7 +60,7 @@ function BlockView({ block, inline }: { block: Block; inline: (source: string) =
         </p>
       );
     case "code":
-      return <CodeBlock language={block.language} text={block.text} />;
+      return <CodeBlock language={block.language} text={block.text} action={codeAction?.({ language: block.language, text: block.text })} />;
     case "quote":
       return <blockquote>{inline(block.text)}</blockquote>;
     case "rule":
@@ -105,7 +107,7 @@ function BlockView({ block, inline }: { block: Block; inline: (source: string) =
   }
 }
 
-function CodeBlock({ language, text }: { language: string; text: string }) {
+function CodeBlock({ language, text, action }: { language: string; text: string; action?: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     navigator.clipboard
@@ -120,9 +122,12 @@ function CodeBlock({ language, text }: { language: string; text: string }) {
     <div className="md-code">
       <div className="md-code-head">
         <span>{language || "code"}</span>
-        <button type="button" onClick={copy}>
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <span className="md-code-actions">
+          {action}
+          <button type="button" onClick={copy}>
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </span>
       </div>
       <pre>
         <code>{text}</code>

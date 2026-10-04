@@ -2219,3 +2219,13 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .preview.full-window { position: fixed; top: var(--deck-top, 0px); left: 0; right: 0; bottom: 0; z-index: 35; background: var(--bg); }
 /* A local server a terminal printed or a bot mentioned; opens it in a Preview beside that pane. */
 .server-chip { flex: none; padding: 0 8px; border-radius: 999px; background: transparent; color: var(--brand-cyan); font: 11px/20px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* A code block's controls: Open as artifact (and its menu) beside Copy. */
+.md-code-actions { display: flex; align-items: center; gap: 2px; }
+.md-code:has(.artifact-menu) { overflow: visible; }
+.artifact-shown.on { color: var(--accent); }
+.artifact-choice { position: relative; display: inline-flex; }
+.artifact-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; width: 260px; padding: 4px; display: flex; flex-direction: column; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 32px #0007; }
+.md-code-head .artifact-menu button { display: flex; flex-direction: column; align-items: flex-start; width: 100%; padding: 6px 10px; border-radius: 6px; color: var(--text); font-size: 12px; text-align: left; }
+.md-code-head .artifact-menu button:hover, .md-code-head .artifact-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.artifact-menu small { font-size: 11px; color: var(--muted); }
