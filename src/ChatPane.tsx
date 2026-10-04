@@ -1218,7 +1218,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return "";
   }, [entries]);
   useEffect(() => {
-    if (newestServer && !profileMode) onServer?.(pane.id, newestServer);
+    // "" when no reply mentions one, as after /clear: the chip goes.
+    if (!profileMode) onServer?.(pane.id, newestServer);
   }, [newestServer, onServer, pane.id, profileMode]);
 
   /** Save each file as soon as it is attached, so sending never waits. */

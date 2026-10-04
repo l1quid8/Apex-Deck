@@ -275,8 +275,17 @@ export function App() {
   }, []);
   /** The newest local server address each running terminal printed, and each open thread's bots mentioned. */
   const [servers, setServers] = useState<Record<string, string>>({});
+  /** An empty address means the pane no longer has one, as after /clear. */
   const onServer = useCallback((paneId: string, address: string) => {
-    setServers((all) => (all[paneId] === address ? all : { ...all, [paneId]: address }));
+    setServers((all) => {
+      if (!address) {
+        if (!(paneId in all)) return all;
+        const rest = { ...all };
+        delete rest[paneId];
+        return rest;
+      }
+      return all[paneId] === address ? all : { ...all, [paneId]: address };
+    });
   }, []);
   const forgetServer = useCallback((paneId: string) => {
     setServers((all) => {
