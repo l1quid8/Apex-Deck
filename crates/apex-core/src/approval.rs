@@ -44,6 +44,11 @@ pub struct ProposedAction {
     pub title: String,
     /// The whole of it: the diff, the command, or the tool's arguments.
     pub detail: String,
+    /// When the asking tool gives up and denies it, in Unix milliseconds.
+    /// Only Codex MCP calls checked by Deck's hook have one; everything
+    /// else waits as long as the person takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
 }
 
 /// Something the person chose "Always allow" for. Saved with the thread.
@@ -269,7 +274,7 @@ mod tests {
 
     #[test]
     fn with_nobody_to_ask_everything_is_rejected() {
-        let action = ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf /".into() };
+        let action = ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf /".into(), expires_at: None };
         assert_eq!(block_on(NoApprover.decide(action)), Decision::Reject);
     }
 
@@ -278,9 +283,9 @@ mod tests {
         let desk = ApprovalDesk::default();
         let bot = ParticipantId::new("codex");
         let other_bot = ParticipantId::new("claude");
-        let app = |name: &str| ProposedAction { kind: ActionKind::Other, title: "cua_repl asks permission".into(), detail: format!("Allow Computer Use to use \"{name}\"?") };
-        let order = |qty: u32| ProposedAction { kind: ActionKind::Tool, title: "robinhood: place_order".into(), detail: format!("{{\"qty\":{qty}}}") };
-        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        let app = |name: &str| ProposedAction { kind: ActionKind::Other, title: "cua_repl asks permission".into(), detail: format!("Allow Computer Use to use \"{name}\"?"), expires_at: None };
+        let order = |qty: u32| ProposedAction { kind: ActionKind::Tool, title: "robinhood: place_order".into(), detail: format!("{{\"qty\":{qty}}}"), expires_at: None };
+        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None };
         assert!(desk.allow_always(&bot, &app("Brave Browser")));
         assert!(!desk.allow_always(&bot, &app("Brave Browser")), "already allowed");
         desk.allow_always(&bot, &order(1));
@@ -297,7 +302,7 @@ mod tests {
     fn allowed_rules_can_be_listed_restored_and_forgotten() {
         let desk = ApprovalDesk::default();
         let bot = ParticipantId::new("codex");
-        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None };
         desk.allow_always(&bot, &run("npm test"));
         desk.allow_always(&bot, &run("cargo test"));
         let saved = desk.allowed();

@@ -509,7 +509,7 @@ impl Participant for AskingBot {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
-        let action = ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-a\n+b\n".into() };
+        let action = ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-a\n+b\n".into(), expires_at: None };
         match approver.decide(action).await {
             Decision::Approve | Decision::ApproveAlways => {
                 on_progress(Progress::Change(&FileChange::new("a.txt", "-a\n+b\n")));
@@ -565,7 +565,7 @@ fn say_and_answer(room: &mut Room, approve: Option<bool>) -> Vec<RoomEvent> {
 fn a_proposed_action_is_shown_and_the_turn_waits_for_the_answer() {
     let (mut room, id) = asking_room();
     let events = say_and_answer(&mut room, Some(true));
-    let action = ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-a\n+b\n".into() };
+    let action = ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-a\n+b\n".into(), expires_at: None };
     let about: Vec<&RoomEvent> = events
         .iter()
         .filter(|e| matches!(e, RoomEvent::ApprovalRequested { .. } | RoomEvent::ApprovalResolved { .. } | RoomEvent::Changed { .. }))

@@ -12,6 +12,8 @@ export interface ProposedAction {
   title: string;
   /** The diff, the command, or the tool's arguments. */
   detail: string;
+  /** When Codex's hook denies it if nobody answers, in milliseconds since the epoch. Only MCP calls checked by Deck's hook have one. */
+  expires_at?: number | null;
 }
 
 /** An edit a bot made to a file. */

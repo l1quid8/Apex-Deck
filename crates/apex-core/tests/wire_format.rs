@@ -118,12 +118,12 @@ fn room_event_shapes() {
         to_value(RoomEvent::Usage { id: id.clone(), input_tokens: Some(10), output_tokens: None }).unwrap(),
         json!({ "type": "usage", "id": "opus", "input_tokens": 10, "output_tokens": null })
     );
-    let action = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "ls".into() };
+    let action = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "ls".into(), expires_at: None };
     assert_eq!(
         to_value(RoomEvent::ApprovalRequested { id: id.clone(), request: "ask-1".into(), action }).unwrap(),
         json!({ "type": "approval_requested", "id": "opus", "request": "ask-1", "action": { "kind": "command", "title": "Run a command", "detail": "ls" } })
     );
-    let rule = apex_core::AllowedRule::new(&id, &apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into() });
+    let rule = apex_core::AllowedRule::new(&id, &apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "npm test".into(), expires_at: None });
     assert_eq!(
         to_value(RoomEvent::AllowedChanged { allowed: vec![rule] }).unwrap(),
         json!({ "type": "allowed_changed", "allowed": [{ "by": "opus", "kind": "command", "title": "Run a command", "what": "npm test" }] })
@@ -203,4 +203,23 @@ fn tool_server_event_carries_canonical_tokens_and_aliases() {
     };
     assert_eq!(to_value(event).unwrap(), json!({"type":"tool_servers", "id":"null",
         "servers":[{"token":"computer-use", "label":"Computer Use", "aliases":["cua_repl"]}]}));
+}
+
+#[test]
+fn a_card_from_codexs_hook_says_when_it_is_denied() {
+    let mut action = apex_core::ProposedAction {
+        kind: apex_core::ActionKind::Tool,
+        title: "x-mcp: post_tweet".into(),
+        detail: "{}".into(),
+        expires_at: None,
+    };
+    assert_eq!(to_value(&action).unwrap(), json!({ "kind": "tool", "title": "x-mcp: post_tweet", "detail": "{}" }), "no deadline, no field");
+    action.expires_at = Some(1_791_100_000_000);
+    assert_eq!(
+        to_value(RoomEvent::ApprovalRequested { id: ParticipantId::new("null"), request: "ask-2".into(), action }).unwrap(),
+        json!({ "type": "approval_requested", "id": "null", "request": "ask-2",
+                "action": { "kind": "tool", "title": "x-mcp: post_tweet", "detail": "{}", "expires_at": 1_791_100_000_000u64 } })
+    );
+    let older: apex_core::ProposedAction = serde_json::from_value(json!({ "kind": "command", "title": "Run a command", "detail": "ls" })).unwrap();
+    assert_eq!(older.expires_at, None, "JSON without the field still reads");
 }

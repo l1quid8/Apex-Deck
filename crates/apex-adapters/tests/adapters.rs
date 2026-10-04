@@ -815,7 +815,7 @@ async fn codex_app_server_asks_before_a_command_when_access_is_ask_first() {
     assert_eq!(result.unwrap().text, "Two files here. effort=default refused=no");
     assert_eq!(
         *yes.asked.lock().unwrap(),
-        [ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "(command not given)".into() }]
+        [ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "(command not given)".into(), expires_at: None }]
     );
 
     let no = Fixed::new(Decision::Reject);
@@ -870,7 +870,7 @@ async fn claude_code_asks_before_writing_when_access_is_ask_first() {
     assert_eq!((reply.input_tokens, reply.output_tokens), (Some(10), Some(4)));
     assert_eq!(
         *yes.asked.lock().unwrap(),
-        [ProposedAction { kind: ActionKind::Edit, title: "Write hello.txt".into(), detail: "+hi\n".into() }]
+        [ProposedAction { kind: ActionKind::Edit, title: "Write hello.txt".into(), detail: "+hi\n".into(), expires_at: None }]
     );
     assert_eq!(changed, [FileChange { path: "hello.txt".into(), diff: "+hi\n".into(), added: 1, removed: 0 }]);
 

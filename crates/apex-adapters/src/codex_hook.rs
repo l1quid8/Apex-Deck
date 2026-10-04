@@ -166,6 +166,9 @@ pub(crate) struct McpCall {
     pub server: String,
     pub tool: String,
     pub arguments: Value,
+    /// When Deck's hook helper gives up and blocks the call, in Unix
+    /// milliseconds. Only calls that came through the hook have one.
+    pub expires_at: Option<u64>,
 }
 
 impl McpCall {
@@ -173,22 +176,37 @@ impl McpCall {
     /// other shape keeps no server and always asks.
     pub(crate) fn from_hook(tool_name: &str, arguments: Value) -> Self {
         match crate::mcp::claude_tool(tool_name) {
-            Some((server, tool)) => Self { server: server.to_string(), tool: tool.to_string(), arguments },
-            None => Self { server: String::new(), tool: tool_name.to_string(), arguments },
+            Some((server, tool)) => Self { server: server.to_string(), tool: tool.to_string(), arguments, expires_at: None },
+            None => Self { server: String::new(), tool: tool_name.to_string(), arguments, expires_at: None },
         }
+    }
+
+    /// The same call, blocked by its helper at `at` (Unix milliseconds).
+    #[cfg(unix)]
+    pub(crate) fn expiring_at(mut self, at: u64) -> Self {
+        self.expires_at = Some(at);
+        self
     }
 
     pub(crate) fn risky(&self) -> bool {
         self.server.is_empty() || crate::mcp::needs_approval(&self.tool)
     }
 
+    /// The card for this call. A hook call's card says when it is denied.
     pub(crate) fn action(&self) -> ProposedAction {
         let mut action = crate::mcp::action(&self.server, &self.tool, &self.arguments);
         if self.server.is_empty() {
             action.title = self.tool.clone();
         }
+        action.expires_at = self.expires_at;
         action
     }
+}
+
+/// Now, in Unix milliseconds: the clock the interface reads cards by.
+#[cfg(unix)]
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 /// A risky call can meet two gates in one turn: Deck's hook and Codex's own
@@ -314,7 +332,9 @@ pub(crate) async fn serve(stream: tokio::net::UnixStream, gates: &mut Gates, app
     let mut line = String::new();
     let call = match tokio::time::timeout(Duration::from_secs(5), read.read_line(&mut line)).await {
         Ok(Ok(count)) if count > 0 => serde_json::from_str::<Value>(&line).ok()
-            .and_then(|input| Some(McpCall::from_hook(input["tool_name"].as_str()?, input["tool_input"].clone()))),
+            .and_then(|input| Some(McpCall::from_hook(input["tool_name"].as_str()?, input["tool_input"].clone())))
+            // The helper started its clock as it sent the call.
+            .map(|call| call.expiring_at(unix_ms() + HELPER_DEADLINE.as_millis() as u64)),
         _ => None,
     };
     let verdict = match call {
@@ -507,6 +527,33 @@ mod tests {
         async fn decide(&self, _: ProposedAction) -> Decision { std::future::pending().await }
     }
 
+    /// Keeps every card it is shown and refuses it.
+    struct Recording(std::sync::Mutex<Vec<ProposedAction>>);
+    #[async_trait::async_trait]
+    impl Approver for Recording {
+        async fn decide(&self, action: ProposedAction) -> Decision {
+            self.0.lock().unwrap().push(action);
+            Decision::Reject
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hook_card_says_when_the_helper_gives_up() {
+        use tokio::io::AsyncWriteExt;
+        let (deck_end, mut helper_end) = tokio::net::UnixStream::pair().unwrap();
+        helper_end.write_all(&[CALL, &b"\n"[..]].concat()).await.unwrap();
+        let asked = Recording(std::sync::Mutex::new(Vec::new()));
+        let before = unix_ms();
+        serve(deck_end, &mut Gates::default(), &asked, &|_: Progress<'_>| {}).await;
+        let after = unix_ms();
+        let deadline = HELPER_DEADLINE.as_millis() as u64;
+        let cards = asked.0.lock().unwrap();
+        let expires = cards[0].expires_at.expect("a card from the hook has a deadline");
+        assert!((before + deadline..=after + deadline).contains(&expires), "{expires} is not {deadline} ms after the call arrived");
+        assert_eq!(McpCall::from_hook("mcp__probe__place_order", json!({})).action().expires_at, None, "only calls that came through the hook expire");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_helper_that_hangs_up_withdraws_the_question_and_blocks_the_call() {
@@ -547,11 +594,11 @@ mod tests {
     #[test]
     fn plugin_and_app_names_share_one_approval_across_gates() {
         let mut gates = Gates::default();
-        let plugin = McpCall { server: "computer-history".into(), tool: "post_note".into(), arguments: json!({"text":"hi"}) };
+        let plugin = McpCall { server: "computer-history".into(), tool: "post_note".into(), arguments: json!({"text":"hi"}), expires_at: None };
         gates.answered_at_hook(McpCall::from_hook("mcp__computer_history__post_note", json!({"text":"hi"})), Decision::Approve);
         assert_eq!(gates.at_codex(&plugin), Some(Decision::Approve));
         assert_eq!(gates.at_codex(&plugin), None);
-        let app = McpCall { server: "codex_apps".into(), tool: "github.post_comment".into(), arguments: json!({"text":"hi"}) };
+        let app = McpCall { server: "codex_apps".into(), tool: "github.post_comment".into(), arguments: json!({"text":"hi"}), expires_at: None };
         gates.answered_at_codex(app, Decision::Approve);
         assert_eq!(gates.at_hook(&McpCall::from_hook("mcp__codex_apps__github__post_comment", json!({"text":"different"}))), None);
         assert_eq!(gates.at_hook(&McpCall::from_hook("mcp__codex_apps__github__post_comment", json!({"text":"hi"}))), Some(Decision::Approve));

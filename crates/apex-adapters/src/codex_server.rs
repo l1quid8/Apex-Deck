@@ -94,14 +94,14 @@ pub(crate) fn proposal(method: &str, params: &Value, reader: &EventReader) -> Op
                 Some(reason) => format!("{command}\n\n{reason}"),
                 None => command.to_string(),
             };
-            Some(ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail })
+            Some(ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail, expires_at: None })
         }
         "item/fileChange/requestApproval" => {
             let (title, detail) = params["itemId"]
                 .as_str()
                 .and_then(|item| reader.pending_edit(item))
                 .unwrap_or_else(|| ("Edit files".to_string(), reason.unwrap_or("The edit was not described.").to_string()));
-            Some(ProposedAction { kind: ActionKind::Edit, title, detail })
+            Some(ProposedAction { kind: ActionKind::Edit, title, detail, expires_at: None })
         }
         _ => None,
     }
@@ -134,7 +134,7 @@ fn mcp_call(params: &Value, pending: &HashMap<String, Value>) -> Option<McpCall>
     let mut matches = pending.values().filter(|item| item["server"] == server && &item["arguments"] == arguments);
     let item = matches.next()?;
     if matches.next().is_some() { return None; }
-    Some(McpCall { server: server.to_string(), tool: item["tool"].as_str()?.to_string(), arguments: arguments.clone() })
+    Some(McpCall { server: server.to_string(), tool: item["tool"].as_str()?.to_string(), arguments: arguments.clone(), expires_at: None })
 }
 
 /// A server's own question that is not a tool call, such as Computer Use
@@ -158,7 +158,7 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
         Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
         None => message.to_string(),
     };
-    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail })
+    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail, expires_at: None })
 }
 
 
@@ -552,6 +552,7 @@ mod tests {
         let resolved = mcp_call(&params, &pending).unwrap();
         assert!(resolved.risky(), "use exact tool name, not title punctuation");
         assert_eq!(resolved.action().title,"probe: post: read");
+        assert_eq!(resolved.action().expires_at, None, "Codex's own MCP approval never shows a deadline");
         let mut different = params.clone(); different["_meta"]["tool_params"]["quantity"]=json!("1000");
         assert!(mcp_call(&different,&pending).is_none());
         pending.insert("c2".into(),call);

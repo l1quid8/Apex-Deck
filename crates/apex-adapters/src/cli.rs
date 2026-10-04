@@ -578,7 +578,7 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         let last_heard = Mutex::new(Instant::now() - Duration::from_secs(60));
         let asking = AtomicBool::new(false);
         let timed = Timed { inner: &Never, last_heard: &last_heard, asking: &asking };
-        let mut waiting = timed.decide(ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() });
+        let mut waiting = timed.decide(ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into(), expires_at: None });
         assert!(waiting.as_mut().now_or_never().is_none());
         assert!(asking.load(Ordering::SeqCst));
         drop(waiting);

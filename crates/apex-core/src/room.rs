@@ -740,7 +740,7 @@ mod approver_tests {
     use std::sync::Mutex;
 
     fn action() -> ProposedAction {
-        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() }
+        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into(), expires_at: None }
     }
 
     #[test]
