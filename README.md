@@ -120,6 +120,28 @@ edges.
 - **Thread names.** Double-click a thread's title in its header or sidebar
   to rename it. Enter saves; Escape cancels. Focus a title and press Enter
   or F2 to rename with the keyboard.
+- **Reading while bots work.** The transcript follows new replies only
+  while you are at its bottom. Scrolled up, it keeps your place and shows
+  "3 new · Jump to latest", and "Null is waiting for you · Show" when an
+  approval card is out of view. Coming back to a thread, a hairline "New
+  since you looked" marks where the replies you missed begin; it is saved
+  with the thread and clears when you send.
+- **Who gets your message.** A line above the message box always says who
+  your message goes to and why: "To Null · last addressed", "To Jigga · you
+  mentioned", "To everyone · everyone at once", with "queued (busy)" when
+  they are at work. Its reason opens Room. An empty room offers example
+  messages built from a real handle, and before the first message the hint
+  teaches @all.
+- **Try again and Let them answer.** A bot's failure notice has **Try
+  again**, which runs that bot once more on the conversation as it is
+  without reposting anything. When the round limit cuts bots off, the
+  notice says who was asked next ("Jigga asked Null next.") and offers
+  **Let Null answer**, which buys exactly one reply.
+- **Quotes and message actions.** Quoting a reply no longer adds its bot's
+  handle when you @mention someone yourself, and **Send to ▾** hands the
+  quote to another bot or to everyone. Every message, yours included, has
+  Quote, Copy and Fork from here; in a pane under 360px wide they fold into
+  one ⋯.
 - **Queue and steer.** While models reply, Enter queues your message for
   the next turn. You can edit or remove queued messages. Steer (or
   Command/Ctrl+Enter) interrupts the current turn and sends immediately;

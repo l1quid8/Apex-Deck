@@ -61,6 +61,10 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | Shared summary when the transcript gets long | done (`/compact`, persisted summary) |
 | Cancel a reply that is in flight | done (Stop cancels promptly; streamed partial text is retained) |
 | Rename group chats | done (header and sidebar; saved with the session) |
+| Hold your place while bots stream; "New since you looked"; a pill for an out-of-view approval card | done |
+| Recipient line: who gets your message and why; examples in an empty room | done |
+| Try again after a failure; Let them answer after the round limit (room_turn with a hop budget) | done |
+| Quotes follow your own @mention; Send to ▾; Copy and Quote on every message | done |
 | Queue added context or steer to another model | done (editable in-memory queue; Steer interrupts and starts a new turn, `@handle` selects the recipient) |
 | Context and provider plan avatar meters | implemented (preview and real Codex desktop readings checked; successful Claude context check blocked by session quota) |
 
