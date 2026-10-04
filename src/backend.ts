@@ -44,8 +44,9 @@ export interface Backend {
    *  follow: null keeps the room's limit, 0 buys exactly one reply each. */
   roomTurn(id: string, participants: string[], hops: number | null): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
-  /** Answer an action a bot proposed, named by the `request` from its event. */
-  /** `always` stops the same thing being asked again in this thread until the app quits. */
+  /** Answer an action a bot proposed, named by the `request` from its event.
+   *  `always` saves a rule with the thread, so the same thing isn't asked again
+   *  until it is removed in thread details. */
   roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
   roomSetOptions(id: string, options: RoomOptions): Promise<void>;
   /** Stop always allowing something, so its card shows again. */

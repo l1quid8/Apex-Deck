@@ -22,7 +22,7 @@ import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance 
 import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
-import { describeRule } from "./allowedRules";
+import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
 import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { DiffPanel } from "./DiffPanel";
 import { RichText } from "./RichText";
@@ -333,6 +333,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   entriesRef.current = entries;
   const [pins, setPins] = useState<string[]>([]);
   const [allowed, setAllowed] = useState<AllowedRule[]>([]);
+  /** "Removed. Null asks again next time.", shown for a moment after Remove. */
+  const [removedNote, setRemovedNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!removedNote) return;
+    const timer = setTimeout(() => setRemovedNote(null), REMOVED_NOTE_MS);
+    return () => clearTimeout(timer);
+  }, [removedNote]);
   const [unpinning, setUnpinning] = useState(false);
   const unpinPending = useRef(false);
   const removePin = (index: number) => {
@@ -1628,18 +1635,25 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       <details className="details-bot-usage"><summary>Usage</summary>{usageCard(p)}</details>
     </article>;
   })}{adding && !editing ? addButton : quickAddButton("details", false)}{savedPicker}</>;
-  const allowedList = allowed.length === 0
-    ? <p className="muted allowed-empty">Nothing yet. Choose Always allow on an approval card and it shows here, so you can take it back.</p>
-    : <ul className="allowed-list" aria-label="Always allowed">
-      {allowed.map((rule) => <li key={`${rule.by}\u001f${rule.kind}\u001f${rule.what}`}>
-        <span className="allowed-copy">
-          <strong style={{ color: color(rule.by) }}>{names.get(rule.by) ?? rule.by}</strong>
-          <span className={rule.kind === "command" ? "mono" : undefined} title={rule.what}>{describeRule(rule)}</span>
-        </span>
-        <button className="ghost small" aria-label={`Stop always allowing ${describeRule(rule)} for ${names.get(rule.by) ?? rule.by}`}
-          onClick={() => backend.roomForgetAllowed(pane.id, rule).catch((error) => notify(`Could not remove it: ${String(error)}`, "error"))}>Remove</button>
-      </li>)}
-    </ul>;
+  /** Take an Always allow back. The bot asks again next time. */
+  const forgetRule = (rule: AllowedRule) => backend.roomForgetAllowed(pane.id, rule)
+    .then(() => setRemovedNote(removedLine(names.get(rule.by) ?? rule.by)))
+    .catch((error) => notify(`Could not remove it: ${String(error)}`, "error"));
+  const allowedList = <>
+    {allowed.length === 0
+      ? <p className="muted allowed-empty">Nothing yet. Choose Always allow on an approval card and it shows here, so you can take it back.</p>
+      : <ul className="allowed-list" aria-label="Always allowed">
+        {allowed.map((rule) => <li key={`${rule.by}\u001f${rule.kind}\u001f${rule.what}`}>
+          <span className="allowed-copy">
+            <strong style={{ color: color(rule.by) }}>{names.get(rule.by) ?? rule.by}</strong>
+            <span className={`allowed-what${rule.kind === "command" || rule.kind === "tool" ? " mono" : ""}`} title={rule.what}>{describeRule(rule)}</span>
+            <span className="allowed-when">{allowedLine(rule, new Date())}</span>
+          </span>
+          <button className="ghost small" aria-label={`Stop always allowing ${describeRule(rule)} for ${names.get(rule.by) ?? rule.by}`} onClick={() => void forgetRule(rule)}>Remove</button>
+        </li>)}
+      </ul>}
+    {removedNote && <p className="allowed-removed" role="status"><span aria-hidden="true">✓</span>{removedNote}</p>}
+  </>;
   return (
     <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
       {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
