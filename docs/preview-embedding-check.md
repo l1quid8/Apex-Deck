@@ -15,3 +15,9 @@ Done automatically rather than by hand in the web inspector. A probe server on `
 | A page sending `X-Frame-Options: DENY` | Its script never ran (frame stays blank) |
 
 Decision: continue with the plan as written.
+
+## After the build
+
+- Browser preview (stand-in backend, http://localhost:1432): every check in plan Tasks 7 and 8 passed — adding from the picker and from + New on both decks, loading, a refused address (`javascript:`), a refusing site with "Always open … in my browser" saved, a stopped server with the page coming back by itself, full window keeping the page and ending on a section switch, the ⋯ menu, numbering, closing, restoring both decks after a reload, the terminal chip (focus an existing Preview, or open one right of the terminal), the servers list, the thread chip opening a Preview right of the thread, "Show thread" without Start, and closing a terminal removing its server.
+- Rust: `preview_probe`'s header rules and real HTTP answers (refused, 404 as ok, nothing listening) are covered by `preview::tests`.
+- Not yet done: the same pass by hand in the desktop app with a real dev server (plan Task 9, step 2).
