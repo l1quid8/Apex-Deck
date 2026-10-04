@@ -131,6 +131,7 @@ pub(crate) struct RoomApprover<'a> {
 impl Approver for RoomApprover<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
         if self.desk.always_allowed(self.id, &action) {
+            eprintln!("[apex-deck] answered without a card (always allowed): {}", action.title);
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
             return Decision::ApproveAlways;
         }
@@ -140,6 +141,7 @@ impl Approver for RoomApprover<'_> {
         let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = answer.await.unwrap_or(Decision::Reject);
+        eprintln!("[apex-deck] card answered: {decision:?}: {}", remembered.title);
         card.settle(decision.approved());
         if decision == Decision::ApproveAlways && self.desk.allow_always(self.id, &remembered) {
             (self.on_event)(RoomEvent::AllowedChanged { allowed: self.desk.allowed() });
