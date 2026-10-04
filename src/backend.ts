@@ -5,7 +5,7 @@ import type { ToolServer } from "./types";
 // the UI can be worked on without building the app.
 
 import { ruleFor, sameRule } from "./allowedRules";
-import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
 
@@ -26,6 +26,8 @@ export interface Backend {
   dataFolder(): Promise<string>;
   /** Whether each environment variable is set, as the app sees it. Never its value. */
   envPresent(names: string[]): Promise<boolean[]>;
+  /** Look at a web address before the Preview pane loads it: does anything answer, and may it be framed. */
+  previewProbe(address: string): Promise<PreviewProbe>;
 
   ptySpawn(o: { id: string; agent?: string; cwd?: string; cols: number; rows: number }): Promise<void>;
   ptyWrite(id: string, data: string): Promise<void>;
@@ -114,6 +116,7 @@ async function tauriBackend(): Promise<Backend> {
     settingsSave: (settings) => invoke("settings_save", { settings }),
     dataFolder: () => invoke<string>("data_folder"),
     envPresent: (names) => invoke<boolean[]>("env_present", { names }),
+    previewProbe: (address) => invoke<PreviewProbe>("preview_probe", { address }),
     pickFolder: async () => {
       const picked = await open({ directory: true, multiple: false, title: "Add a workspace folder" });
       return typeof picked === "string" ? picked : null;
@@ -474,6 +477,18 @@ function demoBackend(): Backend {
     sessionSave: async (session) => { localStorage.setItem("apex-deck.demo.session.v1", JSON.stringify(session)); },
     settingsLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.settings.v1") ?? "null"),
     settingsSave: async (settings) => { localStorage.setItem("apex-deck.demo.settings.v1", JSON.stringify(settings)); },
+    // A browser can't read another site's headers, so a few well-known sites
+    // stand in for "refused", and anything that fails to fetch is unreachable.
+    previewProbe: async (address) => {
+      const host = new URL(address).hostname;
+      if (/(^|\.)(github\.com|google\.com)$/.test(host)) return { kind: "refused" };
+      try {
+        await fetch(address, { mode: "no-cors", cache: "no-store" });
+        return { kind: "ok" };
+      } catch {
+        return { kind: "unreachable", reason: "Nothing is answering there." };
+      }
+    },
     dataFolder: async () => "Browser storage (preview mode)",
     envPresent: async (names) => names.map(() => false),
 

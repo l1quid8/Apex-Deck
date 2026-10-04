@@ -200,6 +200,9 @@ export interface AgentInfo {
 
 export type PaneKind = "terminal" | "chat";
 
+/** What the desktop side found at a Preview address before loading it. */
+export type PreviewProbe = { kind: "ok" } | { kind: "refused" } | { kind: "unreachable"; reason: string };
+
 export interface Pane {
   id: string;
   workspaceId: string;
