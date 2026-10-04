@@ -14,7 +14,7 @@ import { DeckIcon } from "./DeckIcon";
 import { TerminalPane } from "./TerminalPane";
 import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
-import { label, summarize, type Attention, type Signal } from "./attention";
+import { label, summarize, workspaceFlag, type Attention, type Signal } from "./attention";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, savedThreads } from "./closing";
@@ -508,8 +508,9 @@ export function App() {
         </span>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />
-        <span className="spacer" />
+        {/* Before the spacer, so growing never moves the controls on the right. */}
         <AttentionMenu items={attentionItems} onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }} />
+        <span className="spacer" />
         <button className="ghost" onClick={() => setManagingProviders((open) => !open)} aria-expanded={managingProviders}>Providers</button>
         {section !== "agents" && (
           <div className="layout-presets" role="group" aria-label="Arrange panes">
@@ -549,11 +550,12 @@ export function App() {
                   <div className={`ws-row ${workspace.id === activeWorkspace ? "active" : ""}`}>
                     <button className="ws-name" onClick={() => setActiveWorkspace(workspace.id)} title={workspace.path || workspace.name}>
                       <DeckIcon name="folder" size={16} /><span className="ws-label">{workspace.name}</span>
-                      {own.length > 0 && <span className="count">{own.length}</span>}
                       {(() => {
-                        const inside = panes.filter((p) => p.workspaceId === workspace.id && attention[p.id]).map((p) => attention[p.id]);
-                        const { count, worst } = summarize(inside);
-                        return count > 0 ? <span className={`flag-count ${worst ?? ""}`} title={`${count} want attention in this workspace`}>{count}</span> : null;
+                        const inside = panes
+                          .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
+                          .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
+                        const flag = workspaceFlag(inside, section === "code" ? "Code" : section === "threads" ? "Threads" : null);
+                        return flag ? <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span> : null;
                       })()}
                     </button>
                     <button className="icon small" onClick={() => removeWorkspace(workspace.id)} aria-label={`Remove ${workspace.name}`} title="Remove from list (closes its panes, keeps the folder)">

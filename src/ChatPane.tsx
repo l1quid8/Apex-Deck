@@ -1162,9 +1162,9 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
                 <span className="chip-meta chip-description">{describe(p)}</span>
                 {(levels.context !== null || levels.plan !== null) && (
                   <span className="chip-meta chip-levels">
-                    {levels.context !== null && <span className={isLow(levels.context) ? "usage-low" : undefined} title="Context left">{percent(levels.context)}%</span>}
-                    {levels.context !== null && levels.plan !== null && <span className="chip-sep" aria-hidden="true">|</span>}
-                    {levels.plan !== null && <span className={isLow(levels.plan) ? "usage-low" : undefined} title="Plan left">{percent(levels.plan)}%</span>}
+                    {levels.context !== null && <span title="Context left">ctx {percent(levels.context)}%{isLow(levels.context) && <span className="usage-low"> low</span>}</span>}
+                    {levels.context !== null && levels.plan !== null && <span className="chip-sep" aria-hidden="true">·</span>}
+                    {levels.plan !== null && <span title="Plan left">plan {percent(levels.plan)}%{isLow(levels.plan) && <span className="usage-low"> low</span>}</span>}
                   </span>
                 )}
               </button>

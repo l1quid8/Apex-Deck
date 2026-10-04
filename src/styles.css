@@ -774,8 +774,10 @@ textarea {
   margin: 0 4px;
   opacity: 0.6;
 }
+/* Low readings are not failures: they get weight and the word "low", never the danger colour. */
 .usage-low {
-  color: var(--danger);
+  color: var(--text);
+  font-weight: 650;
 }
 /* The usage card under a chip, opened by hovering or focusing it. */
 .chip-wrap {
@@ -1335,7 +1337,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .attention-button.done { border-color: color-mix(in srgb, var(--brand-cyan) 45%, transparent); color: var(--brand-cyan); }
 .attention-list {
   position: absolute;
-  right: 0;
+  left: 0;
   top: calc(100% + 8px);
   z-index: 40;
   width: min(380px, 80vw);

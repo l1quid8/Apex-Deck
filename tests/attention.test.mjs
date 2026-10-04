@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Burst, afterRound, ago, label, summarize, urgency, waitingFor } from "../src/attention.ts";
+import { Burst, afterRound, ago, label, summarize, urgency, waitingFor, workspaceFlag } from "../src/attention.ts";
 
 test("an approval menu under a question is waiting for approval", () => {
   const screen = `
@@ -126,4 +126,20 @@ test("times are given roughly", () => {
   assert.equal(ago(now - 2 * 3_600_000, now), "2h ago");
   assert.equal(ago(now - 3 * 86_400_000, now), "3d ago");
   assert.equal(ago(now + 5_000, now), "just now");
+});
+
+test("a workspace pill says which section an alert is in when it is not this one", () => {
+  const at = 0;
+  const code = { where: "Code", signal: { kind: "needs_input", note: "", at } };
+  const thread = { where: "Threads", signal: { kind: "done", note: "", at } };
+  assert.equal(workspaceFlag([], "Threads"), null);
+  assert.equal(workspaceFlag([code], "Threads").text, "1 · Code");
+  assert.equal(workspaceFlag([code], "Code").text, "1");
+  assert.equal(workspaceFlag([thread], "Threads").text, "1");
+  assert.equal(workspaceFlag([code, thread], "Threads").text, "2 · 1 in Code");
+  assert.equal(workspaceFlag([code, code], "Threads").text, "2 · Code");
+  assert.equal(workspaceFlag([code, thread], null).text, "2");
+  assert.equal(workspaceFlag([code, thread], "Threads").worst, "needs_input");
+  assert.equal(workspaceFlag([code], "Threads").title, "1 wants attention: 1 in Code");
+  assert.equal(workspaceFlag([code, thread], "Code").title, "2 want attention: 1 in Code, 1 in Threads");
 });
