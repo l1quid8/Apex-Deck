@@ -1,6 +1,8 @@
 /** Serializes a room's turns; queued context never overlaps an active turn. */
-export type TurnKind = "message" | "compact";
-export interface QueuedMessage { id: number; text: string; kind: TurnKind }
+/** "turn" runs bots on the transcript as it is and posts no text (see ParticipantQueues.turn). */
+export type TurnKind = "message" | "compact" | "turn";
+/** `hops` is set on "turn" items only: the cap on bot-to-bot rounds, null for the room's own. */
+export interface QueuedMessage { id: number; text: string; kind: TurnKind; hops?: number | null }
 export class TurnQueue {
   items: QueuedMessage[] = [];
   active = false;
@@ -55,11 +57,11 @@ export class ParticipantQueues {
   private draining = false;
   private rerun = false;
   private targets: (text: string) => Promise<string[]>;
-  private post: (text: string, to: string[], kind: TurnKind) => Promise<void>;
+  private post: (text: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>;
   private stop: (id?: string) => Promise<void>;
   private changed: (items: ParticipantMessage[]) => void;
   private failed: (error: unknown) => void;
-  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}) {
+  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}) {
     this.targets = targets; this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
   }
   get active() { return Object.values(this.state).includes("working"); }
@@ -89,6 +91,15 @@ export class ParticipantQueues {
     try { if (this.state[id] === "working") await this.stop(id); this.resume(id); }
     catch (error) { this.failed(error); }
   }
+  /** Run `to` once more on the transcript as it is, ahead of anything queued
+   *  for them, posting no text. Their paused queues resume after it, since
+   *  you chose to go on with them. `hops` caps the bot-to-bot rounds that
+   *  may follow; null keeps the room's limit. */
+  turn(to: string[], hops: number | null) {
+    for (const id of to) this.paused.delete(id);
+    this.items.unshift({ id: ++this.serial, text: "", kind: "turn", to, hops });
+    this.publish(); void this.drain();
+  }
   async halt(id?: string) {
     for (const target of id ? [id] : Object.keys(this.state)) this.paused.add(target);
     this.publish();
@@ -108,7 +119,7 @@ export class ParticipantQueues {
         item.to.forEach(id => { this.state[id] = "working"; });
         this.items = this.items.filter(x => x.id !== item.id); this.publish();
         try {
-          await this.post(item.text, item.to, item.kind);
+          await this.post(item.text, item.to, item.kind, item.hops);
           if (item.kind === "compact") { item.to.forEach(id => { this.state[id] = "idle"; }); this.publish(); }
         }
         catch (error) {

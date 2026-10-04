@@ -159,7 +159,7 @@ fn bots_that_keep_pinging_each_other_are_cut_off() {
 
     // One answer to the human, then two rounds of bots answering bots.
     assert_eq!(lines(&room), ["human: @opus go", "opus: @grok 1", "grok: @opus 2", "opus: @grok 3"]);
-    assert!(events.contains(&RoomEvent::HopLimitReached { limit: 2 }));
+    assert!(events.contains(&RoomEvent::HopLimitReached { limit: 2, next: vec![ParticipantId::new("grok")] }));
     assert_eq!(events.last(), Some(&RoomEvent::Idle));
 }
 
@@ -172,7 +172,7 @@ fn zero_hops_means_bots_never_trigger_each_other() {
     let events = say(&mut room, "@opus go");
 
     assert_eq!(lines(&room), ["human: @opus go", "opus: @grok over to you"]);
-    assert!(events.contains(&RoomEvent::HopLimitReached { limit: 0 }));
+    assert!(events.contains(&RoomEvent::HopLimitReached { limit: 0, next: vec![ParticipantId::new("grok")] }));
     assert!(grok.requests().is_empty());
 }
 

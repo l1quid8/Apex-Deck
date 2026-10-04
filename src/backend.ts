@@ -39,7 +39,10 @@ export interface Backend {
   roomPost(id: string, text: string): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
   roomPostTo(id: string, text: string, targets: string[]): Promise<void>;
-  roomTurn(id: string, participant: string): Promise<void>;
+  /** Run participants on the transcript as it is, one after another, without
+   *  posting anything. `hops` caps the rounds of bots answering bots that may
+   *  follow: null keeps the room's limit, 0 buys exactly one reply each. */
+  roomTurn(id: string, participants: string[], hops: number | null): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
   /** Answer an action a bot proposed, named by the `request` from its event. */
   /** `always` stops the same thing being asked again in this thread until the app quits. */
@@ -130,7 +133,7 @@ async function tauriBackend(): Promise<Backend> {
     roomPost: (id, text) => invoke("room_post", { id, text }),
     roomTargets: (id, text) => invoke("room_targets", { id, text }),
     roomPostTo: (id, text, targets) => invoke("room_post_to", { id, text, targets }),
-    roomTurn: (id, participant) => invoke("room_turn", { id, participant }),
+    roomTurn: (id, participants, hops) => invoke("room_turn", { id, participants, hops }),
     roomStop: (id, participant) => invoke("room_stop", { id, participant: participant ?? null }),
     roomDecide: (id, request, approve, always = false) => invoke("room_decide", { id, request, approve, always }),
     roomSetOptions: (id, options) => invoke("room_set_options", { id, options }),
@@ -239,9 +242,13 @@ function demoBackend(): Backend {
     const all = room.participants.map(p => p.id);
     return /@(all|everyone)\b/i.test(text) || (!named.length && room.options.policy !== "mention") ? all : named.length ? named : room.last.length ? room.last : all.slice(0,1);
   };
-  const runPreview = async (id: string, participant: string) => {
+  /** One participant's turn. Resolves with the bots its reply addressed, so
+   *  runChain can follow them the way the native room does. */
+  const runPreview = async (id: string, participant: string): Promise<string[]> => {
       const key = `${id}:${participant}`;
       let active = true;
+      let stopped = false;
+      let addressed: string[] = [];
       const partials = new Map<string, string>();
       const emit = (event: RoomEvent) => {
         if (!active) return;
@@ -252,7 +259,7 @@ function demoBackend(): Backend {
       const cancelled = new Promise<void>(resolve => cancellations.set(key, () => {
         const room = rooms.get(id);
         for (const [bot, text] of partials) if (text.trim() && room) emit({type: "message_added", message: {seq: room.seq++, speaker: {kind:"bot", id:bot}, text: text.trim() + "\n\n[Interrupted]"}});
-        active = false; resolve();
+        stopped = true; active = false; resolve();
       }));
       try { await Promise.race([(async () => {
       const room = rooms.get(id);
@@ -263,6 +270,7 @@ function demoBackend(): Backend {
         const ownsEditor = configured.access !== "read" && !editors.has(id);
         if (ownsEditor) { editors.set(id, target); emit({type: "editor_changed", id: target}); }
         const p = {...configured, access: ownsEditor ? configured.access : "read" as const};
+        const lastHuman = [...room.transcript].reverse().find((m) => m.speaker.kind === "human");
         emit( { type: "turn_started", id: p.id });
         if (p.backend.kind === "agent") {
           await sleep(600); if (!active) return;
@@ -331,13 +339,23 @@ function demoBackend(): Backend {
             }
           }
         }
-        const reply = [
+        let reply = [
           `## Preview reply from ${p.display_name}`,
           "This is **preview mode**: the desktop app sends your message to the *real* model. See [README.md](README.md) or `npm run tauri dev`.",
           "1. Steps appear while a bot works\n2. Text is written live\n   - nested point with `code`\n3. The final reply replaces the draft",
           "| Tool | Live text |\n|---|---|\n| Claude Code | yes |\n| Codex | yes |",
           "```sh\ncd ~/Downloads/apex-deck\nnpm run tauri dev\n```",
         ].join("\n\n");
+        // Preview only: "relay" in your message makes each bot hand over to the
+        // next one in the room ("relay all": to everyone else), so the round
+        // limit and Let them answer can be seen.
+        if (lastHuman && /\brelay\b/i.test(lastHuman.text) && room.participants.length > 1) {
+          const others = room.participants.filter((x) => x.id !== p.id);
+          const next = room.participants[(room.participants.findIndex((x) => x.id === p.id) + 1) % room.participants.length];
+          const everyone = /\brelay all\b/i.test(lastHuman.text);
+          reply += everyone ? "\n\n@all your turn." : `\n\n@${next.id} your turn.`;
+          addressed = everyone ? others.map((x) => x.id) : [next.id];
+        }
         for (const piece of reply.match(/\S+\s*/g) ?? []) {
           await sleep(25); if (!active) return;
           emit( { type: "delta", id: p.id, text: piece });
@@ -357,9 +375,35 @@ function demoBackend(): Backend {
         active = false; cancellations.delete(key);
         if (editors.get(id) === participant) { editors.delete(id); emitRoom(id, {type: "editor_changed", id: null}); }
         emitRoom(id, {type: "participant_idle", id: participant});
-        if (![...cancellations.keys()].some(key => key.startsWith(`${id}:`))) emitRoom(id, {type: "idle"});
       }
+      return stopped ? [] : addressed;
     };
+
+  /** Rooms with chains of turns running; a room is idle when its last chain ends. */
+  const chains = new Map<string, number>();
+  /** Run `first`, then whoever the replies address, up to `limit` rounds of
+   *  bots answering bots, like ConcurrentRoom::run. */
+  const runChain = async (id: string, first: string[], sequential: boolean, limit: number) => {
+    chains.set(id, (chains.get(id) ?? 0) + 1);
+    try {
+      let wave = first;
+      let inTurn = sequential;
+      for (let hops = 0; wave.length > 0; hops++) {
+        const replies: string[][] = [];
+        if (inTurn) for (const target of wave) replies.push(await runPreview(id, target));
+        else replies.push(...await Promise.all(wave.map((target) => runPreview(id, target))));
+        const next = [...new Set(replies.flat())].filter((target) => rooms.get(id)?.participants.some((p) => p.id === target));
+        if (next.length === 0) break;
+        if (hops >= limit) { emitRoom(id, { type: "hop_limit_reached", limit, next }); break; }
+        wave = next;
+        inTurn = true;
+      }
+    } finally {
+      const left = (chains.get(id) ?? 1) - 1;
+      if (left > 0) chains.set(id, left);
+      else { chains.delete(id); emitRoom(id, { type: "idle" }); }
+    }
+  };
 
   const postPreview = async (id: string, text: string, targets: string[]) => {
     const room = rooms.get(id);
@@ -367,7 +411,7 @@ function demoBackend(): Backend {
     if (targets.some(target => !room.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
     room.last = targets;
     emitRoom(id, {type: "message_added", message: {seq: room.seq++, speaker: {kind: "human"}, text}});
-    await Promise.all(targets.map(target => runPreview(id, target)));
+    await runChain(id, targets, room.options.policy === "round_robin", room.options.max_bot_hops);
   };
 
   return {
@@ -443,7 +487,12 @@ function demoBackend(): Backend {
       if (!rooms.has(id) || targets.some(target => !rooms.get(id)!.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
       void postPreview(id, text, targets).catch(error => emitRoom(id, {type: "failed", id: "storage", error: String(error)}));
     },
-    roomTurn: async (id, participant) => { void runPreview(id, participant); },
+    roomTurn: async (id, participants, hops) => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      if (participants.some((target) => !room.participants.some((p) => p.id === target))) throw new Error("that participant is no longer in this room");
+      void runChain(id, [...new Set(participants)], true, hops ?? room.options.max_bot_hops);
+    },
     roomStop: async (id, participant) => stopPreview(id, participant),
     roomDecide: async (_id, request, approve, always = false) => {
       const answer = asks.get(request);

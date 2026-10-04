@@ -202,7 +202,7 @@ fn targeted_stop_keeps_streamed_text_and_does_not_poison_the_next_turn() {
         runtime.run(batch, &sink).await;
         assert!(events.lock().unwrap().iter().any(|e| matches!(e, RoomEvent::MessageAdded { message } if message.text == "unfinished\n\n[Interrupted]")));
         let next = runtime
-            .begin_turn(ParticipantId::new("jigga"))
+            .begin_turn(vec![ParticipantId::new("jigga")], None)
             .await
             .unwrap();
         runtime.run(next, &sink).await;
@@ -276,7 +276,7 @@ fn round_robin_requests_see_the_prior_reply_and_hops_keep_their_limit() {
             .lock()
             .unwrap()
             .iter()
-            .any(|e| matches!(e, RoomEvent::HopLimitReached { limit: 1 })));
+            .any(|e| matches!(e, RoomEvent::HopLimitReached { limit: 1, next } if next == &vec![ParticipantId::new("null"), ParticipantId::new("jigga")])));
         assert_eq!(null.requests().len(), 2);
         assert_eq!(jigga.requests().len(), 2);
     });
@@ -335,7 +335,7 @@ fn second_writer_is_read_only_until_editor_finishes() {
             tx.send(()).unwrap();
         };
         futures::join!(runtime.run(first, &|_| {}), control);
-        let next = runtime.begin_turn(ParticipantId::new("jigga")).await.unwrap();
+        let next = runtime.begin_turn(vec![ParticipantId::new("jigga")], None).await.unwrap();
         runtime.run(next, &|_| {}).await;
         assert!(fast.requests()[1].system.contains("may edit files and run commands"));
     });
@@ -350,5 +350,62 @@ fn explicit_queued_recipients_survive_a_later_sticky_mention() {
         let other = runtime.begin_post("@jigga plan", None, &|_| {}).await.unwrap();
         assert!(runtime.begin_post("keep building", Some(recipients), &|_| {}).await.is_ok());
         drop(initial); drop(other);
+    });
+}
+
+#[test]
+fn a_turn_with_a_zero_budget_buys_exactly_one_reply() {
+    block_on(async {
+        let null = Arc::new(ScriptedParticipant::new("null", &["@jigga over to you"]));
+        let jigga = Arc::new(ScriptedParticipant::new("jigga", &["never said"]));
+        let runtime = ConcurrentRoom::new(Room::new(vec![null.clone(), jigga.clone()], RoomOptions::default()));
+        let events = Mutex::new(Vec::new());
+        let sink = |event| events.lock().unwrap().push(event);
+        let batch = runtime.begin_turn(vec![ParticipantId::new("null")], Some(0)).await.unwrap();
+        runtime.run(batch, &sink).await;
+        assert_eq!(null.requests().len(), 1);
+        assert!(jigga.requests().is_empty(), "a budget of 0 buys one reply, even though the room allows 3 rounds");
+        let events = events.lock().unwrap();
+        assert!(events.contains(&RoomEvent::HopLimitReached { limit: 0, next: vec![ParticipantId::new("jigga")] }));
+        assert!(!events.iter().any(|e| matches!(e, RoomEvent::MessageAdded { message } if message.speaker == Speaker::Human)), "nothing is posted");
+    });
+}
+
+#[test]
+fn bots_let_answer_together_go_one_after_another() {
+    block_on(async {
+        let null = Arc::new(ScriptedParticipant::new("null", &["first"]));
+        let jigga = Arc::new(ScriptedParticipant::new("jigga", &["second"]));
+        let runtime = ConcurrentRoom::new(Room::new(vec![null.clone(), jigga.clone()], RoomOptions::default()));
+        let batch = runtime.begin_turn(vec![ParticipantId::new("null"), ParticipantId::new("jigga")], Some(0)).await.unwrap();
+        runtime.run(batch, &|_| {}).await;
+        assert!(jigga.requests()[0].turns.iter().any(|t| t.content.contains("first")), "Jigga saw Null's reply");
+    });
+}
+
+#[test]
+fn a_turn_for_someone_who_left_is_refused() {
+    block_on(async {
+        let (runtime, _) = setup();
+        let refused = runtime.begin_turn(vec![ParticipantId::new("ghost")], None).await;
+        assert_eq!(refused.err(), Some("that participant is no longer in this room".to_string()));
+    });
+}
+
+#[test]
+fn without_a_budget_a_turn_keeps_the_rooms_round_limit() {
+    block_on(async {
+        let null = Arc::new(ScriptedParticipant::new("null", &["@jigga one"]));
+        let jigga = Arc::new(ScriptedParticipant::new("jigga", &["@null two"]));
+        let runtime = ConcurrentRoom::new(Room::new(
+            vec![null.clone(), jigga.clone()],
+            RoomOptions { policy: apex_core::TurnPolicy::Mention, max_bot_hops: 1 },
+        ));
+        let events = Mutex::new(Vec::new());
+        let sink = |event| events.lock().unwrap().push(event);
+        let batch = runtime.begin_turn(vec![ParticipantId::new("null")], None).await.unwrap();
+        runtime.run(batch, &sink).await;
+        assert_eq!(jigga.requests().len(), 1);
+        assert!(events.lock().unwrap().contains(&RoomEvent::HopLimitReached { limit: 1, next: vec![ParticipantId::new("null")] }));
     });
 }

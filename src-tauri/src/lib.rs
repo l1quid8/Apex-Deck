@@ -378,10 +378,14 @@ async fn room_post_to(app: AppHandle, state: State<'_, AppState>, id: String, te
     Ok(())
 }
 
+/// Run participants on the transcript as it is, one after another, without
+/// posting anything (Try again, Let them answer). `hops` caps the bot-to-bot
+/// rounds that may follow: `None` keeps the room's limit, `Some(0)` buys
+/// exactly one reply each.
 #[tauri::command]
-async fn room_turn(app: AppHandle, state: State<'_, AppState>, id: String, participant: ParticipantId) -> Result<(), String> {
+async fn room_turn(app: AppHandle, state: State<'_, AppState>, id: String, participants: Vec<ParticipantId>, hops: Option<usize>) -> Result<(), String> {
     let handle = state.handle(&id)?;
-    let batch = handle.runtime.begin_turn(participant).await?;
+    let batch = handle.runtime.begin_turn(participants, hops).await?;
     tauri::async_runtime::spawn(async move {
         if let Err(error) = run_batch(&app, &id, &handle, batch).await {
             let _ = app.emit("room-event", RoomEventPayload { room: &id, event: RoomEvent::Failed { id: ParticipantId::new("storage"), error } });

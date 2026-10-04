@@ -81,8 +81,13 @@ pub enum RoomEvent {
     Passed { id: ParticipantId },
     /// A participant could not reply.
     Failed { id: ParticipantId, error: String },
-    /// Bots kept addressing each other and the room cut them off.
-    HopLimitReached { limit: usize },
+    /// Bots kept addressing each other and the room cut them off. `next`
+    /// lists who the last replies addressed, so the person can let them answer.
+    HopLimitReached {
+        limit: usize,
+        #[serde(default)]
+        next: Vec<ParticipantId>,
+    },
     /// The models now see `summary` in place of the first `upto` messages.
     Compacted { id: ParticipantId, summary: String, upto: usize },
     /// The human pressed stop.
@@ -720,7 +725,7 @@ impl Room {
                 break;
             }
             if hops >= self.options.max_bot_hops {
-                on_event(RoomEvent::HopLimitReached { limit: self.options.max_bot_hops });
+                on_event(RoomEvent::HopLimitReached { limit: self.options.max_bot_hops, next: targets.clone() });
                 break;
             }
             hops += 1;

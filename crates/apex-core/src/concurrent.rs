@@ -147,16 +147,28 @@ impl ConcurrentRoom {
             room.configs().into_iter().map(|c| c.id).collect(),
         ))
     }
-    /// A queued turn reads the existing transcript; it never reposts human text.
-    pub async fn begin_turn(&self, id: ParticipantId) -> Result<TurnBatch, String> {
+    /// Turns on the transcript as it is; nothing is posted. Several
+    /// participants answer one after another, each seeing the replies before
+    /// it. `hops` caps the rounds of bots answering bots that may follow:
+    /// `None` keeps the room's limit, `Some(0)` buys exactly one reply each.
+    pub async fn begin_turn(&self, ids: Vec<ParticipantId>, hops: Option<usize>) -> Result<TurnBatch, String> {
         let room = self.room.lock().await;
-        if !room.has(&id) {
+        if ids.is_empty() {
+            return Err("no one was named to answer".into());
+        }
+        if ids.iter().any(|id| !room.has(id)) {
             return Err("that participant is no longer in this room".into());
         }
+        let mut unique = Vec::new();
+        for id in ids {
+            if !unique.contains(&id) {
+                unique.push(id);
+            }
+        }
         Ok(self.batch(
-            vec![id],
+            unique,
             true,
-            room.options().max_bot_hops,
+            hops.unwrap_or(room.options().max_bot_hops),
             room.configs().into_iter().map(|c| c.id).collect(),
         ))
     }
@@ -248,7 +260,7 @@ impl ConcurrentRoom {
                 break;
             }
             if hops >= batch.limit {
-                sink(RoomEvent::HopLimitReached { limit: batch.limit });
+                sink(RoomEvent::HopLimitReached { limit: batch.limit, next: unique });
                 break;
             }
             hops += 1;

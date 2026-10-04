@@ -156,7 +156,8 @@ export type RoomEvent =
   | { type: "plan_usage"; provider: AgentTool; windows: PlanWindow[]; partial: boolean }
   | { type: "passed"; id: string }
   | { type: "failed"; id: string; error: string }
-  | { type: "hop_limit_reached"; limit: number }
+  /** The room cut off bots answering each other; `next` is who the last replies asked. */
+  | { type: "hop_limit_reached"; limit: number; next: string[] }
   /** The models now see `summary` in place of the first `upto` messages. */
   | { type: "compacted"; id: string; summary: string; upto: number }
   | { type: "stopped" }
