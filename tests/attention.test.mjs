@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Burst, afterRound, ago, label, seenFlags, summarize, urgency, waitingFor, withApprovals, withPaneSignal, workspaceFlag } from "../src/attention.ts";
+import { Burst, afterRound, ago, badgeCount, clearReady, label, seenFlags, summarize, urgency, waitingFor, withApprovals, withPaneSignal, workspaceFlag } from "../src/attention.ts";
 
 test("an approval menu under a question is waiting for approval", () => {
   const screen = `
@@ -182,4 +182,23 @@ test("a pane's own flags behave as before", () => {
   assert.equal(seenFlags({ term: waiting }, "term", true).term, waiting, "a waiting terminal keeps its flag");
   assert.deepEqual(seenFlags({ term: waiting }, "term", false), {});
   assert.deepEqual(seenFlags({}, "none", false), {});
+});
+
+test("Mark ready as seen clears Ready and nothing else", () => {
+  const flags = {
+    a: { kind: "done", note: "New reply", at: 1 },
+    b: { kind: "needs_input", note: "Null wants approval: Run npm test", at: 2, blocking: true },
+    c: { kind: "failed", note: "Null could not reply", at: 3 },
+    d: { kind: "done", note: "Finished working", at: 4 },
+  };
+  assert.deepEqual(Object.keys(clearReady(flags)), ["b", "c"]);
+  const none = { b: flags.b };
+  assert.equal(clearReady(none), none, "nothing to clear changes nothing");
+});
+
+test("the dock badge counts Needs you and Failed, not Ready", () => {
+  const at = 0;
+  assert.equal(badgeCount([]), 0);
+  assert.equal(badgeCount([{ kind: "done", note: "", at }, { kind: "needs_input", note: "", at }, { kind: "failed", note: "", at }]), 2);
+  assert.equal(badgeCount([{ kind: "done", note: "", at }]), 0);
 });

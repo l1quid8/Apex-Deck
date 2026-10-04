@@ -140,3 +140,24 @@ export function deadlineNote(expiresAt: number | null | undefined, now: number):
   if (expiresAt == null) return null;
   return `Denied automatically in ${Math.max(1, Math.ceil((expiresAt - now) / 60_000))}m`;
 }
+
+/** How long a card waits, with the window in the background, before the dock asks harder. */
+export const ESCALATE_AFTER_MS = 2 * 60_000;
+
+/** A card's identity for escalation: its thread, its request and when it arrived. */
+export function escalationKey(card: OpenCard): string {
+  return `${card.room}\u001f${card.request}\u001f${card.at}`;
+}
+
+/**
+ * The cards to escalate now, from each blocked thread's cards. A thread's
+ * oldest waiting card escalates once, when it has been open for 2 minutes
+ * and the window doesn't have focus; `escalated` holds the keys of cards
+ * already escalated, which never escalate again.
+ */
+export function dueEscalations(threads: readonly (readonly OpenCard[])[], escalated: ReadonlySet<string>, focused: boolean, now: number): OpenCard[] {
+  if (focused) return [];
+  return threads
+    .map((cards) => cards.find((card) => waiting(card, now)))
+    .filter((card): card is OpenCard => card !== undefined && now - card.at >= ESCALATE_AFTER_MS && !escalated.has(escalationKey(card)));
+}

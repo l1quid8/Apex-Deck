@@ -15,11 +15,11 @@ import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
-import { label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
+import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { approvalSnapshot, openCards, subscribeApprovals } from "./approvals";
+import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, quitQuestion, removeCounts, removeQuestion, savedThreads, stillRunning } from "./closing";
 import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
@@ -159,7 +159,7 @@ export function App() {
     return () => window.removeEventListener("keydown", key);
   }, [detailsOpen, section, overlayDetails]);
   const [exited, setExited] = useState<Set<string>>(new Set());
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
   /** Panes that want attention, by pane id. */
   const [attention, setAttention] = useState<Record<string, Signal>>({});
   const lastOutput = useRef(new Map<string, number>());
@@ -428,10 +428,25 @@ export function App() {
       setAttention((all) => Object.fromEntries(Object.entries(all).filter(([id]) => listed.some((p) => p.id === id))));
       return;
     }
-    const grew = live.length > flagged.current;
-    flagged.current = live.length;
-    backend?.flagAttention(live.length, grew && !document.hasFocus()).catch(() => {});
+    // The icon counts what needs you or failed; Ready shows only in the title bar and rail.
+    const urgent = badgeCount(live.map((id) => attention[id]));
+    const grew = urgent > flagged.current;
+    flagged.current = urgent;
+    backend?.flagAttention(urgent, grew && !document.hasFocus()).catch(() => {});
   }, [attention, listed, backend]);
+
+  // An approval left waiting for 2 minutes while the window is in the
+  // background asks for Critical attention, once per card. Ready flags and
+  // terminal flags never escalate.
+  const escalated = useRef(new Set<string>());
+  useEffect(() => {
+    if (!backend) return;
+    const threads = listed.filter((p) => p.kind === "chat" && attention[p.id]?.blocking).map((p) => openCards(p.id, approvalState));
+    const due = dueEscalations(threads, escalated.current, document.hasFocus(), Date.now());
+    if (due.length === 0) return;
+    for (const card of due) escalated.current.add(escalationKey(card));
+    backend.requestCriticalAttention().catch(() => {});
+  }, [tick, attention, approvalState, listed, backend]);
 
   const attentionItems: AttentionItem[] = listed
     .filter((pane) => attention[pane.id])
@@ -650,6 +665,7 @@ export function App() {
           items={attentionItems}
           onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }}
           onDecide={(room, request, approve) => backend.roomDecide(room, request, approve, false)}
+          onMarkReadySeen={() => setAttention(clearReady)}
         />
         </div>
         <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />

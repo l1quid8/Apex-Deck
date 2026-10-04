@@ -174,6 +174,17 @@ export function seenFlags(flags: Flags, paneId: string, terminal: boolean): Flag
   return without(flags, paneId);
 }
 
+/** Every flag except Ready, as Mark ready as seen leaves them. */
+export function clearReady(flags: Flags): Flags {
+  const kept = Object.fromEntries(Object.entries(flags).filter(([, signal]) => signal.kind !== "done"));
+  return Object.keys(kept).length === Object.keys(flags).length ? flags : kept;
+}
+
+/** The number on the dock icon: what needs you or failed. Ready shows only in the title bar and rail. */
+export function badgeCount(signals: readonly Signal[]): number {
+  return signals.filter((signal) => signal.kind !== "done").length;
+}
+
 // ----------------------------------------------------------------- summary
 
 /** How many panes are flagged, and the most urgent kind among them. */

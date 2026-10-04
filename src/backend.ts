@@ -71,9 +71,11 @@ export interface Backend {
   roomClose(id: string): Promise<void>;
   roomDelete(id: string): Promise<void>;
   onRoomEvent(cb: (room: string, event: RoomEvent) => void): Promise<Unlisten>;
-  /** Show on the app's icon how many panes want attention. With `nudge`,
+  /** Show on the app's icon how many panes need you or failed (Ready is left out). With `nudge`,
    *  also draw the eye to the icon once, for when the app is in the background. */
   flagAttention(count: number, nudge: boolean): Promise<void>;
+  /** Ask for Critical attention (on macOS the dock bounces until the window is focused), for an approval left waiting. */
+  requestCriticalAttention(): Promise<void>;
   /** The window's close button, ⌘W, ⌘Q or Quit in the app menu was used.
    *  Answer with `quitHeard` at once, then `quitApp` to go ahead. */
   onQuitRequested(cb: (request: number) => void): Promise<Unlisten>;
@@ -119,6 +121,11 @@ async function tauriBackend(): Promise<Backend> {
       // Neither is available on every system; the app works without them.
       await main.setBadgeCount(count > 0 ? count : undefined).catch(() => {});
       if (nudge) await main.requestUserAttention(UserAttentionType.Informational).catch(() => {});
+    },
+    requestCriticalAttention: async () => {
+      const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
+      // Not available on every system; the app works without it.
+      await getCurrentWindow().requestUserAttention(UserAttentionType.Critical).catch(() => {});
     },
     roomPost: (id, text) => invoke("room_post", { id, text }),
     roomTargets: (id, text) => invoke("room_targets", { id, text }),
@@ -409,6 +416,10 @@ function demoBackend(): Backend {
     agentModels: async () => [],
     flagAttention: async (count) => {
       document.title = count > 0 ? `(${count}) Apex Deck` : "Apex Deck";
+    },
+    // The browser has no dock; the console says what the desktop app would do.
+    requestCriticalAttention: async () => {
+      console.info("[preview] Critical attention requested");
     },
     openTarget: async (target) => {
       if (/^https?:/.test(target)) window.open(target, "_blank", "noopener");

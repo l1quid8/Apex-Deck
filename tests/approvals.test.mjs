@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyApprovalEvent, approvalSignal, approvalSnapshot, cardLabel, cardTitle, cardsByBot,
-  deadlineNote, forgetRoom, openCards, recordApproval, subscribeApprovals,
+  deadlineNote, forgetRoom, ESCALATE_AFTER_MS, dueEscalations, escalationKey, openCards, recordApproval, subscribeApprovals,
 } from "../src/approvals.ts";
 
 const run = (detail) => ({ kind: "command", title: "Run a command", detail });
@@ -108,4 +108,17 @@ test("cards group by the bot that asked", () => {
   const c = { room: "t", participant: "null", request: "ask-3", action: edit, at: 3 };
   assert.deepEqual(cardsByBot([a, b, c]), { null: [a, c], jigga: [b] });
   assert.deepEqual(cardsByBot([]), {});
+});
+
+test("an approval left waiting escalates once, and only in the background", () => {
+  const card = { room: "t", participant: "null", request: "ask-1", action: run("npm test"), at: 0 };
+  assert.deepEqual(dueEscalations([[card]], new Set(), false, ESCALATE_AFTER_MS - 1), []);
+  assert.deepEqual(dueEscalations([[card]], new Set(), true, ESCALATE_AFTER_MS), [], "the window has focus");
+  assert.deepEqual(dueEscalations([[card]], new Set(), false, ESCALATE_AFTER_MS), [card]);
+  assert.deepEqual(dueEscalations([[card]], new Set([escalationKey(card)]), false, 10 * ESCALATE_AFTER_MS), [], "never again for the same card");
+  const twin = { ...card, room: "u" };
+  assert.deepEqual(dueEscalations([[twin]], new Set([escalationKey(card)]), false, ESCALATE_AFTER_MS), [twin], "the same request id in another thread is another card");
+  const expired = { ...card, request: "ask-0", action: { kind: "tool", title: "x-mcp: post_tweet", detail: "{}", expires_at: 1 } };
+  assert.deepEqual(dueEscalations([[expired, card]], new Set(), false, ESCALATE_AFTER_MS), [card], "a card being denied doesn't count");
+  assert.deepEqual(dueEscalations([[]], new Set(), false, ESCALATE_AFTER_MS), []);
 });

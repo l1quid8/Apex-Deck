@@ -23,6 +23,8 @@ interface Props {
   onOpen: (paneId: string) => void;
   /** Answer a card from the list. Only Allow once and Deny are offered here. */
   onDecide: (room: string, request: string, approve: boolean) => Promise<void>;
+  /** Clear every Ready flag, leaving Needs you and Failed. */
+  onMarkReadySeen: () => void;
 }
 
 /** A card's identity across threads: request ids repeat from thread to thread. */
@@ -34,7 +36,7 @@ const cardId = (card: OpenCard) => `${card.room}\u001f${card.request}`;
  * items come first, and choosing one goes to its pane. A thread stopped on
  * a routine approval can be answered right here; see answerStrip.ts.
  */
-export function AttentionMenu({ items, onOpen, onDecide }: Props) {
+export function AttentionMenu({ items, onOpen, onDecide, onMarkReadySeen }: Props) {
   const [open, setOpen] = useState(false);
   /** Threads answered from the list since it opened. They keep their row until it closes. */
   const [answered, setAnswered] = useState<Record<string, AttentionItem>>({});
@@ -185,6 +187,7 @@ export function AttentionMenu({ items, onOpen, onDecide }: Props) {
           })}
           <div className="attention-foot">
             <span>Most urgent first</span>
+            {items.some((item) => item.signal.kind === "done") && <button className="ghost small" onClick={onMarkReadySeen}>Mark ready as seen</button>}
             <span><kbd>{/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘J" : "Ctrl+Shift+J"}</kbd> next</span>
           </div>
         </div>
