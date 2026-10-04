@@ -199,6 +199,8 @@ impl McpCall {
             action.title = self.tool.clone();
         }
         action.expires_at = self.expires_at;
+        // A name Deck can't split always asks, so its card is risky too.
+        action.risky = self.risky();
         action
     }
 }
@@ -396,6 +398,13 @@ pub(crate) async fn serve(stream: std::convert::Infallible, _: &mut Gates, _: &d
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hook_cards_are_risky_when_the_call_is() {
+        assert!(McpCall::from_hook("mcp__probe__place_order", json!({})).action().risky);
+        assert!(McpCall::from_hook("not_an_mcp_name", json!({})).action().risky, "a name Deck can't split always asks");
+        assert!(!McpCall::from_hook("mcp__probe__get_balance", json!({})).action().risky);
+    }
+
     use super::*;
 
     #[test]

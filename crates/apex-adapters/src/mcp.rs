@@ -14,7 +14,7 @@ pub(crate) fn claude_tool(tool: &str) -> Option<(&str, &str)> {
 }
 
 pub(crate) fn action(server: &str, tool: &str, arguments: &Value) -> ProposedAction {
-    ProposedAction { kind: ActionKind::Tool, title: format!("{server}: {tool}"), detail: serde_json::to_string_pretty(arguments).expect("JSON value"), expires_at: None, risky: false }
+    ProposedAction { kind: ActionKind::Tool, title: format!("{server}: {tool}"), detail: serde_json::to_string_pretty(arguments).expect("JSON value"), expires_at: None, risky: needs_approval(tool) }
 }
 
 /// Connected server names from `claude mcp list`. Lines look like
@@ -158,6 +158,12 @@ pub(crate) fn codex_policy(servers: &[Value]) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tool_that_can_spend_money_or_publish_makes_a_risky_action() {
+        assert!(action("x-mcp", "post_tweet", &json!({"text": "hi"})).risky);
+        assert!(!action("github", "fetch_pr_patch", &json!({})).risky);
+    }
+
     use super::*;
     #[test]
     fn plugin_menu_groups_servers_and_display_name_by_plugin_identity() {

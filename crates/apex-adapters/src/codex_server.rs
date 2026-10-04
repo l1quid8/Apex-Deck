@@ -158,7 +158,20 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
         Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
         None => message.to_string(),
     };
-    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail, expires_at: None, risky: false })
+    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail, expires_at: None, risky: high_risk(params) })
+}
+
+/// Codex marks some approval requests `riskLevel: "high"` in their `_meta`.
+fn high_risk(params: &Value) -> bool {
+    params["_meta"]["riskLevel"] == "high"
+}
+
+/// The card for an in-flight MCP call Codex asked about: risky when the
+/// tool's name says so or Codex marks the request high risk.
+fn call_action(call: &McpCall, params: &Value) -> ProposedAction {
+    let mut action = call.action();
+    action.risky |= high_risk(params);
+    action
 }
 
 
@@ -433,7 +446,7 @@ pub(crate) async fn run(
                             match gates.at_codex(&call) {
                                 Some(decision) => decision,
                                 None => {
-                                    let action = call.action();
+                                    let action = call_action(&call, params);
                                     on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
                                     let decision = approver.decide(action).await;
                                     gates.answered_at_codex(call, decision);
@@ -542,6 +555,20 @@ fn ended_early(reader: EventReader) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_high_risk_marks_the_card_risky() {
+        let ask = json!({"serverName":"computer-use", "mode":"form", "message":"Allow Codex to use Terminal?",
+            "requestedSchema":{"type":"object","properties":{}}, "_meta":{"codex_approval_kind":"app_approval","riskLevel":"high"}});
+        assert!(mcp_question(&ask).unwrap().risky);
+        let mut low = ask.clone(); low["_meta"]["riskLevel"] = json!("low");
+        assert!(!mcp_question(&low).unwrap().risky);
+        let read = McpCall { server: "probe".into(), tool: "get_balance".into(), arguments: json!({}), expires_at: None };
+        assert!(!call_action(&read, &json!({"_meta":{}})).risky);
+        assert!(call_action(&read, &json!({"_meta":{"riskLevel":"high"}})).risky, "Codex's own mark is kept");
+        let order = McpCall { server: "probe".into(), tool: "place_order".into(), arguments: json!({}), expires_at: None };
+        assert!(call_action(&order, &json!({"_meta":{}})).risky, "the name alone is enough");
+    }
+
     use super::*;
 
     #[test]
