@@ -1,3 +1,5 @@
+import { ReplyPolicyPicker, REPLY_POLICIES } from "./ReplyPolicyPicker";
+import { BotSettings } from "./BotSettings";
 import type { AllowedRule, ThreadStatus, ToolServer } from "./types";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, statusParts, stopLabel, stopTargets, threadStatusOf, type BotProgress } from "./composerStatus";
@@ -361,6 +363,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const refreshDiff = useRef(loadDiff);
   refreshDiff.current = loadDiff;
   useEffect(() => { if (showChanges) refreshDiff.current(); }, [showChanges]);
+  const [quickSettings, setQuickSettings] = useState<{ id: string; anchor: HTMLElement } | null>(null);
+  const [pendingSettings, setPendingSettings] = useState<Record<string, boolean>>({});
+  const closeQuickSettings = () => setQuickSettings(null);
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -590,6 +595,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           setEditor(event.id);
           break;
         case "participant_idle":
+          setPendingSettings(({ [event.id]: _applied, ...rest }) => rest);
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
           reportApprovals();
@@ -684,6 +690,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           notify("Stopped.");
           break;
         case "idle": {
+          setPendingSettings({});
           reportApprovals();
           if (turnQueue.active) break;
           if (showChangesRef.current) refreshDiff.current();
@@ -1571,9 +1578,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           <label>
             Who answers
             <select disabled={!ready || busy} value={options.policy} onChange={(e) => changeOptions({ ...options, policy: e.target.value as TurnPolicy })}>
-              <option value="mention">Whoever I addressed last</option>
-              <option value="everyone">Everyone at once</option>
-              <option value="round_robin">Everyone in turn</option>
+              {REPLY_POLICIES.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
             </select>
           </label>
           <div className="stepper-field" title="How many rounds of models answering each other are allowed after one of your messages">
@@ -1652,6 +1657,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   </>;
   return (
     <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} save={async config => {
+        await backend.roomUpdateParticipant(pane.id, config);
+        setParticipants(list => list.map(p => p.id === config.id ? config : p));
+        if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
+      }} /> }
       {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} />} />, details.slot)}
       <div className="chat-bar">
         <div className="chips">
@@ -1668,10 +1678,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
             >
             <span className="chip" style={{ borderColor: color(p.id) }}>
-              <button className="chip-name" onClick={() => mention(p.id)} title={`Mention @${p.id}`}>
+              <button className="chip-name" aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
+                if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
+                  setCard(null);
+                  setQuickSettings(quickSettings?.id === p.id ? null : { id: p.id, anchor: event.currentTarget });
+                } else mention(p.id);
+              }} title={`Model and reasoning for ${p.display_name}`}>
                 <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
                 <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
                 {p.display_name}
+                {pendingSettings[p.id] && <span className="settings-pending" role="status" aria-label="Settings pending for next reply" title="Settings apply to the next reply" />}
                 {queued.some(item => item.to.includes(p.id)) && <span className="chip-meta">{queued.filter(item => item.to.includes(p.id)).length} queued</span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
                 <span className="chip-meta chip-description">{describe(p)}</span>
@@ -1685,7 +1701,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               </button>
 
             </span>
-            {card === p.id && usageCard(p)}
+            {card === p.id && !quickSettings && usageCard(p)}
             </span>
             );
           })}
@@ -1909,7 +1925,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </div>)}
         </div>}
         {recipient && lineFits && <div className="recipient-line">
-          To {recipient.to} · <button type="button" className="link-button" title="Change who answers by default" onClick={() => details?.show("room")}>{recipient.reason}</button>{recipient.queued && " · queued (busy)"}
+          To {recipient.to} · <ReplyPolicyPicker value={options.policy} label={recipient.reason} disabled={!ready || busy} onChange={policy => changeOptions({ ...options, policy })} />{recipient.queued && " · queued (busy)"}
         </div>}
         <div className="composer-field">
           <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {

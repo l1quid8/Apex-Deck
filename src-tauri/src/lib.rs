@@ -495,15 +495,21 @@ async fn room_update_participant(
     id: String,
     participant: ParticipantConfig,
 ) -> Result<(), String> {
-    state.require_idle(&id)?;
     let name = participant.id.clone();
     let context = state.room_context(&id)?;
     read_plans(&app, &id, std::slice::from_ref(&participant), &context);
     let changed = {
         let room = state.room(&id)?;
         let mut room = room.lock().await;
-        state.require_idle(&id)?;
-        room.replace_participant(apex_adapters::build(participant, &context))
+        let replacement = apex_adapters::build(participant, &context);
+        if state.handle(&id)?.runtime.busy() {
+            if !room.replace_turn_settings(replacement) {
+                return Err("Only model and reasoning can change while models are replying".into());
+            }
+            true
+        } else {
+            room.replace_participant(replacement)
+        }
     };
     if changed {
         state.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));

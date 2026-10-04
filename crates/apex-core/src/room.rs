@@ -381,6 +381,21 @@ impl Room {
         }
     }
 
+    /// Replace only model/effort while active turns retain their cloned instance.
+    pub fn replace_turn_settings(&mut self, participant: Arc<dyn Participant>) -> bool {
+        let next = participant.config();
+        let Some(current) = self.roster.iter().find(|p| p.config().id == next.id) else { return false; };
+        let mut permitted = current.config().clone();
+        permitted.effort = next.effort.clone();
+        match (&mut permitted.backend, &next.backend) {
+            (crate::Backend::Agent { model, .. }, crate::Backend::Agent { model: new, .. }) => *model = new.clone(),
+            (crate::Backend::OpenAiCompatible { model, .. }, crate::Backend::OpenAiCompatible { model: new, .. }) => *model = new.clone(),
+            _ => {}
+        }
+        if &permitted != next { return false; }
+        self.replace_participant(participant)
+    }
+
     /// Remove a participant. Its past messages stay in the transcript.
     pub fn remove_participant(&mut self, id: &ParticipantId) -> bool {
         let before = self.roster.len();

@@ -409,3 +409,72 @@ fn without_a_budget_a_turn_keeps_the_rooms_round_limit() {
         assert!(events.lock().unwrap().contains(&RoomEvent::HopLimitReached { limit: 1, next: vec![ParticipantId::new("null")] }));
     });
 }
+
+#[test]
+fn turn_settings_change_during_reply_preserves_current_turn_and_next_context() {
+    block_on(async {
+        let (release, rx) = oneshot::channel();
+        let mut config = ScriptedParticipant::new("null", &[]).config().clone();
+        config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("old-model".into()) };
+        config.effort = Some("low".into());
+        let original = config.clone();
+        let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(Held { config, release: Mutex::new(Some(rx)) })], RoomOptions::default()));
+        let events = Mutex::new(Vec::new());
+        let sink = |event| events.lock().unwrap().push(event);
+        let batch = runtime.begin_post("@null remember this", None, &sink).await.unwrap();
+        let control = async {
+            let next = runtime.begin_post("@null next", None, &sink).await.unwrap();
+            let mut config = original.clone();
+            config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("new-model".into()) };
+            config.effort = Some("high".into());
+            let replacement = Arc::new(SettingsReply { config });
+            let room = runtime.room();
+            {
+                let mut room = room.lock().await;
+                assert!(room.replace_turn_settings(replacement));
+                assert_eq!(room.transcript()[0].text, "@null remember this");
+                assert_eq!(room.configs()[0].effort.as_deref(), Some("high"));
+            }
+            release.send(()).unwrap();
+            runtime.run(next, &sink).await;
+        };
+        futures::join!(runtime.run(batch, &sink), control);
+        let room = runtime.room();
+        let room = room.lock().await;
+        assert_eq!(room.transcript()[2].text, "slow finished");
+        assert_eq!(room.transcript()[3].text, "new settings replied");
+    });
+}
+
+struct SettingsReply { config: ParticipantConfig }
+#[async_trait]
+impl Participant for SettingsReply {
+    fn config(&self) -> &ParticipantConfig { &self.config }
+    async fn respond(&self, request: TurnRequest, _: DeltaSink<'_>) -> Result<Reply, ParticipantError> {
+        assert!(format!("{request:?}").contains("remember this"));
+        assert_eq!(self.config.effort.as_deref(), Some("high"));
+        assert!(matches!(&self.config.backend, apex_core::Backend::Agent { model: Some(model), .. } if model == "new-model"));
+        Ok(Reply::text("new settings replied"))
+    }
+}
+
+#[test]
+fn active_settings_cannot_change_access_identity_or_provider() {
+    block_on(async {
+        let mut config = ScriptedParticipant::new("null", &[]).config().clone();
+        config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("old-model".into()) };
+        let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(SettingsReply { config: config.clone() })], RoomOptions::default()));
+        let room = runtime.room();
+        let mut room = room.lock().await;
+        let mut changed = config.clone();
+        changed.access = apex_core::Access::Full;
+        assert!(!room.replace_turn_settings(Arc::new(SettingsReply { config: changed })));
+        let mut changed = config.clone();
+        changed.display_name = "Renamed".into();
+        assert!(!room.replace_turn_settings(Arc::new(SettingsReply { config: changed })));
+        let mut changed = config.clone();
+        changed.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::ClaudeCode, model: Some("new-model".into()) };
+        assert!(!room.replace_turn_settings(Arc::new(SettingsReply { config: changed })));
+        assert_eq!(room.configs()[0], config);
+    });
+}
