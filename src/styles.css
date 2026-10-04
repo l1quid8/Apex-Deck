@@ -1876,3 +1876,17 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 .allowed-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .allowed-copy > span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .allowed-copy strong { font-weight: 650; }
+
+/* Now tier, stage 1: toasts stack, so a delete's Undo and a removal's Undo can show at once. */
+.toasts {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.toasts > .toast { position: static; transform: none; }

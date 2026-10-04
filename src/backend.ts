@@ -207,6 +207,12 @@ function demoBackend(): Backend {
 
   const editors = new Map<string, string>();
   const askOwners = new Map<string, string>();
+  /** End a room's running preview turns and turn down their open cards, as the
+   *  native room_stop (one participant) and room_close (everyone) do. */
+  const stopPreview = (id: string, participant?: string) => {
+    for (const [key, cancel] of cancellations) if (key === `${id}:${participant}` || (!participant && key.startsWith(`${id}:`))) cancel();
+    for (const [request, owner] of askOwners) if (owner === `${id}:${participant}` || (!participant && owner.startsWith(`${id}:`))) asks.get(request)?.(false);
+  };
   const targetsFor = (id: string, text: string): string[] => {
     const room = rooms.get(id);
     if (!room) throw new Error(`no group chat with id ${id}`);
@@ -390,10 +396,7 @@ function demoBackend(): Backend {
       void postPreview(id, text, targets).catch(error => emitRoom(id, {type: "failed", id: "storage", error: String(error)}));
     },
     roomTurn: async (id, participant) => { void runPreview(id, participant); },
-    roomStop: async (id, participant) => {
-      for (const [key, cancel] of cancellations) if (key === `${id}:${participant}` || (!participant && key.startsWith(`${id}:`))) cancel();
-      for (const [request, owner] of askOwners) if (owner === `${id}:${participant}` || (!participant && owner.startsWith(`${id}:`))) asks.get(request)?.(false);
-    },
+    roomStop: async (id, participant) => stopPreview(id, participant),
     roomDecide: async (_id, request, approve, always = false) => {
       const answer = asks.get(request);
       if (!answer) throw new Error("that request is no longer waiting for an answer");
@@ -522,6 +525,7 @@ function demoBackend(): Backend {
       emitRoom(id, { type: "compacted", id: by.id, summary, upto });
     },
     roomClose: async (id) => {
+      stopPreview(id);
       rooms.delete(id);
     },
     roomDelete: async (id) => {

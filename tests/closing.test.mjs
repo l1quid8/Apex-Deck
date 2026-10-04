@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, savedThreads } from "../src/closing.ts";
+import { closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, removeCounts, removeQuestion, savedThreads } from "../src/closing.ts";
 
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
 const term = (id, extra = {}) => ({ id, workspaceId: "w", kind: "terminal", title: id, ...extra });
@@ -43,4 +43,35 @@ test("an older session file without the closed field opens every thread", () => 
 
 test("a thread saved as closed stays closed", () => {
   assert.equal(loadedThreads([chat("a", { closed: true })], ["w"])[0].closed, true);
+});
+
+const status = (replying, waiting = []) => ({ text: "", replying, waiting });
+
+test("removing a workspace asks only while something in it is running", () => {
+  assert.equal(removeQuestion("apex-deck", removeCounts(["idle", "exited", "done", "failed"], [status([]), undefined])), null);
+  assert.notEqual(removeQuestion("apex-deck", removeCounts(["working"], [])), null);
+  assert.notEqual(removeQuestion("apex-deck", removeCounts(["needs_input"], [])), null);
+  assert.notEqual(removeQuestion("apex-deck", removeCounts([], [status(["Jigga"])])), null);
+  assert.notEqual(removeQuestion("apex-deck", removeCounts([], [status([], ["Null"])])), null);
+});
+
+test("the remove question says what ends and that the threads stay saved", () => {
+  const asked = removeQuestion("apex-deck", { working: 2, waiting: 1, replying: 0, asking: 0, threads: 4 });
+  assert.equal(asked.title, "Remove apex-deck from the list?");
+  assert.equal(asked.body, "2 terminals are working and 1 is waiting for you. They end now. Its 4 threads stay saved and come back if you add the folder again.");
+  assert.equal(asked.action, "Remove from list");
+});
+
+test("clauses whose count is 0 are left out", () => {
+  assert.equal(removeQuestion("w", { working: 1, waiting: 0, replying: 0, asking: 0, threads: 0 }).body, "1 terminal is working. It ends now.");
+  assert.equal(removeQuestion("w", { working: 0, waiting: 1, replying: 0, asking: 0, threads: 1 }).body, "1 terminal is waiting for you. It ends now. Its thread stays saved and comes back if you add the folder again.");
+  assert.equal(removeQuestion("w", { working: 0, waiting: 0, replying: 1, asking: 1, threads: 3 }).body, "1 thread is replying and 1 is waiting for you. They stop now. Its 3 threads stay saved and come back if you add the folder again.");
+  assert.equal(removeQuestion("w", { working: 0, waiting: 0, replying: 2, asking: 0, threads: 2 }).body, "2 threads are replying. They stop now. Its 2 threads stay saved and come back if you add the folder again.");
+});
+
+test("a thread with a bot on a card counts as waiting, even while another bot replies", () => {
+  assert.deepEqual(
+    removeCounts(["working", "needs_input", "idle"], [status(["Jigga"], ["Null"]), status(["Ada"]), status([]), undefined]),
+    { working: 1, waiting: 1, replying: 1, asking: 1, threads: 4 },
+  );
 });

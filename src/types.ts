@@ -208,6 +208,8 @@ export interface Workspace {
   name: string;
   /** Folder on disk. Empty in the browser demo. */
   path: string;
+  /** A workspace removed from the list. Missing means `false`. Its threads stay saved. */
+  hidden?: boolean;
 }
 
 export type Layout = "top" | "left";

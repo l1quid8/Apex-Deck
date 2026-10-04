@@ -19,7 +19,8 @@ import { label, summarize, urgency, workspaceFlag, type Attention, type Signal }
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, savedThreads } from "./closing";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, removeCounts, removeQuestion, savedThreads } from "./closing";
+import { activeAfter, listedPanes, openThreadIds, removeWorkspacePanes, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -96,6 +97,9 @@ export function App() {
   const deleteTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   /** The latest delete, offered for undo. */
   const [undoable, setUndoable] = useState<{ id: string; title: string } | null>(null);
+  /** The latest workspace removed from the list, offered for undo with the threads that were open. */
+  const [undoableRemove, setUndoableRemove] = useState<{ id: string; name: string; reopen: string[] } | null>(null);
+  const removeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   /** The pane whose ⋯ menu is open. */
   const [paneMenu, setPaneMenu] = useState<string | null>(null);
   /** Bumped by ⌘T to open the + New menu. */
@@ -213,9 +217,10 @@ export function App() {
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
   }, [backend, workspaces, panes, profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed]);
 
+  // The workspace in view is always a listed one: removing it moves on to the first listed.
   useEffect(() => {
-    if (activeWorkspace && workspaces.some((w) => w.id === activeWorkspace)) return;
-    setActiveWorkspace(workspaces[0]?.id ?? null);
+    const next = activeAfter(workspaces, activeWorkspace);
+    if (next !== activeWorkspace) setActiveWorkspace(next);
   }, [workspaces, activeWorkspace]);
 
   // Re-render once a second so status dots fall back to idle.
@@ -238,6 +243,8 @@ export function App() {
     return Date.now() - last < WORKING_WINDOW_MS ? "working" : "idle";
   };
 
+  /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
+  const listed = useMemo(() => listedPanes(panes, workspaces), [panes, workspaces]);
   const visiblePanes = useMemo(() => openPanes(panes, deleting).filter((p) => p.workspaceId === activeWorkspace && (section === "code" ? p.kind === "terminal" : section === "threads" && p.kind === "chat")), [panes, deleting, activeWorkspace, section]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
   useEffect(() => {
@@ -278,7 +285,8 @@ export function App() {
     if (preset !== "grid") setLayout(preset);
     setMaximized(null);
   };
-  const current = workspaces.find((w) => w.id === activeWorkspace) ?? null;
+  const shownList = shownWorkspaces(workspaces);
+  const current = shownList.find((w) => w.id === activeWorkspace) ?? null;
 
   const addWorkspace = async () => {
     if (!backend) return;
@@ -299,16 +307,39 @@ export function App() {
     setActiveWorkspace(workspace.id);
   };
 
-  const removeWorkspace = async (id: string) => {
-    for (const pane of panes.filter((p) => p.workspaceId === id)) {
-      clearTimeout(deleteTimers.current.get(pane.id));
-      deleteTimers.current.delete(pane.id);
-    }
-    try {
-      for (const pane of panes.filter((p) => p.workspaceId === id && p.kind === "chat")) await backend?.roomDelete(pane.id);
-    } catch (error) { setStorageError(String(error)); return; }
-    setPanes((list) => list.filter((p) => p.workspaceId !== id));
-    setWorkspaces((list) => list.filter((w) => w.id !== id));
+  /** Take a workspace off the list. Nothing is deleted: its threads stay saved
+   *  and closed, and its terminals end. Asks first only while something in it runs. */
+  const removeWorkspace = (workspace: Workspace) => {
+    const own = panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id));
+    const counts = removeCounts(
+      own.filter((p) => p.kind === "terminal").map((p) => statusOf(p)),
+      own.filter((p) => p.kind === "chat").map((p) => threadStatus[p.id]),
+    );
+    const reopen = openThreadIds(own, workspace.id);
+    const remove = () => {
+      for (const pane of own) if (pane.kind === "terminal") lastOutput.current.delete(pane.id);
+      setPanes((list) => removeWorkspacePanes(list, workspace.id));
+      setWorkspaces((list) => setHidden(list, workspace.id, true));
+      setFocusedPane((id) => (id && own.some((p) => p.id === id) ? null : id));
+      setMaximized((id) => (id && own.some((p) => p.id === id) ? null : id));
+      clearTimeout(removeTimer.current);
+      setUndoableRemove({ id: workspace.id, name: workspace.name, reopen });
+      removeTimer.current = setTimeout(() => setUndoableRemove((u) => (u?.id === workspace.id ? null : u)), UNDO_MS);
+    };
+    const asked = removeQuestion(workspace.name, counts);
+    if (asked) setQuestion({ ...asked, onConfirm: remove });
+    else remove();
+  };
+
+  /** Undo a removal: the row and its threads come back. Its terminals can't. */
+  const undoRemove = () => {
+    if (!undoableRemove) return;
+    clearTimeout(removeTimer.current);
+    const { id, reopen } = undoableRemove;
+    setWorkspaces((list) => setHidden(list, id, false));
+    setPanes((list) => reopenThreads(list, reopen));
+    setActiveWorkspace(id);
+    setUndoableRemove(null);
   };
 
   /** A workspace with no folder and a thread of two scripted bots, to try a room without keys. */
@@ -385,22 +416,23 @@ export function App() {
     });
   }, [focusedPane, activeWorkspace, section, picking, maximized, windowFocus, attention]);
 
-  // Flags for panes that no longer exist are dropped, and the app's icon
-  // shows how many are left. A new flag raised while the app is in the
-  // background also draws the eye to the icon.
+  // Flags for panes that no longer exist, or whose workspace was removed
+  // from the list, are dropped, and the app's icon shows how many are left.
+  // A new flag raised while the app is in the background also draws the
+  // eye to the icon.
   const flagged = useRef(0);
   useEffect(() => {
-    const live = Object.keys(attention).filter((id) => panes.some((p) => p.id === id));
+    const live = Object.keys(attention).filter((id) => listed.some((p) => p.id === id));
     if (live.length !== Object.keys(attention).length) {
-      setAttention((all) => Object.fromEntries(Object.entries(all).filter(([id]) => panes.some((p) => p.id === id))));
+      setAttention((all) => Object.fromEntries(Object.entries(all).filter(([id]) => listed.some((p) => p.id === id))));
       return;
     }
     const grew = live.length > flagged.current;
     flagged.current = live.length;
     backend?.flagAttention(live.length, grew && !document.hasFocus()).catch(() => {});
-  }, [attention, panes, backend]);
+  }, [attention, listed, backend]);
 
-  const attentionItems: AttentionItem[] = panes
+  const attentionItems: AttentionItem[] = listed
     .filter((pane) => attention[pane.id])
     .map((pane) => ({
       paneId: pane.id,
@@ -614,8 +646,8 @@ export function App() {
                 +
               </button>
             </div>
-            {workspaces.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
-            {workspaces.map((workspace) => {
+            {shownList.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
+            {shownList.map((workspace) => {
               const own = section === "agents" ? [] : panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && p.kind === (section === "code" ? "terminal" : "chat"));
               return (
                 <div key={workspace.id} className="ws">
@@ -630,7 +662,7 @@ export function App() {
                         return flag ? <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span> : null;
                       })()}
                     </button>
-                    <button className="icon small" onClick={() => removeWorkspace(workspace.id)} aria-label={`Remove ${workspace.name}`} title="Remove from list (closes its panes, keeps the folder)">
+                    <button className="icon small" onClick={() => removeWorkspace(workspace)} aria-label={`Remove ${workspace.name} from the list`} title="Remove from list (its threads stay saved)">
                       ×
                     </button>
                   </div>
@@ -668,7 +700,7 @@ export function App() {
           {/* Every pane of every workspace stays mounted so its session keeps
               running. Panes outside the current view are only hidden. */}
           <div ref={gridArea} className={`grid ${resizing || paneDrag.dragging ? "adjusting" : ""}`} style={{ display: section !== "agents" && current && !picking && visiblePanes.length > 0 ? "block" : "none" }}>
-            {panes.map((pane) => {
+            {listed.map((pane) => {
               const visible = shown.some((p) => p.id === pane.id);
               const rect = maximized === pane.id ? FULL : placed.get(pane.id);
               const status = statusOf(pane);
@@ -728,10 +760,20 @@ export function App() {
         </>}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
-      {undoable && (
-        <div className="toast" role="status">
-          <span>{undoable.title} deleted.</span>
-          <button onClick={undoDelete}>Undo</button>
+      {(undoable || undoableRemove) && (
+        <div className="toasts">
+          {undoable && (
+            <div className="toast" role="status">
+              <span>{undoable.title} deleted.</span>
+              <button onClick={undoDelete}>Undo</button>
+            </div>
+          )}
+          {undoableRemove && (
+            <div className="toast" role="status">
+              <span>{undoableRemove.name} removed.</span>
+              <button onClick={undoRemove}>Undo</button>
+            </div>
+          )}
         </div>
       )}
     </div>
