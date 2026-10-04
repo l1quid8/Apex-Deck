@@ -1008,6 +1008,36 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     window.addEventListener("keydown", key, true);
     return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key, true); };
   }, [messageMenu]);
+  /** Text picked inside one message, with where to float Add to chat / More details. */
+  const [picked, setPicked] = useState<{ message: Message; text: string; x: number; y: number } | null>(null);
+  const pickSelection = () => {
+    const selection = window.getSelection();
+    const text = selection?.toString().trim() ?? "";
+    if (!selection || !text || selection.rangeCount === 0) return setPicked(null);
+    const range = selection.getRangeAt(0);
+    const start = (range.startContainer as Element).parentElement?.closest?.("[data-seq]") ?? (range.startContainer as Element).closest?.("[data-seq]");
+    const end = (range.endContainer as Element).parentElement?.closest?.("[data-seq]") ?? (range.endContainer as Element).closest?.("[data-seq]");
+    if (!start || start !== end) return setPicked(null);
+    const message = messagesOf(entries).find((m) => m.seq === Number(start.getAttribute("data-seq")));
+    if (!message) return setPicked(null);
+    const box = range.getBoundingClientRect();
+    setPicked({ message, text, x: box.left + box.width / 2, y: box.top });
+  };
+  const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => ({ ...quoteFor(p.message, (id) => names.get(id) ?? id), text: p.text });
+  const addPicked = () => {
+    if (!picked) return;
+    setReply(pickedQuote(picked)); setPicked(null);
+    window.getSelection()?.removeAllRanges();
+    input.current?.focus();
+  };
+  const explainPicked = () => {
+    if (!picked || !ready || participants.length === 0) return;
+    const message = replyText("Explain this part in more detail.", pickedQuote(picked), participants.map((p) => p.id));
+    setPicked(null);
+    window.getSelection()?.removeAllRanges();
+    stuck.current = true;
+    void turnQueue.send(message).catch((error) => notify(String(error), "error"));
+  };
   /** Quote, Copy and Fork on a message; one ⋯ menu instead in a pane under 360px wide. */
   const messageActions = (message: Message) => {
     const quote = () => { setReply(quoteFor(message, (id) => names.get(id) ?? id)); input.current?.focus(); };
@@ -1757,7 +1787,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </div>}
 
       <div className="chat-body">
-      {!profileMode && <div className="transcript" ref={scroller} onScroll={onTranscriptScroll}>
+      {!profileMode && <div className="transcript" ref={scroller} onScroll={() => { setPicked(null); onTranscriptScroll(); }}
+        onMouseUp={() => requestAnimationFrame(pickSelection)} onKeyUp={(e) => e.shiftKey && pickSelection()}
+        onMouseDown={(e) => { if (!(e.target as Element).closest(".selection-actions")) setPicked(null); }}>
+        {picked && <span className="selection-actions" role="toolbar" aria-label="Selected text" style={{ left: picked.x, top: picked.y }}>
+          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addPicked}>Add to chat</button>
+          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={explainPicked} disabled={!ready || participants.length === 0}>More details</button>
+        </span>}
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
           <div className="empty">
             <div className="empty-emblem"><DeckIcon name="chat" size={26} /></div>
@@ -1795,7 +1831,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <Markdown text={entry.summary.summary} onOpen={openTarget} />
             </details>
           ) : entry.message.speaker.kind === "human" ? (
-            <div key={`m${entry.message.seq}`} className="bubble human">
+            <div key={`m${entry.message.seq}`} className="bubble human" data-seq={entry.message.seq}>
               <RichText text={entry.message.text} onOpen={openTarget} />
               {messageActions(entry.message)}
             </div>
@@ -1806,7 +1842,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 color={color(entry.message.speaker.id)}
                 {...(newestReply.get(entry.message.speaker.id) === entry.message.seq ? { levels: levelsFor(entry.message.speaker.id), refills: refillsFor(entry.message.speaker.id) } : {})}
               />
-              <div className="bubble bot completed">
+              <div className="bubble bot completed" data-seq={entry.message.seq}>
                 <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
