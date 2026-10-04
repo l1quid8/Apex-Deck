@@ -891,7 +891,7 @@ export function App() {
             </div>
             {shownList.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
             {shownList.map((workspace) => {
-              const own = section === "agents" ? [] : panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && p.kind === (section === "code" ? "terminal" : "chat"));
+              const own = section === "agents" ? [] : panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && paneSection(p) === section);
               const inside = panes
                 .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
                 .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
