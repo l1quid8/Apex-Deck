@@ -56,7 +56,22 @@ edges.
   long run of output ends while you are looking at something else. For
   terminals this is a judgement from what is on screen, so it can be wrong
   either way. Looking at a pane clears its flag; a waiting terminal keeps
-  its flag until you type in it.
+  its flag until you type in it, and a thread whose bot is stopped on an
+  approval card keeps its flag until you answer the card ("Null wants
+  approval: Run npm test · +1 more").
+  - **Answering from the list.** A command, or an edit of 20 changed lines
+    or fewer, can be answered right in the attention list with **Allow
+    once** or **Deny**; anything bigger shows **Open to answer**. Always
+    allow is only offered on the card itself. Codex tool calls that its
+    hook denies by itself say so: "Denied automatically in 6m".
+  - **Mark ready as seen** clears every Ready flag at once. The dock badge
+    counts only what needs you or failed. An approval left waiting for 2
+    minutes while Apex Deck is in the background bounces the dock once.
+  - **Pane heads** say what is happening: "Null · Running: npm test ·
+    1m 12s", "2 replying · Null: Editing src/App.tsx", and for a terminal
+    "Working 4m". A command-line bot that has said nothing for 5 minutes
+    reads "Quiet 6m · stops at 15m", since such turns stop after 15 minutes
+    of silence.
 - **Group chat.** One conversation with any number of models. Each
   participant is reached through one of three backends, and you can mix them
   in the same chat:

@@ -92,7 +92,9 @@ chat reject everything that is waiting. Code: `crates/apex-core/src/approval.rs`
 | Terminals flag a prompt that is waiting for an answer, and work that finished while you were elsewhere | done (a judgement from what is on screen and how output arrived; the rules and their tests are in `src/attention.ts`. The approval-prompt pattern has not been checked against a live agent prompt) |
 | The app's icon shows the count, and draws the eye once when something is flagged in the background | done (not yet seen on a real Mac) |
 | The list also shows what is working and idle | later |
-| System notification and sound when something needs you | later |
+| System notification and sound when something needs you | later (an approval left waiting 2 minutes in the background bounces the dock once) |
+| Approval flags stay until answered; answer routine approvals from the list; Mark ready as seen; dock badge counts only Needs you and Failed | done |
+| Pane heads say what each bot or terminal is doing, with a quiet warning before the 15-minute silence limit | done |
 
 ## 4. Side panel
 
