@@ -1720,7 +1720,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .queued-messages { padding: 5px 8px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; }
 .queued-messages > summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queued-message { align-items: center; }
-.recipient-hint { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .participant-status { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--muted); }
 .participant-status.thinking, .participant-status.writing { background: #92b0c9; }
 .participant-status.tool { background: #cbb079; }
@@ -1988,3 +1987,11 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* Now 3.1: "New since you looked", a hairline with no colour. */
 .unseen-divider { display: flex; align-items: center; gap: 10px; align-self: stretch; color: var(--muted); font-size: 11px; }
 .unseen-divider::before, .unseen-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+
+/* Now 3.2: who gets your message, and why. */
+.recipient-line { margin: 0 0 4px 2px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link-button { padding: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; cursor: pointer; }
+.link-button:hover:not(:disabled) { background: none; color: var(--text); text-decoration-color: currentColor; }
+.example-rows { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-top: 16px; }
+.example-row { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--muted); font-size: 12px; text-align: left; }
+.example-row:hover:not(:disabled) { color: var(--text); }

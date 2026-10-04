@@ -31,6 +31,7 @@ import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./tur
 import { replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
+import { exampleRows, hasMention, recipientLine, showsRecipientLine } from "./recipients";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
   Access,
@@ -380,7 +381,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [queued, setQueued] = useState<ParticipantMessage[]>([]);
   const [queuePaused, setQueuePaused] = useState(false);
   const [editor, setEditor] = useState<string | null>(null);
-  const [recipients, setRecipients] = useState<string[]>([]);
   const [reply, setReply] = useState<ReplyQuote | null>(null);
   const [adding, setAdding] = useState(false);
   /** Where the quick add menu is open: under the empty thread's button, or in the sidebar. */
@@ -442,6 +442,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const stuck = useRef(true);
   /** Bot replies that arrived while you were scrolled up. */
   const [unread, setUnread] = useState(0);
+  /** The chat's root element; its pane's size decides what fits. */
+  const root = useRef<HTMLDivElement>(null);
+  /** False in a pane under 260px tall, where the recipient line is hidden. */
+  const [lineFits, setLineFits] = useState(true);
+  useEffect(() => {
+    const paneBox = root.current?.closest<HTMLElement>(".pane");
+    if (!paneBox) return;
+    const observer = new ResizeObserver(() => {
+      // A hidden pane measures nothing; keep what it had.
+      if (paneBox.offsetWidth === 0 && paneBox.offsetHeight === 0) return;
+      setLineFits(showsRecipientLine(paneBox.offsetHeight));
+    });
+    observer.observe(paneBox);
+    return () => observer.disconnect();
+  }, []);
   /** Open approval cards wholly out of view, oldest first. */
   const [cardsAway, setCardsAway] = useState<CardBox[]>([]);
   /** Find the open cards on screen and note which are out of view. */
@@ -509,7 +524,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const waitingNow = active.filter((p) => asks[p.id]?.length);
   const replyingNow = active.filter((p) => !asks[p.id]?.length);
   const activeSince = active.length ? Math.min(...active.map((p) => working[p.id]?.startedAt ?? now)) : 0;
-  const copy = composerCopy(busy, participants.length === 0);
+  /** You have written in this thread, so the room may have someone you addressed last. */
+  const addressedBefore = messagesOf(entries).some((m) => m.speaker.kind === "human");
+  const copy = composerCopy(busy, participants.length === 0, { firstMessage: participants.length >= 2 && !addressedBefore });
 
   const forgetContext = () => {
     setContextFill({});
@@ -871,13 +888,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     items => { setQueued(items); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused.`, "error"); },
   ));
-  useEffect(() => {
-    let alive = true;
-    const timer = setTimeout(() => {
-      if (ready && busy) void backend.roomTargets(pane.id, text).then(ids => { if (alive) setRecipients(ids); }).catch(() => {});
-    }, 150);
-    return () => { alive = false; clearTimeout(timer); };
-  }, [text, ready, busy, pane.id]);
   /** Stop: only the bots that are replying, unless nobody is waiting on a card. */
   const stopReplying = () => {
     const targets = stopTargets(replyingNow.map((p) => p.id), waitingNow.map((p) => p.id));
@@ -975,12 +985,25 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [serverLists, setServerLists] = useState<Record<string, ToolServer[]>>({});
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [serverTargets, setServerTargets] = useState<string[]>([]);
+  /** The text `serverTargets` was worked out for, so the recipient line never mixes a new draft with an old answer. */
+  const [targetsText, setTargetsText] = useState("");
   useEffect(() => {
     if (!ready || !participants.length) return;
     let live = true;
-    backend.roomTargets(pane.id, text).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
+    // Ask about the message as it will be sent, with a quote's leading handle.
+    const outgoing = reply ? replyText(text, reply) : text;
+    // A slower answer for older text is ignored once the text has changed.
+    backend.roomTargets(pane.id, outgoing).then(ids => { if (live) { setServerTargets(ids); setTargetsText(outgoing); } }).catch(() => {});
     return () => { live = false; };
-  }, [backend, pane.id, text, ready, participants]);
+  }, [backend, pane.id, text, reply, ready, participants]);
+  const recipient = recipientLine({
+    targets: serverTargets,
+    roster: participants.map((p) => ({ id: p.id, name: p.display_name })),
+    policy: options.policy,
+    mentioned: hasMention(targetsText, participants.map((p) => p.id)),
+    addressedBefore,
+    busy: participants.filter((p) => working[p.id]).map((p) => p.id),
+  });
   const serverMenuOpen = findTrigger(text, caret)?.kind === "server";
   useEffect(() => {
     if (!ready) return;
@@ -1023,6 +1046,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     } else void turnQueue.send(message).catch(error => notify(String(error), "error"));
   };
 
+  /** Put an example in the composer without sending it. */
+  const insertExample = (example: string) => {
+    const next = text.trim() ? `${text.trimEnd()} ${example}` : example;
+    setText(next);
+    setCaret(next.length);
+    requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.length, next.length); });
+  };
   const mention = (id: string) => {
     setText((t) => (t && !t.endsWith(" ") ? `${t} @${id} ` : `${t}@${id} `));
     input.current?.focus();
@@ -1413,7 +1443,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           <label>
             Who answers
             <select disabled={!ready || busy} value={options.policy} onChange={(e) => changeOptions({ ...options, policy: e.target.value as TurnPolicy })}>
-              <option value="mention">Only who I @mention</option>
+              <option value="mention">Whoever I addressed last</option>
               <option value="everyone">Everyone at once</option>
               <option value="round_robin">Everyone in turn</option>
             </select>
@@ -1486,7 +1516,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </li>)}
     </ul>;
   return (
-    <div className={`chat ${profileMode ? "" : "thread-chat"}`}>
+    <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
       {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
       <div className="chat-bar">
         <div className="chips">
@@ -1571,6 +1601,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 : "Type a message below. Use @name to pick who answers, or @all for everyone."}
             </p>
             {participants.length === 0 && quickAddButton("empty", true)}
+            {participants.length > 0 && <div className="example-rows" aria-label="Examples">
+              {exampleRows(participants.map((p) => p.id)).map((row) => (
+                <button key={row.text} type="button" className="example-row" onClick={() => insertExample(row.text)}>{row.label}</button>
+              ))}
+            </div>}
           </div>
         )}
         {entries.flatMap((entry) => {
@@ -1721,7 +1756,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </div>)}
           {queuePaused && <button className="ghost" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume queue</button>}
         </details>}
-        {busy && recipients.length > 0 && <div className="recipient-hint">To {recipients.map(id => names.get(id) ?? id).join(", ")} · {recipients.some(id => turnQueue.state[id] === "working") ? "queued (busy)" : "starts now"}</div>}
         {reply && <div className="quote-preview">
           <div className="quote-preview-copy"><span className="speaker">{reply.name}</span><blockquote>{reply.text}</blockquote></div>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
@@ -1731,6 +1765,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             {a.preview ? <img src={a.preview} alt={a.name} /> : <span className="attachment-name">{a.name}</span>}
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
+        </div>}
+        {recipient && lineFits && <div className="recipient-line">
+          To {recipient.to} · <button type="button" className="link-button" title="Change who answers by default" onClick={() => details?.show("room")}>{recipient.reason}</button>{recipient.queued && " · queued (busy)"}
         </div>}
         <div className="composer-field">
           <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
@@ -1774,7 +1811,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         />
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
-        <div className="composer-hint"><span>@ who answers · ! which tools · {copy.hint}</span></div>
+        <div className="composer-hint"><span>{copy.hint}</span></div>
         </div>
         <div className="composer-actions">
           {busy && <button className="ghost composer-steer" onClick={() => send(true)} disabled={!ready || !text.trim() || saving} title="Send to the busy model you mentioned now">Steer <kbd>⌘↵</kbd></button>}

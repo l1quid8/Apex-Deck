@@ -17,10 +17,11 @@ export function waitingVerb(count: number): string {
 }
 
 /** What the composer says Enter will do, so the placeholder and hint never disagree. */
-export function composerCopy(busy: boolean, empty: boolean): { placeholder: string; hint: string } {
-  if (empty) return { placeholder: "Add a model to start", hint: "↵ send · ⇧↵ new line" };
-  if (busy) return { placeholder: "Add to the next turn, or ⌘↵ to steer now…", hint: "↵ queue · ⌘↵ steer now · ⇧↵ new line" };
-  return { placeholder: "Message the room. @name picks who answers.", hint: "↵ send · ⇧↵ new line" };
+export function composerCopy(busy: boolean, empty: boolean, extra: { firstMessage?: boolean } = {}): { placeholder: string; hint: string } {
+  if (empty) return { placeholder: "Add a model to start", hint: "@ who answers · ! which tools · ↵ send · ⇧↵ new line" };
+  if (busy) return { placeholder: "Add to the next turn, or ⌘↵ to steer now…", hint: "@ who answers · ! which tools · ↵ queue · ⌘↵ steer now · ⇧↵ new line" };
+  if (extra.firstMessage) return { placeholder: "Message the room. @name picks who answers.", hint: "@all asks everyone · / for commands · ↵ send" };
+  return { placeholder: "Message the room. @name picks who answers.", hint: "@ who answers · ! which tools · ↵ send · ⇧↵ new line" };
 }
 
 /**

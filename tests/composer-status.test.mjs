@@ -125,3 +125,9 @@ test("Stop leaves a waiting card up, and stops everything when nobody waits", ()
   assert.equal(stopTargets(["jigga", "ada"], []), "all");
   assert.deepEqual(stopTargets([], ["null"]), []);
 });
+
+test("before the first message in a room of two or more bots, the hint teaches @all", () => {
+  assert.equal(composerCopy(false, false, { firstMessage: true }).hint, "@all asks everyone · / for commands · ↵ send");
+  assert.equal(composerCopy(false, false).hint, "@ who answers · ! which tools · ↵ send · ⇧↵ new line");
+  assert.match(composerCopy(true, false, { firstMessage: true }).hint, /↵ queue/);
+});
