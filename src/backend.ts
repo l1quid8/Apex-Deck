@@ -169,6 +169,13 @@ async function tauriBackend(): Promise<Backend> {
  *  participants answer with a canned line. Nothing here talks to a model. */
 function demoBackend(): Backend {
   const dataListeners = new Set<(id: string, data: string) => void>();
+  const exitListeners = new Set<(id: string, code: number | null) => void>();
+  /** Preview terminals whose pretend program has ended or been killed. */
+  const endedPtys = new Set<string>();
+  const emitExit = (id: string, code: number | null) => {
+    endedPtys.add(id);
+    exitListeners.forEach((cb) => cb(id, code));
+  };
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
   const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; seq: number; stopped: boolean; last: string[] }>();
   const cancellations = new Map<string, () => void>();
@@ -440,9 +447,10 @@ function demoBackend(): Backend {
 
     ptySpawn: async ({ id, agent }) => {
       const what = agent ? `${agent} (browser demo)` : "shell (browser demo)";
-      setTimeout(() => emitData(id, `\x1b[2m${what}: keys are echoed, nothing runs.\x1b[0m\r\n$ `), 30);
+      setTimeout(() => emitData(id, `\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, exit or fail.\x1b[0m\r\n$ `), 30);
     },
     ptyWrite: async (id, data) => {
+      if (endedPtys.has(id)) throw new Error(`no terminal with id ${id}`);
       emitData(id, data.replace(/\r/g, "\r\n$ ").replace(/\x7f/g, "\b \b"));
       // Preview only: typing "ask" then Enter shows an approval prompt, "work"
       // prints for a few seconds and "long" for 90 seconds, so the attention
@@ -458,14 +466,23 @@ function demoBackend(): Backend {
         for (let i = 1; i <= 180; i++) setTimeout(() => emitData(id, `\r\nstep ${i} of 180 ...`), i * 500);
         setTimeout(() => emitData(id, "\r\nFinished.\r\n$ "), 181 * 500);
       }
+      // "exit" ends the pretend program cleanly. "fail" ends it with code 1
+      // two seconds later, so you can look away and see the Failed flag.
+      if (line.endsWith("exit\r")) setTimeout(() => emitExit(id, 0), 100);
+      if (line.endsWith("fail\r")) setTimeout(() => emitExit(id, 1), 2000);
     },
     ptyResize: async () => {},
-    ptyKill: async () => {},
+    ptyKill: async (id) => {
+      endedPtys.add(id);
+    },
     onPtyData: async (cb) => {
       dataListeners.add(cb);
       return () => dataListeners.delete(cb);
     },
-    onPtyExit: async () => () => {},
+    onPtyExit: async (cb) => {
+      exitListeners.add(cb);
+      return () => exitListeners.delete(cb);
+    },
 
     roomCreate: async (id, participants, options) => {
       const saved = JSON.parse(localStorage.getItem(`apex-deck.demo.room.${id}`) ?? "null");

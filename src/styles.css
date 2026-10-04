@@ -2007,3 +2007,12 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .bubble.bot .msg-action.quote, .bubble:hover .msg-action, .bubble:focus-within .msg-action { opacity: 1; }
 .bubble.human:has(.msg-more) { padding-right: 44px; }
 .copied { font-size: 11px; color: var(--text); }
+
+/* Now tier, stage 4: terminals. A terminal pane is its screen plus, once
+   its program has ended, a bar at the foot. Neutral panel, hairline border. */
+.terminal { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.terminal > .terminal-host { min-height: 0; }
+.terminal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
+/* In a narrow pane the buttons drop below the words rather than squeezing them. */
+.terminal-bar-text { flex: 1 1 26ch; min-width: 0; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.terminal-bar button { padding: 4px 10px; font-size: 12px; white-space: nowrap; }

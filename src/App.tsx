@@ -13,6 +13,7 @@ import { AgentsSection } from "./AgentsSection";
 import { DeckIcon } from "./DeckIcon";
 import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
+import { isRunning, stateWord, terminalStatus, type TerminalRun } from "./terminalRun";
 import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
@@ -163,7 +164,8 @@ export function App() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [detailsOpen, section, overlayDetails]);
-  const [exited, setExited] = useState<Set<string>>(new Set());
+  /** Where each terminal's program is: stopped, running or exited. TerminalPane reports it. */
+  const [runs, setRuns] = useState<Record<string, TerminalRun>>({});
   const [tick, setTick] = useState(0);
   /** Panes that want attention, by pane id. */
   const [attention, setAttention] = useState<Record<string, Signal>>({});
@@ -242,18 +244,19 @@ export function App() {
   const onActivity = useCallback((paneId: string) => {
     lastOutput.current.set(paneId, Date.now());
   }, []);
-  const onExit = useCallback((paneId: string) => {
-    setExited((set) => new Set(set).add(paneId));
+  const onRun = useCallback((paneId: string, run: TerminalRun) => {
+    setRuns((all) => (all[paneId] === run ? all : { ...all, [paneId]: run }));
   }, []);
-  const onRun = useCallback((paneId: string, startedAt: number) => {
+  const onRunStart = useCallback((paneId: string, startedAt: number) => {
     runStart.current.set(paneId, startedAt);
   }, []);
 
   const statusOf = (pane: Pane): PaneStatus => {
+    const working = Date.now() - (lastOutput.current.get(pane.id) ?? 0) < WORKING_WINDOW_MS;
+    // A stopped or exited terminal reads "exited": it never asks before closing.
+    if (pane.kind === "terminal") return terminalStatus(runs[pane.id], attention[pane.id]?.kind ?? null, working);
     if (attention[pane.id]) return attention[pane.id].kind;
-    if (exited.has(pane.id)) return "exited";
-    const last = lastOutput.current.get(pane.id) ?? 0;
-    return Date.now() - last < WORKING_WINDOW_MS ? "working" : "idle";
+    return working ? "working" : "idle";
   };
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
@@ -492,6 +495,7 @@ export function App() {
       setPanes((list) => list.filter((p) => p.id !== id));
       lastOutput.current.delete(id);
       runStart.current.delete(id);
+      setRuns(({ [id]: _ended, ...rest }) => rest);
       takeOff(id);
     };
     const status = statusOf(pane);
@@ -603,7 +607,7 @@ export function App() {
     void backend.quitHeard(request).catch(() => {});
     const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
     const busy = stillRunning(
-      listed.filter((p) => p.kind === "terminal").map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: exited.has(p.id), status: statusOf(p) })),
+      listed.filter((p) => p.kind === "terminal").map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
       listed.filter((p) => p.kind === "chat" && !deleting.has(p.id)).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
     );
     const asked = quitQuestion(busy);
@@ -826,7 +830,7 @@ export function App() {
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
                     {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} /> : <span className="pane-title">{pane.title}</span>}
-                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : status === "exited" ? "Exited" : "Idle"}</span>}
+                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
@@ -852,7 +856,7 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} onRun={onRun} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
                     ) : (
                       <ChatPane onStatus={onThreadStatus} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}
