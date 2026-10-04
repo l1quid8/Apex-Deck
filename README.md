@@ -154,6 +154,12 @@ Thread commands:
 - `/export` saves Markdown to Downloads; `/export json` saves the transcript as JSON. Per-message timestamps and tool calls are not stored, so they are not included.
 - Start a message with `//` to send a literal `/`. Unknown commands keep your text and show a warning.
 
+Photos and files: paste them into the composer, drop them on the thread, or choose
+**Photo or file** from the **+** menu (20 MB each). They are copied into the app's
+data folder, one folder per thread, and sent as file paths, so each agent opens them
+with its own tools and later turns don't resend the bytes. Claude Code and Gemini
+are given read access to that folder.
+
 ## Saved data
 
 Chats, participants, options and completed messages are saved automatically.

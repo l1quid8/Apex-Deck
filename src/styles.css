@@ -1654,3 +1654,10 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .composer-menu [role="option"] { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 9px 8px; background: transparent; border: 0; text-align: left; }
 .composer-menu [role="option"][aria-selected="true"] { background: #ffffff12; }
 .composer-menu small { opacity: .65; }
+
+.attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.attachment { position: relative; display: flex; align-items: center; height: 56px; max-width: 180px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); overflow: hidden; }
+.attachment[aria-busy="true"] { opacity: .5; }
+.attachment img { height: 100%; width: auto; max-width: 120px; object-fit: cover; }
+.attachment-name { padding: 0 28px 0 10px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment > button { position: absolute; top: 2px; right: 2px; background: #000a; border-radius: 4px; }

@@ -553,6 +553,52 @@ fn export_thread(app: AppHandle, file_name: String, contents: String) -> Result<
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Photos and files attached in the composer live with the app's data, one
+/// folder per thread, so they stay out of the workspace and its diff.
+/// Agents are allowed to read the `attachments` folder; see `setup`.
+fn attachment_dir(app: &AppHandle, room: &str) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let room = export::safe_file_name(room)?;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("attachments").join(room);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make the attachments folder: {e}"))?;
+    Ok(dir)
+}
+
+const MAX_ATTACHMENT: usize = 20 * 1024 * 1024;
+
+/// Save a pasted or picked file. The body is the raw bytes; the thread and
+/// file name come in the `x-room` and `x-name` headers. Returns the saved path.
+#[tauri::command]
+fn save_attachment(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    if bytes.len() > MAX_ATTACHMENT {
+        return Err("files over 20 MB can't be attached".into());
+    }
+    let header = |key: &str| request.headers().get(key).and_then(|v| v.to_str().ok()).ok_or(format!("missing {key}"));
+    let dir = attachment_dir(&app, header("x-room")?)?;
+    let path = export::write_new(&dir, header("x-name")?, bytes).map_err(|e| format!("Could not save the attachment: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Copy a file dropped on the window into the thread's attachments.
+#[tauri::command]
+fn copy_attachment(app: AppHandle, room: String, path: String) -> Result<String, String> {
+    let source = std::path::Path::new(&path);
+    let meta = std::fs::metadata(source).map_err(|e| format!("Could not read {path}: {e}"))?;
+    if !meta.is_file() {
+        return Err("only files can be attached, not folders".into());
+    }
+    if meta.len() > MAX_ATTACHMENT as u64 {
+        return Err("files over 20 MB can't be attached".into());
+    }
+    let name = source.file_name().and_then(|n| n.to_str()).ok_or("that file has no usable name")?;
+    let bytes = std::fs::read(source).map_err(|e| format!("Could not read {path}: {e}"))?;
+    let path = export::write_new(&attachment_dir(&app, &room)?, name, &bytes).map_err(|e| format!("Could not save the attachment: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// What changed in the folder since this thread started, and who changed it.
 /// Reads the saved copy, so it answers while models are still working.
 #[tauri::command]
@@ -587,6 +633,7 @@ pub fn run() {
         .setup(|app| {
             let root = app.path().app_data_dir()?.join("saved-chats-v1");
             app.manage(Store::new(root));
+            apex_adapters::allow_reading(&app.path().app_data_dir()?.join("attachments"));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -602,6 +649,8 @@ pub fn run() {
             room_diff,
             room_fork,
             export_thread,
+            save_attachment,
+            copy_attachment,
             room_create,
             room_post,
             room_stop,

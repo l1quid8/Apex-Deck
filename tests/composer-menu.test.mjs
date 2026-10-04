@@ -25,7 +25,7 @@ test('items filter by kind and prefix', () => {
   assert.deepEqual(menuItems(findTrigger('@j', 2), people).map(i => i.label), ['@jigga']);
   assert.deepEqual(menuItems(findTrigger('@a', 2), people).map(i => i.label), ['@all']);
   const all = menuItems(null, people).map(i => i.label);
-  assert.deepEqual(all, ['@all', '@null', '@jigga', '/compact', '/clear', '/pin', '/diff', '/fork', '/export', '/export json']);
+  assert.deepEqual(all, ['Photo or file', '@all', '@null', '@jigga', '/compact', '/clear', '/pin', '/diff', '/fork', '/export', '/export json']);
 });
 
 test('picking replaces the trigger, or inserts at the caret from "+"', () => {

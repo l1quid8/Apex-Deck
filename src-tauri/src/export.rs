@@ -27,20 +27,24 @@ fn numbered_name(name: &str, number: u64) -> String {
 /// Reserve and write a unique path atomically, retrying collisions without
 /// opening or overwriting existing files, including during concurrent exports.
 pub fn write_export(dir: &Path, name: &str, contents: &str) -> Result<PathBuf, String> {
+    write_new(dir, name, contents.as_bytes()).map_err(|e| format!("Could not save the export: {e}"))
+}
+
+/// Write `bytes` under `name` in `dir`, numbering the name if it is taken.
+pub fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let name = safe_file_name(name)?;
     for number in 1..=u64::MAX {
         let path = dir.join(numbered_name(&name, number));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
-                file.write_all(contents.as_bytes())
-                    .map_err(|e| format!("Could not save the export: {e}"))?;
+                file.write_all(bytes).map_err(|e| e.to_string())?;
                 return Ok(path);
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("Could not save the export: {error}")),
+            Err(error) => return Err(error.to_string()),
         }
     }
-    Err("Could not find an unused export file name".into())
+    Err("no unused file name was left".into())
 }
 
 #[cfg(test)]

@@ -38,6 +38,14 @@ pub(crate) fn clean_effort(effort: Option<&str>) -> Option<String> {
         .filter(|e: &String| !e.is_empty())
 }
 
+static READABLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// A folder every agent may read even though it is outside the workspace:
+/// where the app keeps files attached in the chat. Set once at startup.
+pub fn allow_reading(dir: &std::path::Path) {
+    let _ = READABLE.set(dir.to_string_lossy().into_owned());
+}
+
 /// The program and arguments that run `tool` for one turn.
 ///
 /// `access` is turned into the tool's own permission flags where the tool
@@ -60,7 +68,13 @@ pub fn agent_command(
         AgentTool::ClaudeCode => {
             // Events as they happen. `--verbose` is required by the stream
             // format, and partial messages give the text piece by piece.
-            push(&["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
+            push(&["-p"]);
+            // `--add-dir` takes several folders, so it goes before an option
+            // that ends the list.
+            if let Some(dir) = READABLE.get() {
+                push(&["--add-dir", dir]);
+            }
+            push(&["--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
             if let Some(model) = model {
                 push(&["--model", model]);
             }
@@ -109,6 +123,9 @@ pub fn agent_command(
         AgentTool::Gemini => {
             if let Some(model) = model {
                 push(&["--model", model]);
+            }
+            if let Some(dir) = READABLE.get() {
+                push(&["--include-directories", dir]);
             }
             // Access is only stated in the prompt for Gemini, and it has no
             // effort flag, so neither is passed.

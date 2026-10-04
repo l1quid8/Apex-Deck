@@ -42,7 +42,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   };
   useImperativeHandle(ref, () => ({ key }));
   return <div className="composer-tools" ref={root}>
-    <button type="button" className="icon composer-plus" aria-label="Commands and mentions" aria-expanded={visible} aria-haspopup="dialog"
+    <button type="button" className="icon composer-plus" aria-label="Photos, commands and mentions" aria-expanded={visible} aria-haspopup="dialog"
       onClick={() => { if (visible) close(); else { setOpen(true); setQuery(""); setSelected(0); } }}>+</button>
     {visible && <div className="composer-menu" role="dialog" aria-label="Commands and mentions" onKeyDown={key}>
       {open && <input ref={search} aria-label="Find command or participant" placeholder="Find a command or @name…" value={query} onChange={e => setQuery(e.target.value)} />}

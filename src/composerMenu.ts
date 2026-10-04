@@ -4,7 +4,8 @@ import type { Command } from "./commands";
  *  message or `@` at the start of a word opens it filtered to that kind. */
 export type MenuItem =
   | { kind: "mention"; id: string; label: string; detail: string }
-  | { kind: "command"; key: string; label: string; detail: string; command: Command | null };
+  | { kind: "command"; key: string; label: string; detail: string; command: Command | null }
+  | { kind: "attach"; label: string; detail: string };
 
 /** The `/word` or `@word` being typed at the caret. */
 export interface Trigger {
@@ -41,7 +42,7 @@ export function menuItems(trigger: Trigger | null, people: { id: string; display
     { kind: "mention", id: "all", label: "@all", detail: "Everyone answers" },
     ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
   ];
-  if (!trigger) return [...mentions, ...COMMANDS];
+  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, ...mentions, ...COMMANDS];
   const q = trigger.query;
   if (trigger.kind === "command") return COMMANDS.filter((c) => c.key.startsWith(q));
   return mentions.filter((m) => m.kind === "mention" && (m.id.toLowerCase().startsWith(q) || m.detail.toLowerCase().startsWith(q)));

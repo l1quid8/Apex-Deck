@@ -22,6 +22,7 @@ import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { TurnQueue, type QueuedMessage, type TurnKind } from "./turnQueue";
 import { replyText, type ReplyQuote } from "./reply";
+import { attachmentName, withAttachments, type Attachment } from "./attachments";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
   Access,
@@ -376,6 +377,11 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
   const noticeKey = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const composer = useRef<HTMLDivElement>(null);
+  const filePicker = useRef<HTMLInputElement>(null);
+  const [attached, setAttached] = useState<Attachment[]>([]);
+  const saving = attached.some((a) => !a.path && !a.error);
+  const sendable = attached.filter((a) => a.path);
   const activity = useRef(onActivity);
   activity.current = onActivity;
   const signal = useRef(onSignal);
@@ -727,14 +733,58 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     }
   };
 
+  /** Save each file as soon as it is attached, so sending never waits. */
+  const track = (name: string, preview: string | undefined, save: () => Promise<string>) => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setAttached((list) => [...list, { id, name, preview }]);
+    save()
+      .then((path) => setAttached((list) => list.map((a) => (a.id === id ? { ...a, path } : a))))
+      .catch((error) => {
+        setAttached((list) => list.filter((a) => a.id !== id));
+        if (preview) URL.revokeObjectURL(preview);
+        notify(`Could not attach ${name}: ${String(error)}`, "error");
+      });
+  };
+  const attachFiles = (files: Iterable<File>) => {
+    for (const file of files) {
+      const name = attachmentName(file.name, file.type);
+      const preview = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
+      track(name, preview, async () => backend.saveAttachment(pane.id, name, new Uint8Array(await file.arrayBuffer())));
+    }
+    input.current?.focus();
+  };
+  const unattach = (id: string) => setAttached((list) => {
+    const gone = list.find((a) => a.id === id);
+    if (gone?.preview) URL.revokeObjectURL(gone.preview);
+    return list.filter((a) => a.id !== id);
+  });
+  // The desktop window takes file drops itself and reports their paths.
+  const attachDropped = useRef<(paths: string[], x: number, y: number) => void>(() => {});
+  attachDropped.current = (paths, x, y) => {
+    const box = composer.current?.parentElement?.getBoundingClientRect();
+    if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
+    for (const path of paths) {
+      const name = path.split("/").pop() || path;
+      track(name, undefined, () => backend.copyAttachment(pane.id, path));
+    }
+  };
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let live = true;
+    backend.onFileDrop((paths, x, y) => attachDropped.current(paths, x, y)).then((stop) => (live ? (unlisten = stop) : stop()));
+    return () => { live = false; unlisten?.(); };
+  }, [backend]);
+
   const send = (steer = false) => {
     const body = text.trim();
-    if (!body || !ready) return;
-    const parsed = parseComposer(body);
+    if ((!body && !sendable.length) || !ready || saving) return;
+    const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
     if (participants.length === 0) return;
-    const message = replyText(postable(parsed.text), reply);
+    const message = withAttachments(parsed.text && replyText(postable(parsed.text), reply), sendable.map((a) => a.path!));
     setText(""); setReply(null);
+    attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
+    setAttached([]);
     if (steer) { setQueuePaused(false); void turnQueue.steer(message); }
     else turnQueue.send(message);
   };
@@ -1228,7 +1278,11 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
       </div>}
       </div>
 
-      {!profileMode && <div className="composer">
+      {!profileMode && <div className="composer" ref={composer}
+        onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
+        onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attachFiles(e.dataTransfer.files); } }}>
+        <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
+          onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
         {queued.length > 0 && <div className="queued-messages" aria-label="Queued messages">
           <span className="muted">{queuePaused ? "Queue paused" : "Queued for the next turn"}</span>
@@ -1248,24 +1302,37 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           <div className="quote-preview-copy"><span className="speaker">{reply.name}</span><blockquote>{reply.text}</blockquote></div>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
         </div>}
+        {attached.length > 0 && <div className="attachments" aria-label="Attachments">
+          {attached.map((a) => <div className="attachment" key={a.id} title={a.path ?? `${a.name} (saving…)`} aria-busy={!a.path}>
+            {a.preview ? <img src={a.preview} alt={a.name} /> : <span className="attachment-name">{a.name}</span>}
+            <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
+          </div>)}
+        </div>}
         <div className="composer-field">
-        <ComposerMenu ref={composerMenu} participants={participants} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
-          if (item.kind === "command" && item.command) {
-            const draft = text;
-            runCommand(item.command);
-            setText(trigger ? text.slice(trigger.end) : draft);
-          } else if (item.kind === "command" && !trigger && text.trim()) {
-            runCommand({ name: "pin", fact: text.trim() });
-          } else {
-            const next = insertAt(text, trigger, caret, `${item.label} `);
-            setText(next.text); setCaret(next.caret);
-            requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
-          }
-          input.current?.focus();
-        }} />
+          <ComposerMenu ref={composerMenu} participants={participants} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+            if (item.kind === "attach") return filePicker.current?.click();
+            if (item.kind === "command" && item.command) {
+              const draft = text;
+              runCommand(item.command);
+              setText(trigger ? text.slice(trigger.end) : draft);
+            } else if (item.kind === "command" && !trigger && text.trim()) {
+              runCommand({ name: "pin", fact: text.trim() });
+            } else {
+              const next = insertAt(text, trigger, caret, `${item.label} `);
+              setText(next.text); setCaret(next.caret);
+              requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
+            }
+            input.current?.focus();
+          }} />
         <textarea
           ref={input}
           aria-label="Message the room"
+          onPaste={(e) => {
+            const files = [...e.clipboardData.files];
+            if (!files.length) return;
+            e.preventDefault();
+            attachFiles(files);
+          }}
           value={text}
           onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart); }}
           onSelect={e => setCaret(e.currentTarget.selectionStart)}
@@ -1281,16 +1348,16 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           disabled={!ready || participants.length === 0}
         />
         </div>
-        <div className="composer-hint"><span>{busy ? "Models are responding…" : "+ for mentions and commands"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
+        <div className="composer-hint"><span>{busy ? "Models are responding…" : "+ for photos, mentions and commands"}</span><span>{busy ? "Enter to queue · ⌘Enter to steer" : "Enter to send"} · Shift + Enter for a new line</span></div>
         </div>
         {busy ? (
           <div className="composer-actions">
-            <button className="primary" onClick={() => send()} disabled={!text.trim()}>Queue</button>
-            <button className="ghost" onClick={() => send(true)} disabled={!text.trim()} title="Interrupt the current reply and send now. @name chooses who answers.">Steer</button>
+            <button className="primary" onClick={() => send()} disabled={(!text.trim() && !sendable.length) || saving}>Queue</button>
+            <button className="ghost" onClick={() => send(true)} disabled={(!text.trim() && !sendable.length) || saving} title="Interrupt the current reply and send now. @name chooses who answers.">Steer</button>
             <button className="danger" onClick={() => { setQueuePaused(true); void turnQueue.halt(); }}>Stop</button>
           </div>
         ) : (
-          <button className="primary" onClick={() => send()} disabled={!ready || !text.trim() || participants.length === 0}>
+          <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}>
             <DeckIcon name="send" size={18} /> Send
           </button>
         )}

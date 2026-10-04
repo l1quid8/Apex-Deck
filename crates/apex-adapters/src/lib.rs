@@ -25,7 +25,7 @@ use apex_core::{AgentTool, Backend, Participant, ParticipantConfig, PlanUsage};
 pub use catalog::{codex_models_from_cache, installed_models};
 pub use cli::CliParticipant;
 pub use openai::{list_models, OpenAiCompatParticipant};
-pub use presets::agent_command;
+pub use presets::{agent_command, allow_reading};
 
 /// Pass on what a tool's output amounted to: text, activity and changes.
 pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressSink<'_>) {

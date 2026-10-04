@@ -47,6 +47,12 @@ export interface Backend {
   /** Pin a fact for every model in the chat. Resolves with all pins. */
   roomDiff(id: string): Promise<ThreadDiff>;
   exportThread(fileName: string, contents: string): Promise<string | null>;
+  /** Save a pasted or picked file for this thread. Resolves with its path. */
+  saveAttachment(room: string, name: string, bytes: Uint8Array): Promise<string>;
+  /** Copy a file dropped on the window into this thread's attachments. */
+  copyAttachment(room: string, path: string): Promise<string>;
+  /** Files dropped on the window, with where they landed in CSS pixels. */
+  onFileDrop(cb: (paths: string[], x: number, y: number) => void): Promise<Unlisten>;
   roomPin(id: string, fact: string): Promise<string[]>;
   roomUnpin(id: string, index: number): Promise<string[]>;
   roomFork(source: string, target: string, upto: number | null): Promise<void>;
@@ -107,6 +113,14 @@ async function tauriBackend(): Promise<Backend> {
     roomClear: (id) => invoke("room_clear", { id }),
     roomDiff: (id) => invoke("room_diff", { id }),
     exportThread: (fileName, contents) => invoke("export_thread", { fileName, contents }),
+    saveAttachment: (room, name, bytes) => invoke("save_attachment", bytes, { headers: { "x-room": room, "x-name": name } }),
+    copyAttachment: (room, path) => invoke("copy_attachment", { room, path }),
+    onFileDrop: async (cb) => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      return getCurrentWebview().onDragDropEvent((e) => {
+        if (e.payload.type === "drop") cb(e.payload.paths, e.payload.position.x / devicePixelRatio, e.payload.position.y / devicePixelRatio);
+      });
+    },
     roomPin: (id, fact) => invoke("room_pin", { id, fact }),
     roomUnpin: (id, index) => invoke("room_unpin", { id, index }),
     roomFork: (source, target, upto) => invoke("room_fork", { source, target, upto }),
@@ -394,6 +408,10 @@ function demoBackend(): Backend {
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
       return null;
     },
+    // The browser keeps no files, so the "path" is only a name to show.
+    saveAttachment: async (_room, name) => `/preview/attachments/${name}`,
+    copyAttachment: async (_room, path) => path,
+    onFileDrop: async () => () => {},
     roomPin: async (id, fact) => {
       const room = rooms.get(id);
       if (!room) throw new Error(`no group chat with id ${id}`);
