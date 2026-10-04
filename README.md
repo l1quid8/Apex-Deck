@@ -21,13 +21,23 @@ edges.
   another to put it there, or onto the middle to swap the two. Three
   buttons give a ready-made arrangement: an even grid, a large pane on top,
   or a large pane on the left. Rearranging never restarts a terminal. Each
-  pane can be maximized and restored or closed, and has a status dot that
-  shows whether it produced output in the last moment.
+  pane can be maximized and restored or closed, and its head says what it is
+  doing: Working, Idle or Exited for a terminal, and how many bots a thread
+  has. Closing a thread only takes it off the deck: it stays saved and listed
+  in the rail, and clicking it opens it again. To delete a thread, use
+  **Delete thread…** in its ⋯ menu; it asks once, and **Undo** brings it back
+  for 8 seconds. A terminal that is working or waiting for you asks before it
+  closes.
+- **Adding panes.** **+ New terminal** and **+ New thread** open a menu over
+  the deck: type to filter, Enter opens, Escape closes. Tools that aren't
+  installed are listed last, with a link to hide them in Providers.
 - **Attention.** A pane that wants you is marked wherever you are in the
   app: an amber dot when it is waiting on you, red when something failed,
   cyan when there is a result you have not seen. The Code and Threads tabs
-  and each workspace show a count, and a button in the title bar lists every
-  flagged pane; choose one to go to it. A group chat is flagged when a bot
+  and each workspace show a count, and a button beside the tabs lists every
+  flagged pane; choose one to go to it, or press ⌘J for the most urgent. A
+  workspace's count says when an alert is in the other section, such as
+  `1 · Code`. A group chat is flagged when a bot
   fails, when a reply ends with a question, or when a reply arrives while
   you are elsewhere. A terminal is flagged when it shows a prompt that
   blocks until answered (an approval, a yes or no, a password) or when a
@@ -54,8 +64,13 @@ edges.
   Approve and a Reject button. Nothing happens until you choose, the pane is
   flagged as waiting on you, and the time you take does not count against
   the reply's time limit. Stop rejects whatever is waiting.
-- **Thread details.** The right sidebar follows the focused thread and holds
-  model settings, saved agents, reply policy, rounds and Changes. It overlays
+- **Thread details.** The right sidebar shows the focused thread, or the
+  thread on screen you looked at last, and holds its bots, reply policy,
+  rounds and Changes. Each bot is one row with its context (`ctx`) and plan
+  readings; Edit, Save to Agents and Remove are in its ⋯ menu. **+ Add model**
+  opens a small menu where you click it: saved agents first, then a tool,
+  model and access level, with the name filled in from the model. **More
+  options** opens the full form. It overlays
   the conversation in narrow windows. Pins stay above the conversation in a
   collapsible strip, with full text wrapping when expanded.
 - **Changes.** `/diff` opens Changes in thread details, comparing the workspace
@@ -137,8 +152,25 @@ The main navigation has three sections:
 
 - **Agents:** reusable bot profiles with model, effort, access and persona settings.
 - **Code:** live terminal panes in your project folders.
-- **Threads:** saved group chats. Use **Add a saved agent** to bring a profile into a chat,
-  or the plus button on a participant chip to save it to Agents.
+- **Threads:** saved group chats. Use **+ Add model** or **Add a saved agent** to bring a
+  profile into a chat, or **Save to Agents** in a bot's ⋯ menu to keep it.
+
+An empty Agents section offers three starting roles: Reviewer, Planner and Implementer.
+With no workspace yet, **Try a sample thread** opens a thread with two scripted bots, so
+you can try @mentions and turn taking without any model or key.
+
+Keyboard shortcuts (on Windows and Linux, use Ctrl+Shift instead of ⌘):
+
+| Keys | Action |
+|---|---|
+| ⌘1 ⌘2 ⌘3 | Agents, Code, Threads |
+| ⌘T | New terminal |
+| ⌘N | New thread |
+| ⌘J | Go to the most urgent item that wants attention |
+| ⌘[ ⌘] | Previous or next pane |
+| ⌘⇧Enter | Maximize or restore the focused pane |
+
+⌘W is left to macOS, which closes the window with it.
 
 Use **Providers** in the top bar to hide tools you do not use. Toggle any provider,
 choose **Hide uninstalled tools**, or **Enable all** to restore the list. Choices are

@@ -45,7 +45,12 @@ export function identiconCells(seed: string): IdenticonCell[] {
 }
 
 export interface AgentAppearance { seed: string; color: string }
+/** Every agent color. Older agents without a saved color hash into this
+ *  list, so its order must not change. */
 export const AGENT_COLORS = ["#2dd4bf", "#f59e0b", "#a78bfa", "#f472b6", "#60a5fa", "#a3e635", "#fb7185", "#22d3ee"];
+/** Colors given to new agents, in order of preference. Amber, rose and cyan
+ *  are left out because they read as Needs you, Failed and Ready. */
+export const NEW_AGENT_COLORS = ["#a78bfa", "#60a5fa", "#f472b6", "#2dd4bf", "#a3e635"];
 
 /** Older agents keep their handle pattern, with a stable color everywhere. */
 export function legacyAppearance(id: string): AgentAppearance {
@@ -54,10 +59,10 @@ export function legacyAppearance(id: string): AgentAppearance {
 
 /** Randomize once, then store the result with the agent. */
 export function createAppearance(used: AgentAppearance[] = []): AgentAppearance {
-  const available = AGENT_COLORS.filter(color => !used.some(a => a.color === color));
-  const palette = available.length ? available : AGENT_COLORS;
+  // The first unused color in order of preference; when all are used, any of them.
+  const available = NEW_AGENT_COLORS.filter(color => !used.some(a => a.color === color));
   const bits = crypto.getRandomValues(new Uint32Array(1))[0];
-  const color = palette[bits % palette.length];
+  const color = available[0] ?? NEW_AGENT_COLORS[bits % NEW_AGENT_COLORS.length];
   const patterns = new Set(used.map(a => identiconCells(a.seed).map(c => +c.on).join("")));
   for (let attempt = 0; attempt < 256; attempt++) {
     const seed = crypto.randomUUID();
