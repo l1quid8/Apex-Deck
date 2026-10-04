@@ -229,6 +229,8 @@ function demoBackend(): Backend {
 
   const editors = new Map<string, string>();
   const askOwners = new Map<string, string>();
+  /** Preview only: bots that already failed on purpose for a message, so Try again succeeds. */
+  const failedOnce = new Set<string>();
   /** End a room's running preview turns and turn down their open cards, as the
    *  native room_stop (one participant) and room_close (everyone) do. */
   const stopPreview = (id: string, participant?: string) => {
@@ -272,6 +274,15 @@ function demoBackend(): Backend {
         const p = {...configured, access: ownsEditor ? configured.access : "read" as const};
         const lastHuman = [...room.transcript].reverse().find((m) => m.speaker.kind === "human");
         emit( { type: "turn_started", id: p.id });
+        // Preview only: "fail" in your message makes each addressed bot fail
+        // once, so Try again can be seen.
+        const failKey = `${id}:${p.id}:${lastHuman?.seq}`;
+        if (lastHuman && /\bfail\b/i.test(lastHuman.text) && !failedOnce.has(failKey)) {
+          failedOnce.add(failKey);
+          await sleep(400); if (!active) return [];
+          emit({ type: "failed", id: p.id, error: "Preview: this bot failed on purpose. Try again runs it once more." });
+          continue;
+        }
         if (p.backend.kind === "agent") {
           await sleep(600); if (!active) return;
           for (const word of "I'll look at the project first.".split(" ")) {

@@ -32,6 +32,7 @@ import { replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, hasMention, recipientLine, showsRecipientLine } from "./recipients";
+import { askerOf, hopNotice, letLabel, liveActions, retryFor, stillHere, type NoticeAction } from "./noticeActions";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
   Access,
@@ -77,7 +78,8 @@ interface Props {
   details?: DetailsHost;
 }
 
-type Notice = { key: number; text: string; tone: "info" | "error" };
+/** A line in the transcript from the app. `action` adds Try again or Let them answer. */
+type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction };
 /** Where `/compact` cut in: the models see `summary` instead of the messages above it. */
 type Summary = { by: string | null; summary: string; upto: number };
 /** An agent's context has just dropped to the low mark; shown once under its reply. */
@@ -534,8 +536,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     pendingLow.current.clear();
   };
 
-  const notify = (message: string, tone: Notice["tone"] = "info") =>
-    setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone } }]);
+  const notify = (message: string, tone: Notice["tone"] = "info", action?: NoticeAction) =>
+    setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone, ...(action ? { action } : {}) } }]);
 
   useEffect(() => {
     if (profileMode) return;
@@ -639,11 +641,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           setDrafts(({ [event.id]: _gone, ...rest }) => rest);
           setWorking(({ [event.id]: _gone, ...rest }) => rest);
           round.current.failed.push(nameOf(event.id));
-          notify(`${nameOf(event.id)} could not reply: ${event.error}`, "error");
+          notify(`${nameOf(event.id)} could not reply: ${event.error}`, "error", retryFor(event.id, [...namesRef.current.keys()]) ?? undefined);
           break;
-        case "hop_limit_reached":
-          notify(`Stopped after ${event.limit} rounds of models answering each other.`);
+        case "hop_limit_reached": {
+          const roster = [...namesRef.current.keys()];
+          const action: NoticeAction | undefined = event.next.length > 0 ? { kind: "let", ids: event.next } : undefined;
+          // Read the asker from the newest list: its reply may have landed in this same tick.
+          setEntries((list) => {
+            const asker = askerOf(messagesOf(list), event.next, roster);
+            const text = hopNotice(event.limit, asker && nameOf(asker), event.next.map(nameOf));
+            return [...list, { kind: "notice", notice: { key: noticeKey.current++, text, tone: "info", ...(action ? { action } : {}) } }];
+          });
           break;
+        }
         case "compacted":
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
@@ -874,18 +884,20 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
   };
 
-  const dispatch = useRef<(message: string, to: string[], kind: TurnKind) => Promise<void>>(async () => {});
-  dispatch.current = async (message, to, kind) => {
+  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
+  dispatch.current = async (message, to, kind, hops) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
-    } else await backend.roomPostTo(pane.id, message, to);
+    } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
+    else await backend.roomPostTo(pane.id, message, to);
   };
   const [turnQueue] = useState(() => new ParticipantQueues(
     message => backend.roomTargets(pane.id, message),
-    (message, to, kind) => dispatch.current(message, to, kind),
+    (message, to, kind, hops) => dispatch.current(message, to, kind, hops),
     id => backend.roomStop(pane.id, id),
-    items => { setQueued(items); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },
+    // A one-off turn has no text to show or edit, so the queue line leaves it out.
+    items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused.`, "error"); },
   ));
   /** Stop: only the bots that are replying, unless nobody is waiting on a card. */
@@ -893,6 +905,26 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const targets = stopTargets(replyingNow.map((p) => p.id), waitingNow.map((p) => p.id));
     if (targets === "all") void turnQueue.halt();
     else targets.forEach((id) => void turnQueue.halt(id));
+  };
+  /** Notices whose button you pressed; each works once. */
+  const usedActions = useRef(new Set<number>());
+  const [usedKeys, setUsedKeys] = useState<ReadonlySet<number>>(() => new Set());
+  const liveKeys = liveActions(entries.map((entry) => ({
+    key: entry.kind === "notice" && entry.notice.action ? entry.notice.key : null,
+    human: entry.kind === "message" && entry.message.speaker.kind === "human",
+  })), usedKeys);
+  /** Try again or Let them answer: run those bots once on the transcript as it is. */
+  const noticeButton = (key: number, action: NoticeAction) => {
+    const ids = stillHere(action, participants.map((p) => p.id));
+    if (ids.length === 0 || !liveKeys.has(key)) return null;
+    const label = action.kind === "retry" ? "Try again" : letLabel(ids.map((id) => names.get(id) ?? id));
+    return <button type="button" className="ghost small" disabled={ids.some((id) => working[id])} onClick={() => {
+      if (usedActions.current.has(key)) return;
+      usedActions.current.add(key);
+      setUsedKeys(new Set(usedActions.current));
+      // Let them answer buys exactly one reply each; Try again keeps the room's round limit.
+      turnQueue.turn(ids, action.kind === "let" ? 0 : null);
+    }}>{label}</button>;
   };
   const forkAt = (title: string, upto: number | null) => {
     if (!onFork) return notify("Forking is available in workspace threads.", "error");
@@ -1610,8 +1642,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         )}
         {entries.flatMap((entry) => {
           const item = entry.kind === "notice" ? (
-            <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}`}>
-              {entry.notice.text}
+            <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}${entry.notice.action ? " with-action" : ""}`}>
+              <span>{entry.notice.text}</span>
+              {entry.notice.action && noticeButton(entry.notice.key, entry.notice.action)}
             </p>
           ) : entry.kind === "low" ? (
             <p key={`l${entry.low.key}`} className="notice low-context">
