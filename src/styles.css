@@ -1886,6 +1886,8 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
 }
 .quick-add-wrap.empty .quick-add { left: 50%; transform: translateX(-50%); }
+.quick-add-wrap.details { display: flex; width: 100%; }
+.quick-add-wrap.details > button { flex: 1; }
 .quick-add-wrap.details .quick-add { left: 0; width: min(296px, 86vw); }
 .quick-add label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); min-width: 0; }
 .quick-add label input, .quick-add label select { font-size: 12px; color: var(--text); min-width: 0; width: 100%; }

@@ -288,7 +288,7 @@ const SAMPLE_BOTS: ParticipantConfig[] = [
   { id: "ada", display_name: "Ada", persona: "", access: "read", effort: null, appearance: { seed: "sample-ada", color: "#a78bfa" },
     backend: { kind: "scripted", lines: ["Hi, I'm Ada. Mention me with @ada, or everyone with @all.", "Ben sees everything I say, and I see what he says.", "[pass]"] } },
   { id: "ben", display_name: "Ben", persona: "", access: "read", effort: null, appearance: { seed: "sample-ben", color: "#60a5fa" },
-    backend: { kind: "scripted", lines: ["I'm Ben. I answer when you @ben me. Try @all to hear from both of us.", "Add a real model with + Add model when you're ready.", "[pass]"] } },
+    backend: { kind: "scripted", lines: ["I'm Ben. I answer when you @ben me. Try @all to hear from both of us.", "Add a real model with + Add bot when you're ready.", "[pass]"] } },
 ];
 
 /** Starter roles offered in an empty Agents section. */
@@ -1563,17 +1563,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   );
   const quickAddButton = (where: "empty" | "details", primary: boolean) => (
     <span className={`quick-add-wrap ${where}`}>
-      <button className={primary ? "primary" : "ghost"} disabled={!ready || availablePresets.length === 0} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={() => openQuickAdd(where)}>+ Add model</button>
+      <button className={primary ? "primary" : "ghost"} disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={() => openQuickAdd(where)}>+ Add bot</button>
       {quickAdd === where && quickAddMenu}
     </span>
   );
-  const savedPicker = (availableProfiles.length > 0 && <select aria-label="Add a saved agent" value="" disabled={!ready || busy} onChange={async (e) => {
-          const config = availableProfiles.find((p) => p.id === e.target.value);
-          if (config) await addSaved(config);
-        }}>
-          <option value="">Add a saved agent…</option>
-          {availableProfiles.map((p) => <option key={p.id} value={p.id} disabled={participants.some((own) => own.id === p.id)}>{p.display_name}</option>)}
-        </select>);
   const roomControls = (<div className="chat-options">
           <label>
             Who answers
@@ -1635,7 +1628,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </div>
       <details className="details-bot-usage"><summary>Usage</summary>{usageCard(p)}</details>
     </article>;
-  })}{adding && !editing ? addButton : quickAddButton("details", false)}{savedPicker}</>;
+  })}{adding && !editing ? addButton : quickAddButton("details", false)}</>;
   /** Take an Always allow back. The bot asks again next time. */
   const forgetRule = (rule: AllowedRule) => backend.roomForgetAllowed(pane.id, rule)
     .then(() => setRemovedNote(removedLine(names.get(rule.by) ?? rule.by)))
