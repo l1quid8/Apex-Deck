@@ -4,6 +4,8 @@ import type { DetailsSection } from "./detailsLayout";
 export interface DetailsHost {
   slot: HTMLElement | null;
   open: boolean;
+  /** True when the sidebar covers the conversation (narrow windows). */
+  overlay: boolean;
   collapsed: Partial<Record<DetailsSection, boolean>>;
   toggle: (section: DetailsSection) => void;
   show: (section?: DetailsSection) => void;

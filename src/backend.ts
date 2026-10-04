@@ -592,14 +592,18 @@ function demoBackend(): Backend {
       const room = rooms.get(id);
       const [first, second] = room?.participants ?? [];
       const patch = "--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1,2 +1,2 @@\n-const title = \"Deck\";\n+const title = \"Apex Deck\";\n export default App;\n";
-      return {
-        note: "Preview: these changes are made up. The desktop app reads them from git.",
-        files: [
-          { path: "src/App.tsx", added: 1, removed: 1, patch, by: first ? [first.id] : [] },
-          { path: "README.md", added: 3, removed: 0, patch: "+## Commands\n+\n+/pin, /diff, /fork, /export\n", by: [first, second].filter(Boolean).map((p) => p.id) },
-          { path: "package-lock.json", added: 12, removed: 4, patch: "", by: [] },
-        ],
-      };
+      const files = [
+        { path: "src/App.tsx", added: 1, removed: 1, patch, by: first ? [first.id] : [] },
+        { path: "README.md", added: 3, removed: 0, patch: "+## Commands\n+\n+/pin, /diff, /fork, /export\n", by: [first, second].filter(Boolean).map((p) => p.id) },
+        { path: "package-lock.json", added: 12, removed: 4, patch: "", by: [] },
+      ];
+      // Preview only: after a message with "big diff" in it, a 2,400-line
+      // file joins the list, so Ask for review's "One file per patch" can be seen.
+      if (room?.transcript.some((m) => m.speaker.kind === "human" && /big diff/i.test(m.text))) {
+        files.push({ path: "dist/bundle.js", added: 2400, removed: 0, by: [],
+          patch: "--- a/dist/bundle.js\n+++ b/dist/bundle.js\n@@ -0,0 +1,2400 @@\n" + Array.from({ length: 2400 }, (_, i) => `+line ${i + 1}\n`).join("") });
+      }
+      return { note: "Preview: these changes are made up. The desktop app reads them from git.", files };
     },
 
     exportThread: async (fileName, contents) => {

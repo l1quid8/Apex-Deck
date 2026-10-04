@@ -141,7 +141,7 @@ export function App() {
     if (target) setDetailsCollapsed(old => ({ ...old, [target]: false }));
     setDetailsOpen(true);
   };
-  const detailsHostBase = { slot: detailsSlot, open: detailsOpen && section === "threads", collapsed: detailsCollapsed,
+  const detailsHostBase = { slot: detailsSlot, open: detailsOpen && section === "threads", overlay: overlayDetails, collapsed: detailsCollapsed,
     toggle: (target: DetailsSection) => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
   useEffect(() => {
     const body = bodyRef.current;

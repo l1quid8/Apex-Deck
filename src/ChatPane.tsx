@@ -25,6 +25,7 @@ import { approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom,
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
 import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { DiffPanel } from "./DiffPanel";
+import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
@@ -1081,6 +1082,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     }
     input.current?.focus();
   };
+  /** Ask for review: attach the thread's change as a patch for `id` and fill
+   *  the composer with the request. It never sends. */
+  const askForReview = (id: string, split: boolean) => {
+    const files = diff?.files ?? [];
+    const whole = reviewPatch(files);
+    const parts = split ? reviewPatches(files) : whole ? [whole] : [];
+    if (parts.length === 0) return;
+    const taken = [...messagesOf(entries).filter((m) => m.speaker.kind === "human").map((m) => m.text), ...attached.map((a) => a.name)];
+    const fileNames = reviewFileNames(nextReviewNumber(taken), parts.length);
+    parts.forEach((text, i) => track(fileNames[i], undefined, () => backend.saveAttachment(pane.id, fileNames[i], new TextEncoder().encode(text))));
+    setText((draft) => reviewDraft(id, draft));
+    // In a narrow window the sidebar covers the composer; get it out of the way.
+    if (details?.overlay) details.close();
+    input.current?.focus();
+  };
   const unattach = (id: string) => setAttached((list) => {
     const gone = list.find((a) => a.id === id);
     if (gone?.preview) URL.revokeObjectURL(gone.preview);
@@ -1645,7 +1661,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   </>;
   return (
     <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
-      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} onReveal={path => openTarget(path, true)} />} />, details.slot)}
+      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} />} />, details.slot)}
       <div className="chat-bar">
         <div className="chips">
           {!profileMode && participants.map((p) => {

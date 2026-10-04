@@ -2055,3 +2055,13 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .pane-head .program-title { flex: 0 100 auto; font-size: 12px; }
 .pane-row-title:has(+ .program-title) { flex: 0 1 auto; }
 .pane-row .program-title { flex: 1 1 0; font-size: 12px; }
+
+/* Ask for review (DiffPanel): opens under the Changes head, in the sidebar's flow so it is never clipped. */
+.review-menu { display: flex; flex-direction: column; margin: 8px 0 4px; padding: 4px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45); }
+.review-line { margin: 0; padding: 6px 10px 5px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.review-split { display: flex; align-items: center; gap: 8px; padding: 4px 10px 6px; font-size: 12px; }
+.review-bot { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 10px; background: transparent; border-color: transparent; font-size: 12px; text-align: left; }
+.review-bot:hover:not(:disabled), .review-bot:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.review-bot-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.review-bot-name strong { font-weight: 650; }
+.review-bot-note { flex: none; color: var(--muted); font-size: 11px; }
