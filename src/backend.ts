@@ -347,7 +347,7 @@ function demoBackend(): Backend {
               }],
               [
                 { action: { kind: "command", title: "Run a command", detail: "npm test -- --run auth" } },
-                { action: { kind: "tool", title: "x-mcp: post_tweet", detail: "{\n  \"text\": \"Apex Deck preview\"\n}" } },
+                { action: { kind: "tool", title: "x-mcp: post_tweet", detail: "{\n  \"text\": \"Apex Deck preview\"\n}", risky: true } },
               ],
               [{ action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl" } }],
             ];

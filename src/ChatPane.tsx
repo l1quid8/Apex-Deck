@@ -1813,6 +1813,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                     request={ask.request}
                     by={id}
                     action={ask.action}
+                    name={names.get(id) ?? id}
                     deadline={deadlineNote(ask.action.expires_at, now)}
                     onDecide={(approve, always) => {
                       backend.roomDecide(pane.id, ask.request, approve, always).catch((error) => notify(`Could not send your answer: ${String(error)}`, "error"));

@@ -1527,6 +1527,14 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   color: var(--muted);
   font-size: 12px;
 }
+/* What Always allow covers: always on risky cards, on hover or focus otherwise. */
+.approval-scope {
+  margin: 0;
+  padding: 0 12px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+}
 .approval-deadline {
   color: var(--muted);
   font-size: 12px;
