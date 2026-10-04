@@ -607,6 +607,7 @@ fi
 while IFS= read -r line; do
   case "$line" in
   *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[],"nextCursor":null}}' ;;
+ *'"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
   *'"initialize"'*) echo '{"id":0,"result":{"userAgent":"fake"}}' ;;
   *'"thread/start"'*)
     case "$line" in *'"model":"no-server"'*) echo '{"id":1,"error":{"code":-32600,"message":"threads are switched off"}}'; continue ;; esac
@@ -650,6 +651,70 @@ async fn codex_app_server_streams_the_reply_in_pieces_and_declines_when_nobody_c
     assert_eq!(reply.text, "Two files here. effort=high refused=yes");
     assert_eq!((reply.input_tokens, reply.output_tokens), (Some(50), Some(6)));
     assert_eq!(activity, ["Checking MCP tool approval policies", "Starting Codex", "Running: ls -la", "Waiting for approval: Run a command"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A stand-in for `codex app-server` that refuses the MCP inventory unless
+/// `plugin/list` was already sent, and answers the plugins only after the
+/// inventory, the way a slower request can finish second.
+#[cfg(unix)]
+const FAKE_CODEX_PLUGINS: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+ case "$line" in
+ *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
+ *'"plugin/list"'*) asked=yes ;;
+ *'"mcpServerStatus/list"'*)
+  [ -n "$asked" ] || { echo '{"id":10,"error":{"message":"plugins were not asked alongside the inventory"}}'; continue; }
+  echo '{"id":10,"result":{"data":[{"name":"probe","tools":{}}],"nextCursor":null}}'
+  echo 'PLUGINS_ANSWER' ;;
+ *'"thread/start"'*) echo '{"id":1,"result":{"thread":{"id":"thread-plugins"}}}' ;;
+ *'"turn/start"'*)
+  echo '{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"r","text":"done"}}}'
+  echo '{"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}' ;;
+ *'"account/rateLimits/read"'*) echo '{"id":3,"result":{}}' ;;
+ esac
+done
+"#;
+
+/// Run one turn and collect its activity and the tool server lists it reported.
+async fn work_with_servers(participant: &dyn Participant) -> (Result<apex_core::Reply, ParticipantError>, Vec<String>, Vec<Vec<String>>) {
+    use apex_core::Progress;
+    let activity = Mutex::new(Vec::new());
+    let servers = Mutex::new(Vec::new());
+    let result = participant
+        .respond_with_progress(request("hi"), &|update| match update {
+            Progress::Activity(line) => activity.lock().unwrap().push(line.to_string()),
+            Progress::ToolServers(names) => servers.lock().unwrap().push(names.to_vec()),
+            _ => {}
+        })
+        .await;
+    (result, activity.into_inner().unwrap(), servers.into_inner().unwrap())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_lists_plugins_alongside_the_mcp_inventory_for_the_menu() {
+    use apex_core::AgentTool;
+    let plugins = r#"{"id":110,"result":{"marketplaces":[{"plugins":[{"name":"design","installed":true,"enabled":true}]}]}}"#;
+    let dir = fake_tool("codex-plugins", "codex", &FAKE_CODEX_PLUGINS.replace("PLUGINS_ANSWER", plugins));
+    let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context_in(&dir));
+    let (result, activity, servers) = work_with_servers(bot.as_ref()).await;
+    assert_eq!(result.unwrap().text, "done");
+    assert_eq!(servers, [["design", "probe"]]);
+    assert_eq!(activity[..2], ["Checking MCP tool approval policies", "Starting Codex"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_turn_runs_when_the_plugin_list_fails_and_leaves_the_menu_alone() {
+    use apex_core::AgentTool;
+    let plugins = r#"{"id":110,"error":{"code":-32603,"message":"marketplace unavailable"}}"#;
+    let dir = fake_tool("codex-plugins-fail", "codex", &FAKE_CODEX_PLUGINS.replace("PLUGINS_ANSWER", plugins));
+    let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context_in(&dir));
+    let (result, _, servers) = work_with_servers(bot.as_ref()).await;
+    assert_eq!(result.unwrap().text, "done");
+    assert!(servers.is_empty(), "a partial list would hide plugin names: {servers:?}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -867,6 +932,7 @@ async fn per_turn_read_access_reaches_codex_app_server_sandbox() {
 while IFS= read -r line; do
 case "$line" in
 *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[],"nextCursor":null}}' ;;
+ *'"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
 *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
 *'"method":"thread/start"'*)
  case "$line" in *'"sandbox":"read-only"'*) ;; *) echo 'wrong sandbox' >&2; exit 2 ;; esac
@@ -958,6 +1024,7 @@ while IFS= read -r line; do
  case "$line" in
  *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
  *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[{"name":"probe","tools":{"place_order":{"name":"place_order"},"get_balance":{"name":"get_balance"}}}],"nextCursor":null}}' ;;
+ *'"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
  *'"thread/start"'*)
  case "$line" in *'"mcp_servers.probe.tools.place_order.approval_mode":"prompt"'*) ;; *) echo 'missing tool policy' >&2;exit 2 ;; esac
  echo '{"id":1,"result":{"thread":{"id":"thread-mcp"}}}' ;;
@@ -995,4 +1062,18 @@ async fn codex_mcp_reads_proceed_but_each_risky_call_asks_at_every_access_level(
     let (result, _)=ask(bot.as_ref(),"test").await;
     assert_eq!(result.unwrap().text,"allowed=1 denied=2");
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn server_discovery_uses_the_supplied_cli_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("apex-discovery-path-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cli = dir.join("claude");
+    std::fs::write(&cli, "#!/bin/sh\nprintf 'path-test: local - ✔ Connected\\n'\n").unwrap();
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let result = apex_adapters::claude_tool_servers(None, Some(dir.to_string_lossy().into_owned())).await;
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(result.unwrap(), ["path-test"]);
 }

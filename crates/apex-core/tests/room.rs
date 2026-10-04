@@ -386,7 +386,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
             },
             &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7) },
             &RoomEvent::MessageAdded {
-                message: apex_core::Message { seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into() }
+                message: apex_core::Message { servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into() }
             },
         ]
     );
@@ -738,4 +738,19 @@ fn fork_excludes_edits_after_its_message_cutoff() {
     assert_eq!(saved.fork(2).changes.len(), 1);
     assert_eq!(saved.fork(1).changes.len(), 0);
     assert_eq!(saved.fork(99).transcript.len(), 4);
+}
+
+#[test]
+fn server_requests_reach_prompt_and_survive_fork_and_restore() {
+    let null = bot("null", &["ok", "ok"]);
+    let mut chat = room(&[&null], TurnPolicy::Mention, 0);
+    say(&mut chat, "@null !x-mcp read posts");
+    assert!(null.requests()[0].system.contains("The human asked you to use these MCP servers, apps, or installed plugins: x-mcp."));
+    assert_eq!(chat.transcript()[0].servers, vec!["x-mcp"]);
+    let snapshot = chat.snapshot().fork(1);
+    let json = serde_json::to_string(&snapshot).unwrap();
+    let restored = Room::restore(vec![null.clone()], serde_json::from_str(&json).unwrap());
+    assert_eq!(restored.transcript()[0].servers, vec!["x-mcp"]);
+    say(&mut chat, "wow! good work");
+    assert!(!null.requests()[1].system.contains("The human asked you to use these MCP servers, apps, or installed plugins:"));
 }

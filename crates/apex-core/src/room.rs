@@ -48,6 +48,7 @@ impl Default for RoomOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RoomEvent {
+    ToolServers { id: ParticipantId, servers: Vec<String> },
     /// A message was added to the transcript.
     MessageAdded { message: Message },
     /// The participant holding the workspace edit reservation changed.
@@ -94,6 +95,7 @@ type EventSink<'a> = &'a (dyn Fn(RoomEvent) + Send + Sync);
 
 pub(crate) fn progress_event(id: &ParticipantId, update: Progress<'_>) -> RoomEvent {
     match update {
+        Progress::ToolServers(servers) => RoomEvent::ToolServers { id: id.clone(), servers: servers.to_vec() },
         Progress::Text(text) => RoomEvent::Delta { id: id.clone(), text: text.to_string() },
         Progress::Activity(text) => RoomEvent::Activity { id: id.clone(), text: text.to_string() },
         Progress::Change(change) => RoomEvent::Changed { id: id.clone(), change: change.clone() },
@@ -441,7 +443,8 @@ impl Room {
     }
 
     pub(crate) fn push(&mut self, speaker: Speaker, text: String, on_event: EventSink<'_>) {
-        let message = Message { seq: self.transcript.len(), speaker, text };
+        let servers = if speaker == Speaker::Human { crate::server_request::parse_server_requests(&text) } else { vec![] };
+        let message = Message { servers, seq: self.transcript.len(), speaker, text };
         self.transcript.push(message.clone());
         on_event(RoomEvent::MessageAdded { message });
     }
@@ -490,7 +493,9 @@ impl Room {
             .collect();
         let request = TurnRequest {
             access: Some(participant.config().access),
-            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins),
+            system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
+                crate::server_request::prompt_section(&m.text)
+            }).unwrap_or_default(),
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
         };

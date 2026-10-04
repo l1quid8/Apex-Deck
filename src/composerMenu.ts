@@ -1,3 +1,4 @@
+import { normalizeServer, proseMask, serverToken } from "./serverRequests.ts";
 import type { Command } from "./commands";
 
 /** What the composer's "+" menu offers. Typing `/` at the start of the
@@ -5,11 +6,12 @@ import type { Command } from "./commands";
 export type MenuItem =
   | { kind: "mention"; id: string; label: string; detail: string }
   | { kind: "command"; key: string; label: string; detail: string; command: Command | null }
+  | { kind: "server"; agent: string; label: string; detail: string }
   | { kind: "attach"; label: string; detail: string };
 
 /** The `/word` or `@word` being typed at the caret. */
 export interface Trigger {
-  kind: "command" | "mention";
+  kind: "command" | "mention" | "server";
   query: string;
   start: number;
   end: number;
@@ -33,17 +35,21 @@ export function findTrigger(text: string, caret: number): Trigger | null {
   if (command && !text.startsWith("//")) return { kind: "command", query: command[1].toLowerCase(), start: 0, end: caret };
   const mention = /(^|\s)@([\w-]*)$/.exec(before);
   if (mention) return { kind: "mention", query: mention[2].toLowerCase(), start: caret - mention[2].length - 1, end: caret };
+  const bang = /(^|\s)!([A-Za-z0-9._-]*)$/.exec(before);
+  if (bang && proseMask(before).slice(caret - bang[2].length - 1) === before.slice(caret - bang[2].length - 1))
+    return { kind: "server", query: bang[2], start: caret - bang[2].length - 1, end: caret };
   return null;
 }
 
 /** Items for a trigger, or everything when the menu was opened with "+". */
-export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[]): MenuItem[] {
+export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: {agent: string; name: string}[] = []): MenuItem[] {
   const mentions: MenuItem[] = [
     { kind: "mention", id: "all", label: "@all", detail: "Everyone answers" },
     ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
   ];
   if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, ...mentions, ...COMMANDS];
   const q = trigger.query;
+  if (trigger.kind === "server") return servers.filter(s => normalizeServer(s.name).startsWith(normalizeServer(q))).map(s => ({kind: "server", agent: s.agent, label: `!${serverToken(s.name)}`, detail: people.find(p => p.id === s.agent)?.display_name ?? s.agent}));
   if (trigger.kind === "command") return COMMANDS.filter((c) => c.key.startsWith(q));
   return mentions.filter((m) => m.kind === "mention" && (m.id.toLowerCase().startsWith(q) || m.detail.toLowerCase().startsWith(q)));
 }

@@ -131,8 +131,16 @@ fn mcp_proposal(params: &Value, pending: &HashMap<String, Value>) -> Option<(Pro
     Some((crate::mcp::action(server, tool, arguments), crate::mcp::needs_approval(tool)))
 }
 
-/// The approval policy for every MCP tool, from the full server inventory.
-async fn mcp_inventory(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStdout>>) -> Result<Value, String> {
+/// The id of `plugin/list`, which is sent alongside the MCP inventory.
+const PLUGINS: u64 = 110;
+
+/// The approval policy for every MCP tool, and the names for the `!` menu.
+/// Plugins only feed the menu, so they are asked for alongside the first
+/// inventory page and a failure there does not stop the turn.
+async fn mcp_inventory(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStdout>>) -> Result<(Value, Result<Vec<String>, String>), String> {
+    send(stdin, &json!({"id":PLUGINS,"method":"plugin/list","params":{}})).await
+        .map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
+    let mut plugins = Err("no answer".to_string());
     let mut servers = Vec::new();
     let mut cursor = Value::Null;
     let mut cursors = std::collections::HashSet::new();
@@ -141,12 +149,20 @@ async fn mcp_inventory(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<Child
         send(stdin, &json!({"id":id,"method":"mcpServerStatus/list", "params":{
             "detail":"toolsAndAuthOnly", "limit":100, "cursor":cursor
         }})).await.map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
-        let result = answer_within(lines, id, SETUP_TIMEOUT).await
+        let with_plugins = [id, PLUGINS];
+        let mut replies = answers(lines, if page == 0 { &with_plugins } else { &with_plugins[..1] }, SETUP_TIMEOUT).await;
+        if page == 0 { plugins = replies.pop().expect("one answer per request"); }
+        let result = replies.pop().expect("one answer per request")
             .map_err(|_| "Couldn't list Codex MCP servers; this turn did not run.".to_string())?;
         let data = result["data"].as_array().ok_or("Codex MCP inventory had no server list")?;
         servers.extend(data.iter().cloned());
         cursor = result["nextCursor"].clone();
-        if cursor.is_null() { return crate::mcp::codex_policy(&servers); }
+        if cursor.is_null() {
+            let policy = crate::mcp::codex_policy(&servers)?;
+            let menu = plugins.map(|plugins| crate::mcp::menu_names(&servers, &plugins))
+                .map_err(|e| format!("Couldn't list Codex plugins: {e}"));
+            return Ok((policy, menu));
+        }
         if !cursor.is_string() || !cursors.insert(cursor.to_string()) { return Err("Invalid Codex MCP inventory cursor".into()); }
     }
     Err("Codex MCP inventory exceeded its page limit".into())
@@ -196,27 +212,37 @@ async fn answer(lines: &mut Lines<BufReader<ChildStdout>>, id: u64) -> Result<Va
 }
 
 async fn answer_within(lines: &mut Lines<BufReader<ChildStdout>>, id: u64, limit: Duration) -> Result<Value, String> {
+    answers(lines, &[id], limit).await.pop().expect("one answer per request")
+}
+
+/// Read until every request in `ids` is answered, giving one result per id
+/// in the same order. The server works on requests side by side, so ones
+/// sent together can be answered in any order.
+async fn answers(lines: &mut Lines<BufReader<ChildStdout>>, ids: &[u64], limit: Duration) -> Vec<Result<Value, String>> {
+    let mut got: Vec<Option<Result<Value, String>>> = vec![None; ids.len()];
     let wait = async {
-        loop {
+        while got.iter().any(Option::is_none) {
             match lines.next_line().await {
                 Ok(Some(line)) => {
                     let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
-                    if message["id"].as_u64() == Some(id) && message.get("method").is_none() {
-                        return match message.get("error") {
-                            Some(error) => Err(error["message"].as_str().unwrap_or("request refused").to_string()),
-                            None => Ok(message["result"].clone()),
-                        };
-                    }
+                    if message.get("method").is_some() { continue; }
+                    let Some(slot) = message["id"].as_u64().and_then(|id| ids.iter().position(|&want| want == id)) else { continue };
+                    got[slot] = Some(match message.get("error") {
+                        Some(error) => Err(error["message"].as_str().unwrap_or("request refused").to_string()),
+                        None => Ok(message["result"].clone()),
+                    });
                 }
                 Ok(None) => return Err("it stopped before answering".to_string()),
                 Err(e) => return Err(format!("its output could not be read: {e}")),
             }
         }
+        Ok(())
     };
-    match tokio::time::timeout(limit, wait).await {
-        Ok(result) => result,
-        Err(_) => Err(format!("no answer within {} seconds", limit.as_secs())),
-    }
+    let why = match tokio::time::timeout(limit, wait).await {
+        Ok(ended) => ended.err(),
+        Err(_) => Some(format!("no answer within {} seconds", limit.as_secs())),
+    };
+    got.into_iter().map(|slot| slot.unwrap_or_else(|| Err(why.clone().unwrap_or_default()))).collect()
 }
 
 /// Run one turn. `child` must have been started with `ARGS` and all three
@@ -243,7 +269,11 @@ pub(crate) async fn run(
     initialize(&mut stdin, &mut lines).await.map_err(TurnError::Unavailable)?;
 
     on_progress(Progress::Activity("Checking MCP tool approval policies"));
-    let policy = mcp_inventory(&mut stdin, &mut lines).await.map_err(TurnError::Failed)?;
+    let (policy, menu) = mcp_inventory(&mut stdin, &mut lines).await.map_err(TurnError::Failed)?;
+    // Without the plugins the list would be short, so keep the last one.
+    if let Ok(servers) = &menu {
+        on_progress(Progress::ToolServers(servers));
+    }
     on_progress(Progress::Activity("Starting Codex"));
     let mut start = thread_start(&turn);
     start["params"]["config"] = policy;
@@ -477,4 +507,21 @@ mod tests {
         );
         assert!(turn_start("t1", "hello", None)["params"].get("effort").is_none());
     }
+}
+
+pub async fn list_servers(cwd: Option<String>, path: Option<String>) -> Result<Vec<String>, String> {
+    use std::process::Stdio;
+    let mut command = tokio::process::Command::new("codex");
+    if let Some(path) = path { command.env("PATH", path); }
+    command.args(ARGS).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    if let Some(cwd) = cwd { command.current_dir(cwd); }
+    let mut child = command.spawn().map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let result = async {
+        initialize(&mut stdin, &mut lines).await?;
+        mcp_inventory(&mut stdin, &mut lines).await.and_then(|(_, names)| names)
+    }.await;
+    let _ = child.kill().await;
+    result
 }

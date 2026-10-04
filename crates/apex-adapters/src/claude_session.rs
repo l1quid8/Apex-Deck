@@ -82,6 +82,12 @@ pub(crate) async fn run(
     while !reader.turn_over() {
         let Some(line) = lines.next_line().await? else { break };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
+            if message["type"] == "system" && message["subtype"] == "init" {
+                if let Some(servers) = message["mcp_servers"].as_array() {
+                    let names: Vec<String> = servers.iter().filter_map(|s| s["name"].as_str().map(str::to_owned)).collect();
+                    on_progress(Progress::ToolServers(&names));
+                }
+            }
             if message["type"] == "control_request" {
                 let request = &message["request"];
                 let reply = if request["subtype"] == "can_use_tool" {
@@ -149,4 +155,15 @@ mod tests {
     fn the_prompt_is_sent_as_a_user_message() {
         assert_eq!(user_message("hello"), json!({ "type": "user", "message": { "role": "user", "content": "hello" } }));
     }
+}
+
+/// Names of Claude's connected MCP servers, without running a turn.
+pub async fn list_servers(cwd: Option<String>, path: Option<String>) -> Result<Vec<String>, String> {
+    let mut command = tokio::process::Command::new("claude");
+    if let Some(path) = path { command.env("PATH", path); }
+    command.args(["mcp", "list"]).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    if let Some(cwd) = cwd { command.current_dir(cwd); }
+    let output = command.output().await.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+    if !output.status.success() { return Err("Couldn't list Claude tool servers".into()); }
+    Ok(crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout)))
 }

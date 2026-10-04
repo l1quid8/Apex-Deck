@@ -1675,3 +1675,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .turn-controls > summary { cursor: pointer; list-style: none; padding: 9px; }
 .turn-controls-menu { position: absolute; right: 0; bottom: 100%; z-index: 20; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px; min-width: 180px; }
 .turn-controls-menu > div { display: flex; flex-direction: column; }
+
+.server-chip { color: var(--accent); background: color-mix(in srgb, currentColor 10%, transparent); border-radius: 4px; padding: 1px 4px; }
+.server-error { font-size: 12px; color: #ef8b8b; padding: 4px 8px; }

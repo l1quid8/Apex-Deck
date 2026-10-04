@@ -333,3 +333,5 @@ Anthropic-format API adapter.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Type `!` in a thread composer to suggest the addressed participant’s tool servers. For example, `@null !x-mcp read my recent posts`. Enter inserts the highlighted server; names match without case, hyphens, underscores, dots or spaces. A known typo stays unsent. If discovery is unavailable, messages can still send. Servers remain enabled by default and write-tool approval rules still apply. Claude suggestions become available after its first turn.

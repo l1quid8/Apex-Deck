@@ -110,6 +110,7 @@ export interface AppSession {
 export type Speaker = { kind: "human" } | { kind: "bot"; id: string };
 
 export interface Message {
+  servers?: string[];
   seq: number;
   speaker: Speaker;
   text: string;
@@ -120,6 +121,7 @@ export type RoomEvent =
   | { type: "turn_started"; id: string }
   | { type: "participant_idle"; id: string }
   | { type: "editor_changed"; id: string | null }
+  | { type: "tool_servers"; id: string; servers: string[] }
   | { type: "delta"; id: string; text: string }
   /** What a participant is doing mid-turn, such as reading a file. */
   | { type: "activity"; id: string; text: string }

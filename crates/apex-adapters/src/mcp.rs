@@ -17,9 +17,50 @@ pub(crate) fn action(server: &str, tool: &str, arguments: &Value) -> ProposedAct
     ProposedAction { kind: ActionKind::Tool, title: format!("{server}: {tool}"), detail: serde_json::to_string_pretty(arguments).expect("JSON value") }
 }
 
+/// Connected server names from `claude mcp list`. Lines look like
+/// `name: target - ✔ Connected`; names may contain colons but not ": ".
+pub(crate) fn claude_connected(listing: &str) -> Vec<String> {
+    listing.lines()
+        .filter(|line| line.trim_end().ends_with("✔ Connected"))
+        .filter_map(|line| line.split_once(": ").map(|(name, _)| name.trim().to_owned()))
+        .collect()
+}
+
 /// True when the server reported a startup or listing error.
 pub(crate) fn failed(server: &Value) -> bool {
     !server["toolsError"].is_null()
+}
+
+/// Names accepted by the bang menu: connected servers, plugin aliases,
+/// and individual connectors rather than the aggregate codex_apps server.
+pub(crate) fn menu_names(servers: &[Value], plugins: &Value) -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for server in servers.iter().filter(|s| !failed(s)) {
+        if server["name"] == "codex_apps" {
+            if let Some(tools) = server["tools"].as_object() {
+                for tool in tools.values() {
+                    let meta = &tool["_meta"];
+                    if let Some(name) = meta["connector_name"].as_str().or_else(|| meta["connector_id"].as_str()) {
+                        names.insert(name.to_owned());
+                    }
+                }
+            }
+        } else if let Some(name) = server["name"].as_str() {
+            names.insert(name.to_owned());
+            if let Some(plugin) = server["pluginId"].as_str() {
+                names.insert(plugin.split('@').next().unwrap_or(plugin).to_owned());
+            }
+        }
+    }
+    if let Some(markets) = plugins["marketplaces"].as_array() {
+        for plugin in markets.iter().filter_map(|m| m["plugins"].as_array()).flatten() {
+            if plugin["installed"] == true && plugin["enabled"] == true {
+                if let Some(name) = plugin["name"].as_str() { names.insert(name.to_owned()); }
+                if let Some(name) = plugin["interface"]["displayName"].as_str() { names.insert(name.to_owned()); }
+            }
+        }
+    }
+    names.into_iter().filter(|name| !name.trim().is_empty()).collect()
 }
 
 /// Overrides only approval policy, never transport or enabled state. All
@@ -81,6 +122,20 @@ pub(crate) fn codex_policy(servers: &[Value]) -> Result<Value, String> {
 mod tests {
     use super::*;
     #[test]
+    fn menu_includes_plugin_aliases_and_individual_apps() {
+        let servers = vec![json!({"name":"codex_apps","tools":{
+            "gmail.read":{"_meta":{"connector_id":"gmail-app","connector_name":"Gmail"}},
+            "drive.read":{"_meta":{"connector_id":"drive-app"}}
+        }}), json!({"name":"github-server","pluginId":"github@market","tools":{}}),
+        json!({"name":"broken","toolsError":"failed"})];
+        let plugins = json!({"marketplaces":[{"plugins":[
+            {"name":"design","installed":true,"enabled":true},
+            {"name":"disabled","installed":true,"enabled":false},
+            {"name":"available","installed":false,"enabled":true}
+        ]}]});
+        assert_eq!(menu_names(&servers, &plugins), vec!["Gmail", "design", "drive-app", "github", "github-server"]);
+    }
+    #[test]
     fn risky_names_always_ask_and_plain_reads_do_not() {
         for word in RISKY { assert!(needs_approval(&format!("GET_{}_now", word.to_ascii_uppercase()))); }
         for name in ["get_balance", "list_accounts", "search_products", "get_profile"] { assert!(!needs_approval(name)); }
@@ -102,6 +157,11 @@ mod tests {
         assert_eq!(config["apps.x-app.tools"]["x.post"]["approval_mode"], "prompt");
         assert!(!config.to_string().contains("secret"));
         assert!(!config.to_string().contains("enabled"));
+    }
+    #[test]
+    fn claude_listing_keeps_only_connected_servers() {
+        let listing = "Checking MCP server health…\n\nclaude.ai Hyper MCP: https://apex-terminal.xyz/mcp - ✔ Connected\nclaude.ai Canva: https://mcp.canva.com/mcp - ! Needs authentication\nplugin:design:slack: https://mcp.slack.com/mcp (HTTP) - ✔ Connected\nplugin:design:gmail:  (HTTP) - - Not configured\n";
+        assert_eq!(claude_connected(listing), ["claude.ai Hyper MCP", "plugin:design:slack"]);
     }
     #[test]
     fn one_failed_server_is_skipped_but_still_asks_and_others_load() {

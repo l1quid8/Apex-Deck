@@ -1,3 +1,4 @@
+import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
@@ -423,6 +424,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     const nameOf = (id: string) => namesRef.current.get(id) ?? id;
     const unregister = registerRoom(pane.id, (event: RoomEvent) => {
       activity.current(pane.id);
+      if (event.type === "tool_servers") { setServerErrors(errors => { const next = {...errors}; delete next[event.id]; return next; }); setServerLists(lists => ({...lists, [event.id]: event.servers})); return; }
       switch (event.type) {
         case "message_added":
           if (event.message.speaker.kind === "bot") {
@@ -791,7 +793,34 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
     return () => { live = false; unlisten?.(); };
   }, [backend]);
 
-  const send = (steer = false) => {
+  const [serverLists, setServerLists] = useState<Record<string, string[]>>({});
+  const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
+  const [serverTargets, setServerTargets] = useState<string[]>([]);
+  useEffect(() => {
+    if (!ready || !participants.length) return;
+    let live = true;
+    backend.roomTargets(pane.id, text).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
+    return () => { live = false; };
+  }, [backend, pane.id, text, ready, participants]);
+  const serverMenuOpen = findTrigger(text, caret)?.kind === "server";
+  useEffect(() => {
+    if (!ready) return;
+    let live = true;
+    setServerLists({}); setServerErrors({});
+    for (const p of participants) backend.listToolServers(pane.id, p.id).then(names => {
+      if (live) setServerLists(lists => ({...lists, [p.id]: names}));
+    }).catch(error => { if (live) setServerErrors(errors => ({...errors, [p.id]: String(error)})); });
+    return () => { live = false; };
+  }, [backend, pane.id, ready, participants, serverMenuOpen]);
+  const requestedServers = parseServerRequests(text).map(s => s.name);
+  const unknownServers = serverTargets.length && serverTargets.every(id => serverLists[id] !== undefined)
+    ? resolveServerRequests(requestedServers, serverTargets.flatMap(id => serverLists[id])).unknown : [];
+
+  const send = async (steer = false) => {
+    const targetIds = await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
+    const invalid = targetIds.length && targetIds.every(id => serverLists[id] !== undefined)
+      ? resolveServerRequests(parseServerRequests(text).map(s => s.name), targetIds.flatMap(id => serverLists[id])).unknown : [];
+    if (invalid.length) { notify(`No server, app or plugin called "${invalid[0]}" for ${targetIds.map(id => names.get(id) ?? id).join(", ")}`, "error"); return; }
     const body = text.trim();
     if ((!body && !sendable.length) || !ready || saving) return;
     const parsed = body ? parseComposer(body) : { text: "" };
@@ -1335,7 +1364,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           </div>)}
         </div>}
         <div className="composer-field">
-          <ComposerMenu ref={composerMenu} participants={participants} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(name => ({agent, name})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
             if (item.kind === "command" && item.command) {
               const draft = text;
@@ -1353,6 +1382,7 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
         <textarea
           ref={input}
           aria-label="Message the room"
+          aria-invalid={unknownServers.length > 0}
           onPaste={(e) => {
             const files = [...e.clipboardData.files];
             if (!files.length) return;
@@ -1374,7 +1404,8 @@ export function ChatPane({ pane, cwd, agents, backend, focused, onActivity, onSi
           disabled={!ready || participants.length === 0}
         />
         </div>
-        <div className="composer-hint"><span>Enter sends · ⌘Enter steers the busy model you mentioned</span><span>Shift + Enter for a new line</span></div>
+        {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
+        <div className="composer-hint"><span>@ who answers · ! which tools · Enter sends · ⌘Enter steers the busy model you mentioned</span><span>Shift + Enter for a new line</span></div>
         </div>
         <div className="composer-actions">
           <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><DeckIcon name="send" size={18} /> Send</button>

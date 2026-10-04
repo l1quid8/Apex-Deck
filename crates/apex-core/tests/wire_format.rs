@@ -94,8 +94,8 @@ fn room_options_shape() {
 #[test]
 fn room_event_shapes() {
     let id = ParticipantId::new("opus");
-    let human = Message { seq: 0, speaker: Speaker::Human, text: "hi".into() };
-    let bot = Message { seq: 1, speaker: Speaker::Bot(id.clone()), text: "hello".into() };
+    let human = Message { servers: vec![], seq: 0, speaker: Speaker::Human, text: "hi".into() };
+    let bot = Message { servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "hello".into() };
 
     assert_eq!(
         to_value(RoomEvent::MessageAdded { message: human }).unwrap(),

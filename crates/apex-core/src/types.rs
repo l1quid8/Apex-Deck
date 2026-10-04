@@ -126,6 +126,8 @@ pub enum Speaker {
 /// One entry in the shared transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<String>,
     /// Position in the transcript, starting at 0.
     pub seq: usize,
     pub speaker: Speaker,

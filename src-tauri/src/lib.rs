@@ -39,6 +39,7 @@ struct RoomHandle {
 
 #[derive(Default)]
 struct AppState {
+    tool_servers: Mutex<HashMap<String, Vec<String>>>,
     ptys: PtyManager,
     rooms: Mutex<HashMap<String, RoomHandle>>,
 }
@@ -111,6 +112,21 @@ fn folders_from_args(args: impl Iterator<Item = String>) -> Vec<String> {
 #[tauri::command]
 fn startup_folders() -> Vec<String> {
     folders_from_args(std::env::args().skip(1))
+}
+
+#[tauri::command]
+async fn list_tool_servers(state: State<'_, AppState>, room: String, agent: String) -> Result<Vec<String>, String> {
+    let key = format!("{room}:{agent}");
+    if let Some(names) = state.tool_servers.lock().unwrap().get(&key).filter(|names| !names.is_empty()).cloned() { return Ok(names); }
+    let handle = state.handle(&room)?;
+    let config = handle.room.lock().await.configs().into_iter().find(|p| p.id.as_str() == agent).ok_or("Unknown participant")?;
+    let names = match config.backend {
+        apex_core::Backend::Agent { tool: AgentTool::Codex, .. } => tokio::time::timeout(std::time::Duration::from_secs(30), apex_adapters::codex_tool_servers(handle.context.cwd.clone().map(|p| p.to_string_lossy().into_owned()), handle.context.path.clone())).await.map_err(|_| "Couldn't list tool servers: timed out")??,
+        apex_core::Backend::Agent { tool: AgentTool::ClaudeCode, .. } => tokio::time::timeout(std::time::Duration::from_secs(60), apex_adapters::claude_tool_servers(handle.context.cwd.clone().map(|p| p.to_string_lossy().into_owned()), handle.context.path.clone())).await.map_err(|_| "Couldn't list tool servers: timed out")??,
+        _ => Vec::new(),
+    };
+    if !names.is_empty() { state.tool_servers.lock().unwrap().insert(key, names.clone()); }
+    Ok(names)
 }
 
 // ---------------------------------------------------------------- terminals
@@ -267,6 +283,9 @@ fn turn_sink<'a>(app: &'a AppHandle, id: &'a str, handle: &'a RoomHandle, error:
         // The desktop emits room-wide Idle only after the final snapshot
         // (including cursors) is saved by run_batch.
         if matches!(event, RoomEvent::Idle) { return; }
+        if let RoomEvent::ToolServers { id: agent, servers } = &event {
+            app.state::<AppState>().tool_servers.lock().unwrap().insert(format!("{id}:{}", agent.as_str()), servers.clone());
+        }
         if let Err(why) = persist_event(handle, &app.state::<Store>(), id, &event) {
             *error.lock().unwrap() = Some(why.clone());
             handle.runtime.stop(None);
@@ -287,6 +306,18 @@ async fn prepare_post(app: &AppHandle, id: &str, handle: &RoomHandle, text: &str
             if let Some(cwd) = handle.context.cwd.clone() {
                 if let Ok(Ok(tree)) = tokio::task::spawn_blocking(move || changes::snapshot(&cwd)).await { room.set_baseline(tree); }
             }
+        }
+    }
+    let requested = apex_core::server_request::parse_server_requests(text);
+    if !requested.is_empty() {
+        let recipients = match &targets { Some(ids) => ids.clone(), None => handle.runtime.targets(text).await };
+        let state = app.state::<AppState>();
+        let cache = state.tool_servers.lock().unwrap();
+        let lists: Option<Vec<_>> = recipients.iter().map(|agent| cache.get(&format!("{id}:{}", agent.as_str()))).collect();
+        if let Some(lists) = lists {
+            let known = lists.into_iter().flatten().cloned().collect::<Vec<_>>();
+            let unknown = apex_core::server_request::resolve(&requested, &known).unknown;
+            if !unknown.is_empty() { return Err(format!("No tool server called \"{}\" for the addressed models", unknown[0])); }
         }
     }
     let error = Mutex::new(None);
@@ -418,6 +449,7 @@ async fn room_add_participant(
         room.add_participant(apex_adapters::build(participant, &context))
     };
     if changed {
+        state.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
         save_room(&state, &store, &id).await
     } else {
         Err(format!("a participant with the id `{name}` is already in this chat"))
@@ -445,6 +477,7 @@ async fn room_update_participant(
         room.replace_participant(apex_adapters::build(participant, &context))
     };
     if changed {
+        state.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
         save_room(&state, &store, &id).await
     } else {
         Err(format!("no participant with the id `{name}` is in this chat"))
@@ -758,6 +791,7 @@ pub fn run() {
             room_delete,
             startup_folders,
             agents_detect,
+            list_tool_servers,
             pty_spawn,
             pty_write,
             pty_resize,

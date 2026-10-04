@@ -10,6 +10,7 @@ type Unlisten = () => void;
 export interface Backend {
   /** True when running in a browser with no desktop shell behind it. */
   demo: boolean;
+  listToolServers(room: string, agent: string): Promise<string[]>;
   detectAgents(): Promise<AgentInfo[]>;
   pickFolder(): Promise<string | null>;
   /** Folders passed on the command line when the app was started. */
@@ -79,6 +80,7 @@ async function tauriBackend(): Promise<Backend> {
 
   return {
     demo: false,
+    listToolServers: (room, agent) => invoke<string[]>("list_tool_servers", { room, agent }),
     detectAgents: () => invoke<AgentInfo[]>("agents_detect"),
     startupFolders: () => invoke<string[]>("startup_folders"),
     sessionLoad: () => invoke<AppSession | null>("session_load"),
@@ -306,6 +308,7 @@ function demoBackend(): Backend {
 
   return {
     demo: true,
+    listToolServers: async () => ["x-mcp", "hyperliquid", "computer-use"],
     detectAgents: async () => [
       { key: "claude", label: "Claude Code", program: "claude", found: true },
       { key: "codex", label: "Codex", program: "codex", found: true },
