@@ -252,10 +252,12 @@ textarea {
 .ws-row {
   display: flex;
   align-items: center;
+  border: 1px solid transparent;
   border-radius: 6px;
 }
 .ws-row.active {
   background: var(--panel-2);
+  border-color: var(--line);
 }
 .ws-name {
   flex: 1;
@@ -926,7 +928,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .welcome-logo { margin-bottom: 28px; }
 .picker > .primary { margin-top: 26px; padding: 11px 18px; }
 .welcome-capabilities { display: flex; justify-content: center; gap: 24px; margin-top: 48px; color: var(--muted); font: 10px ui-monospace, monospace; letter-spacing: 0.06em; }
-.ws-row.active { box-shadow: inset 2px 0 var(--accent); background: #17251f; }
 .ws-name { padding: 10px; gap: 10px; }
 .ws-name > svg { flex-shrink: 0; color: var(--muted); }
 .ws-label { overflow: hidden; text-overflow: ellipsis; }
