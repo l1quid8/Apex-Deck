@@ -2192,3 +2192,5 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .preview-foot { margin-top: auto !important; padding-top: 16px; font-size: 12px; }
 /* Full window: the same element, fixed over the rail and deck, so the page keeps its state. */
 .preview.full-window { position: fixed; top: var(--deck-top, 0px); left: 0; right: 0; bottom: 0; z-index: 35; background: var(--bg); }
+/* A local server a terminal printed or a bot mentioned; opens it in a Preview beside that pane. */
+.server-chip { flex: none; padding: 0 8px; border-radius: 999px; background: transparent; color: var(--brand-cyan); font: 11px/20px ui-monospace, SFMono-Regular, Menlo, monospace; }

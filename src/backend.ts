@@ -496,7 +496,7 @@ function demoBackend(): Backend {
       const what = agent ? `${agent} (browser demo)` : "shell (browser demo)";
       // Agents name what they are doing in the terminal's title, as Claude Code does.
       const title = agent ? "\x1b]0;\u2733 Reading the project\x07" : "";
-      setTimeout(() => emitData(id, `${title}\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, title, exit or fail.\x1b[0m\r\n$ `), 30);
+      setTimeout(() => emitData(id, `${title}\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, title, serve, exit or fail.\x1b[0m\r\n$ `), 30);
     },
     ptyWrite: async (id, data) => {
       if (endedPtys.has(id)) throw new Error(`no terminal with id ${id}`);
@@ -507,6 +507,8 @@ function demoBackend(): Backend {
       typedSoFar.set(id, ((typedSoFar.get(id) ?? "") + data).slice(-12));
       const line = typedSoFar.get(id) ?? "";
       if (line.endsWith("ask\r")) setTimeout(() => emitData(id, "\r\n Do you want to create hello.txt?\r\n \u276f 1. Yes\r\n   2. No\r\n"), 300);
+      // "serve" prints a dev server's address, in colour as Vite does, so the Preview chip can be seen.
+      if (line.endsWith("serve\r")) setTimeout(() => emitData(id, "\r\n  \x1b[32mVITE\x1b[39m ready in 120 ms\r\n\r\n  \u279c  Local:   \x1b[36mhttp://localhost:\x1b[1m5174\x1b[22m/\x1b[39m\r\n$ "), 300);
       if (line.endsWith("work\r")) {
         for (let i = 1; i <= 40; i++) setTimeout(() => emitData(id, `\r\ncompiling module ${i} of 40 ...`), 2000 + i * 100);
         setTimeout(() => emitData(id, "\r\nFinished.\r\n$ "), 6200);

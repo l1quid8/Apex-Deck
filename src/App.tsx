@@ -14,12 +14,12 @@ import { AgentsSection } from "./AgentsSection";
 import { DeckIcon } from "./DeckIcon";
 import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
-import { PreviewPane } from "./PreviewPane";
+import { PreviewPane, type ServerChoice } from "./PreviewPane";
 import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
 import { nextTitle, programTitle } from "./terminalTitle";
 import { hostLabel } from "./previewAddress";
 import { paneMenuItems, type PaneMenuAction } from "./paneMenu";
-import { grid, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
+import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
@@ -273,9 +273,25 @@ export function App() {
   const onActivity = useCallback((paneId: string) => {
     lastOutput.current.set(paneId, Date.now());
   }, []);
+  /** The newest local server address each running terminal printed, and each open thread's bots mentioned. */
+  const [servers, setServers] = useState<Record<string, string>>({});
+  const onServer = useCallback((paneId: string, address: string) => {
+    setServers((all) => (all[paneId] === address ? all : { ...all, [paneId]: address }));
+  }, []);
+  const forgetServer = useCallback((paneId: string) => {
+    setServers((all) => {
+      if (!(paneId in all)) return all;
+      const rest = { ...all };
+      delete rest[paneId];
+      return rest;
+    });
+  }, []);
+
   const onRun = useCallback((paneId: string, run: TerminalRun) => {
     setRuns((all) => (all[paneId] === run ? all : { ...all, [paneId]: run }));
-  }, []);
+    // A terminal's server chip goes when its program stops or ends.
+    if (run.state !== "running") forgetServer(paneId);
+  }, [forgetServer]);
   const onTitle = useCallback((paneId: string, title: string) => {
     setProgramTitles((all) => ((all[paneId] ?? "") === title ? all : { ...all, [paneId]: title }));
   }, []);
@@ -462,6 +478,40 @@ export function App() {
     backend?.openTarget(address, null, false).catch(() => {});
   }, [backend]);
 
+  /** Servers from a workspace's terminals and open threads, for a Preview's empty page. */
+  const serversFor = (workspaceId: string): ServerChoice[] =>
+    Object.entries(servers).flatMap(([id, address]) => {
+      const source = panes.find((p) => p.id === id && p.workspaceId === workspaceId && !p.closed);
+      return source ? [{ address, source: source.title, sourceId: id }] : [];
+    });
+
+  /**
+   * Show a server in a Preview right of the terminal or thread it came from,
+   * on that pane's deck, or focus the Preview already showing it there.
+   */
+  const openPreview = (address: string, sourceId: string) => {
+    const source = panes.find((p) => p.id === sourceId);
+    if (!source) return;
+    const deck = paneSection(source);
+    const existing = panes.find((p) => p.kind === "preview" && p.workspaceId === source.workspaceId && paneSection(p) === deck && p.url === address);
+    if (existing) {
+      focusPane(existing);
+      return;
+    }
+    const id = newId("pane");
+    const title = nextTitle("Preview", panes.filter((p) => p.workspaceId === source.workspaceId && p.kind === "preview").map((p) => p.title));
+    const preview: Pane = { id, workspaceId: source.workspaceId, kind: "preview", title, url: address, servedBy: sourceId };
+    if (deck === "threads") preview.deck = "threads";
+    const key = layoutKey(source.workspaceId, deck);
+    setPanes((list) => [...list, preview]);
+    setLayouts((all) => (all[key] && leafIds(all[key]).includes(sourceId) ? { ...all, [key]: insertBeside(all[key], sourceId, id, "right") } : all));
+    setActiveWorkspace(source.workspaceId);
+    setSection(deck);
+    setPicking(false);
+    setFocusedPane(id);
+    setMaximized(null);
+  };
+
   const forkThread = async (source: Pane, title: string, upto: number | null) => {
     const id = newId("pane");
     if (!backend) throw new Error("The backend is not ready yet.");
@@ -562,12 +612,15 @@ export function App() {
     if (!pane) return;
     if (pane.kind === "chat") {
       setPanes((list) => list.map((p) => (p.id === id ? { ...p, closed: true } : p)));
+      // The thread reports its server again when it is opened.
+      forgetServer(id);
       takeOff(id);
       return;
     }
     const end = () => {
       setPanes((list) => list.filter((p) => p.id !== id));
       lastOutput.current.delete(id);
+      forgetServer(id);
       runStart.current.delete(id);
       setRuns(({ [id]: _ended, ...rest }) => rest);
       setProgramTitles(({ [id]: _gone, ...rest }) => rest);
@@ -943,6 +996,11 @@ export function App() {
                     {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
                     {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : pane.kind === "preview" ? previewStatus[pane.id] ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
+                    {(pane.kind === "terminal" || pane.kind === "chat") && servers[pane.id] && (
+                      <button className="server-chip" onPointerDown={(event) => event.stopPropagation()} onClick={() => openPreview(servers[pane.id], pane.id)} title={pane.kind === "chat" ? "Open in Preview, beside this thread" : "Open in Preview, beside this terminal"}>
+                        {hostLabel(servers[pane.id])}
+                      </button>
+                    )}
                     <span className="spacer" />
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
                       {maximized === pane.id ? "▣" : "□"}
@@ -968,13 +1026,13 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
                     ) : pane.kind === "preview" ? (
                       <PreviewPane
                         pane={pane}
                         backend={backend}
                         visible={visible}
-                        servers={[]}
+                        servers={serversFor(pane.workspaceId)}
                         source={sourceOf(pane)}
                         openExternally={settings.preview.openExternally}
                         onOpenExternallyChange={(hosts) => setSettings({ ...settings, preview: { openExternally: hosts } })}
@@ -985,7 +1043,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
+                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} />
                     )}
                   </div>
                 </section>
