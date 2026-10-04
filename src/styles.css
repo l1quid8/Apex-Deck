@@ -2200,7 +2200,9 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .preview-body iframe { flex: 1; border: 0; background: #fff; }
 .preview-checking { margin: auto; color: var(--muted); }
 .preview-notice, .preview-empty { margin: auto; max-width: 420px; padding: 32px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
-.preview-empty { margin: 0; max-width: none; width: 100%; box-sizing: border-box; padding: 28px 32px; align-items: stretch; }
+.preview-empty { margin: 0; max-width: none; width: 100%; box-sizing: border-box; padding: 28px 32px; align-items: center; justify-content: center; text-align: center; }
+.preview-empty > * { width: 100%; max-width: 520px; }
+.preview-empty p { margin-inline: auto; }
 .preview-notice h2, .preview-empty h2 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.035em; }
 .preview-notice p, .preview-empty p { margin: 0; color: var(--muted); max-width: 46ch; }
 .preview-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
@@ -2214,7 +2216,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .preview-server { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .preview-server small { font-size: 12px; color: var(--muted); }
 .preview-open { font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; }
-.preview-foot { margin-top: auto !important; padding-top: 16px; font-size: 12px; }
+.preview-foot { padding-top: 16px; font-size: 12px; }
 /* Full window: the same element, fixed over the rail and deck, so the page keeps its state. */
 .preview.full-window { position: fixed; top: var(--deck-top, 0px); left: 0; right: 0; bottom: 0; z-index: 35; background: var(--bg); }
 /* A local server a terminal printed or a bot mentioned; opens it in a Preview beside that pane. */
