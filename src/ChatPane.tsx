@@ -3,7 +3,7 @@ import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, replyingVerb, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { findTrigger, insertAt } from "./composerMenu";
@@ -30,6 +30,7 @@ import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
+import { isAtBottom, newPill } from "./transcriptPlace";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
   Access,
@@ -420,6 +421,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const composer = useRef<HTMLDivElement>(null);
+  /** Whether the transcript sat at its bottom when it was last scrolled. New
+   *  content follows only then; scrolled up, the transcript keeps your place. */
+  const stuck = useRef(true);
+  /** Bot replies that arrived while you were scrolled up. */
+  const [unread, setUnread] = useState(0);
   const filePicker = useRef<HTMLInputElement>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const saving = attached.some((a) => !a.path && !a.error);
@@ -480,6 +486,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         case "message_added":
           if (event.message.speaker.kind === "bot") {
             const id = event.message.speaker.id;
+            if (!stuck.current) setUnread((n) => n + 1);
             setDrafts(({ [id]: _done, ...rest }) => rest);
             setWorking(({ [id]: _done, ...rest }) => rest);
             round.current.lastReply = event.message.text;
@@ -641,10 +648,36 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     backend.openTarget(target, cwd || null, reveal).catch((error) => notify(`Could not open ${target}: ${String(error)}`, "error"));
   };
 
+  /** Bring the transcript to where it should be after anything changed in it. */
+  const settle = useRef(() => {});
+  settle.current = () => {
+    const el = scroller.current;
+    // A hidden pane cannot scroll; the resize when it is shown settles it.
+    if (!el || el.clientHeight === 0) return;
+    if (stuck.current) el.scrollTop = el.scrollHeight;
+  };
+  // Before paint, so following the bottom never flickers.
+  useLayoutEffect(() => settle.current(), [entries, drafts, asks]);
+  // Showing the pane, or a composer that grows, changes the transcript's
+  // height without any scrolling: stay at the bottom if you were there.
   useEffect(() => {
     const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [entries, drafts, asks]);
+    if (!el) return;
+    const observer = new ResizeObserver(() => settle.current());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [profileMode]);
+  const onTranscriptScroll = () => {
+    const el = scroller.current;
+    if (!el || el.clientHeight === 0) return;
+    stuck.current = isAtBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+    if (stuck.current) setUnread(0);
+  };
+  const jumpToLatest = () => {
+    stuck.current = true;
+    setUnread(0);
+    settle.current();
+  };
 
   useEffect(() => {
     if (focused && !adding && ready) input.current?.focus();
@@ -877,6 +910,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
     if (participants.length === 0) return;
+    // Sending takes you to the bottom, where your message and the replies land.
+    stuck.current = true;
+    setUnread(0);
     const message = withAttachments(parsed.text && replyText(postable(parsed.text), reply), sendable.map((a) => a.path!));
     setText(""); setReply(null);
     attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
@@ -1426,7 +1462,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
       </div>}
 
       <div className="chat-body">
-      {!profileMode && <div className="transcript" ref={scroller}>
+      {!profileMode && <div className="transcript" ref={scroller} onScroll={onTranscriptScroll}>
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
           <div className="empty">
             <div className="empty-emblem"><DeckIcon name="chat" size={26} /></div>
@@ -1537,6 +1573,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
             </div>
           );
         })}
+      </div>}
+      {!profileMode && unread > 0 && <div className="transcript-pills">
+        <button type="button" className="transcript-pill" onClick={jumpToLatest}>{newPill(unread)}</button>
       </div>}
       </div>
 

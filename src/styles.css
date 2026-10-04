@@ -1449,6 +1449,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 
 /* The conversation, with the list of changes beside it when open. */
 .chat-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1977,3 +1978,8 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* A command-line bot that has said nothing for a while: muted, not alarming. */
 .working-line.quiet { color: var(--muted); }
 .working-line.quiet .working-dots i { background: var(--muted); }
+
+/* Now 3.1: pills that keep your place while bots stream. */
+.transcript-pills { position: absolute; left: 0; right: 0; bottom: 12px; z-index: 5; display: flex; justify-content: center; gap: 8px; padding: 0 12px; pointer-events: none; }
+.transcript-pill { pointer-events: auto; display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
+.transcript-pill:hover:not(:disabled) { background: var(--panel-2); }
