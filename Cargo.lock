@@ -78,6 +78,7 @@ dependencies = [
  "apex-core",
  "futures",
  "portable-pty",
+ "reqwest",
  "serde",
  "serde_json",
  "tauri",
