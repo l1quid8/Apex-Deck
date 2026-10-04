@@ -1439,8 +1439,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 
 /* Completed responses reserve space on the right for the quote action. */
 .bubble.bot.completed { position: relative; padding-right: 54px; }
-.quote-reply-icon { position: absolute; right: 10px; top: 10px; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; background: transparent; color: var(--muted); }
-.quote-reply-icon:hover, .quote-reply-icon:focus-visible { color: var(--text); background: var(--panel); }
 .quote-preview { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--line); background: var(--panel-2); border-radius: var(--radius); }
 .quote-preview-copy { flex: 1; min-width: 0; }
 .quote-preview-copy .speaker { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; }
@@ -1662,9 +1660,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .diff-file-row .path { flex: 1; overflow-wrap: anywhere; }
 
 .bubble.human { position: relative; }
-.fork-message-icon { opacity: 0; }
-.bubble.bot .fork-message-icon { right: 44px; }
-.bubble:hover .fork-message-icon, .bubble:focus-within .fork-message-icon { opacity: 1; }
 
 /* One app-level details rail; pane components stay mounted when it docks. */
 .body { position: relative; }
@@ -1999,3 +1994,16 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* Now 3.3: Try again and Let them answer on notices. */
 .notice.with-action { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 10px; text-align: center; }
 .notice.with-action button { padding: 2px 10px; font-size: 12px; color: var(--text); }
+
+/* Now 3.4: hand a quote to another bot. The menu opens upward from the composer. */
+.hand-off { flex: none; }
+.hand-off > button { padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+.hand-off-menu { top: auto; bottom: calc(100% + 6px); }
+/* Now 3.4: Quote, Copy and Fork on every message; one ⋯ in a narrow pane. */
+.message-actions { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: row-reverse; align-items: center; gap: 2px; }
+.msg-action, .msg-more { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.msg-action:hover:not(:disabled), .msg-action:focus-visible, .msg-more:hover:not(:disabled), .msg-more:focus-visible { color: var(--text); background: var(--panel); }
+.bubble .msg-action { opacity: 0; }
+.bubble.bot .msg-action.quote, .bubble:hover .msg-action, .bubble:focus-within .msg-action { opacity: 1; }
+.bubble.human:has(.msg-more) { padding-right: 44px; }
+.copied { font-size: 11px; color: var(--text); }

@@ -28,7 +28,7 @@ import { DiffPanel } from "./DiffPanel";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
-import { replyText, type ReplyQuote } from "./reply";
+import { foldsMessageActions, handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, hasMention, recipientLine, showsRecipientLine } from "./recipients";
@@ -265,6 +265,8 @@ interface TurnProgress {
 }
 
 const MAX_STEPS_SHOWN = 4;
+/** How long Copy reads "Copied". */
+const COPIED_MS = 1500;
 
 function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
   if (phase === "tool") return "Working";
@@ -384,6 +386,23 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [queuePaused, setQueuePaused] = useState(false);
   const [editor, setEditor] = useState<string | null>(null);
   const [reply, setReply] = useState<ReplyQuote | null>(null);
+  /** Whether the quote's Send to ▾ menu is open. */
+  const [handOffOpen, setHandOffOpen] = useState(false);
+  const handOffButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (!reply) setHandOffOpen(false); }, [reply]);
+  useEffect(() => {
+    if (!handOffOpen) return;
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".hand-off")) setHandOffOpen(false); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setHandOffOpen(false);
+      handOffButton.current?.focus();
+    };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key, true); };
+  }, [handOffOpen]);
   const [adding, setAdding] = useState(false);
   /** Where the quick add menu is open: under the empty thread's button, or in the sidebar. */
   const [quickAdd, setQuickAdd] = useState<"empty" | "details" | null>(null);
@@ -448,6 +467,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const root = useRef<HTMLDivElement>(null);
   /** False in a pane under 260px tall, where the recipient line is hidden. */
   const [lineFits, setLineFits] = useState(true);
+  /** True in a pane under 360px wide, where message actions fold into one ⋯. */
+  const [foldActions, setFoldActions] = useState(false);
   useEffect(() => {
     const paneBox = root.current?.closest<HTMLElement>(".pane");
     if (!paneBox) return;
@@ -455,6 +476,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       // A hidden pane measures nothing; keep what it had.
       if (paneBox.offsetWidth === 0 && paneBox.offsetHeight === 0) return;
       setLineFits(showsRecipientLine(paneBox.offsetHeight));
+      setFoldActions(foldsMessageActions(paneBox.offsetWidth));
     });
     observer.observe(paneBox);
     return () => observer.disconnect();
@@ -528,7 +550,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const activeSince = active.length ? Math.min(...active.map((p) => working[p.id]?.startedAt ?? now)) : 0;
   /** You have written in this thread, so the room may have someone you addressed last. */
   const addressedBefore = messagesOf(entries).some((m) => m.speaker.kind === "human");
-  const copy = composerCopy(busy, participants.length === 0, { firstMessage: participants.length >= 2 && !addressedBefore });
+  const copy = composerCopy(busy, participants.length === 0, { firstMessage: participants.length >= 2 && !addressedBefore, quoting: Boolean(reply) });
+  /** Who a quote will lead with right now, for its Send to ▾ button. */
+  const quoteTo = reply ? quoteLead(text.trim(), reply, participants.map((p) => p.id)) : null;
 
   const forgetContext = () => {
     setContextFill({});
@@ -932,9 +956,66 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
       .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
   };
-  const forkButton = (seq: number) => onFork && <button className="quote-reply-icon fork-message-icon" aria-label="Fork from here" title="Fork from here" onClick={() => forkAt(`${pane.title} (fork)`, seq + 1)}>
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2"/><circle cx="11" cy="2.5" r="1.2"/></svg>
-  </button>;
+  const forkIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2v5a3 3 0 0 0 3 3 3 3 0 0 1 3 3v1M11 2v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><circle cx="5" cy="2.5" r="1.2"/><circle cx="11" cy="2.5" r="1.2"/></svg>;
+  /** The message whose Copy reads "Copied" for a moment, by seq. */
+  const [copied, setCopied] = useState<number | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimer.current), []);
+  /** Put a message's markdown on the clipboard. */
+  const copyMessage = (message: Message) => {
+    if (!navigator.clipboard) return notify("Could not copy: the clipboard isn't available here.", "error");
+    navigator.clipboard.writeText(message.text)
+      .then(() => {
+        setCopied(message.seq);
+        clearTimeout(copiedTimer.current);
+        copiedTimer.current = setTimeout(() => setCopied(null), COPIED_MS);
+      })
+      .catch((error) => notify(`Could not copy: ${String(error)}`, "error"));
+  };
+  /** The message whose ⋯ menu is open, by seq. */
+  const [messageMenu, setMessageMenu] = useState<number | null>(null);
+  useEffect(() => {
+    if (messageMenu === null) return;
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".message-more")) setMessageMenu(null); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      scroller.current?.querySelector<HTMLButtonElement>(`[data-message-more="${messageMenu}"]`)?.focus();
+      setMessageMenu(null);
+    };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key, true); };
+  }, [messageMenu]);
+  /** Quote, Copy and Fork on a message; one ⋯ menu instead in a pane under 360px wide. */
+  const messageActions = (message: Message) => {
+    const quote = () => { setReply(quoteFor(message, (id) => names.get(id) ?? id)); input.current?.focus(); };
+    const copy = () => copyMessage(message);
+    const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
+    const copiedHere = copied === message.seq;
+    if (foldActions) return <span className="message-actions">
+      <span className="pane-menu-wrap message-more">
+        <button type="button" className="msg-more" data-message-more={message.seq} aria-label="Message actions" aria-haspopup="menu" aria-expanded={messageMenu === message.seq} onClick={() => setMessageMenu((open) => (open === message.seq ? null : message.seq))}>
+          {copiedHere ? <span className="copied">Copied</span> : "⋯"}
+        </button>
+        {messageMenu === message.seq && <span className="pane-menu" role="menu">
+          <button role="menuitem" onClick={() => { setMessageMenu(null); quote(); }}>Quote</button>
+          <button role="menuitem" onClick={() => { setMessageMenu(null); copy(); }}>Copy</button>
+          {onFork && <button role="menuitem" onClick={() => { setMessageMenu(null); fork(); }}>Fork from here</button>}
+        </span>}
+      </span>
+    </span>;
+    return <span className="message-actions">
+      <button type="button" className="msg-action quote" title="Quote" onClick={quote}
+        aria-label={message.speaker.kind === "bot" ? `Quote response from ${names.get(message.speaker.id) ?? message.speaker.id}` : "Quote your message"}>
+        <DeckIcon name="reply" size={18} />
+      </button>
+      <button type="button" className="msg-action copy" title="Copy" aria-label={copiedHere ? "Copied" : "Copy message"} onClick={copy}>
+        {copiedHere ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}
+      </button>
+      {onFork && <button type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>}
+    </span>;
+  };
   /** Commands run locally and never reach the models. */
   const runCommand = (command: Command) => {
     switch (command.name) {
@@ -1023,7 +1104,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (!ready || !participants.length) return;
     let live = true;
     // Ask about the message as it will be sent, with a quote's leading handle.
-    const outgoing = reply ? replyText(text, reply) : text;
+    const outgoing = reply ? replyText(text, reply, participants.map((p) => p.id)) : text;
     // A slower answer for older text is ignored once the text has changed.
     backend.roomTargets(pane.id, outgoing).then(ids => { if (live) { setServerTargets(ids); setTargetsText(outgoing); } }).catch(() => {});
     return () => { live = false; };
@@ -1065,7 +1146,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     stuck.current = true;
     setUnread(0);
     setDividerAt(null);
-    const message = withAttachments(parsed.text && replyText(postable(parsed.text), reply), sendable.map((a) => a.path!));
+    const message = withAttachments(parsed.text && replyText(postable(parsed.text), reply, participants.map((p) => p.id)), sendable.map((a) => a.path!));
     setText(""); setReply(null);
     attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
     setAttached([]);
@@ -1661,7 +1742,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           ) : entry.message.speaker.kind === "human" ? (
             <div key={`m${entry.message.seq}`} className="bubble human">
               <RichText text={entry.message.text} onOpen={openTarget} />
-              {forkButton(entry.message.seq)}
+              {messageActions(entry.message)}
             </div>
           ) : (
             <div key={`m${entry.message.seq}`} className="bot-row">
@@ -1675,12 +1756,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
                 <Markdown text={entry.message.text} onOpen={openTarget} />
-                <button className="quote-reply-icon" aria-label={`Quote response from ${names.get(entry.message.speaker.id) ?? entry.message.speaker.id}`} onClick={() => {
-                  if (entry.message.speaker.kind !== "bot") return;
-                  setReply({ id: entry.message.speaker.id, name: names.get(entry.message.speaker.id) ?? entry.message.speaker.id, text: entry.message.text });
-                  input.current?.focus();
-                }}><DeckIcon name="reply" size={18} /></button>
-                {forkButton(entry.message.seq)}
+                {messageActions(entry.message)}
               </div>
             </div>
           );
@@ -1790,7 +1866,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           {queuePaused && <button className="ghost" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume queue</button>}
         </details>}
         {reply && <div className="quote-preview">
-          <div className="quote-preview-copy"><span className="speaker">{reply.name}</span><blockquote>{reply.text}</blockquote></div>
+          <div className="quote-preview-copy"><span className="speaker">{reply.id ? `Quoting ${reply.name}` : "Quoting your message"}</span><blockquote>{reply.text}</blockquote></div>
+          <span className="pane-menu-wrap hand-off">
+            <button ref={handOffButton} type="button" className="ghost small" aria-haspopup="menu" aria-expanded={handOffOpen} onClick={() => setHandOffOpen((open) => !open)}>
+              {handOffLabel(quoteTo, (id) => names.get(id) ?? id)} ▾
+            </button>
+            {handOffOpen && <span className="pane-menu hand-off-menu" role="menu">
+              {handOffChoices(quoteTo, participants.map((p) => ({ id: p.id, name: p.display_name }))).map((choice) => (
+                <button role="menuitem" key={choice.to} onClick={() => { setReply((quote) => (quote ? { ...quote, to: choice.to } : quote)); setHandOffOpen(false); input.current?.focus(); }}>{choice.label}</button>
+              ))}
+            </span>}
+          </span>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
         </div>}
         {attached.length > 0 && <div className="attachments" aria-label="Attachments">

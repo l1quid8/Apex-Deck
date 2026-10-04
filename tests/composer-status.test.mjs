@@ -131,3 +131,9 @@ test("before the first message in a room of two or more bots, the hint teaches @
   assert.equal(composerCopy(false, false).hint, "@ who answers · ! which tools · ↵ send · ⇧↵ new line");
   assert.match(composerCopy(true, false, { firstMessage: true }).hint, /↵ queue/);
 });
+
+test("while quoting, the placeholder suggests what to ask", () => {
+  assert.equal(composerCopy(false, false, { quoting: true }).placeholder, "e.g. Check this against the tests and say what breaks");
+  assert.equal(composerCopy(true, false, { quoting: true }).placeholder, "e.g. Check this against the tests and say what breaks");
+  assert.match(composerCopy(true, false, { quoting: true }).hint, /↵ queue/);
+});
