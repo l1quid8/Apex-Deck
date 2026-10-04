@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -55,7 +56,7 @@ test('partial fills scale from 30% to 100%', () => {
 
 test('unknown sides draw full and show no warning', () => {
   const cells = batteryCells(solid, { context: null, plan: null });
-  assert.ok(cells.every((c) => c.fill === 1 && c.alpha === 1 && !c.red));
+  assert.ok(cells.every((c) => c.fill === 1 && c.alpha === 1));
   assert.equal(shellState({ context: null, plan: null }), 'ok');
   // Only the known side drains; the middle takes the lower of a known and a full side.
   const half = batteryCells(solid, { context: null, plan: 0.2 });
@@ -67,14 +68,12 @@ test('unknown sides draw full and show no warning', () => {
   assert.equal(planLevel([], 0), null);
 });
 
-test('a side at or under 20% is red, and at or under 8% the shell pulses', () => {
+test('a low side keeps the agent colour: at or under 20% the shell reads low, at or under 8% critical', () => {
   assert.ok(isLow(0.2) && isLow(0.1) && !isLow(0.21) && !isLow(null));
   assert.ok(isCritical(0.08) && !isCritical(0.09) && !isCritical(null));
   const low = batteryCells(solid, { context: 0.18, plan: 0.9 });
-  assert.ok(at(low, 4, 0).red, 'charge on the low side is red');
-  assert.ok(!at(low, 0, 0).red, 'a drained ghost keeps the agent colour');
-  assert.ok(!at(low, 4, 4).red, 'the other side is not');
-  assert.ok(at(low, 4, 2).red, 'the middle follows the lower side');
+  assert.ok(low.every((cell) => !('red' in cell)), 'no cell is drawn in another colour');
+  assert.ok(at(low, 4, 0).alpha > 0.9, 'charge on the low side draws at near full strength');
   assert.equal(shellState({ context: 0.18, plan: 0.9 }), 'low');
   assert.equal(shellState({ context: 0.9, plan: 0.05 }), 'critical');
   assert.equal(shellState({ context: 0.5, plan: 0.5 }), 'ok');
@@ -124,4 +123,12 @@ test('a window that starts over is a reset, a busier one is not', () => {
 
 test('refills run bottom row first, 140ms apart', () => {
   assert.deepEqual([4, 3, 2, 1, 0].map(refillDelay), [0, 140, 280, 420, 560]);
+});
+
+test('battery styles never borrow the danger colour or pulse', () => {
+  const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const rules = css.split('}').filter((rule) => rule.includes('.identicon'));
+  assert.ok(rules.length > 0);
+  for (const rule of rules) assert.ok(!rule.includes('--danger'), rule.trim());
+  assert.ok(!css.includes('battery-critical'), 'no pulsing keyframes');
 });

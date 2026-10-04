@@ -637,21 +637,38 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .identicon.working i.on { animation: none; }
 }
-/* The battery (battery.ts): each cell is drawn at its own strength, in the
-   agent's colour or in red on a side that is running low. */
+/* The battery (battery.ts): each cell is drawn at its own strength, always
+   in the agent's colour. Low is not a failure, so it never borrows the
+   danger colour: a low side gets a hairline outline, and a critical one a
+   thicker outline and the word "low". */
+.identicon.battery {
+  position: relative;
+}
 .identicon.battery i {
-  background: color-mix(in srgb, var(--c, var(--who)) var(--a), transparent);
+  background: color-mix(in srgb, var(--who) var(--a), transparent);
 }
-.identicon.battery.low,
+.identicon.battery.low {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 70%, transparent);
+}
 .identicon.battery.critical {
-  border-color: color-mix(in srgb, var(--danger) 70%, transparent);
+  box-shadow: 0 0 0 2px var(--text);
 }
-.identicon.battery.critical {
-  animation: battery-critical 1.6s ease-in-out infinite;
+.identicon-low {
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  transform: translateX(-50%);
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 12px;
 }
-@keyframes battery-critical {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 0%, transparent); }
-  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 35%, transparent); }
+/* A chip's 21px avatar is too small for the word; the chip says "low" beside it. */
+.identicon-sm .identicon-low {
+  display: none;
 }
 /* A side refilling after /compact or a plan reset, bottom row first. */
 .identicon.battery i.refill {
@@ -661,7 +678,6 @@ textarea {
   from { background: color-mix(in srgb, var(--who) 16%, transparent); transform: scale(0.6); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .identicon.battery.critical,
   .identicon.battery i.refill { animation: none; }
 }
 .bubble.writing {

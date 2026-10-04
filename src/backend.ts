@@ -381,6 +381,11 @@ function demoBackend(): Backend {
         }
         if (p.backend.kind === "agent") {
           emit( { type: "usage", id: p.id, input_tokens: 1840, output_tokens: 26 });
+          // Preview only: a message with "drain" in it leaves this bot at 5%
+          // context, so the critical battery can be seen.
+          const asked = room.transcript.filter((m) => m.speaker.kind === "human").at(-1)?.text ?? "";
+          const size = WINDOWS[p.backend.tool];
+          if (size && /\bdrain\b/i.test(asked)) contextUsed.set(`${id}:${p.id}`, Math.round(size * 0.95) - 2_400);
           reportContext(id, p, 2_400);
           if (p.backend.tool === "claude_code" || p.backend.tool === "codex") {
             planUsed[p.backend.tool] = Math.min(100, planUsed[p.backend.tool] + 1);

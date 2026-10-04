@@ -35,13 +35,14 @@ export function Avatar({ seed, color, size = "md", working = false, levels, refi
       {battery.map((cell, i) => {
         const refill = cell.on && refilling.some((side) => side === cell.side || cell.side === "both");
         const style: Record<string, string> = { "--a": `${Math.round(cell.alpha * 100)}%` };
-        if (cell.red) style["--c"] = "var(--danger)";
         if (refill) style.animationDelay = `${refillDelay(Math.floor(i / 5))}ms`;
         else if (cell.on && working) style.animationDelay = `${cell.wave * 80}ms`;
         const classes = [cell.on ? "on" : "", refill ? "refill" : ""].filter(Boolean).join(" ");
         // A new key restarts the refill each time it plays.
         return <i key={refill ? `r${i}-${refills?.context}-${refills?.plan}` : i} className={classes || undefined} style={style as CSSProperties} />;
       })}
+      {/* The word, so critical never relies on the outline alone. */}
+      {shell === "critical" && <b className="identicon-low">low</b>}
     </span>
   );
 }
