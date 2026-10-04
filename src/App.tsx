@@ -15,7 +15,7 @@ import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
-import { label, seenFlags, summarize, urgency, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
+import { label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
@@ -395,6 +395,10 @@ export function App() {
     if (kind && watched.current(paneId) && !(kind === "needs_input" && kindOf.current(paneId) === "terminal")) return;
     setAttention((all) => withPaneSignal(all, paneId, kind ? { kind, note, at: Date.now() } : null));
   }, []);
+
+  // A thread's open approval cards flag it until the last one is answered,
+  // whether or not it is being looked at. See approvals.ts.
+  const onApprovals = useCallback((paneId: string, signal: Signal | null) => setAttention((all) => withApprovals(all, paneId, signal)), []);
 
   // Looking at a pane settles its flag. A terminal that is still waiting on
   // an answer keeps its flag until something is typed into it, and a thread
@@ -788,7 +792,7 @@ export function App() {
                     <span className={`dot ${status}`} title={status} />
                     {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} /> : <span className="pane-title">{pane.title}</span>}
                     {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : status === "working" ? "Working" : status === "exited" ? "Exited" : "Idle"}</span>}
-                    {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
+                    {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
                       {maximized === pane.id ? "▣" : "□"}
@@ -815,7 +819,7 @@ export function App() {
                     {pane.kind === "terminal" ? (
                       <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} />
+                      <ChatPane onStatus={onThreadStatus} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}
                   </div>
                 </section>

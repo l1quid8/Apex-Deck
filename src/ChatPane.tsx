@@ -3,7 +3,7 @@ import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { composerCopy, joinNames, replyingVerb, threadStatusOf } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { findTrigger, insertAt } from "./composerMenu";
@@ -19,8 +19,9 @@ import { Avatar, type Refills } from "./Avatar";
 import { contextLevel, contextLine, isLow, percent, planLevel, planLine, type Levels } from "./battery";
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
-import { afterRound, type Attention } from "./attention";
+import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
+import { approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { describeRule } from "./allowedRules";
 import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { DiffPanel } from "./DiffPanel";
@@ -39,7 +40,6 @@ import type {
   Pane,
   ParticipantBackend,
   ParticipantConfig,
-  ProposedAction,
   RoomEvent,
   RoomOptions,
   TurnPolicy,
@@ -63,6 +63,8 @@ interface Props {
   onActivity: (paneId: string) => void;
   /** Raise or clear (with `null`) this chat's request for attention. */
   onSignal?: (paneId: string, kind: Attention | null, note?: string) => void;
+  /** Raise (with the flag) or clear (with `null`) this chat's blocking flag for its open approval cards. */
+  onApprovals?: (paneId: string, signal: Signal | null) => void;
   profiles: ParticipantConfig[];
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
@@ -319,7 +321,7 @@ const STARTERS = [
   { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
 ];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -350,8 +352,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   const plans = usePlans();
   /** The chip whose usage card is open. */
   const [card, setCard] = useState<string | null>(null);
-  /** What each bot has proposed and is waiting on a yes or no for. */
-  const [asks, setAsks] = useState<Record<string, { request: string; action: ProposedAction }[]>>({});
+  /** What each bot has proposed and is waiting on a yes or no for, from the app-wide store (approvals.ts). */
+  const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
+  const roomCards = openCards(pane.id, approvalState);
+  const asks = useMemo(() => cardsByBot(roomCards), [roomCards]);
   /** Files the bots have changed since this chat was opened. */
   const [changes, setChanges] = useState<MadeChange[]>([]);
   const showChanges = Boolean(details?.open && details.target === pane.id && !details.collapsed.changes);
@@ -430,6 +434,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   activity.current = onActivity;
   const signal = useRef(onSignal);
   signal.current = onSignal;
+  const approvals = useRef(onApprovals);
+  approvals.current = onApprovals;
   // What happened in the round of replies now running, to decide when it
   // ends whether the chat wants attention. See afterRound in attention.ts.
   const round = useRef<{ failed: string[]; lastReply: string | null; stopped: boolean }>({ failed: [], lastReply: null, stopped: false });
@@ -467,6 +473,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     if (profileMode) return;
     let alive = true;
     const nameOf = (id: string) => namesRef.current.get(id) ?? id;
+    /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
+    const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()));
     const unregister = registerRoom(pane.id, (event: RoomEvent) => {
       activity.current(pane.id);
       if (event.type === "tool_servers") { setServerErrors(errors => { const next = {...errors}; delete next[event.id]; return next; }); setServerLists(lists => ({...lists, [event.id]: event.servers})); return; }
@@ -497,7 +505,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         case "participant_idle":
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
-          setAsks(({ [event.id]: _done, ...rest }) => rest);
+          reportApprovals();
           turnQueue.idle(event.id);
           break;
         case "turn_started":
@@ -517,18 +525,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           });
           break;
         case "approval_requested":
-          setAsks((all) => ({ ...all, [event.id]: [...(all[event.id] ?? []), { request: event.request, action: event.action }] }));
-          // The turn is stuck until the person answers, wherever they are looking.
-          signal.current?.(pane.id, "needs_input", `${nameOf(event.id)} wants approval: ${event.action.title}`);
-          break;
         case "approval_resolved":
-          setAsks((all) => {
-            const left = (all[event.id] ?? []).filter((ask) => ask.request !== event.request);
-            const { [event.id]: _settled, ...others } = all;
-            const next = left.length > 0 ? { ...others, [event.id]: left } : others;
-            if (Object.keys(next).length === 0) signal.current?.(pane.id, null);
-            return next;
-          });
+          // The turn is stuck until the person answers, wherever they are
+          // looking, so the flag is blocking until the last card is answered.
+          reportApprovals();
           break;
         case "changed":
           setChanges((list) => [...list, { seq: list.length, by: event.id, change: event.change }]);
@@ -588,6 +588,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           notify("Stopped.");
           break;
         case "idle": {
+          reportApprovals();
           if (turnQueue.active) break;
           if (showChangesRef.current) refreshDiff.current();
           // A round the person stopped themselves needs no flag.
@@ -597,7 +598,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           setBusy(turnQueue.active);
           setDrafts({});
           setWorking({});
-          setAsks({});
           break;
         }
       }
@@ -621,6 +621,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
     return () => {
       alive = false;
       unregister();
+      forgetRoom(pane.id);
+      approvals.current?.(pane.id, null);
       backend.roomClose(pane.id).catch(() => {});
     };
     // The room lives as long as the pane.
@@ -1507,6 +1509,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
                   <ApprovalCard
                     key={ask.request}
                     action={ask.action}
+                    deadline={deadlineNote(ask.action.expires_at, now)}
                     onDecide={(approve, always) => {
                       backend.roomDecide(pane.id, ask.request, approve, always).catch((error) => notify(`Could not send your answer: ${String(error)}`, "error"));
                     }}

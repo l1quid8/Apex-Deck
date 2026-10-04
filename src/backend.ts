@@ -179,6 +179,8 @@ function demoBackend(): Backend {
   /** Proposals waiting for a yes or no, by request id. */
   const asks = new Map<string, (approve: boolean, always?: boolean) => void>();
   let askCount = 0;
+  /** Codex's hook denies a call nobody answered after this long (HELPER_DEADLINE in codex_hook.rs). */
+  const HOOK_DEADLINE_MS = 570_000;
 
   // Preview only: made-up meter readings so the identicon battery can be
   // seen. Claude Code agents start nearly out of context (18% left), Codex
@@ -266,30 +268,29 @@ function demoBackend(): Backend {
             await sleep(600); if (!active) return;
           }
           emit( { type: "delta", id: p.id, text: "\n\n" });
-          // Preview only: a bot set to ask first proposes one edit and one
-          // command, so the approval cards and changes list can be seen.
+          // Preview only: a bot set to ask first proposes an edit, then a
+          // command and an MCP tool call together (as a model calling two
+          // tools at once does), then a tool's own permission question, so
+          // the approval cards, the attention list and the changes list can
+          // be seen. Like Codex's hook, the tool call is denied by itself if
+          // nobody answers within 570 seconds.
           if (p.access === "ask") {
-            const proposals: { action: ProposedAction; change?: FileChange }[] = [
-              {
-                action: { kind: "edit", title: "Edit README.md", detail: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n" },
-                change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
-              },
-              { action: { kind: "command", title: "Run a command", detail: "npm run build" } },
-              { action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl" } },
-            ];
-            for (const { action, change } of proposals) {
+            const ask = async ({ action: proposed, change }: { action: ProposedAction; change?: FileChange }) => {
+              const action = proposed.kind === "tool" ? { ...proposed, expires_at: Date.now() + HOOK_DEADLINE_MS } : proposed;
               const room = rooms.get(id);
               const rule = ruleFor(p.id, action);
               if (room?.allowed?.some(r => sameRule(r, rule))) {
                 emit( { type: "activity", id: p.id, text: `Always allowed: ${action.title}` });
                 if (change) emit( { type: "changed", id: p.id, change });
-                continue;
+                return;
               }
               const request = `ask-${++askCount}`;
               emit( { type: "activity", id: p.id, text: `Waiting for approval: ${action.title}` });
               emit( { type: "approval_requested", id: p.id, request, action });
               askOwners.set(request, key);
+              const expiry = action.expires_at ? setTimeout(() => asks.get(request)?.(false), action.expires_at - Date.now()) : undefined;
               const [approved, always] = await new Promise<[boolean, boolean]>((answer) => asks.set(request, (yes, forever = false) => answer([yes, forever])));
+              clearTimeout(expiry);
               asks.delete(request); askOwners.delete(request);
               emit( { type: "approval_resolved", id: p.id, request, approved });
               if (approved && always && room) {
@@ -298,6 +299,20 @@ function demoBackend(): Backend {
                 emit( { type: "allowed_changed", allowed: room.allowed });
               }
               if (approved && change) emit( { type: "changed", id: p.id, change });
+            };
+            const steps: { action: ProposedAction; change?: FileChange }[][] = [
+              [{
+                action: { kind: "edit", title: "Edit README.md", detail: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n" },
+                change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
+              }],
+              [
+                { action: { kind: "command", title: "Run a command", detail: "npm test -- --run auth" } },
+                { action: { kind: "tool", title: "x-mcp: post_tweet", detail: "{\n  \"text\": \"Apex Deck preview\"\n}" } },
+              ],
+              [{ action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl" } }],
+            ];
+            for (const step of steps) {
+              await Promise.all(step.map(ask));
               await sleep(300); if (!active) return;
             }
           }

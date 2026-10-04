@@ -26,6 +26,8 @@ export function Diff({ text }: { text: string }) {
 
 interface CardProps {
   action: ProposedAction;
+  /** "Denied automatically in 6m" for a call Codex's hook will deny; null for everything else. */
+  deadline?: string | null;
   /** Called once with the person's answer. `always` stops the same thing being asked again. */
   onDecide: (approve: boolean, always: boolean) => void;
 }
@@ -34,7 +36,7 @@ interface CardProps {
  * Something a bot wants to do, with the whole of it on show and a yes or
  * no to give. The bot's turn waits until one is chosen.
  */
-export function ApprovalCard({ action, onDecide }: CardProps) {
+export function ApprovalCard({ action, deadline = null, onDecide }: CardProps) {
   const [answered, setAnswered] = useState<Answer | null>(null);
   const decide = (answer: Answer) => {
     if (answered !== null) return;
@@ -56,6 +58,7 @@ export function ApprovalCard({ action, onDecide }: CardProps) {
           </button>
         ))}
         <span className="approval-note">Nothing happens until you choose.</span>
+        {deadline && <span className="approval-deadline">{deadline}</span>}
       </div>
     </div>
   );

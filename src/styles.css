@@ -1471,6 +1471,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .approval-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px 12px;
 }
@@ -1482,6 +1483,11 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   margin-left: auto;
   color: var(--muted);
   font-size: 12px;
+}
+.approval-deadline {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 .working-line.asking {
   color: var(--warn);
