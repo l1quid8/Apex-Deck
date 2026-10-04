@@ -1,6 +1,6 @@
 # `!server`: name a tool server in a message
 
-Written 2026-10-03 by Jigga for Null to build on `feat/thread-commands`. Builds on `2026-10-03-mcp-safety.md` (listing, per-turn enforcement, approvals). Pinned rule still applies: servers off by default, trading and publishing tools ask even with Full access.
+Written 2026-10-03 by Jigga for Null. **Active (rewritten 2026-10-03).** An earlier version was parked by mistake when the human chose servers-on-by-default; the human did want `!` with autocomplete. Servers stay on, so `!` no longer loads or unloads anything. It's a shortcut that names a server and tells the model to use it.
 
 ## What the human types
 
@@ -10,71 +10,71 @@ Written 2026-10-03 by Jigga for Null to build on `feat/thread-commands`. Builds 
 @all !x-mcp !hyper_mcp compare notes
 ```
 
-- `@` picks **who** answers (unchanged). `!` picks **which tool servers that turn loads**. The model still decides which tools to call.
-- A `!name` loads that server **for the turn this message starts, and only that turn**. The next message without `!` loads nothing again (unless the thread sidebar has the server switched on, MCP plan commit 3).
-- This is how off-by-default stays usable: you don't have to open the sidebar to use a server once.
+- `@` picks **who** answers (unchanged). `!` names **which tool server to use**. The model still decides which tools to call.
+- Every server stays loaded on every turn (human decision 4). `!` doesn't change what's loaded.
+- Deck adds one line to that turn's prompt: `The human asked you to use these tool servers: x-mcp.` The `!name` text also stays in the message.
+
+## Autocomplete (the main deliverable)
+
+- Typing `!` at the start of the text or after whitespace opens the composer menu (`src/composerMenu.ts`, same trigger and keyboard handling as `@`).
+- The menu lists the servers of the target agent(s): the @mentioned ones, or the last-addressed one when there's no @mention. Each row shows the server name and the agent badge. Filter by typed prefix using the normalised match below.
+- Selecting a row inserts `!name ` (the agent's own spelling, e.g. `!x-mcp`, `!Hyper MCP` → insert `!hyper-mcp`, i.e. lowercase with spaces as `-`).
+- If the list hasn't loaded yet, the menu shows `Loading Null's tool servers…`; if it failed, `Couldn't list Null's tool servers`.
+- Footer hint: `@ who answers · ! which tools`.
+- In sent messages, `!name` renders as a small chip like mentions (`RichText.tsx`).
+
+## Where the server list comes from
+
+- **Codex:** `codex_policy` (`crates/apex-adapters/src/mcp.rs`) already reads the server inventory for approvals. Expose the same inventory (names only).
+- **Claude:** server names from the init event (`mcp_servers`) of the agent's latest turn; cache per agent. Before any turn has run, launch nothing extra: show `Send a message to Claude once to load its tool servers` in the menu. (If Claude has a cheap list command that matches what Deck loads, use it instead; check first.)
+- New Tauri command `list_tool_servers(agent_id) -> Vec<String>`, cached per agent, refreshed after each turn. Browser-preview mock returns a fixed list (`x-mcp`, `hyperliquid`, `computer-use`).
+- Never read config files or tokens (MCP plan rule).
 
 ## Parsing rules
 
-- `!` counts only at the start of the text or after whitespace, followed by a name (`[A-Za-z0-9._-]+`). So `wow!`, `!=`, `![img](…)` and `!!` are not server requests.
-- Ignored inside inline code and fenced code blocks (same rule should apply to `@` mentions; add the same test there).
-- Matching is case-insensitive and ignores `-`, `_`, `.` and spaces on both sides, so `!hyper_mcp`, `!hypermcp` and `!Hyper-MCP` all match Claude's `Hyper MCP`, and `!computeruse` matches `computer-use`.
-- Names are matched **per target agent**, against that agent's own server list. Claude calls it `Hyper MCP`, Codex calls it `hyperliquid`; each is matched separately.
+- `!` counts only at the start of the text or after whitespace, followed by a name (`[A-Za-z0-9._-]+`). `wow!`, `!=`, `![img](…)` and `!!` are not server requests.
+- Ignored inside inline code and fenced code blocks.
+- Matching is case-insensitive and ignores `-`, `_`, `.` and spaces, so `!hyper_mcp`, `!hypermcp` and `!Hyper-MCP` all match `Hyper MCP`, and `!computeruse` matches `computer-use`.
+- Matched per target agent against that agent's own list (Claude `Hyper MCP`, Codex `hyperliquid`).
 - `\!name` is literal text.
-- The `!name` text stays in the message the model sees, and Deck adds one line to that turn's prompt: `The human asked you to use these tool servers: x-mcp.`
 
 ## When a name doesn't match
 
-- **No target agent has it:** the composer doesn't send. It underlines the name and shows `No tool server called "x-mpc" for Null`. The human fixes it or escapes it with `\!`. A typo must never silently run the turn without the tool, or with a different one.
-- **Some targets have it, some don't** (`@all !x-mcp`): send. Agents without it run normally, and their turn gets the prompt line `x-mcp isn't available to you in Deck`.
-- **Server list can't be fetched** (MCP plan rule 2, fail closed): the composer says `Couldn't list Null's tool servers` and doesn't send a message containing `!`.
+- **No target agent has it** (`!x-mpc`): the composer doesn't send, underlines the name and shows `No tool server called "x-mpc" for Null`. Escape with `\!`.
+- **Some targets have it** (`@all !x-mcp`): send; agents without it get the prompt line `x-mcp isn't available to you in Deck`.
+- **List unavailable:** send anyway (servers are on, nothing is loaded by `!`), no underline, and the prompt line still names the server. Don't block the human on a listing failure.
 
-## Safety (nothing here bypasses the MCP plan)
+## Safety
 
-- `!` only adds servers to the turn's enabled set: `turn servers = thread servers ∪ !servers`. Enforcement is the MCP plan's per-turn mechanism (Claude `--disallowedTools mcp__<other>` + `ask` rules; Codex `-c mcp_servers.<other>.enabled=false`).
-- **Until approval cards exist (MCP plan commit 4), `!` servers are read-only.** Tools whose names hit the MCP plan's rule 4 list (`order`, `trade`, `cancel`, `post`, `publish`, `send`, `delete`, `leverage`, …) are removed for the turn, not allowed (rule 5). This turns the human's "don't trigger any write tools" from a request to the model into something Deck enforces.
-  - Claude: tool names come from the init event cache, so this is `--disallowedTools mcp__<server>__<tool>` per matching tool.
-  - Codex: needs the tool names per server. **Check X4** (before building): does `codex mcp` or the app server expose a server's tool list? If not, use `enabled_tools` per server with an allowlist built from the first turn's tool list, or keep the whole server off until approvals land.
-- After commit 4, those tools stop being removed and instead ask every time, with no "Always allow".
-- Queued messages keep their own `!` set. Steering a running turn with a `!` message doesn't add servers mid-turn; the composer says `!x-mcp applies from Null's next turn`.
-
-## UI
-
-- Typing `!` opens the composer menu (`src/composerMenu.ts`, same trigger pattern as `@`): server names for the target agent(s), each with its agent badge and status (`connected`, `needs login`). Selecting one inserts `!name `.
-- In sent messages, `!name` renders as a small chip, like mentions (`RichText.tsx`).
-- While a turn runs, the participant chip shows the loaded servers on hover: `Null · x-mcp, hyperliquid`.
-- Hint text in the composer menu footer: `@ who answers · ! which tools`.
-
-## Data
-
-- `Message` gets `#[serde(default)] servers: Vec<String>`: the resolved server names, per target, stored so retry, `/fork` and `/export` reproduce the same turn. Export lists names only.
+- Nothing changes: `!` doesn't load, enable or allow anything. Trading/publishing tools still go through the approval cards on `feat/mcp-tool-approvals`, every call, even at Full access.
+- During development and testing, don't call MCP/plugin write tools (human instruction).
 
 ## Code
 
-- `crates/apex-core/src/server_request.rs`: `parse_server_requests(text) -> Vec<String>` (raw names) and `resolve(names, known: &[String]) -> Resolved { matched, unknown }`. Pure, no I/O. Mirrors `mention.rs`.
-- Frontend `src/serverRequests.ts`: the same parse for the menu and the unknown-name check. The Rust side is authoritative on send.
-- Turn builder (`src-tauri/src/lib.rs`, the per-turn launch path from per-participant turns stage 1) passes the resolved set to the MCP enforcement arguments.
+- `crates/apex-core/src/server_request.rs`: `parse_server_requests(text) -> Vec<String>` and `resolve(names, known) -> Resolved { matched, unknown }`. Pure. Mirrors `mention.rs`.
+- `src/serverRequests.ts`: same parse for the menu and the unknown-name check. Rust is authoritative on send.
+- Turn builder in `src-tauri/src/lib.rs` adds the prompt line.
 
 ## Commits (tests pass after each)
 
-Depends on MCP plan commits 2 (listing) and 3 (per-turn enforcement). Do those first; they're needed anyway.
+1. **Parser** (`server_request.rs`, `serverRequests.ts`) + tests: start/whitespace rule, code spans, `wow!`, `![img]`, `\!`, normalisation, duplicates.
+2. **Server list:** `list_tool_servers` for Codex and Claude, cache, mock backend.
+3. **Composer:** `!` menu with autocomplete, unknown-name block, chips, footer hint. Tests in the style of `tests/composer-menu.test.mjs`.
+4. **Turn wiring:** prompt line, `Message.servers` (`#[serde(default)]`) so retry, `/fork` and `/export` keep it.
 
-1. **Parser:** `server_request.rs` + tests (start/whitespace rule, code spans, `wow!`, `![img]`, `\!`, normalisation, per-agent matching, duplicates). No behaviour change.
-2. **Turn wiring:** resolve on send, store `servers` on the message, union with thread servers, read-only removal of rule-4 tools, the prompt line. Tests for the argument sets per CLI and for fail-closed paths.
-3. **Composer:** `!` menu, unknown-name block, chips, hover list, browser-preview mock backend.
-4. **After MCP approvals:** swap "removed" for "always asks" on rule-4 tools.
+Commits 1 and 3 can ship first with the mock list if 2 needs more digging, so the human sees autocomplete in the browser preview quickly.
 
 ## Done when (desktop app, real CLIs)
 
-- `@null !x-mcp read my posts` works; the next message without `!` has no x-mcp tools (ask Null to list its MCP tools: none).
-- `!hyper_mcp balance` on Claude: read tools work, `place_order` isn't in the tool list.
-- `!x-mpc` (typo) doesn't send.
-- `wow! that's great` sends normally with no server loaded.
+- Typing `@null !x` shows `x-mcp` (and other `x…` servers); Enter inserts `!x-mcp `.
+- `@null !x-mcp read my posts` works and the prompt line names x-mcp.
+- `!x-mpc` (typo) doesn't send and is underlined.
+- `wow! that's great` sends normally with no menu and no chip.
 
 ## Human decisions (2026-10-03)
 
-1. Yes: a turn without `!` should load no tool servers.
-2. No: do not implement the proposed temporary removal of write/trading/publishing tools. Keep the approval requirement for trading/publishing from the pinned MCP plan; implement approval support before exposing these tools through `!` rather than adding a temporary read-only phase.
-3. Finish the earlier per-participant turns plan first, in FIFO order. MCP listing/switching and `!` remain later work.
-
-These decisions supersede the temporary read-only staging described above. They do not authorize calling MCP/plugin write tools during development or testing.
+1. ~~A turn without `!` loads no servers.~~ Superseded by 4.
+2. No temporary read-only filter; trading/publishing tools ask via approval cards.
+3. Finish per-participant turns first (done).
+4. Servers stay **on** by default.
+5. `!` autocomplete is wanted ("That's what I asked!"). Not parked.

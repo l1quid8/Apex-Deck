@@ -1,6 +1,6 @@
-# `/mcp`: servers off by default, approval for money and publishing
+# `/mcp`: servers on by default, approval for money and publishing
 
-Written 2026-10-03 by Jigga for Null to build on `feat/thread-commands`, after the per-participant turns work. Standing rule from the pinned facts: servers are off by default per thread, and trading or publishing tools always ask, even with Full access.
+Written 2026-10-03 by Jigga for Null to build on `feat/thread-commands`, after the per-participant turns work. Human decision (2026-10-03, supersedes the earlier off-by-default rule): **servers stay on by default.** Trading and publishing tools always ask, even with Full access.
 
 ## Why it matters now
 
@@ -23,9 +23,9 @@ Every agent Deck starts today loads every MCP server its CLI knows about. Nothin
 
 ## Rules
 
-1. **Off by default.** A new thread starts with no MCP servers for any agent. The human switches servers on per agent, per thread.
+1. **On by default.** A new thread loads every server the agent's CLI has enabled. The human can switch servers off per agent, per thread.
 2. **Fail closed.** If Deck can't tell which servers exist (listing fails or times out), the agent runs with **no** MCP servers. It never falls back to "everything".
-3. **Every enabled server asks before each tool call**, at every access level, Full included. The human can mark a single tool as trusted for this thread ("Always allow in this thread").
+3. **Read tools run without asking; risky tools ask.** Tools matching rule 4 ask before every call, at every access level, Full included. Other tools run normally. (Changed from "every tool asks" because servers are now on by default; asking on every read would make them unusable.)
 4. **Some tools can never be trusted.** If a tool name contains `order`, `trade`, `buy`, `sell`, `swap`, `transfer`, `withdraw`, `deposit`, `leverage`, `cancel`, `post`, `tweet`, `publish`, `send`, `reply`, `delete` or `exercise`, it asks every time and the "Always allow" option isn't shown. Better to over-match: a read tool that matches by accident just asks.
 5. **If a CLI can't ask, the tool is removed rather than allowed.** For example, if Codex `exec` can't prompt for MCP calls, the gated tools are disabled for that turn and the agent is told they're unavailable.
 6. **Deck never reads secrets.** It doesn't open `~/.codex/config.toml`, `~/.claude.json`, `.mcp.json` or any token store, and it doesn't pass server definitions through. From the CLI listings it keeps only the server name, enabled flag and status. It drops `transport`, which can contain env names, URLs and headers.
@@ -65,14 +65,14 @@ Out of scope. Gemini agents always get no MCP servers (check G1 for the flag). T
 
 ## Data
 
-On `SavedRoom` (`src-tauri/src/storage.rs`), per participant, with defaults so old rooms load as "nothing enabled":
+On `SavedRoom` (`src-tauri/src/storage.rs`), per participant, with defaults so old rooms load as "everything the CLI enables":
 
 ```rust
 #[serde(default)]
 pub mcp: HashMap<ParticipantId, McpChoice>,
 
 #[derive(Default, Serialize, Deserialize)]
-pub struct McpChoice { pub enabled: Vec<String>, pub trusted_tools: Vec<String> }
+pub struct McpChoice { pub disabled: Vec<String> }
 ```
 
 - `/fork` copies the MCP choice. `/export` lists the enabled server names only.
@@ -136,3 +136,18 @@ Validation: 182 Rust tests passed serially; 78 frontend tests passed; frontend b
 ## User override: installed integrations enabled
 
 The human explicitly requested restoring installed MCPs and plugins for Deck launches. Removed the temporary MCP-off discovery and launch overrides for Codex, Claude, and Gemini. This restores each CLI's configured integrations; it does not force-enable integrations disabled in the CLI library. During this task, do not invoke MCP/plugin write tools. Per-thread MCP controls and mandatory trading/publishing approval remain future work, not enforced by this launch change. No commit, push, merge, or production restart is authorized.
+
+## Approval implementation checkpoint — Null, 2026-10-03
+
+Human's next step implemented on `feat/mcp-tool-approvals`, committed in `8011fee`. Integrations remain on by default. Scope is risky-tool approvals; sidebar switches and `!` syntax are not part of this step.
+
+- Claude uses a two-way stream at every access level, with `permissions.ask: ["mcp__*"]`. The host releases ordinary reads and presents risky names on the existing approval card. User deny settings remain ahead of ask rules.
+- Codex inventories server tools through `mcpServerStatus/list` before starting the model, including plugin and app identities. Only approval overrides are retained; transport definitions, config files and tokens are not read. All catalog tools prompt at the CLI boundary; Deck releases ordinary reads and asks for risky names.
+- Codex non-Ask access uses granular policy with MCP elicitation enabled and local sandbox escalation disabled. Live probe showed `approvalPolicy: never` bypasses MCP prompting even with explicit `prompt`, so it cannot enforce this feature.
+- Codex MCP approvals arrive as `mcpServer/elicitation/request`, with `_meta.codex_approval_kind=mcp_tool_call` and `tool_params`. They bind to the exact pending call and arguments; unrelated or ambiguous requests decline. Responses contain no persistent/session trust option.
+- `ActionKind::Tool` uses the existing Approve/Reject card, with full JSON arguments. Targeted Stop retains the existing approval-desk rejection and participant-idle card cleanup.
+- Fail closed: Codex refuses a turn if app-server setup or tool discovery fails. An unreachable/auth-failing server's incomplete catalog currently refuses the whole Codex turn. No unprotected exec fallback.
+- Ruling: flattened Codex approval-key overrides preserve transport settings. App tool policies use a tools table with literal qualified names (for example `github.fetch_pr_patch`), since dotted override keys would address a different tool. Names in override path segments containing dots are refused rather than misaddressed.
+- Live harmless tests: Claude Full `can_use_tool` rejection; Claude synthetic deny settings still remove the test tool; Codex Full local read approval rejection, including overriding a previous `approve` default; Codex GitHub `fetch_pr_patch` read approval rejection; Codex plugin-scoped approval rejection before execution. Claude local `search_products` returned `LOCAL_TEST_OK` after one approval and asked again on the second call, which was rejected. No trading/publishing tools ran.
+
+Verification: 195 Rust tests passed serially; 82 frontend tests passed; frontend build passed with the existing chunk-size warning. Self-review performed; the fresh-review agent could not start because the collaboration runtime could not load this thread. Live desktop-card testing remains pending. Nothing committed, pushed, merged, or restarted.
