@@ -725,6 +725,42 @@ fn settings_save(store: State<'_, Store>, settings: serde_json::Value) -> Result
 }
 
 #[tauri::command]
+fn artifacts_load(store: State<'_, Store>, room: String) -> Result<Option<serde_json::Value>, String> {
+    store.artifacts(&room)
+}
+
+#[tauri::command]
+fn artifacts_save(store: State<'_, Store>, room: String, artifacts: serde_json::Value) -> Result<(), String> {
+    store.save_artifacts(&room, &artifacts)
+}
+
+/// Write an artifact out of the app: to the path chosen in the save dialog,
+/// or, with none, to the exports folder, for opening in its default app.
+/// Returns where it went.
+#[tauri::command]
+fn artifact_export(store: State<'_, Store>, name: String, contents: String, path: Option<String>) -> Result<String, String> {
+    let target = match path {
+        Some(path) => std::path::PathBuf::from(path),
+        None => store.folder().join("exports").join(safe_name(&name)?),
+    };
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Could not save it: {e}"))?;
+    }
+    std::fs::write(&target, contents).map_err(|e| format!("Could not save it: {e}"))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+/// A file name with only letters, digits, dots, dashes and underscores, never starting with a dot.
+fn safe_name(name: &str) -> Result<String, String> {
+    let kept: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).collect();
+    let clean = kept.trim_start_matches('.');
+    if clean.is_empty() {
+        return Err("That file name can't be used.".into());
+    }
+    Ok(clean.to_string())
+}
+
+#[tauri::command]
 fn data_folder(store: State<'_, Store>) -> String {
     store.folder().to_string_lossy().into_owned()
 }
@@ -900,6 +936,9 @@ pub fn run() {
             session_save,
             settings_load,
             settings_save,
+            artifacts_load,
+            artifacts_save,
+            artifact_export,
             preview_probe,
             data_folder,
             env_present,
@@ -968,6 +1007,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn export_names_keep_only_safe_characters() {
+        assert_eq!(safe_name("welcome-email-v3.html").unwrap(), "welcome-email-v3.html");
+        assert_eq!(safe_name("../../etc/passwd").unwrap(), "etcpasswd");
+        assert_eq!(safe_name(".hidden").unwrap(), "hidden");
+        assert!(safe_name("..").is_err());
+        assert!(safe_name("✓").is_err());
+    }
+
     #[test]
     fn token_totals_are_saved_as_each_turn_reports_them() {
         let (handle, store, path) = checkpoint_fixture("usage");
