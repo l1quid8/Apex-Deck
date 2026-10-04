@@ -171,6 +171,8 @@ export interface Pane {
   agent?: string;
   /** A thread taken off the deck. It stays saved and listed in the rail. */
   closed?: boolean;
+  /** A sample thread: its room starts with scripted bots. */
+  sample?: boolean;
 }
 
 export interface Workspace {

@@ -52,6 +52,10 @@ interface Props {
   focused: boolean;
   /** The workspace's name, for the details sidebar heading. */
   workspaceName?: string;
+  /** What the pane head says about this thread, such as "2 bots · replying". */
+  onStatus?: (paneId: string, text: string) => void;
+  /** Agents only: bumped to open the new agent form. */
+  addRequest?: number;
   onActivity: (paneId: string) => void;
   /** Raise or clear (with `null`) this chat's request for attention. */
   onSignal?: (paneId: string, kind: Attention | null, note?: string) => void;
@@ -296,7 +300,22 @@ function describe(config: ParticipantConfig): string {
   return "Scripted";
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
+/** The two scripted bots of the sample thread. */
+const SAMPLE_BOTS: ParticipantConfig[] = [
+  { id: "ada", display_name: "Ada", persona: "", access: "read", effort: null, appearance: { seed: "sample-ada", color: "#a78bfa" },
+    backend: { kind: "scripted", lines: ["Hi, I'm Ada. Mention me with @ada, or everyone with @all.", "Ben sees everything I say, and I see what he says.", "[pass]"] } },
+  { id: "ben", display_name: "Ben", persona: "", access: "read", effort: null, appearance: { seed: "sample-ben", color: "#60a5fa" },
+    backend: { kind: "scripted", lines: ["I'm Ben. I answer when you @ben me. Try @all to hear from both of us.", "Add a real model with + Add model when you're ready.", "[pass]"] } },
+];
+
+/** Starter roles offered in an empty Agents section. */
+const STARTERS = [
+  { name: "Reviewer", note: "Reads the change and flags bugs.", persona: "You are the reviewer. Read the change, look for bugs and risky edge cases, and be brief.", access: "read" as Access },
+  { name: "Planner", note: "Breaks the work into steps.", persona: "You are the planner. Break the request into small, ordered steps and name the files each one touches.", access: "read" as Access },
+  { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
+];
+
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, agents, backend, focused, onActivity, onSignal, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -571,7 +590,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", agents, backend, focus
       }
     });
     backend
-      .roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 3 }, cwd)
+      .roomCreate(pane.id, pane.sample ? SAMPLE_BOTS : [], { policy: "mention", max_bot_hops: 3 }, cwd)
       .then((saved) => {
         if (!alive) return;
         setChanges((saved.changes ?? []).map((c) => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
@@ -897,6 +916,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", agents, backend, focus
       return { ...d, model, effort: known && !known.includes(d.effort) ? "" : d.effort };
     });
 
+  // The pane head shows the number of bots, and whether any is replying.
+  const statusText = profileMode ? "" : `${participants.length === 0 ? "No bots yet" : participants.length === 1 ? "1 bot" : `${participants.length} bots`}${Object.keys(working).length > 0 ? " · replying" : ""}`;
+  useEffect(() => { if (!profileMode) onStatus?.(pane.id, statusText); }, [statusText]);
+  // The title bar's + New agent opens the form here.
+  useEffect(() => { if (profileMode && addRequest) openNewForm(); }, [addRequest]);
+
   // In the quick add menu the name follows the model until the person types one.
   useEffect(() => {
     if (!quickAdd || nameTouched.current) return;
@@ -955,14 +980,30 @@ export function ChatPane({ pane, cwd, workspaceName = "", agents, backend, focus
     ? "Enforced with the tool's own permission settings."
     : "Stated to the model as an instruction. Not enforced.";
 
+  /** Open the full form for a new bot or agent. */
+  function openNewForm() {
+    details?.show("form");
+    if (preset.api?.autoLoad && apiModels.length === 0) loadModels(draft.baseUrl, draft.keyEnv);
+    if (!providerEnabled(draft.preset, disabledProviders)) setDraft(emptyDraft(firstPreset));
+    setEditing(null);
+    setAdding(true);
+  }
+  /** Save a starter role as an agent, on the first coding agent that is installed. */
+  const addStarter = (starter: typeof STARTERS[number]) => {
+    const start = PRESETS.find((p) => p.key === firstPreset)!;
+    const name = uniqueName(starter.name, participants.map((p) => p.id), slug);
+    const built = draftToConfig({ ...emptyDraft(firstPreset), name, persona: starter.persona, access: starter.access === "ask" && !start.agent?.enforcesAccess ? "read" : starter.access });
+    if (typeof built === "string") return notify(built, "error");
+    const config = { ...built, appearance: createAppearance(participants.map((p) => appearance(p.id))) };
+    const next = [...participants, config];
+    setParticipants(next);
+    onProfilesChange(next);
+  };
   const addButton = (<button
             className="ghost"
             onClick={() => {
-              details?.show("form");
               if (adding) return closeForm(draft.preset);
-              if (preset.api?.autoLoad && apiModels.length === 0) loadModels(draft.baseUrl, draft.keyEnv);
-              if (!providerEnabled(draft.preset, disabledProviders)) setDraft(emptyDraft(firstPreset));
-              setAdding(true);
+              openNewForm();
             }}
             disabled={!ready || availablePresets.length === 0}
           >
@@ -1287,7 +1328,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", agents, backend, focus
             </span>
             );
           })}
-          {profileMode && addButton}
+          {/* An empty library offers its own button inside the starter card. */}
+          {profileMode && (participants.length > 0 || adding) && addButton}
         </div>
 
 
@@ -1300,7 +1342,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", agents, backend, focus
       {profileMode && modelForm}
 
       {profileMode && <div className="agent-library">
-        {participants.length === 0 && !adding && <div className="empty"><h3>Create your first agent</h3><p>Save a bot profile here, then add it to a conversation in Threads.</p></div>}
+        {participants.length === 0 && !adding && <div className="empty agents-empty">
+          <h3>Create your first agent</h3>
+          <p>Start from a role and change anything later, or build one from scratch.</p>
+          <div className="starters">
+            {STARTERS.map((starter) => <button key={starter.name} disabled={availablePresets.length === 0} onClick={() => addStarter(starter)}>
+              <strong>{starter.name}</strong><span>{starter.note} {starter.access === "ask" ? "Asks first." : "Read only."}</span>
+            </button>)}
+          </div>
+          <div className="starters-foot">
+            <span className="muted">Or save a bot from a thread with Save to Agents.</span>
+            <button className="primary" onClick={openNewForm} disabled={availablePresets.length === 0}>+ New agent</button>
+          </div>
+        </div>}
         {participants.map((p) => <article className="agent-card" key={p.id}>
           <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="lg" />
           <div className="agent-card-copy"><h2>{p.display_name}</h2><p className="muted">{describe(p)}</p><p>{p.persona || "No brief added yet."}</p><span className="hint">@{p.id} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>

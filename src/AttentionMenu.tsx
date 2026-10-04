@@ -84,6 +84,7 @@ export function AttentionMenu({ items, onOpen }: Props) {
               </span>
             </button>
           ))}
+          <div className="attention-foot"><span>Most urgent first</span><span><kbd>{/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘J" : "Ctrl+Shift+J"}</kbd> next</span></div>
         </div>
       )}
     </div>

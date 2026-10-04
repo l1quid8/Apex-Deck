@@ -18,7 +18,9 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | Layout presets (even grid, large pane on top or left), maximize and restore, close | done |
 | Status dot per pane: working (recent output), idle, exited | done |
 | Drag the line between panes to resize; drag a pane by its title bar to move or swap it | done (thread layouts are saved; terminals are not restored, so neither is their layout) |
-| Tabs within a workspace; keyboard control of the layout | later |
+| Keyboard shortcuts for sections, new panes, the next alert, moving between panes and maximizing | done (⌘W is left to the macOS window menu) |
+| Close a thread without deleting it; confirmed delete with undo; confirm before closing a busy terminal | done |
+| Tabs within a workspace | later |
 | Restore open panes after restart | later |
 | One git worktree per agent pane so agents do not collide | later |
 
