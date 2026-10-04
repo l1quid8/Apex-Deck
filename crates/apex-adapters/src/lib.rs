@@ -12,6 +12,7 @@ mod catalog;
 mod claude_session;
 mod cli;
 mod codex_server;
+mod codex_hook;
 mod events;
 mod mcp;
 mod openai;
@@ -24,6 +25,8 @@ use apex_core::testing::ScriptedParticipant;
 use apex_core::{AgentTool, Backend, Participant, ParticipantConfig, PlanUsage};
 
 pub use catalog::{codex_models_from_cache, installed_models};
+pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_ARG as CODEX_HOOK_ARG};
+
 pub use cli::CliParticipant;
 pub use openai::{list_models, OpenAiCompatParticipant};
 pub use presets::{agent_command, allow_reading};
