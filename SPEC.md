@@ -55,10 +55,12 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | A reply in progress is shown as a draft with its steps, a thinking, working or writing status and elapsed time, so it is not mistaken for the final message | done |
 | Persona and access level per participant | done (access is enforced for Claude Code and Codex, advisory otherwise) |
 | "Ask first" access: a bot proposes each edit and command, and waits for Approve or Reject in the chat | done for Claude Code (checked against the real tool) and Codex (checked against its message format and a stand-in server only) |
+| Always allow: a rule saved with the thread; the card says what it covers, thread details shows when it was given, Remove takes it back | done (a later match is a plain yes; Codex is told to remember it for its session only) |
 | Changes in thread details: workspace diff with added and removed lines, grouped by reported editor | done (thread baseline and edit records saved) |
+| Ask for review: attach the thread's change as a patch for a bot, with a request in the composer | done (never sends; one file per patch over 2,000 lines) |
 | Anthropic-format API adapter | next |
 | Saved bots (reuse a participant across chats) | done (Agents profiles, with saved appearance) |
-| Per-participant token meter | done for Claude Code, Codex and API models (totals since the app opened; not saved) |
+| Per-participant token meter | done for Claude Code, Codex and API models (totals for each thread, saved with it; /clear keeps them, a fork starts at zero) |
 | Session resume for command-line tools (send only unseen messages) | next (the room already tracks unseen messages) |
 | Moderator policy: a cheap model picks who answers | later |
 | Shared summary when the transcript gets long | done (`/compact`, persisted summary) |
@@ -69,7 +71,7 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | Try again after a failure; Let them answer after the round limit (room_turn with a hop budget) | done |
 | Quotes follow your own @mention; Send to ▾; Copy and Quote on every message | done |
 | Queue added context or steer to another model | done (editable in-memory queue; Steer interrupts and starts a new turn, `@handle` selects the recipient) |
-| Context and provider plan avatar meters | implemented (preview and real Codex desktop readings checked; successful Claude context check blocked by session quota) |
+| Context and provider plan avatar meters | implemented (preview and real Codex desktop readings checked; successful Claude context check blocked by session quota); low readings get an outline and the word "low", never the Failed red |
 
 **Access levels.** Read only, Ask first, Can edit files, Full access. Claude
 Code and Codex participants get the tool's own permission settings, so the
@@ -86,6 +88,11 @@ app server sends `requestApproval` requests, answered accept or decline.
 Waiting does not count against the turn's time limit. Stop and closing the
 chat reject everything that is waiting. Code: `crates/apex-core/src/approval.rs`,
 `crates/apex-adapters/src/claude_session.rs`, `codex_server.rs`.
+Always allow saves an `AllowedRule` (with the date and whether the card was
+risky) on the room snapshot. A later match is answered as a plain yes, and
+Codex is sent `persist: "session"` at most, so removing the rule in thread
+details takes it back. A Codex command rule matches the command alone, not
+the reason Codex gives for it.
 
 ## 3. Status board
 

@@ -100,10 +100,20 @@ edges.
   limit you set, and there is a stop button.
 - **Approvals.** Set a Claude Code or Codex participant to "Ask first" and
   it stops before every file edit and every command. The chat shows what it
-  wants to do, with the change drawn as added and removed lines, and an
-  Approve and a Reject button. Nothing happens until you choose, the pane is
-  flagged as waiting on you, and the time you take does not count against
-  the reply's time limit. Stop rejects whatever is waiting.
+  wants to do, with the change drawn as added and removed lines, and **Allow
+  once**, **Always allow** and **Deny**. Nothing happens until you choose, the
+  pane is flagged as waiting on you, and the time you take does not count
+  against the reply's time limit. Stop rejects whatever is waiting.
+- **Always allow.** It saves a rule with the thread, so that bot may do the
+  same thing again in this thread without a card: a tool with any arguments,
+  that exact command, edits with the same title (one file, or any edit of the
+  same number of files), or the same permission question. The card says what
+  the rule would cover before you choose: always on cards that can spend money
+  or publish, and while Always allow is hovered or focused on the others.
+  Thread details lists each rule with the date it was allowed; **Remove** takes
+  it back at once and the bot asks again next time. Codex is only told to
+  remember a choice for its own session, which ends with the turn, so the
+  thread's list is the only lasting record.
 - **Thread details.** The right sidebar shows the focused thread, or the
   thread on screen you looked at last, and holds its bots, reply policy,
   rounds and Changes. Each bot is one row with its context (`ctx`) and plan
@@ -115,6 +125,11 @@ edges.
   collapsible strip, with full text wrapping when expanded.
 - **Changes.** `/diff` opens Changes in thread details, comparing the workspace
   against the thread's starting snapshot and grouping files by reported editor.
+  **Ask for review ▾** in its head attaches the whole change as one patch file
+  (`review-since-start-<n>.patch`) and fills the composer with "@name Review
+  this change." for the bot you pick; it never sends. Over 2,000 lines it
+  offers one file per patch. Bots that can't open the attachments folder (API
+  models and scripted bots) say "Can't read attachments".
 - **Composer tools.** Click + for mentions and commands, or type `/` or `@`
   to filter the menu. Arrows select; Enter or Tab picks. Mentions insert at the
   cursor. Commands without arguments run while preserving your draft.
@@ -163,8 +178,11 @@ edges.
   app restarts. Steering currently starts a new turn for all providers,
   including Codex; its native `turn/steer` protocol is not wired in.
 - **Avatar batteries.** The left half shows context remaining, the right
-  half the provider account's plan remaining. Usage cards show reset times,
-  other plan windows and session token totals, with a Compact now button.
+  half the provider account's plan remaining. A low side gets a thin outline;
+  a critical one a thicker outline and the word "low". The cells keep the
+  agent's colour, because red means something failed. Usage cards show reset
+  times, other plan windows and the bot's token totals for this thread, with
+  a Compact now button.
   Unknown readings draw full without inventing a percentage. Claude Code
   reports plan usage during replies; Codex also reports it when joining.
   Plan readings are shared across agents using the same provider account.
@@ -174,7 +192,7 @@ edges.
   selections; your choices are saved across restarts.
 - **Live activity and token counts.** See replies in progress and activity
   status lines, with steps from Claude Code and Codex and per-participant
-  token counts for the chat.
+  token counts for the thread, saved with it.
 
 ## Requirements
 
@@ -302,8 +320,9 @@ mistaken for a finished message: it lists the steps taken so far (the file
 being read, the command being run), shows the text written so far in a
 dimmer colour, and ends with a moving status line that says whether the bot
 is thinking, working or writing and for how long. When the turn ends the
-bubble is replaced by the final reply, and the bot's chip shows the tokens
-it has used in this chat; hover for the split between input and output.
+bubble is replaced by the final reply. Hover the bot's chip for the tokens it
+has used in this thread, split into input and output. The totals are saved
+with the thread; `/clear` keeps them and a fork starts at zero.
 
 Claude Code is run in its event mode (`--output-format stream-json`). Codex
 is run through its app server (`codex app-server`), the same interface its
@@ -338,8 +357,9 @@ the level is only stated to the model as an instruction.
 Configured MCP servers and plugins stay enabled for Claude Code and Codex.
 Ordinary read tools run without a card. MCP tool names containing trading or
 publishing terms (including order, transfer, cancel, post, send, and delete)
-require Approve or Reject every time, even at Full access. The card shows the
-server, tool name, and complete JSON arguments; approval is for that call only.
+ask every time, even at Full access, unless you chose Always allow for that
+tool in this thread. Their cards say "can spend money or publish" and show the
+server, tool name, and complete JSON arguments; Allow once is for that call only.
 Stopping that participant rejects its pending approvals. Some read names, such
 as `get_open_orders`, also match and ask.
 
