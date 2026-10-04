@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BLANK, GHOST, TINT, batteryCells, bindingWindow, contextLevel, contextLine, hasReset, isCritical, isLow,
-  mergePlan, planLevel, planLine, refillDelay, rowFill, shellState, windowLabel,
+  mergePlan, planLevel, planLine, refillDelay, rowFill, shellState, tokenLine, windowLabel,
 } from '../src/battery.ts';
 
 /** A pattern with every cell lit, so each cell shows its fill. */
@@ -131,4 +131,11 @@ test('battery styles never borrow the danger colour or pulse', () => {
   assert.ok(rules.length > 0);
   for (const rule of rules) assert.ok(!rule.includes('--danger'), rule.trim());
   assert.ok(!css.includes('battery-critical'), 'no pulsing keyframes');
+});
+
+test('token totals say they are for this thread', () => {
+  assert.equal(tokenLine(undefined), 'No tokens used in this thread yet.');
+  assert.equal(tokenLine({ input: 0, output: 0, turns: 0 }), 'No tokens used in this thread yet.');
+  assert.match(tokenLine({ input: 1840, output: 26, turns: 1 }), /^1\D?840 in, 26 out over 1 turn in this thread\. Input includes the conversation/);
+  assert.match(tokenLine({ input: 3680, output: 52, turns: 2 }), /over 2 turns in this thread\./);
 });

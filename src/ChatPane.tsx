@@ -16,7 +16,7 @@ import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, effortLabel, effortsFor, find
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
 import { Avatar, type Refills } from "./Avatar";
-import { contextLevel, contextLine, isLow, percent, planLevel, planLine, type Levels } from "./battery";
+import { contextLevel, contextLine, isLow, percent, planLevel, planLine, tokenLine, type Levels } from "./battery";
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention, type Signal } from "./attention";
@@ -47,6 +47,7 @@ import type {
   RoomOptions,
   TurnPolicy,
   ThreadDiff,
+  TokenTotals,
 } from "./types";
 
 interface Props {
@@ -277,18 +278,6 @@ function phaseLabel(phase: TurnProgress["phase"] | undefined): string {
 }
 
 
-/** Running token totals for one participant. */
-interface TokenUse {
-  input: number;
-  output: number;
-  turns: number;
-}
-
-function tokenDetail(use: TokenUse): string {
-  const turns = use.turns === 1 ? "1 turn" : `${use.turns} turns`;
-  return `${use.input.toLocaleString()} in, ${use.output.toLocaleString()} out over ${turns} since the app opened. Input includes the conversation and files the tool re-read from its cache.`;
-}
-
 /** The provider whose plan an agent draws on, if it reports one. */
 function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
   const b = config?.backend;
@@ -355,8 +344,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [working, setWorking] = useState<Record<string, TurnProgress>>({});
   /** The clock, ticking once a second while any turn runs, for "12s". */
   const [now, setNow] = useState(() => Date.now());
-  /** Tokens each participant has used in this chat since the app opened. */
-  const [used, setUsed] = useState<Record<string, TokenUse>>({});
+  /** Tokens each participant has used in this thread, saved with it. */
+  const [used, setUsed] = useState<Record<string, TokenTotals>>({});
   /** How full each agent's context window was on its latest request. Missing
    *  means unknown: not reported yet, or refilled by /compact since. */
   const [contextFill, setContextFill] = useState<Record<string, ContextFill>>({});
@@ -726,6 +715,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         setOptions(saved.options);
         setPins(saved.pins ?? []);
         setAllowed(saved.allowed ?? []);
+        setUsed(saved.usage ?? {});
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
@@ -901,7 +891,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         // Messages count from 0 again; nothing in the cleared thread is new.
         lastSeenRef.current = -1;
         onSeen?.(pane.id, -1);
-        setUsed({});
         forgetContext();
         notify("Chat cleared. The models start fresh; participants are kept.");
       })
@@ -1314,7 +1303,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </span>
         </div>
         {provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
-        <p className="usage-note">{used[p.id] ? tokenDetail(used[p.id]) : "No tokens used in this chat yet."}</p>
+        <p className="usage-note">{tokenLine(used[p.id])}</p>
         <button className="ghost usage-compact" onClick={() => { setCard(null); compactChat(); }} disabled={!canCompact} title="Summarize earlier turns so every model starts from the summary">
           Compact now
         </button>

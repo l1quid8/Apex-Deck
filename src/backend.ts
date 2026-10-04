@@ -5,7 +5,7 @@ import type { ToolServer } from "./types";
 // the UI can be worked on without building the app.
 
 import { ruleFor, sameRule } from "./allowedRules";
-import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
 
@@ -178,7 +178,7 @@ function demoBackend(): Backend {
     exitListeners.forEach((cb) => cb(id, code));
   };
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
-  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; seq: number; stopped: boolean; last: string[] }>();
+  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; usage?: Record<string, TokenTotals>; seq: number; stopped: boolean; last: string[] }>();
   const cancellations = new Map<string, () => void>();
   const emitData = (id: string, data: string) => dataListeners.forEach((cb) => cb(id, data));
   const saveRoom = (id: string) => {
@@ -189,6 +189,15 @@ function demoBackend(): Backend {
     if (event.type === "message_added") {
       rooms.get(id)?.transcript.push(event.message);
       saveRoom(id);
+    }
+    // Like the desktop app, each bot's token totals are saved with the thread.
+    if (event.type === "usage") {
+      const room = rooms.get(id);
+      if (room) {
+        const before = room.usage?.[event.id] ?? { input: 0, output: 0, turns: 0 };
+        room.usage = { ...room.usage, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1 } };
+        saveRoom(id);
+      }
     }
     roomListeners.forEach((cb) => cb(id, event));
   };
@@ -506,7 +515,7 @@ function demoBackend(): Backend {
       rooms.set(id, room);
       saveRoom(id);
       setTimeout(() => reportMeters(id, room.participants), 50);
-      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [], allowed: room.allowed ?? [] };
+      return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [], allowed: room.allowed ?? [], usage: room.usage ?? {} };
     },
     apiModels: async (baseUrl) => {
       if (baseUrl.includes("11434")) return ["llama3", "qwen2.5-coder"];
@@ -630,6 +639,9 @@ function demoBackend(): Backend {
       if (fork.changes) fork.changes = fork.changes.filter((change: { seq: number }) => change.seq < cutoff);
       fork.seq = cutoff;
       fork.stopped = false;
+      // As in the desktop app, a fork starts without the source's Always allow rules and token totals.
+      delete fork.allowed;
+      delete fork.usage;
       localStorage.setItem(`apex-deck.demo.room.${target}`, JSON.stringify(fork));
     },
     roomUnpin: async (id, index) => {

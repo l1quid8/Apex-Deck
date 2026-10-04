@@ -5,7 +5,7 @@
 // Each side drains from the top.
 
 import type { IdenticonCell } from "./identicon";
-import type { PlanWindow } from "./types";
+import type { PlanWindow, TokenTotals } from "./types";
 
 /** At or under this much left, a side reads low: the shell gets a hairline outline. */
 export const LOW = 0.2;
@@ -132,6 +132,13 @@ export function shortCount(n: number): string {
 export function contextLine(use: { used: number; window: number }): string {
   const level = contextLevel(use) ?? 0;
   return `${percent(level)}% left · ${shortCount(Math.max(0, use.window - use.used))} of ${shortCount(use.window)} tokens`;
+}
+
+/** The usage card's token sentence for one bot. The totals are saved with the thread. */
+export function tokenLine(use: TokenTotals | undefined): string {
+  if (!use || use.turns === 0) return "No tokens used in this thread yet.";
+  const turns = use.turns === 1 ? "1 turn" : `${use.turns} turns`;
+  return `${use.input.toLocaleString()} in, ${use.output.toLocaleString()} out over ${turns} in this thread. Input includes the conversation and files the tool re-read from its cache.`;
 }
 
 /** What a plan window is called: "5-hour", "weekly". */
