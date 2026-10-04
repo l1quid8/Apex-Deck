@@ -1488,8 +1488,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
                   <ApprovalCard
                     key={ask.request}
                     action={ask.action}
-                    onDecide={(approve) => {
-                      backend.roomDecide(pane.id, ask.request, approve).catch((error) => notify(`Could not send your answer: ${String(error)}`, "error"));
+                    onDecide={(approve, always) => {
+                      backend.roomDecide(pane.id, ask.request, approve, always).catch((error) => notify(`Could not send your answer: ${String(error)}`, "error"));
                     }}
                   />
                 ))}

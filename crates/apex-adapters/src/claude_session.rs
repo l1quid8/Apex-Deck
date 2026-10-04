@@ -33,7 +33,7 @@ pub(crate) fn user_message(prompt: &str) -> Value {
 /// input back, which is where a client could change it; we pass it through.
 pub(crate) fn permission_response(request_id: &Value, input: &Value, decision: Decision) -> Value {
     let response = match decision {
-        Decision::Approve => json!({ "behavior": "allow", "updatedInput": input }),
+        Decision::Approve | Decision::ApproveAlways => json!({ "behavior": "allow", "updatedInput": input }),
         Decision::Reject => json!({ "behavior": "deny", "message": "The person reading the chat rejected this action." }),
     };
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })

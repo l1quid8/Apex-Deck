@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { ANSWER_LABEL, approvalChoices, decisionFor, type Answer } from "./approvalChoices";
 import type { FileChange, ProposedAction } from "./types";
 
 /** A diff drawn line by line: added lines green, removed lines red. */
@@ -25,8 +26,8 @@ export function Diff({ text }: { text: string }) {
 
 interface CardProps {
   action: ProposedAction;
-  /** Called once with the person's answer. */
-  onDecide: (approve: boolean) => void;
+  /** Called once with the person's answer. `always` asks the tool to remember a yes. */
+  onDecide: (approve: boolean, always: boolean) => void;
 }
 
 /**
@@ -34,26 +35,26 @@ interface CardProps {
  * no to give. The bot's turn waits until one is chosen.
  */
 export function ApprovalCard({ action, onDecide }: CardProps) {
-  const [answered, setAnswered] = useState<boolean | null>(null);
-  const decide = (approve: boolean) => {
+  const [answered, setAnswered] = useState<Answer | null>(null);
+  const decide = (answer: Answer) => {
     if (answered !== null) return;
-    setAnswered(approve);
-    onDecide(approve);
+    setAnswered(answer);
+    const { approve, always } = decisionFor(answer, action);
+    onDecide(approve, always);
   };
   return (
-    <div className="approval" role="group" aria-label={`Approve or reject: ${action.title}`}>
+    <div className="approval" role="group" aria-label={`Allow or deny: ${action.title}`}>
       <div className="approval-head">
         <span className="approval-kind">{action.kind === "edit" ? "Wants to change a file" : action.kind === "command" ? "Wants to run a command" : action.kind === "tool" ? "Wants to call an MCP tool" : "Wants permission"}</span>
         <strong>{action.title}</strong>
       </div>
       {action.kind === "edit" ? <Diff text={action.detail} /> : <pre className="approval-detail">{action.detail}</pre>}
       <div className="approval-actions">
-        <button className="primary" onClick={() => decide(true)} disabled={answered !== null}>
-          {answered === true ? "Approved" : "Approve"}
-        </button>
-        <button className="danger" onClick={() => decide(false)} disabled={answered !== null}>
-          {answered === false ? "Rejected" : "Reject"}
-        </button>
+        {approvalChoices(action).map((answer) => (
+          <button key={answer} className={answer === "once" ? "primary" : answer === "deny" ? "danger" : "ghost"} onClick={() => decide(answer)} disabled={answered !== null}>
+            {answered === answer ? ANSWER_LABEL[answer].done : ANSWER_LABEL[answer].ask}
+          </button>
+        ))}
         <span className="approval-note">Nothing happens until you choose.</span>
       </div>
     </div>

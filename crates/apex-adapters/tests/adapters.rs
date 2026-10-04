@@ -815,7 +815,7 @@ async fn codex_app_server_asks_before_a_command_when_access_is_ask_first() {
     assert_eq!(result.unwrap().text, "Two files here. effort=default refused=no");
     assert_eq!(
         *yes.asked.lock().unwrap(),
-        [ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "(command not given)".into() }]
+        [ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "(command not given)".into(), always: false }]
     );
 
     let no = Fixed::new(Decision::Reject);
@@ -870,7 +870,7 @@ async fn claude_code_asks_before_writing_when_access_is_ask_first() {
     assert_eq!((reply.input_tokens, reply.output_tokens), (Some(10), Some(4)));
     assert_eq!(
         *yes.asked.lock().unwrap(),
-        [ProposedAction { kind: ActionKind::Edit, title: "Write hello.txt".into(), detail: "+hi\n".into() }]
+        [ProposedAction { kind: ActionKind::Edit, title: "Write hello.txt".into(), detail: "+hi\n".into(), always: false }]
     );
     assert_eq!(changed, [FileChange { path: "hello.txt".into(), diff: "+hi\n".into(), added: 1, removed: 0 }]);
 
@@ -1256,7 +1256,7 @@ async fn computer_use_app_permission_is_separate_from_an_outer_tool_approval() {
         let approver = Fixed::new(decision);
         let bot = build(config("null",Backend::Agent{tool:AgentTool::Codex,model:None}), &context_in(&dir));
         let (result, _, _) = work_asking(bot.as_ref(), &approver).await;
-        assert_eq!(result.unwrap().text, if decision == Decision::Approve {"allowed=3 denied=0"} else {"allowed=0 denied=3"});
+        assert_eq!(result.unwrap().text, if decision.approved() {"allowed=3 denied=0"} else {"allowed=0 denied=3"});
         let asked = approver.asked.lock().unwrap();
         assert_eq!(asked.len(), 3, "even a read call must ask before app access");
         assert!(asked.iter().all(|a| a.kind == ActionKind::Other && a.detail.contains("dev.apexdeck.app")));

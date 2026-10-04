@@ -44,13 +44,27 @@ pub struct ProposedAction {
     pub title: String,
     /// The whole of it: the diff, the command, or the tool's arguments.
     pub detail: String,
+    /// The tool offers to remember a yes, so the card can show "Always allow".
+    /// Never set for risky tools.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub always: bool,
 }
 
 /// The person's answer to a proposed action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Approve,
+    /// Approve, and let the tool remember it. Only offered when the action
+    /// says it can be remembered; anywhere else it counts as [`Decision::Approve`].
+    ApproveAlways,
     Reject,
+}
+
+impl Decision {
+    /// Whether the action goes ahead, once or always.
+    pub fn approved(self) -> bool {
+        self != Decision::Reject
+    }
 }
 
 /// Gets the person's answer to a proposed action. Backends call this and
@@ -195,7 +209,7 @@ mod tests {
 
     #[test]
     fn with_nobody_to_ask_everything_is_rejected() {
-        let action = ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf /".into() };
+        let action = ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf /".into(), always: false };
         assert_eq!(block_on(NoApprover.decide(action)), Decision::Reject);
     }
 

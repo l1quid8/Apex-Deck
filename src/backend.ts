@@ -41,7 +41,8 @@ export interface Backend {
   roomTurn(id: string, participant: string): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
   /** Answer an action a bot proposed, named by the `request` from its event. */
-  roomDecide(id: string, request: string, approve: boolean): Promise<void>;
+  /** `always` asks the tool to remember a yes; it is ignored unless the request offered it. */
+  roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
   roomSetOptions(id: string, options: RoomOptions): Promise<void>;
   roomAddParticipant(id: string, participant: ParticipantConfig): Promise<void>;
   /** Replace the settings of a participant that is already in the chat. */
@@ -114,7 +115,7 @@ async function tauriBackend(): Promise<Backend> {
     roomPostTo: (id, text, targets) => invoke("room_post_to", { id, text, targets }),
     roomTurn: (id, participant) => invoke("room_turn", { id, participant }),
     roomStop: (id, participant) => invoke("room_stop", { id, participant: participant ?? null }),
-    roomDecide: (id, request, approve) => invoke("room_decide", { id, request, approve }),
+    roomDecide: (id, request, approve, always = false) => invoke("room_decide", { id, request, approve, always }),
     roomSetOptions: (id, options) => invoke("room_set_options", { id, options }),
     roomAddParticipant: (id, participant) => invoke("room_add_participant", { id, participant }),
     roomUpdateParticipant: (id, participant) => invoke("room_update_participant", { id, participant }),
@@ -254,6 +255,7 @@ function demoBackend(): Backend {
                 change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
               },
               { action: { kind: "command", title: "Run a command", detail: "npm run build" } },
+              { action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl", always: true } },
             ];
             for (const { action, change } of proposals) {
               const request = `ask-${++askCount}`;

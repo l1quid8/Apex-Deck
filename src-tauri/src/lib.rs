@@ -404,10 +404,14 @@ fn room_stop(state: State<'_, AppState>, id: String, participant: Option<Partici
 /// was settled another way (by stop, say) is an error the interface can
 /// ignore.
 #[tauri::command]
-fn room_decide(state: State<'_, AppState>, id: String, request: String, approve: bool) -> Result<(), String> {
+fn room_decide(state: State<'_, AppState>, id: String, request: String, approve: bool, always: Option<bool>) -> Result<(), String> {
     let rooms = state.rooms.lock().unwrap();
     let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
-    let decision = if approve { apex_core::Decision::Approve } else { apex_core::Decision::Reject };
+    let decision = match (approve, always.unwrap_or(false)) {
+        (false, _) => apex_core::Decision::Reject,
+        (true, false) => apex_core::Decision::Approve,
+        (true, true) => apex_core::Decision::ApproveAlways,
+    };
     if handle.approvals.resolve(&request, decision) {
         Ok(())
     } else {

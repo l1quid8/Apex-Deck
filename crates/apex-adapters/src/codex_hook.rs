@@ -213,13 +213,13 @@ impl Gates {
     }
 
     pub(crate) fn answered_at_hook(&mut self, call: McpCall, decision: Decision) {
-        if decision == Decision::Approve {
+        if decision.approved() {
             self.approved_at_hook.push(call);
         }
     }
 
     pub(crate) fn answered_at_codex(&mut self, call: McpCall, decision: Decision) {
-        if decision == Decision::Approve {
+        if decision.approved() {
             self.approved_at_codex.push(call);
         }
     }
@@ -335,7 +335,7 @@ pub(crate) async fn serve(stream: tokio::net::UnixStream, gates: &mut Gates, app
                 }
             };
             match decision {
-                Decision::Approve => Verdict::Allow,
+                Decision::Approve | Decision::ApproveAlways => Verdict::Allow,
                 Decision::Reject => Verdict::Deny(REJECTED.into()),
             }
         }

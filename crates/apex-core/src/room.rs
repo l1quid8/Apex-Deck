@@ -133,7 +133,7 @@ impl Approver for RoomApprover<'_> {
         let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = answer.await.unwrap_or(Decision::Reject);
-        card.settle(decision == Decision::Approve);
+        card.settle(decision.approved());
         decision
     }
 }
@@ -721,7 +721,7 @@ mod approver_tests {
     use std::sync::Mutex;
 
     fn action() -> ProposedAction {
-        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() }
+        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into(), always: false }
     }
 
     #[test]
