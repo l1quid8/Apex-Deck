@@ -44,18 +44,28 @@ pub struct ProposedAction {
     pub title: String,
     /// The whole of it: the diff, the command, or the tool's arguments.
     pub detail: String,
-    /// The tool offers to remember a yes, so the card can show "Always allow".
-    /// Never set for risky tools.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub always: bool,
+}
+
+impl ProposedAction {
+    /// What an "Always allow" covers: the same tool on the same app, the
+    /// same command, or edits to the same file. A tool's arguments are left
+    /// out, so it isn't asked about again; an app or a command is kept, so
+    /// allowing one doesn't allow another.
+    pub fn remember_key(&self) -> String {
+        let what = match self.kind {
+            ActionKind::Tool | ActionKind::Edit => &self.title,
+            ActionKind::Command | ActionKind::Other => &self.detail,
+        };
+        format!("{:?}\u{1f}{what}", self.kind)
+    }
 }
 
 /// The person's answer to a proposed action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Approve,
-    /// Approve, and let the tool remember it. Only offered when the action
-    /// says it can be remembered; anywhere else it counts as [`Decision::Approve`].
+    /// Approve, and don't ask again about the same thing in this thread
+    /// until the app quits. Tools that can remember it themselves are told too.
     ApproveAlways,
     Reject,
 }
@@ -90,9 +100,21 @@ impl Approver for NoApprover {
 pub struct ApprovalDesk {
     waiting: Mutex<HashMap<String, (Option<ParticipantId>, oneshot::Sender<Decision>)>>,
     next: AtomicU64,
+    /// "Always allow" answers, by participant and [`ProposedAction::remember_key`].
+    always: Mutex<std::collections::HashSet<(Option<ParticipantId>, String)>>,
 }
 
 impl ApprovalDesk {
+    /// Whether the person already chose "Always allow" for this.
+    pub fn always_allowed(&self, participant: Option<&ParticipantId>, action: &ProposedAction) -> bool {
+        self.always.lock().unwrap().contains(&(participant.cloned(), action.remember_key()))
+    }
+
+    /// Don't ask again about this.
+    pub fn allow_always(&self, participant: Option<&ParticipantId>, action: &ProposedAction) {
+        self.always.lock().unwrap().insert((participant.cloned(), action.remember_key()));
+    }
+
     /// Register a new proposal. Returns its id and the place its answer
     /// will arrive. If the desk is dropped first, the answer is an error,
     /// which callers treat as a rejection.
@@ -209,8 +231,27 @@ mod tests {
 
     #[test]
     fn with_nobody_to_ask_everything_is_rejected() {
-        let action = ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf /".into(), always: false };
+        let action = ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf /".into() };
         assert_eq!(block_on(NoApprover.decide(action)), Decision::Reject);
+    }
+
+    #[test]
+    fn always_allow_covers_the_same_thing_and_nothing_else() {
+        let desk = ApprovalDesk::default();
+        let bot = ParticipantId::new("codex");
+        let other_bot = ParticipantId::new("claude");
+        let app = |name: &str| ProposedAction { kind: ActionKind::Other, title: "cua_repl asks permission".into(), detail: format!("Allow Computer Use to use \"{name}\"?") };
+        let order = |qty: u32| ProposedAction { kind: ActionKind::Tool, title: "robinhood: place_order".into(), detail: format!("{{\"qty\":{qty}}}") };
+        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into() };
+        desk.allow_always(Some(&bot), &app("Brave Browser"));
+        desk.allow_always(Some(&bot), &order(1));
+        desk.allow_always(Some(&bot), &run("npm test"));
+        assert!(desk.always_allowed(Some(&bot), &app("Brave Browser")));
+        assert!(!desk.always_allowed(Some(&bot), &app("Calculator")), "another app asks again");
+        assert!(desk.always_allowed(Some(&bot), &order(5)), "the same tool with other arguments");
+        assert!(desk.always_allowed(Some(&bot), &run("npm test")));
+        assert!(!desk.always_allowed(Some(&bot), &run("rm -rf build")), "another command asks again");
+        assert!(!desk.always_allowed(Some(&other_bot), &app("Brave Browser")), "another bot asks again");
     }
 
     #[test]

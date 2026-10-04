@@ -41,7 +41,7 @@ export interface Backend {
   roomTurn(id: string, participant: string): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
   /** Answer an action a bot proposed, named by the `request` from its event. */
-  /** `always` asks the tool to remember a yes; it is ignored unless the request offered it. */
+  /** `always` stops the same thing being asked again in this thread until the app quits. */
   roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
   roomSetOptions(id: string, options: RoomOptions): Promise<void>;
   roomAddParticipant(id: string, participant: ParticipantConfig): Promise<void>;
@@ -255,7 +255,7 @@ function demoBackend(): Backend {
                 change: { path: "README.md", diff: "-A desktop workspace for running coding agents.\n+A desktop workspace for running coding agents side by side.\n+It is open source.\n", added: 2, removed: 1 },
               },
               { action: { kind: "command", title: "Run a command", detail: "npm run build" } },
-              { action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl", always: true } },
+              { action: { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?\n\nApp: dev.apexdeck.app\nRequested by: node_repl" } },
             ];
             for (const { action, change } of proposals) {
               const request = `ask-${++askCount}`;

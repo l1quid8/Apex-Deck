@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { ANSWER_LABEL, approvalChoices, decisionFor, type Answer } from "./approvalChoices";
+import { ANSWER_LABEL, APPROVAL_CHOICES, decisionFor, type Answer } from "./approvalChoices";
 import type { FileChange, ProposedAction } from "./types";
 
 /** A diff drawn line by line: added lines green, removed lines red. */
@@ -26,7 +26,7 @@ export function Diff({ text }: { text: string }) {
 
 interface CardProps {
   action: ProposedAction;
-  /** Called once with the person's answer. `always` asks the tool to remember a yes. */
+  /** Called once with the person's answer. `always` stops the same thing being asked again. */
   onDecide: (approve: boolean, always: boolean) => void;
 }
 
@@ -39,7 +39,7 @@ export function ApprovalCard({ action, onDecide }: CardProps) {
   const decide = (answer: Answer) => {
     if (answered !== null) return;
     setAnswered(answer);
-    const { approve, always } = decisionFor(answer, action);
+    const { approve, always } = decisionFor(answer);
     onDecide(approve, always);
   };
   return (
@@ -50,7 +50,7 @@ export function ApprovalCard({ action, onDecide }: CardProps) {
       </div>
       {action.kind === "edit" ? <Diff text={action.detail} /> : <pre className="approval-detail">{action.detail}</pre>}
       <div className="approval-actions">
-        {approvalChoices(action).map((answer) => (
+        {APPROVAL_CHOICES.map((answer) => (
           <button key={answer} className={answer === "once" ? "primary" : answer === "deny" ? "danger" : "ghost"} onClick={() => decide(answer)} disabled={answered !== null}>
             {answered === answer ? ANSWER_LABEL[answer].done : ANSWER_LABEL[answer].ask}
           </button>

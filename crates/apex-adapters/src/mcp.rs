@@ -14,7 +14,7 @@ pub(crate) fn claude_tool(tool: &str) -> Option<(&str, &str)> {
 }
 
 pub(crate) fn action(server: &str, tool: &str, arguments: &Value) -> ProposedAction {
-    ProposedAction { kind: ActionKind::Tool, title: format!("{server}: {tool}"), detail: serde_json::to_string_pretty(arguments).expect("JSON value"), always: false }
+    ProposedAction { kind: ActionKind::Tool, title: format!("{server}: {tool}"), detail: serde_json::to_string_pretty(arguments).expect("JSON value") }
 }
 
 /// Connected server names from `claude mcp list`. Lines look like

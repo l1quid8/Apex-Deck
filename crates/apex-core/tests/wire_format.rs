@@ -118,15 +118,10 @@ fn room_event_shapes() {
         to_value(RoomEvent::Usage { id: id.clone(), input_tokens: Some(10), output_tokens: None }).unwrap(),
         json!({ "type": "usage", "id": "opus", "input_tokens": 10, "output_tokens": null })
     );
-    let action = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "ls".into(), always: false };
+    let action = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "ls".into() };
     assert_eq!(
         to_value(RoomEvent::ApprovalRequested { id: id.clone(), request: "ask-1".into(), action }).unwrap(),
         json!({ "type": "approval_requested", "id": "opus", "request": "ask-1", "action": { "kind": "command", "title": "Run a command", "detail": "ls" } })
-    );
-    let remembered = apex_core::ProposedAction { kind: apex_core::ActionKind::Other, title: "node_repl asks permission".into(), detail: "Allow?".into(), always: true };
-    assert_eq!(
-        to_value(RoomEvent::ApprovalRequested { id: id.clone(), request: "ask-2".into(), action: remembered }).unwrap(),
-        json!({ "type": "approval_requested", "id": "opus", "request": "ask-2", "action": { "kind": "other", "title": "node_repl asks permission", "detail": "Allow?", "always": true } })
     );
     assert_eq!(
         to_value(RoomEvent::ApprovalResolved { id: id.clone(), request: "ask-1".into(), approved: false }).unwrap(),

@@ -94,14 +94,14 @@ pub(crate) fn proposal(method: &str, params: &Value, reader: &EventReader) -> Op
                 Some(reason) => format!("{command}\n\n{reason}"),
                 None => command.to_string(),
             };
-            Some(ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail, always: false })
+            Some(ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail })
         }
         "item/fileChange/requestApproval" => {
             let (title, detail) = params["itemId"]
                 .as_str()
                 .and_then(|item| reader.pending_edit(item))
                 .unwrap_or_else(|| ("Edit files".to_string(), reason.unwrap_or("The edit was not described.").to_string()));
-            Some(ProposedAction { kind: ActionKind::Edit, title, detail, always: false })
+            Some(ProposedAction { kind: ActionKind::Edit, title, detail })
         }
         _ => None,
     }
@@ -116,9 +116,8 @@ pub(crate) fn approval_response(id: &Value, decision: Decision) -> Value {
     json!({ "id": id, "result": { "decision": decision } })
 }
 
-/// MCP approval is an elicitation, not a command approval. Persistence is
-/// only sent for "Always allow", which the card offers only when the request
-/// listed "always" in `_meta.persist` and the tool isn't risky.
+/// MCP approval is an elicitation, not a command approval. "Always allow"
+/// also sends Codex's own "always" choice, for tools that remember it.
 fn mcp_response(id: &Value, decision: Decision) -> Value {
     let mut result = json!({"action": if decision.approved() {"accept"} else {"decline"},
         "content": if decision.approved() {json!({})} else {Value::Null}});
@@ -159,24 +158,9 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
         Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
         None => message.to_string(),
     };
-    let always = can_remember(params, meta["tool_name"].as_str().unwrap_or(""));
-    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail, always })
+    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail })
 }
 
-/// "Always allow" counts only where the card could offer it; anywhere else
-/// it is an ordinary one-time yes.
-fn only_if_offered(decision: Decision, offered: bool) -> Decision {
-    if decision == Decision::ApproveAlways && !offered { Decision::Approve } else { decision }
-}
-
-/// Whether "Always allow" may be offered: the request itself must list
-/// "always" in `_meta.persist`, and neither the tool's name nor the
-/// request's own risk level may mark it as risky.
-fn can_remember(params: &Value, tool: &str) -> bool {
-    let meta = &params["_meta"];
-    let offered = meta["persist"].as_array().is_some_and(|choices| choices.iter().any(|c| c == "always"));
-    offered && !crate::mcp::needs_approval(tool) && meta["riskLevel"] != "high"
-}
 
 /// The id of `plugin/list`, which is sent alongside the MCP inventory.
 const PLUGINS: u64 = 110;
@@ -434,23 +418,24 @@ pub(crate) async fn run(
                 (Some(id), Some(method)) => {
                     if method == "mcpServer/elicitation/request" {
                         let params = &message["params"];
+                        // Only the fields that decide which buttons the card shows.
+                        let meta = &params["_meta"];
+                        eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
+                            params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
                         let decision = if params["threadId"] != thread {
                             Decision::Reject
                         } else if let Some(action) = mcp_question(params) {
                             // App access is a separate decision even if its arguments
                             // happen to match a read that the hook already allowed.
                             on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
-                            let always = action.always;
-                            only_if_offered(approver.decide(action).await, always)
+                            approver.decide(action).await
                         } else if let Some(call) = mcp_call(params, &pending_mcp) {
                             match gates.at_codex(&call) {
                                 Some(decision) => decision,
                                 None => {
-                                    let mut action = call.action();
-                                    action.always = can_remember(params, &call.tool);
-                                    let always = action.always;
+                                    let action = call.action();
                                     on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
-                                    let decision = only_if_offered(approver.decide(action).await, always);
+                                    let decision = approver.decide(action).await;
                                     gates.answered_at_codex(call, decision);
                                     decision
                                 }
@@ -600,25 +585,6 @@ mod tests {
     }
 
     #[test]
-    fn always_allow_is_offered_only_when_codex_offers_it_and_the_tool_is_not_risky() {
-        let ask = json!({"serverName":"node_repl", "mode":"form",
-            "message":"Allow Computer Use to use \"Apex Deck\"?",
-            "requestedSchema":{"type":"object","properties":{}},
-            "_meta":{"codex_approval_kind":"mcp_tool_call","connector_id":"computer-use",
-                "connector_name":"Computer Use","tool_name":"get_app_state",
-                "tool_params":{"app":"dev.apexdeck.app"},"persist":["session","always"]}});
-        assert!(mcp_question(&ask).unwrap().always, "Codex offered always and the tool is a read");
-        let mut session_only = ask.clone(); session_only["_meta"]["persist"] = json!(["session"]);
-        assert!(!mcp_question(&session_only).unwrap().always, "nothing to remember it with");
-        let mut no_persist = ask.clone(); no_persist["_meta"].as_object_mut().unwrap().remove("persist");
-        assert!(!mcp_question(&no_persist).unwrap().always);
-        let mut risky = ask.clone(); risky["_meta"]["tool_name"] = json!("place_order");
-        assert!(!mcp_question(&risky).unwrap().always, "risky tools only get Allow once and Deny");
-        let mut high = ask.clone(); high["_meta"]["riskLevel"] = json!("high");
-        assert!(!mcp_question(&high).unwrap().always, "Codex's own high risk level counts as risky");
-    }
-
-    #[test]
     fn always_allow_sends_codexs_persist_choice_and_nothing_else_does() {
         let always = mcp_response(&json!(9), Decision::ApproveAlways);
         assert_eq!(always, json!({"id":9,"result":{"action":"accept","content":{},"_meta":{"persist":"always"}}}));
@@ -626,14 +592,6 @@ mod tests {
         assert_eq!(once, json!({"id":9,"result":{"action":"accept","content":{}}}));
         let deny = mcp_response(&json!(9), Decision::Reject);
         assert_eq!(deny, json!({"id":9,"result":{"action":"decline","content":null}}));
-    }
-
-    #[test]
-    fn always_counts_as_once_where_it_was_not_offered() {
-        assert_eq!(only_if_offered(Decision::ApproveAlways, false), Decision::Approve);
-        assert_eq!(only_if_offered(Decision::ApproveAlways, true), Decision::ApproveAlways);
-        assert_eq!(only_if_offered(Decision::Reject, true), Decision::Reject);
-        assert_eq!(approval_response(&json!(1), Decision::ApproveAlways), json!({"id":1,"result":{"decision":"accept"}}));
     }
 
     #[test]

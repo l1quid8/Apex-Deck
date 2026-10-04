@@ -128,12 +128,18 @@ pub(crate) struct RoomApprover<'a> {
 #[async_trait]
 impl Approver for RoomApprover<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
+        if self.desk.always_allowed(Some(self.id), &action) {
+            (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
+            return Decision::ApproveAlways;
+        }
+        let remembered = action.clone();
         let (request, answer) = self.desk.open_for(self.id.clone());
         (self.on_event)(RoomEvent::ApprovalRequested { id: self.id.clone(), request: request.clone(), action });
         let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = answer.await.unwrap_or(Decision::Reject);
         card.settle(decision.approved());
+        if decision == Decision::ApproveAlways { self.desk.allow_always(Some(self.id), &remembered); }
         decision
     }
 }
@@ -721,7 +727,7 @@ mod approver_tests {
     use std::sync::Mutex;
 
     fn action() -> ProposedAction {
-        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into(), always: false }
+        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() }
     }
 
     #[test]
@@ -753,5 +759,23 @@ mod approver_tests {
         assert_eq!(futures::executor::block_on(waiting), Decision::Approve);
         let events = events.into_inner().unwrap();
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. }]), "{events:?}");
+    }
+
+    #[test]
+    fn always_allow_skips_the_card_next_time() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| events.lock().unwrap().push(event);
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let mut first = approver.decide(action());
+        assert!(first.as_mut().now_or_never().is_none());
+        assert!(desk.resolve("ask-1", Decision::ApproveAlways));
+        assert_eq!(futures::executor::block_on(first), Decision::ApproveAlways);
+        let second = approver.decide(action()).now_or_never();
+        assert_eq!(second, Some(Decision::ApproveAlways), "answered without waiting");
+        assert_eq!(desk.waiting(), 0, "no second card");
+        let events = events.into_inner().unwrap();
+        assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. }, RoomEvent::Activity { .. }]), "{events:?}");
     }
 }

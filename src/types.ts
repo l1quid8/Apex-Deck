@@ -12,8 +12,6 @@ export interface ProposedAction {
   title: string;
   /** The diff, the command, or the tool's arguments. */
   detail: string;
-  /** The tool offers to remember a yes, so the card shows "Always allow". Never set for risky tools. */
-  always?: boolean;
 }
 
 /** An edit a bot made to a file. */
