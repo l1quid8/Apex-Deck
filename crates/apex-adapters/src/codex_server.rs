@@ -17,11 +17,11 @@
 //! The server is started fresh for each turn and stopped when the turn
 //! ends, the same as every other command-line participant.
 //!
-//! The app server is marked experimental by Codex. If it cannot be started
-//! or does not get as far as a thread, the caller falls back to
-//! `codex exec`, which gives the same reply without the live text.
+//! MCP approvals require this two-way path. If it cannot be started, the
+//! turn is refused rather than falling back to an unprotected exec turn.
 
 use std::time::Duration;
+use std::collections::HashMap;
 
 use apex_core::{Access, ActionKind, Approver, Decision, PlanUsage, Progress, ProgressSink, ProposedAction, Reply};
 use serde_json::{json, Value};
@@ -66,12 +66,14 @@ fn sandbox(access: Access) -> &'static str {
 }
 
 /// When Codex stops to ask. "untrusted" asks before every edit and every
-/// command it does not know to be harmless; "never" leaves the sandbox as
-/// the only limit.
-fn approval_policy(access: Access) -> &'static str {
+/// command it does not know to be harmless. Other access levels keep MCP
+/// elicitation enabled without asking for local sandbox escalations.
+fn approval_policy(access: Access) -> Value {
     match access {
-        Access::Ask => "untrusted",
-        Access::Read | Access::Edits | Access::Full => "never",
+        Access::Ask => json!("untrusted"),
+        Access::Read | Access::Edits | Access::Full => json!({"granular": {
+            "mcp_elicitations": true, "rules": false, "sandbox_approval": false
+        }}),
     }
 }
 
@@ -107,6 +109,47 @@ pub(crate) fn approval_response(id: &Value, decision: Decision) -> Value {
         Decision::Reject => "decline",
     };
     json!({ "id": id, "result": { "decision": decision } })
+}
+
+/// MCP approval is an elicitation, not a command approval. Never return
+/// persistence metadata: even an approved risky call is approved only once.
+fn mcp_response(id: &Value, decision: Decision) -> Value {
+    json!({"id":id,"result":{"action": if decision == Decision::Approve {"accept"} else {"decline"},
+        "content": if decision == Decision::Approve {json!({})} else {Value::Null}}})
+}
+
+/// Bind the CLI's approval to the exact in-flight call, never its prose
+/// description or a display-name summary. Ambiguous or missing calls reject.
+fn mcp_proposal(params: &Value, pending: &HashMap<String, Value>) -> Option<(ProposedAction, bool)> {
+    if params["_meta"]["codex_approval_kind"] != "mcp_tool_call" { return None; }
+    let server = params["serverName"].as_str()?;
+    let arguments = params["_meta"].get("tool_params")?;
+    let mut matches = pending.values().filter(|item| item["server"] == server && &item["arguments"] == arguments);
+    let item = matches.next()?;
+    if matches.next().is_some() { return None; }
+    let tool = item["tool"].as_str()?;
+    Some((crate::mcp::action(server, tool, arguments), crate::mcp::needs_approval(tool)))
+}
+
+/// The approval policy for every MCP tool, from the full server inventory.
+async fn mcp_inventory(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStdout>>) -> Result<Value, String> {
+    let mut servers = Vec::new();
+    let mut cursor = Value::Null;
+    let mut cursors = std::collections::HashSet::new();
+    for page in 0..100u64 {
+        let id = 10 + page;
+        send(stdin, &json!({"id":id,"method":"mcpServerStatus/list", "params":{
+            "detail":"toolsAndAuthOnly", "limit":100, "cursor":cursor
+        }})).await.map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
+        let result = answer_within(lines, id, SETUP_TIMEOUT).await
+            .map_err(|_| "Couldn't list Codex MCP servers; this turn did not run.".to_string())?;
+        let data = result["data"].as_array().ok_or("Codex MCP inventory had no server list")?;
+        servers.extend(data.iter().cloned());
+        cursor = result["nextCursor"].clone();
+        if cursor.is_null() { return crate::mcp::codex_policy(&servers); }
+        if !cursor.is_string() || !cursors.insert(cursor.to_string()) { return Err("Invalid Codex MCP inventory cursor".into()); }
+    }
+    Err("Codex MCP inventory exceeded its page limit".into())
 }
 
 pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
@@ -199,7 +242,12 @@ pub(crate) async fn run(
 
     initialize(&mut stdin, &mut lines).await.map_err(TurnError::Unavailable)?;
 
-    send(&mut stdin, &thread_start(&turn))
+    on_progress(Progress::Activity("Checking MCP tool approval policies"));
+    let policy = mcp_inventory(&mut stdin, &mut lines).await.map_err(TurnError::Failed)?;
+    on_progress(Progress::Activity("Starting Codex"));
+    let mut start = thread_start(&turn);
+    start["params"]["config"] = policy;
+    send(&mut stdin, &start)
         .await
         .map_err(|e| unavailable("the app server went away", e.to_string()))?;
     let started = answer(&mut lines, 1).await.map_err(|e| unavailable("could not start a thread", e))?;
@@ -213,6 +261,7 @@ pub(crate) async fn run(
         .map_err(|e| TurnError::Failed(format!("could not send the message: {e}")))?;
 
     let mut reader = EventReader::new(OutputFormat::CodexServer, turn.cwd.clone());
+    let mut pending_mcp = HashMap::new();
     while !reader.turn_over() {
         let line = match lines.next_line().await {
             Ok(Some(line)) => line,
@@ -220,12 +269,33 @@ pub(crate) async fn run(
             Err(e) => return Err(TurnError::Failed(format!("reading output failed: {e}"))),
         };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
+            let item = &message["params"]["item"];
+            if message["method"] == "item/started" && item["type"] == "mcpToolCall" {
+                if let Some(id) = item["id"].as_str() { pending_mcp.insert(id.to_string(), item.clone()); }
+            }
+            if message["method"] == "item/completed" {
+                if let Some(id) = item["id"].as_str() { pending_mcp.remove(id); }
+            }
             let id = message.get("id").filter(|id| !id.is_null());
             match (id, message.get("method")) {
                 // The server is asking us something. Requests to approve an
                 // edit or a command go to the person. Anything else cannot
                 // be answered here, and is refused rather than left to hang.
                 (Some(id), Some(method)) => {
+                    if method == "mcpServer/elicitation/request" {
+                        let params = &message["params"];
+                        let decision = if params["threadId"] != thread {
+                            Decision::Reject
+                        } else if let Some((action, risky)) = mcp_proposal(params, &pending_mcp) {
+                            if risky {
+                                on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
+                                approver.decide(action).await
+                            } else { Decision::Approve }
+                        } else { Decision::Reject };
+                        send(&mut stdin, &mcp_response(id, decision)).await
+                            .map_err(|_| TurnError::Failed("Could not deliver MCP approval".into()))?;
+                        continue;
+                    }
                     let reply = match proposal(method.as_str().unwrap_or(""), &message["params"], &reader) {
                         Some(action) => {
                             on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
@@ -281,7 +351,7 @@ async fn initialize(stdin: &mut ChildStdin, lines: &mut Lines<BufReader<ChildStd
     let hello = json!({
         "method": "initialize",
         "id": 0,
-        "params": { "clientInfo": { "name": "apex_deck", "title": "Apex Deck", "version": env!("CARGO_PKG_VERSION") } }
+        "params": { "clientInfo": { "name": "apex_deck", "title": "Apex Deck", "version": env!("CARGO_PKG_VERSION") }, "capabilities":{"experimentalApi":true} }
     });
     send(stdin, &hello).await.map_err(|e| format!("could not start the app server: {e}"))?;
     answer(lines, 0).await.map_err(|e| format!("the app server did not start: {e}"))?;
@@ -323,12 +393,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mcp_approval_binds_exact_arguments_and_rejects_ambiguous_or_unrelated_forms() {
+        let params = json!({"serverName":"probe", "_meta":{"codex_approval_kind":"mcp_tool_call", "tool_params":{"quantity":"0.001"}}});
+        let call = json!({"server":"probe", "tool":"post: read", "arguments":{"quantity":"0.001"}});
+        let mut pending = HashMap::from([("c1".to_string(),call.clone())]);
+        let (action, risky) = mcp_proposal(&params, &pending).unwrap();
+        assert!(risky, "use exact tool name, not title punctuation");
+        assert_eq!(action.title,"probe: post: read");
+        let mut different = params.clone(); different["_meta"]["tool_params"]["quantity"]=json!("1000");
+        assert!(mcp_proposal(&different,&pending).is_none());
+        pending.insert("c2".into(),call);
+        assert!(mcp_proposal(&params,&pending).is_none());
+        assert!(mcp_proposal(&json!({"serverName":"probe","mode":"form"}),&pending).is_none());
+        let accepted=mcp_response(&json!(1),Decision::Approve);
+        assert_eq!(accepted["result"],json!({"action":"accept","content":{}}));
+        assert!(!accepted.to_string().contains("persist"));
+        assert_eq!(mcp_response(&json!(1),Decision::Reject)["result"]["action"],"decline");
+    }
+
+    #[test]
+    fn full_access_keeps_mcp_approval_transport_enabled() {
+        let turn = Turn { model: None, effort: None, access: Access::Full, cwd: None };
+        let policy = thread_start(&turn)["params"]["approvalPolicy"].clone();
+        assert_eq!(policy["granular"]["mcp_elicitations"], true);
+        assert_eq!(policy["granular"]["sandbox_approval"], false);
+        assert_eq!(thread_start(&turn)["params"]["sandbox"], "danger-full-access");
+    }
+
+    #[test]
     fn thread_start_carries_access_model_and_folder() {
         let turn = Turn { model: Some("m"), effort: None, access: Access::Edits, cwd: Some("/work".into()) };
         assert_eq!(
             thread_start(&turn),
             json!({ "method": "thread/start", "id": 1, "params": {
-                "approvalPolicy": "never", "sandbox": "workspace-write", "ephemeral": true, "model": "m", "cwd": "/work"
+                "approvalPolicy": approval_policy(Access::Edits), "sandbox": "workspace-write", "ephemeral": true, "model": "m", "cwd": "/work"
             } })
         );
         let asking = Turn { model: None, effort: None, access: Access::Ask, cwd: None };
@@ -339,7 +437,7 @@ mod tests {
         let bare = Turn { model: None, effort: None, access: Access::Read, cwd: None };
         assert_eq!(
             thread_start(&bare)["params"],
-            json!({ "approvalPolicy": "never", "sandbox": "read-only", "ephemeral": true })
+            json!({ "approvalPolicy": approval_policy(Access::Read), "sandbox": "read-only", "ephemeral": true })
         );
         let full = Turn { model: None, effort: None, access: Access::Full, cwd: None };
         assert_eq!(thread_start(&full)["params"]["sandbox"], "danger-full-access");

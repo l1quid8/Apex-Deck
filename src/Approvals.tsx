@@ -43,7 +43,7 @@ export function ApprovalCard({ action, onDecide }: CardProps) {
   return (
     <div className="approval" role="group" aria-label={`Approve or reject: ${action.title}`}>
       <div className="approval-head">
-        <span className="approval-kind">{action.kind === "edit" ? "Wants to change a file" : action.kind === "command" ? "Wants to run a command" : "Wants permission"}</span>
+        <span className="approval-kind">{action.kind === "edit" ? "Wants to change a file" : action.kind === "command" ? "Wants to run a command" : action.kind === "tool" ? "Wants to call an MCP tool" : "Wants permission"}</span>
         <strong>{action.title}</strong>
       </div>
       {action.kind === "edit" ? <Diff text={action.detail} /> : <pre className="approval-detail">{action.detail}</pre>}

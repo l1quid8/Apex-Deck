@@ -372,6 +372,9 @@ impl EventReader {
     /// What a Claude Code permission request is asking for, in a form the
     /// person can judge.
     pub(crate) fn claude_action(&self, tool: &str, input: &Value) -> ProposedAction {
+        if let Some((server, name)) = crate::mcp::claude_tool(tool) {
+            return crate::mcp::action(server, name, input);
+        }
         let changes = self.claude_changes(tool, input);
         if let Some(change) = changes.first() {
             let verb = if tool == "Write" { "Write" } else { "Edit" };
@@ -736,6 +739,16 @@ mod tests {
 {"type":"assistant","message":{"content":[{"type":"text","text":"It says hello."}]},"parent_tool_use_id":null}
 {"type":"result","subtype":"success","is_error":false,"result":"It says hello.","usage":{"input_tokens":4,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"output_tokens":12}}
 "#;
+
+    #[test]
+    fn mcp_approval_shows_exact_server_tool_and_complete_arguments() {
+        let reader = EventReader::new(OutputFormat::ClaudeStream, None);
+        let args = serde_json::json!({"quantity":"0.001", "nested":{"symbol":"ZEC"}});
+        let action = reader.claude_action("mcp__Hyper_MCP__place_order", &args);
+        assert_eq!(serde_json::to_value(action.kind).unwrap(), "tool");
+        assert_eq!(action.title, "Hyper_MCP: place_order");
+        assert_eq!(serde_json::from_str::<Value>(&action.detail).unwrap(), args);
+    }
 
     #[test]
     fn claude_text_is_streamed_once_with_activity_and_usage() {

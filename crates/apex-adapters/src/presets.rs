@@ -87,10 +87,11 @@ pub fn agent_command(
                 Access::Read => push(&["--disallowedTools", "Edit,Write,NotebookEdit,Bash"]),
                 // A two-way conversation in which each edit and command is
                 // put to the person first; see claude_session.rs.
-                Access::Ask => push(crate::claude_session::ASK_ARGS),
+                Access::Ask => push(&["--permission-mode", "default"]),
                 Access::Edits => push(&["--permission-mode", "acceptEdits"]),
                 Access::Full => push(&["--permission-mode", "bypassPermissions"]),
             }
+            push(&["--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--settings", r#"{"permissions":{"ask":["mcp__*"]}}"#]);
             "claude"
         }
         AgentTool::Codex => {
@@ -141,8 +142,20 @@ mod tests {
     use super::*;
 
     fn line(tool: AgentTool, model: Option<&str>, access: Access) -> String {
-        let (program, args) = agent_command(tool, model, None, access);
+        let (program, mut args) = agent_command(tool, model, None, access);
+        if tool == AgentTool::ClaudeCode { args.truncate(args.len() - 6); }
         format!("{program} {}", args.join(" "))
+    }
+
+    #[test]
+    fn claude_mcp_approvals_have_a_two_way_channel_at_full_access() {
+        let (_, args) = agent_command(AgentTool::ClaudeCode, None, None, Access::Full);
+        assert!(args.windows(2).any(|a| a == ["--permission-prompt-tool", "stdio"]));
+        assert!(args.windows(2).any(|a| a == ["--input-format", "stream-json"]));
+        let settings = args.windows(2).find(|a| a[0] == "--settings").expect("MCP ask rule");
+        let value: serde_json::Value = serde_json::from_str(&settings[1]).unwrap();
+        assert_eq!(value["permissions"]["ask"], serde_json::json!(["mcp__*"]));
+        assert!(args.contains(&"bypassPermissions".to_string()));
     }
 
     #[test]
@@ -151,7 +164,8 @@ mod tests {
             for access in [Access::Read, Access::Ask, Access::Edits, Access::Full] {
                 let (_, args) = agent_command(tool, None, None, access);
                 for arg in args {
-                    assert!(!arg.contains("mcp"), "unexpected MCP override: {arg}");
+                    assert!(!arg.contains("strict-mcp-config"), "unexpected MCP disable: {arg}");
+                    assert!(!arg.contains("mcp_servers.") || !arg.contains("enabled=false"));
                     assert!(!arg.contains("features.plugins=false"));
                     assert!(!arg.contains("features.apps=false"));
                 }
@@ -179,7 +193,7 @@ mod tests {
     fn asking_first_makes_claude_code_a_two_way_conversation_and_keeps_codex_exec_read_only() {
         assert_eq!(
             line(AgentTool::ClaudeCode, Some("opus"), Access::Ask),
-            "claude -p --output-format stream-json --verbose --include-partial-messages --model opus --input-format stream-json --permission-mode default --permission-prompt-tool stdio"
+            "claude -p --output-format stream-json --verbose --include-partial-messages --model opus --permission-mode default"
         );
         assert_eq!(line(AgentTool::Codex, None, Access::Ask), "codex exec --skip-git-repo-check --json --sandbox read-only -");
     }
@@ -212,7 +226,7 @@ mod tests {
     #[test]
     fn effort_is_passed_in_each_tools_own_way() {
         let (_, claude) = agent_command(AgentTool::ClaudeCode, Some("opus"), Some("xhigh"), Access::Read);
-        assert_eq!(claude, ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", "opus", "--effort", "xhigh", "--disallowedTools", "Edit,Write,NotebookEdit,Bash"]);
+        assert_eq!(&claude[..claude.len() - 6], &["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--model", "opus", "--effort", "xhigh", "--disallowedTools", "Edit,Write,NotebookEdit,Bash"]);
 
         let (_, codex) = agent_command(AgentTool::Codex, None, Some(" high "), Access::Read);
         assert_eq!(

@@ -230,7 +230,7 @@ async fn cli_colour_codes_are_removed_from_the_reply_and_the_stream() {
 /// on standard input.
 #[cfg(unix)]
 #[tokio::test]
-async fn agent_backend_runs_the_preset_command_for_its_tool_model_and_access() {
+async fn codex_agent_refuses_exec_even_when_model_effort_and_access_are_configured() {
     use apex_core::AgentTool;
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("apex-deck-agent-{}", std::process::id()));
@@ -249,14 +249,7 @@ async fn agent_backend_runs_the_preset_command_for_its_tool_model_and_access() {
     let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())) };
     let bot = build(cfg, &context);
     let (result, _) = ask(bot.as_ref(), "hey, testing").await;
-    let text = result.unwrap().text;
-
-    assert!(
-        text.starts_with("args:exec args:--skip-git-repo-check args:--json args:--model args:some-model args:-c args:model_reasoning_effort=\"high\" args:--sandbox args:workspace-write args:- "),
-        "{text}"
-    );
-    let bytes: usize = text.rsplit("stdin-bytes:").next().unwrap().trim().parse().unwrap();
-    assert!(bytes > "[Human]: hey, testing".len(), "{text}");
+    assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -518,7 +511,7 @@ async fn work(
 async fn claude_code_events_become_streamed_text_activity_and_token_counts() {
     use apex_core::AgentTool;
     let script = r#"#!/bin/sh
-cat >/dev/null
+IFS= read -r prompt
 cat <<JSONL
 {"type":"system","subtype":"init"}
 {"type":"stream_event","event":{"type":"message_start"},"parent_tool_use_id":null}
@@ -553,7 +546,7 @@ JSONL
 async fn claude_code_failure_inside_the_run_is_reported_from_its_result_event() {
     use apex_core::AgentTool;
     let script = r#"#!/bin/sh
-cat >/dev/null
+IFS= read -r prompt
 echo '"m" is not in the model catalog' >&2
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Not logged in · Please run /login"}]}}'
 echo '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}'
@@ -575,7 +568,7 @@ exit 1
 
 #[cfg(unix)]
 #[tokio::test]
-async fn without_an_app_server_codex_exec_events_give_the_reply_and_a_failed_turn_is_an_error() {
+async fn without_an_app_server_codex_does_not_run_ungated_exec() {
     use apex_core::AgentTool;
     let script = r#"#!/bin/sh
 [ "$1" = app-server ] && exit 2
@@ -596,22 +589,9 @@ echo '{"type":"turn.completed","usage":{"input_tokens":50,"cached_input_tokens":
 
     let good = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context);
     let (result, text, activity) = work(good.as_ref()).await;
-    let reply = result.unwrap();
-    assert_eq!(reply.text, "Two files here.");
-    assert_eq!((reply.input_tokens, reply.output_tokens), (Some(50), Some(6)));
-    assert_eq!(text, "Two files here.");
-    assert_eq!(activity, ["Running: ls"]);
-
-    let bad = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: Some("broken".into()) }), &context);
-    let (result, _, _) = work(bad.as_ref()).await;
-    match result {
-        Err(ParticipantError::Failed(message)) => {
-            assert!(message.contains("401 Unauthorized: Missing bearer"), "{message}");
-            assert!(!message.contains("Reconnecting"), "{message}");
-            assert!(message.contains("codex login"), "{message}");
-        }
-        other => panic!("expected a failure, got {other:?}"),
-    }
+    assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
+    assert!(text.is_empty());
+    assert!(activity.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -626,6 +606,7 @@ if [ "$1" != app-server ]; then
 fi
 while IFS= read -r line; do
   case "$line" in
+  *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[],"nextCursor":null}}' ;;
   *'"initialize"'*) echo '{"id":0,"result":{"userAgent":"fake"}}' ;;
   *'"thread/start"'*)
     case "$line" in *'"model":"no-server"'*) echo '{"id":1,"error":{"code":-32600,"message":"threads are switched off"}}'; continue ;; esac
@@ -668,7 +649,7 @@ async fn codex_app_server_streams_the_reply_in_pieces_and_declines_when_nobody_c
     assert_eq!(text, "Two files here.");
     assert_eq!(reply.text, "Two files here. effort=high refused=yes");
     assert_eq!((reply.input_tokens, reply.output_tokens), (Some(50), Some(6)));
-    assert_eq!(activity, ["Running: ls -la", "Waiting for approval: Run a command"]);
+    assert_eq!(activity, ["Checking MCP tool approval policies", "Starting Codex", "Running: ls -la", "Waiting for approval: Run a command"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -703,13 +684,13 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
 
 #[cfg(unix)]
 #[tokio::test]
-async fn codex_falls_back_to_exec_when_the_app_server_cannot_start_a_thread() {
+async fn codex_refuses_ungated_exec_when_the_app_server_cannot_start_a_thread() {
     use apex_core::AgentTool;
     let dir = fake_tool("codex-server-off", "codex", FAKE_CODEX_SERVER);
     let cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: Some("no-server".into()) });
     let (result, text, _) = work(build(cfg, &context_in(&dir)).as_ref()).await;
-    assert_eq!(result.unwrap().text, "from exec");
-    assert_eq!(text, "from exec");
+    assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
+    assert!(text.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -865,15 +846,15 @@ async fn time_spent_waiting_for_an_answer_does_not_count_against_the_turn() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn per_turn_read_access_rebuilds_codex_exec_sandbox_without_changing_profile() {
+async fn per_turn_read_access_does_not_allow_ungated_codex_exec() {
     use apex_core::AgentTool;
     let dir = fake_tool("codex-turn-access", "codex", "#!/bin/sh\n[ \"$1\" = app-server ] && exit 2\nprintf 'args:%s ' \"$@\"\ncat >/dev/null\n");
     let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: None });
     cfg.access = Access::Full;
     let bot = build(cfg, &context_in(&dir));
     let mut turn = request("read only"); turn.access = Some(Access::Read);
-    let reply = bot.respond(turn, &|_| {}).await.unwrap();
-    assert!(reply.text.contains("args:--sandbox args:read-only"), "{}", reply.text);
+    let error = bot.respond(turn, &|_| {}).await.unwrap_err();
+    assert!(error.to_string().contains("MCP approvals require it"));
     assert_eq!(bot.config().access, Access::Full);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -885,6 +866,7 @@ async fn per_turn_read_access_reaches_codex_app_server_sandbox() {
     let script = r#"#!/bin/sh
 while IFS= read -r line; do
 case "$line" in
+*'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[],"nextCursor":null}}' ;;
 *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
 *'"method":"thread/start"'*)
  case "$line" in *'"sandbox":"read-only"'*) ;; *) echo 'wrong sandbox' >&2; exit 2 ;; esac
@@ -909,13 +891,20 @@ done
 #[tokio::test]
 async fn per_turn_read_access_rebuilds_claude_tool_permissions() {
     use apex_core::AgentTool;
-    let dir = fake_tool("claude-turn-access", "claude", "#!/bin/sh\nprintf 'args:%s ' \"$@\"\ncat >/dev/null\n");
+    let dir = fake_tool("claude-turn-access", "claude", r#"#!/bin/sh
+IFS= read -r prompt
+case "$*" in
+*"--disallowedTools Edit,Write,NotebookEdit,Bash"*) said=read-only ;;
+*) said=wrong-access ;;
+esac
+case "$*" in *bypassPermissions*) said=wrong-access ;; esac
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"$said\"}"
+"#);
     let mut cfg = config("jigga", Backend::Agent { tool: AgentTool::ClaudeCode, model: None }); cfg.access = Access::Full;
     let bot = build(cfg, &context_in(&dir));
     let mut turn = request("read only"); turn.access = Some(Access::Read);
     let reply = bot.respond(turn, &|_| {}).await.unwrap();
-    assert!(reply.text.contains("args:--disallowedTools args:Edit,Write,NotebookEdit,Bash"), "{}", reply.text);
-    assert!(!reply.text.contains("bypassPermissions"), "{}", reply.text);
+    assert_eq!(reply.text, "read-only");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -927,4 +916,83 @@ async fn custom_cli_is_refused_when_another_editor_requires_a_read_only_turn() {
     let mut turn = request("read only"); turn.access = Some(Access::Read);
     let error = bot.respond(turn, &|_| panic!("custom command must not start")).await.unwrap_err();
     assert!(error.to_string().contains("cannot enforce read-only access"));
+}
+
+/// Both providers wait at the tool boundary. The fake tool performs no
+/// external action; its transcript exposes whether Deck sent allow/decline.
+#[cfg(unix)]
+const FAKE_MCP_CLAUDE: &str = r#"#!/bin/sh
+IFS= read -r prompt
+for tool in get_balance place_order place_order; do
+ echo "{\"type\":\"control_request\",\"request_id\":\"$tool\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"mcp__probe__$tool\",\"input\":{\"quantity\":\"0.001\",\"nested\":{\"symbol\":\"ZEC\"}}}}"
+ IFS= read -r answer
+ case "$answer" in *'"behavior":"deny"'*) denied=$((denied+1)) ;; *'"behavior":"allow"'*) allowed=$((allowed+1)) ;; *) exit 2 ;; esac
+done
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"allowed=${allowed:-0} denied=${denied:-0}\"}"
+"#;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_mcp_reads_proceed_but_each_risky_call_asks_at_every_access_level() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("claude-mcp-approval", "claude", FAKE_MCP_CLAUDE);
+    for access in [Access::Read, Access::Ask, Access::Edits, Access::Full] {
+        let mut cfg = config("jigga", Backend::Agent {tool:AgentTool::ClaudeCode, model:None}); cfg.access=access;
+        let no = Fixed::new(Decision::Reject);
+        let (result, _, _) = work_asking(build(cfg, &context_in(&dir)).as_ref(), &no).await;
+        assert_eq!(result.unwrap().text, "allowed=1 denied=2");
+        let asked = no.asked.lock().unwrap();
+        assert_eq!(asked.len(), 2);
+        for action in asked.iter() {
+            assert_eq!(action.kind, ActionKind::Tool);
+            assert_eq!(action.title, "probe: place_order");
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&action.detail).unwrap(), serde_json::json!({"quantity":"0.001", "nested":{"symbol":"ZEC"}}));
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+const FAKE_MCP_CODEX: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+ case "$line" in
+ *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
+ *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[{"name":"probe","tools":{"place_order":{"name":"place_order"},"get_balance":{"name":"get_balance"}}}],"nextCursor":null}}' ;;
+ *'"thread/start"'*)
+ case "$line" in *'"mcp_servers.probe.tools.place_order.approval_mode":"prompt"'*) ;; *) echo 'missing tool policy' >&2;exit 2 ;; esac
+ echo '{"id":1,"result":{"thread":{"id":"thread-mcp"}}}' ;;
+ *'"turn/start"'*)
+ for tool in get_balance place_order place_order; do
+  echo "{\"method\":\"item/started\",\"params\":{\"item\":{\"type\":\"mcpToolCall\",\"id\":\"call-1\",\"server\":\"probe\",\"tool\":\"$tool\",\"arguments\":{\"quantity\":\"0.001\"}}}}"
+  echo '{"method":"mcpServer/elicitation/request","id":"approval-1","params":{"threadId":"thread-mcp","serverName":"probe","mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{"quantity":"0.001"}},"requestedSchema":{"type":"object","properties":{}}}}'
+  IFS= read -r answer
+  case "$answer" in *'"action":"decline"'*) denied=$((denied+1)) ;; *'"action":"accept"'*) allowed=$((allowed+1)) ;; *) echo "bad response $answer" >&2;exit 2 ;; esac
+  case "$answer" in *persist*) echo 'unexpected persistent approval' >&2;exit 2 ;; esac
+  echo '{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"call-1"}}}'
+ done
+ echo "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"agentMessage\",\"id\":\"reply\",\"text\":\"allowed=${allowed:-0} denied=${denied:-0}\"}}}"
+ echo '{"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}' ;;
+ *'"account/rateLimits/read"'*) echo '{"id":3,"result":{}}' ;;
+ esac
+done
+"#;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_mcp_reads_proceed_but_each_risky_call_asks_at_every_access_level() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("codex-mcp-approval", "codex", FAKE_MCP_CODEX);
+    for access in [Access::Read, Access::Ask, Access::Edits, Access::Full] {
+        let mut cfg=config("null", Backend::Agent {tool:AgentTool::Codex, model:None});cfg.access=access;
+        let no=Fixed::new(Decision::Reject);
+        let (result, _, _) = work_asking(build(cfg, &context_in(&dir)).as_ref(), &no).await;
+        assert_eq!(result.unwrap().text, "allowed=1 denied=2");
+        let asked=no.asked.lock().unwrap();assert_eq!(asked.len(),2);
+        assert!(asked.iter().all(|a| a.kind==ActionKind::Tool && a.title=="probe: place_order"));
+    }
+    // No approval transport to the person: risky calls reject, reads proceed.
+    let bot=build(config("null",Backend::Agent{tool:AgentTool::Codex,model:None}),&context_in(&dir));
+    let (result, _)=ask(bot.as_ref(),"test").await;
+    assert_eq!(result.unwrap().text,"allowed=1 denied=2");
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -238,6 +238,19 @@ settings, so it is enforced by the tool. "Ask first" is offered for those
 two only, because it needs the tool to stop and wait. For the other presets
 the level is only stated to the model as an instruction.
 
+Configured MCP servers and plugins stay enabled for Claude Code and Codex.
+Ordinary read tools run without a card. MCP tool names containing trading or
+publishing terms (including order, transfer, cancel, post, send, and delete)
+require Approve or Reject every time, even at Full access. The card shows the
+server, tool name, and complete JSON arguments; approval is for that call only.
+Stopping that participant rejects its pending approvals. Some read names, such
+as `get_open_orders`, also match and ask.
+
+Codex turns require the app server and a complete tool inventory so Deck can
+override saved per-tool allow rules. If either fails, the turn is refused; it
+does not fall back to `codex exec`. These MCP approvals cover Claude Code and
+Codex agent presets, not custom CLI commands or Gemini.
+
 How "Ask first" was checked: with Claude Code against the real tool
 (approving wrote the file and listed the change, rejecting left the file
 alone). With Codex only against its published message format and a stand-in

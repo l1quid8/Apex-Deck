@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use apex_core::{
-    render_prompt, Access, AgentTool, Approver, Backend, Decision, DeltaSink, NoApprover, Participant,
+    render_prompt, AgentTool, Approver, Backend, Decision, DeltaSink, NoApprover, Participant,
     ParticipantConfig, ParticipantError, Progress, ProgressSink, ProposedAction, Reply, TurnRequest,
 };
 use async_trait::async_trait;
@@ -106,16 +106,15 @@ impl CliParticipant {
     }
 
     /// A Codex turn through its app server, which reports the reply as it
-    /// is written. `Ok(None)` means the app server could not be used and
-    /// nothing was asked of the model, so the caller should run the turn
-    /// the plain way instead.
+    /// is written. An unavailable server refuses the turn: exec cannot
+    /// enforce Deck MCP approval cards.
     async fn run_codex_server(
         &self,
         model: Option<&str>,
         prompt: &str,
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
-    ) -> Result<Option<Reply>, ParticipantError> {
+    ) -> Result<Reply, ParticipantError> {
         let program = "codex";
         let args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
         let child = self.start(program, &args)?;
@@ -127,10 +126,9 @@ impl CliParticipant {
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
         };
         match codex_server::run(child, turn, prompt, on_progress, approver).await {
-            Ok(reply) => Ok(Some(reply)),
+            Ok(reply) => Ok(reply),
             Err(TurnError::Unavailable(why)) => {
-                eprintln!("[apex-deck] Codex app server not used ({why}); running `codex exec` instead");
-                Ok(None)
+                Err(ParticipantError::Failed(format!("Codex app server unavailable ({why}); this turn did not run because MCP approvals require it.")))
             }
             Err(TurnError::Failed(why)) => {
                 eprintln!("[apex-deck] `{program}` turn failed: {why}");
@@ -447,11 +445,9 @@ impl Participant for CliParticipant {
         let turn = async {
             // Codex writes its reply live only through its app server.
             if let Backend::Agent { tool: AgentTool::Codex, model } = &self.config.backend {
-                if let Some(reply) = self.run_codex_server(model.as_deref(), &prompt, on_progress, &approver).await? {
-                    return Ok(reply);
-                }
+                return self.run_codex_server(model.as_deref(), &prompt, on_progress, &approver).await;
             }
-            if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) && self.config.access == Access::Ask {
+            if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
                 return self.run_claude_asking(program, &args, &prompt, on_progress, &approver).await;
             }
             self.run(program, &args, format, prompt, on_progress).await

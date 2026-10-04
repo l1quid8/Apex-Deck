@@ -30,6 +30,8 @@ pub enum ActionKind {
     Edit,
     /// Run a command. The detail is the command line.
     Command,
+    /// An MCP tool call. The detail is its complete JSON arguments.
+    Tool,
     /// Anything else a tool asks permission for.
     Other,
 }

@@ -25,11 +25,6 @@ use tokio::process::{Child, ChildStdin};
 use crate::events::{EventReader, OutputFormat};
 use crate::report;
 
-/// The flags that turn on the two-way mode. They follow `-p` and the event
-/// output flags; see `presets.rs`.
-pub(crate) const ASK_ARGS: &[&str] =
-    &["--input-format", "stream-json", "--permission-mode", "default", "--permission-prompt-tool", "stdio"];
-
 pub(crate) fn user_message(prompt: &str) -> Value {
     json!({ "type": "user", "message": { "role": "user", "content": prompt } })
 }
@@ -92,8 +87,13 @@ pub(crate) async fn run(
                 let reply = if request["subtype"] == "can_use_tool" {
                     let tool = request["tool_name"].as_str().unwrap_or("a tool");
                     let action = reader.claude_action(tool, &request["input"]);
-                    on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
-                    let decision = approver.decide(action).await;
+                    let decision = match crate::mcp::claude_tool(tool) {
+                        Some((_, name)) if !crate::mcp::needs_approval(name) => Decision::Approve,
+                        _ => {
+                            on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
+                            approver.decide(action).await
+                        },
+                    };
                     permission_response(&message["request_id"], &request["input"], decision)
                 } else {
                     // Something else it wants from its host. Say so plainly

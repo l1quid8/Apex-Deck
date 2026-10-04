@@ -13,6 +13,7 @@ mod claude_session;
 mod cli;
 mod codex_server;
 mod events;
+mod mcp;
 mod openai;
 mod presets;
 
