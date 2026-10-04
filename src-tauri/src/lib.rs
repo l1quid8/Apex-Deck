@@ -4,11 +4,13 @@
 //! - `pty-data`   `{ id, data }`   terminal output
 //! - `pty-exit`   `{ id, code }`   the program in a terminal ended
 //! - `room-event` `{ room, event }` something happened in a group chat
+//! - `quit-requested` `request` the window or app was asked to close; answer with `quit_heard`
 
 mod agents;
 mod export;
 mod changes;
 mod pty;
+mod quit;
 mod storage;
 
 use std::collections::HashMap;
@@ -792,17 +794,57 @@ async fn save_room(state: &AppState, store: &Store, id: &str) -> Result<(), Stri
     checkpoint_room(&state.handle(id)?, store, id).await
 }
 
+// ---------------------------------------------------------------- quitting
+
+/// Ask the window about quit request `request`, and let the quit through if
+/// the window hasn't said it got it within `quit::ANSWER_TIME`.
+fn ask_to_quit(app: &AppHandle, request: u64) {
+    let _ = app.emit("quit-requested", request);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(quit::ANSWER_TIME);
+        let gate = app.state::<quit::QuitGate>();
+        if gate.unanswered(request) {
+            gate.confirm();
+            app.exit(0);
+        }
+    });
+}
+
+/// The window got quit request `request` and is asking the person.
+#[tauri::command]
+fn quit_heard(gate: State<'_, quit::QuitGate>, request: u64) {
+    gate.heard(request);
+}
+
+/// Quit now: the person chose to, or nothing was running. Every terminal
+/// ends on the way out (`RunEvent::Exit`).
+#[tauri::command]
+fn quit_app(app: AppHandle, gate: State<'_, quit::QuitGate>) {
+    gate.confirm();
+    app.exit(0);
+}
+
 // ---------------------------------------------------------------- app
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(quit::QuitGate::default())
         .setup(|app| {
             let root = app.path().app_data_dir()?.join("saved-chats-v1");
             app.manage(Store::new(root));
             apex_adapters::allow_reading(&app.path().app_data_dir()?.join("attachments"));
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == quit::QUIT_MENU_ID {
+                match app.state::<quit::QuitGate>().request(None) {
+                    Some(request) => ask_to_quit(app, request),
+                    None => app.exit(0),
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             session_load,
@@ -840,14 +882,33 @@ pub fn run() {
             api_models,
             agent_models,
             open_target,
-        ])
+            quit_heard,
+            quit_app,
+        ]);
+    // The system Quit item ends the app without asking; Deck's own asks first.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(|handle| quit::app_menu(handle));
+    builder
         .build(tauri::generate_context!())
         .expect("error while building Apex Deck")
-        .run(|app, event| {
-            // Do not leave agents running after the window is gone.
-            if let tauri::RunEvent::Exit = event {
-                app.state::<AppState>().ptys.kill_all();
+        .run(|app, event| match event {
+            // The close button and ⌘W.
+            tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::CloseRequested { api, .. }, .. } => {
+                if let Some(request) = app.state::<quit::QuitGate>().request(None) {
+                    api.prevent_close();
+                    ask_to_quit(app, request);
+                }
             }
+            // The last window going away (no code), or an exit with a code, which is never held.
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                if let Some(request) = app.state::<quit::QuitGate>().request(code) {
+                    api.prevent_exit();
+                    ask_to_quit(app, request);
+                }
+            }
+            // Do not leave agents running after the window is gone.
+            tauri::RunEvent::Exit => app.state::<AppState>().ptys.kill_all(),
+            _ => {}
         });
 }
 
