@@ -774,8 +774,10 @@ textarea {
   margin: 0 4px;
   opacity: 0.6;
 }
+/* Low readings are not failures: they get weight and the word "low", never the danger colour. */
 .usage-low {
-  color: var(--danger);
+  color: var(--text);
+  font-weight: 650;
 }
 /* The usage card under a chip, opened by hovering or focusing it. */
 .chip-wrap {
@@ -944,7 +946,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .empty p { font-size: 13px; line-height: 1.8; }
 .empty .eyebrow { font-size: 9px; }
 .composer-input { flex: 1; min-width: 0; }
-.composer-hint { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; color: var(--muted); font-size: 10px; }
+.composer-hint { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; color: var(--muted); font-size: 11px; }
 .composer > button { min-height: 40px; margin-top: 18px; }
 .chip button:hover { background: #ffffff09; }
 .chip button:focus-visible { outline-offset: -3px; }
@@ -1335,7 +1337,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .attention-button.done { border-color: color-mix(in srgb, var(--brand-cyan) 45%, transparent); color: var(--brand-cyan); }
 .attention-list {
   position: absolute;
-  right: 0;
+  left: 0;
   top: calc(100% + 8px);
   z-index: 40;
   width: min(380px, 80vw);
@@ -1678,3 +1680,176 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 
 .server-chip { color: var(--accent); background: color-mix(in srgb, currentColor 10%, transparent); border-radius: 4px; padding: 1px 4px; }
 .server-error { font-size: 12px; color: #ef8b8b; padding: 4px 8px; }
+/* UI review, stage 1: closing, deleting and the rounds stepper. */
+.pane-row.closed .pane-row-title { color: var(--muted); }
+.pane-menu-wrap { position: relative; display: inline-flex; }
+.pane-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 45;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.pane-menu button {
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.pane-menu button:hover:not(:disabled), .pane-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.pane-menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.danger-text { color: var(--danger); }
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 12, 0.6);
+}
+.confirm {
+  width: min(380px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.confirm p { margin: 0; font-size: 12px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 8px 8px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.stepper-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.stepper { display: inline-flex; align-items: stretch; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--bg); }
+.stepper button { border: 0; border-radius: 0; padding: 0; width: 28px; min-height: 28px; background: var(--panel-2); }
+.stepper button:first-child { border-right: 1px solid var(--line); }
+.stepper button:last-child { border-left: 1px solid var(--line); }
+.chat-options .stepper input {
+  width: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.stepper input::-webkit-outer-spin-button, .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* UI review, stage 3: one compact row per bot in thread details. */
+.details-bot { border: 0; border-radius: 6px; padding: 6px 4px; margin-bottom: 4px; }
+.details-bot:hover { background: #ffffff05; }
+.details-bot-row { display: flex; align-items: flex-start; gap: 10px; }
+.details-bot-copy { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 1px; }
+.details-bot-copy strong { font-size: 12px; font-weight: 650; }
+.details-bot-copy .muted { font-size: 11px; overflow-wrap: anywhere; }
+.bot-meters { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 3px; }
+.bot-meter { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bot-meter-track { display: inline-flex; width: 30px; height: 4px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.bot-meter-track > span { border-radius: 999px; background: var(--muted); }
+.bot-meter-track > span.low { background: var(--text); }
+.details-bot-usage { margin: 2px 0 0 38px; font-size: 11px; color: var(--muted); }
+.details-bot-usage > summary { cursor: pointer; width: fit-content; padding: 2px 0; }
+.details-bot-usage[open] > summary { color: var(--text); }
+
+/* UI review, stage 3: + New as a menu over the deck. */
+.new-menu { position: relative; }
+.new-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 40;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.new-menu-filter { margin-bottom: 3px; padding: 7px 10px; font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.new-menu-list > button { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 0; background: transparent; text-align: left; font-size: 12px; }
+.new-menu-list > button strong { font-weight: 600; }
+.new-menu-list > button span { color: var(--muted); font-size: 11px; }
+.new-menu-list > button .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.new-menu-list > button.active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.new-menu-enter { margin-left: auto; }
+.new-menu-missing { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); margin-top: 3px; }
+button.link { padding: 0; border: 0; background: transparent; color: var(--brand-cyan); font-size: 11px; }
+button.link:hover:not(:disabled) { text-decoration: underline; }
+.new-menu-foot { display: flex; justify-content: space-between; padding: 5px 10px 3px; border-top: 1px solid var(--line); margin-top: 3px; font-size: 11px; color: var(--muted); }
+.new-menu-empty { margin: 4px 10px; font-size: 12px; }
+
+/* UI review, stage 3: add a bot from a menu at the button. */
+.quick-add-wrap { position: relative; display: inline-flex; }
+.quick-add {
+  position: absolute;
+  top: calc(100% + 8px);
+  z-index: 35;
+  width: min(330px, 86vw);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  text-align: left;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.quick-add-wrap.empty .quick-add { left: 50%; transform: translateX(-50%); }
+.quick-add-wrap.details .quick-add { left: 0; width: min(296px, 86vw); }
+.quick-add label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); min-width: 0; }
+.quick-add label input, .quick-add label select { font-size: 12px; color: var(--text); min-width: 0; width: 100%; }
+.quick-add-label { font-size: 11px; color: var(--muted); }
+.quick-add-saved { display: flex; flex-wrap: wrap; gap: 6px; }
+.quick-add-chip { padding: 3px 10px; border-radius: 999px; background: var(--panel); font-size: 12px; }
+.quick-add-tools { display: flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.quick-add-tools button { flex: 1; padding: 4px 6px; border: 1px solid transparent; background: transparent; font-size: 12px; color: var(--muted); }
+.quick-add-tools button.on { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+.quick-add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.quick-add-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.quick-add .form-error { margin: 0; }
+.attention-foot { display: flex; justify-content: space-between; gap: 12px; padding: 6px 10px 4px; margin-top: 2px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--bg); }
+
+/* UI review, stage 4: Agents starters and the sample thread. */
+.agents-empty { display: flex; flex-direction: column; align-items: stretch; gap: 10px; text-align: left; }
+.starters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.starters button { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 12px; border-radius: 10px; text-align: left; background: var(--panel-2); }
+.starters button span { font-size: 12px; color: var(--muted); }
+.starters-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; }
+.welcome-note { font-size: 11px; margin-top: -6px; }
+@media (max-width: 720px) { .starters { grid-template-columns: minmax(0, 1fr); } }
+.new-menu > .primary, .attention-button { white-space: nowrap; }
+/* Between the wrapped phone layout and a full window the title bar is tight: keep the mark, drop the name. */
+@media (max-width: 960px) and (min-width: 721px) {
+  .titlebar > .brand { font-size: 0; gap: 0; }
+}

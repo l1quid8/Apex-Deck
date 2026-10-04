@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBackend, type Backend } from "./backend";
 import { ProviderSettings } from "./ProviderSettings";
 import { providerEnabled } from "./providers";
-import { detailsOverlay, type DetailsSection } from "./detailsLayout";
+import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { DetailsHost } from "./ThreadDetails";
 import { ThreadName } from "./ThreadName";
 import { ChatPane } from "./ChatPane";
@@ -11,11 +11,15 @@ import { startHub } from "./hub";
 import { SectionNavigation } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { DeckIcon } from "./DeckIcon";
+import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
-import { label, summarize, type Attention, type Signal } from "./attention";
+import { label, summarize, urgency, workspaceFlag, type Attention, type Signal } from "./attention";
+import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
+import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, savedThreads } from "./closing";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -56,6 +60,14 @@ const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
 
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
+  /** Code or Threads, whichever was used last; a workspace clicked in Agents opens there. */
+  const [lastDeck, setLastDeck] = useState<"code" | "threads">("threads");
+  useEffect(() => { if (section !== "agents") setLastDeck(section); }, [section]);
+  /** Bumped by the title bar's + New agent button. */
+  const [newAgentRequest, setNewAgentRequest] = useState(0);
+  /** What each thread's head says: "2 bots", "2 bots · replying". */
+  const [threadStatus, setThreadStatus] = useState<Record<string, string>>({});
+  const onThreadStatus = useCallback((paneId: string, text: string) => setThreadStatus((all) => (all[paneId] === text ? all : { ...all, [paneId]: text })), []);
   const [disabledProviders, setDisabledProviders] = useState<string[]>([]);
   const [managingProviders, setManagingProviders] = useState(false);
   const [profiles, setProfiles] = useState<ParticipantConfig[]>([]);
@@ -67,6 +79,8 @@ export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
   const [panes, setPanes] = useState<Pane[]>([]);
   const [focusedPane, setFocusedPane] = useState<string | null>(null);
+  /** Threads in the order they were last focused, most recent first. */
+  const [recentThreads, setRecentThreads] = useState<string[]>([]);
   const [maximized, setMaximized] = useState<string | null>(null);
   const [layout, setLayout] = useState<Layout>("top");
   /** How the panes of each workspace section are arranged. */
@@ -75,6 +89,19 @@ export function App() {
   const [resizing, setResizing] = useState(false);
   const gridArea = useRef<HTMLDivElement>(null);
   const [picking, setPicking] = useState(false);
+  /** A question waiting for Cancel or go ahead. */
+  const [question, setQuestion] = useState<Question | null>(null);
+  /** Threads deleted but still inside their undo time, by pane id. */
+  const [deleting, setDeleting] = useState<Set<string>>(new Set());
+  const deleteTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  /** The latest delete, offered for undo. */
+  const [undoable, setUndoable] = useState<{ id: string; title: string } | null>(null);
+  /** The pane whose ⋯ menu is open. */
+  const [paneMenu, setPaneMenu] = useState<string | null>(null);
+  /** Bumped by ⌘T to open the + New menu. */
+  const [newMenuRequest, setNewMenuRequest] = useState(0);
+  /** Bumped to start renaming a thread from its ⋯ menu. */
+  const [renameRequests, setRenameRequests] = useState<Record<string, number>>({});
   const [railOpen, setRailOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
@@ -84,6 +111,8 @@ export function App() {
   const canvasRef = useRef<HTMLElement>(null);
   const detailsToggle = useRef<HTMLButtonElement>(null);
   const focusDetails = useRef(false);
+  /** Whether a thread is on screen for the sidebar; read by the Escape handler. */
+  const detailsTargetRef = useRef<string | null>(null);
   const pendingSection = useRef<DetailsSection | undefined>(undefined);
   const overlayDetails = detailsOverlay(availableWidth);
   const closeDetails = () => { setDetailsOpen(false); detailsToggle.current?.focus(); };
@@ -93,8 +122,8 @@ export function App() {
     if (target) setDetailsCollapsed(old => ({ ...old, [target]: false }));
     setDetailsOpen(true);
   };
-  const detailsHost: DetailsHost = { slot: detailsSlot, open: detailsOpen && section === "threads", collapsed: detailsCollapsed,
-    toggle: target => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
+  const detailsHostBase = { slot: detailsSlot, open: detailsOpen && section === "threads", collapsed: detailsCollapsed,
+    toggle: (target: DetailsSection) => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
@@ -117,7 +146,7 @@ export function App() {
     }
   }, [detailsOpen, detailsSlot, detailsCollapsed]);
   useEffect(() => {
-    if (!detailsOpen || section !== "threads" || !overlayDetails) return;
+    if (!detailsOpen || section !== "threads" || !overlayDetails || !detailsTargetRef.current) return;
     const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); closeDetails(); } };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
@@ -139,7 +168,7 @@ export function App() {
       setAgents(found);
       const known = saved?.workspaces ?? loadWorkspaces();
       setWorkspaces(known);
-      setPanes((saved?.panes ?? []).filter((p) => p.kind === "chat" && known.some((w) => w.id === p.workspaceId)));
+      setPanes(loadedThreads(saved?.panes ?? [], known.map((w) => w.id)));
       setProfiles(saved?.profiles ?? []);
       setDisabledProviders(saved?.disabledProviders ?? []);
       setSection(saved?.section ?? "threads");
@@ -178,7 +207,7 @@ export function App() {
     saveWorkspaces(workspaces);
     // Terminals are not restored, so only the arrangement of threads is kept.
     const kept = Object.fromEntries(Object.entries(layouts).filter(([key]) => key.endsWith(":threads") && workspaces.some((w) => key === layoutKey(w.id, "threads"))));
-    const session: AppSession = { version: 1, workspaces, panes: panes.filter((p) => p.kind === "chat"), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: kept, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
+    const session: AppSession = { version: 1, workspaces, panes: savedThreads(panes), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: kept, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
@@ -209,8 +238,15 @@ export function App() {
     return Date.now() - last < WORKING_WINDOW_MS ? "working" : "idle";
   };
 
-  const visiblePanes = useMemo(() => panes.filter((p) => p.workspaceId === activeWorkspace && (section === "code" ? p.kind === "terminal" : section === "threads" && p.kind === "chat")), [panes, activeWorkspace, section]);
+  const visiblePanes = useMemo(() => openPanes(panes, deleting).filter((p) => p.workspaceId === activeWorkspace && (section === "code" ? p.kind === "terminal" : section === "threads" && p.kind === "chat")), [panes, deleting, activeWorkspace, section]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
+  useEffect(() => {
+    if (focusedPane && panes.some((p) => p.id === focusedPane && p.kind === "chat")) setRecentThreads((recent) => (recent[0] === focusedPane ? recent : noteFocus(recent, focusedPane)));
+  }, [focusedPane, panes]);
+  /** The thread the details sidebar shows; null when no thread is on screen. */
+  const detailsTarget = section === "threads" && !picking ? detailsThread(focusedPane, shown.filter((p) => p.kind === "chat").map((p) => p.id), recentThreads) : null;
+  detailsTargetRef.current = detailsTarget;
+  const detailsHost: DetailsHost = { ...detailsHostBase, target: detailsTarget };
 
   // The arrangement of the panes in view. Panes that were added or closed
   // since it was last stored are worked in here, so it always matches.
@@ -264,11 +300,27 @@ export function App() {
   };
 
   const removeWorkspace = async (id: string) => {
+    for (const pane of panes.filter((p) => p.workspaceId === id)) {
+      clearTimeout(deleteTimers.current.get(pane.id));
+      deleteTimers.current.delete(pane.id);
+    }
     try {
       for (const pane of panes.filter((p) => p.workspaceId === id && p.kind === "chat")) await backend?.roomDelete(pane.id);
     } catch (error) { setStorageError(String(error)); return; }
     setPanes((list) => list.filter((p) => p.workspaceId !== id));
     setWorkspaces((list) => list.filter((w) => w.id !== id));
+  };
+
+  /** A workspace with no folder and a thread of two scripted bots, to try a room without keys. */
+  const trySample = () => {
+    const workspace = { id: newId("ws"), name: "Sample", path: "" };
+    const pane: Pane = { id: newId("pane"), workspaceId: workspace.id, kind: "chat", title: "Sample thread", sample: true };
+    setWorkspaces((list) => [...list, workspace]);
+    setActiveWorkspace(workspace.id);
+    setPanes((list) => [...list, pane]);
+    setFocusedPane(pane.id);
+    setSection("threads");
+    setPicking(false);
   };
 
   const renamePane = (id: string, title: string) => setPanes(list => list.map(p => p.id === id ? {...p, title} : p));
@@ -362,23 +414,109 @@ export function App() {
     threads: summarize(attentionItems.filter((i) => i.where === "Threads").map((i) => i.signal)),
   };
 
-  const closePane = async (id: string) => {
-    if (panes.find((p) => p.id === id)?.kind === "chat") {
-      try { await backend?.roomDelete(id); } catch (error) { setStorageError(String(error)); return; }
-    }
-    setPanes((list) => list.filter((p) => p.id !== id));
-    lastOutput.current.delete(id);
+  /** Take a pane off the deck. */
+  const takeOff = (id: string) => {
     if (maximized === id) setMaximized(null);
     if (focusedPane === id) setFocusedPane(null);
   };
 
+  /** × on a pane head. It never deletes: a thread is closed and stays in the rail. */
+  const closePane = (id: string) => {
+    const pane = panes.find((p) => p.id === id);
+    if (!pane) return;
+    if (pane.kind === "chat") {
+      setPanes((list) => list.map((p) => (p.id === id ? { ...p, closed: true } : p)));
+      takeOff(id);
+      return;
+    }
+    const end = () => {
+      setPanes((list) => list.filter((p) => p.id !== id));
+      lastOutput.current.delete(id);
+      takeOff(id);
+    };
+    const status = statusOf(pane);
+    if (closeNeedsConfirm(pane.kind, status)) setQuestion({ ...closeQuestion(pane.title, status), onConfirm: end });
+    else end();
+  };
+
+  /** Delete a thread once the undo time runs out. Quitting before then keeps it. */
+  const deleteThread = (pane: Pane) => {
+    setQuestion({
+      title: `Delete ${pane.title}?`,
+      body: "Its messages and pins are removed.",
+      action: "Delete thread",
+      onConfirm: () => {
+        setDeleting((set) => new Set(set).add(pane.id));
+        takeOff(pane.id);
+        setUndoable({ id: pane.id, title: pane.title });
+        deleteTimers.current.set(pane.id, setTimeout(async () => {
+          deleteTimers.current.delete(pane.id);
+          try {
+            await backend?.roomDelete(pane.id);
+            setPanes((list) => list.filter((p) => p.id !== pane.id));
+          } catch (error) {
+            setStorageError(`Could not delete ${pane.title}: ${String(error)}`);
+          }
+          setDeleting((set) => { const next = new Set(set); next.delete(pane.id); return next; });
+          setUndoable((u) => (u?.id === pane.id ? null : u));
+        }, UNDO_MS));
+      },
+    });
+  };
+
+  const undoDelete = () => {
+    if (!undoable) return;
+    clearTimeout(deleteTimers.current.get(undoable.id));
+    deleteTimers.current.delete(undoable.id);
+    setDeleting((set) => { const next = new Set(set); next.delete(undoable.id); return next; });
+    setUndoable(null);
+  };
+
+  // The ⋯ menu closes on a click elsewhere or Escape.
+  useEffect(() => {
+    if (!paneMenu) return;
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".pane-menu-wrap")) setPaneMenu(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") setPaneMenu(null); };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key); };
+  }, [paneMenu]);
+
   const focusPane = (pane: Pane) => {
+    if (pane.closed) setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, closed: false } : p)));
     setActiveWorkspace(pane.workspaceId);
     setSection(pane.kind === "chat" ? "threads" : "code");
     setPicking(false);
     setFocusedPane(pane.id);
     if (maximized && maximized !== pane.id) setMaximized(null);
   };
+
+  // Deck shortcuts, caught before a terminal or the composer sees them. See shortcuts.ts.
+  const onShortcut = useRef<(event: KeyboardEvent) => void>(() => {});
+  onShortcut.current = (event) => {
+    const action = shortcutFor(event, /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent));
+    if (!action || question) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (action.kind === "section") { setSection(action.section); setPicking(false); setMaximized(null); }
+    else if (action.kind === "new_terminal") { if (current) { setSection("code"); setNewMenuRequest((n) => n + 1); } }
+    else if (action.kind === "new_thread") { if (current) addPane("chat", "Group chat"); }
+    else if (action.kind === "next_attention") {
+      const next = [...attentionItems].sort((a, b) => urgency(a.signal.kind) - urgency(b.signal.kind) || b.signal.at - a.signal.at)[0];
+      const pane = next && panes.find((p) => p.id === next.paneId);
+      if (pane) focusPane(pane);
+    } else if (action.kind === "cycle_pane") {
+      const next = cyclePane(leafIds(tree).filter((id) => shown.some((p) => p.id === id)), focusedPane, action.step);
+      if (next) { setFocusedPane(next); if (maximized) setMaximized(next); }
+    } else if (action.kind === "maximize") {
+      if (focusedPane && visiblePanes.some((p) => p.id === focusedPane)) setMaximized((m) => (m === focusedPane ? null : focusedPane));
+    }
+  };
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => onShortcut.current(event);
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, []);
 
   if (!backend) return (
     <div className="loading">
@@ -432,32 +570,43 @@ export function App() {
         </span>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />
-        <span className="spacer" />
+        {/* Before the spacer, so growing never moves the controls on the right. */}
         <AttentionMenu items={attentionItems} onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }} />
+        <span className="spacer" />
         <button className="ghost" onClick={() => setManagingProviders((open) => !open)} aria-expanded={managingProviders}>Providers</button>
-        {section !== "agents" && (
+        {(
           <div className="layout-presets" role="group" aria-label="Arrange panes">
-            <button onClick={() => arrange("grid")} disabled={visiblePanes.length < 2} title="Even grid" aria-label="Arrange as an even grid">
+            <button onClick={() => arrange("grid")} disabled={section === "agents" || visiblePanes.length < 2} title="Even grid" aria-label="Arrange as an even grid">
               <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" /><rect x="9" y="1.5" width="5.5" height="5.5" rx="1" /><rect x="1.5" y="9" width="5.5" height="5.5" rx="1" /><rect x="9" y="9" width="5.5" height="5.5" rx="1" /></svg>
             </button>
-            <button onClick={() => arrange("top")} disabled={visiblePanes.length < 2} title="Large pane on top, the rest below" aria-label="Arrange with a large pane on top">
+            <button onClick={() => arrange("top")} disabled={section === "agents" || visiblePanes.length < 2} title="Large pane on top, the rest below" aria-label="Arrange with a large pane on top">
               <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="13" height="7.5" rx="1" /><rect x="1.5" y="11" width="5.5" height="3.5" rx="1" /><rect x="9" y="11" width="5.5" height="3.5" rx="1" /></svg>
             </button>
-            <button onClick={() => arrange("left")} disabled={visiblePanes.length < 2} title="Large pane on the left, the rest beside it" aria-label="Arrange with a large pane on the left">
+            <button onClick={() => arrange("left")} disabled={section === "agents" || visiblePanes.length < 2} title="Large pane on the left, the rest beside it" aria-label="Arrange with a large pane on the left">
               <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="7.5" height="13" rx="1" /><rect x="11" y="1.5" width="3.5" height="5.5" rx="1" /><rect x="11" y="9" width="3.5" height="5.5" rx="1" /></svg>
             </button>
           </div>
         )}
-        {section !== "agents" && <button className="primary" onClick={() => setPicking(true)} disabled={!current}>
-          {section === "threads" ? "+ New thread" : "+ New terminal"}
-        </button>}
+        {section === "agents" && <button className="primary" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
+        {section !== "agents" && <NewMenu
+          section={section}
+          label={section === "threads" ? "+ New thread" : "+ New terminal"}
+          disabled={!current}
+          agents={agents}
+          disabledProviders={disabledProviders}
+          hasPanes={visiblePanes.length > 0}
+          onShowPicker={() => setPicking(true)}
+          onPick={(item) => addPane(item.kind, item.kind === "chat" ? "Group chat" : item.label, item.agent)}
+          onManageProviders={() => setManagingProviders(true)}
+          openRequest={newMenuRequest}
+        />}
         {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
       </header>
 
       {managingProviders && <ProviderSettings agents={agents} disabled={disabledProviders} onChange={setDisabledProviders} onClose={() => setManagingProviders(false)} />}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       <div className="body" ref={bodyRef}>
-        {railOpen && section !== "agents" && (
+        {railOpen && (
           <aside className="rail">
             <div className="rail-head">
               <span>Workspaces</span>
@@ -467,17 +616,18 @@ export function App() {
             </div>
             {workspaces.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
             {workspaces.map((workspace) => {
-              const own = panes.filter((p) => p.workspaceId === workspace.id && p.kind === (section === "code" ? "terminal" : "chat"));
+              const own = section === "agents" ? [] : panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && p.kind === (section === "code" ? "terminal" : "chat"));
               return (
                 <div key={workspace.id} className="ws">
                   <div className={`ws-row ${workspace.id === activeWorkspace ? "active" : ""}`}>
-                    <button className="ws-name" onClick={() => setActiveWorkspace(workspace.id)} title={workspace.path || workspace.name}>
+                    <button className="ws-name" onClick={() => { setActiveWorkspace(workspace.id); if (section === "agents") setSection(lastDeck); }} title={workspace.path || workspace.name}>
                       <DeckIcon name="folder" size={16} /><span className="ws-label">{workspace.name}</span>
-                      {own.length > 0 && <span className="count">{own.length}</span>}
                       {(() => {
-                        const inside = panes.filter((p) => p.workspaceId === workspace.id && attention[p.id]).map((p) => attention[p.id]);
-                        const { count, worst } = summarize(inside);
-                        return count > 0 ? <span className={`flag-count ${worst ?? ""}`} title={`${count} want attention in this workspace`}>{count}</span> : null;
+                        const inside = panes
+                          .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
+                          .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
+                        const flag = workspaceFlag(inside, section === "code" ? "Code" : section === "threads" ? "Threads" : null);
+                        return flag ? <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span> : null;
                       })()}
                     </button>
                     <button className="icon small" onClick={() => removeWorkspace(workspace.id)} aria-label={`Remove ${workspace.name}`} title="Remove from list (closes its panes, keeps the folder)">
@@ -485,7 +635,7 @@ export function App() {
                     </button>
                   </div>
                   {own.map((pane) => (
-                    <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane ? "focused" : ""}`} onClick={() => focusPane(pane)}>
+                    <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}>
                       <span className={`dot ${statusOf(pane)}`} title={statusOf(pane)} />
                       <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} />
                       {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note}>{label(attention[pane.id].kind)}</span>}
@@ -498,7 +648,7 @@ export function App() {
         )}
 
         <main ref={canvasRef} className={`canvas section-${section}`}>
-          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} />}
+          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} addRequest={newAgentRequest} />}
           {section !== "agents" && !current && (
             <div className="picker">
               <img className="welcome-logo" src="/branding/mark.svg" alt="" width="80" height="80" />
@@ -508,6 +658,8 @@ export function App() {
               <button className="primary" onClick={addWorkspace}>
                 <DeckIcon name="folder" /> Add a workspace <DeckIcon name="arrow" size={16} />
               </button>
+              <button onClick={trySample}>Try a sample thread</button>
+              <span className="muted welcome-note">Scripted bots. No keys needed.</span>
               <div className="welcome-capabilities"><span>01 / Agents</span><span>02 / Code</span><span>03 / Threads</span></div>
             </div>
           )}
@@ -528,16 +680,30 @@ export function App() {
                   style={visible && rect ? paneStyle(rect) : { display: "none" }}
                   onMouseDown={() => setFocusedPane(pane.id)}
                 >
-                  <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={maximized || visiblePanes.length < 2 ? undefined : "Drag onto another pane to move it"}>
+                  <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
-                    {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} /> : <span className="pane-title">{pane.title}</span>}
-                    <span className="pane-folder">{workspace?.name}</span>
+                    {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} /> : <span className="pane-title">{pane.title}</span>}
+                    {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id] ?? "" : status === "working" ? "Working" : status === "exited" ? "Exited" : "Idle"}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
                       {maximized === pane.id ? "▣" : "□"}
                     </button>
-                    <button className="icon small" onClick={() => closePane(pane.id)} aria-label={pane.kind === "chat" ? "Delete thread" : "Close pane"} title={pane.kind === "chat" ? "Delete this saved thread" : "Close (ends what is running in it)"}>
+                    {pane.kind === "chat" && (
+                      <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
+                        <button className="icon small" onClick={() => setPaneMenu((open) => (open === pane.id ? null : pane.id))} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
+                          ⋯
+                        </button>
+                        {paneMenu === pane.id && (
+                          <span className="pane-menu" role="menu">
+                            <button role="menuitem" onClick={() => { setPaneMenu(null); setRenameRequests((all) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 })); }}>Rename</button>
+                            <span className="pane-menu-sep" role="separator" />
+                            <button role="menuitem" className="danger-text" onClick={() => { setPaneMenu(null); deleteThread(pane); }}>Delete thread…</button>
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    <button className="icon small" onClick={() => closePane(pane.id)} aria-label={`Close ${pane.title}`} title={pane.kind === "chat" ? "Close (the thread stays in the list)" : "Close"}>
                       ×
                     </button>
                   </div>
@@ -545,7 +711,7 @@ export function App() {
                     {pane.kind === "terminal" ? (
                       <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onExit={onExit} onSignal={onSignal} />
                     ) : (
-                      <ChatPane details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} />
+                      <ChatPane onStatus={onThreadStatus} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} />
                     )}
                   </div>
                 </section>
@@ -555,13 +721,19 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
         </main>
-        {section === "threads" && detailsOpen && <>
+        {section === "threads" && detailsOpen && detailsTarget && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close thread details overlay" onClick={closeDetails} />}
           <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} aria-label="Thread details">
-            {!(section === "threads" && !picking && shown.some(p => p.kind === "chat" && p.id === focusedPane)) && <p className="muted details-empty">Select a thread to see its bots and changes.</p>}
           </aside>
         </>}
       </div>
+      {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
+      {undoable && (
+        <div className="toast" role="status">
+          <span>{undoable.title} deleted.</span>
+          <button onClick={undoDelete}>Undo</button>
+        </div>
+      )}
     </div>
   );
 }

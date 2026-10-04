@@ -1,8 +1,10 @@
-import { useState } from "react";
-/** Inline naming works with the keyboard and saves through the existing session. */
-export function ThreadName({title, onRename, className}: {title: string; onRename: (name: string) => void; className?: string}) {
+import { useEffect, useState } from "react";
+/** Inline naming works with the keyboard and saves through the existing session.
+ *  `renameRequest` starts editing each time it changes, for a Rename menu item. */
+export function ThreadName({title, onRename, className, renameRequest}: {title: string; onRename: (name: string) => void; className?: string; renameRequest?: number}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
+  useEffect(() => { if (renameRequest) { setDraft(title); setEditing(true); } }, [renameRequest]);
   const finish = () => { const name = draft.trim(); if(name) onRename(name); setEditing(false); };
   return editing ? <input className="thread-name-input" aria-label="Thread name" autoFocus value={draft}
     onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}

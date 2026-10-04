@@ -145,6 +145,27 @@ export function summarize(signals: Signal[]): { count: number; worst: Attention 
   return { count: signals.length, worst };
 }
 
+/** Where a pane lives, as the rail and the attention list name it. */
+export type Place = "Code" | "Threads";
+
+/**
+ * The alert pill on a workspace row. Its rows only list the panes of the
+ * section in view, so alerts from the other section say where they are:
+ * "1 · Code", or "2 · 1 in Code" when some are here and some are not.
+ */
+export function workspaceFlag(items: { where: Place; signal: Signal }[], here: Place | null): { count: number; worst: Attention | null; text: string; title: string } | null {
+  const { count, worst } = summarize(items.map((item) => item.signal));
+  if (count === 0) return null;
+  const other: Place | null = here === "Code" ? "Threads" : here === "Threads" ? "Code" : null;
+  const away = other ? items.filter((item) => item.where === other).length : 0;
+  const text = away === 0 ? `${count}` : away === count ? `${count} · ${other}` : `${count} · ${away} in ${other}`;
+  const per = (["Code", "Threads"] as const)
+    .map((place) => [place, items.filter((item) => item.where === place).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([place, n]) => `${n} in ${place}`);
+  return { count, worst, text, title: `${count === 1 ? "1 wants" : `${count} want`} attention: ${per.join(", ")}` };
+}
+
 /** "just now", "3m ago", "2h ago". */
 export function ago(at: number, now: number): string {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
