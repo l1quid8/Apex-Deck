@@ -87,13 +87,16 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
     return () => { live = false; clearTimeout(timer); };
   }, [look, visible, backend, address]);
 
-  // Hosts you chose to always open in your browser: open it once per address.
+  // Hosts you chose to always open in your browser: open it once per address,
+  // when a look finds it refused. Ticking the box itself opens nothing.
+  const external = useRef(openExternally);
+  external.current = openExternally;
   useEffect(() => {
-    if (look.kind === "refused" && openExternally.includes(host) && openedFor.current !== address) {
+    if (look.kind === "refused" && external.current.includes(host) && openedFor.current !== address) {
       openedFor.current = address;
       onOpenInBrowser(address);
     }
-  }, [look, host, address, openExternally, onOpenInBrowser]);
+  }, [look, host, address, onOpenInBrowser]);
 
   const status = !address ? "No page yet"
     : look.kind === "checking" ? "Checking…"
