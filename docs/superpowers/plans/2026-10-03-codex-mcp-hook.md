@@ -213,7 +213,7 @@ The hook's wait can end without an answer: the helper gives up at 570 s, or Code
 **Interfaces:**
 - Produces: `ApprovalDesk::withdraw(&self, request: &str) -> bool`. After this task, dropping any `decide` future is safe: the card is withdrawn, the room sees `ApprovalResolved { approved: false }`, and the quiet clock resumes.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `crates/apex-core/src/approval.rs`, inside `mod tests`:
 
@@ -301,12 +301,12 @@ In `crates/apex-adapters/src/cli.rs`, inside `mod tests`:
     }
 ```
 
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p apex-core withdraw -- --test-threads=1`, then `cargo test -p apex-core approver_tests -- --test-threads=1`, then `cargo test -p apex-adapters an_abandoned_question -- --test-threads=1`
 Expected: the first fails to compile (no `withdraw`). The others fail on `desk.waiting()` being 1 and on `asking` still being true.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `crates/apex-core/src/approval.rs`, in `impl ApprovalDesk`, after `resolve`:
 
@@ -384,12 +384,12 @@ impl Approver for Timed<'_> {
 }
 ```
 
-- [ ] **Step 4: Run the tests to see them pass**
+- [x] **Step 4: Run the tests to see them pass**
 
 Run: `cargo test --workspace -- --test-threads=1`
 Expected: all pass, with no warnings.
 
-- [ ] **Step 5: Commit (once the human has OK'd commits)**
+- [x] **Step 5: Commit (once the human has OK'd commits)**
 
 ```bash
 git add crates/apex-core/src/approval.rs crates/apex-core/src/room.rs crates/apex-adapters/src/cli.rs
@@ -413,7 +413,7 @@ The process Codex runs before each MCP call. It reads the hook input, asks the t
 - Produces (crate): `codex_hook::{SOCKET_ENV, HOOK_TIMEOUT_SECS, Verdict}`. `Verdict` is `enum Verdict { Allow, Deny(String) }`, deriving `Debug, PartialEq`.
 - Wire format, helper to Deck: the hook input JSON object, compact, on one line. Deck to helper: `{"decision":"allow"}` or `{"decision":"deny","reason":"…"}`, on one line.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `crates/apex-adapters/src/codex_hook.rs` with only the tests for now:
 
@@ -489,12 +489,12 @@ mod tests {
 
 In `crates/apex-adapters/src/lib.rs`, after `mod codex_server;`, add `mod codex_hook;`.
 
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p apex-adapters codex_hook -- --test-threads=1`
 Expected: compile errors: `hook_command`, `respond`, `Path`, `PathBuf`, `Duration`, `Value` not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 At the top of `crates/apex-adapters/src/codex_hook.rs`, above the tests:
 
@@ -623,7 +623,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 4: Run the tests to see them pass, and try the real binary**
+- [x] **Step 4: Run the tests to see them pass, and try the real binary**
 
 Run: `cargo test -p apex-adapters codex_hook -- --test-threads=1`
 Expected: 3 passed.
@@ -634,7 +634,7 @@ Expected: one line of JSON with `"permissionDecision":"deny"` and the reason `Ap
 Run: `cargo test --workspace -- --test-threads=1`
 Expected: all pass, with no warnings.
 
-- [ ] **Step 5: Commit (once the human has OK'd commits)**
+- [x] **Step 5: Commit (once the human has OK'd commits)**
 
 ```bash
 git add crates/apex-adapters/src/codex_hook.rs crates/apex-adapters/src/bin/apex-deck-codex-hook.rs crates/apex-adapters/src/lib.rs src-tauri/src/main.rs
@@ -663,7 +663,7 @@ git commit -m "feat: add the Codex hook helper (apex-deck --codex-hook)"
   - `mcp::base_policy() -> Value`
   - `codex_server::run(child, turn, prompt, on_progress, approver, hook: Option<&Hook>)`
 
-- [ ] **Step 1: Write the failing unit tests**
+- [x] **Step 1: Write the failing unit tests**
 
 Append to `mod tests` in `crates/apex-adapters/src/codex_hook.rs`:
 
@@ -773,7 +773,7 @@ Append to `mod tests` in `crates/apex-adapters/src/codex_hook.rs`:
     }
 ```
 
-- [ ] **Step 2: Write the failing end-to-end tests**
+- [x] **Step 2: Write the failing end-to-end tests**
 
 In `crates/apex-adapters/tests/adapters.rs`:
 
@@ -951,12 +951,12 @@ async fn codex_without_the_hook_falls_back_to_the_inventory_policy() {
 }
 ```
 
-- [ ] **Step 3: Run them to see them fail**
+- [x] **Step 3: Run them to see them fail**
 
 Run: `cargo test -p apex-adapters -- --test-threads=1`
 Expected: compile errors: `codex_hook` isn't a field of `BuildContext`; `hook_flag`, `hook_state`, `Gates`, `Hook` and `serve` not found.
 
-- [ ] **Step 4: Implement `codex_hook.rs` (Deck's side)**
+- [x] **Step 4: Implement `codex_hook.rs` (Deck's side)**
 
 Add these imports at the top of `codex_hook.rs`, next to the existing ones:
 
@@ -1241,7 +1241,7 @@ pub(crate) async fn serve(stream: std::convert::Infallible, _: &mut Gates, _: &d
 }
 ```
 
-- [ ] **Step 5: Implement `mcp.rs`**
+- [x] **Step 5: Implement `mcp.rs`**
 
 Add above `codex_policy`:
 
@@ -1258,7 +1258,7 @@ pub(crate) fn base_policy() -> Value {
 
 In `codex_policy`, replace the `let mut config = json!({...});` statement with `let mut config = base_policy();`.
 
-- [ ] **Step 6: Implement `codex_server.rs`**
+- [x] **Step 6: Implement `codex_server.rs`**
 
 Add to the imports: `use crate::codex_hook::{hook_state, hooks_list, next_call, serve, trust_edit, Gates, Hook, HookState, McpCall};`
 
@@ -1426,7 +1426,7 @@ Add this to the end of the module doc at the top of `codex_server.rs`:
 //! turn first lists every MCP tool to set "prompt" on each (`mcp.rs`).
 ```
 
-- [ ] **Step 7: Implement `cli.rs`, `lib.rs` and the Tauri side**
+- [x] **Step 7: Implement `cli.rs`, `lib.rs` and the Tauri side**
 
 In `crates/apex-adapters/src/lib.rs`, add to `BuildContext`:
 
@@ -1481,14 +1481,14 @@ In `src-tauri/src/lib.rs`, in the `BuildContext { … }` literal near line 232, 
         codex_hook: if cfg!(unix) { std::env::current_exe().ok() } else { None },
 ```
 
-- [ ] **Step 8: Run the tests to see them pass**
+- [x] **Step 8: Run the tests to see them pass**
 
 Run: `cargo test --workspace -- --test-threads=1`
 Expected: all pass, with no warnings. Then run `cargo test -p apex-adapters codex_ -- --test-threads=1` three more times to check the end-to-end tests aren't flaky.
 
 If you have a Windows target installed, also run `cargo check -p apex-adapters --target x86_64-pc-windows-msvc`. If you don't, read the `cfg(not(unix))` stubs by eye.
 
-- [ ] **Step 9: Commit (once the human has OK'd commits)**
+- [x] **Step 9: Commit (once the human has OK'd commits)**
 
 ```bash
 git add crates/apex-adapters src-tauri/src/lib.rs
@@ -1504,7 +1504,7 @@ git commit -m "feat: approve Codex MCP calls through a PreToolUse hook"
 - Modify: `docs/superpowers/plans/2026-10-03-open-work.md`
 - Modify: `docs/superpowers/plans/2026-10-03-mcp-safety.md`
 
-- [ ] **Step 1: Build the app and time the helper**
+- [x] **Step 1: Build the app and time the helper**
 
 Run: `npm run tauri build`
 Then time the helper with no Deck socket, which is the slowest case because it still prints a deny:
@@ -1540,7 +1540,7 @@ Then, in the app:
 
 Then remove the fake server: `codex mcp remove deckprobe`.
 
-- [ ] **Step 4: Write it down**
+- [x] **Step 4: Write it down**
 
 In `README.md`, in the MCP approvals section, add:
 
@@ -1559,7 +1559,7 @@ In `2026-10-03-open-work.md`: under "In progress" (or "Current implementation st
 
 In `2026-10-03-mcp-safety.md`, at the top of "### Codex", add: "Superseded on Codex 0.160+ by the PreToolUse hook (`2026-10-03-codex-mcp-hook.md`). The inventory policy below is now the fallback."
 
-- [ ] **Step 5: Commit (once the human has OK'd commits)**
+- [x] **Step 5: Commit (once the human has OK'd commits)**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-10-03-open-work.md docs/superpowers/plans/2026-10-03-mcp-safety.md docs/superpowers/plans/2026-10-03-codex-mcp-hook.md
@@ -1597,3 +1597,13 @@ Null ran Task 1 against the real `codex-cli 0.160.0` app-server on 2026-10-03. E
 The driver verified all fields identifying its own session hook before writing the plan-authorized trust hash through `config/batchWrite` to `hooks.state."/<session-flags>/config.toml:pre_tool_use:0:0"` in the real Codex config. No persistent fake server was added, no trust bypass flag was used, and no other hook was trusted. The current hash refers to the spike helper; Deck's integration will replace it with its own hash.
 
 Current-batch baseline: **204 Rust tests passed serially**, **85 frontend tests passed**, `npm run build` passed (bundle-size advisory), and `git diff --check` passed. No app restart or commit was performed. Tasks 2–5 have not begun; waiting for explicit commit authorization to separate the existing approval, `!server`, and docs changes first.
+
+## Implementation findings
+
+- Task 2 committed as `98c3842`: card/desk cleanup and quiet-clock restart on cancellation. All 208 Rust tests passed serially.
+- Task 3 committed as `1ba9ee0`: helper; all 211 Rust tests passed. Real debug executable denied without opening a window.
+- Task 4 committed as `719ea93`: exact hook trust checks, two-gate approval handling, Unix socket, inventory fallback. All 222 Rust tests passed without warnings; Codex subset repeated three times (27 unit and 15 integration tests each). No Windows target installed; non-Unix stubs read.
+- Implementation corrects the plan's shadowed `call` fixture in the adapter unit test. Spike G6 requires matching plugin server hyphens and app tool dots across gates; a new failing test reproduced duplicate approval, then the fix passed while retaining full argument equality and one-use approvals.
+- Task 5 release app and DMG built at `target/release/bundle/{macos,dmg}`. Helper denied in 0.3772 s on its first launch, then 0.0086/0.0065/0.0058/0.0062 s: the cold run misses the suggested 0.1 s target, warm runs meet it.
+- Two real Codex turns through the production adapter with the release bundle's helper returned `ok`. First: trust activity at 0.280 s, Starting Codex at 0.315 s, text at 5.047 s. Second: Starting Codex at 0.155 s, text at 6.316 s, no trust write. Neither ran the MCP inventory. The trust hash in the session-flags entry now belongs to Deck's bundled helper, replacing the spike helper hash.
+- Native UI remains unverified: the separately built `Apex Deck Hook Check.app` was rejected by computer-use approval ("Computer Use was not approved to use Apex Deck Hook Check"). Production app remains running and was not restarted. Task 5 steps 2 and 3 remain pending; the temporary fake server permission question is unanswered and no server was added. Automated fake-server tests are not human approval-card evidence.

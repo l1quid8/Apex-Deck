@@ -45,6 +45,8 @@ Every agent Deck starts today loads every MCP server its CLI knows about. Nothin
 
 ### Codex (`presets.rs`, `codex_server.rs`)
 
+Superseded on supported Unix Codex 0.160+ app servers by the PreToolUse hook (`2026-10-03-codex-mcp-hook.md`, commit `719ea93`). The inventory policy below is now the fallback.
+
 - Run `codex mcp list --json` before each turn. It's fast; cache it for 60 s. Parse only `name` and `enabled`.
 - For every server that isn't enabled for this thread: `-c mcp_servers.<name>.enabled=false`. Quote the name as a TOML key if it isn't a bare key.
 - If the listing fails: don't start the turn. Post "Couldn't list Codex MCP servers, so this turn didn't run." `--ignore-user-config` would also drop the user's model and profile settings, so it isn't a fallback.
