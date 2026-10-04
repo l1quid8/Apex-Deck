@@ -5,7 +5,7 @@ use apex_core::testing::ScriptedParticipant;
 use apex_core::{
     Access, ActionKind, AgentTool, Approver, Backend, ContextUse, Decision, DeltaSink, FileChange, Participant, ParticipantConfig,
     ParticipantError, ParticipantId, PlanUsage, PlanWindow, Progress, ProgressSink, ProposedAction, Reply, Role, Room, RoomEvent,
-    RoomOptions, Speaker, TurnPolicy, TurnRequest,
+    RoomOptions, Speaker, TokenTotals, TurnPolicy, TurnRequest,
 };
 use futures::executor::block_on;
 
@@ -753,4 +753,34 @@ fn server_requests_reach_prompt_and_survive_fork_and_restore() {
     assert_eq!(restored.transcript()[0].servers, vec!["x-mcp"]);
     say(&mut chat, "wow! good work");
     assert!(!null.requests()[1].system.contains("The human asked you to use these MCP servers, apps, or installed plugins:"));
+}
+
+#[test]
+fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
+    let id = ParticipantId::new("worker");
+    let config = ParticipantConfig {
+        id: id.clone(),
+        display_name: "worker".into(),
+        backend: Backend::Scripted { lines: vec![] },
+        persona: String::new(),
+        access: Access::Read,
+        effort: None,
+        appearance: None,
+    };
+    let quiet = bot("quiet", &["hello", "again"]);
+    let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(WorkingBot(config.clone())), quiet.clone()];
+    let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: 0 });
+    say(&mut room, "go");
+    say(&mut room, "again");
+    assert_eq!(room.usage().get(&id), Some(&TokenTotals { input: 240, output: 14, turns: 2 }));
+    assert!(room.usage().get(&ParticipantId::new("quiet")).is_none(), "a bot that reports nothing has no totals");
+
+    let snapshot = room.snapshot();
+    let saved = serde_json::to_value(&snapshot).unwrap();
+    let reopened = Room::restore(vec![Arc::new(WorkingBot(config))], serde_json::from_value(saved).unwrap());
+    assert_eq!(reopened.usage(), room.usage(), "totals survive a restart");
+
+    room.clear();
+    assert_eq!(room.usage().get(&id).map(|t| t.turns), Some(2), "/clear keeps what the thread has spent");
+    assert!(snapshot.fork(1).usage.is_empty(), "a fork starts at zero");
 }

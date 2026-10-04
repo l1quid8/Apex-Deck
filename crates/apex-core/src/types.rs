@@ -169,6 +169,25 @@ pub struct PlanUsage {
     pub partial: bool,
 }
 
+/// Tokens a participant has used in one thread, over the turns that
+/// reported a count. Saved with the thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TokenTotals {
+    pub input: u64,
+    pub output: u64,
+    /// Turns that reported a count.
+    pub turns: u64,
+}
+
+impl TokenTotals {
+    /// Count one turn. A side the backend didn't report adds nothing.
+    pub fn add(&mut self, input: Option<u64>, output: Option<u64>) {
+        self.input = self.input.saturating_add(input.unwrap_or(0));
+        self.output = self.output.saturating_add(output.unwrap_or(0));
+        self.turns += 1;
+    }
+}
+
 /// Saved visual identity; has no effect on model behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAppearance {

@@ -86,6 +86,8 @@ export interface RoomSnapshot {
   compaction?: Compaction | null;
   /** What the person chose "Always allow" for. */
   allowed?: AllowedRule[];
+  /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */
+  usage?: Record<string, TokenTotals>;
 }
 
 /** Something a bot may do without asking, because the person chose "Always allow". */
@@ -101,6 +103,13 @@ export interface AllowedRule {
   allowed_at?: number;
   /** The card it came from could spend money or publish. */
   risky?: boolean;
+}
+
+/** Tokens a bot has used in one thread, over the turns that reported a count. */
+export interface TokenTotals {
+  input: number;
+  output: number;
+  turns: number;
 }
 
 export interface Compaction {

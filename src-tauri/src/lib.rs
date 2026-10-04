@@ -268,7 +268,7 @@ fn room_create(
 /// One shared checkpoint for all running chains. Completed messages are saved
 /// before emission; a failed write cancels work and is reported to the caller.
 fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent) -> Result<(), String> {
-    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. }) { return Ok(()); }
+    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. } | RoomEvent::Usage { .. }) { return Ok(()); }
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
     match event {
@@ -278,6 +278,10 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
             checkpoint.snapshot.changes.push(apex_core::ChangeRecord { by: id.clone(), path: change.path.clone(), added: change.added, removed: change.removed, seq });
         }
         RoomEvent::AllowedChanged { allowed } => checkpoint.snapshot.allowed = allowed.clone(),
+        // The room adds these up too; a full checkpoint replaces this copy
+        // with the room's, so nothing is counted twice. Saving each one now
+        // keeps the totals if the app quits before the chain ends.
+        RoomEvent::Usage { id, input_tokens, output_tokens } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add(*input_tokens, *output_tokens),
         _ => {}
     }
     store.save_room(id, &checkpoint)
@@ -918,6 +922,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn token_totals_are_saved_as_each_turn_reports_them() {
+        let (handle, store, path) = checkpoint_fixture("usage");
+        let null = ParticipantId::new("null");
+        for (input, output) in [(Some(100), Some(5)), (Some(20), None)] {
+            persist_event(&handle, &store, "room", &RoomEvent::Usage { id: null.clone(), input_tokens: input, output_tokens: output }).unwrap();
+        }
+        let saved = store.room("room").unwrap().unwrap().snapshot;
+        assert_eq!(saved.usage.get(&null), Some(&apex_core::TokenTotals { input: 120, output: 5, turns: 2 }));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     use super::*;
 
     #[cfg(target_os = "macos")]

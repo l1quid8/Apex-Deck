@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedAction};
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
-use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker};
+use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker, TokenTotals};
 use crate::view::{pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
@@ -223,6 +223,10 @@ pub struct RoomSnapshot {
     /// What the person chose "Always allow" for. A fork starts without it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed: Vec<crate::AllowedRule>,
+    /// Tokens each participant has used in this thread. `/clear` keeps
+    /// them; a fork starts without them.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub usage: HashMap<ParticipantId, TokenTotals>,
 }
 
 impl RoomSnapshot {
@@ -240,6 +244,7 @@ impl RoomSnapshot {
             changes: self.changes.iter().filter(|c| c.seq < upto).cloned().collect(),
             baseline: self.baseline.clone(),
             allowed: Vec::new(),
+            usage: HashMap::new(),
         }
     }
 }
@@ -255,6 +260,8 @@ pub struct Room {
     pins: Vec<String>,
     changes: Vec<ChangeRecord>,
     baseline: Option<String>,
+    /// Tokens each participant has used in this thread.
+    usage: HashMap<ParticipantId, TokenTotals>,
     options: RoomOptions,
     stop: Arc<AtomicBool>,
     /// Actions participants have proposed and are waiting on.
@@ -280,6 +287,7 @@ impl Room {
             changes: self.changes.clone(),
             baseline: self.baseline.clone(),
             allowed: self.desk.allowed(),
+            usage: self.usage.clone(),
         }
     }
 
@@ -296,6 +304,7 @@ impl Room {
             pins: snapshot.pins,
             changes: snapshot.changes,
             baseline: snapshot.baseline,
+            usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(desk),
         }
@@ -311,6 +320,7 @@ impl Room {
             pins: Vec::new(),
             changes: Vec::new(),
             baseline: None,
+            usage: HashMap::new(),
             options,
             stop: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
@@ -318,6 +328,11 @@ impl Room {
     }
 
     pub(crate) fn record_changes(&mut self, changes: Vec<ChangeRecord>) { self.changes.extend(changes); }
+
+    /// Tokens each participant has used in this thread.
+    pub fn usage(&self) -> &HashMap<ParticipantId, TokenTotals> {
+        &self.usage
+    }
 
     pub fn baseline(&self) -> Option<&str> {
         self.baseline.as_deref()
@@ -452,6 +467,7 @@ impl Room {
         }
         let reply = outcome.map_err(|error| error.to_string())?;
         if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
+            self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens);
             on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens });
         }
         let summary = reply.text.trim();
@@ -565,6 +581,7 @@ impl Room {
             }
             Ok(reply) => {
                 if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
+                    self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens);
                     on_event(RoomEvent::Usage {
                         id: id.clone(),
                         input_tokens: reply.input_tokens,

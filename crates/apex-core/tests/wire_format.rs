@@ -189,6 +189,7 @@ fn old_snapshots_without_pins_still_load() {
     assert!(snapshot.pins.is_empty());
     assert!(snapshot.changes.is_empty());
     assert!(snapshot.baseline.is_none());
+    assert!(snapshot.usage.is_empty());
 }
 
 #[test]
@@ -258,4 +259,17 @@ fn rules_saved_before_dates_and_risk_still_load_and_match() {
     desk.set_allowed(old.clone());
     assert!(desk.forget(&old[1]), "Remove still works on an old rule");
     assert!(!desk.always_allowed(&null, &run));
+}
+
+#[test]
+fn token_totals_are_saved_per_bot() {
+    let mut snapshot: apex_core::RoomSnapshot = serde_json::from_value(
+        json!({ "participants": [], "transcript": [], "options": { "policy": "mention", "max_bot_hops": 3 } }),
+    )
+    .unwrap();
+    assert!(to_value(&snapshot).unwrap().get("usage").is_none(), "nothing written until a bot reports");
+    let mut totals = apex_core::TokenTotals::default();
+    totals.add(Some(1840), None);
+    snapshot.usage.insert(ParticipantId::new("opus"), totals);
+    assert_eq!(to_value(&snapshot).unwrap()["usage"], json!({ "opus": { "input": 1840, "output": 0, "turns": 1 } }));
 }
