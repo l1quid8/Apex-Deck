@@ -1340,8 +1340,8 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   left: 0;
   top: calc(100% + 8px);
   z-index: 40;
-  width: min(380px, 80vw);
-  max-height: 60vh;
+  width: min(440px, calc(100vw - 32px));
+  max-height: 70vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -1351,19 +1351,59 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   border-radius: 10px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
 }
-.attention-list button {
+.attention-list .attention-row {
   display: flex;
   align-items: center;
   gap: 12px;
+  width: 100%;
   border: 0;
   background: transparent;
   text-align: left;
   padding: 9px 10px;
   border-radius: 7px;
 }
-.attention-list button:hover {
+.attention-list button.attention-row:hover {
   background: color-mix(in srgb, var(--text) 7%, transparent);
 }
+.attention-row > .ghost.small {
+  flex: none;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.attention-item.expanded {
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+/* An approval answered in place. Neutral panel and hairline, no coloured bar. */
+.answer-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 10px 10px 29px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.answer-strip.empty { color: var(--muted); font-size: 12px; }
+.answer-kind { font-size: 11px; font-weight: 600; color: var(--warn); }
+.answer-command {
+  display: block;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.answer-summary { font-size: 12px; font-variant-numeric: tabular-nums; }
+.answer-strip .diff { max-height: 200px; border: 1px solid var(--line); border-radius: 8px; }
+.answer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.answer-actions button { padding: 5px 10px; font-size: 12px; }
+.answer-next { color: var(--muted); font-size: 12px; }
 .attention-what,
 .attention-where {
   display: flex;
@@ -1843,7 +1883,8 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
 .quick-add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .quick-add-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .quick-add .form-error { margin: 0; }
-.attention-foot { display: flex; justify-content: space-between; gap: 12px; padding: 6px 10px 4px; margin-top: 2px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.attention-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 6px 10px 4px; margin-top: 2px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.attention-foot button { padding: 3px 8px; font-size: 11px; }
 kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--bg); }
 
 /* UI review, stage 4: Agents starters and the sample thread. */

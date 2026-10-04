@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
 import { ProviderSettings } from "./ProviderSettings";
@@ -19,6 +19,7 @@ import { label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, wo
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { approvalSnapshot, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, quitQuestion, removeCounts, removeQuestion, savedThreads, stillRunning } from "./closing";
 import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
@@ -162,6 +163,8 @@ export function App() {
   /** Panes that want attention, by pane id. */
   const [attention, setAttention] = useState<Record<string, Signal>>({});
   const lastOutput = useRef(new Map<string, number>());
+  /** Every open approval card, app-wide (approvals.ts). */
+  const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
 
   useEffect(() => {
     let alive = true;
@@ -438,6 +441,7 @@ export function App() {
       workspace: workspaces.find((w) => w.id === pane.workspaceId)?.name ?? "",
       where: pane.kind === "chat" ? "Threads" : "Code",
       signal: attention[pane.id],
+      cards: pane.kind === "chat" ? openCards(pane.id, approvalState) : undefined,
     }));
   const sectionFlags = {
     code: summarize(attentionItems.filter((i) => i.where === "Code").map((i) => i.signal)),
@@ -642,7 +646,11 @@ export function App() {
         </span>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         {/* Just left of the tabs: it grows away from them, so neither the tabs nor the right-hand controls move. */}
-        <AttentionMenu items={attentionItems} onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }} />
+        <AttentionMenu
+          items={attentionItems}
+          onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }}
+          onDecide={(room, request, approve) => backend.roomDecide(room, request, approve, false)}
+        />
         </div>
         <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
