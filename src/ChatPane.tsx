@@ -1,4 +1,5 @@
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
+import { composerCopy, joinNames, replyingVerb } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -445,6 +446,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
   }
   const appearance = (id: string) => identities.current.get(id) ?? legacyAppearance(id);
   const color = (id: string) => appearance(id).color;
+  // Who is replying right now, for the line above the composer.
+  const replying = participants.filter(p => working[p.id]);
+  const replyingSince = replying.length ? Math.min(...replying.map(p => working[p.id].startedAt)) : 0;
+  const copy = composerCopy(busy, participants.length === 0);
 
   const forgetContext = () => {
     setContextFill({});
@@ -1509,7 +1514,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
-        {queued.length > 0 && <details className="queued-messages" aria-label="Queued messages">
+        {busy && replying.length > 0 && <div className="composer-status" role="status">
+          <span className="composer-status-dots" aria-hidden="true"><i /><i /><i /></span>
+          <span className="composer-status-who">
+            {replying.map((p, index) => <span key={p.id}>
+              {index > 0 && (index === replying.length - 1 ? " and " : ", ")}
+              <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
+            </span>)} {replyingVerb(replying.length)}
+          </span>
+          <span className="composer-status-time" aria-label={`for ${elapsed(now - replyingSince)}`}>{elapsed(now - replyingSince)}</span>
+          <button className="danger small" aria-label={`Stop ${joinNames(replying.map(p => p.display_name))}`} onClick={() => void turnQueue.halt()}>Stop</button>
+        </div>}
+        {queued.length > 0 && <details className="queued-messages" aria-label="Queued messages" open>
           <summary>{queuePaused ? "Paused" : "Queued"} ({queued.length}) · {queued[0].to.map(id => names.get(id) ?? id).join(", ")}: “{queued[0].text.slice(0, 65)}”</summary>
           {queued.map(item => <div className="queued-message" key={item.id}>
             <span>{item.to.map(id => names.get(id) ?? id).join(", ")}</span>
@@ -1524,7 +1540,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
           </div>)}
           {queuePaused && <button className="ghost" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume queue</button>}
         </details>}
-        {busy && <div className="recipient-hint">To {recipients.map(id => names.get(id) ?? id).join(", ")} · {recipients.some(id => turnQueue.state[id] === "working") ? "queued (busy)" : "starts now"}</div>}
+        {busy && recipients.length > 0 && <div className="recipient-hint">To {recipients.map(id => names.get(id) ?? id).join(", ")} · {recipients.some(id => turnQueue.state[id] === "working") ? "queued (busy)" : "starts now"}</div>}
         {reply && <div className="quote-preview">
           <div className="quote-preview-copy"><span className="speaker">{reply.name}</span><blockquote>{reply.text}</blockquote></div>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
@@ -1572,16 +1588,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, addRequest, 
             }
           }}
           rows={2}
-          placeholder={participants.length === 0 ? "Add a model to start" : "Message the room. @name picks who answers."}
+          placeholder={copy.placeholder}
           disabled={!ready || participants.length === 0}
         />
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
-        <div className="composer-hint"><span>@ who answers · ! which tools · Enter sends · ⌘Enter steers the busy model you mentioned</span><span>Shift + Enter for a new line</span></div>
+        <div className="composer-hint"><span>@ who answers · ! which tools · {copy.hint}</span></div>
         </div>
         <div className="composer-actions">
-          <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><DeckIcon name="send" size={18} /> Send</button>
-          {busy && <details className="turn-controls"><summary aria-label="Turn controls">⋯</summary><div className="turn-controls-menu">
+          {busy && <button className="ghost composer-steer" onClick={() => send(true)} disabled={!ready || !text.trim() || saving} title="Send to the busy model you mentioned now">Steer <kbd>⌘↵</kbd></button>}
+          <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}>{busy ? <>Queue <kbd>↵</kbd></> : <><DeckIcon name="send" size={18} /> Send</>}</button>
+          {busy && replying.length > 1 && <details className="turn-controls"><summary aria-label="Turn controls">⋯</summary><div className="turn-controls-menu">
             {participants.filter(p => turnQueue.state[p.id] === "working").map(p => <div key={p.id}>
               <button className="ghost small" disabled={!text.trim()} onClick={() => { const message = text; setText(""); void turnQueue.steer(p.id, message); }}>Steer {p.display_name}</button>
               <button className="ghost small" onClick={() => void turnQueue.halt(p.id)}>Stop {p.display_name}</button>

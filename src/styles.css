@@ -1853,3 +1853,18 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 @media (max-width: 960px) and (min-width: 721px) {
   .titlebar > .brand { font-size: 0; gap: 0; }
 }
+
+/* Board 06: who is replying, and Queue and Steer side by side. */
+.composer-status { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding: 6px 8px 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); font-size: 12px; }
+.composer-status-dots { display: flex; gap: 3px; }
+.composer-status-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: composer-pulse 1.2s infinite ease-in-out; }
+.composer-status-dots i:nth-child(2) { animation-delay: .2s; }
+.composer-status-dots i:nth-child(3) { animation-delay: .4s; }
+@keyframes composer-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .composer-status-dots i { animation: none; } }
+.composer-status-who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-status-who strong { font-weight: 650; }
+.composer-status-time { font-family: var(--mono, ui-monospace, monospace); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.composer-actions { align-items: center; align-self: flex-end; margin-bottom: 26px; }
+.composer-actions kbd { font-family: var(--mono, ui-monospace, monospace); font-size: 10px; opacity: .75; background: none; border: 0; padding: 0; }
+.composer-steer { white-space: nowrap; }
