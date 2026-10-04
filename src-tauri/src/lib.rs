@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn always_allowed_list_is_saved_and_survives_reopening() {
         let (handle, store, path) = checkpoint_fixture("allowed");
-        let run = |cmd: &str| apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None };
+        let run = |cmd: &str| apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None, risky: false };
         let null = ParticipantId::new("null");
         futures::executor::block_on(async {
             let desk = handle.room.lock().await.approvals_handle();

@@ -383,14 +383,15 @@ impl EventReader {
                 title: format!("{verb} {}", change.path),
                 detail: changes.iter().map(|c| c.diff.as_str()).collect::<Vec<_>>().join("\n"),
                 expires_at: None,
+                risky: false,
             };
         }
         if tool == "Bash" {
             let command = input["command"].as_str().unwrap_or("").to_string();
-            return ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail: command, expires_at: None };
+            return ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail: command, expires_at: None, risky: false };
         }
         let detail = serde_json::to_string_pretty(input).unwrap_or_default();
-        ProposedAction { kind: ActionKind::Other, title: self.claude_activity(tool, input), detail, expires_at: None }
+        ProposedAction { kind: ActionKind::Other, title: self.claude_activity(tool, input), detail, expires_at: None, risky: false }
     }
 
     // ------------------------------------------------------------------ Codex
@@ -939,11 +940,11 @@ mod tests {
     fn claude_permission_requests_are_described_for_a_person() {
         let reader = EventReader::new(OutputFormat::ClaudeStream, Some("/work/project".into()));
         let edit = reader.claude_action("Edit", &serde_json::json!({"file_path":"/work/project/a.txt","old_string":"hi","new_string":"hello"}));
-        assert_eq!(edit, ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-hi\n+hello\n".into(), expires_at: None });
+        assert_eq!(edit, ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-hi\n+hello\n".into(), expires_at: None, risky: false });
         let write = reader.claude_action("Write", &serde_json::json!({"file_path":"/work/project/new.txt","content":"x"}));
         assert_eq!((write.kind, write.title.as_str(), write.detail.as_str()), (ActionKind::Edit, "Write new.txt", "+x\n"));
         let run = reader.claude_action("Bash", &serde_json::json!({"command":"rm -rf build","description":"clean"}));
-        assert_eq!(run, ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf build".into(), expires_at: None });
+        assert_eq!(run, ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf build".into(), expires_at: None, risky: false });
         let other = reader.claude_action("WebFetch", &serde_json::json!({"url":"https://example.com"}));
         assert_eq!((other.kind, other.title.as_str()), (ActionKind::Other, "Fetching https://example.com"));
         assert!(other.detail.contains("example.com"));

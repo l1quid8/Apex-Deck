@@ -49,6 +49,12 @@ pub struct ProposedAction {
     /// else waits as long as the person takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// It can spend money or publish: an MCP tool whose name says so
+    /// (`mcp::needs_approval` in apex-adapters) or a request Codex marks
+    /// `riskLevel: "high"`. The card says so, always shows what Always allow
+    /// would cover, and the saved rule remembers it.
+    #[serde(default)]
+    pub risky: bool,
 }
 
 /// Something the person chose "Always allow" for. Saved with the thread.
@@ -274,7 +280,7 @@ mod tests {
 
     #[test]
     fn with_nobody_to_ask_everything_is_rejected() {
-        let action = ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf /".into(), expires_at: None };
+        let action = ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf /".into(), expires_at: None, risky: false };
         assert_eq!(block_on(NoApprover.decide(action)), Decision::Reject);
     }
 
@@ -283,9 +289,9 @@ mod tests {
         let desk = ApprovalDesk::default();
         let bot = ParticipantId::new("codex");
         let other_bot = ParticipantId::new("claude");
-        let app = |name: &str| ProposedAction { kind: ActionKind::Other, title: "cua_repl asks permission".into(), detail: format!("Allow Computer Use to use \"{name}\"?"), expires_at: None };
-        let order = |qty: u32| ProposedAction { kind: ActionKind::Tool, title: "robinhood: place_order".into(), detail: format!("{{\"qty\":{qty}}}"), expires_at: None };
-        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None };
+        let app = |name: &str| ProposedAction { kind: ActionKind::Other, title: "cua_repl asks permission".into(), detail: format!("Allow Computer Use to use \"{name}\"?"), expires_at: None, risky: false };
+        let order = |qty: u32| ProposedAction { kind: ActionKind::Tool, title: "robinhood: place_order".into(), detail: format!("{{\"qty\":{qty}}}"), expires_at: None, risky: false };
+        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None, risky: false };
         assert!(desk.allow_always(&bot, &app("Brave Browser")));
         assert!(!desk.allow_always(&bot, &app("Brave Browser")), "already allowed");
         desk.allow_always(&bot, &order(1));
@@ -302,7 +308,7 @@ mod tests {
     fn allowed_rules_can_be_listed_restored_and_forgotten() {
         let desk = ApprovalDesk::default();
         let bot = ParticipantId::new("codex");
-        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None };
+        let run = |cmd: &str| ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: cmd.into(), expires_at: None, risky: false };
         desk.allow_always(&bot, &run("npm test"));
         desk.allow_always(&bot, &run("cargo test"));
         let saved = desk.allowed();

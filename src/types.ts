@@ -14,6 +14,8 @@ export interface ProposedAction {
   detail: string;
   /** When Codex's hook denies it if nobody answers, in milliseconds since the epoch. Only MCP calls checked by Deck's hook have one. */
   expires_at?: number | null;
+  /** It can spend money or publish. Missing means no. */
+  risky?: boolean;
 }
 
 /** An edit a bot made to a file. */

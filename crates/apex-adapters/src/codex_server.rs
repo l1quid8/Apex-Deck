@@ -94,14 +94,14 @@ pub(crate) fn proposal(method: &str, params: &Value, reader: &EventReader) -> Op
                 Some(reason) => format!("{command}\n\n{reason}"),
                 None => command.to_string(),
             };
-            Some(ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail, expires_at: None })
+            Some(ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail, expires_at: None, risky: false })
         }
         "item/fileChange/requestApproval" => {
             let (title, detail) = params["itemId"]
                 .as_str()
                 .and_then(|item| reader.pending_edit(item))
                 .unwrap_or_else(|| ("Edit files".to_string(), reason.unwrap_or("The edit was not described.").to_string()));
-            Some(ProposedAction { kind: ActionKind::Edit, title, detail, expires_at: None })
+            Some(ProposedAction { kind: ActionKind::Edit, title, detail, expires_at: None, risky: false })
         }
         _ => None,
     }
@@ -158,7 +158,7 @@ fn mcp_question(params: &Value) -> Option<ProposedAction> {
         Some(app) => format!("{message}\n\nApp: {app}\nRequested by: {server}"),
         None => message.to_string(),
     };
-    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail, expires_at: None })
+    Some(ProposedAction { kind: ActionKind::Other, title: format!("{server} asks permission"), detail, expires_at: None, risky: false })
 }
 
 
