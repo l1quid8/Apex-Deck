@@ -1131,6 +1131,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // Artifacts: code from replies, opened on request, saved beside the thread.
   // A file that can't be read is never written over. See artifacts.ts.
   const [artifacts, setArtifacts] = useState<ArtifactFile>(EMPTY_ARTIFACTS);
+  /** The newest file, ahead of the next render, so two changes in a row both land. */
+  const latestArtifacts = useRef<ArtifactFile>(EMPTY_ARTIFACTS);
   const [artifactsLoaded, setArtifactsLoaded] = useState(false);
   const [artifactProblem, setArtifactProblem] = useState("");
   const [panel, setPanel] = useState<PanelView | null>(null);
@@ -1144,7 +1146,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     backend.artifactsLoad(pane.id).then(
       (raw) => {
         if (!live) return;
-        setArtifacts(readArtifacts(raw));
+        latestArtifacts.current = readArtifacts(raw);
+        setArtifacts(latestArtifacts.current);
         artifactsReadable.current = true;
         setArtifactProblem("");
         setArtifactsLoaded(true);
@@ -1159,6 +1162,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   }, [backend, pane.id, profileMode]);
 
   const changeArtifacts = (next: ArtifactFile) => {
+    latestArtifacts.current = next;
     setArtifacts(next);
     if (!artifactsReadable.current) return;
     artifactSaves.current = artifactSaves.current
@@ -1176,7 +1180,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     }
     const version = { source: code.text, by: message.speaker.kind === "bot" ? message.speaker.id : null, seq: message.seq, at: Date.now() };
     if (choice.kind === "version") {
-      const added = addVersion(artifacts, choice.artifactId, version);
+      const added = addVersion(latestArtifacts.current, choice.artifactId, version);
       if (added.n === 0) return;
       changeArtifacts(added.file);
       showVersion(choice.artifactId, added.n);
@@ -1184,7 +1188,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     }
     const kind = kindOf(code.language, code.text);
     if (!kind || code.text.length > MAX_SOURCE) return;
-    const added = addArtifact(artifacts, `art-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, kind, version);
+    const added = addArtifact(latestArtifacts.current, `art-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, kind, version);
     changeArtifacts(added.file);
     showVersion(added.artifact.id, 1);
   };

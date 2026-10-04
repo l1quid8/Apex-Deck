@@ -633,6 +633,7 @@ export function App() {
       runStart.current.delete(id);
       setRuns(({ [id]: _ended, ...rest }) => rest);
       setProgramTitles(({ [id]: _gone, ...rest }) => rest);
+      setPreviewStatus(({ [id]: _shown, ...rest }) => rest);
       takeOff(id);
     };
     const status = statusOf(pane);
