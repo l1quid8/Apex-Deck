@@ -15,7 +15,7 @@ import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
-import { label, summarize, urgency, workspaceFlag, type Attention, type Signal } from "./attention";
+import { label, seenFlags, summarize, urgency, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
@@ -393,20 +393,12 @@ export function App() {
 
   const onSignal = useCallback((paneId: string, kind: Attention | null, note = "") => {
     if (kind && watched.current(paneId) && !(kind === "needs_input" && kindOf.current(paneId) === "terminal")) return;
-    setAttention((all) => {
-      if (!kind) {
-        if (!all[paneId]) return all;
-        const { [paneId]: _cleared, ...rest } = all;
-        return rest;
-      }
-      const old = all[paneId];
-      if (old && old.kind === kind && old.note === note) return all;
-      return { ...all, [paneId]: { kind, note, at: Date.now() } };
-    });
+    setAttention((all) => withPaneSignal(all, paneId, kind ? { kind, note, at: Date.now() } : null));
   }, []);
 
   // Looking at a pane settles its flag. A terminal that is still waiting on
-  // an answer keeps its flag until something is typed into it.
+  // an answer keeps its flag until something is typed into it, and a thread
+  // stopped on an approval card keeps its flag until the card is answered.
   const [windowFocus, setWindowFocus] = useState(0);
   useEffect(() => {
     const seen = () => setWindowFocus((n) => n + 1);
@@ -415,12 +407,7 @@ export function App() {
   }, []);
   useEffect(() => {
     if (!focusedPane || !watched.current(focusedPane)) return;
-    setAttention((all) => {
-      const flag = all[focusedPane];
-      if (!flag || (flag.kind === "needs_input" && kindOf.current(focusedPane) === "terminal")) return all;
-      const { [focusedPane]: _seen, ...rest } = all;
-      return rest;
-    });
+    setAttention((all) => seenFlags(all, focusedPane, kindOf.current(focusedPane) === "terminal"));
   }, [focusedPane, activeWorkspace, section, picking, maximized, windowFocus, attention]);
 
   // Flags for panes that no longer exist, or whose workspace was removed
