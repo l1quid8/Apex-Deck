@@ -21,18 +21,31 @@ edges.
   for you, or one of its threads is replying, it asks first.
 - **Terminal panes.** Real terminals in the workspace folder. Launch a plain
   shell, or any coding agent Apex Deck finds installed (the list is in
-  `src-tauri/src/agents.rs`).
+  `src-tauri/src/agents.rs`). A second terminal of the same tool in a
+  workspace is numbered ("Codex 2"); double-click a name, or focus it and
+  press F2, to rename it. When the program sets its own title, such as
+  Claude Code's "Writing tests for auth", it shows muted after the name in
+  the pane head, the rail and the attention list. When the program ends, the
+  pane keeps its output and a bar at the foot says how and when it ended,
+  with **Start Codex again** and **Close**; a program that ends with an
+  error is flagged Failed. A terminal's ⋯ menu has **Rename**, **Start
+  again**, **Copy folder path** and **Close**.
+- **Terminals after a restart.** Terminals and their arrangement in Code are
+  saved with your threads, as a name and a tool only. After a restart they
+  come back **Stopped**, never started: choose **Start Codex** to run it
+  again. Earlier output isn't kept, and a tool that is no longer installed
+  can't be started.
 - **Layout.** Panes can be arranged any way you like. Drag the line between
   two panes to resize them. Drag a pane by its title bar onto the side of
   another to put it there, or onto the middle to swap the two. Three
   buttons give a ready-made arrangement: an even grid, a large pane on top,
   or a large pane on the left. Rearranging never restarts a terminal. Each
   pane can be maximized and restored or closed, and its head says what it is
-  doing: Working, Idle or Exited for a terminal, and how many bots a thread
+  doing: Working, Idle, Exited or Stopped for a terminal, and how many bots a thread
   has. Closing a thread only takes it off the deck: it stays saved and listed
-  in the rail, and clicking it opens it again. To delete a thread, use
-  **Delete thread…** in its ⋯ menu; it asks once, and **Undo** brings it back
-  for 8 seconds. A terminal that is working or waiting for you asks before it
+  in the rail, and clicking it opens it again. A thread's ⋯ menu has
+  **Rename**, **Fork**, **Export** and **Delete thread…**; deleting asks
+  once, and **Undo** brings it back for 8 seconds. A terminal that is working or waiting for you asks before it
   closes.
 - **Quitting.** Closing the window, ⌘W, ⌘Q and Quit in the app menu ask
   first while a coding agent's terminal is open, a shell is working or
@@ -247,7 +260,9 @@ Chats, participants, options and completed messages are saved automatically.
 On macOS the native app stores them in
 `~/Library/Application Support/dev.apexdeck.app/saved-chats-v1/` using atomic file replacements.
 Workspace folders previously remembered by the app are migrated on first launch.
-Running model turns and terminal processes are not restarted automatically.
+Running model turns and terminal processes are not restarted automatically:
+terminals and their Code layout are saved as names and tools only, and come
+back Stopped until you start them.
 Use **Delete thread** to remove a saved conversation. Switching sections, removing a
 workspace from the list or quitting the application keeps your chats. Browser demo data
 is stored separately in browser storage.

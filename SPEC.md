@@ -16,16 +16,19 @@ Legend: **done** means built and covered by tests or a scripted UI check.
 | Terminal panes backed by real pseudo-terminals in the workspace folder | done |
 | Launch through the user's login shell so PATH matches their terminal | done |
 | Layout presets (even grid, large pane on top or left), maximize and restore, close | done |
-| Status dot per pane: working (recent output), idle, exited | done |
-| Drag the line between panes to resize; drag a pane by its title bar to move or swap it | done (thread layouts are saved; terminals are not restored, so neither is their layout) |
+| Status dot per pane: working (recent output), idle, exited (or stopped, for a terminal restored after a restart) | done |
+| Drag the line between panes to resize; drag a pane by its title bar to move or swap it | done (thread and terminal layouts are saved; panes that didn't load are dropped from them) |
 | Keyboard shortcuts for sections, new panes, the next alert, moving between panes and maximizing | done (⌘W is left to the macOS window menu) |
 | Close a thread without deleting it; confirmed delete with undo; confirm before closing a busy terminal | done |
+| Terminal names: a second pane of a tool is numbered ("Codex 2"), renamed in place, with the program's own title muted after the name | done |
+| A terminal whose program ended keeps its output and offers Start again; a non-zero exit is flagged Failed | done |
+| ⋯ menus on every pane: terminals (Rename, Start again, Copy folder path, Close) and threads (Rename, Fork, Export, Delete thread…) | done |
 | Remove a workspace from the list without deleting its threads: asks while something runs, undo, Removed · Show, adding the folder again brings it back | done |
 | Rename a workspace; reveal its folder in Finder | done |
 | Ask before quitting while agent terminals, busy shells or replying bots are running | done (logout and shutdown never ask) |
 | Section tabs centred in the title bar; the active workspace row has no accent bar | done |
 | Tabs within a workspace | later |
-| Restore open panes after restart | later |
+| Restore open panes after restart | done (terminals come back Stopped and are never started on launch; earlier output isn't kept. Start all and resume flags such as `--continue` are later) |
 | One git worktree per agent pane so agents do not collide | later |
 
 ## 2. Group chat
