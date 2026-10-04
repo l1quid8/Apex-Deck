@@ -8,7 +8,7 @@ test("no settings file gives the defaults", () => {
 });
 
 test("saved values are kept", () => {
-  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 } };
+  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] } };
   assert.deepEqual(readSettings(saved), saved);
 });
 
@@ -32,4 +32,9 @@ test("key names are collected from saved agents, once each and sorted", () => {
   const api = (env) => ({ backend: { kind: "open_ai_compatible", base_url: "", model: "", api_key_env: env } });
   const names = keyNamesIn([api("OPENROUTER_API_KEY"), api("ANTHROPIC_API_KEY"), api("OPENROUTER_API_KEY"), api(null), api("  "), { backend: { kind: "scripted" } }]);
   assert.deepEqual(names, [{ name: "ANTHROPIC_API_KEY", uses: 1 }, { name: "OPENROUTER_API_KEY", uses: 2 }]);
+});
+
+test("hosts to open in the browser are kept lower case, once each", () => {
+  assert.deepEqual(readSettings({ preview: { openExternally: ["GitHub.com", "github.com", 4, " "] } }).preview.openExternally, ["github.com"]);
+  assert.deepEqual(readSettings({ preview: "broken" }).preview.openExternally, []);
 });

@@ -38,3 +38,13 @@ test("Close is never turned off, so a busy terminal can always be closed (it ask
   assert.equal(close.disabled, false);
   assert.equal(close.danger, false);
 });
+
+test("a preview's menu renames, copies its address and closes", () => {
+  const terminal = { running: false, installed: true, tool: "", folder: "" };
+  const items = paneMenuItems("preview", terminal, { address: "http://localhost:5173/" });
+  assert.deepEqual(items.map((i) => i.action), ["rename", "copy_address", "close"]);
+  assert.equal(items[1].disabled, false);
+  const empty = paneMenuItems("preview", terminal, { address: "" });
+  assert.equal(empty[1].disabled, true);
+  assert.equal(empty[1].reason, "No page yet.");
+});

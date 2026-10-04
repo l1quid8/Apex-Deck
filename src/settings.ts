@@ -14,6 +14,8 @@ export interface AppSettings {
   /** The access a bot gets when the add form opens. */
   newBotAccess: Access;
   terminal: { fontSize: number; scrollback: number };
+  /** Hosts whose pages open in your browser instead of the Preview pane. */
+  preview: { openExternally: string[] };
 }
 
 export const SCROLLBACK_CHOICES = [1000, 5000, 10000, 50000];
@@ -26,6 +28,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   newThread: { policy: "mention", max_bot_hops: 3 },
   newBotAccess: "read",
   terminal: { fontSize: 13, scrollback: 5000 },
+  preview: { openExternally: [] },
 };
 
 const POLICIES: TurnPolicy[] = ["mention", "everyone", "round_robin"];
@@ -54,6 +57,9 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
     terminal: {
       fontSize: whole(terminal.fontSize, FONT_SIZES.min, FONT_SIZES.max, d.terminal.fontSize),
       scrollback: SCROLLBACK_CHOICES.includes(terminal.scrollback as number) ? terminal.scrollback as number : d.terminal.scrollback,
+    },
+    preview: {
+      openExternally: [...new Set((strings(record(saved.preview).openExternally) ?? []).map((host) => host.trim().toLowerCase()).filter(Boolean))],
     },
   };
 }

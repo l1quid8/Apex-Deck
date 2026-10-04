@@ -3,7 +3,7 @@
 
 import type { PaneKind } from "./types";
 
-export type PaneMenuAction = "rename" | "start" | "copy_path" | "close" | "fork" | "export" | "delete";
+export type PaneMenuAction = "rename" | "start" | "copy_path" | "copy_address" | "close" | "fork" | "export" | "delete";
 
 export interface PaneMenuItem {
   action: PaneMenuAction;
@@ -31,9 +31,16 @@ const item = (action: PaneMenuAction, label: string, extra: Partial<PaneMenuItem
   action, label, disabled: false, reason: "", danger: false, separated: false, ...extra,
 });
 
-export function paneMenuItems(kind: PaneKind, terminal: TerminalMenuState): PaneMenuItem[] {
+export function paneMenuItems(kind: PaneKind, terminal: TerminalMenuState, preview: { address: string } = { address: "" }): PaneMenuItem[] {
   if (kind === "chat") {
     return [item("rename", "Rename"), item("fork", "Fork"), item("export", "Export"), item("delete", "Delete thread…", { danger: true, separated: true })];
+  }
+  if (kind === "preview") {
+    return [
+      item("rename", "Rename"),
+      item("copy_address", "Copy address", { disabled: !preview.address, reason: preview.address ? "" : "No page yet." }),
+      item("close", "Close", { separated: true }),
+    ];
   }
   const startReason = terminal.running ? "It's still running." : terminal.installed ? "" : `${terminal.tool} isn't installed.`;
   return [

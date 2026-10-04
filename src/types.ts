@@ -198,7 +198,7 @@ export interface AgentInfo {
   found: boolean;
 }
 
-export type PaneKind = "terminal" | "chat";
+export type PaneKind = "terminal" | "chat" | "preview";
 
 /** What the desktop side found at a Preview address before loading it. */
 export type PreviewProbe = { kind: "ok" } | { kind: "refused" } | { kind: "unreachable"; reason: string };
@@ -210,6 +210,12 @@ export interface Pane {
   title: string;
   /** Agent key for terminal panes; undefined means a plain shell. */
   agent?: string;
+  /** A Preview pane's address; "" before one is chosen. */
+  url?: string;
+  /** The terminal or thread whose server a Preview shows, when it was opened from one. */
+  servedBy?: string;
+  /** The deck a Preview is on. Missing means Code. */
+  deck?: "code" | "threads";
   /** A thread taken off the deck. It stays saved and listed in the rail. */
   closed?: boolean;
   /** A sample thread: its room starts with scripted bots. */
