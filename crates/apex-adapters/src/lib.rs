@@ -10,6 +10,7 @@
 mod ansi;
 mod catalog;
 mod claude_session;
+mod claude_usage;
 mod cli;
 mod codex_server;
 mod codex_hook;
@@ -73,9 +74,15 @@ pub fn build(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Parti
 }
 
 /// Read how much of a provider account's plan is used, without asking a
-/// model anything. Only Codex can be asked outside a turn; Claude Code
-/// reports its plan during turns only, so this gives `None` for it.
+/// model anything. Codex is asked through its app server; Claude through
+/// the endpoint behind Claude Code's `/usage`.
 pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanUsage> {
+    if tool == AgentTool::ClaudeCode {
+        return claude_usage::read_plan()
+            .await
+            .map_err(|why| eprintln!("[apex-deck] could not read Claude plan limits: {why}"))
+            .ok();
+    }
     if tool != AgentTool::Codex {
         return None;
     }

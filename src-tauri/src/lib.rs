@@ -196,14 +196,14 @@ fn pty_kill(state: State<'_, AppState>, id: String) {
 // ---------------------------------------------------------------- group chats
 
 /// Read the plan usage of each provider in `configs` that can report it
-/// outside a turn (only Codex can), and send it to the chat as a
+/// outside a turn (Codex and Claude Code), and send it to the chat as a
 /// `plan_usage` event. Runs in the background; it asks no model anything.
 fn read_plans(app: &AppHandle, room: &str, configs: &[ParticipantConfig], context: &BuildContext) {
     let mut tools: Vec<AgentTool> = Vec::new();
     for config in configs {
-        if let apex_core::Backend::Agent { tool: AgentTool::Codex, .. } = config.backend {
-            if !tools.contains(&AgentTool::Codex) {
-                tools.push(AgentTool::Codex);
+        if let apex_core::Backend::Agent { tool: tool @ (AgentTool::Codex | AgentTool::ClaudeCode), .. } = config.backend {
+            if !tools.contains(&tool) {
+                tools.push(tool);
             }
         }
     }

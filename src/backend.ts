@@ -249,10 +249,12 @@ function demoBackend(): Backend {
     }
   };
   /** What a room shows when it opens: every agent's context, and the plan of
-   *  providers that can be read outside a turn (only Codex can). */
+   *  providers that can be read outside a turn (Codex and Claude Code). */
   const reportMeters = (room: string, participants: ParticipantConfig[]) => {
     for (const p of participants) reportContext(room, p, 0);
-    if (participants.some((p) => p.backend.kind === "agent" && p.backend.tool === "codex")) reportPlan(room, "codex");
+    for (const tool of ["codex", "claude_code"] as const) {
+      if (participants.some((p) => p.backend.kind === "agent" && p.backend.tool === tool)) reportPlan(room, tool);
+    }
   };
 
   const editors = new Map<string, string>();
