@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
 import { ProviderSettings } from "./ProviderSettings";
@@ -20,7 +20,7 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, removeCounts, removeQuestion, savedThreads } from "./closing";
-import { activeAfter, listedPanes, openThreadIds, removeWorkspacePanes, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
+import { activeAfter, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -504,15 +504,26 @@ export function App() {
     setUndoable(null);
   };
 
-  // The ⋯ menu closes on a click elsewhere or Escape.
+  // A ⋯ menu closes on a click elsewhere or Escape. Escape puts focus back on
+  // the button that opened it.
+  const menuOpener = useRef<HTMLElement | null>(null);
+  const toggleMenu = (id: string, event: ReactMouseEvent<HTMLElement>) => {
+    menuOpener.current = event.currentTarget;
+    setPaneMenu((open) => (open === id ? null : id));
+  };
   useEffect(() => {
     if (!paneMenu) return;
     const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".pane-menu-wrap")) setPaneMenu(null); };
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape") setPaneMenu(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { setPaneMenu(null); menuOpener.current?.focus(); } };
     window.addEventListener("mousedown", away);
     window.addEventListener("keydown", key);
     return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key); };
   }, [paneMenu]);
+
+  /** Show a workspace's folder in Finder. */
+  const revealWorkspace = (workspace: Workspace) => {
+    backend?.openTarget(workspace.path, null, true).catch((error) => setStorageError(`Could not show ${workspace.name} in Finder: ${String(error)}`));
+  };
 
   const focusPane = (pane: Pane) => {
     if (pane.closed) setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, closed: false } : p)));
@@ -649,22 +660,40 @@ export function App() {
             {shownList.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
             {shownList.map((workspace) => {
               const own = section === "agents" ? [] : panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && p.kind === (section === "code" ? "terminal" : "chat"));
+              const inside = panes
+                .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
+                .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
+              const flag = workspaceFlag(inside, section === "code" ? "Code" : section === "threads" ? "Threads" : null);
+              const openWorkspace = () => { setActiveWorkspace(workspace.id); if (section === "agents") setSection(lastDeck); };
+              const rename = () => setRenameRequests((all) => ({ ...all, [workspace.id]: (all[workspace.id] ?? 0) + 1 }));
               return (
                 <div key={workspace.id} className="ws">
                   <div className={`ws-row ${workspace.id === activeWorkspace ? "active" : ""}`}>
-                    <button className="ws-name" onClick={() => { setActiveWorkspace(workspace.id); if (section === "agents") setSection(lastDeck); }} title={workspace.path || workspace.name}>
-                      <DeckIcon name="folder" size={16} /><span className="ws-label">{workspace.name}</span>
-                      {(() => {
-                        const inside = panes
-                          .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
-                          .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
-                        const flag = workspaceFlag(inside, section === "code" ? "Code" : section === "threads" ? "Threads" : null);
-                        return flag ? <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span> : null;
-                      })()}
-                    </button>
-                    <button className="icon small" onClick={() => removeWorkspace(workspace)} aria-label={`Remove ${workspace.name} from the list`} title="Remove from list (its threads stay saved)">
-                      ×
-                    </button>
+                    {/* A div, not a button, so the name inside can be renamed in place (as pane rows do). */}
+                    <div role="button" tabIndex={0} data-workspace={workspace.id} className="ws-name" title={workspace.path || workspace.name}
+                      aria-label={[workspace.name, flag?.title].filter(Boolean).join(", ")}
+                      onClick={openWorkspace}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openWorkspace(); }
+                        else if (event.key === "F2") { event.preventDefault(); rename(); }
+                      }}>
+                      <DeckIcon name="folder" size={16} />
+                      <ThreadName className="ws-label" title={workspace.name} label="Workspace name" tooltip={workspace.path || workspace.name} renameRequest={renameRequests[workspace.id]} onRename={(name) => setWorkspaces((list) => renameWorkspace(list, workspace.id, name))} />
+                      {flag && <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span>}
+                    </div>
+                    <span className="pane-menu-wrap">
+                      <button className="icon small" onClick={(event) => toggleMenu(workspace.id, event)} aria-label={`More for ${workspace.name}`} aria-haspopup="menu" aria-expanded={paneMenu === workspace.id} title="More">
+                        ⋯
+                      </button>
+                      {paneMenu === workspace.id && (
+                        <span className="pane-menu" role="menu">
+                          <button role="menuitem" onClick={() => { setPaneMenu(null); rename(); }}>Rename</button>
+                          <button role="menuitem" disabled={!workspace.path} title={workspace.path ? undefined : "This workspace has no folder"} onClick={() => { setPaneMenu(null); revealWorkspace(workspace); }}>Reveal in Finder</button>
+                          <span className="pane-menu-sep" role="separator" />
+                          <button role="menuitem" className="danger-text" onClick={() => { setPaneMenu(null); removeWorkspace(workspace); }}>Remove from list…</button>
+                        </span>
+                      )}
+                    </span>
                   </div>
                   {own.map((pane) => (
                     <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}>
@@ -723,7 +752,7 @@ export function App() {
                     </button>
                     {pane.kind === "chat" && (
                       <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
-                        <button className="icon small" onClick={() => setPaneMenu((open) => (open === pane.id ? null : pane.id))} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
+                        <button className="icon small" onClick={(event) => toggleMenu(pane.id, event)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
                           ⋯
                         </button>
                         {paneMenu === pane.id && (

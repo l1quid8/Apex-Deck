@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeAfter, listedPanes, openThreadIds, removeWorkspacePanes, reopenThreads, setHidden, shownWorkspaces } from "../src/workspaces.ts";
+import { activeAfter, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "../src/workspaces.ts";
 import { loadedThreads, savedThreads } from "../src/closing.ts";
 
 const ws = (id, extra = {}) => ({ id, name: id, path: `/code/${id}`, ...extra });
@@ -46,4 +46,10 @@ test("removing the active workspace, or the last listed one, moves on cleanly", 
   assert.equal(activeAfter(setHidden(setHidden(list, "w", true), "v", true), "v"), null);
   assert.equal(activeAfter(list, null), "w");
   assert.equal(activeAfter(list, "gone"), "w");
+});
+
+test("renaming a workspace changes only its name, and an empty name is ignored", () => {
+  const list = [ws("w"), ws("v")];
+  assert.deepEqual(renameWorkspace(list, "w", "  Apex  "), [{ ...ws("w"), name: "Apex" }, ws("v")]);
+  assert.equal(renameWorkspace(list, "w", "   "), list);
 });

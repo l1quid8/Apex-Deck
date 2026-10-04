@@ -44,3 +44,10 @@ export function removeWorkspacePanes(panes: Pane[], workspaceId: string): Pane[]
 export function reopenThreads(panes: Pane[], ids: string[]): Pane[] {
   return panes.map((p) => (ids.includes(p.id) ? { ...p, closed: false } : p));
 }
+
+/** Rename a workspace. A blank name leaves it as it was. */
+export function renameWorkspace(list: Workspace[], id: string, name: string): Workspace[] {
+  const trimmed = name.trim();
+  if (!trimmed) return list;
+  return list.map((w) => (w.id === id ? { ...w, name: trimmed } : w));
+}
