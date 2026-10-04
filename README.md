@@ -35,6 +35,13 @@ edges.
   come back **Stopped**, never started: choose **Start Codex** to run it
   again. Earlier output isn't kept, and a tool that is no longer installed
   can't be started.
+- **Preview.** **+ New › Preview** shows a web page beside your terminals or
+  threads. When a terminal prints a local server address, or a bot mentions
+  one in a thread, a chip in its head opens it right of that pane. A stopped
+  server or a site that refuses to be shown inside another app gets words,
+  not a blank box, and a stopped server's page comes back by itself. The
+  full-window button gives the page the whole window; Esc returns. Pages run
+  sandboxed: they can't reach the app or navigate it away.
 - **Layout.** Panes can be arranged any way you like. Drag the line between
   two panes to resize them. Drag a pane by its title bar onto the side of
   another to put it there, or onto the middle to swap the two. Three

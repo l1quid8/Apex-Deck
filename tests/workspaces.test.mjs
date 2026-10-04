@@ -86,3 +86,9 @@ test("the Removed line lists removed workspaces in their list order", () => {
   assert.deepEqual(hiddenWorkspaces(list).map((w) => w.id), ["a", "c"]);
   assert.deepEqual(hiddenWorkspaces([ws("a")]), []);
 });
+
+test("removing a workspace ends its previews too", () => {
+  const preview = { id: "p", workspaceId: "w", kind: "preview", title: "Preview", url: "http://localhost:5173/" };
+  const after = removeWorkspacePanes([chat("a"), preview, { ...preview, id: "q", workspaceId: "v" }], "w");
+  assert.deepEqual(after.map((p) => p.id), ["a", "q"]);
+});

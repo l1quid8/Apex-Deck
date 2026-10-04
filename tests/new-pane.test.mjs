@@ -28,10 +28,10 @@ const agents = [
 
 test("the + New menu lists installed tools first, then the shell, then missing tools", () => {
   const items = newMenuItems("code", agents, on([]), "");
-  assert.deepEqual(items.map((i) => i.label), ["Claude Code", "Codex", "Terminal", "Gemini CLI"]);
+  assert.deepEqual(items.map((i) => i.label), ["Claude Code", "Codex", "Terminal", "Preview", "Gemini CLI"]);
   assert.equal(items.at(-1).installed, false);
   assert.equal(items.at(-1).detail, "not installed");
-  assert.deepEqual(newMenuItems("threads", agents, on([]), "").map((i) => i.kind), ["chat"]);
+  assert.deepEqual(newMenuItems("threads", agents, on([]), "").map((i) => i.kind), ["chat", "preview"]);
   assert.deepEqual(newMenuItems("agents", agents, on([]), ""), []);
 });
 
@@ -56,4 +56,10 @@ test("a name already in the chat gets a number", () => {
   assert.equal(uniqueName("Opus", [], slug), "Opus");
   assert.equal(uniqueName("Opus", ["opus"], slug), "Opus 2");
   assert.equal(uniqueName("Opus", ["opus", "opus-2"], slug), "Opus 3");
+});
+
+test("+ New offers a Preview on both decks", () => {
+  const item = { key: "preview", label: "Preview", detail: "a web page", kind: "preview", installed: true };
+  assert.deepEqual(newMenuItems("code", agents, on([]), "preview")[0], item);
+  assert.deepEqual(newMenuItems("threads", agents, on([]), "preview")[0], item);
 });

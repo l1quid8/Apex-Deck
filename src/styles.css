@@ -2188,3 +2188,34 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .effort-ticks span::before { content: ''; position: absolute; top: 0; left: 50%; width: 1px; height: 4px; background: currentColor; }
 .effort-ticks span:first-child::before { left: 0; } .effort-ticks span:last-child::before { left: auto; right: 0; }
 .effort-ticks span.on { opacity: 1; color: var(--accent, #3fb950); font-weight: 600; }
+
+/* Preview: a web page beside your terminals or threads. */
+.preview { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); }
+.preview-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.preview-bar form { flex: 1; min-width: 0; display: flex; }
+.preview-bar input { flex: 1; min-width: 0; padding: 5px 10px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.preview-full-title { padding: 0 8px; font-weight: 600; white-space: nowrap; }
+.preview-error { margin: 0; padding: 6px 12px; font-size: 12px; color: var(--danger); border-bottom: 1px solid var(--line); }
+.preview-body { position: relative; flex: 1; min-height: 0; display: flex; overflow: auto; }
+.preview-body iframe { flex: 1; border: 0; background: #fff; }
+.preview-checking { margin: auto; color: var(--muted); }
+.preview-notice, .preview-empty { margin: auto; max-width: 420px; padding: 32px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.preview-empty { margin: 0; max-width: none; width: 100%; box-sizing: border-box; padding: 28px 32px; align-items: stretch; }
+.preview-notice h2, .preview-empty h2 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.035em; }
+.preview-notice p, .preview-empty p { margin: 0; color: var(--muted); max-width: 46ch; }
+.preview-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.preview-retry { margin-top: 6px; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.preview-always { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.preview-label { margin-top: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.preview-servers { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); overflow: hidden; }
+.preview-servers button { display: flex; align-items: center; gap: 12px; padding: 10px 12px; text-align: left; border: 0; border-radius: 0; border-top: 1px solid var(--line); background: transparent; }
+.preview-servers button:first-child { border-top: 0; }
+.preview-servers button:hover { background: var(--panel-2); }
+.preview-server { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.preview-server small { font-size: 12px; color: var(--muted); }
+.preview-open { font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.preview-foot { margin-top: auto !important; padding-top: 16px; font-size: 12px; }
+/* Full window: the same element, fixed over the rail and deck, so the page keeps its state. */
+.preview.full-window { position: fixed; top: var(--deck-top, 0px); left: 0; right: 0; bottom: 0; z-index: 35; background: var(--bg); }
+/* A local server a terminal printed or a bot mentioned; opens it in a Preview beside that pane. */
+.server-chip { flex: none; padding: 0 8px; border-radius: 999px; background: transparent; color: var(--brand-cyan); font: 11px/20px ui-monospace, SFMono-Regular, Menlo, monospace; }

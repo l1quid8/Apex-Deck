@@ -5,7 +5,7 @@ import type { ToolServer } from "./types";
 // the UI can be worked on without building the app.
 
 import { ruleFor, sameRule } from "./allowedRules";
-import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
 
@@ -26,6 +26,8 @@ export interface Backend {
   dataFolder(): Promise<string>;
   /** Whether each environment variable is set, as the app sees it. Never its value. */
   envPresent(names: string[]): Promise<boolean[]>;
+  /** Look at a web address before the Preview pane loads it: does anything answer, and may it be framed. */
+  previewProbe(address: string): Promise<PreviewProbe>;
 
   ptySpawn(o: { id: string; agent?: string; cwd?: string; cols: number; rows: number }): Promise<void>;
   ptyWrite(id: string, data: string): Promise<void>;
@@ -114,6 +116,7 @@ async function tauriBackend(): Promise<Backend> {
     settingsSave: (settings) => invoke("settings_save", { settings }),
     dataFolder: () => invoke<string>("data_folder"),
     envPresent: (names) => invoke<boolean[]>("env_present", { names }),
+    previewProbe: (address) => invoke<PreviewProbe>("preview_probe", { address }),
     pickFolder: async () => {
       const picked = await open({ directory: true, multiple: false, title: "Add a workspace folder" });
       return typeof picked === "string" ? picked : null;
@@ -474,6 +477,18 @@ function demoBackend(): Backend {
     sessionSave: async (session) => { localStorage.setItem("apex-deck.demo.session.v1", JSON.stringify(session)); },
     settingsLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.settings.v1") ?? "null"),
     settingsSave: async (settings) => { localStorage.setItem("apex-deck.demo.settings.v1", JSON.stringify(settings)); },
+    // A browser can't read another site's headers, so a few well-known sites
+    // stand in for "refused", and anything that fails to fetch is unreachable.
+    previewProbe: async (address) => {
+      const host = new URL(address).hostname;
+      if (/(^|\.)(github\.com|google\.com)$/.test(host)) return { kind: "refused" };
+      try {
+        await fetch(address, { mode: "no-cors", cache: "no-store" });
+        return { kind: "ok" };
+      } catch {
+        return { kind: "unreachable", reason: "Nothing is answering there." };
+      }
+    },
     dataFolder: async () => "Browser storage (preview mode)",
     envPresent: async (names) => names.map(() => false),
 
@@ -481,7 +496,7 @@ function demoBackend(): Backend {
       const what = agent ? `${agent} (browser demo)` : "shell (browser demo)";
       // Agents name what they are doing in the terminal's title, as Claude Code does.
       const title = agent ? "\x1b]0;\u2733 Reading the project\x07" : "";
-      setTimeout(() => emitData(id, `${title}\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, title, exit or fail.\x1b[0m\r\n$ `), 30);
+      setTimeout(() => emitData(id, `${title}\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, title, serve, exit or fail.\x1b[0m\r\n$ `), 30);
     },
     ptyWrite: async (id, data) => {
       if (endedPtys.has(id)) throw new Error(`no terminal with id ${id}`);
@@ -492,6 +507,8 @@ function demoBackend(): Backend {
       typedSoFar.set(id, ((typedSoFar.get(id) ?? "") + data).slice(-12));
       const line = typedSoFar.get(id) ?? "";
       if (line.endsWith("ask\r")) setTimeout(() => emitData(id, "\r\n Do you want to create hello.txt?\r\n \u276f 1. Yes\r\n   2. No\r\n"), 300);
+      // "serve" prints a dev server's address, in colour as Vite does, so the Preview chip can be seen.
+      if (line.endsWith("serve\r")) setTimeout(() => emitData(id, "\r\n  \x1b[32mVITE\x1b[39m ready in 120 ms\r\n\r\n  \u279c  Local:   \x1b[36mhttp://localhost:\x1b[1m5174\x1b[22m/\x1b[39m\r\n$ "), 300);
       if (line.endsWith("work\r")) {
         for (let i = 1; i <= 40; i++) setTimeout(() => emitData(id, `\r\ncompiling module ${i} of 40 ...`), 2000 + i * 100);
         setTimeout(() => emitData(id, "\r\nFinished.\r\n$ "), 6200);

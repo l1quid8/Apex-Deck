@@ -8,6 +8,7 @@ import type { Backend } from "./backend";
 import { registerPty } from "./hub";
 import { STOPPED, canStart, exitBar, exitLine, exitSignal, exited, ptyIdFor, started, startedAgainLine, stoppedNotice, type TerminalRun } from "./terminalRun";
 import { TitleThrottle, cleanTitle } from "./terminalTitle";
+import { ServerWatch } from "./previewAddress";
 import type { Pane } from "./types";
 
 interface Props {
@@ -34,6 +35,8 @@ interface Props {
   onClose: (paneId: string) => void;
   /** A new run of output began at `startedAt` (ms since the epoch), for the head's "Working 4m". */
   onRunStart?: (paneId: string, startedAt: number) => void;
+  /** A local server address the program printed, once per address per run. */
+  onServer?: (paneId: string, address: string) => void;
   /** From Settings › Terminal. Open terminals take a change straight away. */
   fontSize?: number;
   scrollback?: number;
@@ -58,7 +61,7 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onSignal, onClose, onRunStart, fontSize = 13, scrollback = 5000 }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
   /** Fit the terminal to its pane and tell the program its new size. Set up with the terminal below. */
   const refit = useRef<() => void>(() => {});
   const host = useRef<HTMLDivElement>(null);
@@ -66,8 +69,8 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
   /** Where the program is, for the bar at the foot of the pane. */
   const [run, setRun] = useState<TerminalRun>(STOPPED);
   // Keep the latest callbacks and folder without restarting the terminal when they change.
-  const latest = useRef({ onActivity, onRun, onTitle, onSignal, onRunStart, cwd, installed });
-  latest.current = { onActivity, onRun, onTitle, onSignal, onRunStart, cwd, installed };
+  const latest = useRef({ onActivity, onRun, onTitle, onSignal, onRunStart, onServer, cwd, installed });
+  latest.current = { onActivity, onRun, onTitle, onSignal, onRunStart, onServer, cwd, installed };
   /** Starts the program, or starts it again once it has ended. Set up with the terminal below. */
   const start = useRef<() => void>(() => {});
 
@@ -94,6 +97,8 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     // its screen and how the output arrived, and say whether it is waiting
     // for the person or has finished a piece of work. See attention.ts.
     const burst = new Burst();
+    // Local server addresses the program prints, for the chip in the pane head.
+    const servers = new ServerWatch();
     let quiet: ReturnType<typeof setTimeout> | undefined;
     let waiting = false;
     let reportedRun = 0;
@@ -144,11 +149,13 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       const again = current.generation > 0;
       const next = started(current, Date.now());
       const id = ptyIdFor(pane.id, next.generation);
+      servers.reset();
       unregister();
       unregister = registerPty(id, {
         onData: (data) => {
           term.write(data);
           latest.current.onActivity(pane.id);
+          for (const address of servers.feed(data)) latest.current.onServer?.(pane.id, address);
           burst.output(Date.now(), data.length);
           // A new run of output: the pane head times it from here.
           const runStart = burst.runStartedAt();

@@ -38,10 +38,10 @@ export function openThreadIds(panes: Pane[], workspaceId: string): string[] {
   return panes.filter((p) => p.workspaceId === workspaceId && p.kind === "chat" && !p.closed).map((p) => p.id);
 }
 
-/** Panes once a workspace is removed: its terminals are gone and its threads are closed. Nothing is deleted. */
+/** Panes once a workspace is removed: its terminals and previews are gone and its threads are closed. Nothing is deleted. */
 export function removeWorkspacePanes(panes: Pane[], workspaceId: string): Pane[] {
   return panes
-    .filter((p) => !(p.workspaceId === workspaceId && p.kind === "terminal"))
+    .filter((p) => !(p.workspaceId === workspaceId && (p.kind === "terminal" || p.kind === "preview")))
     .map((p) => (p.workspaceId === workspaceId && p.kind === "chat" && !p.closed ? { ...p, closed: true } : p));
 }
 

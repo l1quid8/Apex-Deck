@@ -9,6 +9,7 @@
 mod agents;
 mod export;
 mod changes;
+mod preview;
 mod pty;
 mod quit;
 mod storage;
@@ -741,6 +742,12 @@ fn env_is_set(name: &str) -> bool {
     valid && std::env::var_os(name).is_some_and(|v| !v.is_empty())
 }
 
+/// Look at a web address before the Preview pane loads it. See preview.rs.
+#[tauri::command]
+async fn preview_probe(address: String) -> Result<preview::Probe, String> {
+    preview::probe(preview::client(), &address).await
+}
+
 #[tauri::command]
 fn room_delete(state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<(), String> {
     let handle = state.handle(&id).ok();
@@ -893,6 +900,7 @@ pub fn run() {
             session_save,
             settings_load,
             settings_save,
+            preview_probe,
             data_folder,
             env_present,
             room_delete,

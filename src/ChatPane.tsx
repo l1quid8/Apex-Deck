@@ -2,6 +2,7 @@ import { ReplyPolicyPicker, REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, ThreadStatus, ToolServer } from "./types";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
+import { findServerUrls } from "./previewAddress";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, statusParts, stopLabel, stopTargets, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
@@ -75,6 +76,8 @@ interface Props {
   onSignal?: (paneId: string, kind: Attention | null, note?: string) => void;
   /** Raise (with the flag) or clear (with `null`) this chat's blocking flag for its open approval cards. */
   onApprovals?: (paneId: string, signal: Signal | null) => void;
+  /** The newest local server address a bot mentioned in a finished reply. */
+  onServer?: (paneId: string, address: string) => void;
   profiles: ParticipantConfig[];
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
@@ -314,7 +317,7 @@ const STARTERS = [
   { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
 ];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -1113,6 +1116,22 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (menuRequest.action === "fork") void forkAt(`${pane.title} (fork)`, null);
     else exportAs("markdown");
   }, [menuRequest]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The newest local server address a bot mentioned, for the chip in the pane
+  // head. Only finished replies are messages; text still streaming is not, so
+  // a half-written address never makes a chip.
+  const newestServer = useMemo(() => {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.kind !== "message" || entry.message.speaker.kind !== "bot") continue;
+      const found = findServerUrls(entry.message.text);
+      if (found.length > 0) return found[found.length - 1];
+    }
+    return "";
+  }, [entries]);
+  useEffect(() => {
+    if (newestServer && !profileMode) onServer?.(pane.id, newestServer);
+  }, [newestServer, onServer, pane.id, profileMode]);
 
   /** Save each file as soon as it is attached, so sending never waits. */
   const track = (name: string, preview: string | undefined, save: () => Promise<string>) => {

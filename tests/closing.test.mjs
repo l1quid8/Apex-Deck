@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, restoredLayouts, savedLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning } from "../src/closing.ts";
+import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, restoredLayouts, savedLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning } from "../src/closing.ts";
 
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
 const term = (id, extra = {}) => ({ id, workspaceId: "w", kind: "terminal", title: id, ...extra });
@@ -197,4 +197,41 @@ test("a layout that only holds panes that loaded comes back unchanged", () => {
   const panes = [term("t1"), term("t2"), chat("a"), chat("b")];
   const saved = { "w:code": row([leaf("t1"), leaf("t2")], [0.7, 0.3]), "w:threads": leaf("a") };
   assert.deepEqual(restoredLayouts(saved, panes), saved);
+});
+
+const preview = (id, extra = {}) => ({ id, workspaceId: "w", kind: "preview", title: id, url: "http://localhost:5173/", ...extra });
+
+test("a preview is saved and read back with its address and source terminal", () => {
+  const saved = savedPanes([preview("p", { servedBy: "t", stray: 1 })]);
+  assert.deepEqual(saved, [{ id: "p", workspaceId: "w", kind: "preview", title: "p", url: "http://localhost:5173/", servedBy: "t" }]);
+  assert.deepEqual(loadedPanes(saved, ["w"]), saved);
+});
+
+test("a preview with an address that isn't a web address loads empty, and a nameless one is left out", () => {
+  const [loaded] = loadedPanes([preview("p", { url: "javascript:alert(1)" })], ["w"]);
+  assert.equal(loaded.url, "");
+  assert.deepEqual(loadedPanes([preview("q", { title: " " })], ["w"]), []);
+});
+
+test("previews keep their place in the Code layout", () => {
+  const tree = row([leaf("t"), leaf("p")], [0.5, 0.5]);
+  assert.deepEqual(restoredLayouts({ "w:code": tree }, [term("t"), preview("p")])["w:code"], tree);
+});
+
+test("a preview remembers which deck it is on, and one without a deck is on Code", () => {
+  const saved = savedPanes([preview("p", { deck: "threads" })]);
+  assert.equal(saved[0].deck, "threads");
+  assert.equal(loadedPanes(saved, ["w"])[0].deck, "threads");
+  assert.equal(loadedPanes([preview("q", { deck: "elsewhere" })], ["w"])[0].deck, undefined);
+  assert.equal(paneSection(preview("q")), "code");
+  assert.equal(paneSection(preview("r", { deck: "threads" })), "threads");
+  assert.equal(paneSection(chat("c")), "threads");
+  assert.equal(paneSection(term("t")), "code");
+});
+
+test("a preview on the Threads deck keeps its place beside threads, not terminals", () => {
+  const tree = row([leaf("c"), leaf("p")], [0.5, 0.5]);
+  const panes = [chat("c"), preview("p", { deck: "threads" })];
+  assert.deepEqual(restoredLayouts({ "w:threads": tree }, panes)["w:threads"], tree);
+  assert.equal(restoredLayouts({ "w:code": tree }, panes)["w:code"], undefined);
 });
