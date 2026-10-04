@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "../src/workspaces.ts";
-import { loadedThreads, savedThreads } from "../src/closing.ts";
+import { loadedPanes, savedPanes } from "../src/closing.ts";
 
 const ws = (id, extra = {}) => ({ id, name: id, path: `/code/${id}`, ...extra });
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
@@ -32,8 +32,8 @@ test("after removing a workspace and quitting, its threads load back and it stay
   const workspaces = setHidden([ws("w"), ws("v")], "w", true);
   const panes = removeWorkspacePanes([chat("a"), chat("b", { closed: true }), term("t"), chat("c", { workspaceId: "v" })], "w");
   // What App writes to the session file, and reads back on the next launch.
-  const file = JSON.parse(JSON.stringify({ workspaces, panes: savedThreads(panes) }));
-  const loaded = loadedThreads(file.panes, file.workspaces.map((w) => w.id));
+  const file = JSON.parse(JSON.stringify({ workspaces, panes: savedPanes(panes) }));
+  const loaded = loadedPanes(file.panes, file.workspaces.map((w) => w.id));
   assert.deepEqual(loaded.map((p) => [p.id, p.closed]), [["a", true], ["b", true], ["c", false]]);
   assert.deepEqual(shownWorkspaces(file.workspaces).map((w) => w.id), ["v"]);
   assert.deepEqual(listedPanes(loaded, file.workspaces).map((p) => p.id), ["c"]);

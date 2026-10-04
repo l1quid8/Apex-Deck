@@ -2016,3 +2016,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* In a narrow pane the buttons drop below the words rather than squeezing them. */
 .terminal-bar-text { flex: 1 1 26ch; min-width: 0; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .terminal-bar button { padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+/* A terminal restored from the last session, before it is started. */
+.terminal-stopped { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; background: var(--panel); }
+.terminal-stopped p { margin: 0; max-width: 42ch; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.terminal-stopped-actions { display: flex; gap: 8px; }

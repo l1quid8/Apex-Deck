@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, quitQuestion, removeCounts, removeQuestion, savedThreads, stillRunning } from "../src/closing.ts";
+import { closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, restoredLayouts, savedLayouts, quitQuestion, removeCounts, removeQuestion, savedPanes, stillRunning } from "../src/closing.ts";
 
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
 const term = (id, extra = {}) => ({ id, workspaceId: "w", kind: "terminal", title: id, ...extra });
+const leaf = (id) => ({ kind: "leaf", id });
+const row = (children, sizes) => ({ kind: "split", dir: "row", children, sizes });
 
 test("only a busy or waiting terminal asks before closing", () => {
   assert.equal(closeNeedsConfirm("terminal", "working"), true);
@@ -26,23 +28,62 @@ test("closed threads and threads being deleted are off the deck", () => {
 test("a thread waiting out its undo time is still saved, so quitting keeps it", () => {
   const panes = [chat("a"), chat("gone-soon"), term("t")];
   // The deck hides "gone-soon", but the session file must still hold it.
-  assert.deepEqual(savedThreads(panes).map((p) => p.id), ["a", "gone-soon"]);
+  assert.deepEqual(savedPanes(panes).filter((p) => p.kind === "chat").map((p) => p.id), ["a", "gone-soon"]);
 });
 
 test("a closed thread stays saved", () => {
-  assert.deepEqual(savedThreads([chat("a", { closed: true })]).map((p) => p.closed), [true]);
+  assert.deepEqual(savedPanes([chat("a", { closed: true })]).map((p) => p.closed), [true]);
+});
+
+test("terminals are saved as descriptors: id, workspace, name and tool only", () => {
+  const saved = savedPanes([term("t1", { title: "Codex 2", agent: "codex", closed: true, extra: "x" }), term("t2", { title: "Terminal" })]);
+  assert.deepEqual(saved, [
+    { id: "t1", workspaceId: "w", kind: "terminal", title: "Codex 2", agent: "codex" },
+    { id: "t2", workspaceId: "w", kind: "terminal", title: "Terminal" },
+  ]);
+  // Written as JSON, a plain shell has no agent field at all.
+  assert.equal(JSON.stringify(saved[1]), '{"id":"t2","workspaceId":"w","kind":"terminal","title":"Terminal"}');
 });
 
 test("an older session file without the closed field opens every thread", () => {
-  const saved = [chat("a"), chat("b"), chat("other", { workspaceId: "gone" }), term("t"), null];
-  const loaded = loadedThreads(saved, ["w"]);
+  const saved = [chat("a"), chat("b"), chat("other", { workspaceId: "gone" }), null];
+  const loaded = loadedPanes(saved, ["w"]);
   assert.deepEqual(loaded.map((p) => p.id), ["a", "b"]);
   assert.ok(loaded.every((p) => p.closed === false));
   assert.deepEqual(openPanes(loaded, new Set()).map((p) => p.id), ["a", "b"]);
 });
 
 test("a thread saved as closed stays closed", () => {
-  assert.equal(loadedThreads([chat("a", { closed: true })], ["w"])[0].closed, true);
+  assert.equal(loadedPanes([chat("a", { closed: true })], ["w"])[0].closed, true);
+});
+
+test("terminals load back as descriptors, in saved order beside threads", () => {
+  const saved = [chat("a"), term("t1", { title: "Codex", agent: "codex" }), term("t2", { title: "Terminal" })];
+  assert.deepEqual(loadedPanes(saved, ["w"]), [
+    { ...chat("a"), closed: false },
+    { id: "t1", workspaceId: "w", kind: "terminal", title: "Codex", agent: "codex" },
+    { id: "t2", workspaceId: "w", kind: "terminal", title: "Terminal" },
+  ]);
+});
+
+test("malformed or repeated panes in a session file are left out and the rest load", () => {
+  const saved = [
+    term("ok", { title: "Codex", agent: "codex" }),
+    term("no-title", { title: "" }),
+    term("bad-title", { title: 7 }),
+    term("bad-agent", { agent: 3 }),
+    term("gone", { workspaceId: "removed" }),
+    { kind: "terminal", workspaceId: "w", title: "No id" },
+    { id: "odd", workspaceId: "w", kind: "browser", title: "Odd" },
+    term("ok", { title: "Duplicate" }),
+    term("null-agent", { agent: null, closed: true, running: true }),
+    "junk",
+    42,
+  ];
+  assert.deepEqual(loadedPanes(saved, ["w"]), [
+    { id: "ok", workspaceId: "w", kind: "terminal", title: "Codex", agent: "codex" },
+    { id: "null-agent", workspaceId: "w", kind: "terminal", title: "null-agent" },
+  ]);
 });
 
 const status = (replying, waiting = []) => ({ text: "", replying, waiting });
@@ -121,7 +162,39 @@ test("an exited terminal never counts, even with a Failed flag", () => {
 });
 
 test("a thread keeps where you stopped reading; older files load without it", () => {
-  assert.equal(savedThreads([chat("a", { lastSeenSeq: 7 })])[0].lastSeenSeq, 7);
-  assert.equal(loadedThreads([chat("a", { lastSeenSeq: 7 })], ["w"])[0].lastSeenSeq, 7);
-  assert.equal(loadedThreads([chat("a")], ["w"])[0].lastSeenSeq, undefined);
+  assert.equal(savedPanes([chat("a", { lastSeenSeq: 7 })])[0].lastSeenSeq, 7);
+  assert.equal(loadedPanes([chat("a", { lastSeenSeq: 7 })], ["w"])[0].lastSeenSeq, 7);
+  assert.equal(loadedPanes([chat("a")], ["w"])[0].lastSeenSeq, undefined);
+});
+
+test("Threads and Code layouts are saved for workspaces still listed", () => {
+  const layouts = { "w:threads": leaf("a"), "w:code": leaf("t"), "gone:code": leaf("x"), ":code": leaf("y"), "w:agents": leaf("z") };
+  assert.deepEqual(savedLayouts(layouts, ["w"]), { "w:threads": leaf("a"), "w:code": leaf("t") });
+});
+
+test("a saved layout drops panes that didn't load and gives their space to the rest", () => {
+  const panes = [term("t1"), term("t2"), chat("a")];
+  const saved = { "w:code": row([leaf("t1"), leaf("t2"), leaf("gone")], [0.25, 0.25, 0.5]) };
+  assert.deepEqual(restoredLayouts(saved, panes), { "w:code": row([leaf("t1"), leaf("t2")], [0.5, 0.5]) });
+});
+
+test("a layout left with no panes, or one that can't be read, is dropped", () => {
+  const panes = [term("t1"), chat("a")];
+  const saved = {
+    "w:code": row([leaf("gone"), leaf("a")], [0.5, 0.5]),
+    "w:threads": { kind: "split", dir: "diagonal", children: [], sizes: [] },
+    "other:threads": leaf("a"),
+    "w:agents": leaf("t1"),
+    nocolon: leaf("t1"),
+  };
+  assert.deepEqual(restoredLayouts(saved, panes), {});
+  assert.deepEqual(restoredLayouts(null, panes), {});
+  assert.deepEqual(restoredLayouts("junk", panes), {});
+  assert.deepEqual(restoredLayouts([leaf("t1")], panes), {});
+});
+
+test("a layout that only holds panes that loaded comes back unchanged", () => {
+  const panes = [term("t1"), term("t2"), chat("a"), chat("b")];
+  const saved = { "w:code": row([leaf("t1"), leaf("t2")], [0.7, 0.3]), "w:threads": leaf("a") };
+  assert.deepEqual(restoredLayouts(saved, panes), saved);
 });

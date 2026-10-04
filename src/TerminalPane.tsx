@@ -6,7 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Burst, QUIET_MS, waitingFor, type Attention } from "./attention";
 import type { Backend } from "./backend";
 import { registerPty } from "./hub";
-import { STOPPED, canStart, exitBar, exitLine, exitSignal, exited, ptyIdFor, started, startedAgainLine, type TerminalRun } from "./terminalRun";
+import { STOPPED, canStart, exitBar, exitLine, exitSignal, exited, ptyIdFor, started, startedAgainLine, stoppedNotice, type TerminalRun } from "./terminalRun";
 import type { Pane } from "./types";
 
 interface Props {
@@ -14,6 +14,12 @@ interface Props {
   cwd: string;
   backend: Backend;
   focused: boolean;
+  /** False for a terminal restored from the last session: it waits, Stopped, for you to start it. */
+  startOnMount: boolean;
+  /** False when the pane's tool is no longer on this computer; Start is then turned off. */
+  installed: boolean;
+  /** The tool's own name, such as "Codex", for "Codex isn't installed." */
+  toolLabel: string;
   /** Bumped by the ⋯ menu's Start again. */
   startRequest?: number;
   onActivity: (paneId: string) => void;
@@ -46,14 +52,14 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, startRequest, onActivity, onRun, onSignal, onClose, onRunStart }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onSignal, onClose, onRunStart }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   /** Where the program is, for the bar at the foot of the pane. */
   const [run, setRun] = useState<TerminalRun>(STOPPED);
   // Keep the latest callbacks and folder without restarting the terminal when they change.
-  const latest = useRef({ onActivity, onRun, onSignal, onRunStart, cwd });
-  latest.current = { onActivity, onRun, onSignal, onRunStart, cwd };
+  const latest = useRef({ onActivity, onRun, onSignal, onRunStart, cwd, installed });
+  latest.current = { onActivity, onRun, onSignal, onRunStart, cwd, installed };
   /** Starts the program, or starts it again once it has ended. Set up with the terminal below. */
   const start = useRef<() => void>(() => {});
 
@@ -110,7 +116,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startRequest, onActi
     const ptyId = () => ptyIdFor(pane.id, current.generation);
 
     start.current = () => {
-      if (!canStart(current)) return;
+      if (!canStart(current) || !latest.current.installed) return;
       const again = current.generation > 0;
       const next = started(current, Date.now());
       const id = ptyIdFor(pane.id, next.generation);
@@ -172,7 +178,9 @@ export function TerminalPane({ pane, cwd, backend, focused, startRequest, onActi
     });
     observer.observe(element);
 
-    start.current();
+    // A terminal restored from the last session never starts by itself.
+    if (startOnMount) start.current();
+    else report(STOPPED);
 
     return () => {
       observer.disconnect();
@@ -198,13 +206,23 @@ export function TerminalPane({ pane, cwd, backend, focused, startRequest, onActi
   }, [focused]);
 
   const bar = run.state === "exited" ? exitBar(run, pane.title) : null;
+  const notice = run.state === "stopped" ? stoppedNotice(pane.title, toolLabel, installed) : null;
   return (
     <div className="terminal">
       <div className="terminal-host" ref={host} />
+      {notice && (
+        <div className="terminal-stopped" role="status">
+          <p>{notice.text}</p>
+          <div className="terminal-stopped-actions">
+            <button className="primary" disabled={!installed} onClick={() => start.current()}>{notice.start}</button>
+            <button onClick={() => onClose(pane.id)}>Close</button>
+          </div>
+        </div>
+      )}
       {bar && (
         <div className="terminal-bar" role="status">
           <span className="terminal-bar-text">{bar.text}</span>
-          <button className="primary" onClick={() => start.current()}>{bar.start}</button>
+          <button className="primary" disabled={!installed} onClick={() => start.current()}>{bar.start}</button>
           <button onClick={() => onClose(pane.id)}>Close</button>
         </div>
       )}

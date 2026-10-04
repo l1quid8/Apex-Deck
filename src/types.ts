@@ -107,7 +107,8 @@ export type AppSection = "agents" | "code" | "threads";
 export interface AppSession {
   version: 1;
   workspaces: Workspace[];
-  /** Saved chats only; processes are started explicitly in Code. */
+  /** Saved threads, and each terminal as a descriptor (id, workspace, name,
+   *  tool). Terminals come back Stopped: nothing is started on launch. */
   panes: Pane[];
   profiles: ParticipantConfig[];
   disabledProviders?: string[];
@@ -116,8 +117,9 @@ export interface AppSession {
   section: AppSection;
   /** The last ready-made layout chosen. Kept for files saved by older versions. */
   layout: Layout;
-  /** How the threads of each workspace are arranged, by "workspace:section".
-   *  Each value is a tree from layout.ts and is checked when it is read. */
+  /** How the panes of each workspace are arranged in Threads and in Code, by
+   *  "workspace:section". Each value is a tree from layout.ts and is checked
+   *  when it is read; panes that didn't load are taken out. */
   layouts?: Record<string, unknown>;
   threadDetailsOpen?: boolean;
   threadDetailsCollapsed?: Partial<Record<import("./detailsLayout").DetailsSection, boolean>>;

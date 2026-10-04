@@ -13,8 +13,8 @@ import { AgentsSection } from "./AgentsSection";
 import { DeckIcon } from "./DeckIcon";
 import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
-import { isRunning, stateWord, terminalStatus, type TerminalRun } from "./terminalRun";
-import { grid, leafIds, mainAndStack, rects, sync, validate, type LayoutNode, type Rect } from "./layout";
+import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
+import { grid, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
@@ -22,7 +22,7 @@ import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedThreads, openPanes, quitQuestion, removeCounts, removeQuestion, savedThreads, stillRunning } from "./closing";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, quitQuestion, removeCounts, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
 import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
@@ -170,6 +170,8 @@ export function App() {
   /** Panes that want attention, by pane id. */
   const [attention, setAttention] = useState<Record<string, Signal>>({});
   const lastOutput = useRef(new Map<string, number>());
+  /** Terminals read back from the session file. They wait, Stopped, until started. */
+  const restored = useRef(new Set<string>());
   /** When each terminal's current run of output began, for "Working 4m". */
   const runStart = useRef(new Map<string, number>());
   /** Every open approval card, app-wide (approvals.ts). */
@@ -186,20 +188,18 @@ export function App() {
       setAgents(found);
       const known = saved?.workspaces ?? loadWorkspaces();
       setWorkspaces(known);
-      setPanes(loadedThreads(saved?.panes ?? [], known.map((w) => w.id)));
+      const loaded = loadedPanes(saved?.panes ?? [], known.map((w) => w.id));
+      restored.current = new Set(loaded.filter((p) => p.kind === "terminal").map((p) => p.id));
+      setPanes(loaded);
       setProfiles(saved?.profiles ?? []);
       setDisabledProviders(saved?.disabledProviders ?? []);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
       setDetailsOpen(saved?.threadDetailsOpen ?? false);
       setDetailsCollapsed(saved?.threadDetailsCollapsed ?? {});
-      // A layout that cannot be read is dropped and rebuilt from the panes.
-      const arranged: Record<string, LayoutNode> = {};
-      for (const [key, value] of Object.entries(saved?.layouts ?? {})) {
-        const tree = validate(value);
-        if (tree) arranged[key] = tree;
-      }
-      setLayouts(arranged);
+      // A layout that cannot be read is dropped and rebuilt from the panes,
+      // and panes that didn't load are taken out of the rest.
+      setLayouts(restoredLayouts(saved?.layouts, loaded));
       setActiveWorkspace(saved?.activeWorkspace ?? known[0]?.id ?? null);
       setFocusedPane(saved?.focusedPane ?? null);
       if (folders.length > 0) {
@@ -221,9 +221,7 @@ export function App() {
   useEffect(() => {
     if (!backend) return;
     saveWorkspaces(workspaces);
-    // Terminals are not restored, so only the arrangement of threads is kept.
-    const kept = Object.fromEntries(Object.entries(layouts).filter(([key]) => key.endsWith(":threads") && workspaces.some((w) => key === layoutKey(w.id, "threads"))));
-    const session: AppSession = { version: 1, workspaces, panes: savedThreads(panes), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: kept, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
+    const session: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, disabledProviders, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map((w) => w.id)), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
@@ -856,7 +854,7 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
                     ) : (
                       <ChatPane onStatus={onThreadStatus} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}

@@ -5,6 +5,8 @@
 // a short time to undo it. These rules are plain functions so they can be
 // tested on their own.
 
+import type { LayoutNode } from "./layout";
+import { leafIds, removeLeaf, validate } from "./layout.ts";
 import type { Pane, PaneStatus, ThreadStatus } from "./types";
 
 /** How long a deleted thread can still be brought back. */
@@ -34,19 +36,74 @@ export function openPanes(panes: Pane[], deleting: ReadonlySet<string>): Pane[] 
 }
 
 /**
- * The threads written to the session file. A thread waiting out its undo
- * time is still written, so quitting before the time is up keeps it: the
- * delete only happens when the time runs out.
+ * What is written to the session file: every thread, and each terminal as a
+ * descriptor (its id, workspace, name and tool; never its output or its
+ * process). A thread waiting out its undo time is still written, so quitting
+ * before the time is up keeps it: the delete only happens when the time runs out.
  */
-export function savedThreads(panes: Pane[]): Pane[] {
-  return panes.filter((p) => p.kind === "chat");
+export function savedPanes(panes: Pane[]): Pane[] {
+  return panes.map((p) => {
+    if (p.kind === "chat") return p;
+    const terminal: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "terminal", title: p.title };
+    if (p.agent) terminal.agent = p.agent;
+    return terminal;
+  });
 }
 
-/** Threads read back from a session file. Older files have no `closed` field, and their threads open as before. */
-export function loadedThreads(saved: unknown[], workspaceIds: string[]): Pane[] {
-  return saved
-    .filter((p): p is Pane => Boolean(p) && typeof p === "object" && (p as Pane).kind === "chat" && workspaceIds.includes((p as Pane).workspaceId))
-    .map((p) => (p.closed ? p : { ...p, closed: false }));
+/**
+ * Panes read back from a session file. Older files have no `closed` field,
+ * and their threads open as before; they have no terminals either. A
+ * terminal comes back as its descriptor only, and the deck shows it Stopped
+ * until you start it. Anything malformed, repeated, or in a workspace that
+ * is gone is left out.
+ */
+export function loadedPanes(saved: unknown[], workspaceIds: string[]): Pane[] {
+  const seen = new Set<string>();
+  return saved.flatMap((value): Pane[] => {
+    if (!value || typeof value !== "object") return [];
+    const p = value as Partial<Pane>;
+    if (typeof p.id !== "string" || !p.id || seen.has(p.id)) return [];
+    if (typeof p.workspaceId !== "string" || !workspaceIds.includes(p.workspaceId)) return [];
+    if (p.kind === "chat") {
+      seen.add(p.id);
+      return [p.closed ? (p as Pane) : { ...(p as Pane), closed: false }];
+    }
+    if (p.kind !== "terminal" || typeof p.title !== "string" || !p.title.trim()) return [];
+    if (p.agent != null && typeof p.agent !== "string") return [];
+    seen.add(p.id);
+    const terminal: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "terminal", title: p.title };
+    if (p.agent) terminal.agent = p.agent;
+    return [terminal];
+  });
+}
+
+/** Layouts are kept by "<workspace id>:<section>". Threads and Code are both saved, for workspaces still listed. */
+export function savedLayouts(layouts: Record<string, LayoutNode>, workspaceIds: string[]): Record<string, LayoutNode> {
+  const keep = new Set(workspaceIds.flatMap((id) => [`${id}:threads`, `${id}:code`]));
+  return Object.fromEntries(Object.entries(layouts).filter(([key]) => keep.has(key)));
+}
+
+/**
+ * Layouts read back from a session file, for the panes that loaded. A layout
+ * that can't be read is dropped; a pane that didn't load, or that belongs to
+ * the other section, is taken out and its space goes to its neighbours; and
+ * a layout with no panes left is dropped.
+ */
+export function restoredLayouts(saved: unknown, panes: Pane[]): Record<string, LayoutNode> {
+  const out: Record<string, LayoutNode> = {};
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return out;
+  for (const [key, value] of Object.entries(saved)) {
+    const cut = key.lastIndexOf(":");
+    const section = key.slice(cut + 1);
+    if (cut < 1 || (section !== "threads" && section !== "code")) continue;
+    const workspace = key.slice(0, cut);
+    const kind = section === "code" ? "terminal" : "chat";
+    const loaded = new Set(panes.filter((p) => p.workspaceId === workspace && p.kind === kind).map((p) => p.id));
+    let tree = validate(value);
+    for (const id of leafIds(tree)) if (!loaded.has(id)) tree = removeLeaf(tree, id);
+    if (tree) out[key] = tree;
+  }
+  return out;
 }
 
 // ------------------------------------------------- removing a workspace
