@@ -640,6 +640,8 @@ export function App() {
   return (
     <div className="app">
       <header className="titlebar">
+        {/* Three groups: the two sides take equal room, so the section tabs sit at the centre. */}
+        <div className="titlebar-start">
         <button className="icon" onClick={() => setRailOpen((open) => !open)} aria-label={railOpen ? "Hide workspaces" : "Show workspaces"} title={railOpen ? "Hide workspaces" : "Show workspaces"}>
           <DeckIcon name="sidebar" />
         </button>
@@ -648,10 +650,11 @@ export function App() {
           Apex Deck
         </span>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
-        <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />
-        {/* Before the spacer, so growing never moves the controls on the right. */}
+        {/* Just left of the tabs: it grows away from them, so neither the tabs nor the right-hand controls move. */}
         <AttentionMenu items={attentionItems} onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }} />
-        <span className="spacer" />
+        </div>
+        <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />
+        <div className="titlebar-end">
         <button className="ghost" onClick={() => setManagingProviders((open) => !open)} aria-expanded={managingProviders}>Providers</button>
         {(
           <div className="layout-presets" role="group" aria-label="Arrange panes">
@@ -680,6 +683,7 @@ export function App() {
           openRequest={newMenuRequest}
         />}
         {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
+        </div>
       </header>
 
       {managingProviders && <ProviderSettings agents={agents} disabled={disabledProviders} onChange={setDisabledProviders} onClose={() => setManagingProviders(false)} />}

@@ -954,18 +954,17 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .agent-library .empty { margin: 8px 0 0; border: 1px dashed var(--line); border-radius: 14px; width: 100%; max-width: none; padding: 48px 24px; }
 @media (max-width: 1050px) {
   .titlebar { gap: 8px; }
-  .titlebar > .badge { display: none; }
+  .titlebar .badge { display: none; }
   .section-navigation { margin-left: 4px; }
   .section-button { padding: 7px 10px; }
-  .titlebar > .ghost { font-size: 11px; }
+  .titlebar-end > .ghost { font-size: 11px; }
   .rail { width: 200px; }
 }
 @media (max-width: 720px) {
   .titlebar { padding: 10px; }
-  .titlebar > button.ghost[title] { display: none; }
+  .titlebar-end > button.ghost[title] { display: none; }
   .section-navigation { order: 5; width: 100%; justify-content: center; }
   .section-button { flex: 1; justify-content: center; }
-  .titlebar > .spacer { min-width: 0; }
   .rail { width: 160px; padding: 14px 8px; }
   .canvas { padding: 8px; }
   .picker { padding: 24px 16px; }
@@ -1852,7 +1851,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 .new-menu > .primary, .attention-button { white-space: nowrap; }
 /* Between the wrapped phone layout and a full window the title bar is tight: keep the mark, drop the name. */
 @media (max-width: 960px) and (min-width: 721px) {
-  .titlebar > .brand { font-size: 0; gap: 0; }
+  .titlebar-start > .brand { font-size: 0; gap: 0; }
 }
 
 /* Board 06: who is replying, and Queue and Steer side by side. */
@@ -1908,3 +1907,18 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* Now tier, stage 1: what is still running, under the quit question. */
 .confirm-rows { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
 .confirm-rows li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* Now tier, stage 1: the section tabs sit at the centre of the title bar. The
+   two sides take equal room while both fit, and shift aside rather than overlap. */
+.titlebar-start, .titlebar-end { display: flex; align-items: center; gap: 10px; flex: 1 1 0; min-width: max-content; }
+.titlebar-end { justify-content: flex-end; }
+.titlebar-start > .attention { margin-left: auto; }
+@media (min-width: 1051px) {
+  .titlebar > .section-navigation { margin-left: 0; }
+}
+/* Narrower, there's no room for three balanced groups: the tabs follow the brand. */
+@media (max-width: 1050px) {
+  .titlebar-start, .titlebar-end { flex: none; min-width: 0; gap: 8px; }
+  .titlebar-end { margin-left: auto; }
+  .titlebar-start > .attention { margin-left: 0; }
+}
