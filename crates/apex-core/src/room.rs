@@ -130,14 +130,35 @@ impl Approver for RoomApprover<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
         let (request, answer) = self.desk.open_for(self.id.clone());
         (self.on_event)(RoomEvent::ApprovalRequested { id: self.id.clone(), request: request.clone(), action });
+        let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
         let decision = answer.await.unwrap_or(Decision::Reject);
-        (self.on_event)(RoomEvent::ApprovalResolved {
-            id: self.id.clone(),
-            request,
-            approved: decision == Decision::Approve,
-        });
+        card.settle(decision == Decision::Approve);
         decision
+    }
+}
+
+/// A proposal on screen. If the wait for it is abandoned, as when the tool
+/// that asked stops waiting, it is taken down and shown as refused.
+struct Card<'a, 'b> {
+    approver: &'a RoomApprover<'b>,
+    request: Option<String>,
+}
+
+impl Card<'_, '_> {
+    fn settle(&mut self, approved: bool) {
+        if let Some(request) = self.request.take() {
+            (self.approver.on_event)(RoomEvent::ApprovalResolved { id: self.approver.id.clone(), request, approved });
+        }
+    }
+}
+
+impl Drop for Card<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(request) = &self.request {
+            self.approver.desk.withdraw(request);
+        }
+        self.settle(false);
     }
 }
 
@@ -689,5 +710,48 @@ impl Room {
             sequential = true;
         }
         on_event(RoomEvent::Idle);
+    }
+}
+
+#[cfg(test)]
+mod approver_tests {
+    use super::*;
+    use crate::approval::ActionKind;
+    use futures::FutureExt;
+    use std::sync::Mutex;
+
+    fn action() -> ProposedAction {
+        ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() }
+    }
+
+    #[test]
+    fn a_card_whose_wait_is_abandoned_is_taken_down() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| events.lock().unwrap().push(event);
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let mut waiting = approver.decide(action());
+        assert!(waiting.as_mut().now_or_never().is_none(), "nobody has answered");
+        assert_eq!(desk.waiting(), 1);
+        drop(waiting);
+        assert_eq!(desk.waiting(), 0, "the card is gone");
+        let events = events.into_inner().unwrap();
+        assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: false, .. }]), "{events:?}");
+    }
+
+    #[test]
+    fn an_answered_card_is_settled_once() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| events.lock().unwrap().push(event);
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let mut waiting = approver.decide(action());
+        assert!(waiting.as_mut().now_or_never().is_none());
+        assert!(desk.resolve("ask-1", Decision::Approve));
+        assert_eq!(futures::executor::block_on(waiting), Decision::Approve);
+        let events = events.into_inner().unwrap();
+        assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. }]), "{events:?}");
     }
 }

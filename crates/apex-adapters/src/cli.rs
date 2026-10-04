@@ -377,11 +377,21 @@ struct Timed<'a> {
 #[async_trait]
 impl Approver for Timed<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
+        /// Restarts the quiet clock however the wait ends, including when
+        /// it is abandoned.
+        struct Asking<'a> {
+            asking: &'a AtomicBool,
+            last_heard: &'a Mutex<Instant>,
+        }
+        impl Drop for Asking<'_> {
+            fn drop(&mut self) {
+                *self.last_heard.lock().unwrap() = Instant::now();
+                self.asking.store(false, Ordering::SeqCst);
+            }
+        }
         self.asking.store(true, Ordering::SeqCst);
-        let decision = self.inner.decide(action).await;
-        *self.last_heard.lock().unwrap() = Instant::now();
-        self.asking.store(false, Ordering::SeqCst);
-        decision
+        let _asking = Asking { asking: self.asking, last_heard: self.last_heard };
+        self.inner.decide(action).await
     }
 }
 
@@ -535,4 +545,25 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         assert!(sign_in_hint("mytool", "please log in first").is_some());
         assert!(sign_in_hint("claude", "usage limit reached").is_none());
     }
+    #[test]
+    fn an_abandoned_question_restarts_the_quiet_clock() {
+        use super::{AtomicBool, Duration, Instant, Mutex, Ordering, Timed};
+        use apex_core::{ActionKind, Approver, Decision, ProposedAction};
+        use futures::FutureExt;
+        struct Never;
+        #[async_trait::async_trait]
+        impl Approver for Never {
+            async fn decide(&self, _: ProposedAction) -> Decision { std::future::pending().await }
+        }
+        let last_heard = Mutex::new(Instant::now() - Duration::from_secs(60));
+        let asking = AtomicBool::new(false);
+        let timed = Timed { inner: &Never, last_heard: &last_heard, asking: &asking };
+        let mut waiting = timed.decide(ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into() });
+        assert!(waiting.as_mut().now_or_never().is_none());
+        assert!(asking.load(Ordering::SeqCst));
+        drop(waiting);
+        assert!(!asking.load(Ordering::SeqCst), "the quiet clock runs again");
+        assert!(last_heard.lock().unwrap().elapsed() < Duration::from_secs(5));
+    }
+
 }

@@ -106,6 +106,12 @@ impl ApprovalDesk {
         }
     }
 
+    /// Take a proposal down without an answer, as when the tool that asked
+    /// stopped waiting. Returns false if it was already answered.
+    pub fn withdraw(&self, request: &str) -> bool {
+        self.waiting.lock().unwrap().remove(request).is_some()
+    }
+
     /// Reject everything that is waiting, as when the person presses stop.
     /// Returns how many proposals that was.
     pub fn reject_all(&self) -> usize {
@@ -200,4 +206,14 @@ mod tests {
         let unknown = FileChange::new("b.rs", "");
         assert_eq!((unknown.added, unknown.removed), (0, 0));
     }
+    #[test]
+    fn a_withdrawn_proposal_cannot_be_answered() {
+        let desk = ApprovalDesk::default();
+        let (request, _answer) = desk.open();
+        assert!(desk.withdraw(&request));
+        assert!(!desk.withdraw(&request), "already gone");
+        assert!(!desk.resolve(&request, Decision::Approve));
+        assert_eq!(desk.waiting(), 0);
+    }
+
 }
