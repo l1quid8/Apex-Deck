@@ -7,6 +7,7 @@ import { Burst, QUIET_MS, waitingFor, type Attention } from "./attention";
 import type { Backend } from "./backend";
 import { registerPty } from "./hub";
 import { STOPPED, canStart, exitBar, exitLine, exitSignal, exited, ptyIdFor, started, startedAgainLine, stoppedNotice, type TerminalRun } from "./terminalRun";
+import { TitleThrottle, cleanTitle } from "./terminalTitle";
 import type { Pane } from "./types";
 
 interface Props {
@@ -25,6 +26,8 @@ interface Props {
   onActivity: (paneId: string) => void;
   /** Told each time the program starts or ends. */
   onRun: (paneId: string, run: TerminalRun) => void;
+  /** The title the program gives itself, cleaned; "" when it has none or has ended. */
+  onTitle: (paneId: string, title: string) => void;
   /** Raise or clear (with `null`) this pane's request for attention. */
   onSignal: (paneId: string, kind: Attention | null, note?: string) => void;
   /** Close the pane, from the bar shown once the program has ended. */
@@ -52,14 +55,14 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onSignal, onClose, onRunStart }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onSignal, onClose, onRunStart }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   /** Where the program is, for the bar at the foot of the pane. */
   const [run, setRun] = useState<TerminalRun>(STOPPED);
   // Keep the latest callbacks and folder without restarting the terminal when they change.
-  const latest = useRef({ onActivity, onRun, onSignal, onRunStart, cwd, installed });
-  latest.current = { onActivity, onRun, onSignal, onRunStart, cwd, installed };
+  const latest = useRef({ onActivity, onRun, onTitle, onSignal, onRunStart, cwd, installed });
+  latest.current = { onActivity, onRun, onTitle, onSignal, onRunStart, cwd, installed };
   /** Starts the program, or starts it again once it has ended. Set up with the terminal below. */
   const start = useRef<() => void>(() => {});
 
@@ -108,6 +111,22 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     // exit end the new one. See terminalRun.ts.
     let current: TerminalRun = STOPPED;
     let unregister = () => {};
+
+    // The title the program gives itself (OSC 0 or 2), cleaned, at most four
+    // times a second, and only while it runs. See terminalTitle.ts.
+    const throttle = new TitleThrottle();
+    let titleTimer: ReturnType<typeof setTimeout> | undefined;
+    const titled = term.onTitleChange((raw) => {
+      if (current.state !== "running") return;
+      clearTimeout(titleTimer);
+      const now = Date.now();
+      const shown = throttle.offer(cleanTitle(raw), now);
+      if (shown !== null) latest.current.onTitle(pane.id, shown);
+      else titleTimer = setTimeout(() => {
+        const held = throttle.flush(Date.now());
+        if (held !== null && current.state === "running") latest.current.onTitle(pane.id, held);
+      }, throttle.wait(now));
+    });
     const report = (next: TerminalRun) => {
       current = next;
       setRun(next);
@@ -139,6 +158,9 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
           const ended = exited(current, next.generation, code, Date.now());
           if (ended === current) return;
           clearTimeout(quiet);
+          // The title belonged to the program that just ended.
+          clearTimeout(titleTimer);
+          latest.current.onTitle(pane.id, "");
           term.write(exitLine(code, ended.at));
           report(ended);
           const failed = exitSignal(code);
@@ -185,6 +207,8 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     return () => {
       observer.disconnect();
       clearTimeout(quiet);
+      clearTimeout(titleTimer);
+      titled.dispose();
       typed.dispose();
       unregister();
       if (current.state === "running") backend.ptyKill(ptyId()).catch(() => {});

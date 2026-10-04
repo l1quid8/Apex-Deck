@@ -14,6 +14,7 @@ import { DeckIcon } from "./DeckIcon";
 import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
+import { nextTitle, programTitle } from "./terminalTitle";
 import { grid, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
@@ -166,6 +167,8 @@ export function App() {
   }, [detailsOpen, section, overlayDetails]);
   /** Where each terminal's program is: stopped, running or exited. TerminalPane reports it. */
   const [runs, setRuns] = useState<Record<string, TerminalRun>>({});
+  /** The title each terminal's program gives itself, cleaned. TerminalPane reports it. */
+  const [programTitles, setProgramTitles] = useState<Record<string, string>>({});
   const [tick, setTick] = useState(0);
   /** Panes that want attention, by pane id. */
   const [attention, setAttention] = useState<Record<string, Signal>>({});
@@ -245,6 +248,15 @@ export function App() {
   const onRun = useCallback((paneId: string, run: TerminalRun) => {
     setRuns((all) => (all[paneId] === run ? all : { ...all, [paneId]: run }));
   }, []);
+  const onTitle = useCallback((paneId: string, title: string) => {
+    setProgramTitles((all) => ((all[paneId] ?? "") === title ? all : { ...all, [paneId]: title }));
+  }, []);
+  /** What a terminal's program says it is doing, shown muted after its name; "" for threads and when it only repeats a name. */
+  const programOf = (pane: Pane): string => {
+    if (pane.kind !== "terminal") return "";
+    const tool = agents.find((a) => a.key === pane.agent);
+    return programTitle(programTitles[pane.id] ?? "", [pane.title, tool?.label ?? "", tool?.program ?? ""]);
+  };
   const onRunStart = useCallback((paneId: string, startedAt: number) => {
     runStart.current.set(paneId, startedAt);
   }, []);
@@ -379,7 +391,9 @@ export function App() {
 
   const addPane = (kind: Pane["kind"], title: string, agent?: string) => {
     if (!activeWorkspace) return;
-    const pane: Pane = { id: newId("pane"), workspaceId: activeWorkspace, kind, title, agent };
+    // A second terminal of the same name in a workspace is numbered: "Codex 2".
+    const name = kind === "terminal" ? nextTitle(title, panes.filter((p) => p.workspaceId === activeWorkspace && p.kind === "terminal").map((p) => p.title)) : title;
+    const pane: Pane = { id: newId("pane"), workspaceId: activeWorkspace, kind, title: name, agent };
     setPanes((list) => [...list, pane]);
     setFocusedPane(pane.id);
     setSection(kind === "chat" ? "threads" : "code");
@@ -466,6 +480,7 @@ export function App() {
       title: pane.title,
       workspace: workspaces.find((w) => w.id === pane.workspaceId)?.name ?? "",
       where: pane.kind === "chat" ? "Threads" : "Code",
+      program: programOf(pane),
       signal: attention[pane.id],
       cards: pane.kind === "chat" ? openCards(pane.id, approvalState) : undefined,
     }));
@@ -494,6 +509,7 @@ export function App() {
       lastOutput.current.delete(id);
       runStart.current.delete(id);
       setRuns(({ [id]: _ended, ...rest }) => rest);
+      setProgramTitles(({ [id]: _gone, ...rest }) => rest);
       takeOff(id);
     };
     const status = statusOf(pane);
@@ -766,7 +782,8 @@ export function App() {
                   {own.map((pane) => (
                     <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}>
                       <span className={`dot ${statusOf(pane)}`} title={statusOf(pane)} />
-                      <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} />
+                      <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} label={pane.kind === "chat" ? "Thread name" : "Terminal name"} />
+                      {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
                       {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note}>{label(attention[pane.id].kind)}</span>}
                     </div>
                   ))}
@@ -827,7 +844,8 @@ export function App() {
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
-                    {pane.kind === "chat" ? <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} /> : <span className="pane-title">{pane.title}</span>}
+                    <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} label={pane.kind === "chat" ? "Thread name" : "Terminal name"} />
+                    {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
                     {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
                     <span className="spacer" />
@@ -854,7 +872,7 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
                     ) : (
                       <ChatPane onStatus={onThreadStatus} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}

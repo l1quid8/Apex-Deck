@@ -12,6 +12,8 @@ export interface AttentionItem {
   workspace: string;
   /** "Code" or "Threads". */
   where: string;
+  /** What a terminal's program says it is doing, shown muted after the name; "" when nothing. */
+  program?: string;
   signal: Signal;
   /** A thread's open approval cards, oldest first. */
   cards?: readonly OpenCard[];
@@ -138,7 +140,7 @@ export function AttentionMenu({ items, onOpen, onDecide, onMarkReadySeen }: Prop
             const next = nextLine(cards);
             const what = (
               <span className="attention-what">
-                <strong>{item.title}</strong>
+                <strong>{item.title}{item.program && <span className="program-title"> · {item.program}</span>}</strong>
                 {live && <span>{item.signal.note || label(item.signal.kind)}</span>}
                 {deadline && <span>{deadline}</span>}
               </span>

@@ -447,7 +447,9 @@ function demoBackend(): Backend {
 
     ptySpawn: async ({ id, agent }) => {
       const what = agent ? `${agent} (browser demo)` : "shell (browser demo)";
-      setTimeout(() => emitData(id, `\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, exit or fail.\x1b[0m\r\n$ `), 30);
+      // Agents name what they are doing in the terminal's title, as Claude Code does.
+      const title = agent ? "\x1b]0;\u2733 Reading the project\x07" : "";
+      setTimeout(() => emitData(id, `${title}\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, title, exit or fail.\x1b[0m\r\n$ `), 30);
     },
     ptyWrite: async (id, data) => {
       if (endedPtys.has(id)) throw new Error(`no terminal with id ${id}`);
@@ -465,6 +467,13 @@ function demoBackend(): Backend {
       if (line.endsWith("long\r")) {
         for (let i = 1; i <= 180; i++) setTimeout(() => emitData(id, `\r\nstep ${i} of 180 ...`), i * 500);
         setTimeout(() => emitData(id, "\r\nFinished.\r\n$ "), 181 * 500);
+      }
+      // "title" retitles the terminal 20 times a second, as a spinner does, so
+      // the four-a-second limit can be seen; it settles on the last title.
+      if (line.endsWith("title\r")) {
+        const frames = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f";
+        for (let i = 0; i < 20; i++) setTimeout(() => emitData(id, `\x1b]0;${frames[i % frames.length]} Writing tests for auth (${i + 1} of 20)\x07`), i * 50);
+        setTimeout(() => emitData(id, "\x1b]0;\u2733 Writing tests for auth\x07"), 1100);
       }
       // "exit" ends the pretend program cleanly. "fail" ends it with code 1
       // two seconds later, so you can look away and see the Failed flag.
