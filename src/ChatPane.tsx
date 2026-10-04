@@ -74,6 +74,8 @@ interface Props {
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
   onFork?: (title: string, upto: number | null) => Promise<string>;
+  /** Fork or Export chosen in the pane's ⋯ menu; `n` goes up on each choice. */
+  menuRequest?: { action: "fork" | "export"; n: number };
   disabledProviders: string[];
   details?: DetailsHost;
 }
@@ -323,7 +325,7 @@ const STARTERS = [
   { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
 ];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, profileMode = false, details }: Props) {
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>({ policy: "mention", max_bot_hops: 3 });
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -1016,6 +1018,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {onFork && <button type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>}
     </span>;
   };
+  /** Save the thread to Downloads as Markdown or JSON, then show the file. */
+  const exportAs = (format: "markdown" | "json") => {
+    const at = new Date();
+    const thread: ThreadExport = { title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries) };
+    const contents = format === "json" ? exportJson(thread, at) : exportMarkdown(thread, at);
+    backend.exportThread(exportFileName(pane.title, format, at), contents)
+      .then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } })
+      .catch((error) => notify(`Could not export: ${String(error)}`, "error"));
+  };
   /** Commands run locally and never reach the models. */
   const runCommand = (command: Command) => {
     switch (command.name) {
@@ -1035,15 +1046,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           .finally(() => { unpinPending.current = false; setUnpinning(false); });
       case "fork":
         setText(""); return void forkAt(command.title || `${pane.title} (fork)`, null);
-      case "export": {
-        setText("");
-        const at = new Date();
-        const thread: ThreadExport = { title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries) };
-        const contents = command.format === "json" ? exportJson(thread, at) : exportMarkdown(thread, at);
-        return void backend.exportThread(exportFileName(pane.title, command.format, at), contents)
-          .then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } })
-          .catch((error) => notify(`Could not export: ${String(error)}`, "error"));
-      }
+      case "export":
+        setText(""); return exportAs(command.format);
 
       case "diff":
         setText(""); details?.show("changes"); loadDiff(); return;
@@ -1052,6 +1056,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
     }
   };
+  // Fork or Export chosen in the pane's ⋯ menu.
+  const lastMenu = useRef(menuRequest?.n ?? 0);
+  useEffect(() => {
+    if (!menuRequest || menuRequest.n === lastMenu.current) return;
+    lastMenu.current = menuRequest.n;
+    if (menuRequest.action === "fork") void forkAt(`${pane.title} (fork)`, null);
+    else exportAs("markdown");
+  }, [menuRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Save each file as soon as it is attached, so sending never waits. */
   const track = (name: string, preview: string | undefined, save: () => Promise<string>) => {

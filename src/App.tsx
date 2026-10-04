@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
 import { ProviderSettings } from "./ProviderSettings";
@@ -15,6 +15,7 @@ import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
 import { nextTitle, programTitle } from "./terminalTitle";
+import { paneMenuItems, type PaneMenuAction } from "./paneMenu";
 import { grid, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
@@ -116,6 +117,10 @@ export function App() {
   const [newMenuRequest, setNewMenuRequest] = useState(0);
   /** Bumped to start renaming a thread from its ⋯ menu. */
   const [renameRequests, setRenameRequests] = useState<Record<string, number>>({});
+  /** Bumped to start a terminal again from its ⋯ menu. */
+  const [startRequests, setStartRequests] = useState<Record<string, number>>({});
+  /** Fork or Export chosen in a thread's ⋯ menu; `n` goes up on each choice. */
+  const [threadRequests, setThreadRequests] = useState<Record<string, { action: "fork" | "export"; n: number }>>({});
   const [railOpen, setRailOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
@@ -571,6 +576,19 @@ export function App() {
     backend?.openTarget(workspace.path, null, true).catch((error) => setStorageError(`Could not show ${workspace.name} in Finder: ${String(error)}`));
   };
 
+  /** Run what was chosen in a pane's ⋯ menu. */
+  const runPaneMenu = (pane: Pane, action: PaneMenuAction) => {
+    const bump = (all: Record<string, number>) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 });
+    if (action === "rename") setRenameRequests(bump);
+    else if (action === "start") setStartRequests(bump);
+    else if (action === "copy_path") {
+      const path = workspaces.find((w) => w.id === pane.workspaceId)?.path;
+      if (path) navigator.clipboard?.writeText(path).catch(() => {});
+    } else if (action === "close") closePane(pane.id);
+    else if (action === "fork" || action === "export") setThreadRequests((all) => ({ ...all, [pane.id]: { action, n: (all[pane.id]?.n ?? 0) + 1 } }));
+    else if (action === "delete") deleteThread(pane);
+  };
+
   const focusPane = (pane: Pane) => {
     if (pane.closed) setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, closed: false } : p)));
     setActiveWorkspace(pane.workspaceId);
@@ -852,29 +870,30 @@ export function App() {
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
                       {maximized === pane.id ? "▣" : "□"}
                     </button>
-                    {pane.kind === "chat" && (
-                      <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
-                        <button className="icon small" onClick={(event) => toggleMenu(pane.id, event)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
-                          ⋯
-                        </button>
-                        {paneMenu === pane.id && (
-                          <span className="pane-menu" role="menu">
-                            <button role="menuitem" onClick={() => { setPaneMenu(null); setRenameRequests((all) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 })); }}>Rename</button>
-                            <span className="pane-menu-sep" role="separator" />
-                            <button role="menuitem" className="danger-text" onClick={() => { setPaneMenu(null); deleteThread(pane); }}>Delete thread…</button>
-                          </span>
-                        )}
-                      </span>
-                    )}
+                    <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
+                      <button className="icon small" onClick={(event) => toggleMenu(pane.id, event)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
+                        ⋯
+                      </button>
+                      {paneMenu === pane.id && (
+                        <span className="pane-menu" role="menu">
+                          {paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, agents), tool: toolName(pane.agent, agents), folder: workspace?.path ?? "" }).map((item) => (
+                            <Fragment key={item.action}>
+                              {item.separated && <span className="pane-menu-sep" role="separator" />}
+                              <button role="menuitem" className={item.danger ? "danger-text" : undefined} disabled={item.disabled} title={item.reason || undefined} onClick={() => { setPaneMenu(null); runPaneMenu(pane, item.action); }}>{item.label}</button>
+                            </Fragment>
+                          ))}
+                        </span>
+                      )}
+                    </span>
                     <button className="icon small" onClick={() => closePane(pane.id)} aria-label={`Close ${pane.title}`} title={pane.kind === "chat" ? "Close (the thread stays in the list)" : "Close"}>
                       ×
                     </button>
                   </div>
                   <div className="pane-body">
                     {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
+                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} />
                     )}
                   </div>
                 </section>
