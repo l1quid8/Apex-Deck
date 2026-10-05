@@ -6,17 +6,9 @@
 //! - `room-event` `{ room, event }` something happened in a group chat
 //! - `quit-requested` `request` the window or app was asked to close; answer with `quit_heard`
 
-mod agents;
-mod export;
-mod images;
-mod mods;
-mod changes;
-mod checkpoints;
-mod preview;
-mod pty;
 mod quit;
-mod reply_images;
-mod storage;
+
+use apex_host::{agents, changes, checkpoints, export, images, mods, preview, reply_images};
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,8 +19,8 @@ use apex_core::{Access, AgentTool, ModelChoice, ParticipantConfig, ParticipantId
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use pty::{PtyManager, SpawnOptions};
-use storage::{SavedRoom, Store};
+use apex_host::pty::{PtyManager, SpawnOptions};
+use apex_host::storage::{SavedRoom, Store};
 
 #[derive(Clone)]
 struct RoomHandle {
@@ -1077,6 +1069,36 @@ async fn mod_install(app: AppHandle, source: String) -> Result<String, String> {
     }).await.map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+fn mod_read(dir: String) -> Result<mods::ModSource, String> {
+    mods::mod_read(dir)
+}
+
+#[tauri::command]
+async fn mod_process_run(argv: Vec<String>, cwd: Option<String>, stdin: Option<String>, timeout_ms: Option<u64>) -> Result<mods::RunResult, String> {
+    mods::mod_process_run(argv, cwd, stdin, timeout_ms).await
+}
+
+#[tauri::command]
+async fn mod_http_fetch(url: String, method: Option<String>, headers: Option<std::collections::HashMap<String, String>>, body: Option<String>) -> Result<mods::FetchResult, String> {
+    mods::mod_http_fetch(url, method, headers, body).await
+}
+
+#[tauri::command]
+fn mod_fs_write(path: String, text: String) -> Result<(), String> {
+    mods::mod_fs_write(path, text)
+}
+
+#[tauri::command]
+fn mod_fs_stat(path: String, resolve: Option<bool>) -> Result<mods::StatResult, String> {
+    mods::mod_fs_stat(path, resolve)
+}
+
+#[tauri::command]
+fn mod_env_get(name: String) -> Option<String> {
+    mods::mod_env_get(name)
+}
+
 /// What changed in the folder since this thread started, and who changed it.
 /// Reads the saved copy, so it answers while models are still working.
 #[tauri::command]
@@ -1219,13 +1241,13 @@ pub fn run() {
             paths_exist,
             quit_heard,
             quit_app,
-            mods::mod_read,
+            mod_read,
             mod_install,
-            mods::mod_process_run,
-            mods::mod_http_fetch,
-            mods::mod_fs_write,
-            mods::mod_fs_stat,
-            mods::mod_env_get,
+            mod_process_run,
+            mod_http_fetch,
+            mod_fs_write,
+            mod_fs_stat,
+            mod_env_get,
         ]);
     // The system Quit item ends the app without asking; Deck's own asks first.
     #[cfg(target_os = "macos")]

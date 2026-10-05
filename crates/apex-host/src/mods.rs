@@ -70,7 +70,6 @@ fn collect(root: &Path, dir: &Path, files: &mut HashMap<String, String>, total: 
     Ok(())
 }
 
-#[tauri::command]
 pub fn mod_read(dir: String) -> Result<ModSource, String> {
     let root = PathBuf::from(dir.trim_end_matches('/'));
     if !root.is_dir() {
@@ -105,7 +104,6 @@ fn cut(bytes: Vec<u8>) -> (String, bool) {
     (String::from_utf8_lossy(kept).to_string(), long)
 }
 
-#[tauri::command]
 pub async fn mod_process_run(
     argv: Vec<String>,
     cwd: Option<String>,
@@ -146,7 +144,6 @@ pub struct FetchResult {
     text: String,
 }
 
-#[tauri::command]
 pub async fn mod_http_fetch(
     url: String,
     method: Option<String>,
@@ -176,7 +173,6 @@ pub async fn mod_http_fetch(
     Ok(FetchResult { ok: status.is_success(), status: status.as_u16(), headers, text })
 }
 
-#[tauri::command]
 pub fn mod_fs_write(path: String, text: String) -> Result<(), String> {
     let path = PathBuf::from(path);
     if let Some(parent) = path.parent() {
@@ -194,7 +190,6 @@ pub struct StatResult {
     mtime_ms: u128,
 }
 
-#[tauri::command]
 pub fn mod_fs_stat(path: String, resolve: Option<bool>) -> Result<StatResult, String> {
     let mut path = PathBuf::from(path);
     if resolve.unwrap_or(false) {
@@ -210,7 +205,6 @@ pub fn mod_fs_stat(path: String, resolve: Option<bool>) -> Result<StatResult, St
     Ok(StatResult { path: path.to_string_lossy().to_string(), is_dir: meta.is_dir(), size: meta.len(), mtime_ms })
 }
 
-#[tauri::command]
 pub fn mod_env_get(name: String) -> Option<String> {
     std::env::var(name).ok()
 }
