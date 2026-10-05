@@ -663,7 +663,7 @@ export function App() {
   const deleteThread = (pane: Pane) => {
     setQuestion({
       title: `Delete ${pane.title}?`,
-      body: "Its messages and pins are removed.",
+      body: "Its messages, pins and temp files are removed.",
       action: "Delete thread",
       onConfirm: () => {
         setDeleting((set) => new Set(set).add(pane.id));
