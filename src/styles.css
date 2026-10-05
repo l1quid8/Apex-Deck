@@ -2042,6 +2042,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .message-actions { flex: none; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 2px; }
 .message-more > .pane-menu { left: 0; right: auto; }
 .human-row .message-more > .pane-menu { left: auto; right: 0; }
+.human-row .msg-action.quote svg { transform: scaleX(-1); }
 .msg-action, .msg-more { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .msg-action:hover:not(:disabled), .msg-action:focus-visible, .msg-more:hover:not(:disabled), .msg-more:focus-visible { color: var(--text); background: var(--panel); }
 .copied { font-size: 11px; color: var(--text); }

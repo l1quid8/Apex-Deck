@@ -1186,27 +1186,33 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const stamp = message.at === undefined ? null
       : <time className="message-time" dateTime={new Date(message.at).toISOString()} title={new Date(message.at).toLocaleString()}>{messageTime(message.at)}</time>;
     const held = expanded || goingBack?.message.seq === message.seq;
-    return <span className={`message-actions collapsed-actions${held ? " held" : ""}`}>
-      {message.speaker.kind === "human" && stamp}
-      {message.speaker.kind === "human" && disclosure}
-      <span className="message-primary-actions">
-      <button type="button" className="msg-action quote" title="Quote" onClick={quote}
+    const primary = [
+      <button key="quote" type="button" className="msg-action quote" title="Quote" onClick={quote}
         aria-label={message.speaker.kind === "bot" ? `Quote response from ${names.get(message.speaker.id) ?? message.speaker.id}` : "Quote your message"}>
         <DeckIcon name="reply" size={18} />
-      </button>
-      <button type="button" className="msg-action copy" title="Copy" aria-label={copiedHere ? "Copied" : "Copy message"} onClick={copy}>
+      </button>,
+      <button key="copy" type="button" className="msg-action copy" title="Copy" aria-label={copiedHere ? "Copied" : "Copy message"} onClick={copy}>
         {copiedHere ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}
-      </button>
-      {canPin && <button type="button" className="msg-action pin-action" title={pinLabel} aria-label={pinLabel} aria-pressed={pinned} disabled={unpinning} onClick={togglePin}>
+      </button>,
+      canPin && <button key="pin" type="button" className="msg-action pin-action" title={pinLabel} aria-label={pinLabel} aria-pressed={pinned} disabled={unpinning} onClick={togglePin}>
         <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={pinned ? "currentColor" : "none"}/><path d="M12 16v6" /></svg>
-      </button>}
-      </span>
-      {expanded && <span className="message-action-items">
-        {goBackKind && <button type="button" className={`msg-action ${goBackKind}`} disabled={busy} aria-label={goBackLabel} title={goBackHint} onClick={() => goBack(message)}>{goBackKind === "retry" ? retryIcon : revertIcon}</button>}
-        {onFork && <button type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>}
-      </span>}
-      {message.speaker.kind !== "human" && disclosure}
-      {message.speaker.kind !== "human" && stamp}
+      </button>,
+    ];
+    const extra = [
+      goBackKind && <button key="goback" type="button" className={`msg-action ${goBackKind}`} disabled={busy} aria-label={goBackLabel} title={goBackHint} onClick={() => goBack(message)}>{goBackKind === "retry" ? retryIcon : revertIcon}</button>,
+      onFork && <button key="fork" type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>,
+    ];
+    // Your messages mirror a model's row: time, chevron, fork, revert, pin, copy, reply.
+    const mine = message.speaker.kind === "human";
+    const ordered = <T,>(items: T[]) => mine ? [...items].reverse() : items;
+    return <span className={`message-actions collapsed-actions${held ? " held" : ""}`}>
+      {mine && stamp}
+      {mine && disclosure}
+      {mine && expanded && <span className="message-action-items">{ordered(extra)}</span>}
+      <span className="message-primary-actions">{ordered(primary)}</span>
+      {!mine && expanded && <span className="message-action-items">{extra}</span>}
+      {!mine && disclosure}
+      {!mine && stamp}
       {goBackPop(message)}
     </span>;
   };
