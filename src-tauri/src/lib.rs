@@ -8,6 +8,7 @@
 
 mod agents;
 mod export;
+mod mods;
 mod changes;
 mod checkpoints;
 mod preview;
@@ -1155,6 +1156,12 @@ pub fn run() {
             paths_exist,
             quit_heard,
             quit_app,
+            mods::mod_read,
+            mods::mod_process_run,
+            mods::mod_http_fetch,
+            mods::mod_fs_write,
+            mods::mod_fs_stat,
+            mods::mod_env_get,
         ]);
     // The system Quit item ends the app without asking; Deck's own asks first.
     #[cfg(target_os = "macos")]

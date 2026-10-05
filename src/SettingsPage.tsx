@@ -8,16 +8,18 @@ import type { Backend } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
 import { FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
+import { ModsSettings } from "./ModsSettings";
 import { shortcutList } from "./shortcuts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "providers" | "threads" | "terminal" | "shortcuts";
+export type SettingsSection = "general" | "providers" | "threads" | "terminal" | "mods" | "shortcuts";
 
 const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
   { id: "providers", label: "Providers" },
   { id: "threads", label: "New threads" },
   { id: "terminal", label: "Terminal" },
+  { id: "mods", label: "Mods" },
   { id: "shortcuts", label: "Shortcuts" },
 ];
 
@@ -74,6 +76,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
         {section === "providers" && <Providers settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} />}
         {section === "threads" && <Threads settings={settings} onChange={onChange} />}
         {section === "terminal" && <TerminalSettings settings={settings} onChange={onChange} />}
+        {section === "mods" && <ModsSettings backend={backend} />}
         {section === "shortcuts" && <Shortcuts />}
       </div>
     </main>
@@ -82,6 +85,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
 
 const LEADS: Partial<Record<SettingsSection, string>> = {
   providers: "Choose which tools appear when adding terminals and bots.",
+  mods: "Claude Code mods that Deck runs itself and draws in its own window, for every bot.",
   threads: "Used when you create a thread. Threads you already have keep their own settings.",
   terminal: "Open terminals update straight away.",
   shortcuts: "Fixed for now.",

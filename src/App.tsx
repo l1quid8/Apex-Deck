@@ -8,6 +8,8 @@ import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from ".
 import type { DetailsHost } from "./ThreadDetails";
 import { ThreadName } from "./ThreadName";
 import { ChatPane } from "./ChatPane";
+import { ModOverlays, ModStatuses, OPEN_SETTINGS_EVENT } from "./ModView";
+import { modHost } from "./mods/host";
 import { startHub } from "./hub";
 import { SectionNavigation } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
@@ -89,6 +91,12 @@ export function App() {
   const settingsRead = useRef(false);
   const settingsQueue = useRef<Promise<void>>(Promise.resolve());
   const closeSettings = useCallback(() => setSettingsOpen(null), []);
+  // The mod panel's Options button opens Settings → Mods.
+  useEffect(() => {
+    const open = (e: Event) => setSettingsOpen((e as CustomEvent<SettingsSection>).detail);
+    window.addEventListener(OPEN_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
+  }, []);
   const [profiles, setProfiles] = useState<ParticipantConfig[]>([]);
   const [storageError, setStorageError] = useState("");
   const saveQueue = useRef(Promise.resolve());
@@ -205,6 +213,7 @@ export function App() {
     let alive = true;
     getBackend().then(async (b) => {
       await startHub(b);
+      if (!b.demo) modHost.start();
       const found = await b.detectAgents().catch(() => []);
       const folders = await b.startupFolders().catch(() => []);
       const saved = await b.sessionLoad();
@@ -833,10 +842,6 @@ export function App() {
           <strong>Terminal</strong>
           <span>your shell</span>
         </button>}
-        {section === "code" && <button onClick={() => addPane("preview", "Preview")}>
-          <strong>Preview</strong>
-          <span>a web page</span>
-        </button>}
         {section === "threads" && <button className="accent" onClick={() => addPane("chat", "Group chat")}>
           <span className="picker-action-icon"><DeckIcon name="chat" size={22} /></span>
           <strong>Start a group chat</strong>
@@ -1039,6 +1044,7 @@ export function App() {
                       </button>
                     )}
                     <span className="spacer" />
+                    {pane.kind === "chat" && <ModStatuses />}
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
                       {maximized === pane.id ? "▣" : "□"}
                     </button>
@@ -1108,6 +1114,7 @@ export function App() {
         {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
+      <ModOverlays />
       {(undoable || undoableRemove) && (
         <div className="toasts">
           {undoable && (

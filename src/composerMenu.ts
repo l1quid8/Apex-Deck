@@ -32,7 +32,7 @@ export const COMMANDS: Extract<MenuItem, { kind: "command" }>[] = [
 
 export function findTrigger(text: string, caret: number): Trigger | null {
   const before = text.slice(0, caret);
-  const command = /^\/([A-Za-z]*(?: [A-Za-z]*)?)$/.exec(before);
+  const command = /^\/((?:[A-Za-z][\w-]*(?: [A-Za-z]*)?)?)$/.exec(before);
   if (command && !text.startsWith("//")) return { kind: "command", query: command[1].toLowerCase(), start: 0, end: caret };
   const mention = /(^|\s)@([\w-]*)$/.exec(before);
   if (mention) return { kind: "mention", query: mention[2].toLowerCase(), start: caret - mention[2].length - 1, end: caret };
@@ -42,16 +42,22 @@ export function findTrigger(text: string, caret: number): Trigger | null {
   return null;
 }
 
-/** Items for a trigger, or everything when the menu was opened with "+". */
-export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: (ToolServer & {agent: string})[] = []): MenuItem[] {
+/** Items for a trigger, or everything when the menu was opened with "+".
+ *  Mod commands are inserted, not run, so you can add arguments first. */
+export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: (ToolServer & {agent: string})[] = [], mods: { mod: string; name: string; description: string }[] = []): MenuItem[] {
+  const commands: Extract<MenuItem, { kind: "command" }>[] = [
+    ...COMMANDS,
+    ...mods.filter((m) => !COMMANDS.some((c) => c.key === m.name.toLowerCase()))
+      .map((m) => ({ kind: "command" as const, key: m.name.toLowerCase(), label: `/${m.name}`, detail: m.description || `From ${m.mod}`, command: null })),
+  ];
   const mentions: MenuItem[] = [
     { kind: "mention", id: "all", label: "@all", detail: "Everyone answers" },
     ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
   ];
-  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, ...mentions, ...COMMANDS];
+  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, ...mentions, ...commands];
   const q = trigger.query;
   if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
-  if (trigger.kind === "command") return COMMANDS.filter((c) => c.key.startsWith(q));
+  if (trigger.kind === "command") return commands.filter((c) => c.key.startsWith(q));
   return mentions.filter((m) => m.kind === "mention" && (m.id.toLowerCase().startsWith(q) || m.detail.toLowerCase().startsWith(q)));
 }
 

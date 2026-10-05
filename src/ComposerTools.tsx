@@ -7,9 +7,11 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   participants: { id: string; display_name: string }[];
   servers: (ToolServer & {agent: string})[];
   serverStatus?: string;
+  /** Commands the running mods registered. */
+  mods?: { mod: string; name: string; description: string }[];
   trigger: Trigger | null;
   choose: (item: MenuItem, trigger: Trigger | null) => void;
-}>(({ participants, servers, serverStatus, trigger, choose }, ref) => {
+}>(({ participants, servers, serverStatus, mods = [], trigger, choose }, ref) => {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -19,7 +21,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   const signature = trigger ? `${trigger.kind}:${trigger.start}:${trigger.end}:${trigger.query}` : null;
   const typing = !!trigger && signature !== dismissed && !open;
   const visible = open || typing;
-  const entries = menuItems(open ? null : trigger, participants, servers).filter(item => !open || `${item.label} ${item.detail}`.toLowerCase().includes(query.toLowerCase()));
+  const entries = menuItems(open ? null : trigger, participants, servers, mods).filter(item => !open || `${item.label} ${item.detail}`.toLowerCase().includes(query.toLowerCase()));
   const close = () => { setOpen(false); setDismissed(signature); };
   const pick = (item: MenuItem) => { close(); choose(item, open ? null : trigger); };
   useEffect(() => { setSelected(0); }, [signature, query]);

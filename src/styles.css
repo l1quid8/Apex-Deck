@@ -2403,3 +2403,46 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 @media (prefers-reduced-motion: reduce) {
   .artifact-glow { animation: none; box-shadow: 0 0 0 1px var(--accent, #4f8cff); }
 }
+
+/* Mods: panes a mod draws, as Claude Code's desktop surface would. */
+.artifacts-panel.mod-dock { width: min(760px, 62%); }
+.artifacts-panel.mod-dock.overlay { width: min(760px, 100%); }
+.artifacts-panel.mod-dock:not(.overlay):not(.maximized) { position: relative; }
+.artifacts-panel.mod-dock.maximized { position: absolute; inset: 0; z-index: 31; width: auto; border-left: 0; background: var(--bg); }
+.mod-resize { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; z-index: 2; cursor: col-resize; }
+.mod-resize:hover, body.mod-resizing .mod-resize { background: var(--accent); opacity: .5; }
+body.mod-resizing { cursor: col-resize; user-select: none; }
+body.mod-resizing iframe { pointer-events: none; }
+.mod-dock-head { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--line); }
+.mod-tabs { flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; }
+.mod-tabs button { padding: 2px 10px; font-size: 12px; background: transparent; border-color: transparent; color: var(--muted); white-space: nowrap; }
+.mod-tabs button.active { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+.mod-pane-body { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); position: relative; }
+.mod-box { min-width: 0; box-sizing: border-box; }
+.mod-text { display: block; }
+.mod-box[style*="flex-direction: row"] > .mod-text { display: inline-block; }
+.mod-button { font: inherit; padding: 1px 8px; margin: 1px 2px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); cursor: pointer; }
+.mod-button:hover { border-color: var(--accent); }
+.mod-button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.mod-button.plain { background: transparent; border-color: transparent; padding: 0 2px; }
+.mod-field { display: flex; align-items: center; gap: 1ch; margin: 2px 0; }
+.mod-field-label { white-space: pre; opacity: 0.8; }
+.mod-field input, .mod-field select { font: inherit; flex: 1; min-width: 10ch; padding: 2px 6px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+.mod-svg { display: block; max-width: 100%; height: auto; }
+.mod-code { margin: 0; white-space: pre-wrap; }
+.mod-modal-backdrop { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: #0008; }
+.mod-modal { width: min(560px, 92vw); max-height: 80vh; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 24px 64px #000a; }
+.mod-corner { position: fixed; right: 16px; top: 76px; z-index: 61; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
+.mod-corner > * { pointer-events: auto; }
+.mod-toast { max-width: 420px; text-align: left; padding: 8px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); box-shadow: 0 8px 24px #0007; }
+.mod-toast.error { border-color: var(--danger); }
+.mod-status { white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+.mod-list { display: flex; flex-direction: column; gap: 12px; }
+.mod-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
+.mod-card-head { display: flex; align-items: center; gap: 8px; }
+.mod-card-head strong { flex: 1; }
+.mod-card .muted { color: var(--muted); font-size: 12px; }
+.mod-card .error { color: var(--danger); font-size: 12px; white-space: pre-wrap; }
+.mod-grants label, .mod-options label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.mod-options { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.mod-options input[type="text"], .mod-options input[type="number"], .mod-options select { flex: 1; }

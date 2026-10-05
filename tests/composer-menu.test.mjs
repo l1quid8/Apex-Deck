@@ -33,3 +33,13 @@ test('picking replaces the trigger, or inserts at the caret from "+"', () => {
   assert.deepEqual(insertAt('hey', null, 3, '@all '), { text: 'hey @all ', caret: 9 });
   assert.deepEqual(insertAt('', null, 0, '@all '), { text: '@all ', caret: 5 });
 });
+
+test('mod commands show up after the built-in ones and are inserted, not run', () => {
+  const mods = [{ mod: 'hyperliquid', name: 'hl', description: 'Hyperliquid positions' }, { mod: 'dupe', name: 'clear', description: 'shadowed' }];
+  assert.deepEqual(findTrigger('/h', 2), { kind: 'command', query: 'h', start: 0, end: 2 });
+  const hl = menuItems(findTrigger('/h', 2), people, [], mods);
+  assert.deepEqual(hl.map(i => [i.label, i.detail, i.command]), [['/hl', 'Hyperliquid positions', null]]);
+  const all = menuItems(findTrigger('/', 1), people, [], mods).map(i => i.label);
+  assert.deepEqual(all, ['/compact', '/clear', '/diff', '/fork', '/export', '/export json', '/hl']);
+  assert.deepEqual(findTrigger('/my-mod2', 8), { kind: 'command', query: 'my-mod2', start: 0, end: 8 });
+});

@@ -5,6 +5,8 @@ import { BotSettings } from "./BotSettings";
 import type { AllowedRule, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { parseBlocks } from "./markdownText";
+import { ModDock, useMods } from "./ModView";
+import { modHost } from "./mods/host";
 import { ArtifactsPanel, DEFAULT_VIEW, type PanelView } from "./ArtifactsPanel";
 import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindForPath, kindOf, pickVersion, readArtifacts, artifactAutoOpen, upsertFromFile, fromReply, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
@@ -1287,6 +1289,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [artifactsLoaded, setArtifactsLoaded] = useState(false);
   const [artifactProblem, setArtifactProblem] = useState("");
   const [panel, setPanel] = useState<PanelView | null>(null);
+  const mods = useMods();
+  const modDock = mods.hostPane === pane.id ? mods.panes.filter((p) => !p.focus) : [];
   const artifactsReadable = useRef(false);
   const artifactSaves = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
@@ -1542,6 +1546,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       ? resolveServerRequests(parseServerRequests(text).map(s => s.name), targetIds.flatMap(id => serverLists[id])).unknown : [];
     if (invalid.length) { notify(`No server, app or plugin called "${invalid[0]}" for ${targetIds.map(id => names.get(id) ?? id).join(", ")}`, "error"); return; }
     const body = text.trim();
+    // A command a mod registered runs in the mod, never reaching the models.
+    const modCommand = body && !sendable.length ? modHost.commandFor(body) : null;
+    if (modCommand) {
+      setText("");
+      const out = await modHost.run(pane.id, modCommand, 100);
+      if (out?.text) notify(out.text);
+      return;
+    }
     if ((!body && !sendable.length) || !ready || saving) return;
     const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
@@ -2318,6 +2330,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           problem={artifactProblem}
         />
       )}
+      {!profileMode && !panel && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
       </div>
 
       {!profileMode && <div className={tldr ? "composer tldr" : "composer"} ref={composer}
@@ -2350,7 +2363,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           To {recipient.to} · <ReplyPolicyPicker value={options.policy} label={recipient.reason} disabled={!ready || busy} onChange={policy => changeOptions({ ...options, policy })} />
         </div>}
         <div className="composer-field" ref={field}>
-          <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          <ComposerMenu ref={composerMenu} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
             if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
             if (item.kind === "command" && item.command) {
