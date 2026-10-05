@@ -305,10 +305,10 @@ function saveContext(pane: string, fill: Record<string, ContextFill>) {
   else localStorage.removeItem(contextKey(pane));
 }
 
-/** The provider whose plan an agent draws on, if it reports one. */
+/** The provider whose plan an agent draws on. Each coding agent reports one. */
 function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
   const b = config?.backend;
-  return b?.kind === "agent" && (b.tool === "claude_code" || b.tool === "codex") ? b.tool : null;
+  return b?.kind === "agent" ? b.tool : null;
 }
 
 /** Tokens the latest request filled, against the window. */

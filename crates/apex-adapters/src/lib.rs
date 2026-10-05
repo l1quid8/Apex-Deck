@@ -12,9 +12,11 @@ mod catalog;
 mod claude_session;
 mod claude_usage;
 mod cli;
+mod gemini_usage;
 mod codex_server;
 mod codex_hook;
 mod events;
+mod grok_usage;
 mod mcp;
 mod openai;
 mod plan_cache;
@@ -82,20 +84,24 @@ pub fn build(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Parti
 }
 
 /// Read how much of a provider account's plan is used, without asking a
-/// model anything. Codex is asked through its app server; Claude through
-/// the endpoint behind Claude Code's `/usage`. Every chat shares one
-/// answer per provider, so opening several at once reads only once, and a
-/// failed read is logged once and not retried until its wait is over.
+/// model anything. Codex is asked through its app server. Claude, Grok and
+/// Gemini are read from the endpoints behind each CLI's usage screen, with
+/// the login that CLI saved. Every chat shares one answer per provider, so
+/// opening several at once reads only once, and a failed read is logged
+/// once and not retried until its wait is over.
 pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanUsage> {
     let name = match tool {
         AgentTool::ClaudeCode => "Claude",
         AgentTool::Codex => "Codex",
-        _ => return None,
+        AgentTool::Grok => "Grok",
+        AgentTool::Gemini => "Gemini",
     };
     let read = || async {
         match tool {
             AgentTool::ClaudeCode => claude_usage::read_plan().await,
-            _ => read_codex_plan(context).await.map_err(|why| plan_cache::Failure::new(why, plan_cache::Failure::SHORT)),
+            AgentTool::Codex => read_codex_plan(context).await.map_err(|why| plan_cache::Failure::new(why, plan_cache::Failure::SHORT)),
+            AgentTool::Grok => grok_usage::read_plan().await,
+            AgentTool::Gemini => gemini_usage::read_plan().await,
         }
     };
     plan_cache::get(tool, read)

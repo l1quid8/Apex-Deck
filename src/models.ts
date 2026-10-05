@@ -190,11 +190,31 @@ export function modelGroups(tool: AgentTool, reported: ModelChoice[], toolLabel:
 }
 
 /**
+ * Least reasoning first. The slider and the picker both read left to right,
+ * and low to high. A level not listed here stays after these, in the order
+ * it was given.
+ */
+const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+function leastReasoningFirst(levels: readonly string[]): string[] {
+  const rank = (level: string) => {
+    const index = EFFORT_ORDER.indexOf(level);
+    return index === -1 ? EFFORT_ORDER.length : index;
+  };
+  // Copy first. Sorting the model's own list would reverse it for the next read.
+  return [...levels].sort((a, b) => rank(a) - rank(b));
+}
+
+/**
  * The effort levels to offer for `modelId`. An empty result means the model
  * has no effort setting. With no model picked, or one this list does not
  * know, every level the tool understands is offered.
+ *
+ * The result is always least reasoning first. Grok's own catalog lists the
+ * levels the other way, highest first, and a slider that follows that order
+ * turns reasoning down as the thumb moves right.
  */
 export function effortsFor(all: string[], groups: ModelGroup[], modelId: string): string[] {
   const model = findModel(groups, modelId);
-  return model?.efforts ?? all;
+  return leastReasoningFirst(model?.efforts ?? all);
 }

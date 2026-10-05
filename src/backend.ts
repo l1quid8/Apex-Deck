@@ -251,7 +251,10 @@ function demoBackend(): Backend {
   // agents with plenty; each reply fills a little more.
   const WINDOWS: Partial<Record<AgentTool, number>> = { claude_code: 200_000, codex: 272_000 };
   const contextUsed = new Map<string, number>();
-  const planUsed: Record<"claude_code" | "codex", number> = { claude_code: 36, codex: 58 };
+  const PLAN_TOOLS = ["claude_code", "codex", "grok", "gemini"] as const;
+  type PlanTool = (typeof PLAN_TOOLS)[number];
+  const planUsed: Record<PlanTool, number> = { claude_code: 36, codex: 58, grok: 22, gemini: 41 };
+  const isPlanTool = (tool: AgentTool): tool is PlanTool => (PLAN_TOOLS as readonly string[]).includes(tool);
   const hours = (n: number) => Math.floor(Date.now() / 1000 + n * 3600);
   const reportContext = (room: string, p: ParticipantConfig, grow: number) => {
     if (p.backend.kind !== "agent") return;
@@ -272,13 +275,21 @@ function demoBackend(): Backend {
       emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
         { name: "primary", used_percent: planUsed.codex, window_minutes: 10_080, resets_at: hours(100) },
       ] });
+    } else if (tool === "grok") {
+      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
+        { name: "weekly", used_percent: planUsed.grok, window_minutes: 10_080, resets_at: hours(70) },
+      ] });
+    } else if (tool === "gemini") {
+      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
+        { name: "daily", used_percent: planUsed.gemini, window_minutes: 1440, resets_at: hours(14) },
+      ] });
     }
   };
   /** What a room shows when it opens: every agent's context, and the plan of
-   *  providers that can be read outside a turn (Codex and Claude Code). */
+   *  each coding agent. Grok and Gemini context windows are still not reported. */
   const reportMeters = (room: string, participants: ParticipantConfig[]) => {
     for (const p of participants) reportContext(room, p, 0);
-    for (const tool of ["codex", "claude_code"] as const) {
+    for (const tool of PLAN_TOOLS) {
       if (participants.some((p) => p.backend.kind === "agent" && p.backend.tool === tool)) reportPlan(room, tool);
     }
   };
@@ -435,7 +446,7 @@ function demoBackend(): Backend {
           const size = WINDOWS[p.backend.tool];
           if (size && /\bdrain\b/i.test(asked)) contextUsed.set(`${id}:${p.id}`, Math.round(size * 0.95) - 2_400);
           reportContext(id, p, 2_400);
-          if (p.backend.tool === "claude_code" || p.backend.tool === "codex") {
+          if (isPlanTool(p.backend.tool)) {
             planUsed[p.backend.tool] = Math.min(100, planUsed[p.backend.tool] + 1);
             reportPlan(id, p.backend.tool);
           }

@@ -72,7 +72,9 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
     document.addEventListener('keydown', pick);
     return () => document.removeEventListener('keydown', pick);
   });
-  const commitEffort = () => { if (supportedEffort !== (config.effort ?? '')) void apply(model, supportedEffort); };
+  /** The stop under the thumb, read from the control so a click saves the new stop. */
+  const effortAt = (input: HTMLInputElement) => steps[Number(input.value)] ?? '';
+  const commitEffort = (value: string) => { if (value !== (config.effort ?? '')) void apply(model, value); };
   return createPortal(<div ref={root} className="bot-settings" style={position} onScroll={() => setOpen(false)} role="dialog" aria-label={`Settings for ${config.display_name}`}>
     <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
     <fieldset disabled={saving}>
@@ -94,7 +96,7 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
         </div>}
       </div> : <label>Model<Picker name="quick-bot-model" value={model} onChange={setModel} groups={[]} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>}
       <label className="effort-slider">Reasoning <span className="effort-value">{efforts.length ? (supportedEffort ? (supportedEffort === 'xhigh' ? 'xHigh' : effortLabel(supportedEffort)) : 'Default') : 'Not supported'}</span>
-        <input type="range" aria-label="Reasoning" min={0} max={steps.length - 1} step={1} value={step} disabled={efforts.length === 0} onChange={e => setEffort(steps[Number(e.target.value)])} onPointerUp={commitEffort} onKeyUp={commitEffort} />
+        <input type="range" aria-label="Reasoning" min={0} max={steps.length - 1} step={1} value={step} disabled={efforts.length === 0} onChange={e => setEffort(effortAt(e.currentTarget))} onPointerUp={e => { const value = effortAt(e.currentTarget); setEffort(value); commitEffort(value); }} onKeyUp={e => { const value = effortAt(e.currentTarget); setEffort(value); commitEffort(value); }} />
         {efforts.length > 0 && <span className="effort-ticks" aria-hidden="true">{steps.map((s, i) => <span key={s || 'default'} className={i === step ? 'on' : ''}>{s ? (s === 'xhigh' ? 'xHigh' : effortLabel(s)) : 'Default'}</span>)}</span>}
       </label>
       {note && <p className="muted">{note}</p>}

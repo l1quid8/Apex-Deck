@@ -38,7 +38,7 @@ pub(crate) async fn read_plan() -> Result<PlanUsage, Failure> {
 
 /// A `Retry-After` given in seconds, kept between a minute and an hour. The date form
 /// isn't worth parsing here; the default wait covers it.
-fn retry_after(header: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
+pub(crate) fn retry_after(header: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
     let seconds: u64 = header?.to_str().ok()?.trim().parse().ok()?;
     Some(Duration::from_secs(seconds.clamp(60, 3600)))
 }
@@ -84,7 +84,7 @@ pub(crate) fn parse(body: &Value) -> Option<PlanUsage> {
 }
 
 /// Unix seconds from an RFC 3339 time such as `2026-10-05T02:00:00.05+00:00`.
-fn unix_seconds(text: &str) -> Option<u64> {
+pub(crate) fn unix_seconds(text: &str) -> Option<u64> {
     let num = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
     let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
     let (h, mi, s) = (num(11..13)?, num(14..16)?, num(17..19)?);
