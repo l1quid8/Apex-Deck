@@ -2,5 +2,6 @@
 //! app, a phone, an SSH session) drive it over one JSON protocol.
 
 pub mod cli;
+pub mod identity;
 pub mod paths;
 pub mod protocol;

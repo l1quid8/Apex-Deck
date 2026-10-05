@@ -82,15 +82,24 @@ where
             return;
         }
     };
-    // Subscribe before reading `last_seq`, so no later event is missed;
-    // anything at or before `written` is skipped.
-    let mut events = daemon.host.events().subscribe();
-    let mut written = daemon.host.events().last_seq();
+    // Subscribe before reading the buffer or `last_seq`, so no later event
+    // is missed; live events at or before `written` are skipped.
+    let bus = daemon.host.events();
+    let mut events = bus.subscribe();
+    let replay = hello.since.filter(|since| since.boot_id == daemon.boot_id).and_then(|since| bus.since(since.seq));
+    let resumed = replay.is_some();
+    let replay = replay.unwrap_or_default();
+    let mut written = replay.last().map(|e| e.seq).unwrap_or_else(|| bus.last_seq());
     let welcome = json!({ "id": hello.id, "ok": {
-        "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": false,
+        "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
     } });
     if output.send(welcome.to_string()).await.is_err() {
         return;
+    }
+    for envelope in &replay {
+        if output.send(event_frame(envelope)).await.is_err() {
+            return;
+        }
     }
 
     let (replies_tx, mut replies) = mpsc::unbounded_channel::<Reply>();
@@ -200,6 +209,14 @@ fn read_request(text: &str) -> Result<(u64, Command), String> {
 
 struct Hello {
     id: Value,
+    since: Option<Since>,
+}
+
+/// Where a returning client left off.
+#[derive(serde::Deserialize)]
+struct Since {
+    boot_id: String,
+    seq: u64,
 }
 
 /// Check the first frame, or say why the connection is refused.
@@ -221,7 +238,8 @@ fn read_hello(text: &str, trust: Trust, daemon: &Daemon) -> Result<Hello, String
             return Err(refusal(id, "wrong or missing token"));
         }
     }
-    Ok(Hello { id })
+    let since = serde_json::from_value(args["since"].clone()).ok();
+    Ok(Hello { id, since })
 }
 
 /// Compare without stopping at the first difference.
@@ -238,7 +256,7 @@ mod tests {
     struct Client {
         read: FramedRead<ReadHalf<DuplexStream>, LinesCodec>,
         write: FramedWrite<WriteHalf<DuplexStream>, LinesCodec>,
-        _data: TempDir,
+        _data: Option<TempDir>,
     }
 
     struct TempDir(std::path::PathBuf);
@@ -256,17 +274,28 @@ mod tests {
         TempDir(dir)
     }
 
-    fn connect(trust: Trust) -> Client {
+    fn daemon() -> (Arc<Daemon>, TempDir) {
         let data = temp_dir();
         let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()) });
+        (Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()) }), data)
+    }
+
+    fn connect(trust: Trust) -> Client {
+        let (daemon, data) = daemon();
+        let mut client = connect_to(&daemon, trust);
+        client._data = Some(data);
+        client
+    }
+
+    fn connect_to(daemon: &Arc<Daemon>, trust: Trust) -> Client {
+        let daemon = Arc::clone(daemon);
         let (ours, theirs) = tokio::io::duplex(1 << 16);
         let (their_read, their_write) = tokio::io::split(theirs);
         let (input, output) = lines(their_read, their_write);
         tokio::spawn(serve(daemon, trust, input, output));
         let (read, write) = tokio::io::split(ours);
         let (read, write) = lines(read, write);
-        Client { read, write, _data: data }
+        Client { read, write, _data: None }
     }
 
     impl Client {
@@ -304,6 +333,74 @@ mod tests {
         let mut client = connect(Trust::Local);
         let reply = client.hello().await;
         assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false } }));
+    }
+
+    async fn save_sessions(client: &mut Client, versions: std::ops::RangeInclusive<u64>) {
+        for n in versions {
+            client.send(json!({ "id": n, "cmd": "session_save", "args": { "session": { "version": n } } })).await;
+            client.until_reply(n).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_client_that_comes_back_gets_exactly_the_events_it_missed() {
+        let (daemon, _data) = daemon();
+        let mut first = connect_to(&daemon, Trust::Local);
+        first.hello().await;
+        save_sessions(&mut first, 1..=3).await;
+
+        let mut back = connect_to(&daemon, Trust::Local);
+        back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 1 } } })).await;
+        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true }));
+        assert_eq!(back.next().await.unwrap(), json!({ "seq": 2, "event": "session-changed", "payload": { "version": 2 } }));
+        assert_eq!(back.next().await.unwrap(), json!({ "seq": 3, "event": "session-changed", "payload": { "version": 3 } }));
+        // Then live events, with nothing doubled.
+        save_sessions(&mut first, 4..=4).await;
+        assert_eq!(back.next().await.unwrap()["seq"], 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seq_from_another_boot_is_never_resumed() {
+        let (daemon, _data) = daemon();
+        let mut first = connect_to(&daemon, Trust::Local);
+        first.hello().await;
+        save_sessions(&mut first, 1..=3).await;
+
+        // seq 1 is in range for this boot, but it was counted by another one.
+        let mut back = connect_to(&daemon, Trust::Local);
+        back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-0", "seq": 1 } } })).await;
+        assert_eq!(back.next().await.unwrap()["ok"]["resumed"], false);
+        save_sessions(&mut first, 4..=4).await;
+        assert_eq!(back.next().await.unwrap()["seq"], 4, "no replay, only live events");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seq_that_fell_out_of_the_buffer_is_not_resumed() {
+        let (daemon, _data) = daemon();
+        for n in 0..=apex_host::events::REPLAY_EVENTS {
+            daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: n.to_string() });
+        }
+        let mut back = connect_to(&daemon, Trust::Local);
+        back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 0 } } })).await;
+        let ok = back.next().await.unwrap()["ok"].clone();
+        assert_eq!((ok["resumed"].clone(), ok["last_seq"].clone()), (json!(false), json!(apex_host::events::REPLAY_EVENTS + 1)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_client_too_far_behind_is_told_to_resync_and_closed() {
+        let (daemon, _data) = daemon();
+        let mut slow = connect_to(&daemon, Trust::Local);
+        slow.hello().await;
+        // The client reads nothing while far more events than a subscriber
+        // may fall behind are sent.
+        for n in 0..apex_host::events::BUS_CAPACITY * 2 {
+            daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: n.to_string() });
+        }
+        let mut last = Value::Null;
+        while let Some(frame) = slow.next().await {
+            last = frame;
+        }
+        assert!(last["err"].as_str().unwrap_or_default().starts_with("resync"), "{last}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
