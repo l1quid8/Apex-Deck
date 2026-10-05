@@ -9,7 +9,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 image=apex-deck-linux-test
-packages=(-p apex-core -p apex-adapters -p apex-host)
+packages=(-p apex-core -p apex-adapters -p apex-host -p apex-daemon)
 
 # Tests run as an ordinary user, as they would on a server: as root, file
 # permission checks always pass.

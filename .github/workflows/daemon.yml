@@ -1,0 +1,42 @@
+# apex-daemon on the systems it runs on: tests on Linux (x86_64 and arm64)
+# and macOS, then Linux release binaries. Built on Ubuntu 22.04 so the
+# binaries run on 22.04 and 24.04 servers. The Tauri app is not built here.
+name: daemon
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p apex-core -p apex-adapters -p apex-host -p apex-daemon
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p apex-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apex-daemon-linux-${{ matrix.arch }}
+          path: target/release/apex-daemon

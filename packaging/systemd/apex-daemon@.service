@@ -1,0 +1,25 @@
+# Runs apex-daemon for one user at boot, without anyone logged in:
+#   sudo cp apex-daemon@.service /etc/systemd/system/
+#   sudo systemctl enable --now apex-daemon@<user>
+# It runs as that user, so agents find their logins and the PATH the user's
+# login shell sets up, as they would in an SSH session.
+[Unit]
+Description=Apex Deck daemon for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/usr/local/bin/apex-daemon serve
+Restart=on-failure
+RestartSec=2
+# SIGTERM goes to the daemon only, so it shuts agents down in order;
+# anything left after the timeout is killed.
+KillMode=mixed
+TimeoutStopSec=30
+# No ProtectHome or NoNewPrivileges: agents edit files in the user's home
+# and may run sudo.
+
+[Install]
+WantedBy=multi-user.target

@@ -65,13 +65,27 @@ mod tests {
         dir
     }
 
+    /// Take a lock this process just let go of. On Linux a test running
+    /// alongside may be between fork and exec of a child, which briefly holds
+    /// a copy of the lock's descriptor; that copy closes at exec.
+    fn reacquire(data: &Path, owner: &str) -> DataLock {
+        let start = std::time::Instant::now();
+        loop {
+            match DataLock::acquire(data, owner) {
+                Ok(lock) => return lock,
+                Err(LockError::Held { .. }) if start.elapsed() < std::time::Duration::from_secs(5) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(e) => panic!("{e}"),
+            }
+        }
+    }
+
     #[test]
     fn a_second_owner_is_told_who_has_the_folder() {
         let data = folder("second");
         let first = DataLock::acquire(&data, "Apex Deck desktop app (pid 1)").unwrap();
         assert_eq!(DataLock::acquire(&data, "apex-daemon serve (pid 2)").unwrap_err(), LockError::Held { owner: "Apex Deck desktop app (pid 1)".into() });
         drop(first);
-        let second = DataLock::acquire(&data, "apex-daemon serve (pid 2)").unwrap();
+        let second = reacquire(&data, "apex-daemon serve (pid 2)");
         assert_eq!(DataLock::acquire(&data, "x").unwrap_err(), LockError::Held { owner: "apex-daemon serve (pid 2)".into() });
         drop(second);
         let _ = std::fs::remove_dir_all(data);
@@ -81,7 +95,7 @@ mod tests {
     fn a_shorter_owner_replaces_a_longer_one_completely() {
         let data = folder("shorter");
         drop(DataLock::acquire(&data, "a very long description of the first owner").unwrap());
-        let _lock = DataLock::acquire(&data, "short").unwrap();
+        let _lock = reacquire(&data, "short");
         assert_eq!(std::fs::read_to_string(data.join(LOCK_FILE)).unwrap(), "short");
         let _ = std::fs::remove_dir_all(data);
     }
