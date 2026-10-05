@@ -2059,7 +2059,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .message-more > .pane-menu { left: 0; right: auto; }
 .msg-action, .msg-more { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .msg-action:hover:not(:disabled), .msg-action:focus-visible, .msg-more:hover:not(:disabled), .msg-more:focus-visible { color: var(--text); background: var(--panel); }
-.message-row .msg-action { opacity: 0; }
+.message-row .msg-action { opacity: 1; }
 .bot-row .msg-action.quote, .message-row:hover .msg-action, .message-row:focus-within .msg-action { opacity: 1; }
 .copied { font-size: 11px; color: var(--text); }
 
