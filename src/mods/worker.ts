@@ -50,6 +50,11 @@ self.onmessage = async (event: MessageEvent) => {
       post({ type: "commandResult", id: m.id, result: out ?? {} });
       break;
     }
+    case "event": {
+      const out = await mod?.dispatch(m.name, m.event);
+      if (m.id) post({ type: "eventResult", id: m.id, result: out ?? null });
+      break;
+    }
     case "press":
       await mod?.press(m.pane, m.fn, m.args);
       break;

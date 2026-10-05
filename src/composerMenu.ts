@@ -27,6 +27,7 @@ export const COMMANDS: Extract<MenuItem, { kind: "command" }>[] = [
   { kind: "command", key: "diff", label: "/diff", detail: "Show what changed in the folder", command: { name: "diff" } },
   { kind: "command", key: "fork", label: "/fork", detail: "Copy this chat into a new thread", command: { name: "fork", title: "" } },
   { kind: "command", key: "export", label: "/export", detail: "Save the chat as Markdown", command: { name: "export", format: "markdown" } },
+  { kind: "command", key: "image", label: "/image", detail: "Make a picture: /image [chatgpt|grok|venice] prompt", command: null },
   { kind: "command", key: "export json", label: "/export json", detail: "Save the raw transcript as JSON", command: { name: "export", format: "json" } },
 ];
 

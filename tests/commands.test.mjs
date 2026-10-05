@@ -51,3 +51,11 @@ test('queued edits follow composer command and escape rules', async () => {
   }
   assert.deepEqual(parseQueueEdit('//compact'), {text:'/compact'});
 });
+
+test('/image takes an optional provider and needs a prompt', () => {
+  assert.deepEqual(parseComposer('/image a red apple'), { command: { name: 'image', provider: 'chatgpt', prompt: 'a red apple' } });
+  assert.deepEqual(parseComposer('/image Grok a red apple'), { command: { name: 'image', provider: 'grok', prompt: 'a red apple' } });
+  assert.deepEqual(parseComposer('/image venice:flux a red\napple'), { command: { name: 'image', provider: 'venice:flux', prompt: 'a red\napple' } });
+  assert.deepEqual(parseComposer('/image grok'), { command: { name: 'unknown', typed: '/image grok' } });
+  assert.deepEqual(parseComposer('/image'), { command: { name: 'unknown', typed: '/image' } });
+});

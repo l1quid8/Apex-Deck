@@ -25,7 +25,7 @@ test('items filter by kind and prefix', () => {
   assert.deepEqual(menuItems(findTrigger('@j', 2), people).map(i => i.label), ['@jigga']);
   assert.deepEqual(menuItems(findTrigger('@a', 2), people).map(i => i.label), ['@all']);
   const all = menuItems(null, people).map(i => i.label);
-  assert.deepEqual(all, ['Photo or file', 'Folder', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/export json']);
+  assert.deepEqual(all, ['Photo or file', 'Folder', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json']);
 });
 
 test('picking replaces the trigger, or inserts at the caret from "+"', () => {
@@ -40,6 +40,6 @@ test('mod commands show up after the built-in ones and are inserted, not run', (
   const hl = menuItems(findTrigger('/h', 2), people, [], mods);
   assert.deepEqual(hl.map(i => [i.label, i.detail, i.command]), [['/hl', 'Hyperliquid positions', null]]);
   const all = menuItems(findTrigger('/', 1), people, [], mods).map(i => i.label);
-  assert.deepEqual(all, ['/compact', '/clear', '/diff', '/fork', '/export', '/export json', '/hl']);
+  assert.deepEqual(all, ['/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/hl']);
   assert.deepEqual(findTrigger('/my-mod2', 8), { kind: 'command', query: 'my-mod2', start: 0, end: 8 });
 });

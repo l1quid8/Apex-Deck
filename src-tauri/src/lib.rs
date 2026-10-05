@@ -8,12 +8,14 @@
 
 mod agents;
 mod export;
+mod images;
 mod mods;
 mod changes;
 mod checkpoints;
 mod preview;
 mod pty;
 mod quit;
+mod reply_images;
 mod storage;
 
 use std::collections::HashMap;
@@ -979,6 +981,42 @@ fn copy_attachment(app: AppHandle, room: String, path: String) -> Result<String,
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Make a picture with `provider` ("chatgpt", "grok" or "venice", with an
+/// optional ":model") and save it with the thread's attachments.
+#[tauri::command]
+async fn generate_image(app: AppHandle, room: String, provider: String, prompt: String) -> Result<String, String> {
+    let (name, model) = match provider.split_once(':') { Some((n, m)) => (n, Some(m)), None => (provider.as_str(), None) };
+    let chosen = images::provider(name).ok_or_else(|| format!("{name} can't make pictures; use chatgpt, grok or venice"))?;
+    let bytes = images::generate(&chosen, model, &prompt).await?;
+    let file = format!("{}-image.{}", chosen.label.to_lowercase(), images::extension(&bytes));
+    let path = export::write_new(&attachment_dir(&app, &room)?, &file, &bytes).map_err(|e| format!("Could not save the picture: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Keep a picture a model made (Codex saves them under ~/.codex) with the
+/// thread, so it still shows after the original is gone. Returns the copy.
+#[tauri::command]
+fn import_reply_image(app: AppHandle, room: String, path: String) -> Result<String, String> {
+    let saved = reply_images::import(&attachment_dir(&app, &room)?, std::path::Path::new(&path))?;
+    Ok(saved.to_string_lossy().into_owned())
+}
+
+/// The bytes of a saved attachment, so the chat can show pictures. Only
+/// files in the attachments folder are read.
+#[tauri::command]
+fn read_attachment(app: AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
+    use tauri::Manager;
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("attachments").canonicalize().map_err(|e| e.to_string())?;
+    let file = std::path::Path::new(&path).canonicalize().map_err(|e| format!("Could not read {path}: {e}"))?;
+    if !file.starts_with(&root) {
+        return Err(format!("{path} is not an attachment"));
+    }
+    if std::fs::metadata(&file).map_err(|e| e.to_string())?.len() > MAX_ATTACHMENT as u64 {
+        return Err("too big to show".into());
+    }
+    std::fs::read(&file).map(tauri::ipc::Response::new).map_err(|e| format!("Could not read {path}: {e}"))
+}
+
 const MAX_FOLDER_FILES: usize = 2000;
 const MAX_FOLDER: u64 = 100 * 1024 * 1024;
 /// Build output and caches that would only bloat a shared folder.
@@ -1151,6 +1189,9 @@ pub fn run() {
             export_thread,
             save_attachment,
             copy_attachment,
+            generate_image,
+            read_attachment,
+            import_reply_image,
             room_create,
             room_post,
             room_targets,

@@ -32,3 +32,18 @@ export function withAttachments(message: string, paths: string[]): string {
   const lines = paths.map((p) => `Attached ${isFolder(p) ? "folder" : isImage(p) ? "image" : "file"}: ${p}`);
   return [message, lines.join("\n")].filter(Boolean).join("\n\n");
 }
+
+/** The paths of the pictures a message attached, in order. */
+export function attachedImages(message: string): string[] {
+  return [...message.matchAll(/^Attached image: (.+)$/gm)].map((m) => m[1].trim());
+}
+
+/** The local pictures a reply links to or attaches, once each, in order.
+ *  Code is skipped, since paths there are examples rather than results. */
+export function replyImages(message: string): string[] {
+  const prose = message.replace(/```[\s\S]*?(```|$)/g, "").replace(/`[^`\n]*`/g, "");
+  const links = [...prose.matchAll(/!?\[[^\]\n]*\]\((?:<([^>\n]+)>|([^)\s]+))\)/g)].map((m) => m[1] ?? m[2]);
+  const decoded = links.map((link) => { try { return decodeURI(link); } catch { return link; } });
+  const found = [...decoded, ...attachedImages(prose)].filter((p) => p.startsWith("/") && isImage(p));
+  return [...new Set(found)];
+}

@@ -92,6 +92,13 @@ export interface Backend {
   saveAttachment(room: string, name: string, bytes: Uint8Array): Promise<string>;
   /** Copy a file dropped on the window into this thread's attachments. */
   copyAttachment(room: string, path: string): Promise<string>;
+  /** Make a picture with "chatgpt", "grok" or "venice" (optionally ":model")
+   *  and save it with the thread's attachments. Returns its path. */
+  generateImage(room: string, provider: string, prompt: string): Promise<string>;
+  /** Copy a picture a model made into this thread's attachments; the same source always gives the same copy. */
+  importReplyImage(room: string, path: string): Promise<string>;
+  /** A saved attachment's bytes, for showing pictures in the chat. */
+  readAttachment(path: string): Promise<ArrayBuffer>;
   /** Files dropped on the window, with where they landed in CSS pixels. */
   onFileDrop(cb: (paths: string[], x: number, y: number) => void): Promise<Unlisten>;
   roomPin(id: string, fact: string): Promise<string[]>;
@@ -200,6 +207,9 @@ async function tauriBackend(): Promise<Backend> {
     exportThread: (fileName, contents) => invoke("export_thread", { fileName, contents }),
     saveAttachment: (room, name, bytes) => invoke("save_attachment", bytes, { headers: { "x-room": room, "x-name": name } }),
     copyAttachment: (room, path) => invoke("copy_attachment", { room, path }),
+    generateImage: (room, provider, prompt) => invoke("generate_image", { room, provider, prompt }),
+    importReplyImage: (room, path) => invoke("import_reply_image", { room, path }),
+    readAttachment: (path) => invoke<ArrayBuffer>("read_attachment", { path }),
     onFileDrop: async (cb) => {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       return getCurrentWebview().onDragDropEvent((e) => {
@@ -709,6 +719,9 @@ function demoBackend(): Backend {
     // The browser keeps no files, so the "path" is only a name to show.
     saveAttachment: async (_room, name) => `/preview/attachments/${name}`,
     copyAttachment: async (_room, path) => path,
+    generateImage: async () => { throw new Error("Pictures are made in the desktop app"); },
+    importReplyImage: async (_room, path) => path,
+    readAttachment: async () => { throw new Error("Pictures are shown in the desktop app"); },
     onFileDrop: async () => () => {},
     roomPin: async (id, fact) => {
       const room = rooms.get(id);

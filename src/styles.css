@@ -1722,6 +1722,9 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .attachment[aria-busy="true"] { opacity: .5; }
 .attachment img { height: 100%; width: auto; max-width: 120px; object-fit: cover; }
 .attachment-name { padding: 0 28px 0 10px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attached-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.attached-image { padding: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: none; cursor: zoom-in; }
+.attached-image img { display: block; max-width: 320px; max-height: 320px; }
 .attachment > button { position: absolute; top: 2px; right: 2px; background: #000a; border-radius: 4px; }
 
 /* Per-participant turns keep the composer compact at every activity level. */

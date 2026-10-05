@@ -78,3 +78,24 @@ test("a mod importing a package it doesn't ship fails to load with the reason", 
   const files = { ...MOD, "hooks/register.tsx": "import x from 'left-pad'\nexport const register = () => x()" };
   assert.throws(() => loadMod({ files, modules: ["./register.tsx"], options: {}, name: "demo", host: host().host }), /left-pad/);
 });
+
+test("session hooks rewrite a prompt, refuse a tool call, and leave events alone when they fail", async () => {
+  const files = {
+    "hooks/hooks.json": '{ "modules": ["./register.ts"] }',
+    "hooks/register.ts": `
+export const register = (on) => {
+  on('prompt.submit', ($, e, next) => e.text.includes('secret') ? { deny: 'no secrets' } : next({ ...e, text: e.text + ' (via mod)' }))
+  on('tool.call', ($, e, next) => /rm -rf/.test(e.input) ? { deny: 'not that' } : next(e))
+  on('turn.complete', () => { throw new Error('boom') })
+}`,
+  };
+  const { log, host: h } = host();
+  const mod = loadMod({ files, modules: ["./register.ts"], options: {}, name: "guard", host: h });
+  assert.deepEqual(await mod.dispatch("prompt.submit", { text: "hi" }), { text: "hi (via mod)", context: undefined });
+  assert.deepEqual(await mod.dispatch("prompt.submit", { text: "a secret" }), { deny: "no secrets" });
+  assert.deepEqual(await mod.dispatch("tool.call", { tool: "Run a command", input: "rm -rf /" }), { deny: "not that" });
+  assert.deepEqual(await mod.dispatch("tool.call", { tool: "Run a command", input: "ls" }), {});
+  assert.equal(await mod.dispatch("turn.complete", { reason: "answer" }), null);
+  assert.deepEqual(log.errors, ["boom"]);
+  mod.stop();
+});

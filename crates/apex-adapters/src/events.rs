@@ -92,6 +92,8 @@ pub(crate) struct EventReader {
     /// Claude Code: the input of the turn's latest request and the model
     /// that took it. The context window is only named at the end.
     last_request: Option<(u64, String)>,
+    /// Pictures the tool made and saved during the turn.
+    images: Vec<String>,
 }
 
 impl EventReader {
@@ -113,6 +115,7 @@ impl EventReader {
             input_tokens: None,
             output_tokens: None,
             last_request: None,
+            images: Vec::new(),
         }
     }
 
@@ -142,7 +145,10 @@ impl EventReader {
     }
 
     pub(crate) fn outcome(self) -> Outcome {
-        let text = self.final_text.filter(|t| !t.trim().is_empty()).unwrap_or(self.streamed);
+        let mut text = self.final_text.filter(|t| !t.trim().is_empty()).unwrap_or(self.streamed);
+        for path in &self.images {
+            text.push_str(&format!("\n\nAttached image: {path}"));
+        }
         let has_reply = !text.trim().is_empty();
         Outcome {
             error: self.failure.or(if has_reply { None } else { self.last_error }),
@@ -520,7 +526,12 @@ impl EventReader {
                         steps.extend(self.changes_in(&item["changes"]).into_iter().map(Step::Change));
                     }
                 }
-                _ => {}
+                // Generated pictures arrive as their own item, saved to disk.
+                _ => {
+                    if let Some(path) = item["savedPath"].as_str().filter(|_| item["status"] == "completed") {
+                        self.images.push(path.to_string());
+                    }
+                }
             },
             Some("thread/tokenUsage/updated") => {
                 // One thread is one turn here, so the thread total is the
@@ -976,6 +987,16 @@ mod tests {
             assert_eq!(outcome.text, "Hello\nthere\n[1, 2]\nlast\n");
             assert_eq!(outcome.error, None);
         }
+    }
+
+    #[test]
+    fn codex_pictures_are_attached_to_the_reply() {
+        let stream = r#"{"method":"item/completed","params":{"item":{"type":"imageGeneration","id":"i1","status":"completed","savedPath":"/tmp/apple.png"}}}
+{"method":"item/completed","params":{"item":{"type":"imageGeneration","id":"i2","status":"failed","savedPath":"/tmp/pear.png"}}}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"i3","text":"Here it is."}}}
+"#;
+        let (_, outcome) = read(OutputFormat::CodexServer, &[stream]);
+        assert_eq!(outcome.text, "Here it is.\n\nAttached image: /tmp/apple.png");
     }
 
     #[test]

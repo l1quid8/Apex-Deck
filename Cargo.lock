@@ -76,6 +76,7 @@ version = "0.4.0"
 dependencies = [
  "apex-adapters",
  "apex-core",
+ "base64 0.22.1",
  "futures",
  "portable-pty",
  "reqwest",

@@ -175,6 +175,10 @@ export function loadMod(opts: {
   }
 
   // ----- hooks -----
+  // What the engine itself answers once every hook has called next: a prompt
+  // goes on as it arrived; a tool call or turn goes on unchanged.
+  const bottom = (name: string, e: Record<string, unknown>): unknown =>
+    name === "ui.render" ? null : name === "prompt.submit" ? { text: e.text, context: e.context } : {};
   const matches = (hook: Registered, e: Record<string, unknown>) =>
     !hook.filter || Object.entries(hook.filter).every(([k, v]) => e[k] === v);
 
@@ -182,7 +186,7 @@ export function loadMod(opts: {
     const chain = hooks.filter((hook) => hook.name === name && matches(hook, e));
     const step = async (i: number, arg: Record<string, unknown>): Promise<unknown> => {
       const hook = chain[i];
-      if (!hook) return name === "ui.render" ? null : {};
+      if (!hook) return bottom(name, arg);
       return hook.fn($, arg, (nextArg?: any) => step(i + 1, nextArg ?? arg));
     };
     return step(0, e);
@@ -338,7 +342,8 @@ export function loadMod(opts: {
         return out;
       } catch (error) {
         report(error);
-        return { text: `Error: ${error instanceof Error ? error.message : String(error)}` };
+        // A failed session hook leaves the event as it was; only a command shows the error.
+        return name === "command.run" ? { text: `Error: ${error instanceof Error ? error.message : String(error)}` } : null;
       }
     },
     press: async (pane, fn, args) => {

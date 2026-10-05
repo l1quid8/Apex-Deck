@@ -5,7 +5,11 @@ export type Command =
   | { name: "fork"; title: string }
   | { name: "export"; format: "markdown" | "json" }
   | { name: "diff" }
+  | { name: "image"; provider: string; prompt: string }
   | { name: "unknown"; typed: string };
+
+/** Who `/image` can ask; each needs its own API key. */
+export const IMAGE_PROVIDERS = ["chatgpt", "openai", "grok", "xai", "venice"];
 
 /** Composer text is either a command to run or a message to send. */
 export type Parsed = { command: Command } | { text: string };
@@ -30,6 +34,14 @@ export function parseComposer(body: string): Parsed {
       if (arg === "") return { command: { name: "export", format: "markdown" } };
       if (arg.toLowerCase() === "json") return { command: { name: "export", format: "json" } };
       return { command: { name: "unknown", typed: body } };
+    case "image": {
+      // An optional provider first, "grok" or "venice:model"; ChatGPT otherwise.
+      const first = arg.split(/\s/)[0];
+      const named = IMAGE_PROVIDERS.includes(first.split(":")[0].toLowerCase());
+      const prompt = (named ? arg.slice(first.length) : arg).trim();
+      if (!prompt) return { command: { name: "unknown", typed: body } };
+      return { command: { name: "image", provider: named ? first.toLowerCase() : "chatgpt", prompt } };
+    }
     default:
       return { command: { name: "unknown", typed: `/${match[1]}` } };
   }

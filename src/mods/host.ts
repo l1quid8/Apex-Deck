@@ -4,13 +4,15 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import type { ProposedAction, RoomEvent } from "../types";
 import type { ModNode } from "./runtime";
 
-export type Grant = "process" | "network" | "files";
+export type Grant = "process" | "network" | "files" | "session";
 export const GRANTS: { id: Grant; label: string }[] = [
   { id: "process", label: "Run programs on this Mac" },
   { id: "network", label: "Make network requests" },
   { id: "files", label: "Read file details and write files" },
+  { id: "session", label: "See and change your messages, and see and block bots' tool calls" },
 ];
 
 export interface UserConfigField {
@@ -83,7 +85,12 @@ let snapshot: ModSnapshot = { mods: [], runs: {}, panes: [], toasts: [], hostPan
 const listeners = new Set<() => void>();
 const workers = new Map<string, Worker>();
 const pendingCommands = new Map<number, (result: { text?: string }) => void>();
+const pendingEvents = new Map<number, (result: unknown) => void>();
+/** The turn each bot is on, per thread, and how it ended so far. */
+const turns = new Map<string, { turnId: string; reason: "answer" | "error" | "aborted"; text: string; error?: string }>();
 let commandIds = 0;
+let eventIds = 0;
+let turnIds = 0;
 let toastIds = 0;
 let started = false;
 
@@ -198,6 +205,63 @@ export const modHost = {
     workers.get(pane.mod)?.postMessage({ type: "closed", pane: pane.id });
   },
 
+  /** `prompt.submit` through every mod allowed to see messages, in list order.
+   *  Resolves with the text to send, or `deny` when a mod refused it. */
+  async promptSubmit(thread: string, text: string): Promise<{ text: string; deny?: string }> {
+    for (const mod of sessionMods()) {
+      const out = (await ask(mod, "prompt.submit", { text, thread, surface: "desktop" }, 3000)) as { text?: unknown; deny?: unknown } | null;
+      if (out && typeof out.deny === "string") return { text, deny: `${mod}: ${out.deny}` };
+      if (out && typeof out.text === "string") text = out.text;
+    }
+    return { text };
+  },
+
+  /** `tool.call` for an action a bot asked approval for. Deck can only stop a
+   *  call that waits on approval, so that's when mods hear it. Resolves with
+   *  the first mod's `deny`, or null to leave the card to the person. */
+  async toolCall(thread: string, bot: string, action: ProposedAction): Promise<string | null> {
+    const e = { tool: action.title, kind: action.kind, title: action.title, input: action.detail, risky: Boolean(action.risky), thread, bot };
+    for (const mod of sessionMods()) {
+      const out = (await ask(mod, "tool.call", e, 5000)) as { deny?: unknown } | null;
+      if (out && typeof out.deny === "string") return `${mod}: ${out.deny}`;
+    }
+    return null;
+  },
+
+  /** Turn starts and ends in any thread, told to mods allowed to see them. Nothing waits on the answer. */
+  roomEvent(thread: string, event: RoomEvent) {
+    const bot = event.type === "message_added" ? (event.message.speaker.kind === "bot" ? event.message.speaker.id : null) : "id" in event && typeof event.id === "string" ? event.id : null;
+    if (!bot || !snapshot.mods.some((m) => m.enabled && m.grants.includes("session"))) return;
+    const key = `${thread}:${bot}`;
+    switch (event.type) {
+      case "turn_started": {
+        const turnId = `turn-${++turnIds}`;
+        turns.set(key, { turnId, reason: "aborted", text: "" });
+        tell("turn.start", { turnId, text: "", thread, bot });
+        break;
+      }
+      case "message_added":
+      case "passed":
+      case "failed": {
+        const turn = turns.get(key);
+        if (turn) Object.assign(turn, event.type === "failed" ? { reason: "error", error: event.error } : { reason: "answer", text: event.type === "message_added" ? event.message.text : "" });
+        break;
+      }
+      case "participant_idle": {
+        const turn = turns.get(key);
+        if (!turn) break;
+        turns.delete(key);
+        tell("turn.complete", { ...turn, thread, bot });
+        break;
+      }
+    }
+  },
+
+  /** A line from Deck about a mod, such as a refusal, shown as a toast. */
+  notice(text: string) {
+    toast(text.split(":")[0], text);
+  },
+
   hideStatus(mod: string) {
     if (!snapshot.hiddenStatus.includes(mod)) set({ hiddenStatus: [...snapshot.hiddenStatus, mod] });
   },
@@ -206,6 +270,31 @@ export const modHost = {
     set({ toasts: snapshot.toasts.filter((t) => t.id !== id) });
   },
 };
+
+/** Running mods allowed to hook the session, in the list's order. */
+function sessionMods(): string[] {
+  return snapshot.mods.filter((m) => m.enabled && m.grants.includes("session") && snapshot.runs[m.name]?.state === "ready" && workers.has(m.name)).map((m) => m.name);
+}
+
+/** One mod's answer to an event, or null if it fails or takes longer than `ms`. */
+function ask(mod: string, name: string, event: unknown, ms: number): Promise<unknown> {
+  const worker = workers.get(mod);
+  if (!worker) return Promise.resolve(null);
+  const id = ++eventIds;
+  return new Promise((done) => {
+    const timer = setTimeout(() => {
+      pendingEvents.delete(id);
+      toast(mod, `${mod} took over ${ms / 1000}s on ${name}; Deck went on without it`, "error");
+      done(null);
+    }, ms);
+    pendingEvents.set(id, (result) => { clearTimeout(timer); done(result); });
+    worker.postMessage({ type: "event", id, name, event });
+  });
+}
+
+function tell(name: string, event: unknown) {
+  for (const mod of sessionMods()) workers.get(mod)?.postMessage({ type: "event", id: 0, name, event });
+}
 
 function entryFrom(source: ModSource): ModEntry {
   const manifest = source.manifest ?? {};
@@ -333,6 +422,7 @@ async function boot(mod: ModEntry) {
         setRun(mod.name, { commands });
         break;
       }
+      case "eventResult": pendingEvents.get(m.id)?.(m.result); pendingEvents.delete(m.id); break;
       case "commandResult": pendingCommands.get(m.id)?.(m.result); pendingCommands.delete(m.id); break;
       case "open": {
         const rest = snapshot.panes.filter((p) => !(p.mod === mod.name && p.id === m.pane.id));

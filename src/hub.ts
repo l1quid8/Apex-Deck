@@ -4,6 +4,7 @@
 import { recordApproval } from "./approvals";
 import type { Backend } from "./backend";
 import { recordPlan } from "./plans";
+import { modHost } from "./mods/host";
 import type { RoomEvent } from "./types";
 
 type PtyHandlers = { onData: (data: string) => void; onExit: (code: number | null) => void };
@@ -24,6 +25,13 @@ export async function startHub(backend: Backend): Promise<void> {
     // reading it while handling this event sees the card already.
     recordApproval(room, event);
     rooms.get(room)?.(event);
+    modHost.roomEvent(room, event);
+    // A mod allowed to see the session may refuse a call waiting on approval.
+    if (event.type === "approval_requested") {
+      void modHost.toolCall(room, event.id, event.action).then((deny) => {
+        if (deny) return backend.roomDecide(room, event.request, false).then(() => modHost.notice(deny));
+      }).catch(() => {});
+    }
   });
 }
 

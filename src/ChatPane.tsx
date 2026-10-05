@@ -44,7 +44,8 @@ import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
-import { attachmentName, withAttachments, type Attachment } from "./attachments";
+import { attachedImages, attachmentName, replyImages, withAttachments, type Attachment } from "./attachments";
+import { AttachedImages } from "./AttachedImages";
 import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, hasMention, recipientLine, showsRecipientLine } from "./recipients";
@@ -833,6 +834,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return known;
   }, [pathChecks, cwd]);
 
+  // A model's picture may live outside the attachments folder (Codex keeps
+  // its own); a copy is taken the first time it is shown.
+  const readReplyImage = useCallback(
+    (path: string) => backend.importReplyImage(pane.id, path).then(backend.readAttachment),
+    [pane.id],
+  );
+
   /** Bring the transcript to where it should be after anything changed in it. */
   const settle = useRef(() => {});
   settle.current = () => {
@@ -1273,6 +1281,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
       case "diff":
         setText(""); details?.show("changes"); loadDiff(); return;
+      case "image": {
+        // The picture is posted as your message, so every model can see it,
+        // without asking anyone to reply.
+        setText("");
+        const who = command.provider.split(":")[0];
+        const label = who === "grok" || who === "xai" ? "Grok" : who === "venice" ? "Venice" : "ChatGPT";
+        notify(`Making a picture with ${label}…`);
+        return void backend.generateImage(pane.id, command.provider, command.prompt)
+          .then((path) => backend.roomPostTo(pane.id, withAttachments(`Picture from ${label}: ${command.prompt}`, [path]), []))
+          .catch((error) => notify(`Could not make the picture: ${String(error)}`, "error"));
+      }
       case "unknown":
         return notify(`${command.typed} isn't a command. Start with // to send it as a message.`, "error");
 
@@ -1569,7 +1588,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     stuck.current = true;
     setUnread(0);
     setDividerAt(null);
-    const message = withTldr(withAttachments(parsed.text && replyText(postable(parsed.text), reply, participants.map((p) => p.id)), sendable.map((a) => a.path!)), tldr);
+    // Mods allowed to see the session may rewrite the prompt or refuse it.
+    const hooked = parsed.text ? await modHost.promptSubmit(pane.id, parsed.text) : { text: parsed.text };
+    if (hooked.deny) { notify(hooked.deny, "error"); return; }
+    const message = withTldr(withAttachments(hooked.text && replyText(postable(hooked.text), reply, participants.map((p) => p.id)), sendable.map((a) => a.path!)), tldr);
     if (tldr) wiggle(field.current);
     setText(""); setReply(null);
     attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
@@ -2197,6 +2219,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               {messageActions(entry.message)}
               <div className="bubble human">
                 <RichText text={splitTldr(entry.message.text).text} onOpen={openTarget} />
+                <AttachedImages paths={attachedImages(entry.message.text)} read={backend.readAttachment} onOpen={(path) => openTarget(path, true)} />
               </div>
             </div>
           ) : (
@@ -2211,6 +2234,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
                 <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} />
+                <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage} onOpen={(path) => openTarget(path, true)} />
               </div>
               {messageActions(entry.message)}
             </div>
