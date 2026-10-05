@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import type { Backend, BrowserState } from "./backend";
+import { loadFailure, type LoadError } from "./browserPage";
 import { BrowserView } from "./BrowserView";
 import { hostLabel, normalizeAddress } from "./previewAddress";
 import type { Pane, PreviewProbe } from "./types";
@@ -68,6 +69,12 @@ export function PreviewPane({ pane, backend, visible, behind = false, servers, s
   /** The docked browser, in the Electron app. */
   const docked = backend.browser;
   const [page, setPage] = useState<BrowserState | null>(null);
+  /** Why the docked page won't load, kept while it tries again. */
+  const [failed, setFailed] = useState<LoadError | null>(null);
+  const pageState = useCallback((state: BrowserState) => {
+    setPage(state);
+    setFailed((previous) => loadFailure(previous, state));
+  }, []);
 
   // Keep the field in step when the address changes from outside, e.g. a terminal's chip.
   useEffect(() => {
@@ -109,13 +116,15 @@ export function PreviewPane({ pane, backend, visible, behind = false, servers, s
   }, [look, host, address, onOpenInBrowser]);
 
   // A docked page that failed to load: try again every 2 s while it's on screen.
-  const failed = docked && page?.error && !page.loading ? page.error : null;
   useEffect(() => {
     if (!docked || !failed || !visible || !address) return;
     const timer = setTimeout(() => void docked.navigate(pane.id, address), RETRY_MS);
     return () => clearTimeout(timer);
   }, [docked, failed, visible, address, pane.id, page]);
-  useEffect(() => { setPage(null); }, [address]);
+  useEffect(() => {
+    setPage(null);
+    setFailed(null);
+  }, [address]);
   // The field follows the page as you click around in it.
   useEffect(() => { if (page?.url && !page.url.startsWith("data:") && !page.error) setTyped(page.url); }, [page?.url, page?.error]);
 
@@ -179,7 +188,7 @@ export function PreviewPane({ pane, backend, visible, behind = false, servers, s
       <div className="preview-body">
         {!address && <EmptyPage servers={servers} onPick={(server) => onAddress(pane.id, server.address, server.sourceId)} />}
         {docked && address && (
-          <BrowserView pane={pane.id} url={address} browser={docked} visible={visible && !behind && !failed} onState={setPage} />
+          <BrowserView pane={pane.id} url={address} browser={docked} visible={visible && !behind && !failed} onState={pageState} />
         )}
         {docked && address && failed && (
           <div className="preview-notice" role="status">

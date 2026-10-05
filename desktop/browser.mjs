@@ -73,20 +73,30 @@ export function dockedBrowser({ win, send, downloads }) {
       webPreferences: { partition: PARTITION, sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
     const page = view.webContents;
-    const state = (extra = {}) => send('browser:state', pane, {
+    /** Why the latest load failed, sent with every state until the next one starts. */
+    let failure = null;
+    const state = () => send('browser:state', pane, {
       url: page.getURL(),
       title: page.getTitle(),
       loading: page.isLoading(),
       canGoBack: page.navigationHistory.canGoBack(),
       canGoForward: page.navigationHistory.canGoForward(),
-      ...extra,
+      ...(failure && { error: failure }),
     });
-    for (const event of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) {
+    page.on('did-start-loading', () => {
+      failure = null;
+      state();
+    });
+    for (const event of ['did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) {
       page.on(event, () => state());
     }
+    // A failure is reported while the page still counts as loading, and
+    // did-stop-loading follows it; that state has to carry the failure too.
     page.on('did-fail-load', (_event, code, description, url, mainFrame) => {
       // -3 is a load stopped by another one starting.
-      if (mainFrame && code !== -3) state({ error: { code, description, url } });
+      if (!mainFrame || code === -3) return;
+      failure = { code, description, url };
+      state();
     });
     // Only web pages; nothing a page does takes it to app:// or file://.
     page.on('will-navigate', (event, url) => { if (!web(url)) event.preventDefault(); });

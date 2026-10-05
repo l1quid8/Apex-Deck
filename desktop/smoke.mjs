@@ -160,6 +160,42 @@ export async function runSmoke(win, { sidecar, browser }) {
     }
   });
 
+  await step('a Preview page that won\'t load says so, and comes back by itself', async () => {
+    // A port nothing listens on, until the end.
+    const port = await new Promise((resolve) => { const probe = http.createServer().listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
+    const url = `http://127.0.0.1:${port}/`;
+    await page(`
+      await __deck.backend.sessionSave({
+        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: '/tmp' }],
+        panes: [{ id: 'smoke-down', workspaceId: 'ws-smoke', kind: 'preview', title: 'Preview', url: ${JSON.stringify(url)}, deck: 'threads' }],
+        profiles: [], activeWorkspace: 'ws-smoke', focusedPane: 'smoke-down', section: 'threads', layout: 'top',
+      });
+      return true;`);
+    contents.reload();
+    await sleep(200);
+    await ready();
+    const notice = () => page(`return document.querySelector('.preview-notice')?.innerText ?? ''`);
+    const said = await until('the notice', async () => /Nothing is answering at 127\.0\.0\.1/.test(await notice()) && notice());
+    if (!/Checking every 2 s/.test(said)) throw new Error(`the notice says: ${said.replace(/\s+/g, ' ')}`);
+    // Through two tries the notice stays, and the blank page never shows in its place.
+    const start = Date.now();
+    while (Date.now() - start < 4_500) {
+      if (browser.inspect('smoke-down')?.shown) throw new Error('the failed page showed over the pane');
+      if (!(await notice())) throw new Error('the notice went away while trying again');
+      await sleep(50);
+    }
+    const site = await serveSite(port);
+    try {
+      await until('the page to come back', async () => {
+        const seen = browser.inspect('smoke-down');
+        return seen?.shown && !seen.contents.isLoading() && (await seen.contents.executeJavaScript('document.body.innerText')) === 'hello';
+      }, 10_000);
+      if (await notice()) throw new Error('the notice stayed after the page came back');
+    } finally {
+      site.close();
+    }
+  });
+
   await step('a second window runs on another host, names it, and closes on its own', async () => {
     const saved = () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'hosts.json'), 'utf8')).windows;
     // A host nothing answers at, so the new window sits on its loading screen.
@@ -341,8 +377,8 @@ async function runRemoteSmoke(win) {
   return null;
 }
 
-/** Pages for the docked browser: one that signs in (sets a cookie), and one that misbehaves. */
-function serveSite() {
+/** Pages for the docked browser, on `port` or any free one: one that signs in (sets a cookie), and one that misbehaves. */
+function serveSite(port = 0) {
   const server = http.createServer((request, response) => {
     response.setHeader('content-type', 'text/html');
     if (request.url === '/evil') {
@@ -355,7 +391,7 @@ function serveSite() {
     }
     response.end(`<title>smoke page</title><body>hello<script>document.cookie = 'deck_login=kept; max-age=86400; path=/';</script></body>`);
   });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() })));
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() })));
 }
 
 /** The second launch on the same folders: the sign-in from the first is still there. */
