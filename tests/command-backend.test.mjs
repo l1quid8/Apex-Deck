@@ -52,6 +52,8 @@ const COMMANDS = [
   ['agentModels', ['codex'], 'agent_models', { tool: 'codex' }],
   ['workspaceRead', ['a.txt', '/w'], 'workspace_read', { target: 'a.txt', cwd: '/w' }],
   ['pathsExist', [['a'], null], 'paths_exist', { targets: ['a'], cwd: null }],
+  ['listFolder', ['/srv'], 'folder_list', { path: '/srv' }],
+  ['listFolder', [null], 'folder_list', { path: null }],
   ['roomPost', ['t', 'hi'], 'room_post', { id: 't', text: 'hi' }],
   ['roomTargets', ['t', 'hi'], 'room_targets', { id: 't', text: 'hi' }],
   ['roomPostTo', ['t', 'hi', ['p']], 'room_post_to', { id: 't', text: 'hi', targets: ['p'] }],

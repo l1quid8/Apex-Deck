@@ -61,7 +61,9 @@ splits the Rust core into a host that local and remote clients share.
   flight when the connection drops fails with words saying it may not have
   finished.
 - Files the person saves or opens land on the machine with the screen. On a
-  remote host, folders are typed (checked there) rather than picked.
+  remote host, folders and files are picked by looking through that host's
+  folders (`folder_list`); a daemon too old for that gets a typed path,
+  checked there.
 - The docked browser loads pages on this Mac; a remote host's `localhost`
   isn't reachable from it yet.
 - Agents driving the docked browser is phase 3b.

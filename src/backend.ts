@@ -9,7 +9,7 @@ import { ruleFor, sameRule } from "./allowedRules";
 import { commandBackend } from "./commandBackend.ts";
 import { electronBackend } from "./electronShell.ts";
 import { tauriShell, tauriTransport } from "./tauriShell.ts";
-import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
 
@@ -62,6 +62,8 @@ export interface Backend {
   workspaceRead(target: string, cwd: string | null): Promise<string | null>;
   /** Whether each path names a file or folder that exists. */
   pathsExist(targets: string[], cwd: string | null): Promise<boolean[]>;
+  /** What is in a folder on the host, for picking one there. Null is the home folder. */
+  listFolder(path: string | null): Promise<FolderListing>;
   roomPost(id: string, text: string): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
   roomPostTo(id: string, text: string, targets: string[]): Promise<void>;
@@ -607,6 +609,7 @@ function demoBackend(): Backend {
     },
     workspaceRead: async () => null,
     pathsExist: async (targets) => targets.map(() => false),
+    listFolder: async () => { throw new Error("folders cannot be listed in the browser demo"); },
     roomTargets: async (id, text) => targetsFor(id, text),
     roomPost: async (id, text) => postPreview(id, text, targetsFor(id, text)),
     roomPostTo: async (id, text, targets) => {

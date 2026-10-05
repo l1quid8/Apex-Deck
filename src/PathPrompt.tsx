@@ -1,34 +1,82 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import type { Backend } from "./backend";
 import { connection } from "./connection";
-import { pathPrompt, pathProblem } from "./typedPath";
+import { folderRows, listingUnsupported, pathPrompt } from "./typedPath";
+import type { FolderListing } from "./types";
 
-/** Asks for a path on a host on another machine, and checks it's there before closing. */
+const FOLDER_ICON = <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6.5a1 1 0 0 0-1-1H8L6.5 3h-4a1 1 0 0 0-1 1.5z" /></svg>;
+const FILE_ICON = <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.5h5.5L12.5 4.5v9.5a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5v-12a.5.5 0 0 1 .5-.5zM9.5 1.5v3h3" /></svg>;
+
+/** Picks a folder or file on a host on another machine by looking through its folders. */
 export function PathPrompt({ backend }: { backend: Backend }) {
   const request = useSyncExternalStore(pathPrompt.subscribe, pathPrompt.get);
   const { host } = useSyncExternalStore(connection.subscribe, connection.get);
-  const [text, setText] = useState("");
+  const [listing, setListing] = useState<FolderListing | null>(null);
+  const [typed, setTyped] = useState("");
+  const [file, setFile] = useState<string | null>(null);
+  const [hidden, setHidden] = useState(false);
   const [problem, setProblem] = useState("");
-  const [checking, setChecking] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    setText("");
+  const [loading, setLoading] = useState(false);
+  /** The host's apex-daemon can't list folders, so the path is typed. */
+  const [typeOnly, setTypeOnly] = useState(false);
+  const asked = useRef(0);
+  const list = useRef<HTMLUListElement>(null);
+
+  /** Show the folder at `path` (null is home). False when it can't be opened. */
+  const open = useCallback(async (path: string | null) => {
+    const ask = ++asked.current;
+    setLoading(true);
     setProblem("");
-    setChecking(false);
-    input.current?.focus();
-  }, [request]);
+    try {
+      const next = await backend.listFolder(path);
+      if (ask !== asked.current) return true;
+      setListing(next);
+      setTyped(next.path);
+      setFile(null);
+      list.current?.scrollTo?.({ top: 0 });
+      return true;
+    } catch (error) {
+      if (ask !== asked.current) return true;
+      if (listingUnsupported(error)) {
+        setTypeOnly(true);
+        return true;
+      }
+      setProblem(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      if (ask === asked.current) setLoading(false);
+    }
+  }, [backend]);
+
+  useEffect(() => {
+    setListing(null);
+    setTyped("");
+    setFile(null);
+    setHidden(false);
+    setProblem("");
+    setTypeOnly(false);
+    if (!request) return;
+    const start = pathPrompt.startAt();
+    // The last folder may be gone; home is always there.
+    void open(start).then((ok) => { if (!ok && start) void open(null); });
+  }, [request, open]);
+
   if (!request) return null;
   const what = request.kind === "directory" ? "Folder" : "File";
+  const rows = listing ? folderRows(listing, request.kind, hidden) : [];
+  const chosen = typeOnly ? typed.trim() || null : request.kind === "directory" ? listing?.path ?? null : file;
   const cancel = () => pathPrompt.answer(null);
   const choose = async () => {
-    const wrong = pathProblem(text);
-    if (wrong) return setProblem(wrong);
-    setChecking(true);
-    const [there] = await backend.pathsExist([text.trim()], null).catch(() => [false]);
-    setChecking(false);
-    if (!there) return setProblem(`Nothing is at ${text.trim()} on ${host}.`);
-    pathPrompt.answer(text);
+    if (!chosen || loading) return;
+    if (typeOnly) {
+      if (!chosen.startsWith("/")) return setProblem("Use a full path, starting with /.");
+      setLoading(true);
+      const [there] = await backend.pathsExist([chosen], null).catch(() => [false]);
+      setLoading(false);
+      if (!there) return setProblem(`Nothing is at ${chosen} on ${host}.`);
+    }
+    pathPrompt.answer(chosen);
   };
   return (
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) cancel(); }}>
@@ -36,15 +84,47 @@ export function PathPrompt({ backend }: { backend: Backend }) {
         onSubmit={(event) => { event.preventDefault(); void choose(); }}
         onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancel(); } }}>
         <strong id="path-prompt-title">{what} on {host}</strong>
-        <p className="muted">{request.title}. Type its full path on {host}.</p>
-        <input ref={input} className="mono" value={text} spellCheck={false} autoCapitalize="off" autoCorrect="off"
-          placeholder={request.kind === "directory" ? "/home/me/project" : "/home/me/file"} aria-label={`${what} path on ${host}`}
-          aria-invalid={problem ? true : undefined} aria-describedby={problem ? "path-prompt-problem" : undefined}
-          onChange={(event) => { setText(event.target.value); setProblem(""); }} />
+        <p className="muted">{request.title}. {typeOnly ? `The apex-daemon on ${host} is too old to list its folders, so type the full path, or update apex-daemon there.`
+          : request.kind === "directory" ? "Open the folder you want, then choose it." : "Pick a file, then choose it."}</p>
+        <div className="folder-bar">
+          {!typeOnly && <>
+            <button type="button" title="Enclosing folder" aria-label="Enclosing folder" disabled={!listing?.parent || loading}
+              onClick={() => listing?.parent && void open(listing.parent)}>↑</button>
+            <button type="button" title="Home folder" aria-label="Home folder" disabled={loading} onClick={() => void open(null)}>~</button>
+          </>}
+          <input autoFocus className="mono" value={typed} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+            placeholder="/home/me/project" aria-label={`Go to a folder on ${host}`}
+            aria-invalid={problem ? true : undefined} aria-describedby={problem ? "path-prompt-problem" : undefined}
+            onChange={(event) => { setTyped(event.target.value); setProblem(""); }}
+            onKeyDown={(event) => {
+              // Enter on a changed path goes there; on the folder shown, it chooses.
+              if (event.key === "Enter" && !typeOnly && typed.trim() !== listing?.path) { event.preventDefault(); void open(typed); }
+            }} />
+        </div>
+        {!typeOnly && <>
+          <ul ref={list} className="folder-list" aria-label={listing ? `In ${listing.path}` : "Loading"} aria-busy={loading}>
+            {rows.map((row) => (
+              <li key={row.path}>
+                <button type="button" className={row.path === file ? "selected" : undefined} aria-pressed={row.folder ? undefined : row.path === file}
+                  title={row.folder ? `Open ${row.name}` : row.name}
+                  onClick={() => row.folder ? void open(row.path) : setFile(row.path)}
+                  onDoubleClick={() => { if (!row.folder) pathPrompt.answer(row.path); }}>
+                  {row.folder ? FOLDER_ICON : FILE_ICON}
+                  <span>{row.name}</span>
+                </button>
+              </li>
+            ))}
+            {listing && !rows.length && <li className="muted folder-empty">{request.kind === "directory" ? "No folders in here." : "Nothing in here."}</li>}
+          </ul>
+          <div className="folder-foot">
+            <label><input type="checkbox" checked={hidden} onChange={(event) => setHidden(event.target.checked)} /> Show hidden</label>
+            {listing?.truncated && <span className="muted">Only the first {(listing.folders.length + listing.files.length).toLocaleString()} are shown.</span>}
+          </div>
+        </>}
         {problem && <span id="path-prompt-problem" className="error" role="alert">{problem}</span>}
         <div className="confirm-actions">
           <button type="button" onClick={cancel}>Cancel</button>
-          <button type="submit" className="primary" disabled={checking}>{checking ? "Checking…" : "Choose"}</button>
+          <button type="submit" className="primary" disabled={!chosen || loading}>{typeOnly ? (loading ? "Checking…" : "Choose") : request.kind === "directory" ? "Choose this folder" : "Choose"}</button>
         </div>
       </form>
     </div>

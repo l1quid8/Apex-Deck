@@ -208,6 +208,11 @@ fn paths_exist(host: HostState<'_>, targets: Vec<String>, cwd: Option<String>) -
 }
 
 #[tauri::command]
+fn folder_list(host: HostState<'_>, path: Option<String>) -> Result<apex_host::folders::Folder, String> {
+    host.folder_list(path)
+}
+
+#[tauri::command]
 fn session_load(host: HostState<'_>) -> Result<Option<serde_json::Value>, String> {
     host.session_load()
 }
@@ -452,6 +457,7 @@ pub fn run() {
             open_target,
             workspace_read,
             paths_exist,
+            folder_list,
             quit_heard,
             quit_app,
             mod_read,

@@ -141,7 +141,7 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on">): Tran
 
 /**
  * The shell's jobs: what the person saves or opens lands on this machine.
- * On a host on another machine, paths there are typed (`ask`), its files
+ * On a host on another machine, paths there are picked from its folders (`ask`), its files
  * aren't opened here, and dropped files are sent there.
  */
 export function electronShell(

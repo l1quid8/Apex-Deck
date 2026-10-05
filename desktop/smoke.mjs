@@ -278,6 +278,28 @@ async function runRemoteSmoke(win) {
     await until('the reply', () => page(`return __smoke.events.some((e) => e.event.type === 'message_added' && e.event.message.text === 'hello over ssh')`));
   });
 
+  await step('the folder picker looks through the host\'s folders and picks one', async () => {
+    const shown = () => page(`
+      const list = document.querySelector('.folder-list');
+      const first = list?.querySelector('button span');
+      if (!list || list.getAttribute('aria-busy') === 'true') return null;
+      return { at: document.querySelector('.folder-bar input').value, first: first?.textContent ?? null };`);
+    const click = (selector) => page(`document.querySelector(${JSON.stringify(selector)}).click(); return true;`);
+    await page(`window.__picked = __deck.backend.pickFolder(); return true;`);
+    const home = await until('the home folder\'s list', async () => { const now = await shown(); return now?.first && now; });
+    await click('.folder-list button');
+    const inside = await until('the folder to open', async () => { const now = await shown(); return now && now.at !== home.at && now; });
+    if (!inside.at.endsWith(`/${home.first}`)) throw new Error(`opened ${inside.at}, not ${home.first}`);
+    await click('[aria-label="Enclosing folder"]');
+    await until('the way back up', async () => (await shown())?.at === home.at);
+    await click('.folder-list button');
+    await until('the folder again', async () => (await shown())?.at === inside.at);
+    await click('.path-prompt button[type="submit"]');
+    const picked = await page(`return await window.__picked`);
+    if (picked !== inside.at) throw new Error(`picked ${picked}, not ${inside.at}`);
+    console.log(`smoke: picked ${picked}`);
+  });
+
   if (env.APEX_DECK_SMOKE_PAUSE) await step('a connection that goes quiet mid-reply comes back with the reply, once', async () => {
     await page(`
       await __deck.backend.roomAddParticipant(${JSON.stringify(room)}, ${JSON.stringify(shell('slow', 'sleep 20; echo after the pause'))});

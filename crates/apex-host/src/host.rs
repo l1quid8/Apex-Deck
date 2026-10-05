@@ -15,7 +15,7 @@ use crate::events::{Bus, HostEvent};
 use crate::pty::{PtyManager, SpawnOptions};
 use crate::quit::QuitGate;
 use crate::storage::{SavedRoom, Store};
-use crate::{agents, changes, checkpoints, export, images, mods, preview, reply_images};
+use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images};
 
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
@@ -656,6 +656,13 @@ impl Host {
     /// paths in a message become links.
     pub fn paths_exist(&self, targets: Vec<String>, cwd: Option<String>) -> Vec<bool> {
         paths_exist(targets, cwd)
+    }
+
+    /// What is in a folder on this machine, for picking one from another.
+    /// No path, or `~`, is the home folder.
+    pub fn folder_list(&self, path: Option<String>) -> Result<folders::Folder, String> {
+        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|h| !h.is_empty()).map(PathBuf::from);
+        folders::list(path.as_deref(), home)
     }
 
     /// The saved session, or `None` before the first save.

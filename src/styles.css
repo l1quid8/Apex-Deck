@@ -179,7 +179,40 @@ textarea {
 .connection-banner.failed strong { color: var(--danger); }
 .connection-words { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .connection-words small { color: var(--muted); overflow-wrap: anywhere; }
-.path-prompt input { margin-top: 6px; }
+.confirm.path-prompt { width: min(520px, calc(100vw - 32px)); }
+.folder-bar { display: flex; gap: 6px; margin-top: 6px; }
+.folder-bar button { min-width: 32px; padding: 0 8px; }
+.folder-bar input { flex: 1; min-width: 0; }
+.folder-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 4px;
+  height: min(300px, 45vh);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.folder-list[aria-busy="true"] { opacity: 0.6; }
+.folder-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+}
+.folder-list button span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.folder-list svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.2; color: var(--muted); }
+.folder-list button:hover, .folder-list button:focus-visible { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.folder-list button.selected { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+.folder-empty { padding: 8px; font-size: 12px; }
+.folder-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
+.folder-foot label { display: flex; align-items: center; gap: 6px; }
 .hosts .host-current { color: var(--muted); font-weight: normal; }
 .host-actions { display: flex; gap: 8px; }
 .host-add { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; }

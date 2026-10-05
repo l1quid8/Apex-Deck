@@ -16,6 +16,7 @@ pub mod quit;
 pub mod host;
 pub mod command;
 pub mod documents;
+pub mod folders;
 pub mod lock;
 
 pub use command::Command;

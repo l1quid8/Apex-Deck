@@ -209,6 +209,17 @@ export type PaneKind = "terminal" | "chat" | "preview";
 /** What the desktop side found at a Preview address before loading it. */
 export type PreviewProbe = { kind: "ok" } | { kind: "refused" } | { kind: "unreachable"; reason: string };
 
+/** What is in one folder on the host (apex-host's `folders::Folder`). */
+export interface FolderListing {
+  path: string;
+  /** Null at the top. */
+  parent: string | null;
+  folders: string[];
+  files: string[];
+  /** The folder held more than the host sends, and the rest were left out. */
+  truncated: boolean;
+}
+
 export interface Pane {
   id: string;
   workspaceId: string;

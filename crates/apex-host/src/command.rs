@@ -72,6 +72,7 @@ pub enum Command {
     OpenTarget { target: String, cwd: Option<String>, reveal: Option<bool> },
     WorkspaceRead { target: String, cwd: Option<String> },
     PathsExist { targets: Vec<String>, cwd: Option<String> },
+    FolderList { path: Option<String> },
     QuitHeard { request: u64 },
     /// Confirms the quit; the shell that owns the window does the exiting.
     QuitApp {},
@@ -158,6 +159,7 @@ impl Host {
             OpenTarget { target, cwd, reveal } => reply(self.open_target(target, cwd, reveal)?),
             WorkspaceRead { target, cwd } => reply(self.workspace_read(target, cwd)),
             PathsExist { targets, cwd } => reply(self.paths_exist(targets, cwd)),
+            FolderList { path } => reply(self.folder_list(path)?),
             QuitHeard { request } => { self.quit_heard(request); reply(()) },
             QuitApp {} => { self.quit_confirm(); reply(()) },
             ModRead { dir } => reply(self.mod_read(dir)?),
@@ -210,7 +212,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 60);
+        assert_eq!(names.len(), 61);
         assert!(names.contains(&"session_load".to_string()));
         assert!(names.contains(&"mod_env_get".to_string()));
     }
@@ -230,6 +232,11 @@ mod tests {
         let saved = call(json!({ "cmd": "save_attachment", "args": { "room": "r", "name": "a.txt", "data": "aGk=" } })).unwrap();
         assert_eq!(call(json!({ "cmd": "read_attachment", "args": { "path": saved } })), Ok(json!("aGk=")));
         assert_eq!(call(json!({ "cmd": "room_post", "args": { "id": "nope", "text": "hi" } })), Err("no group chat with id nope".into()));
+        let saved_chats = std::fs::canonicalize(data.join("saved-chats-v1")).unwrap().to_string_lossy().into_owned();
+        let listed = call(json!({ "cmd": "folder_list", "args": { "path": data.to_string_lossy() } })).unwrap();
+        assert!(listed["folders"].as_array().unwrap().contains(&json!("saved-chats-v1")), "{listed}");
+        assert_eq!(listed["truncated"], json!(false));
+        assert_eq!(call(json!({ "cmd": "folder_list", "args": { "path": saved_chats } })).unwrap()["path"], json!(saved_chats));
         let _ = std::fs::remove_dir_all(data);
     }
 }

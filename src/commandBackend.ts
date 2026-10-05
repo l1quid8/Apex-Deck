@@ -3,7 +3,7 @@
 // with the screen: dialogs, saved files, the dock, file drops and quitting.
 
 import type { Backend } from "./backend";
-import type { AgentInfo, AppSession, ModelChoice, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer } from "./types";
+import type { AgentInfo, AppSession, FolderListing, ModelChoice, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer } from "./types";
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
@@ -49,6 +49,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     agentModels: (tool) => call<ModelChoice[]>("agent_models", { tool }),
     workspaceRead: (target, cwd) => call<string | null>("workspace_read", { target, cwd }),
     pathsExist: (targets, cwd) => call<boolean[]>("paths_exist", { targets, cwd }),
+    listFolder: (path) => call<FolderListing>("folder_list", { path }),
     roomPost: (id, text) => call("room_post", { id, text }),
     roomTargets: (id, text) => call<string[]>("room_targets", { id, text }),
     roomPostTo: (id, text, targets) => call("room_post_to", { id, text, targets }),
