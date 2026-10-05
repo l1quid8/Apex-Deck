@@ -16,6 +16,8 @@ export interface AppSettings {
   terminal: { fontSize: number; scrollback: number };
   /** Hosts whose pages open in your browser instead of the Preview pane. */
   preview: { openExternally: string[] };
+  /** Ask before a steer interrupts a bot mid-turn. A thread can override it. */
+  confirmSteer: boolean;
 }
 
 export const SCROLLBACK_CHOICES = [1000, 5000, 10000, 50000];
@@ -29,6 +31,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   newBotAccess: "read",
   terminal: { fontSize: 13, scrollback: 5000 },
   preview: { openExternally: [] },
+  confirmSteer: true,
 };
 
 const POLICIES: TurnPolicy[] = ["mention", "everyone", "round_robin"];
@@ -61,6 +64,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
     preview: {
       openExternally: [...new Set((strings(record(saved.preview).openExternally) ?? []).map((host) => host.trim().toLowerCase()).filter(Boolean))],
     },
+    confirmSteer: typeof saved.confirmSteer === "boolean" ? saved.confirmSteer : d.confirmSteer,
   };
 }
 

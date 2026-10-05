@@ -6,7 +6,8 @@ import { ArtifactsPanel, DEFAULT_VIEW, type PanelView } from "./ArtifactsPanel";
 import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindOf, pickVersion, readArtifacts, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls } from "./previewAddress";
-import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, joinNames, quietLine, statusParts, stopLabel, stopTargets, threadStatusOf, type BotProgress } from "./composerStatus";
+import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
+import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -92,6 +93,10 @@ interface Props {
   newThread?: RoomOptions;
   /** Settings › New threads: the access the add-bot form starts at. */
   newBotAccess?: Access;
+  /** Settings › Confirm before steering. A thread can override it. */
+  confirmSteer?: boolean;
+  /** "Always" in the steer prompt turns the setting off everywhere. */
+  onConfirmSteer?: (confirm: boolean) => void;
   details?: DetailsHost;
 }
 
@@ -323,7 +328,7 @@ const STARTERS = [
 /** Below this width the artifacts panel covers the conversation instead of sitting beside it. */
 const NARROW_PX = 760;
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -418,7 +423,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   }, [handOffOpen]);
   const [adding, setAdding] = useState(false);
   /** Where the quick add menu is open: under the empty thread's button, or in the sidebar. */
-  const [quickAdd, setQuickAdd] = useState<"empty" | "details" | null>(null);
+  const [quickAdd, setQuickAdd] = useState<"empty" | "details" | "roster" | null>(null);
+  // The chip row scrolls sideways, which clips anything absolutely positioned inside it, so the roster menu is placed against the viewport.
+  const [rosterAnchor, setRosterAnchor] = useState<{ left: number; top: number } | null>(null);
   /** True once the person types a name, so choosing a model stops renaming the bot. */
   const nameTouched = useRef(false);
   useEffect(() => {
@@ -564,10 +571,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const color = (id: string) => appearance(id).color;
   // Who is at work right now, for the line above the composer: bots still
   // replying, and bots stopped on an approval card waiting for you.
-  const active = participants.filter((p) => working[p.id] || asks[p.id]?.length);
-  const waitingNow = active.filter((p) => asks[p.id]?.length);
-  const replyingNow = active.filter((p) => !asks[p.id]?.length);
-  const activeSince = active.length ? Math.min(...active.map((p) => working[p.id]?.startedAt ?? now)) : 0;
   /** You have written in this thread, so the room may have someone you addressed last. */
   const addressedBefore = messagesOf(entries).some((m) => m.speaker.kind === "human");
   const copy = composerCopy(busy, participants.length === 0, { firstMessage: participants.length >= 2 && !addressedBefore, quoting: Boolean(reply) });
@@ -954,12 +957,31 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused.`, "error"); },
   ));
-  /** Stop: only the bots that are replying, unless nobody is waiting on a card. */
-  const stopReplying = () => {
-    const targets = stopTargets(replyingNow.map((p) => p.id), waitingNow.map((p) => p.id));
-    if (targets === "all") void turnQueue.halt();
-    else targets.forEach((id) => void turnQueue.halt(id));
+  /** This thread's own steer choice, over Settings. */
+  const [steerChoice, setSteerChoice] = useState<ThreadSteer>(() => threadSteer(pane.id));
+  const chooseSteer = (choice: ThreadSteer) => { setSteerChoice(choice); saveThreadSteer(pane.id, choice); };
+  /** The queued message whose Steer is asking first. */
+  const [steerAsking, setSteerAsking] = useState<number | null>(null);
+  /** Steer a queued message: stop its bots mid-turn and give it to them now. */
+  const steerQueued = (item: ParticipantMessage) => void turnQueue.steerQueued(item.id);
+  /** Steer, asking first unless this thread or Settings says not to. */
+  const askToSteer = (item: ParticipantMessage) => {
+    if (steerAsks(confirmSteer, steerChoice)) setSteerAsking(item.id);
+    else steerQueued(item);
   };
+  const answerSteer = (item: ParticipantMessage, answer: SteerAnswer) => {
+    const result = steerAnswer(answer);
+    setSteerAsking(null);
+    if (result.thread) chooseSteer(result.thread);
+    if (result.confirmSteer !== undefined) onConfirmSteer?.(result.confirmSteer);
+    if (result.steer) steerQueued(item);
+  };
+  useEffect(() => { if (steerAsking !== null && !queued.some((item) => item.id === steerAsking)) setSteerAsking(null); }, [queued, steerAsking]);
+  /** The queued message being edited in the transcript. */
+  const [editingQueued, setEditingQueued] = useState<number | null>(null);
+  /** When the round button last flipped between Send and Stop; clicks right after are ignored. */
+  const flippedAt = useRef(0);
+  useEffect(() => { flippedAt.current = Date.now(); }, [busy]);
   /** Notices whose button you pressed; each works once. */
   const usedActions = useRef(new Set<number>());
   const [usedKeys, setUsedKeys] = useState<ReadonlySet<number>>(() => new Set());
@@ -1338,13 +1360,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     setText(""); setReply(null);
     attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
     setAttached([]);
-    if (steer) {
-      void backend.roomTargets(pane.id, message).then(async ids => {
-        const target = ids.find(id => turnQueue.state[id] === "working");
-        if (target) await turnQueue.steer(target, message);
-        else await turnQueue.send(message);
-      }).catch(error => notify(String(error), "error"));
-    } else void turnQueue.send(message).catch(error => notify(String(error), "error"));
+    // ⌘↵ queues it, then steers it from the queue, so a cancelled prompt leaves it queued.
+    void turnQueue.send(message).then(id => {
+      const item = turnQueue.items.find(queuedItem => queuedItem.id === id);
+      if (steer && item) askToSteer(item);
+    }).catch(error => notify(String(error), "error"));
   };
 
   /** Put an example in the composer without sending it. */
@@ -1669,7 +1689,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       return true;
     } catch (error) { notify(`Could not add the agent: ${String(error)}`, "error"); return false; }
   };
-  const openQuickAdd = (where: "empty" | "details") => {
+  const openQuickAdd = (where: "empty" | "details" | "roster") => {
     if (quickAdd === where) return setQuickAdd(null);
     nameTouched.current = false;
     setEditing(null);
@@ -1727,7 +1747,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </div>
     </form>
   );
-  const quickAddButton = (where: "empty" | "details", primary: boolean) => (
+  const quickAddButton = (where: "empty" | "details" | "roster", primary: boolean) => (
     <span className={`quick-add-wrap ${where}`}>
       <button className={primary ? "primary" : "ghost"} disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={() => openQuickAdd(where)}>+ Add bot</button>
       {quickAdd === where && quickAddMenu}
@@ -1756,6 +1776,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <button type="button" aria-label="More rounds" disabled={!ready || busy || options.max_bot_hops >= 10} onClick={() => changeOptions({ ...options, max_bot_hops: Math.min(10, options.max_bot_hops + 1) })}>+</button>
             </span>
           </div>
+          <label>
+            Confirm before steering
+            <select value={steerChoice} onChange={(e) => chooseSteer(e.target.value as ThreadSteer)}>
+              <option value="global">Use Settings ({confirmSteer ? "ask" : "don't ask"})</option>
+              <option value="ask">Always ask</option>
+              <option value="never">Never ask</option>
+            </select>
+          </label>
         </div>);
   const pinControls = (pins.length > 0 ? <details className="pins" aria-label="Pinned for every model">
         <summary className="pins-label">Pinned <span>({pins.length})</span></summary>
@@ -1816,6 +1844,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   </>;
   return (
     <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
+      {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" style={{ left: rosterAnchor.left, top: rosterAnchor.top }}>{quickAddMenu}</span>}
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async config => {
         await backend.roomUpdateParticipant(pane.id, config);
         setParticipants(list => list.map(p => p.id === config.id ? config : p));
@@ -1866,6 +1895,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           })}
           {/* An empty library offers its own button inside the starter card. */}
           {profileMode && (participants.length > 0 || adding) && addButton}
+          {!profileMode && participants.length > 0 && (
+            <span className="quick-add-wrap roster">
+              <button className="chip-add" disabled={!ready} aria-label="Add a bot" title="Add a bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { details?.show("form"); setAdding(true); } else { const r = e.currentTarget.getBoundingClientRect(); setRosterAnchor({ left: r.left, top: r.bottom + 8 }); openQuickAdd("roster"); } }}>
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+              </button>
+            </span>
+          )}
         </div>
 
 
@@ -2021,10 +2057,47 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   </span>
                   <span>{asks[id]?.length ? "Waiting for you" : quiet ?? phaseLabel(turn?.phase)}</span>
                   {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
+                  {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${names.get(id) ?? id}`} title={`Stop ${names.get(id) ?? id}`} onClick={() => void turnQueue.halt(id)}><StopSquare /> Stop</button>}
                 </div>
               </div>
             </div>
           );
+        })}
+        {queued.map((item) => {
+          const who = item.to.map((id) => names.get(id) ?? id).join(", ");
+          const steerable = item.kind === "message" && item.to.some((id) => working[id]);
+          return <div key={`q${item.id}`} className="queued-inline">
+            {editingQueued === item.id
+              ? <textarea className="q-edit" aria-label={`Edit queued message ${item.id}`} autoFocus rows={2} defaultValue={item.text}
+                  onKeyDown={(e) => { if (e.key === "Escape" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); e.currentTarget.blur(); } }}
+                  onBlur={(e) => {
+                    setEditingQueued(null);
+                    if (e.target.value === item.text) return;
+                    const parsed = parseQueueEdit(e.target.value);
+                    if ("text" in parsed) turnQueue.edit(item.id, parsed.text);
+                    else if (parsed.command.name === "compact") turnQueue.edit(item.id, "/compact", "compact");
+                    else { turnQueue.remove(item.id); setText(e.target.value); runCommand(parsed.command); }
+                  }} />
+              : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{item.text}</button>}
+            <div className="q-meta">
+              <span className="q-for">{queuePaused ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span></span>
+              {queuePaused && <><i className="q-sep" /><button type="button" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume</button></>}
+              {steerable && <><i className="q-sep" /><button type="button" title={`Send to ${who} now, mid-turn (⌘↵)`} onClick={() => askToSteer(item)}>Steer <SteerArrow /></button></>}
+              <i className="q-sep" />
+              <button type="button" className="q-trash" aria-label="Remove queued message" title="Remove" onClick={() => turnQueue.remove(item.id)}><TrashIcon /></button>
+              {steerAsking === item.id && <div className="steer-pop" role="dialog" aria-label="Steer now?"
+                onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); answerSteer(item, "cancel"); } }}>
+                <strong>Steer interrupts {who} mid-turn.</strong>
+                <p>It may leave work half-done. Change this later in Thread details or Settings.</p>
+                <div className="row">
+                  <button type="button" className="primary small" autoFocus onClick={() => answerSteer(item, "once")}>Allow once</button>
+                  <button type="button" className="ghost small" onClick={() => answerSteer(item, "thread")}>Always in this thread</button>
+                  <button type="button" className="ghost small" onClick={() => answerSteer(item, "always")}>Always</button>
+                  <button type="button" className="link" onClick={() => answerSteer(item, "cancel")}>Cancel</button>
+                </div>
+              </div>}
+            </div>
+          </div>;
         })}
       </div>}
       {!profileMode && (unread > 0 || cardsAway.length > 0) && <div className="transcript-pills">
@@ -2057,35 +2130,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
-        {busy && active.length > 0 && <div className="composer-status" role="status">
-          <span className="composer-status-dots" aria-hidden="true"><i /><i /><i /></span>
-          <span className="composer-status-who">
-            {statusParts(replyingNow, waitingNow).map((part, partIndex) => <span key={part.verb}>
-              {partIndex > 0 && " · "}
-              {part.who.map((p, index) => <span key={p.id}>
-                {index > 0 && (index === part.who.length - 1 ? " and " : ", ")}
-                <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
-              </span>)} {part.verb}
-            </span>)}
-          </span>
-          <span className="composer-status-time" aria-label={`for ${elapsed(now - activeSince)}`}>{elapsed(now - activeSince)}</span>
-          {replyingNow.length > 0 && <button className="danger small" aria-label={`Stop ${joinNames(replyingNow.map((p) => p.display_name))}`} onClick={stopReplying}>{stopLabel(replyingNow.map((p) => p.display_name))}</button>}
-        </div>}
-        {queued.length > 0 && <details className="queued-messages" aria-label="Queued messages" open>
-          <summary>{queuePaused ? "Paused" : "Queued"} ({queued.length}) · {queued[0].to.map(id => names.get(id) ?? id).join(", ")}: “{queued[0].text.slice(0, 65)}”</summary>
-          {queued.map(item => <div className="queued-message" key={item.id}>
-            <span>{item.to.map(id => names.get(id) ?? id).join(", ")}</span>
-            <textarea aria-label={`Queued message ${item.id}`} rows={2} defaultValue={item.text} onBlur={e => {
-              if (e.target.value === item.text) return;
-              const parsed = parseQueueEdit(e.target.value);
-              if ("text" in parsed) turnQueue.edit(item.id, parsed.text);
-              else if (parsed.command.name === "compact") turnQueue.edit(item.id, "/compact", "compact");
-              else { turnQueue.remove(item.id); setText(e.target.value); runCommand(parsed.command); }
-            }} />
-            <button className="icon" aria-label="Remove queued message" onClick={() => turnQueue.remove(item.id)}>×</button>
-          </div>)}
-          {queuePaused && <button className="ghost" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume queue</button>}
-        </details>}
         {reply && <div className="quote-preview">
           <div className="quote-preview-copy"><span className="speaker">{reply.id ? `Quoting ${reply.name}` : "Quoting your message"}</span><blockquote>{reply.text}</blockquote></div>
           <span className="pane-menu-wrap hand-off">
@@ -2107,7 +2151,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </div>)}
         </div>}
         {recipient && lineFits && <div className="recipient-line">
-          To {recipient.to} · <ReplyPolicyPicker value={options.policy} label={recipient.reason} disabled={!ready || busy} onChange={policy => changeOptions({ ...options, policy })} />{recipient.queued && " · queued (busy)"}
+          To {recipient.to} · <ReplyPolicyPicker value={options.policy} label={recipient.reason} disabled={!ready || busy} onChange={policy => changeOptions({ ...options, policy })} />
         </div>}
         <div className="composer-field">
           <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
@@ -2140,6 +2184,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           onSelect={e => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
             if (composerMenu.current?.key(e)) return;
+            // Esc stops every bot and keeps your draft, like Claude Code and Codex.
+            if (e.key === "Escape" && busy) { e.preventDefault(); void turnQueue.halt(); return; }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send(e.metaKey || e.ctrlKey);
@@ -2151,20 +2197,30 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         />
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
-        <div className="composer-hint"><span>{copy.hint}</span></div>
+        {!busy && <div className="composer-hint"><span>{copy.hint}</span></div>}
         </div>
         <div className="composer-actions">
-          {busy && <button className="ghost composer-steer" onClick={() => send(true)} disabled={!ready || !text.trim() || saving} title="Send to the busy model you mentioned now">Steer <kbd>⌘↵</kbd></button>}
-          <button className="primary" onClick={() => send()} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}>{busy ? <>Queue <kbd>↵</kbd></> : <><DeckIcon name="send" size={18} /> Send</>}</button>
-          {busy && (active.length > 1 || waitingNow.length > 0) && <details className="turn-controls"><summary aria-label="Turn controls">⋯</summary><div className="turn-controls-menu">
-            {participants.filter(p => turnQueue.state[p.id] === "working").map(p => <div key={p.id}>
-              <button className="ghost small" disabled={!text.trim()} onClick={() => { const message = text; setText(""); void turnQueue.steer(p.id, message); }}>Steer {p.display_name}</button>
-              <button className="ghost small" onClick={() => void turnQueue.halt(p.id)}>Stop {p.display_name}</button>
-            </div>)}
-            <button className="ghost small" onClick={() => void turnQueue.halt()}>Stop all</button>
-          </div></details>}
+          {busy
+            ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) void turnQueue.halt(); }}><StopSquare size={12} /></button>
+            : <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
         </div>
       </div>}
     </div>
   );
+}
+
+function StopSquare({ size = 10 }: { size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 10 10" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1.5" fill="currentColor" /></svg>;
+}
+
+function SendArrow() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg>;
+}
+
+function SteerArrow() {
+  return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>;
+}
+
+function TrashIcon() {
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" /></svg>;
 }

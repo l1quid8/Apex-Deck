@@ -6,11 +6,6 @@ export function joinNames(names: string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
-/** The verb after the names in the status line. */
-export function replyingVerb(count: number): string {
-  return count === 1 ? "is replying" : "are replying";
-}
-
 /** The verb after the names of bots stopped on an approval card. */
 export function waitingVerb(count: number): string {
   return count === 1 ? "is waiting for you" : "are waiting for you";
@@ -22,7 +17,7 @@ export function composerCopy(busy: boolean, empty: boolean, extra: { firstMessag
   // While quoting, the placeholder suggests what to ask about the quote.
   const placeholder = extra.quoting
     ? "e.g. Check this against the tests and say what breaks"
-    : busy ? "Add to the next turn, or ⌘↵ to steer now…" : "Message the room. @name picks who answers.";
+    : busy ? "Queue a message… (⌘↵ steers)" : "Message the room. @name picks who answers.";
   if (busy) return { placeholder, hint: "@ who answers · ! which tools · ↵ queue · ⌘↵ steer now · ⇧↵ new line" };
   if (extra.firstMessage) return { placeholder, hint: "@all asks everyone · / for commands · ↵ send" };
   return { placeholder, hint: "@ who answers · ! which tools · ↵ send · ⇧↵ new line" };
@@ -116,27 +111,4 @@ export function headLine(bots: number, replying: readonly BotProgress[], now: nu
 export function workingFor(startedAt: number, now: number): string {
   const minutes = Math.floor((now - startedAt) / 60_000);
   return minutes >= 1 ? `Working ${minutes}m` : "Working";
-}
-
-/** The status line in parts: who is replying, then who is waiting for you. Empty groups are left out. */
-export function statusParts<T>(replying: T[], waiting: T[]): { who: T[]; verb: string }[] {
-  const parts: { who: T[]; verb: string }[] = [];
-  if (replying.length > 0) parts.push({ who: replying, verb: replyingVerb(replying.length) });
-  if (waiting.length > 0) parts.push({ who: waiting, verb: waitingVerb(waiting.length) });
-  return parts;
-}
-
-/** The Stop button's words. It names only bots that are replying: "Stop Jigga". */
-export function stopLabel(names: string[]): string {
-  if (names.length === 0) return "Stop";
-  return names.length <= 2 ? `Stop ${joinNames(names)}` : `Stop ${names.length} bots`;
-}
-
-/**
- * Who Stop stops. With nobody waiting on a card it stops everything, as it
- * always has (that also stops /compact). Otherwise it stops only the bots
- * that are replying, so a card you have not answered stays up.
- */
-export function stopTargets(replying: string[], waiting: string[]): string[] | "all" {
-  return waiting.length === 0 ? "all" : replying;
 }

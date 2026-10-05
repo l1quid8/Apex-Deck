@@ -105,3 +105,15 @@ test('a turn for several bots waits until every one is free, then posts once', a
   q.idle('jigga'); await tick();
   assert.deepEqual(sent.at(-1), { to: ['null', 'jigga'], kind: 'turn', hops: 0 });
 });
+
+test('steering a queued message stops every bot it is for and sends it once, ahead of the rest', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [], stops = [];
+  let q;
+  q = new ParticipantQueues(async text => text.includes('@all') ? ['jigga', 'null'] : [text.includes('jigga') ? 'jigga' : 'null'], async text => {sent.push(text)}, async id => {stops.push(id); q.idle(id)}, () => {});
+  await q.send('@jigga first'); await q.send('@null first'); await q.send('@jigga later'); const id = await q.send('@all both');
+  await q.steerQueued(id); await tick();
+  assert.deepEqual(stops.sort(), ['jigga', 'null']);
+  assert.equal(sent.filter(text => text === '@all both').length, 1);
+  assert.equal(sent.at(-1), '@all both'); assert.equal(q.items[0].text, '@jigga later');
+});

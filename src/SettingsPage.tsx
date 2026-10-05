@@ -176,6 +176,9 @@ function Threads({ settings, onChange }: { settings: AppSettings; onChange: (s: 
         <option value="full">Full access</option>
       </select>
     </Row>
+    <Row label="Confirm before steering" note="Steering stops a bot mid-turn. Threads can override this in Thread details.">
+      <input type="checkbox" aria-label="Confirm before steering" checked={settings.confirmSteer} onChange={(e) => onChange({ ...settings, confirmSteer: e.target.checked })} />
+    </Row>
   </div>;
 }
 

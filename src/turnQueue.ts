@@ -91,6 +91,17 @@ export class ParticipantQueues {
     try { if (this.state[id] === "working") await this.stop(id); this.resume(id); }
     catch (error) { this.failed(error); }
   }
+  /** Send a queued message now: stop its bots mid-turn and put it first. */
+  async steerQueued(id: number) {
+    const item = this.items.find(x => x.id === id);
+    if (!item) return;
+    item.to.forEach(target => this.paused.add(target));
+    this.items = [item, ...this.items.filter(x => x.id !== id)]; this.publish();
+    try {
+      await Promise.all(item.to.filter(target => this.state[target] === "working").map(target => this.stop(target)));
+      item.to.forEach(target => this.paused.delete(target)); this.publish(); void this.drain();
+    } catch (error) { this.failed(error); }
+  }
   /** Run `to` once more on the transcript as it is, ahead of anything queued
    *  for them, posting no text. Their paused queues resume after it, since
    *  you chose to go on with them. `hops` caps the bot-to-bot rounds that
