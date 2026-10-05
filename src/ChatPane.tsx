@@ -5,7 +5,7 @@ import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { ArtifactsPanel, DEFAULT_VIEW, type PanelView } from "./ArtifactsPanel";
 import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindOf, pickVersion, readArtifacts, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
-import { findServerUrls } from "./previewAddress";
+import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress";
 import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
@@ -82,6 +82,8 @@ interface Props {
   onApprovals?: (paneId: string, signal: Signal | null) => void;
   /** The newest local server address a bot mentioned in a finished reply. */
   onServer?: (paneId: string, address: string) => void;
+  /** Show a local server in a Preview beside this thread: a link you clicked, or (`auto`) one a bot just named. */
+  onPreview?: (address: string, auto: boolean) => void;
   profiles: ParticipantConfig[];
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
@@ -328,7 +330,7 @@ const STARTERS = [
 /** Below this width the artifacts panel covers the conversation instead of sitting beside it. */
 const NARROW_PX = 760;
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -548,6 +550,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   signal.current = onSignal;
   const approvals = useRef(onApprovals);
   approvals.current = onApprovals;
+  const preview = useRef(profileMode ? undefined : onPreview);
+  preview.current = profileMode ? undefined : onPreview;
   // What happened in the round of replies now running, to decide when it
   // ends whether the chat wants attention. See afterRound in attention.ts.
   const round = useRef<{ failed: string[]; lastReply: string | null; stopped: boolean }>({ failed: [], lastReply: null, stopped: false });
@@ -611,6 +615,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             setDrafts(({ [id]: _done, ...rest }) => rest);
             setWorking(({ [id]: _done, ...rest }) => rest);
             round.current.lastReply = event.message.text;
+            // A server a bot names as it replies opens beside the thread.
+            // Replies loaded with the thread don't: those were seen already.
+            const servers = findServerUrls(event.message.text);
+            if (servers.length > 0) preview.current?.(servers[servers.length - 1], true);
             const left = pendingLow.current.get(id);
             pendingLow.current.delete(id);
             if (left !== undefined) {
@@ -785,8 +793,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return () => clearInterval(timer);
   }, [running]);
 
-  /** Open a file, folder or web address a message links to. */
+  /** Open a file, folder or web address a message links to. A local server opens in a Preview. */
   const openTarget = (target: string, reveal = false) => {
+    const address = /^https?:\/\//i.test(target) ? normalizeAddress(target) : null;
+    if (address && isLocalHost(new URL(address).hostname) && preview.current) return preview.current(address, false);
     backend.openTarget(target, cwd || null, reveal).catch((error) => notify(`Could not open ${target}: ${String(error)}`, "error"));
   };
 

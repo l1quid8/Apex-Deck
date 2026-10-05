@@ -504,14 +504,21 @@ export function App() {
   /**
    * Show a server in a Preview right of the terminal or thread it came from,
    * on that pane's deck, or focus the Preview already showing it there.
+   * `auto` is a thread's bot naming a new server: the thread's own Preview
+   * moves to it, or one opens, and focus stays where you are.
    */
-  const openPreview = (address: string, sourceId: string) => {
+  const openPreview = (address: string, sourceId: string, auto = false) => {
     const source = panes.find((p) => p.id === sourceId);
     if (!source) return;
     const deck = paneSection(source);
     const existing = panes.find((p) => p.kind === "preview" && p.workspaceId === source.workspaceId && paneSection(p) === deck && p.url === address);
     if (existing) {
-      focusPane(existing);
+      if (!auto) focusPane(existing);
+      return;
+    }
+    const own = auto ? panes.find((p) => p.kind === "preview" && !p.closed && p.servedBy === sourceId && paneSection(p) === deck) : undefined;
+    if (own) {
+      setPreviewAddress(own.id, address, sourceId);
       return;
     }
     const id = newId("pane");
@@ -521,6 +528,7 @@ export function App() {
     const key = layoutKey(source.workspaceId, deck);
     setPanes((list) => [...list, preview]);
     setLayouts((all) => (all[key] && leafIds(all[key]).includes(sourceId) ? { ...all, [key]: insertBeside(all[key], sourceId, id, "right") } : all));
+    if (auto) return;
     setActiveWorkspace(source.workspaceId);
     setSection(deck);
     setPicking(false);
@@ -1069,7 +1077,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} />
+                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}
                   </div>
                 </section>
