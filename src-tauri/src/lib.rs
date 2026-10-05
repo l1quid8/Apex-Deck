@@ -9,6 +9,7 @@
 mod agents;
 mod export;
 mod changes;
+mod checkpoints;
 mod preview;
 mod pty;
 mod quit;
@@ -253,6 +254,12 @@ fn room_create(
         None => Room::new(roster, options),
     };
     let snapshot = room.snapshot();
+    if let Some(cwd) = context.cwd.clone() {
+        // Taken now so the first message doesn't wait on it. Anything that
+        // changed while the thread was closed isn't this thread's work.
+        let (snapshots, thread, seq) = (snaps(&app), id.clone(), snapshot.transcript.len());
+        std::thread::spawn(move || { let _ = snapshots.take(&thread, &cwd, seq, checkpoints::Kind::Open, None); });
+    }
     store.save_room(&id, &SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
     let stop = room.stop_handle();
     let approvals = room.approvals_handle();
@@ -293,6 +300,16 @@ fn turn_sink<'a>(app: &'a AppHandle, id: &'a str, handle: &'a RoomHandle, error:
         // The desktop emits room-wide Idle only after the final snapshot
         // (including cursors) is saved by run_batch.
         if matches!(event, RoomEvent::Idle) { return; }
+        if let (RoomEvent::TurnStarted { id: bot }, Some(cwd)) = (&event, &handle.context.cwd) {
+            let seq = handle.checkpoint.lock().unwrap().snapshot.transcript.len();
+            let _ = snaps(app).take(id, cwd, seq, checkpoints::Kind::Start, Some(bot.clone()));
+        }
+        if let RoomEvent::Activity { id: bot, text } = &event {
+            if let Some(command) = text.strip_prefix("Running: ") {
+                let seq = handle.checkpoint.lock().unwrap().snapshot.transcript.len();
+                snaps(app).note_command(id, seq, bot, command);
+            }
+        }
         if let RoomEvent::ToolServers { id: agent, servers } = &event {
             app.state::<AppState>().tool_servers.lock().unwrap().insert(format!("{id}:{}", agent.as_str()), servers.clone());
         }
@@ -311,11 +328,11 @@ fn turn_sink<'a>(app: &'a AppHandle, id: &'a str, handle: &'a RoomHandle, error:
 
 async fn prepare_post(app: &AppHandle, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>) -> Result<TurnBatch, String> {
     {
-        let mut room = handle.room.lock().await;
-        if room.baseline().is_none() {
-            if let Some(cwd) = handle.context.cwd.clone() {
-                if let Ok(Ok(tree)) = tokio::task::spawn_blocking(move || changes::snapshot(&cwd)).await { room.set_baseline(tree); }
-            }
+        let room = handle.room.lock().await;
+        if let Some(cwd) = handle.context.cwd.clone() {
+            // A failed snapshot doesn't stop the turn; Revert then offers only the chat.
+            let (snapshots, thread, seq) = (snaps(app), id.to_string(), room.transcript().len());
+            let _ = tokio::task::spawn_blocking(move || snapshots.take(&thread, &cwd, seq, checkpoints::Kind::Send, None)).await;
         }
     }
     let requested = apex_core::server_request::parse_server_requests(text);
@@ -337,6 +354,8 @@ async fn prepare_post(app: &AppHandle, id: &str, handle: &RoomHandle, text: &str
     Ok(batch)
 }
 
+fn snaps(app: &AppHandle) -> Arc<checkpoints::Snapshots> { Arc::clone(&app.state::<Arc<checkpoints::Snapshots>>()) }
+
 async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
     let room = handle.room.lock().await;
     let mut checkpoint = handle.checkpoint.lock().unwrap();
@@ -350,6 +369,12 @@ async fn run_batch(app: &AppHandle, id: &str, handle: &RoomHandle, batch: TurnBa
     handle.runtime.run(batch, &turn_sink(app, id, handle, &error)).await;
     checkpoint_room(handle, &app.state::<Store>(), id).await?;
     if let Some(why) = error.into_inner().unwrap() { return Err(why); }
+    if !handle.runtime.busy() {
+        if let Some(cwd) = handle.context.cwd.clone() {
+            let (snapshots, thread, seq) = (snaps(app), id.to_string(), handle.checkpoint.lock().unwrap().snapshot.transcript.len());
+            let _ = tokio::task::spawn_blocking(move || snapshots.take(&thread, &cwd, seq, checkpoints::Kind::Idle, None)).await;
+        }
+    }
     let _room = handle.room.lock().await;
     if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
         let _ = app.emit("room-event", RoomEventPayload { room: id, event: RoomEvent::Idle });
@@ -539,7 +564,7 @@ async fn room_remove_participant(
 
 /// Empty a chat's transcript, keeping its participants and settings.
 #[tauri::command]
-async fn room_clear(state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<(), String> {
+async fn room_clear(state: State<'_, AppState>, store: State<'_, Store>, snapshots: State<'_, Arc<checkpoints::Snapshots>>, id: String) -> Result<(), String> {
     state.require_idle(&id)?;
     {
         let room = state.room(&id)?;
@@ -547,6 +572,9 @@ async fn room_clear(state: State<'_, AppState>, store: State<'_, Store>, id: Str
         state.require_idle(&id)?;
         room.clear();
     }
+    let (snapshots, cwd) = (Arc::clone(&snapshots), state.room_context(&id)?.cwd);
+    let thread = id.clone();
+    let _ = tokio::task::spawn_blocking(move || snapshots.clear(&thread, cwd.as_deref())).await;
     save_room(&state, &store, &id).await
 }
 
@@ -561,6 +589,45 @@ async fn room_rewind(state: State<'_, AppState>, store: State<'_, Store>, id: St
         room.rewind(upto);
     }
     save_room(&state, &store, &id).await
+}
+
+/// What going back to message `at` would do to the folder. `bot` is set for
+/// a Retry on that bot's reply, and unset for a Revert on your message.
+#[tauri::command]
+async fn room_revert_plan(state: State<'_, AppState>, snapshots: State<'_, Arc<checkpoints::Snapshots>>, id: String, at: usize, bot: Option<ParticipantId>) -> Result<checkpoints::RevertPlan, String> {
+    let Some(cwd) = state.room_context(&id)?.cwd else {
+        return Ok(checkpoints::RevertPlan { available: false, note: Some("This thread has no workspace folder, so only the chat goes back.".into()), files: vec![], skipped: vec![], effects: vec![] });
+    };
+    let snapshots = Arc::clone(&snapshots);
+    tokio::task::spawn_blocking(move || snapshots.plan(&id, &cwd, at, bot.as_ref())).await.map_err(|e| e.to_string())
+}
+
+/// Go back to message `at`: put `files` back as they were then (deleting
+/// ones that didn't exist), and with `chat`, delete message `at` and
+/// everything after it. Returns the files it couldn't put back.
+#[tauri::command]
+async fn room_revert(state: State<'_, AppState>, store: State<'_, Store>, snapshots: State<'_, Arc<checkpoints::Snapshots>>, id: String, at: usize, bot: Option<ParticipantId>, chat: bool, files: Vec<String>) -> Result<Vec<String>, String> {
+    state.require_idle(&id)?;
+    let cwd = state.room_context(&id)?.cwd;
+    let room = state.room(&id)?;
+    let mut room = room.lock().await;
+    state.require_idle(&id)?;
+    let mut failed = Vec::new();
+    if let Some(cwd) = cwd.clone() {
+        let (snaps, thread, bot, len) = (Arc::clone(&snapshots), id.clone(), bot.clone(), room.transcript().len());
+        failed = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+            let failed = if files.is_empty() { Vec::new() } else { snaps.restore(&thread, &cwd, at, bot.as_ref(), &files)? };
+            // With the chat gone, its snapshots go too; either way, the folder
+            // as it is now is the new starting point.
+            if chat { snaps.rewind(&thread, &cwd, at, bot.as_ref(), checkpoints::Kind::Restore)?; }
+            else { snaps.take(&thread, &cwd, len, checkpoints::Kind::Restore, None)?; }
+            Ok(failed)
+        }).await.map_err(|e| e.to_string())??;
+    }
+    if chat { room.rewind(at); }
+    drop(room);
+    save_room(&state, &store, &id).await?;
+    Ok(failed)
 }
 
 /// Pin a fact for every model in this chat. Returns the pins now in place.
@@ -798,8 +865,9 @@ async fn preview_probe(address: String) -> Result<preview::Probe, String> {
 }
 
 #[tauri::command]
-fn room_delete(state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<(), String> {
+fn room_delete(state: State<'_, AppState>, store: State<'_, Store>, snapshots: State<'_, Arc<checkpoints::Snapshots>>, id: String) -> Result<(), String> {
     let handle = state.handle(&id).ok();
+    snapshots.delete(&id);
     room_close(state, id.clone());
     match handle {
         Some(handle) => delete_checkpoint(&handle, &store, &id),
@@ -873,18 +941,28 @@ fn copy_attachment(app: AppHandle, room: String, path: String) -> Result<String,
 /// What changed in the folder since this thread started, and who changed it.
 /// Reads the saved copy, so it answers while models are still working.
 #[tauri::command]
-async fn room_diff(state: State<'_, AppState>, store: State<'_, Store>, id: String) -> Result<changes::ThreadDiff, String> {
+async fn room_diff(state: State<'_, AppState>, store: State<'_, Store>, snapshots: State<'_, Arc<checkpoints::Snapshots>>, id: String) -> Result<changes::ThreadDiff, String> {
     let cwd = state.room_context(&id)?.cwd.ok_or("this thread has no workspace folder")?;
     let snapshot = store.room(&id)?.ok_or("this thread has not been saved yet")?.snapshot;
-    tokio::task::spawn_blocking(move || changes::thread_diff(&cwd, snapshot.baseline.as_deref(), &snapshot.changes))
+    let snapshots = Arc::clone(&snapshots);
+    tokio::task::spawn_blocking(move || {
+        // Threads from before the snapshot store keep their old starting point while git still has it.
+        if snapshot.baseline.is_some() { return changes::thread_diff(&cwd, snapshot.baseline.as_deref(), &snapshot.changes); }
+        match snapshots.diff_since_start(&id, &cwd) {
+            Some(Ok(patch)) => changes::from_patch(&cwd, &patch, &snapshot.changes),
+            Some(Err(error)) => changes::thread_diff_note(&snapshot.changes, &format!("Couldn't compare the folder ({error}), so this lists only the edits the models reported.")),
+            None => changes::thread_diff_note(&snapshot.changes, "This thread starts tracking the folder with your next message. Until then, this lists only the edits the models reported."),
+        }
+    })
         .await
         .map_err(|e| e.to_string())
 }
 
 /// Fork durable state without waiting for a model turn's live room lock.
 #[tauri::command]
-async fn room_fork(state: State<'_, AppState>, store: State<'_, Store>, source: String, target: String, upto: Option<usize>) -> Result<(), String> {
+async fn room_fork(state: State<'_, AppState>, store: State<'_, Store>, snapshots: State<'_, Arc<checkpoints::Snapshots>>, source: String, target: String, upto: Option<usize>) -> Result<(), String> {
     let cwd = state.room_context(&source)?.cwd.map(|p| p.to_string_lossy().into_owned());
+    snapshots.fork(&source, &target, upto);
     store.fork_room(&source, &target, upto, cwd)
 }
 
@@ -933,6 +1011,10 @@ pub fn run() {
         .setup(|app| {
             let root = app.path().app_data_dir()?.join("saved-chats-v1");
             app.manage(Store::new(root));
+            let snapshots = Arc::new(checkpoints::Snapshots::new(app.path().app_data_dir()?.join("snapshots")));
+            let compacting = Arc::clone(&snapshots);
+            std::thread::spawn(move || compacting.compact());
+            app.manage(snapshots);
             apex_adapters::allow_reading(&app.path().app_data_dir()?.join("attachments"));
             Ok(())
         })
@@ -982,6 +1064,8 @@ pub fn run() {
             room_remove_participant,
             room_clear,
             room_rewind,
+            room_revert_plan,
+            room_revert,
             room_pin,
             room_unpin,
             room_compact,

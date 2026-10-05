@@ -1,11 +1,12 @@
 import { ReplyPolicyPicker, REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { ArtifactsPanel, DEFAULT_VIEW, type PanelView } from "./ArtifactsPanel";
 import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindOf, pickVersion, readArtifacts, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress";
+import { failedLine, goBackAlways, goBackAsks, goBackRequest, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
 import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
@@ -1080,40 +1081,84 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     void turnQueue.send(message).catch((error) => notify(String(error), "error"));
   };
   const retryIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-  /** Delete this message's answers (or this answer) and everything after, then ask again. */
-  const retryFrom = (message: Message) => {
-    if (busy) return notify("Stop the bots before retrying.", "error");
-    const all = messagesOf(entries);
-    const at = all.findIndex((m) => m.seq === message.seq);
-    const human = message.speaker.kind === "human";
-    // Your message: the bots that answered it answer again. A bot's: that bot answers again.
-    let ids: string[] = [];
-    if (human) {
-      for (const m of all.slice(at + 1)) {
-        if (m.speaker.kind !== "bot") break;
-        if (!ids.includes(m.speaker.id)) ids.push(m.speaker.id);
-      }
-    } else if (message.speaker.kind === "bot") ids = [message.speaker.id];
-    ids = ids.filter((id) => participants.some((p) => p.id === id));
-    const upto = human ? message.seq + 1 : message.seq;
-    const targets = ids.length ? Promise.resolve(ids) : backend.roomTargets(pane.id, message.text);
-    void targets.then(async (to) => {
-      if (to.length === 0) throw new Error("no one in this thread would answer it");
-      await backend.roomRewind(pane.id, upto);
-      setEntries((list) => {
-        const first = list.findIndex((e) => e.kind === "message" && e.message.seq >= upto);
+  const revertIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+  /** The Retry or Revert waiting on its confirmation. */
+  const [goingBack, setGoingBack] = useState<{ kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[] } | null>(null);
+  /** Retry on a bot's reply, Revert on your message: delete from there, put this thread's files back. */
+  const goBack = (message: Message) => {
+    if (busy) return notify("Stop the bots first.", "error");
+    const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
+    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${names.get(bot ?? "") ?? bot} isn't in this thread any more, so it can't answer again.`, "error");
+    void backend.roomRevertPlan(pane.id, message.seq, bot).then((plan) => {
+      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan) });
+      else runGoBack(kind, message, plan, "both", initialFiles(plan));
+    }).catch((error) => notify(`Could not ${kind}: ${String(error)}`, "error"));
+  };
+  const runGoBack = (kind: GoBack, message: Message, plan: RevertPlan, scope: RevertScope, ticked: string[]) => {
+    setGoingBack(null);
+    const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
+    const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
+    void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+      if (request.chat) setEntries((list) => {
+        const first = list.findIndex((e) => e.kind === "message" && e.message.seq >= message.seq);
         return first < 0 ? list : list.slice(0, first);
       });
-      stuck.current = true;
-      turnQueue.turn(to, null);
-    }).catch((error) => notify(`Could not retry: ${String(error)}`, "error"));
+      const problem = failedLine(failed);
+      if (problem) notify(problem, "error");
+      else if (request.files.length) notify(`Put back ${request.files.length === 1 ? request.files[0] : `${request.files.length} files`}.`, "info");
+      if (kind === "revert" && request.chat) { setText(message.text); input.current?.focus(); }
+      if (kind === "retry" && bot) { stuck.current = true; turnQueue.turn([bot], null); }
+    }).catch((error) => notify(`Could not ${kind}: ${String(error)}`, "error"));
+  };
+  const answerGoBack = (always: boolean) => {
+    if (!goingBack) return;
+    if (always) saveGoBackAlways(goingBack.kind, true);
+    runGoBack(goingBack.kind, goingBack.message, goingBack.plan, goingBack.scope, goingBack.ticked);
+  };
+  /** The Retry/Revert confirmation under a message's actions. */
+  const goBackPop = (message: Message) => {
+    if (!goingBack || goingBack.message.seq !== message.seq) return null;
+    const { kind, plan, scope, ticked } = goingBack;
+    const who = names.get(message.speaker.kind === "bot" ? message.speaker.id : "") ?? "the bot";
+    const showFiles = plan.available && plan.files.length > 0 && !(kind === "revert" && scope === "chat");
+    const toggle = (path: string) => setGoingBack((g) => g && { ...g, ticked: g.ticked.includes(path) ? g.ticked.filter((p) => p !== path) : [...g.ticked, path] });
+    return <div className="steer-pop goback-pop" role="dialog" aria-label={kind === "retry" ? "Retry?" : "Revert?"}
+      onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setGoingBack(null); } }}>
+      <strong>{goBackTitle(kind, plan, who)}</strong>
+      {plan.note && <p>{plan.note}</p>}
+      {kind === "revert" && plan.available && plan.files.length > 0 && <div className="goback-scope" role="radiogroup" aria-label="What goes back">
+        {([["both", "Files and chat"], ["chat", "Chat only"], ["files", "Files only"]] as const).map(([value, label]) =>
+          <label key={value}><input type="radio" name={`goback-${pane.id}`} checked={scope === value} onChange={() => setGoingBack((g) => g && { ...g, scope: value })} />{label}</label>)}
+      </div>}
+      {showFiles && <ul className="goback-files">
+        {plan.files.map((file) => <li key={file.path}>
+          <label title={file.conflict ? "Also changed outside this thread's turns. Untick to keep it as it is now." : undefined}>
+            <input type="checkbox" checked={ticked.includes(file.path)} onChange={() => toggle(file.path)} />
+            <code>{file.path}</code>
+            {file.delete && <em>deleted</em>}
+            {file.conflict && <em className="warn">also changed elsewhere</em>}
+          </label>
+        </li>)}
+      </ul>}
+      {showFiles && plan.skipped.length > 0 && <p>Too big to save, so left as they are: {plan.skipped.join(", ")}</p>}
+      {plan.effects.length > 0 && <p className="goback-effects">Can't be undone: {plan.effects.map((effect, i) => <span key={i}><code>{effect.command}</code> ({names.get(effect.by) ?? effect.by}){i < plan.effects.length - 1 ? ", " : ""}</span>)}</p>}
+      {kind === "revert" && scope !== "files" && <p>Your message goes back in the box, unsent.</p>}
+      <div className="row">
+        <button type="button" className="primary small" autoFocus onClick={() => answerGoBack(false)}>Allow once</button>
+        <button type="button" className="ghost small" onClick={() => answerGoBack(true)}>Allow always</button>
+        <button type="button" className="link" onClick={() => setGoingBack(null)}>Cancel</button>
+      </div>
+    </div>;
   };
   /** Quote, Copy and Fork on a message; one ⋯ menu instead in a pane under 360px wide. */
   const messageActions = (message: Message) => {
     const quote = () => { setReply(quoteFor(message, (id) => names.get(id) ?? id)); input.current?.focus(); };
     const copy = () => copyMessage(message);
     const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
-    const retry = () => retryFrom(message);
+    const goBackKind: GoBack | null = message.speaker.kind === "bot" ? "retry" : message.speaker.kind === "human" ? "revert" : null;
+    const goBackLabel = goBackKind === "retry" ? "Retry" : "Revert to here";
+    const goBackHint = busy ? "Stop the bots first" : goBackKind === "retry" ? "Retry: delete this reply and after, put files back, ask again" : "Revert: delete everything after, put files back, your text returns to the box";
     const copiedHere = copied === message.seq;
     if (foldActions) return <span className="message-actions">
       <span className="pane-menu-wrap message-more">
@@ -1123,10 +1168,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         {messageMenu === message.seq && <span className="pane-menu" role="menu">
           <button role="menuitem" onClick={() => { setMessageMenu(null); quote(); }}>Quote</button>
           <button role="menuitem" onClick={() => { setMessageMenu(null); copy(); }}>Copy</button>
-          <button role="menuitem" disabled={busy} onClick={() => { setMessageMenu(null); retry(); }}>Retry from here</button>
+          {goBackKind && <button role="menuitem" disabled={busy} onClick={() => { setMessageMenu(null); goBack(message); }}>{goBackLabel}</button>}
           {onFork && <button role="menuitem" onClick={() => { setMessageMenu(null); fork(); }}>Fork from here</button>}
         </span>}
       </span>
+      {goBackPop(message)}
     </span>;
     return <span className="message-actions">
       <button type="button" className="msg-action quote" title="Quote" onClick={quote}
@@ -1136,8 +1182,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       <button type="button" className="msg-action copy" title="Copy" aria-label={copiedHere ? "Copied" : "Copy message"} onClick={copy}>
         {copiedHere ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}
       </button>
-      <button type="button" className="msg-action retry" disabled={busy} aria-label="Retry from here" title={busy ? "Stop the bots before retrying" : "Retry from here (deletes everything after)"} onClick={retry}>{retryIcon}</button>
+      {goBackKind && <button type="button" className={`msg-action ${goBackKind}`} disabled={busy} aria-label={goBackLabel} title={goBackHint} onClick={() => goBack(message)}>{goBackKind === "retry" ? retryIcon : revertIcon}</button>}
       {onFork && <button type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>}
+      {goBackPop(message)}
     </span>;
   };
   /** Save the thread to Downloads as Markdown or JSON, then show the file. */

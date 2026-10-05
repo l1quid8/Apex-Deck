@@ -73,6 +73,10 @@ export interface ChangeRecord {
   seq: number;
 }
 export interface DiffFile { path: string; added: number; removed: number; patch: string; by: string[] }
+export interface RevertFile { path: string; delete: boolean; conflict: boolean }
+export interface SideEffect { seq: number; by: string; command: string }
+/** What going back to a message would do to the folder. */
+export interface RevertPlan { available: boolean; note: string | null; files: RevertFile[]; skipped: string[]; effects: SideEffect[] }
 export interface ThreadDiff { files: DiffFile[]; note: string | null }
 export interface RoomSnapshot {
   changes?: ChangeRecord[];

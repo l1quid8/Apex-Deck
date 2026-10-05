@@ -99,6 +99,17 @@ fn reported(records: &[ChangeRecord], note: &str) -> ThreadDiff {
     ThreadDiff { files, note: Some(note.to_string()) }
 }
 
+pub fn thread_diff_note(records: &[ChangeRecord], note: &str) -> ThreadDiff { reported(records, note) }
+
+/// The diff panel from a patch made in Deck's own snapshot store.
+pub fn from_patch(cwd: &Path, patch: &str, records: &[ChangeRecord]) -> ThreadDiff {
+    let files = split_patch(patch).into_iter().map(|(path, patch)| {
+        let counted = FileChange::new(path.clone(), patch.clone());
+        DiffFile { by: who_changed(cwd, &path, records), added: counted.added, removed: counted.removed, path, patch }
+    }).collect();
+    ThreadDiff { files, note: None }
+}
+
 pub fn thread_diff(cwd: &Path, baseline: Option<&str>, records: &[ChangeRecord]) -> ThreadDiff {
     if git(cwd, None, &["rev-parse", "--is-inside-work-tree"]).is_err() {
         return reported(records, "This folder isn't a git repository, so this lists only the edits the models reported. Files changed by commands aren't included.");
