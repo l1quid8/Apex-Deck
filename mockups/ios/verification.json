@@ -1,0 +1,9 @@
+{
+  "screens": 20,
+  "screenshots": 43,
+  "consoleErrors": [],
+  "axeViolations": [],
+  "undersizedPhoneTargets": [],
+  "horizontalOverflows": [],
+  "flows": "QR pairing, SSH key + fingerprint, mention + attach + send, approval once + deny, modal Escape, browser control, terminal toolbar, unpair"
+}
