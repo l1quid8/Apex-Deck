@@ -388,3 +388,30 @@ pub fn added_texts(frames: &[Value], room: &str) -> Vec<String> {
         .filter_map(|f| f["payload"]["event"]["message"]["text"].as_str().map(str::to_string))
         .collect()
 }
+
+/// Whether `pid` is still a live process (a zombie waiting to be reaped is not).
+pub fn alive(pid: &str) -> bool {
+    let out = Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
+    let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+/// Wait for a file to hold a pid, and return it.
+pub fn read_pid(path: &Path) -> String {
+    let start = Instant::now();
+    loop {
+        if let Some(pid) = std::fs::read_to_string(path).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+            return pid;
+        }
+        assert!(start.elapsed() < PATIENCE, "nothing wrote {}", path.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+pub fn wait_until_dead(pid: &str) {
+    let start = Instant::now();
+    while alive(pid) {
+        assert!(start.elapsed() < Duration::from_secs(5), "process {pid} is still running");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

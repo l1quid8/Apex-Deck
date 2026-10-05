@@ -13,7 +13,7 @@ use tokio::net::{TcpListener, UnixListener, UnixStream};
 
 use crate::cli::ServeOptions;
 use crate::protocol::{self, Daemon, Trust, PROTOCOL};
-use crate::{files, identity, paths, websocket};
+use crate::{files, identity, paths, signals, websocket};
 
 /// The local socket, inside the data folder.
 pub const SOCKET: &str = "daemon.sock";
@@ -34,7 +34,10 @@ pub fn run(data_dir: Option<PathBuf>, options: ServeOptions) -> Result<(), Strin
     let lock = DataLock::acquire(&paths.data, &format!("apex-daemon serve (pid {})", std::process::id()))
         .map_err(|e| format!("{}: {e}", paths.data.display()))?;
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
-    runtime.block_on(serve(paths, socket, options, lock))
+    let result = runtime.block_on(serve(paths, socket, options, lock));
+    // Sessions of clients still connected end with the runtime.
+    runtime.shutdown_background();
+    result
 }
 
 /// Where the socket goes, if its path is short enough to bind.
@@ -53,6 +56,8 @@ fn private_folder(data: &Path) -> Result<(), String> {
 }
 
 async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: DataLock) -> Result<(), String> {
+    let stop = signals::stop_requested()?;
+    tokio::pin!(stop);
     let host = Host::new(paths.clone(), tokio::runtime::Handle::current());
     let token = identity::random_hex(32);
     files::write_private(&paths.data.join("daemon-token"), &format!("{token}\n"))?;
@@ -69,11 +74,13 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
         "pid": std::process::id(), "port": port, "bind": options.bind.to_string(), "socket": socket.to_string_lossy(),
         "protocol": PROTOCOL, "host_id": daemon.host_id, "boot_id": daemon.boot_id,
     });
-    files::write_private(&paths.data.join("daemon.json"), &info.to_string())?;
+    let info_path = paths.data.join("daemon.json");
+    files::write_private(&info_path, &info.to_string())?;
     eprintln!("apex-daemon: listening on ws://{}:{port} and {}", options.bind, socket.display());
 
     loop {
         tokio::select! {
+            _ = &mut stop => break,
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => { tokio::spawn(websocket::serve(Arc::clone(&daemon), stream)); }
                 Err(e) => eprintln!("apex-daemon: could not accept a WebSocket connection: {e}"),
@@ -84,6 +91,12 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
             },
         }
     }
+    eprintln!("apex-daemon: stopping");
+    drop((listener, local));
+    let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(&info_path);
+    daemon.host.wind_down(signals::WIND_DOWN).await;
+    Ok(())
 }
 
 /// A connection on the local socket: the same trust as stdio, for this user only.

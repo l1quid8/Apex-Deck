@@ -114,3 +114,60 @@ fn a_chat_a_terminal_an_approval_and_a_restart() {
 
     let _ = std::fs::remove_dir_all(&data);
 }
+
+/// Whether `pid` is still a live process (a zombie waiting to be reaped is not).
+fn alive(pid: &str) -> bool {
+    let out = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
+    let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+#[test]
+fn winding_down_stops_running_agents_and_keeps_their_chat() {
+    let data = std::env::temp_dir().join(format!("apex-host-wind-down-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let pid_file = data.join("agent.pid");
+    let options = serde_json::to_value(RoomOptions::default()).unwrap();
+    let slow = serde_json::to_value(ParticipantConfig {
+        id: ParticipantId::new("slow"),
+        display_name: "slow".into(),
+        backend: Backend::Cli { program: "sh".into(), args: vec!["-c".into(), format!("echo $$ > {}; exec sleep 30", pid_file.display())] },
+        persona: String::new(),
+        access: Default::default(),
+        effort: None,
+        appearance: None,
+    })
+    .unwrap();
+
+    let first = Running::start(&data);
+    first.call(json!({ "cmd": "room_create", "args": { "id": "t1", "participants": [slow], "options": options, "cwd": null } })).unwrap();
+    let host = Arc::clone(&first.host);
+    first.runtime.spawn(async move { host.room_post("t1".into(), "@slow go".into()).await });
+    let start = Instant::now();
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&pid_file).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+            break pid;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "the agent never started");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(alive(&pid));
+
+    let start = Instant::now();
+    first.runtime.block_on(first.host.wind_down(Duration::from_secs(10)));
+    assert!(start.elapsed() < Duration::from_secs(5), "stopping doesn't wait for the agent to finish");
+    let start = Instant::now();
+    while alive(&pid) {
+        assert!(start.elapsed() < Duration::from_secs(5), "the agent's process {pid} is still running");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(first);
+
+    let second = Running::start(&data);
+    let restored = second.call(json!({ "cmd": "room_create", "args": { "id": "t1", "participants": [], "options": options, "cwd": null } })).unwrap();
+    let texts: Vec<&str> = restored["transcript"].as_array().unwrap().iter().filter_map(|m| m["text"].as_str()).collect();
+    assert_eq!(texts.first(), Some(&"@slow go"));
+    second.host.shutdown();
+    let _ = std::fs::remove_dir_all(&data);
+}

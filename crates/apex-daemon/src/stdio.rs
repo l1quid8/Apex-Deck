@@ -13,7 +13,7 @@ use apex_host::{Host, HostPaths};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{self, Daemon, Trust};
-use crate::{identity, paths, serve};
+use crate::{identity, paths, serve, signals};
 
 pub fn run(data_dir: Option<PathBuf>, attach: bool) -> Result<(), String> {
     let paths = paths::host_paths(data_dir)?;
@@ -81,12 +81,16 @@ fn relay(daemon: std::os::unix::net::UnixStream, stdin: File, stdout: File) -> R
 fn run_in_process(paths: HostPaths, _lock: DataLock, stdin: File, stdout: File) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     runtime.block_on(async {
+        let stop = signals::stop_requested()?;
         let host = Host::new(paths.clone(), tokio::runtime::Handle::current());
         let daemon = Arc::new(Daemon { host: Arc::clone(&host), host_id: identity::host_id(&paths.data)?, boot_id: identity::boot_id(), token: None });
         eprintln!("apex-daemon: running the host in this process; its work stops when this connection closes");
         let (input, output) = protocol::lines(tokio::fs::File::from_std(stdin), tokio::fs::File::from_std(stdout));
-        protocol::serve(daemon, Trust::Local, input, output).await;
-        host.shutdown();
+        tokio::select! {
+            _ = protocol::serve(daemon, Trust::Local, input, output) => {}
+            _ = stop => {}
+        }
+        host.wind_down(signals::WIND_DOWN).await;
         Ok::<(), String>(())
     })?;
     runtime.shutdown_background();

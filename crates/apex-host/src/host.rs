@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use apex_adapters::BuildContext;
@@ -51,6 +51,24 @@ pub struct Host {
     tool_servers: Mutex<HashMap<String, Vec<apex_core::server_request::ToolServer>>>,
     ptys: PtyManager,
     rooms: Mutex<HashMap<String, RoomHandle>>,
+    /// Turn chains running now, counted until they have saved.
+    chains: AtomicUsize,
+}
+
+/// Counts one running chain for as long as it lives.
+struct Chain<'a>(&'a AtomicUsize);
+
+impl<'a> Chain<'a> {
+    fn start(count: &'a AtomicUsize) -> Chain<'a> {
+        count.fetch_add(1, Ordering::SeqCst);
+        Chain(count)
+    }
+}
+
+impl Drop for Chain<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Host {
@@ -72,6 +90,7 @@ impl Host {
             tool_servers: Mutex::default(),
             ptys: PtyManager::default(),
             rooms: Mutex::default(),
+            chains: AtomicUsize::new(0),
         })
     }
 
@@ -311,6 +330,7 @@ impl Host {
     }
 
     async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
+        let _chain = Chain::start(&self.chains);
         let error = Mutex::new(None);
         handle.runtime.run(batch, &self.turn_sink(id, handle, &error)).await;
         checkpoint_room(handle, &self.store, id).await?;
@@ -889,6 +909,20 @@ impl Host {
     /// End every terminal. Called on the way out.
     pub fn shutdown(&self) {
         self.ptys.kill_all();
+    }
+
+    /// Stop every running turn as the stop button does, wait up to `limit`
+    /// for the chains to end and save, then end every terminal.
+    pub async fn wind_down(&self, limit: std::time::Duration) {
+        let open: Vec<String> = self.rooms.lock().unwrap().keys().cloned().collect();
+        for id in open {
+            self.room_stop(id, None);
+        }
+        let deadline = tokio::time::Instant::now() + limit;
+        while self.chains.load(Ordering::SeqCst) > 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        self.shutdown();
     }
 }
 

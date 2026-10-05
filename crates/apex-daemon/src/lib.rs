@@ -7,5 +7,6 @@ pub mod identity;
 pub mod paths;
 pub mod protocol;
 pub mod serve;
+pub mod signals;
 pub mod stdio;
 pub mod websocket;
