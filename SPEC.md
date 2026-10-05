@@ -148,9 +148,11 @@ Design: `docs/superpowers/specs/2026-10-05-remote-and-electron.md`.
 | Feature | State |
 |---|---|
 | Embedded Chromium browser that agents drive over CDP (Electron spike in `spikes/electron-browser/`) | proven by spike |
-| Rust host logic moved out of `src-tauri` into an `apex-host` crate; session and settings owned by Rust | next |
-| `apex-daemon` daemon: WebSocket listener and `--stdio` mode, one JSON protocol with event sequence numbers and replay | next |
-| Electron desktop shell: React UI unchanged, talks to `apex-daemon`, browser pane as a `WebContentsView` | later |
+| Rust host logic moved out of `src-tauri` into an `apex-host` crate; session and settings owned by Rust | built (phase 1) |
+| `apex-daemon` daemon: WebSocket listener and `--stdio` mode, one JSON protocol with event sequence numbers and replay; systemd unit for Ubuntu | built (phase 2) |
+| Electron desktop shell on `apex-daemon`: the React UI as it was, the daemon as a sidecar, hosts over SSH, a real Chromium browser docked in the Preview pane (`docs/desktop.md`) | built (phase 3) |
+| Agents drive the docked browser over CDP, through a Deck MCP server that reaches it through the daemon, with approvals | next (phase 3b) |
+| Remove `src-tauri` once the Electron app has been used for real | next |
 | QR pairing, device keys, Settings → Devices, per-device permissions | later |
 | Phone app: SSH transport, iroh transport across NAT, mobile layout | later |
-| Push notifications for approvals; switching between several hosts | later |
+| Push notifications for approvals; several hosts open at once | later |

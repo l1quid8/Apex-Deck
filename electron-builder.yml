@@ -1,0 +1,26 @@
+# The Electron app: `npm run desktop:package` builds an unsigned
+# `release/mac-*/Apex Deck.app` with apex-daemon inside it.
+appId: dev.apexdeck.app
+productName: Apex Deck
+directories:
+  output: release
+  buildResources: src-tauri/icons
+files:
+  - package.json
+  - desktop/**
+  - dist/**
+  # The UI is bundled into dist/ and main uses only Electron and Node.
+  - "!node_modules/**"
+  # Dev-only launchers; smoke.mjs stays so the packaged app can be smoke-tested.
+  - "!desktop/run-smoke.mjs"
+  - "!desktop/dev.mjs"
+extraResources:
+  - from: target/release/apex-daemon
+    to: bin/apex-daemon
+mac:
+  icon: src-tauri/icons/icon.icns
+  category: public.app-category.developer-tools
+  target: dir
+  # Ad-hoc: unsigned, but Apple silicon runs it. Signing and notarization come later.
+  identity: "-"
+  hardenedRuntime: false

@@ -35,10 +35,15 @@ splits the Rust core into a host that local and remote clients share.
   a snapshot or the events after `seq` from a bounded ring buffer; it only
   resumes when `boot_id` matches the running daemon, since `seq` restarts with
   each boot.
-- **Electron**: main process spawns `apex-daemon --stdio` and relays to the
-  renderer through a preload bridge. `src/backend.ts` gets a transport
-  interface with `TauriTransport` (removed after migration) and `DaemonTransport`.
-  Browser pane fix: set bounds and focus on attach, not only on resize.
+- **Electron** (built in phase 3, `docs/desktop.md`): main starts (or finds)
+  `apex-daemon serve --exit-on-stdin-close` on this Mac and relays protocol
+  lines between the window and its socket, or an `ssh HOST apex-daemon
+  --stdio --attach` child for a saved host. The protocol client is in the
+  renderer (`src/daemon/client.ts`), so the phone app can reuse it.
+  `src/backend.ts` is commands over a `Transport` plus a `Shell`
+  (`commandBackend.ts`), with Tauri and Electron versions of each. The docked
+  browser is one `WebContentsView` per Preview pane, bounds set before it's
+  added (the spike's blank pane), hidden under menus and dialogs.
 
 ## Security
 - Localhost WebSocket requires a token from a 0600 file in the app data dir.
@@ -48,6 +53,18 @@ splits the Rust core into a host that local and remote clients share.
 - SSH relies on the user's existing SSH keys; no listener needed.
 
 ## Decisions taken
+- The local host is an `apex-daemon serve` that Electron starts with
+  `--exit-on-stdin-close`, not an in-process `--stdio`: reloading the window
+  must not stop agents, and a crashed Electron must not leave them running. A
+  daemon already running on the data folder is used and left running.
+- Commands made while disconnected fail at once rather than queue; one in
+  flight when the connection drops fails with words saying it may not have
+  finished.
+- Files the person saves or opens land on the machine with the screen. On a
+  remote host, folders are typed (checked there) rather than picked.
+- The docked browser loads pages on this Mac; a remote host's `localhost`
+  isn't reachable from it yet.
+- Agents driving the docked browser is phase 3b.
 - Concurrent control: host is the source of truth, last write wins, every
   client sees live updates.
 - Phone app framework: decided in phase 5 (Tauri mobile or Capacitor; both
@@ -58,7 +75,8 @@ splits the Rust core into a host that local and remote clients share.
 ## Phases
 1. `apex-host` extraction; Tauri becomes a shim; all tests green, no behaviour change.
 2. `apex-daemon` with stdio + WebSocket, protocol, replay.
-3. Electron shell on the daemon: one chat flow + browser pane, then the rest.
+3. Electron shell on the daemon: the whole UI, hosts over SSH, the docked browser (built).
+   3b. Agents drive the docked browser over CDP, with approvals.
 4. Device keys, QR pairing, Settings → Devices, permissions.
 5. Phone app: SSH and iroh transports, mobile layout.
 6. Push notifications, multiple hosts.

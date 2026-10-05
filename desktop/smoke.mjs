@@ -126,6 +126,7 @@ export async function runSmoke(win, { sidecar, browser }) {
       await page(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`);
       await until('the view to come back', () => browser.inspect('smoke-preview').shown, 5_000);
 
+
       // A page that tries to take over the window or reach the bridge gets nowhere.
       await page(`await __deck.backend.browser.navigate('smoke-preview', ${JSON.stringify(`${site.url}/evil`)}); return true;`);
       await until('the hostile page', () => {
@@ -240,7 +241,7 @@ async function runRemoteSmoke(win) {
     await until('the reply', () => page(`return __smoke.events.some((e) => e.event.type === 'message_added' && e.event.message.text === 'hello over ssh')`));
   });
 
-  await step('a connection that goes quiet mid-reply comes back with the reply, once', async () => {
+  if (env.APEX_DECK_SMOKE_PAUSE) await step('a connection that goes quiet mid-reply comes back with the reply, once', async () => {
     await page(`
       await __deck.backend.roomAddParticipant(${JSON.stringify(room)}, ${JSON.stringify(shell('slow', 'sleep 20; echo after the pause'))});
       void __deck.backend.roomPost(${JSON.stringify(room)}, '@slow go').catch(() => {});
@@ -259,7 +260,7 @@ async function runRemoteSmoke(win) {
     if (count !== 1) throw new Error(`the reply arrived ${count} times`);
   });
 
-  await step('a stopped daemon is named in the banner', async () => {
+  if (env.APEX_DECK_SMOKE_STOP) await step('a stopped daemon is named in the banner', async () => {
     run(env.APEX_DECK_SMOKE_STOP);
     try {
       const shown = await until('the daemon\'s words', async () => /apex-daemon/.test(await banner()) && banner(), 60_000);
@@ -302,5 +303,6 @@ async function runAgain(win, sidecar) {
   const cookies = await session.fromPartition(PARTITION).cookies.get({ domain: '127.0.0.1', name: 'deck_login' });
   if (cookies.length !== 1 || cookies[0].value !== 'kept') throw new Error(`the docked browser's cookie is gone (${JSON.stringify(cookies)})`);
   console.log('smoke: ok — a cookie set in the docked browser survives a restart of the app');
+
   return quit(win, sidecar);
 }

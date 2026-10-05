@@ -7,11 +7,15 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import electron from 'electron';
 
-// With --ssh DEST the window runs on that host instead; --ssh-config FILE
+// With --packaged it runs the built .app. With --ssh DEST the window runs on that host instead; --ssh-config FILE
 // makes ssh read FILE; --pause, --resume, --stop and --start are shell
 // commands that do that to the server, for the remote checks.
 const { values: options } = parseArgs({
-  options: Object.fromEntries(['ssh', 'ssh-config', 'pause', 'resume', 'stop', 'start'].map((name) => [name, { type: 'string' }])),
+  options: {
+    ...Object.fromEntries(['ssh', 'ssh-config', 'pause', 'resume', 'stop', 'start'].map((name) => [name, { type: 'string' }])),
+    // Run the app built by `npm run desktop:package` instead of `electron .`.
+    packaged: { type: 'boolean' },
+  },
 });
 
 const data = fs.mkdtempSync('/tmp/ads-');
@@ -35,7 +39,10 @@ if (options.ssh) {
     env.PATH = `${bin}:${env.PATH}`;
   }
 }
-let app = spawn(electron, ['.'], { stdio: 'inherit', env });
+const [program, args] = options.packaged
+  ? [path.resolve(`release/mac-${process.arch}/Apex Deck.app/Contents/MacOS/Apex Deck`), []]
+  : [electron, ['.']];
+let app = spawn(program, args, { stdio: 'inherit', env });
 /** The second launch, on this Mac: what the first left behind is still there. */
 let again = !options.ssh;
 // The last check quits the app; one that never exits has failed.
@@ -48,7 +55,7 @@ function finished(code, signal) {
     again = false;
     console.log('smoke: ok — quitting exits 0 and the daemon the app started is gone');
     fs.rmSync(`${data}-desktop/sidecar.pid`, { force: true });
-    app = spawn(electron, ['.'], { stdio: 'inherit', env: { ...env, APEX_DECK_SMOKE_PHASE: 'again' } });
+    app = spawn(program, args, { stdio: 'inherit', env: { ...env, APEX_DECK_SMOKE_PHASE: 'again' } });
     app.on('exit', finished);
     return;
   }

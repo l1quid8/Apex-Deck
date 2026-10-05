@@ -235,6 +235,20 @@ and native backend. Move it to Applications and launch it normally; Node.js,
 a development server and an open terminal are not needed to run the packaged app.
 Coding agents still use the command-line tools installed and signed in on your Mac.
 
+### The Electron app
+
+The desktop app is moving to Electron, which runs everything in
+`apex-daemon` and docks a real Chromium browser in the Preview pane. It can
+also run on another machine's daemon over SSH. See [docs/desktop.md](docs/desktop.md).
+
+```sh
+npx install-electron
+npm run desktop:dev        # or: npm run desktop:package for Apex Deck.app
+```
+
+The Tauri app and the Electron app share their saved data and can't be open
+at the same time.
+
 To work on the interface alone, `npm run dev` opens it in a browser with a
 stand-in backend. Terminals only echo and chat replies are canned in that
 mode; a badge in the title bar says so.
@@ -465,9 +479,11 @@ mark is available without adding a new tray feature.
 ## Tests
 
 ```sh
-cargo test --workspace   # room logic, adapters, terminals
-npm test                 # provider preference behavior (Node.js 22.6+)
+cargo test --workspace   # room logic, adapters, terminals, the daemon
+npm test                 # the interface's logic and the Electron shell's (Node.js 22.6+)
 npm run build            # type-check and bundle the interface
+npm run test:e2e         # the protocol client against a real apex-daemon
+npm run desktop:smoke    # the Electron app, driven end to end
 ```
 
 The adapter tests run against a local mock server and small shell commands,

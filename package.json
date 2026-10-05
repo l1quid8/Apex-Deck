@@ -12,7 +12,8 @@
     "test:e2e": "cargo build -p apex-daemon && node --experimental-strip-types --test tests/e2e/*.e2e.mjs",
     "desktop": "cargo build -p apex-daemon && vite build && electron .",
     "desktop:dev": "cargo build -p apex-daemon && node desktop/dev.mjs",
-    "desktop:smoke": "cargo build -p apex-daemon && vite build && node desktop/run-smoke.mjs"
+    "desktop:smoke": "cargo build -p apex-daemon && vite build && node desktop/run-smoke.mjs",
+    "desktop:package": "cargo build --release -p apex-daemon && vite build && electron-builder --mac --dir"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
@@ -29,6 +30,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.2"
   },
