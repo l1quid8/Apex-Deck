@@ -25,6 +25,8 @@ import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withAppro
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { SidebarHandle } from "./SidebarHandle";
+import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
 import { workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, quitQuestion, removeCounts, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
@@ -135,6 +137,10 @@ export function App() {
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
   const [detailsSlot, setDetailsSlot] = useState<HTMLElement | null>(null);
   const [availableWidth, setAvailableWidth] = useState(0);
+  /** Sidebar widths the user dragged to; null keeps the default. */
+  const [sidebarWidths, setSidebarWidths] = useState<SidebarWidths>(loadWidths);
+  const setSidebarWidth = (which: Sidebar) => (width: number | null) => setSidebarWidths((old) => ({ ...old, [which]: width }));
+  useEffect(() => saveWidths(sidebarWidths), [sidebarWidths]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLElement>(null);
   const detailsToggle = useRef<HTMLButtonElement>(null);
@@ -142,7 +148,8 @@ export function App() {
   /** Whether a thread is on screen for the sidebar; read by the Escape handler. */
   const detailsTargetRef = useRef<string | null>(null);
   const pendingSection = useRef<DetailsSection | undefined>(undefined);
-  const overlayDetails = detailsOverlay(availableWidth);
+  const detailsWidth = sidebarWidths.details ?? SIDEBAR_DEFAULT.details;
+  const overlayDetails = detailsOverlay(availableWidth, detailsWidth);
   const closeDetails = () => { setDetailsOpen(false); detailsToggle.current?.focus(); };
   const showDetails = (target?: DetailsSection) => {
     pendingSection.current = target;
@@ -892,7 +899,7 @@ export function App() {
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       <div className="body" ref={bodyRef}>
         {railOpen && (
-          <aside className="rail">
+          <aside className="rail" style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}>
             <div className="rail-head">
               <span>Workspaces</span>
               <button className="icon" onClick={addWorkspace} aria-label="Add workspace" title="Add a folder">
@@ -965,6 +972,15 @@ export function App() {
               </div>
             )}
           </aside>
+        )}
+        {railOpen && (
+          <SidebarHandle
+            which="rail"
+            width={sidebarWidths.rail}
+            measure={() => bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? SIDEBAR_DEFAULT.rail}
+            onChange={setSidebarWidth("rail")}
+            onActive={setResizing}
+          />
         )}
 
         <main ref={canvasRef} className={`canvas section-${section}`}>
@@ -1065,7 +1081,16 @@ export function App() {
         </main>
         {section === "threads" && detailsOpen && detailsTarget && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close thread details overlay" onClick={closeDetails} />}
-          <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} aria-label="Thread details">
+          <SidebarHandle
+            which="details"
+            width={sidebarWidths.details}
+            measure={() => detailsSlot?.getBoundingClientRect().width ?? detailsWidth}
+            onChange={setSidebarWidth("details")}
+            onActive={setResizing}
+            className={overlayDetails ? "overlay" : ""}
+            style={overlayDetails ? { right: `min(${detailsWidth}px, 100%)` } : undefined}
+          />
+          <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100%)` : detailsWidth }} aria-label="Thread details">
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}

@@ -2278,3 +2278,12 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .artifacts-kind { width: 30px; height: 30px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
 .artifacts-row { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .thread-counts .on { border-color: var(--accent); color: var(--text); }
+
+/* The draggable inner edge of each sidebar. It overlaps the border by a few
+   pixels each side, so it is easy to grab without taking any room. */
+.sidebar-handle { flex: none; position: relative; z-index: 6; width: 7px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
+.sidebar-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 3px; transform: translateX(-50%); border-radius: 2px; background: var(--accent); opacity: 0; transition: opacity 0.12s; }
+.sidebar-handle:hover::after, .sidebar-handle:focus-visible::after { opacity: 0.45; }
+.sidebar-handle.held::after { opacity: 0.9; }
+.sidebar-handle:focus-visible { outline: none; }
+.sidebar-handle.overlay { position: absolute; top: 0; bottom: 0; z-index: 31; margin: 0; transform: translateX(50%); }
