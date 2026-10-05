@@ -1,0 +1,18 @@
+[package]
+name = "apex-daemon"
+description = "Apex Deck without a window: runs the host and lets the desktop app, a phone or an SSH session drive it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "apex-daemon"
+path = "src/main.rs"
+
+[dependencies]
+apex-adapters = { path = "../apex-adapters" }
+apex-host = { path = "../apex-host" }
+dirs = "7"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["signal", "io-std", "fs"] }

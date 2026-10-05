@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "src-tauri"]
+members = ["crates/apex-core", "crates/apex-adapters", "crates/apex-host", "crates/apex-daemon", "src-tauri"]
 
 [workspace.package]
 version = "0.4.0"

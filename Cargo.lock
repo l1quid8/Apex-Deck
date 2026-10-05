@@ -71,6 +71,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-daemon"
+version = "0.4.0"
+dependencies = [
+ "apex-adapters",
+ "apex-host",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "apex-deck"
 version = "0.4.0"
 dependencies = [
