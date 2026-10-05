@@ -23,7 +23,6 @@ export interface Trigger {
 export const COMMANDS: Extract<MenuItem, { kind: "command" }>[] = [
   { kind: "command", key: "compact", label: "/compact", detail: "Summarize earlier turns and free up context", command: { name: "compact" } },
   { kind: "command", key: "clear", label: "/clear", detail: "Empty the chat; keep the models", command: { name: "clear" } },
-  { kind: "command", key: "pin", label: "/pin", detail: "Keep a fact in every model's context", command: null },
   { kind: "command", key: "diff", label: "/diff", detail: "Show what changed in the folder", command: { name: "diff" } },
   { kind: "command", key: "fork", label: "/fork", detail: "Copy this chat into a new thread", command: { name: "fork", title: "" } },
   { kind: "command", key: "export", label: "/export", detail: "Save the chat as Markdown", command: { name: "export", format: "markdown" } },

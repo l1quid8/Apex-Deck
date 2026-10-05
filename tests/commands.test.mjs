@@ -5,8 +5,8 @@ import { parseComposer, postable } from '../src/commands.ts';
 test('known commands parse with their arguments', () => {
   assert.deepEqual(parseComposer('/clear'), { command: { name: 'clear' } });
   assert.deepEqual(parseComposer('/compact'), { command: { name: 'compact' } });
-  assert.deepEqual(parseComposer('/pin  we are on Tauri 2 '), { command: { name: 'pin', fact: 'we are on Tauri 2' } });
-  assert.deepEqual(parseComposer('/pin'), { command: { name: 'pin', fact: '' } });
+  assert.deepEqual(parseComposer('/pin  we are on Tauri 2 '), { command: { name: 'unknown', typed: '/pin' } });
+  assert.deepEqual(parseComposer('/pin'), { command: { name: 'unknown', typed: '/pin' } });
   assert.deepEqual(parseComposer('/fork Try SQLite'), { command: { name: 'fork', title: 'Try SQLite' } });
   assert.deepEqual(parseComposer('/fork'), { command: { name: 'fork', title: '' } });
   assert.deepEqual(parseComposer('/export'), { command: { name: 'export', format: 'markdown' } });
@@ -15,8 +15,8 @@ test('known commands parse with their arguments', () => {
   assert.deepEqual(parseComposer('/DIFF'), { command: { name: 'diff' } });
 });
 
-test('multiline pins keep their lines', () => {
-  assert.deepEqual(parseComposer('/pin line one\nline two'), { command: { name: 'pin', fact: 'line one\nline two' } });
+test('removed pin command is rejected even with multiline arguments', () => {
+  assert.deepEqual(parseComposer('/pin line one\nline two'), { command: { name: 'unknown', typed: '/pin' } });
 });
 
 test('unknown commands and bad arguments are flagged, not sent', () => {

@@ -1,3 +1,5 @@
+import { actionChevron } from "./messageActions";
+import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { ReplyPolicyPicker, REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
@@ -38,7 +40,7 @@ import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatc
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
-import { foldsMessageActions, handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
+import { handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, hasMention, recipientLine, showsRecipientLine } from "./recipients";
@@ -497,8 +499,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const root = useRef<HTMLDivElement>(null);
   /** False in a pane under 260px tall, where the recipient line is hidden. */
   const [lineFits, setLineFits] = useState(true);
-  /** True in a pane under 360px wide, where message actions fold into one ⋯. */
-  const [foldActions, setFoldActions] = useState(false);
   useEffect(() => {
     const paneBox = root.current?.closest<HTMLElement>(".pane");
     if (!paneBox) return;
@@ -506,7 +506,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       // A hidden pane measures nothing; keep what it had.
       if (paneBox.offsetWidth === 0 && paneBox.offsetHeight === 0) return;
       setLineFits(showsRecipientLine(paneBox.offsetHeight));
-      setFoldActions(foldsMessageActions(paneBox.offsetWidth));
     });
     observer.observe(paneBox);
     return () => observer.disconnect();
@@ -933,6 +932,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       .roomClear(pane.id)
       .then(() => {
         setEntries([]);
+        setPins(pinsAfterClear);
         setDividerAt(null);
         // Messages count from 0 again; nothing in the cleared thread is new.
         lastSeenRef.current = -1;
@@ -1035,11 +1035,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       })
       .catch((error) => notify(`Could not copy: ${String(error)}`, "error"));
   };
-  /** The message whose ⋯ menu is open, by seq. */
+  /** The message whose action controls are expanded, by seq. */
   const [messageMenu, setMessageMenu] = useState<number | null>(null);
   useEffect(() => {
     if (messageMenu === null) return;
-    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".message-more")) setMessageMenu(null); };
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".message-actions")) setMessageMenu(null); };
     const key = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
@@ -1100,6 +1100,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+      if (request.chat) setPins(list => list.filter(pin => { const seq = pinSource(pin); return seq === null || seq < message.seq; }));
       if (request.chat) setEntries((list) => {
         const first = list.findIndex((e) => e.kind === "message" && e.message.seq >= message.seq);
         return first < 0 ? list : list.slice(0, first);
@@ -1151,7 +1152,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </div>
     </div>;
   };
-  /** Quote, Copy and Fork on a message; one ⋯ menu instead in a pane under 360px wide. */
+  /** Directional disclosure for message actions; a menu in narrow panes. */
   const messageActions = (message: Message) => {
     const quote = () => { setReply(quoteFor(message, (id) => names.get(id) ?? id)); input.current?.focus(); };
     const copy = () => copyMessage(message);
@@ -1160,21 +1161,31 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const goBackLabel = goBackKind === "retry" ? "Retry" : "Revert to here";
     const goBackHint = busy ? "Stop the bots first" : goBackKind === "retry" ? "Retry: delete this reply and after, put files back, ask again" : "Revert: delete everything after, put files back, your text returns to the box";
     const copiedHere = copied === message.seq;
-    if (foldActions) return <span className="message-actions">
-      <span className="pane-menu-wrap message-more">
-        <button type="button" className="msg-more" data-message-more={message.seq} aria-label="Message actions" aria-haspopup="menu" aria-expanded={messageMenu === message.seq} onClick={() => setMessageMenu((open) => (open === message.seq ? null : message.seq))}>
-          {copiedHere ? <span className="copied">Copied</span> : "⋯"}
-        </button>
-        {messageMenu === message.seq && <span className="pane-menu" role="menu">
-          <button role="menuitem" onClick={() => { setMessageMenu(null); quote(); }}>Quote</button>
-          <button role="menuitem" onClick={() => { setMessageMenu(null); copy(); }}>Copy</button>
-          {goBackKind && <button role="menuitem" disabled={busy} onClick={() => { setMessageMenu(null); goBack(message); }}>{goBackLabel}</button>}
-          {onFork && <button role="menuitem" onClick={() => { setMessageMenu(null); fork(); }}>Fork from here</button>}
-        </span>}
-      </span>
-      {goBackPop(message)}
-    </span>;
-    return <span className="message-actions">
+    const pinIndex = pins.findIndex(pin => pinSource(pin) === message.seq);
+    const pinned = pinIndex >= 0;
+    const canPin = message.speaker.kind === "bot" || message.speaker.kind === "human";
+    const pinTarget = message.speaker.kind === "human" ? "your message" : "response";
+    const pinLabel = `${pinned ? "Unpin" : "Pin"} ${pinTarget}`;
+    const togglePin = () => {
+      if (unpinPending.current) return;
+      if (pinned) return removePin(pinIndex);
+      unpinPending.current = true; setUnpinning(true);
+      void backend.roomPin(pane.id, responsePin(message.seq, message.text)).then(setPins)
+        .catch(error => notify(`Could not pin: ${String(error)}`, "error"))
+        .finally(() => { unpinPending.current = false; setUnpinning(false); });
+    };
+    const expanded = messageMenu === message.seq;
+    const disclosure = <button type="button" className="msg-action action-disclosure" data-message-more={message.seq}
+      title={expanded ? "Hide message actions" : "Show message actions"}
+      aria-label={expanded ? "Hide message actions" : "Show message actions"} aria-expanded={expanded}
+      onClick={() => setMessageMenu(open => open === message.seq ? null : message.seq)}>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d={actionChevron(message.speaker.kind, expanded) === "‹" ? "M15 6 9 12l6 6" : "m9 6 6 6-6 6"} />
+      </svg>
+    </button>;
+    return <span className="message-actions collapsed-actions">
+      {message.speaker.kind === "human" && disclosure}
+      <span className="message-primary-actions">
       <button type="button" className="msg-action quote" title="Quote" onClick={quote}
         aria-label={message.speaker.kind === "bot" ? `Quote response from ${names.get(message.speaker.id) ?? message.speaker.id}` : "Quote your message"}>
         <DeckIcon name="reply" size={18} />
@@ -1182,8 +1193,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       <button type="button" className="msg-action copy" title="Copy" aria-label={copiedHere ? "Copied" : "Copy message"} onClick={copy}>
         {copiedHere ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}
       </button>
-      {goBackKind && <button type="button" className={`msg-action ${goBackKind}`} disabled={busy} aria-label={goBackLabel} title={goBackHint} onClick={() => goBack(message)}>{goBackKind === "retry" ? retryIcon : revertIcon}</button>}
-      {onFork && <button type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>}
+      {canPin && <button type="button" className="msg-action pin-action" title={pinLabel} aria-label={pinLabel} aria-pressed={pinned} disabled={unpinning} onClick={togglePin}>
+        <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={pinned ? "currentColor" : "none"}/><path d="M12 16v6" /></svg>
+      </button>}
+      </span>
+      {expanded && <span className="message-action-items">
+        {goBackKind && <button type="button" className={`msg-action ${goBackKind}`} disabled={busy} aria-label={goBackLabel} title={goBackHint} onClick={() => goBack(message)}>{goBackKind === "retry" ? retryIcon : revertIcon}</button>}
+        {onFork && <button type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>}
+      </span>}
+      {message.speaker.kind !== "human" && disclosure}
       {goBackPop(message)}
     </span>;
   };
@@ -1204,15 +1222,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         return clearChat();
       case "compact":
         return compactChat();
-      case "pin":
-        if (unpinPending.current) return notify("Wait for the pending pin change to finish.");
-        if (!command.fact) return notify("Type the fact after /pin, for example: /pin we're on Tauri 2, don't suggest Electron");
-        unpinPending.current = true; setUnpinning(true);
-        setText("");
-        return void backend.roomPin(pane.id, command.fact)
-          .then((next) => { setPins(next); notify(busy ? "Pinned. It applies from the next turn." : "Pinned for every model in this chat."); })
-          .catch((error) => { setText(`/pin ${command.fact}`); notify(`Could not pin: ${String(error)}`, "error"); })
-          .finally(() => { unpinPending.current = false; setUnpinning(false); });
       case "fork":
         setText(""); return void forkAt(command.title || `${pane.title} (fork)`, null);
       case "export":
@@ -1878,11 +1887,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <summary className="pins-label">Pinned <span>({pins.length})</span></summary>
         <div className="pins-list">
         {pins.map((pin, index) => <div className="pin" key={pin}>
-          <span className="pin-text" title={pin}>{pin}</span>
+          {pinSource(pin) !== null ? <button className="pin-text pin-jump" title={pinText(pin)} onClick={() => scroller.current?.querySelector<HTMLElement>(`[data-seq="${pinSource(pin)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>{pinText(pin)}</button> : <span className="pin-text" title={pin}>{pin}</span>}
           <button className="icon small" aria-label={`Unpin ${pin}`} disabled={unpinning} onClick={() => removePin(index)}>×</button>
         </div>)}
         </div>
-      </details> : <p className="muted">No pinned facts. Add one with /pin.</p>);
+      </details> : <p className="muted">No pinned responses. Use the pin icon on a model response.</p>);
   const accessLabel = (access: Access) => access === "read" ? "Read only" : access === "ask" ? "Ask first" : access === "edits" ? "Can edit files" : "Full access";
   /** A small labelled bar for a context or plan reading. */
   const meter = (name: string, level: number | null) => level === null ? null : <span className="bot-meter" title={name === "ctx" ? "Context left" : "Plan left"}>
@@ -2249,8 +2258,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               const draft = text;
               runCommand(item.command);
               setText(trigger ? text.slice(trigger.end) : draft);
-            } else if (item.kind === "command" && !trigger && text.trim()) {
-              runCommand({ name: "pin", fact: text.trim() });
+
             } else {
               const next = insertAt(text, trigger, caret, `${item.label} `);
               setText(next.text); setCaret(next.caret);

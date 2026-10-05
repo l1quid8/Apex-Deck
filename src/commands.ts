@@ -2,7 +2,6 @@
 export type Command =
   | { name: "clear" }
   | { name: "compact" }
-  | { name: "pin"; fact: string }
   | { name: "fork"; title: string }
   | { name: "export"; format: "markdown" | "json" }
   | { name: "diff" }
@@ -25,8 +24,6 @@ export function parseComposer(body: string): Parsed {
     case "compact":
     case "diff":
       return arg ? { command: { name: "unknown", typed: body } } : { command: { name } as Command };
-    case "pin":
-      return { command: { name: "pin", fact: arg } };
     case "fork":
       return { command: { name: "fork", title: arg } };
     case "export":

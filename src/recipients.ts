@@ -83,7 +83,7 @@ export function recipientLine(input: RecipientInput): RecipientLine | null {
 /** Starter rows for an empty room, built from a real handle. Clicking one puts `text` in the composer; it is never sent for you. */
 export function exampleRows(ids: string[]): { label: string; text: string }[] {
   if (ids.length === 0) return [];
-  return ["@all what would you change first?", `@${handleFor(ids[0])} review the last commit`, "/pin Use pnpm, not npm"]
+  return ["@all what would you change first?", `@${handleFor(ids[0])} review the last commit`, "/export markdown"]
     .map((text) => ({ label: `e.g. ${text}`, text }));
 }
 

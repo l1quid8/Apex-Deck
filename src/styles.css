@@ -2327,3 +2327,13 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .goback-files em { font-style: normal; font-size: 11px; color: var(--muted); flex: none; }
 .goback-files em.warn { color: var(--danger); }
 .goback-effects code { color: var(--text); }
+
+.msg-action.pin-action[aria-pressed="true"] { color: var(--accent); }
+.pin-jump { border: 0; background: transparent; color: inherit; padding: 0; cursor: pointer; text-align: left; max-height: 4.5em; overflow: hidden; }
+.pin-jump:hover { text-decoration: underline; }
+
+/* A consistent action row, with disclosure last in both message types. */
+.collapsed-actions { min-height: 32px; }
+.message-action-items, .message-primary-actions { display: flex; align-items: center; gap: 2px; }
+.action-disclosure { flex: none; }
+.message-pin-indicator { display: grid; place-items: center; width: 20px; height: 32px; color: var(--accent); }

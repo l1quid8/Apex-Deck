@@ -51,7 +51,7 @@ test("examples use a real handle", () => {
   assert.deepEqual(exampleRows(["Null", "jigga"]), [
     { label: "e.g. @all what would you change first?", text: "@all what would you change first?" },
     { label: "e.g. @null review the last commit", text: "@null review the last commit" },
-    { label: "e.g. /pin Use pnpm, not npm", text: "/pin Use pnpm, not npm" },
+    { label: "e.g. /export markdown", text: "/export markdown" },
   ]);
   assert.deepEqual(exampleRows([]), []);
 });

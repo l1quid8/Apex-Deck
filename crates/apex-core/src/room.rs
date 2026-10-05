@@ -408,6 +408,7 @@ impl Room {
     /// Forget the conversation but keep the participants and settings.
     /// Participants see only the transcript, so this resets their context.
     pub fn clear(&mut self) {
+        self.pins = self.pins.iter().map(|pin| response_pin_parts(pin).map_or_else(|| pin.clone(), |(_, text)| text.to_string())).collect();
         self.transcript.clear();
         self.cursors.clear();
         self.last_targets.clear();
@@ -420,6 +421,7 @@ impl Room {
     /// token totals and Always allow rules stay.
     pub fn rewind(&mut self, upto: usize) {
         if upto >= self.transcript.len() { return; }
+        self.pins.retain(|pin| response_pin_parts(pin).is_none_or(|(seq, _)| seq < upto));
         self.transcript.truncate(upto);
         for seen in self.cursors.values_mut() { *seen = (*seen).min(upto); }
         self.last_targets.clear();
@@ -436,9 +438,9 @@ impl Room {
     pub fn pin(&mut self, fact: &str) -> Result<(), String> {
         let fact = fact.trim();
         if fact.is_empty() {
-            return Err("type the fact after /pin".into());
+            return Err("select a response to pin".into());
         }
-        if fact.chars().count() > MAX_PIN_CHARS {
+        if response_pin_parts(fact).is_none() && fact.chars().count() > MAX_PIN_CHARS {
             return Err(format!("pins can be at most {MAX_PIN_CHARS} characters"));
         }
         if self.pins.iter().any(|p| p == fact) {
@@ -842,4 +844,10 @@ mod approver_tests {
         assert!(matches!(events.as_slice(), [RoomEvent::ApprovalRequested { .. }, RoomEvent::ApprovalResolved { approved: true, .. },
             RoomEvent::AllowedChanged { allowed }, RoomEvent::Activity { .. }] if allowed.len() == 1), "{events:?}");
     }
+}
+
+fn response_pin_parts(pin: &str) -> Option<(usize, &str)> {
+    let rest = pin.strip_prefix("[Pinned response #")?;
+    let (seq, text) = rest.split_once("]\n")?;
+    Some((seq.parse().ok()?, text))
 }

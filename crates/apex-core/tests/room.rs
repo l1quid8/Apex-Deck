@@ -797,3 +797,20 @@ fn rewind_drops_the_message_and_everything_after_but_keeps_pins() {
     room.rewind(5);
     assert_eq!(room.snapshot().transcript.len(), 1);
 }
+
+#[test]
+fn response_pins_keep_their_text_after_clear_without_reusing_the_source() {
+    let a = bot("a", &["fresh"]);
+    let mut r = room(&[&a], TurnPolicy::Everyone, 0);
+    r.pin("[Pinned response #0]\nRemember this response").unwrap();
+    r.clear();
+    assert_eq!(r.pins(), ["Remember this response"]);
+    let mut restored = Room::restore(vec![a.clone()], r.snapshot());
+    say(&mut restored, "hello");
+}
+
+#[test]
+fn full_response_pins_accept_more_than_the_old_fact_limit() {
+    let mut r = room(&[], TurnPolicy::Mention, 0);
+    assert!(r.pin(&format!("[Pinned response #1]\n{}", "x".repeat(2000))).is_ok());
+}
