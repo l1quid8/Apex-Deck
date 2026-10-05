@@ -26,6 +26,21 @@ window.addEventListener('drop', (event) => {
   dropped.forEach((cb) => cb(paths, event.clientX, event.clientY));
 }, true);
 
+// Once, before the page reads it: what the Tauri app (v0.4.0 and before)
+// kept in its window's storage, such as installed mods. A key this app has
+// already set keeps its value.
+const TAURI_IMPORTED = 'apex-deck.tauri-storage-imported';
+try {
+  if (localStorage.getItem(TAURI_IMPORTED) === null) {
+    for (const [key, value] of Object.entries(ipcRenderer.sendSync('apex:tauriStorage') ?? {})) {
+      if (localStorage.getItem(key) === null) localStorage.setItem(key, value);
+    }
+    localStorage.setItem(TAURI_IMPORTED, new Date().toISOString());
+  }
+} catch {
+  // Storage unavailable: the window starts without the old values.
+}
+
 contextBridge.exposeInMainWorld('apexDeck', {
   daemon: {
     connect: () => ipcRenderer.invoke('daemon:connect'),

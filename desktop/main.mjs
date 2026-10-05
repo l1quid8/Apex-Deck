@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
 import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, windowsAtLaunch } from './hosts.mjs';
+import { tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
 import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon } from './sidecar.mjs';
@@ -186,6 +187,15 @@ ipcMain.on('daemon:close', (event, gen) => {
 });
 
 ipcMain.on('apex:smoke', (event) => { event.returnValue = smoke; });
+
+/** What the Tauri app kept in its window's storage, read once for preload.cjs to copy over. */
+let tauriItems = null;
+ipcMain.on('apex:tauriStorage', (event) => {
+  // A test's data folder never takes this Mac's; APEX_DECK_TAURI_HOME gives it a home to read instead.
+  const home = dataDir ? env.APEX_DECK_TAURI_HOME : app.getPath('home');
+  if (fromUi(event) && home) tauriItems ??= tauriStorage(home);
+  event.returnValue = (fromUi(event) && tauriItems) || {};
+});
 
 // ------------------------------------------------------------ the shell's jobs
 // What the person saves or opens lands on this machine, the one with the screen.

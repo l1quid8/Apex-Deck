@@ -4,6 +4,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
 import electron from 'electron';
 
@@ -19,7 +20,15 @@ const { values: options } = parseArgs({
 });
 
 const data = fs.mkdtempSync('/tmp/ads-');
-const env = { ...process.env, APEX_DECK_SMOKE: '1', APEX_DECK_DATA_DIR: data };
+const env = { ...process.env, APEX_DECK_SMOKE: '1', APEX_DECK_DATA_DIR: data, APEX_DECK_TAURI_HOME: `${data}-tauri` };
+// What a Tauri app of v0.4.0 left in its window's storage, for the first launch to bring over.
+const tauri = `${data}-tauri/Library/WebKit/dev.apexdeck.app/WebsiteData/Default/smoke/smoke`;
+fs.mkdirSync(`${tauri}/LocalStorage`, { recursive: true });
+fs.writeFileSync(`${tauri}/origin`, 'tauri\0localhost');
+const storage = new DatabaseSync(`${tauri}/LocalStorage/localstorage.sqlite3`);
+storage.exec('CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB NOT NULL ON CONFLICT FAIL)');
+storage.prepare('INSERT INTO ItemTable VALUES (?, ?)').run('apex-deck.smoke.tauri', Buffer.from('kept from Tauri', 'utf16le'));
+storage.close();
 if (options.ssh) {
   fs.mkdirSync(`${data}-desktop`, { recursive: true });
   fs.writeFileSync(`${data}-desktop/hosts.json`, JSON.stringify({
@@ -60,7 +69,7 @@ function finished(code, signal) {
     return;
   }
   clearTimeout(timer);
-  for (const dir of [data, `${data}-desktop`]) fs.rmSync(dir, { recursive: true, force: true });
+  for (const dir of [data, `${data}-desktop`, `${data}-tauri`]) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   if (failed) console.error(`smoke: failed (${failed})`);
   else console.log(options.ssh ? 'smoke: ok — quitting exits 0' : 'smoke: ok — logging out with a bot replying quits at once, and the daemon is gone');
   process.exit(failed ? 1 : 0);

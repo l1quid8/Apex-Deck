@@ -61,6 +61,13 @@ export async function runSmoke(win, { sidecar, browser }) {
     if (await page(`return __deck.backend.demo`) !== false) throw new Error('the window fell back to the demo backend');
   });
 
+  await step("the Tauri app's window storage came over", async () => {
+    const kept = await page(`return localStorage.getItem('apex-deck.smoke.tauri')`);
+    if (kept !== 'kept from Tauri') throw new Error(`the old value is ${JSON.stringify(kept)}`);
+    // The next launch must not bring it back.
+    await page(`localStorage.removeItem('apex-deck.smoke.tauri'); return true;`);
+  });
+
   await step('a chat gets its reply', async () => {
     await listen();
     await page(`
@@ -362,6 +369,9 @@ async function runAgain(win, sidecar) {
   const cookies = await session.fromPartition(PARTITION).cookies.get({ domain: '127.0.0.1', name: 'deck_login' });
   if (cookies.length !== 1 || cookies[0].value !== 'kept') throw new Error(`the docked browser's cookie is gone (${JSON.stringify(cookies)})`);
   console.log('smoke: ok — a cookie set in the docked browser survives a restart of the app');
+  const again = await contents.executeJavaScript(`localStorage.getItem('apex-deck.smoke.tauri')`);
+  if (again !== null) throw new Error(`the Tauri app's storage came over a second time (${JSON.stringify(again)})`);
+  console.log("smoke: ok — the Tauri app's storage comes over only once");
 
   // Logging out or shutting down never waits on a question, even with a bot replying.
   await contents.executeJavaScript(`(async () => {
