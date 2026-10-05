@@ -71,6 +71,10 @@ protocol on stdin/stdout. Type a hello to see it answer:
 {"id":0,"cmd":"hello","args":{"protocol":1}}
 ```
 
+Commands run at the same time and their replies can come back in any order,
+matched by `id`. Wait for a reply before sending a command that depends on
+it, such as posting to a chat you've just opened with `room_create`.
+
 Or run one command with the dev tool in this repository:
 
 ```sh
