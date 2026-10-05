@@ -64,6 +64,10 @@ pub struct BuildContext {
     /// Desktop apps often start with a shorter PATH than the user's
     /// terminal, so the shell passes in the terminal's.
     pub path: Option<String>,
+    /// The thread's own temp folder, given to tools as `TMPDIR` so their
+    /// scratch files go away when the thread is deleted. `None` keeps the
+    /// system's.
+    pub temp: Option<PathBuf>,
 }
 
 /// Create the participant described by `config`.

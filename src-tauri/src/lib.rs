@@ -238,6 +238,7 @@ fn room_create(
 
         cwd: cwd.filter(|c| !c.is_empty()).map(std::path::PathBuf::from),
         path: agents::login_path(),
+        temp: thread_temp_dir(&id).ok(),
     };
     let mut seen: Vec<&ParticipantId> = Vec::new();
     for config in &participants {
@@ -891,6 +892,9 @@ fn room_delete(state: State<'_, AppState>, store: State<'_, Store>, snapshots: S
     let handle = state.handle(&id).ok();
     snapshots.delete(&id);
     room_close(state, id.clone());
+    if let Ok(name) = export::safe_file_name(&id) {
+        let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
+    }
     match handle {
         Some(handle) => delete_checkpoint(&handle, &store, &id),
         None => store.delete_room(&id),
@@ -903,6 +907,20 @@ fn delete_checkpoint(handle: &RoomHandle, store: &Store, id: &str) -> Result<(),
     // interrupted task cannot recreate a room after it has been deleted.
     handle.deleted.store(true, Ordering::SeqCst);
     store.delete_room(id)
+}
+
+/// Where each thread's temp folders live: inside the system temp folder, so
+/// sandboxed tools may already write there and the OS sweeps leftovers.
+fn thread_temp_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("apex-deck-threads")
+}
+
+/// The thread's own temp folder, made if needed. Tools get it as `TMPDIR`,
+/// and deleting the thread deletes it.
+fn thread_temp_dir(room: &str) -> Result<std::path::PathBuf, String> {
+    let dir = thread_temp_root().join(export::safe_file_name(room)?);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make the thread's temp folder: {e}"))?;
+    Ok(dir)
 }
 
 /// Save an exported thread in the Downloads folder. Returns where it went.

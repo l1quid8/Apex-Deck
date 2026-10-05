@@ -40,11 +40,12 @@ pub struct CliParticipant {
     cwd: Option<PathBuf>,
     path: Option<String>,
     codex_hook: Option<PathBuf>,
+    temp: Option<PathBuf>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None }
     }
 
     /// Run the tool in the folder, and with the PATH, given by `context`.
@@ -52,6 +53,7 @@ impl CliParticipant {
         self.cwd = context.cwd.clone();
         self.path = context.path.clone();
         self.codex_hook = context.codex_hook.clone();
+        self.temp = context.temp.clone();
         self
     }
 
@@ -90,6 +92,10 @@ impl CliParticipant {
         command.env("NO_COLOR", "1").env("TERM", "dumb");
         if let Some(path) = &self.path {
             command.env("PATH", path);
+        }
+        // Scratch files land in the thread's temp folder when it exists.
+        if let Some(temp) = self.temp.as_ref().filter(|dir| dir.is_dir()) {
+            command.env("TMPDIR", temp).env("TMP", temp).env("TEMP", temp);
         }
         if let Some(cwd) = &self.cwd {
             // A missing folder would otherwise be reported as a missing program.
@@ -458,7 +464,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, args, format) = self.command_line()?;

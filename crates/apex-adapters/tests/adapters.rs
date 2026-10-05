@@ -170,7 +170,7 @@ async fn cli_runs_in_the_workspace_folder() {
     let dir = std::env::temp_dir().join(format!("apex-deck-cwd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let real = std::fs::canonicalize(&dir).unwrap();
-    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None };
+    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None, temp: None };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; pwd -P"))).with_context(&context);
     let (result, _) = ask(&bot, "where are you?").await;
     assert_eq!(result.unwrap().text, real.to_string_lossy());
@@ -179,8 +179,20 @@ async fn cli_runs_in_the_workspace_folder() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
+    let dir = std::env::temp_dir().join(format!("apex-deck-tmp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let context = BuildContext { cwd: None, path: None, codex_hook: None, temp: Some(dir.clone()) };
+    let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; printf %s \"$TMPDIR\""))).with_context(&context);
+    let (result, _) = ask(&bot, "where is scratch?").await;
+    assert_eq!(result.unwrap().text, dir.to_string_lossy());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn cli_reports_a_workspace_folder_that_no_longer_exists() {
-    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None };
+    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None, temp: None };
     let bot = CliParticipant::new(config("cli", sh("echo hi"))).with_context(&context);
     let (result, _) = ask(&bot, "hi").await;
     match result {
@@ -208,7 +220,7 @@ async fn cli_finds_the_program_on_the_path_it_is_given() {
     assert!(matches!(missing, Err(ParticipantError::NotConfigured(_))), "{missing:?}");
 
     let path = format!("{}:/usr/bin:/bin", dir.to_string_lossy());
-    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None };
+    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None, temp: None };
     let bot = CliParticipant::new(config("cli", backend)).with_context(&context);
     let (found, _) = ask(&bot, "hi").await;
     assert_eq!(found.unwrap().text, "found-on-custom-path");
@@ -246,7 +258,7 @@ async fn codex_agent_refuses_exec_even_when_model_effort_and_access_are_configur
     let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: Some("some-model".into()) });
     cfg.access = Access::Edits;
     cfg.effort = Some("high".into());
-    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None };
+    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None };
     let bot = build(cfg, &context);
     let (result, _) = ask(bot.as_ref(), "hey, testing").await;
     assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
@@ -486,7 +498,7 @@ fn fake_tool(tag: &str, name: &str, script: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 fn context_in(dir: &std::path::Path) -> BuildContext {
-    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None }
+    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None }
 }
 
 /// Run one turn the way the room does and collect text and activity.
