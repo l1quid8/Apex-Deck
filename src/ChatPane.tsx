@@ -2203,6 +2203,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           {busy
             ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) void turnQueue.halt(); }}><StopSquare size={12} /></button>
             : <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
+          <span className="send-key" aria-hidden="true">{copy.keys}</span>
         </div>
       </div>}
     </div>

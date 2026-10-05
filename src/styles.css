@@ -2306,3 +2306,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .composer-actions > button.round-send.stop:hover { background: color-mix(in srgb, var(--danger) 26%, transparent); filter: none; }
 /* A long placeholder stays on one line in a narrow pane instead of wrapping out of view. */
 .composer-field > textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* What ↵ does sits under the round button; only while typing, like the hint. */
+.composer-actions { position: relative; }
+.send-key { display: none; position: absolute; top: 100%; right: 0; margin-top: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.composer:focus-within .send-key { display: block; }

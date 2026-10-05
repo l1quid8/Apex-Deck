@@ -12,15 +12,15 @@ export function waitingVerb(count: number): string {
 }
 
 /** What the composer says Enter will do, so the placeholder and hint never disagree. */
-export function composerCopy(busy: boolean, empty: boolean, extra: { firstMessage?: boolean; quoting?: boolean } = {}): { placeholder: string; hint: string } {
-  if (empty) return { placeholder: "Add a model to start", hint: "@ who answers · ! which tools · ↵ send · ⇧↵ new line" };
+export function composerCopy(busy: boolean, empty: boolean, extra: { firstMessage?: boolean; quoting?: boolean } = {}): { placeholder: string; hint: string; keys: string } {
+  if (empty) return { placeholder: "Add a model to start", hint: "@ who answers · ! which tools", keys: "⇧↵ new line" };
   // While quoting, the placeholder suggests what to ask about the quote.
   const placeholder = extra.quoting
     ? "e.g. Check this against the tests and say what breaks"
     : busy ? "Queue a message… (⌘↵ steers)" : "Message the room. @name picks who answers.";
-  if (busy) return { placeholder, hint: "@ who answers · ! which tools · ↵ queue · ⌘↵ steer now · ⇧↵ new line" };
-  if (extra.firstMessage) return { placeholder, hint: "@all asks everyone · / for commands · ↵ send" };
-  return { placeholder, hint: "@ who answers · ! which tools · ↵ send · ⇧↵ new line" };
+  if (busy) return { placeholder, hint: "@ who answers · ! which tools", keys: "↵ queue · ⌘↵ steer" };
+  if (extra.firstMessage) return { placeholder, hint: "@all asks everyone · / for commands", keys: "↵ send · ⇧↵ new line" };
+  return { placeholder, hint: "@ who answers · ! which tools", keys: "↵ send · ⇧↵ new line" };
 }
 
 /**
