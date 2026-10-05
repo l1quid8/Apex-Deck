@@ -2,10 +2,12 @@
 // enabled mod, and what they've drawn. Settings → Mods edits the list; chat
 // panes draw the panes; App draws modal panes, toasts and status chips.
 
-import { invoke } from "@tauri-apps/api/core";
-
+import { getBackend } from "../backend";
 import type { ProposedAction, RoomEvent } from "../types";
 import type { ModNode } from "./runtime";
+
+/** A host command, through whichever backend the app runs on. */
+const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => (await getBackend()).call<T>(cmd, args);
 
 export type Grant = "process" | "network" | "files" | "session";
 export const GRANTS: { id: Grant; label: string }[] = [

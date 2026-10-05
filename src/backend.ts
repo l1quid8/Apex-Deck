@@ -5,6 +5,8 @@ import type { ToolServer } from "./types";
 // the UI can be worked on without building the app.
 
 import { ruleFor, sameRule } from "./allowedRules";
+import { commandBackend } from "./commandBackend";
+import { tauriShell, tauriTransport } from "./tauriShell";
 import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
@@ -122,111 +124,18 @@ export interface Backend {
   quitHeard(request: number): Promise<void>;
   /** Quit now, ending every terminal. Nothing asks again. */
   quitApp(): Promise<void>;
+  /** False when agents and terminals go on after quitting: on another
+   *  machine, or a daemon this app didn't start. */
+  quitStopsWork: boolean;
+  /** Send any host command as it is, for mods. */
+  call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 async function tauriBackend(): Promise<Backend> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  const { listen } = await import("@tauri-apps/api/event");
-  const { open } = await import("@tauri-apps/plugin-dialog");
-
-  return {
-    demo: false,
-    listToolServers: (room, agent) => invoke<ToolServer[]>("list_tool_servers", { room, agent }),
-    detectAgents: () => invoke<AgentInfo[]>("agents_detect"),
-    startupFolders: () => invoke<string[]>("startup_folders"),
-    sessionLoad: () => invoke<AppSession | null>("session_load"),
-    sessionSave: (session) => invoke("session_save", { session }),
-    settingsLoad: () => invoke<unknown>("settings_load"),
-    settingsSave: (settings) => invoke("settings_save", { settings }),
-    artifactsLoad: (room) => invoke<unknown>("artifacts_load", { room }),
-    artifactsSave: (room, artifacts) => invoke("artifacts_save", { room, artifacts }),
-    artifactSave: async (name, contents) => {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({ defaultPath: name });
-      return path ? invoke<string>("artifact_export", { name, contents, path }) : null;
-    },
-    artifactOpenExternal: async (name, contents) => {
-      const path = await invoke<string>("artifact_export", { name, contents, path: null });
-      await invoke("open_target", { target: path, cwd: null, reveal: false });
-    },
-    dataFolder: () => invoke<string>("data_folder"),
-    envPresent: (names) => invoke<boolean[]>("env_present", { names }),
-    previewProbe: (address) => invoke<PreviewProbe>("preview_probe", { address }),
-    pickFolder: async () => {
-      const picked = await open({ directory: true, multiple: false, title: "Add a workspace folder" });
-      return typeof picked === "string" ? picked : null;
-    },
-    pickPath: async (kind, title) => {
-      const picked = await open({ directory: kind === "directory", multiple: false, title });
-      return typeof picked === "string" ? picked : null;
-    },
-
-    ptySpawn: (o) => invoke("pty_spawn", { id: o.id, agent: o.agent ?? null, cwd: o.cwd ?? null, cols: o.cols, rows: o.rows }),
-    ptyWrite: (id, data) => invoke("pty_write", { id, data }),
-    ptyResize: (id, cols, rows) => invoke("pty_resize", { id, cols, rows }),
-    ptyKill: (id) => invoke("pty_kill", { id }),
-    onPtyData: (cb) => listen<{ id: string; data: string }>("pty-data", (e) => cb(e.payload.id, e.payload.data)),
-    onPtyExit: (cb) => listen<{ id: string; code: number | null }>("pty-exit", (e) => cb(e.payload.id, e.payload.code)),
-
-    roomCreate: (id, participants, options, cwd) => invoke("room_create", { id, participants, options, cwd: cwd || null }),
-    apiModels: (baseUrl, apiKeyEnv) => invoke<string[]>("api_models", { baseUrl, apiKeyEnv }),
-    agentModels: (tool) => invoke<ModelChoice[]>("agent_models", { tool }),
-    openTarget: (target, cwd, reveal) => invoke("open_target", { target, cwd, reveal }),
-    workspaceRead: (target, cwd) => invoke<string | null>("workspace_read", { target, cwd }),
-    pathsExist: (targets, cwd) => invoke<boolean[]>("paths_exist", { targets, cwd }),
-    flagAttention: async (count, nudge) => {
-      const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
-      const main = getCurrentWindow();
-      // Neither is available on every system; the app works without them.
-      await main.setBadgeCount(count > 0 ? count : undefined).catch(() => {});
-      if (nudge) await main.requestUserAttention(UserAttentionType.Informational).catch(() => {});
-    },
-    requestCriticalAttention: async () => {
-      const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
-      // Not available on every system; the app works without it.
-      await getCurrentWindow().requestUserAttention(UserAttentionType.Critical).catch(() => {});
-    },
-    roomPost: (id, text) => invoke("room_post", { id, text }),
-    roomTargets: (id, text) => invoke("room_targets", { id, text }),
-    roomPostTo: (id, text, targets) => invoke("room_post_to", { id, text, targets }),
-    roomTurn: (id, participants, hops) => invoke("room_turn", { id, participants, hops }),
-    roomStop: (id, participant) => invoke("room_stop", { id, participant: participant ?? null }),
-    roomDecide: (id, request, approve, always = false) => invoke("room_decide", { id, request, approve, always }),
-    roomSetOptions: (id, options) => invoke("room_set_options", { id, options }),
-    roomForgetAllowed: (id, rule) => invoke("room_forget_allowed", { id, rule }),
-    roomAddParticipant: (id, participant) => invoke("room_add_participant", { id, participant }),
-    roomUpdateParticipant: (id, participant) => invoke("room_update_participant", { id, participant }),
-    roomRemoveParticipant: (id, participant) => invoke("room_remove_participant", { id, participant }),
-    roomClear: (id) => invoke("room_clear", { id }),
-    roomRewind: (id, upto) => invoke("room_rewind", { id, upto }),
-    roomRevertPlan: (id, at, bot) => invoke("room_revert_plan", { id, at, bot }),
-    roomRevert: (id, at, bot, chat, files) => invoke("room_revert", { id, at, bot, chat, files }),
-    roomDiff: (id) => invoke("room_diff", { id }),
-    exportThread: (fileName, contents) => invoke("export_thread", { fileName, contents }),
-    saveAttachment: (room, name, bytes) => invoke("save_attachment", bytes, { headers: { "x-room": room, "x-name": name } }),
-    copyAttachment: (room, path) => invoke("copy_attachment", { room, path }),
-    generateImage: (room, provider, prompt) => invoke("generate_image", { room, provider, prompt }),
-    importReplyImage: (room, path) => invoke("import_reply_image", { room, path }),
-    readAttachment: (path) => invoke<ArrayBuffer>("read_attachment", { path }),
-    onFileDrop: async (cb) => {
-      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-      return getCurrentWebview().onDragDropEvent((e) => {
-        if (e.payload.type === "drop") cb(e.payload.paths, e.payload.position.x / devicePixelRatio, e.payload.position.y / devicePixelRatio);
-      });
-    },
-    roomPin: (id, fact) => invoke("room_pin", { id, fact }),
-    roomUnpin: (id, index) => invoke("room_unpin", { id, index }),
-    roomFork: (source, target, upto) => invoke("room_fork", { source, target, upto }),
-    roomCompact: (id) => invoke("room_compact", { id }),
-    roomClose: (id) => invoke("room_close", { id }),
-    roomDelete: (id) => invoke("room_delete", { id }),
-    onRoomEvent: (cb) => listen<{ room: string; event: RoomEvent }>("room-event", (e) => cb(e.payload.room, e.payload.event)),
-    onQuitRequested: (cb) => listen<number>("quit-requested", (e) => cb(e.payload)),
-    quitHeard: (request) => invoke("quit_heard", { request }),
-    quitApp: () => invoke("quit_app"),
-  };
+  const transport = await tauriTransport();
+  return commandBackend(transport, tauriShell(transport));
 }
 
 /** A stand-in for the desktop shell. Terminals echo what you type and chat
@@ -834,6 +743,8 @@ function demoBackend(): Backend {
     },
     quitHeard: async () => {},
     quitApp: async () => { console.info("Preview: the desktop app would quit now."); },
+    quitStopsWork: true,
+    call: async (cmd) => { throw new Error(`The preview has no host to run ${cmd}.`); },
   };
 }
 

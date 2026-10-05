@@ -244,11 +244,13 @@ const STATE_ORDER: Running["state"][] = ["waiting", "working", "replying", "idle
 
 /**
  * The question asked before quitting, or `null` to quit at once because
- * nothing is running. Rows are most urgent first, at most QUIT_ROWS of them,
+ * nothing is running or, with `stopsWork` false, because quitting ends none
+ * of it. Rows are most urgent first, at most QUIT_ROWS of them,
  * then "and n more".
  */
-export function quitQuestion(busy: Running[]): { title: string; body: string; rows: string[]; action: string } | null {
-  if (busy.length === 0) return null;
+export function quitQuestion(busy: Running[], stopsWork = true): { title: string; body: string; rows: string[]; action: string } | null {
+  // On another machine, or a daemon this app didn't start, quitting ends nothing.
+  if (busy.length === 0 || !stopsWork) return null;
   const sorted = [...busy].sort((a, b) => STATE_ORDER.indexOf(a.state) - STATE_ORDER.indexOf(b.state));
   const rows = sorted
     .slice(0, QUIT_ROWS)

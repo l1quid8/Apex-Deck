@@ -235,3 +235,8 @@ test("a preview on the Threads deck keeps its place beside threads, not terminal
   assert.deepEqual(restoredLayouts({ "w:threads": tree }, panes)["w:threads"], tree);
   assert.equal(restoredLayouts({ "w:code": tree }, panes)["w:code"], undefined);
 });
+test('quitting asks nothing when the work goes on without this app', () => {
+  const busy = stillRunning([terminal("Codex", true, "working")], [thread("Fix login", ["Jigga"], ["Null"])]);
+  assert.ok(quitQuestion(busy, true));
+  assert.equal(quitQuestion(busy, false), null);
+});

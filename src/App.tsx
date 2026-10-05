@@ -806,7 +806,7 @@ export function App() {
       listed.filter((p) => p.kind === "terminal").map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
       listed.filter((p) => p.kind === "chat" && !deleting.has(p.id)).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
     );
-    const asked = quitQuestion(busy);
+    const asked = quitQuestion(busy, backend.quitStopsWork);
     if (asked) setQuestion({ ...asked, onConfirm: quitNow });
     else quitNow();
   };
