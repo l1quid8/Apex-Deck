@@ -117,16 +117,18 @@ pub(crate) async fn run(
     report(reader.finish(), on_progress);
 
     // With its input closed and the turn over, the program exits by itself.
+    // Shutting down MCP servers, hooks or background shells can hold it
+    // past the grace period; a turn that already ended is still a reply.
     drop(stdin);
-    let status = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(status) => status?,
+    let (status, killed) = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(status) => (status?, false),
         Err(_) => {
             let _ = child.kill().await;
-            child.wait().await?
+            (child.wait().await?, true)
         }
     };
     Ok(Finished {
-        success: status.success(),
+        success: status.success() || (killed && reader.turn_over()),
         status: status.to_string(),
         stderr: errors.await.unwrap_or_default(),
         reader,
