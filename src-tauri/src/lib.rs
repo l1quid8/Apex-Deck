@@ -14,8 +14,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use apex_core::{AgentTool, ModelChoice, ParticipantConfig, ParticipantId, RoomOptions, RoomSnapshot};
+use apex_host::lock::DataLock;
 use apex_host::{agents, changes, checkpoints, mods, preview, Host, HostPaths};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 type HostState<'a> = State<'a, Arc<Host>>;
 
@@ -334,7 +336,8 @@ fn mod_env_get(host: HostState<'_>, name: String) -> Option<String> {
 /// hasn't said it got the request within `ANSWER_TIME`. Returns false when
 /// nothing holds it, so the caller lets it go now.
 fn ask_to_quit(app: &AppHandle, code: Option<i32>) -> bool {
-    let host = Arc::clone(&app.state::<Arc<Host>>());
+    // No host when another program owns the data folder; nothing to ask about.
+    let Some(host) = app.try_state::<Arc<Host>>().map(|host| Arc::clone(&host)) else { return false };
     let Some(request) = host.quit_request(code) else { return false };
     let app = app.clone();
     std::thread::spawn(move || {
@@ -368,6 +371,22 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let paths = HostPaths { data: app.path().app_data_dir()?, downloads: app.path().download_dir().ok() };
+            // The daemon may own the same folder; two writers would corrupt it.
+            let lock = match DataLock::acquire(&paths.data, &format!("the Apex Deck app (pid {})", std::process::id())) {
+                Ok(lock) => lock,
+                Err(why) => {
+                    for window in app.webview_windows().values() {
+                        let _ = window.hide();
+                    }
+                    app.dialog()
+                        .message(format!("{why}.\n\nQuit it, then open Apex Deck again. For apex-daemon: press Ctrl-C where it runs, or `systemctl stop apex-daemon@$USER`."))
+                        .title("Apex Deck can't open its data")
+                        .kind(MessageDialogKind::Error)
+                        .show(|_| std::process::exit(1));
+                    return Ok(());
+                }
+            };
+            app.manage(lock);
             let host = Host::new(paths, tauri::async_runtime::handle().inner().clone());
             let window = app.handle().clone();
             host.events().listen(move |envelope| {
@@ -463,7 +482,11 @@ pub fn run() {
                 }
             }
             // Do not leave agents running after the window is gone.
-            tauri::RunEvent::Exit => app.state::<Arc<Host>>().shutdown(),
+            tauri::RunEvent::Exit => {
+                if let Some(host) = app.try_state::<Arc<Host>>() {
+                    host.shutdown();
+                }
+            }
             _ => {}
         });
 }

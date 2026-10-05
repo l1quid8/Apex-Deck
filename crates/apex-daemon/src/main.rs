@@ -18,7 +18,7 @@ fn main() {
     match cli.action {
         Action::Help => println!("{}", cli::USAGE),
         Action::Version => println!("apex-daemon {}", env!("CARGO_PKG_VERSION")),
-        Action::Stdio { .. } => exit(stdio::run_in_process(cli.data_dir)),
+        Action::Stdio { attach } => exit(stdio::run(cli.data_dir, attach)),
         Action::Serve(options) => exit(serve::run(cli.data_dir, options)),
     }
 }
