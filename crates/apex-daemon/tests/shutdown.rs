@@ -1,6 +1,8 @@
-//! SIGTERM and SIGINT: stop, end agents and terminals, save, clean up, exit 0.
+//! SIGTERM, SIGINT and SIGHUP: stop, end agents and terminals, save, clean up, exit 0.
 
 mod common;
+
+use std::os::unix::process::CommandExt;
 
 use common::*;
 use serde_json::json;
@@ -62,4 +64,37 @@ fn an_in_process_stdio_session_ends_its_agents_on_sigterm() {
     ssh.process.signal("TERM");
     assert!(ssh.wait().success());
     wait_until_dead(&agent);
+}
+
+#[test]
+fn sighup_shuts_down_the_same_way() {
+    let data = temp_dir();
+    let mut served = Served::start(&data.0, &[]);
+    served.process.signal("HUP");
+    assert!(served.process.wait().success());
+    assert!(!data.0.join("daemon.json").exists());
+}
+
+/// `nohup apex-daemon serve &` ignores SIGHUP so the daemon outlives the
+/// SSH session that started it; the daemon must keep it ignored.
+#[test]
+fn a_daemon_started_with_sighup_ignored_keeps_running_through_one() {
+    let data = temp_dir();
+    let mut served = Served::start_with(&data.0, &[], |command| {
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                Ok(())
+            })
+        };
+    });
+    served.process.signal("HUP");
+    let token = std::fs::read_to_string(data.0.join("daemon-token")).unwrap().trim().to_string();
+    let mut web = websocket(served.port());
+    web.hello_frame(json!({ "token": token }));
+    assert!(web.call("session_load", json!({})).1.is_ok());
+    assert!(served.process.child.try_wait().unwrap().is_none(), "the daemon stopped on SIGHUP");
+    served.process.signal("TERM");
+    assert!(served.process.wait().success());
 }

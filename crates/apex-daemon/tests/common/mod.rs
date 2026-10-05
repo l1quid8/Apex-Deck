@@ -155,8 +155,15 @@ pub struct Process {
 
 impl Process {
     pub fn spawn(args: &[&str], data: &Path, env: &[(&str, String)]) -> (Process, Option<ChildStdin>, Option<std::process::ChildStdout>) {
+        Process::spawn_with(args, data, |command| {
+            command.envs(env.iter().map(|(k, v)| (k, v)));
+        })
+    }
+
+    /// `spawn`, letting `adjust` change the command first.
+    pub fn spawn_with(args: &[&str], data: &Path, adjust: impl FnOnce(&mut Command)) -> (Process, Option<ChildStdin>, Option<std::process::ChildStdout>) {
         let mut command = daemon(args, data);
-        command.envs(env.iter().map(|(k, v)| (k, v)));
+        adjust(&mut command);
         let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("the daemon starts");
         let stderr = Arc::new(Mutex::new(String::new()));
         let sink = Arc::clone(&stderr);
@@ -263,10 +270,15 @@ pub struct Served {
 
 impl Served {
     pub fn start(data: &Path, extra: &[&str]) -> Served {
+        Served::start_with(data, extra, |_| {})
+    }
+
+    /// `start`, letting `adjust` change the command first.
+    pub fn start_with(data: &Path, extra: &[&str], adjust: impl FnOnce(&mut Command)) -> Served {
         let _ = std::fs::remove_file(data.join("daemon.json"));
         let mut args = vec!["serve"];
         args.extend_from_slice(extra);
-        let (mut process, _, _) = Process::spawn(&args, data, &[]);
+        let (mut process, _, _) = Process::spawn_with(&args, data, adjust);
         let start = Instant::now();
         let info = loop {
             if let Some(info) = std::fs::read_to_string(data.join("daemon.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {

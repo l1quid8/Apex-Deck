@@ -58,6 +58,10 @@ if it crashes.
 - Stop: `sudo systemctl stop apex-daemon@$USER`. Running turns are stopped
   and chats are kept.
 
+Without systemd, run `apex-daemon serve` in tmux, or as
+`nohup apex-daemon serve >> ~/apex-daemon.log 2>&1 &`. Started plainly from
+an SSH session, it stops when that session closes.
+
 ## 5. Connect from your Mac
 
 ```sh

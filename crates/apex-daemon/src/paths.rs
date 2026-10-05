@@ -37,7 +37,8 @@ pub fn default_data_dir(os: Os, home: &Path, xdg_data_home: Option<&OsStr>) -> P
 /// `--data-dir` when given, otherwise the desktop app's folder.
 pub fn data_dir(flag: Option<PathBuf>, os: Os, home: Option<&Path>, xdg_data_home: Option<&OsStr>) -> Result<PathBuf, String> {
     match (flag, home) {
-        (Some(dir), _) => Ok(dir),
+        // Agents and terminals run elsewhere; pin a relative path to here.
+        (Some(dir), _) => std::path::absolute(&dir).map_err(|e| format!("could not resolve --data-dir {}: {e}", dir.display())),
         (None, Some(home)) => Ok(default_data_dir(os, home, xdg_data_home)),
         (None, None) => Err("there is no home folder to keep data in; pass --data-dir".into()),
     }
@@ -77,6 +78,14 @@ mod tests {
             default_data_dir(Os::Mac, Path::new("/Users/me"), Some(OsStr::new("/ignored"))),
             PathBuf::from("/Users/me/Library/Application Support/dev.apexdeck.app")
         );
+    }
+
+    /// Agents and terminals run in other folders, so a relative --data-dir
+    /// has to be pinned to where the daemon started.
+    #[test]
+    fn a_relative_data_dir_is_made_absolute() {
+        let data = host_paths(Some(PathBuf::from("deck-data"))).unwrap().data;
+        assert_eq!(data, std::env::current_dir().unwrap().join("deck-data"));
     }
 
     #[test]

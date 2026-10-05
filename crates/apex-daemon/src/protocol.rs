@@ -27,6 +27,9 @@ pub const PROTOCOL: u64 = 1;
 /// A frame longer than this closes the connection.
 pub const MAX_FRAME: usize = 32 * 1024 * 1024;
 
+/// How long a WebSocket client may take to connect and say hello.
+pub const HELLO_WAIT: Duration = Duration::from_secs(10);
+
 /// After the client stops sending, how long replies already under way may
 /// still take to arrive before the connection closes.
 pub const DRAIN_GRACE: Duration = Duration::from_secs(10);
@@ -83,7 +86,12 @@ where
     E: std::fmt::Display,
     O: Sink<String> + Unpin,
 {
-    let Some(Ok(first)) = input.next().await else { return };
+    // Only a WebSocket client has yet to prove itself; it gets HELLO_WAIT.
+    let first = match trust {
+        Trust::Local => input.next().await,
+        Trust::Token => tokio::time::timeout(HELLO_WAIT, input.next()).await.unwrap_or(None),
+    };
+    let Some(Ok(first)) = first else { return };
     let hello = match read_hello(&first, trust, &daemon) {
         Ok(hello) => hello,
         Err(refusal) => {
@@ -465,6 +473,15 @@ mod tests {
         assert_eq!(reply["id"], 4);
         assert!(reply["err"].as_str().unwrap().contains("hello"));
         assert_eq!(client.next().await, None);
+    }
+
+    /// A WebSocket client has to prove itself before it may hold a connection.
+    #[tokio::test(start_paused = true)]
+    async fn a_token_connection_that_never_says_hello_is_closed() {
+        let mut client = connect(Trust::Token);
+        let start = tokio::time::Instant::now();
+        assert_eq!(client.next().await, None);
+        assert_eq!(start.elapsed(), HELLO_WAIT);
     }
 
     #[tokio::test(flavor = "multi_thread")]

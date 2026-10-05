@@ -82,11 +82,11 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
             _ = &mut stop => break,
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => { tokio::spawn(websocket::serve(Arc::clone(&daemon), stream)); }
-                Err(e) => eprintln!("apex-daemon: could not accept a WebSocket connection: {e}"),
+                Err(e) => accept_failed("a WebSocket connection", e).await,
             },
             accepted = local.accept() => match accepted {
                 Ok((stream, _)) => { tokio::spawn(serve_local(Arc::clone(&daemon), stream)); }
-                Err(e) => eprintln!("apex-daemon: could not accept a socket connection: {e}"),
+                Err(e) => accept_failed("a socket connection", e).await,
             },
         }
     }
@@ -96,6 +96,13 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     let _ = std::fs::remove_file(&info_path);
     daemon.host.wind_down(signals::WIND_DOWN).await;
     Ok(())
+}
+
+/// Log a failed accept and pause, so an error that repeats (out of file
+/// descriptors, say) doesn't spin.
+async fn accept_failed(what: &str, e: std::io::Error) {
+    eprintln!("apex-daemon: could not accept {what}: {e}");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
 
 /// A connection on the local socket: the same trust as stdio, for this user only.

@@ -8,12 +8,14 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
-use crate::protocol::{self, Daemon, Trust, MAX_FRAME};
+use crate::protocol::{self, Daemon, Trust, HELLO_WAIT, MAX_FRAME};
 
-/// Serve one WebSocket client. `hello` must carry the daemon's token.
+/// Serve one WebSocket client. `hello` must carry the daemon's token, and
+/// the handshake and `hello` each get `HELLO_WAIT`.
 pub async fn serve(daemon: Arc<Daemon>, stream: TcpStream) {
     let config = WebSocketConfig::default().max_message_size(Some(MAX_FRAME)).max_frame_size(Some(MAX_FRAME));
-    let Ok(socket) = tokio_tungstenite::accept_async_with_config(stream, Some(config)).await else { return };
+    let handshake = tokio_tungstenite::accept_async_with_config(stream, Some(config));
+    let Ok(Ok(socket)) = tokio::time::timeout(HELLO_WAIT, handshake).await else { return };
     let (sink, stream) = socket.split();
     let input = stream.filter_map(|message| {
         ready(match message {
