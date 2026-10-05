@@ -320,7 +320,7 @@ function demoBackend(): Backend {
       };
       const cancelled = new Promise<void>(resolve => cancellations.set(key, () => {
         const room = rooms.get(id);
-        for (const [bot, text] of partials) if (text.trim() && room) emit({type: "message_added", message: {seq: room.seq++, speaker: {kind:"bot", id:bot}, text: text.trim() + "\n\n[Interrupted]"}});
+        for (const [bot, text] of partials) if (text.trim() && room) emit({type: "message_added", message: {seq: room.seq++, speaker: {kind:"bot", id:bot}, text: text.trim() + "\n\n[Interrupted]", at: Date.now()}});
         stopped = true; active = false; resolve();
       }));
       try { await Promise.race([(async () => {
@@ -444,7 +444,7 @@ function demoBackend(): Backend {
             reportPlan(id, p.backend.tool);
           }
         }
-        emit( { type: "message_added", message: { seq: room.seq++, speaker: { kind: "bot", id: p.id }, text: reply } });
+        emit( { type: "message_added", message: { seq: room.seq++, speaker: { kind: "bot", id: p.id }, text: reply, at: Date.now() } });
       }
       })(), cancelled]); }
       finally {
@@ -486,7 +486,7 @@ function demoBackend(): Backend {
     if (!room) throw new Error(`no group chat with id ${id}`);
     if (targets.some(target => !room.participants.some(p => p.id === target))) throw new Error("a message recipient is no longer in this room");
     room.last = targets;
-    emitRoom(id, {type: "message_added", message: {seq: room.seq++, speaker: {kind: "human"}, text}});
+    emitRoom(id, {type: "message_added", message: {seq: room.seq++, speaker: {kind: "human"}, text, at: Date.now()}});
     await runChain(id, targets, room.options.policy === "round_robin", room.options.max_bot_hops);
   };
 

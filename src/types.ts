@@ -151,6 +151,8 @@ export interface Message {
   seq: number;
   speaker: Speaker;
   text: string;
+  /** When it was added, in ms since the epoch. Older saved messages have none. */
+  at?: number;
 }
 
 export type RoomEvent =

@@ -535,7 +535,8 @@ impl Room {
 
     pub(crate) fn push(&mut self, speaker: Speaker, text: String, on_event: EventSink<'_>) {
         let servers = if speaker == Speaker::Human { crate::server_request::parse_server_requests(&text) } else { vec![] };
-        let message = Message { servers, seq: self.transcript.len(), speaker, text };
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64);
+        let message = Message { servers, seq: self.transcript.len(), speaker, text, at };
         self.transcript.push(message.clone());
         on_event(RoomEvent::MessageAdded { message });
     }

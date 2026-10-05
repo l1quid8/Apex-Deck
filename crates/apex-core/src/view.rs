@@ -195,7 +195,7 @@ mod tests {
     }
 
     fn msg(seq: usize, speaker: Speaker, text: &str) -> Message {
-        Message { servers: vec![], seq, speaker, text: text.to_string() }
+        Message { servers: vec![], seq, speaker, text: text.to_string(), at: None }
     }
 
     #[test]

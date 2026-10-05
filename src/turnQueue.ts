@@ -52,6 +52,7 @@ export class ParticipantQueues {
   items: ParticipantMessage[] = [];
   state: Record<string, "idle" | "working"> = {};
   paused = new Set<string>();
+  private halted = new Set<string>();
   private serial = 0;
   private accepting: Promise<unknown> = Promise.resolve();
   private draining = false;
@@ -69,6 +70,9 @@ export class ParticipantQueues {
     const accepted = this.accepting.then(async () => {
       const to = await this.targets(text);
       const id = ++this.serial;
+      // Stop pauses a bot so what was queued for it waits. A new message to a
+      // stopped bot with nothing waiting is the person going on with it.
+      for (const target of to) if (this.halted.has(target) && !this.items.some(item => item.to.includes(target))) { this.paused.delete(target); this.halted.delete(target); }
       this.items.push({id, text, kind, to}); this.publish();
       await this.drain(); return id;
     });
@@ -78,7 +82,7 @@ export class ParticipantQueues {
   started(id: string) { this.state[id] = "working"; this.publish(); }
   idle(id: string) { this.state[id] = "idle"; this.publish(); void this.drain(); }
   error(id: string) { this.paused.add(id); this.publish(); }
-  resume(id?: string) { if (id) this.paused.delete(id); else this.paused.clear(); this.publish(); void this.drain(); }
+  resume(id?: string) { if (id) { this.paused.delete(id); this.halted.delete(id); } else { this.paused.clear(); this.halted.clear(); } this.publish(); void this.drain(); }
   async edit(id: number, text: string, kind: TurnKind = "message") {
     const to = await this.targets(text);
     this.items = this.items.map(item => item.id === id ? {...item, text, kind, to} : item);
@@ -112,7 +116,7 @@ export class ParticipantQueues {
     this.publish(); void this.drain();
   }
   async halt(id?: string) {
-    for (const target of id ? [id] : Object.keys(this.state)) this.paused.add(target);
+    for (const target of id ? [id] : Object.keys(this.state)) { this.paused.add(target); this.halted.add(target); }
     this.publish();
     try { await this.stop(id); } catch (error) { this.failed(error); }
   }

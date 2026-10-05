@@ -1,4 +1,4 @@
-import { actionChevron } from "./messageActions";
+import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { ReplyPolicyPicker, REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
@@ -1183,7 +1183,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <path d={actionChevron(message.speaker.kind, expanded) === "‹" ? "M15 6 9 12l6 6" : "m9 6 6 6-6 6"} />
       </svg>
     </button>;
-    return <span className="message-actions collapsed-actions">
+    const stamp = message.at === undefined ? null
+      : <time className="message-time" dateTime={new Date(message.at).toISOString()} title={new Date(message.at).toLocaleString()}>{messageTime(message.at)}</time>;
+    const held = expanded || goingBack?.message.seq === message.seq;
+    return <span className={`message-actions collapsed-actions${held ? " held" : ""}`}>
+      {message.speaker.kind === "human" && stamp}
       {message.speaker.kind === "human" && disclosure}
       <span className="message-primary-actions">
       <button type="button" className="msg-action quote" title="Quote" onClick={quote}
@@ -1202,6 +1206,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         {onFork && <button type="button" className="msg-action fork" aria-label="Fork from here" title="Fork from here" onClick={fork}>{forkIcon}</button>}
       </span>}
       {message.speaker.kind !== "human" && disclosure}
+      {message.speaker.kind !== "human" && stamp}
       {goBackPop(message)}
     </span>;
   };

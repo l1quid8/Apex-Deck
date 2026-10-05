@@ -117,3 +117,14 @@ test('steering a queued message stops every bot it is for and sends it once, ahe
   assert.equal(sent.filter(text => text === '@all both').length, 1);
   assert.equal(sent.at(-1), '@all both'); assert.equal(q.items[0].text, '@jigga later');
 });
+
+test('a new message after Stop goes straight out; queued ones still wait', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async text => [text.includes('jigga') ? 'jigga' : 'null'], async text => { sent.push(text); }, async () => {}, () => {});
+  q.started('null'); await q.send('@null queued'); await q.halt(); q.idle('null'); await tick();
+  assert.deepEqual(sent, []); assert.equal(q.items.length, 1);
+  q.remove(q.items[0].id); q.started('jigga'); await q.halt(); q.idle('jigga');
+  await q.send('@jigga fresh'); await tick();
+  assert.deepEqual(sent, ['@jigga fresh']);
+});

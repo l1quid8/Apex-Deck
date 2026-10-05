@@ -371,6 +371,12 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
             _ => false,
         })
         .collect();
+    // Every message is stamped with when it was added; the stamp is checked here, not compared.
+    let about_worker: Vec<RoomEvent> = about_worker.into_iter().cloned().map(|mut e| {
+        if let RoomEvent::MessageAdded { message } = &mut e { assert!(message.at.take().is_some_and(|at| at > 1_700_000_000_000)); }
+        e
+    }).collect();
+    let about_worker: Vec<&RoomEvent> = about_worker.iter().collect();
     assert_eq!(
         about_worker,
         [
@@ -386,7 +392,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
             },
             &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7) },
             &RoomEvent::MessageAdded {
-                message: apex_core::Message { servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into() }
+                message: apex_core::Message { servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into(), at: None }
             },
         ]
     );

@@ -2044,8 +2044,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .human-row .message-more > .pane-menu { left: auto; right: 0; }
 .msg-action, .msg-more { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .msg-action:hover:not(:disabled), .msg-action:focus-visible, .msg-more:hover:not(:disabled), .msg-more:focus-visible { color: var(--text); background: var(--panel); }
-.message-row .msg-action { opacity: 1; }
-.bot-row .msg-action.quote, .message-row:hover .msg-action, .message-row:focus-within .msg-action { opacity: 1; }
 .copied { font-size: 11px; color: var(--text); }
 
 /* Now tier, stage 4: terminals. A terminal pane is its screen plus, once
@@ -2336,4 +2334,14 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .collapsed-actions { min-height: 32px; }
 .message-action-items, .message-primary-actions { display: flex; align-items: center; gap: 2px; }
 .action-disclosure { flex: none; }
+/* Actions and time show while the message is hovered, like Codex. The row keeps
+   its height so nothing shifts; a pinned message keeps its pin in view. */
+.message-time { padding: 0 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+@media (hover: hover) {
+  .message-actions .msg-action, .message-time { opacity: 0; transition: opacity 120ms ease; }
+  .message-row:hover .message-actions .msg-action, .message-row:hover .message-time,
+  .message-actions:focus-within .msg-action, .message-actions:focus-within .message-time,
+  .message-actions.held .msg-action, .message-actions.held .message-time,
+  .message-actions .msg-action.pin-action[aria-pressed="true"] { opacity: 1; }
+}
 .message-pin-indicator { display: grid; place-items: center; width: 20px; height: 32px; color: var(--accent); }

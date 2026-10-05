@@ -132,6 +132,10 @@ pub struct Message {
     pub seq: usize,
     pub speaker: Speaker,
     pub text: String,
+    /// When it was added, in milliseconds since the Unix epoch. Messages
+    /// saved before this was recorded have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
 }
 
 /// How full a participant's context window was on its latest request: the
