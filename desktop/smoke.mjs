@@ -2,11 +2,20 @@
 // the backend the window exposes when APEX_DECK_SMOKE=1. Resolves with the
 // exit code; any failed check ends the run.
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { app } from 'electron';
+
 const OPTIONS = { policy: 'mention', max_bot_hops: 3 };
 const shell = (id, script) => ({ id, display_name: id, backend: { kind: 'cli', program: 'sh', args: ['-c', script] } });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export async function runSmoke(win) {
+/**
+ * Resolves with the exit code, or null once it has started a quit the way
+ * the person would; desktop/run-smoke.mjs then checks the app and the daemon
+ * it started are gone.
+ */
+export async function runSmoke(win, { sidecar }) {
   const contents = win.webContents;
   /** Run `code` in the window; it may await, and its value comes back. */
   const page = (code) => contents.executeJavaScript(`(async () => { ${code} })()`, true);
@@ -82,5 +91,39 @@ export async function runSmoke(win) {
     await page(`await __deck.backend.ptyKill('smoke-term'); return true;`);
   });
 
-  return 0;
+  await step('quitting while an agent replies asks first', async () => {
+    // A thread in the window, with a bot that takes its time.
+    await page(`
+      await __deck.backend.roomCreate('smoke-busy', [${JSON.stringify(shell('slow', 'sleep 30; echo done'))}], ${JSON.stringify(OPTIONS)}, '');
+      await __deck.backend.sessionSave({
+        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: '/tmp' }],
+        panes: [{ id: 'smoke-busy', workspaceId: 'ws-smoke', kind: 'chat', title: 'Busy' }],
+        profiles: [], activeWorkspace: 'ws-smoke', focusedPane: 'smoke-busy', section: 'threads', layout: 'top',
+      });
+      return true;`);
+    contents.reload();
+    await sleep(200);
+    await ready();
+    await listen();
+    await page(`void __deck.backend.roomPost('smoke-busy', '@slow go').catch(() => {}); return true;`);
+    await until('the turn to start', () => page(`return __smoke.events.some((e) => e.room === 'smoke-busy' && e.event.type === 'turn_started')`));
+    await sleep(500);
+    win.close();
+    const asked = await until('the question', () => page(`return document.querySelector('[role=alertdialog] #confirm-title')?.textContent ?? ''`), 5_000);
+    if (!/still running/.test(asked)) throw new Error(`asked "${asked}"`);
+    // Stay, stop the bot, and the next quit asks nothing.
+    await page(`[...document.querySelectorAll('[role=alertdialog] button')].find((b) => b.textContent === 'Cancel').click(); return true;`);
+    await page(`await __deck.backend.roomStop('smoke-busy'); return true;`);
+    await until('the bot to stop', () => page(`return !document.querySelector('[role=alertdialog]')`));
+    await sleep(1000);
+  });
+
+  // Quit with nothing running: the window answers, nothing is asked, and the
+  // app exits 0 after the daemon it started has wound down.
+  const daemon = sidecar();
+  if (!daemon?.owned) throw new Error('the smoke run should own its daemon');
+  fs.writeFileSync(path.join(app.getPath('userData'), 'sidecar.pid'), String(daemon.child.pid));
+  console.log('smoke: quitting');
+  win.close();
+  return null;
 }

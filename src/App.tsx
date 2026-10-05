@@ -820,6 +820,16 @@ export function App() {
     if (asked) setQuestion({ ...asked, onConfirm: quitNow });
     else quitNow();
   };
+  // The Electron app's menu: Settings… (⌘,) is a menu item there, so the key never reaches the window.
+  useEffect(() => {
+    if (!backend?.onMenu) return;
+    let stop: (() => void) | undefined;
+    let live = true;
+    backend.onMenu((action) => {
+      if (action === "settings") setSettingsOpen((open) => (open ? null : "general"));
+    }).then((unlisten) => (live ? (stop = unlisten) : unlisten()));
+    return () => { live = false; stop?.(); };
+  }, [backend]);
   useEffect(() => {
     if (!backend) return;
     let stop: (() => void) | undefined;

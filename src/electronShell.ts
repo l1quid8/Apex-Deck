@@ -20,6 +20,24 @@ export interface DeckBridge {
   connection: {
     current(): Promise<{ id: string; name: string; remote: boolean; owned: boolean }>;
   };
+  shell: {
+    pickPath(kind: "directory" | "file", title: string): Promise<string | null>;
+    /** Ask where, then write it there. Null when cancelled. */
+    saveFile(name: string, contents: string): Promise<string | null>;
+    /** Into Downloads under a name not yet taken. */
+    exportFile(name: string, contents: string): Promise<string>;
+    /** Write to the exports folder and open in its default app. */
+    openArtifact(name: string, contents: string): Promise<void>;
+    openExternal(url: string): Promise<void>;
+    setBadge(count: number): Promise<void>;
+    attention(critical: boolean): Promise<void>;
+    startupFolders(): Promise<string[]>;
+    onFileDrop(cb: (paths: string[], x: number, y: number) => void): () => void;
+    onQuitRequested(cb: (request: number) => void): () => void;
+    quitHeard(request: number): Promise<void>;
+    quitApp(): Promise<void>;
+    onMenu(cb: (action: string) => void): () => void;
+  };
   smoke: boolean;
 }
 
@@ -95,27 +113,31 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on">): Tran
   };
 }
 
-function electronShell(transport: Transport, owned: boolean): Shell {
+/** The shell's jobs: what the person saves or opens lands on this machine. */
+export function electronShell(bridge: Pick<DeckBridge, "shell">, transport: Transport, owned: boolean): Shell & Pick<Backend, "onMenu"> {
   const call = transport.call.bind(transport);
+  const shell = bridge.shell;
   return {
     quitStopsWork: owned,
-    startupFolders: async () => [],
-    pickFolder: async () => null,
-    pickPath: async () => null,
-    artifactSave: async () => null,
-    artifactOpenExternal: async (name, contents) => {
-      const path = await call<string>("artifact_export", { name, contents, path: null });
-      await call("open_target", { target: path, cwd: null, reveal: false });
-    },
-    exportThread: (fileName, contents) => call("export_thread", { fileName, contents }),
+    startupFolders: () => shell.startupFolders(),
+    pickFolder: () => shell.pickPath("directory", "Add a workspace folder"),
+    pickPath: (kind, title) => shell.pickPath(kind, title),
+    artifactSave: (name, contents) => shell.saveFile(name, contents),
+    artifactOpenExternal: (name, contents) => shell.openArtifact(name, contents),
+    exportThread: (fileName, contents) => shell.exportFile(fileName, contents),
+    // The host opens files on this Mac, as it always has.
     openTarget: (target, cwd, reveal) => call("open_target", { target, cwd, reveal }),
     copyAttachment: (room, path) => call("copy_attachment", { room, path }),
-    flagAttention: async () => {},
-    requestCriticalAttention: async () => {},
-    onFileDrop: async () => () => {},
-    onQuitRequested: async () => () => {},
-    quitHeard: async () => {},
-    quitApp: async () => { window.close(); },
+    flagAttention: async (count, nudge) => {
+      await shell.setBadge(count);
+      if (nudge) await shell.attention(false);
+    },
+    requestCriticalAttention: () => shell.attention(true),
+    onFileDrop: async (cb) => shell.onFileDrop(cb),
+    onQuitRequested: async (cb) => shell.onQuitRequested(cb),
+    quitHeard: (request) => shell.quitHeard(request),
+    quitApp: () => shell.quitApp(),
+    onMenu: async (cb) => shell.onMenu(cb),
   };
 }
 
@@ -131,7 +153,8 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   const current = await bridge.connection.current();
   connection.setHost(current.name);
   const transport = daemonTransport(client);
-  const backend = commandBackend(transport, electronShell(transport, current.owned));
+  const { onMenu, ...shell } = electronShell(bridge, transport, current.owned);
+  const backend: Backend = { ...commandBackend(transport, shell), onMenu };
   if (bridge.smoke) window.__deck = { backend };
   return backend;
 }

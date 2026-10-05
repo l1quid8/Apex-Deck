@@ -131,6 +131,8 @@ export interface Backend {
   quitStopsWork: boolean;
   /** Send any host command as it is, for mods. */
   call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  /** The Electron app's menu items that the window carries out, such as "settings". */
+  onMenu?(cb: (action: string) => void): Promise<Unlisten>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

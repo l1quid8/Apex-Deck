@@ -67,3 +67,37 @@ test('attachments travel as base64 over the daemon', async () => {
   assert.deepEqual(new Uint8Array(await transport.readAttachment('/att/a.bin')), new Uint8Array([1, 2, 3]));
   assert.deepEqual(calls, [['save_attachment', { room: 't', name: 'a.bin', data: 'AQID' }], ['read_attachment', { path: '/att/a.bin' }]]);
 });
+
+import { electronShell } from '../src/electronShell.ts';
+
+test('the shell saves and opens on this machine, and the host opens targets and copies drops', async () => {
+  const seen = [];
+  const record = (name) => async (...args) => { seen.push([name, ...args]); return name === 'saveFile' ? '/Users/me/Downloads/a.md' : null; };
+  const bridge = { shell: Object.fromEntries(['pickPath', 'saveFile', 'exportFile', 'openArtifact', 'setBadge', 'attention', 'startupFolders', 'quitHeard', 'quitApp'].map((n) => [n, record(n)])) };
+  const calls = [];
+  const transport = { call: async (cmd, args) => { calls.push([cmd, args]); return null; } };
+  const shell = electronShell(bridge, transport, false);
+  assert.equal(shell.quitStopsWork, false);
+  await shell.pickFolder();
+  assert.equal(await shell.artifactSave('a.md', 'x'), '/Users/me/Downloads/a.md');
+  await shell.exportThread('t.md', 'y');
+  await shell.artifactOpenExternal('page.html', '<p>');
+  await shell.flagAttention(3, false);
+  await shell.flagAttention(0, true);
+  await shell.requestCriticalAttention();
+  await shell.openTarget('src/a.ts', '/w', true);
+  await shell.copyAttachment('t', '/Users/me/pic.png');
+  assert.deepEqual(seen, [
+    ['pickPath', 'directory', 'Add a workspace folder'],
+    ['saveFile', 'a.md', 'x'],
+    ['exportFile', 't.md', 'y'],
+    ['openArtifact', 'page.html', '<p>'],
+    ['setBadge', 3],
+    ['setBadge', 0], ['attention', false],
+    ['attention', true],
+  ]);
+  assert.deepEqual(calls, [
+    ['open_target', { target: 'src/a.ts', cwd: '/w', reveal: true }],
+    ['copy_attachment', { room: 't', path: '/Users/me/pic.png' }],
+  ]);
+});

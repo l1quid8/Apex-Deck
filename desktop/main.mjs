@@ -3,11 +3,13 @@
 // The window speaks the protocol itself (src/daemon/client.ts); main only
 // relays lines and does what needs the machine with the screen.
 
-import { app, BrowserWindow, ipcMain, net, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { appFile } from './files.mjs';
+import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
 import { socketLink } from './link.mjs';
+import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon } from './sidecar.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -108,6 +110,130 @@ ipcMain.handle('connection:current', async () => {
 
 ipcMain.on('apex:smoke', (event) => { event.returnValue = smoke; });
 
+// ------------------------------------------------------------ the shell's jobs
+// What the person saves or opens lands on this machine, the one with the screen.
+
+/** The main window, once made. */
+let win = null;
+
+/** Handle `channel` only for the Deck window's own page. */
+function handle(channel, run) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!fromUi(event)) throw new Error('Not the Deck window.');
+    return run(...args);
+  });
+}
+
+handle('shell:pickPath', async (kind, title) => {
+  const picked = await dialog.showOpenDialog(win, {
+    title: String(title || ''),
+    properties: [kind === 'directory' ? 'openDirectory' : 'openFile', 'createDirectory'],
+  });
+  return picked.canceled ? null : (picked.filePaths[0] ?? null);
+});
+
+handle('shell:saveFile', async (name, contents) => {
+  const picked = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), safeName(name)) });
+  if (picked.canceled || !picked.filePath) return null;
+  await fs.promises.writeFile(picked.filePath, String(contents));
+  return picked.filePath;
+});
+
+handle('shell:exportFile', async (name, contents) => {
+  try {
+    return writeNew(app.getPath('downloads'), name, String(contents));
+  } catch (e) {
+    throw new Error(`Could not save the export: ${e.message}`);
+  }
+});
+
+handle('shell:openArtifact', async (name, contents) => {
+  // Opened in its default app, outside the sandbox; kept apart from Downloads.
+  const file = writeNew(path.join(app.getPath('userData'), 'exports'), name, String(contents));
+  const problem = await shell.openPath(file);
+  if (problem) throw new Error(problem);
+});
+
+handle('shell:openExternal', async (url) => openExternally(url));
+
+handle('shell:setBadge', async (count) => {
+  app.setBadgeCount(Math.max(0, Number(count) || 0));
+});
+
+handle('shell:attention', async (critical) => {
+  if (process.platform === 'darwin') app.dock?.bounce(critical ? 'critical' : 'informational');
+  else win?.flashFrame(true);
+});
+
+handle('shell:startupFolders', async () => startupFolders(process.argv, app.isPackaged, (folder) => {
+  try {
+    return fs.statSync(folder).isDirectory();
+  } catch {
+    return false;
+  }
+}));
+
+// ------------------------------------------------------------ quitting
+
+/** Quit now: the person chose to, nothing was running, or the window never answered. */
+async function finishQuit() {
+  gate.confirm();
+  // The daemon Deck started ends with it; a daemon it found goes on.
+  if (local?.owned) await local.stop();
+  app.exit(0);
+}
+
+const gate = new QuitGate({ letThrough: () => void finishQuit() });
+
+/** Hold a close or quit and ask the window; false when nothing holds it. */
+function askToQuit() {
+  const request = gate.request();
+  if (request === null) return false;
+  if (win && !win.isDestroyed()) win.webContents.send('quit-requested', request);
+  return true;
+}
+
+handle('shell:quitHeard', async (request) => gate.heard(Number(request)));
+handle('shell:quitApp', async () => finishQuit());
+
+function menu() {
+  const toWindow = (action) => () => win?.webContents.send('menu', action);
+  const mac = process.platform === 'darwin';
+  return Menu.buildFromTemplate([
+    ...(mac ? [{
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: toWindow('settings') },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    }] : []),
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' }, { role: 'redo' }, { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'pasteAndMatchStyle' }, { role: 'delete' }, { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' },
+        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' },
+      ],
+    },
+    { role: 'windowMenu' },
+  ]);
+}
+
 function openExternally(url) {
   try {
     if (['http:', 'https:'].includes(new URL(url).protocol)) void shell.openExternal(url);
@@ -117,7 +243,7 @@ function openExternally(url) {
 }
 
 function createWindow() {
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
@@ -143,6 +269,10 @@ function createWindow() {
     openExternally(url);
     return { action: 'deny' };
   });
+  // The close button and ⌘W ask the window first, like Quit.
+  win.on('close', (event) => {
+    if (askToQuit()) event.preventDefault();
+  });
   void win.loadURL(devUrl || 'app://deck/');
   return win;
 }
@@ -153,25 +283,23 @@ app.whenReady().then(async () => {
     if (!file) return new Response('Not found', { status: 404 });
     return net.fetch(pathToFileURL(file).toString());
   });
-  const win = createWindow();
+  Menu.setApplicationMenu(menu());
+  createWindow();
   if (smoke) {
     const { runSmoke } = await import('./smoke.mjs');
-    const code = await runSmoke(win).catch((e) => {
+    const code = await runSmoke(win, { sidecar: () => local }).catch((e) => {
       console.error(`smoke: ${e.stack ?? e}`);
       return 1;
     });
-    await local?.stop?.();
-    app.exit(code);
+    // null: the smoke run ended by quitting the way the person would.
+    if (code !== null) {
+      await local?.stop?.();
+      app.exit(code);
+    }
   }
 });
 
-app.on('window-all-closed', () => app.quit());
-
-let stopped = false;
-app.on('will-quit', (event) => {
-  // The daemon Deck started ends with it; give it time to wind down.
-  if (stopped || !local?.owned) return;
-  event.preventDefault();
-  stopped = true;
-  void local.stop().finally(() => app.quit());
+// ⌘Q and Quit in the menu ask the window first.
+app.on('before-quit', (event) => {
+  if (askToQuit()) event.preventDefault();
 });
