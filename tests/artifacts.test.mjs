@@ -107,3 +107,20 @@ test("times read as a few words, and export names are safe file names", () => {
   assert.equal(exportName({ title: "App icon", kind: "svg" }, 1), "app-icon-v1.svg");
   assert.equal(exportName({ title: "✓✓", kind: "markdown" }, 2), "artifact-v2.md");
 });
+
+test("a finished reply's last HTML or SVG fence becomes an artifact", async () => {
+  const { fromReply } = await import("../src/artifacts.ts");
+  const code = [{ language: "html", text: "<p>one</p>" }, { language: "js", text: "x()" }, { language: "svg", text: "<svg></svg>" }];
+  const out = fromReply(EMPTY_ARTIFACTS, code, v(""), "a1");
+  assert.equal(out.artifact.kind, "svg");
+  assert.equal(out.artifact.versions[0].source, "<svg></svg>");
+  assert.equal(out.artifact.versions[0].seq, 1);
+  assert.equal(fromReply(out.file, code, v(""), "a2").artifact, null, "the same reply adds nothing twice");
+});
+
+test("markdown, other languages and oversized fences don't open on their own", async () => {
+  const { fromReply } = await import("../src/artifacts.ts");
+  assert.equal(fromReply(EMPTY_ARTIFACTS, [{ language: "md", text: "# Hi" }], v(""), "a").artifact, null);
+  assert.equal(fromReply(EMPTY_ARTIFACTS, [{ language: "ts", text: "<p>" }], v(""), "a").artifact, null);
+  assert.equal(fromReply(EMPTY_ARTIFACTS, [{ language: "html", text: "x".repeat(MAX_SOURCE + 1) }], v(""), "a").artifact, null);
+});

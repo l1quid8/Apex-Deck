@@ -144,6 +144,20 @@ export function upsertFromFile(file: ArtifactFile, path: string, version: NewVer
   return { file: { version: 1, artifacts: [...file.artifacts, artifact] }, artifact, added: true };
 }
 
+/**
+ * A finished reply's code: its last HTML or SVG block that isn't an artifact
+ * yet becomes one. Markdown fences are usually examples, so they wait for a click.
+ */
+export function fromReply(file: ArtifactFile, code: { language: string; text: string }[], version: NewVersion, newId: string): { file: ArtifactFile; artifact: Artifact | null } {
+  for (let i = code.length - 1; i >= 0; i--) {
+    const choices = codeChoices(file, version.seq ?? -1, code[i].language, code[i].text);
+    if (!choices || choices.kind === "markdown" || choices.tooLarge) continue;
+    if (choices.opened) return { file, artifact: null };
+    return addArtifact(file, newId, choices.kind, { ...version, source: code[i].text });
+  }
+  return { file, artifact: null };
+}
+
 const lastAt = (artifact: Artifact) => artifact.versions[artifact.versions.length - 1].at;
 
 /** Most recently changed first. */
@@ -198,4 +212,15 @@ export function ago(at: number, now: number): string {
 export function exportName(artifact: Pick<Artifact, "title" | "kind">, n: number): string {
   const slug = artifact.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "artifact";
   return `${slug}-v${n}.${EXTENSION[artifact.kind]}`;
+}
+
+const AUTO_OPEN_KEY = "apex-deck.artifacts.autoOpen";
+
+/** Whether the pane opens by itself when a bot writes a file it can show. On unless turned off. */
+export function artifactAutoOpen(): boolean {
+  try { return localStorage.getItem(AUTO_OPEN_KEY) !== "off"; } catch { return true; }
+}
+
+export function setArtifactAutoOpen(on: boolean) {
+  try { localStorage.setItem(AUTO_OPEN_KEY, on ? "on" : "off"); } catch { /* not saved */ }
 }

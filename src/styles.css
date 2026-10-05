@@ -2377,7 +2377,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .tldr-pill span:first-child { border-radius: 999px 0 0 999px; background: var(--tldr-hot); color: #fff; }
 .tldr-pill span:last-child { border-radius: 0 999px 999px 0; background: var(--tldr-amber); color: #1a0710; }
 .composer-field > .tldr-pill[aria-pressed="true"] { font-size: 8.75px; border-color: transparent; filter: none; box-shadow: 0 0 7px var(--tldr-hot), 0 0 15px color-mix(in srgb, var(--tldr-amber) 50%, transparent); }
-.tldr-tag { display: inline-block; margin-right: 6px; padding: 0 5px; font-size: 9px; font-weight: 800; border-radius: 999px; background: linear-gradient(90deg, var(--tldr-hot), var(--tldr-amber)); color: #1a0710; vertical-align: 2px; }
 @media (prefers-reduced-motion: reduce) {
   .composer.tldr .composer-field, .composer.tldr .composer-field:focus-within { animation: none; box-shadow: 0 0 16px -4px var(--tldr-hot), 0 0 26px -8px var(--tldr-amber); }
   .composer-field > .tldr-pill:hover { animation: none; }
@@ -2394,3 +2393,13 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   vertical-align: middle;
 }
 .md code .msg-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+
+/* A new artifact arrived while the pane stayed shut. */
+.artifact-glow { animation: artifact-glow 2.2s ease-out; }
+@keyframes artifact-glow {
+  0%, 60% { box-shadow: 0 0 0 1px var(--accent, #4f8cff), 0 0 14px 2px color-mix(in srgb, var(--accent, #4f8cff) 55%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .artifact-glow { animation: none; box-shadow: 0 0 0 1px var(--accent, #4f8cff); }
+}

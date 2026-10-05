@@ -4,8 +4,9 @@ import { ReplyPolicyPicker, REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
+import { parseBlocks } from "./markdownText";
 import { ArtifactsPanel, DEFAULT_VIEW, type PanelView } from "./ArtifactsPanel";
-import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindForPath, kindOf, pickVersion, readArtifacts, upsertFromFile, type ArtifactFile } from "./artifacts";
+import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindForPath, kindOf, pickVersion, readArtifacts, artifactAutoOpen, upsertFromFile, fromReply, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
@@ -386,6 +387,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** Files written this turn, by path, with who wrote them; see collectWritten. */
   const written = useRef(new Map<string, string>());
   const collectWritten = useRef<(bot: string) => void>(() => {});
+  /** HTML or SVG fenced in a reply as it arrives; see collectReply below. */
+  const collectReply = useRef<(message: { seq: number; text: string; speaker: Speaker }) => void>(() => {});
   const showChanges = Boolean(details?.open && details.target === pane.id && !details.collapsed.changes);
   const showChangesRef = useRef(false);
   showChangesRef.current = showChanges;
@@ -626,6 +629,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             // Replies loaded with the thread don't: those were seen already.
             const servers = findServerUrls(event.message.text);
             if (servers.length > 0) preview.current?.(servers[servers.length - 1], true);
+            collectReply.current(event.message);
             const left = pendingLow.current.get(id);
             pendingLow.current.delete(id);
             if (left !== undefined) {
@@ -1318,10 +1322,38 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
 
   // Files a bot wrote that the pane can show become artifacts when its turn
-  // ends, or new versions of the ones already made from them. The pane
-  // isn't opened for them; the Artifacts button says there is something new.
+  // ends, or new versions of the ones already made from them. The pane opens
+  // beside the chat to show them, without taking focus, unless that would get
+  // in the way: the person closed it since their last message, is typing, the
+  // window is too narrow to share, or auto-open is off. Then the Artifacts
+  // button glows briefly and keeps a dot.
   const [unseenArtifacts, setUnseenArtifacts] = useState(0);
+  const [artifactGlow, setArtifactGlow] = useState(0);
   useEffect(() => { if (panel) setUnseenArtifacts(0); }, [panel]);
+  const panelWasOpen = useRef(false);
+  const panelDismissed = useRef(false);
+  useEffect(() => {
+    if (panelWasOpen.current && !panel) panelDismissed.current = true;
+    panelWasOpen.current = panel !== null;
+  }, [panel]);
+  const lastComposerKey = useRef(0);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (composer.current?.contains(event.target as Node)) lastComposerKey.current = Date.now(); };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, []);
+  useEffect(() => {
+    if (!artifactGlow) return;
+    const timer = window.setTimeout(() => setArtifactGlow(0), 2200);
+    return () => window.clearTimeout(timer);
+  }, [artifactGlow]);
+  const announceArtifact = (artifactId: string, n: number) => {
+    const typing = Date.now() - lastComposerKey.current < 2000;
+    if (panelWasOpen.current) { showVersion(artifactId, n); return; }
+    if (artifactAutoOpen() && !panelDismissed.current && !typing && !narrow) { showVersion(artifactId, n); return; }
+    setUnseenArtifacts((count) => count + 1);
+    setArtifactGlow(Date.now());
+  };
   collectWritten.current = (bot: string) => {
     const paths = [...written.current].filter(([path, by]) => by === bot && kindForPath(path)).map(([path]) => path);
     for (const path of paths) written.current.delete(path);
@@ -1332,9 +1364,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         const out = upsertFromFile(latestArtifacts.current, path, { source, by: bot, seq: null, at: Date.now() }, `art-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
         if (!out.added) return;
         changeArtifacts(out.file);
-        setUnseenArtifacts((n) => n + 1);
+        if (out.artifact) announceArtifact(out.artifact.id, out.artifact.versions.length);
       }, () => {});
     }
+  };
+
+  // HTML or SVG fenced in a live reply opens the same way. Replies loaded
+  // with the thread don't: those were seen already.
+  collectReply.current = (message) => {
+    if (!artifactsReadable.current || message.speaker.kind !== "bot") return;
+    const code = parseBlocks(message.text).flatMap((block) => (block.kind === "code" ? [{ language: block.language, text: block.text }] : []));
+    if (code.length === 0) return;
+    const out = fromReply(latestArtifacts.current, code, { source: "", by: message.speaker.id, seq: message.seq, at: Date.now() }, `art-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
+    if (!out.artifact) return;
+    changeArtifacts(out.file);
+    announceArtifact(out.artifact.id, 1);
   };
 
   const showVersion = (artifactId: string, n: number) => setPanel((view) => ({ ...(view ?? DEFAULT_VIEW), artifactId, n, list: false }));
@@ -1492,6 +1536,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     ? resolveServerRequests(requestedServers, serverTargets.flatMap(id => serverLists[id])).unknown : [];
 
   const send = async (steer = false) => {
+    panelDismissed.current = false;
     const targetIds = await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
     const invalid = targetIds.length && targetIds.every(id => serverLists[id] !== undefined)
       ? resolveServerRequests(parseServerRequests(text).map(s => s.name), targetIds.flatMap(id => serverLists[id])).unknown : [];
@@ -2057,7 +2102,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
 
 
-        {!profileMode && <div className="thread-counts">{artifacts.artifacts.length > 0 && <button className={panel ? "ghost small on" : "ghost small"} aria-pressed={panel !== null} onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>Artifacts · {artifacts.artifacts.length}{unseenArtifacts > 0 && !panel && <span className="new-dot" aria-label={`${unseenArtifacts} new`} />}</button>}{changes.length > 0 && <button className="ghost small" onClick={() => { details?.show("changes"); loadDiff(); }}>Changes · {new Set(changes.map(c => c.change.path)).size}</button>}</div>}
+        {!profileMode && <div className="thread-counts">{artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${panel ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={panel !== null} onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>Artifacts · {artifacts.artifacts.length}{unseenArtifacts > 0 && !panel && <span className="new-dot" aria-label={`${unseenArtifacts} new`} />}</button>}{changes.length > 0 && <button className="ghost small" onClick={() => { details?.show("changes"); loadDiff(); }}>Changes · {new Set(changes.map(c => c.change.path)).size}</button>}</div>}
       </div>
 
       {!profileMode && pins.length > 0 && pinControls}
@@ -2133,7 +2178,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <div key={`m${entry.message.seq}`} className="message-row human-row" data-seq={entry.message.seq}>
               {messageActions(entry.message)}
               <div className="bubble human">
-                {splitTldr(entry.message.text).tldr && <span className="tldr-tag" title="Sent in TL;DR mode">TL;DR</span>}
                 <RichText text={splitTldr(entry.message.text).text} onOpen={openTarget} />
               </div>
             </div>

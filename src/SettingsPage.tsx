@@ -2,6 +2,7 @@
 // It takes the place of the deck until closed. Per-thread and per-bot
 // controls stay in thread details and the Agents tab.
 
+import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Backend } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
@@ -104,11 +105,18 @@ function Stepper({ value, min, max, unit, label, onChange }: { value: number; mi
 function General({ backend }: { backend: Backend }) {
   const [folder, setFolder] = useState("");
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
+  const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
   useEffect(() => { backend.dataFolder().then(setFolder, () => setFolder("")); }, [backend]);
   return <div className="settings-card">
     <Row label="Theme" note="Dark is the only theme for now."><select disabled value="dark" aria-label="Theme"><option value="dark">Dark</option></select></Row>
     <Row label="Saved in" note={<span className="mono">{folder || "…"}</span>}>
       {!backend.demo && <button disabled={!folder} onClick={() => backend.openTarget(folder, null, false).catch(() => {})}>Show in Finder</button>}
+    </Row>
+    <Row label="New artifacts" note="When a bot writes a file the artifacts pane can show.">
+      <select aria-label="New artifacts" value={autoOpen ? "open" : "notify"} onChange={(e) => { const on = e.target.value === "open"; setArtifactAutoOpen(on); setAutoOpen(on); }}>
+        <option value="open">Open the pane</option>
+        <option value="notify">Just notify</option>
+      </select>
     </Row>
     <Row label="Remembered models" note={remembered === 0 ? "None yet. Model names you type in the bot form are offered again next time." : `Model names from ${remembered} ${remembered === 1 ? "provider" : "providers"}, offered again in the bot form.`}>
       <button disabled={remembered === 0} onClick={() => { forgetModels(); setRemembered(0); }}>Clear</button>
