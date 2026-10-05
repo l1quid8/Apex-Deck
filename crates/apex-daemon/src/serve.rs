@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use apex_host::lock::DataLock;
-use apex_host::{Host, HostPaths};
+use apex_host::HostPaths;
 use serde_json::json;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 
@@ -58,10 +58,9 @@ fn private_folder(data: &Path) -> Result<(), String> {
 async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: DataLock) -> Result<(), String> {
     let stop = signals::stop_requested()?;
     tokio::pin!(stop);
-    let host = Host::new(paths.clone(), tokio::runtime::Handle::current());
     let token = identity::random_hex(32);
     files::write_private(&paths.data.join("daemon-token"), &format!("{token}\n"))?;
-    let daemon = Arc::new(Daemon { host, host_id: identity::host_id(&paths.data)?, boot_id: identity::boot_id(), token: Some(token) });
+    let daemon = Daemon::start(&paths, Some(token))?;
 
     let listener = TcpListener::bind((options.bind, options.port)).await.map_err(|e| format!("could not listen on {}:{}: {e}", options.bind, options.port))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();

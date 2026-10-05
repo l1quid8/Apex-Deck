@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use apex_host::lock::{DataLock, LockError};
-use apex_host::{Host, HostPaths};
+use apex_host::HostPaths;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{self, Daemon, Trust};
-use crate::{identity, paths, serve, signals};
+use crate::{paths, serve, signals};
 
 pub fn run(data_dir: Option<PathBuf>, attach: bool) -> Result<(), String> {
     let paths = paths::host_paths(data_dir)?;
@@ -82,8 +82,8 @@ fn run_in_process(paths: HostPaths, _lock: DataLock, stdin: File, stdout: File) 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     runtime.block_on(async {
         let stop = signals::stop_requested()?;
-        let host = Host::new(paths.clone(), tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon { host: Arc::clone(&host), host_id: identity::host_id(&paths.data)?, boot_id: identity::boot_id(), token: None });
+        let daemon = Daemon::start(&paths, None)?;
+        let host = Arc::clone(&daemon.host);
         eprintln!("apex-daemon: running the host in this process; its work stops when this connection closes");
         let (input, output) = protocol::lines(tokio::fs::File::from_std(stdin), tokio::fs::File::from_std(stdout));
         tokio::select! {

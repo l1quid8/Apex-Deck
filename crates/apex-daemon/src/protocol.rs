@@ -42,6 +42,16 @@ pub struct Daemon {
     pub token: Option<String>,
 }
 
+impl Daemon {
+    /// Open the host on `paths` with a new boot id. Call inside the runtime.
+    pub fn start(paths: &apex_host::HostPaths, token: Option<String>) -> Result<Arc<Daemon>, String> {
+        let host = Host::new(paths.clone(), tokio::runtime::Handle::current());
+        // The daemon's arguments (`--data-dir PATH`) are not workspaces.
+        host.set_startup_folders(Vec::new());
+        Ok(Arc::new(Daemon { host, host_id: crate::identity::host_id(&paths.data)?, boot_id: crate::identity::boot_id(), token }))
+    }
+}
+
 /// How a connection proved who it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trust {

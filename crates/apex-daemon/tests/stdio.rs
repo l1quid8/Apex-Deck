@@ -48,3 +48,14 @@ fn output_from_programs_the_host_starts_stays_out_of_the_protocol() {
     client.process.wait_for_log("stray-output-from-a-child");
     assert_eq!(client.call("session_load", json!({})).1, Ok(json!(null)));
 }
+
+/// The daemon's own arguments (its --data-dir, say) are not folders for a
+/// client to open as workspaces.
+#[test]
+fn the_daemon_has_no_startup_folders() {
+    let data = temp_dir();
+    std::fs::create_dir_all(&data.0).unwrap();
+    let mut client = StdioClient::spawn(&["--stdio"], &data.0);
+    client.hello(None);
+    assert_eq!(client.call("startup_folders", json!({})).1, Ok(json!([])));
+}

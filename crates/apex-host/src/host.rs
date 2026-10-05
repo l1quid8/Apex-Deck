@@ -53,6 +53,8 @@ pub struct Host {
     rooms: Mutex<HashMap<String, RoomHandle>>,
     /// Turn chains running now, counted until they have saved.
     chains: AtomicUsize,
+    /// Set by a shell whose command line isn't a list of folders (the daemon).
+    startup: Mutex<Option<Vec<String>>>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -91,6 +93,7 @@ impl Host {
             ptys: PtyManager::default(),
             rooms: Mutex::default(),
             chains: AtomicUsize::new(0),
+            startup: Mutex::new(None),
         })
     }
 
@@ -135,8 +138,15 @@ impl Host {
 
     // ------------------------------------------------------------ startup
 
+    /// Folders to open at launch: those named on this process's command
+    /// line, unless the shell said otherwise.
     pub fn startup_folders(&self) -> Vec<String> {
-        folders_from_args(std::env::args().skip(1))
+        self.startup.lock().unwrap().clone().unwrap_or_else(|| folders_from_args(std::env::args().skip(1)))
+    }
+
+    /// Use `folders` as the startup folders instead of the command line.
+    pub fn set_startup_folders(&self, folders: Vec<String>) {
+        *self.startup.lock().unwrap() = Some(folders);
     }
 
     pub async fn list_tool_servers(&self, room: String, agent: String) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
