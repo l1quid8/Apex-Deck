@@ -172,8 +172,9 @@ async fn room_diff(host: HostState<'_>, id: String) -> Result<changes::ThreadDif
     host.room_diff(id).await
 }
 
+/// Async so the snapshot copy runs off the main thread, as it always has.
 #[tauri::command]
-fn room_fork(host: HostState<'_>, source: String, target: String, upto: Option<usize>) -> Result<(), String> {
+async fn room_fork(host: HostState<'_>, source: String, target: String, upto: Option<usize>) -> Result<(), String> {
     host.room_fork(source, target, upto)
 }
 
