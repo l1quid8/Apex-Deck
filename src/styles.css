@@ -2437,6 +2437,13 @@ body.mod-resizing iframe { pointer-events: none; }
 .mod-toast { max-width: 420px; text-align: left; padding: 8px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); box-shadow: 0 8px 24px #0007; }
 .mod-toast.error { border-color: var(--danger); }
 .mod-status { white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+.mod-status-wrap { position: relative; display: inline-flex; min-width: 0; flex: 0 1 auto; }
+button.mod-status { cursor: pointer; }
+button.mod-status:hover { color: var(--text); }
+.mod-status-chevron { margin-left: 4px; opacity: .7; }
+.mod-status-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 50; min-width: 180px; display: flex; flex-direction: column; padding: 4px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.mod-status-menu button { text-align: left; padding: 6px 10px; border: 0; border-radius: 6px; background: none; color: var(--text); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.mod-status-menu button:hover { background: var(--panel-2); }
 .mod-list { display: flex; flex-direction: column; gap: 12px; }
 .mod-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
 .mod-card-head { display: flex; align-items: center; gap: 8px; }
@@ -2446,3 +2453,5 @@ body.mod-resizing iframe { pointer-events: none; }
 .mod-grants label, .mod-options label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .mod-options { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .mod-options input[type="text"], .mod-options input[type="number"], .mod-options select { flex: 1; }
+.mod-option-input { display: flex; flex: 1; gap: 6px; }
+.mod-option-input input { flex: 1; }

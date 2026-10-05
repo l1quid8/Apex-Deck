@@ -1,10 +1,10 @@
 import { useState } from "react";
 
 import type { Backend } from "./backend";
-import { GRANTS, modHost, optionsOf, type Grant, type ModEntry } from "./mods/host";
+import { enableBlocker, GRANTS, modHost, optionsOf, type Grant, type ModEntry, type UserConfigField } from "./mods/host";
 import { useMods } from "./ModView";
 
-// Settings → Mods: add a mod folder, review what it may do, turn it on.
+// Settings → Mods: install a mod folder (Deck runs its own copy), review what it may do, turn it on.
 
 export function ModsSettings({ backend }: { backend: Backend }) {
   const mods = useMods();
@@ -24,16 +24,18 @@ export function ModsSettings({ backend }: { backend: Backend }) {
       <div><button type="button" onClick={add}>Add mod folder…</button></div>
       {problem && <p className="error">{problem}</p>}
       {mods.mods.length === 0 && <p className="muted">No mods yet. A mod is a Claude Code plugin folder whose hooks/hooks.json names <code>modules</code>.</p>}
-      {mods.mods.map((mod) => <ModCard key={mod.name} mod={mod} />)}
+      {mods.mods.map((mod) => <ModCard key={mod.name} mod={mod} backend={backend} />)}
     </div>
   );
 }
 
-function ModCard({ mod }: { mod: ModEntry }) {
+function ModCard({ mod, backend }: { mod: ModEntry; backend: Backend }) {
   const mods = useMods();
   const run = mods.runs[mod.name];
-  const [grants, setGrants] = useState<Grant[]>(mod.enabled ? mod.grants : GRANTS.map((g) => g.id));
-  const [showOptions, setShowOptions] = useState(false);
+  const [grants, setGrants] = useState<Grant[]>(mod.enabled ? mod.grants : []);
+  // Before it's on, the settings are part of the review; after, they fold away.
+  const [showOptions, setShowOptions] = useState(!mod.enabled);
+  const blocker = mod.enabled ? "" : enableBlocker(mod);
   const options = optionsOf(mod);
   const setOption = (key: string, value: unknown) => modHost.setOptions(mod.name, { ...mod.options, [key]: value });
   const state = !mod.enabled ? "Off" : run?.state === "ready" ? "On" : run?.state === "failed" ? "Failed" : "Starting…";
@@ -43,10 +45,11 @@ function ModCard({ mod }: { mod: ModEntry }) {
         <strong>{mod.name}</strong>
         <span className="muted">{state}</span>
         {mod.enabled && <button type="button" className="ghost small" onClick={() => void modHost.reload(mod.name)}>Reload</button>}
+        {mod.source && <button type="button" className="ghost small" title="Copy the source folder in again" onClick={() => void modHost.add(mod.source!)}>Reinstall</button>}
         <button type="button" className="ghost small" onClick={() => modHost.remove(mod.name)}>Remove</button>
       </div>
       {mod.description && <span className="muted">{mod.description}</span>}
-      <span className="muted">{mod.dir}</span>
+      <span className="muted" title={mod.dir}>{mod.source ? `Installed from ${mod.source}` : mod.dir}</span>
       {run?.state === "failed" && <span className="error">{run.error}</span>}
       {run?.commands.length ? <span className="muted">Commands: {run.commands.map((c) => `/${c.name}`).join(", ")}</span> : null}
       <div className="mod-grants">
@@ -62,9 +65,10 @@ function ModCard({ mod }: { mod: ModEntry }) {
       <div>
         {mod.enabled
           ? <button type="button" onClick={() => modHost.setEnabled(mod.name, false)}>Turn off</button>
-          : <button type="button" className="primary" onClick={() => modHost.setEnabled(mod.name, true, grants)}>Turn on with these permissions</button>}
+          : <button type="button" className="primary" disabled={!!blocker} title={blocker} onClick={() => modHost.setEnabled(mod.name, true, grants)}>Turn on with these permissions</button>}
         {Object.keys(mod.userConfig).length > 0 && <button type="button" className="ghost small" onClick={() => setShowOptions((s) => !s)}>{showOptions ? "Hide options" : "Options"}</button>}
       </div>
+      {blocker && <span className="error">{blocker}</span>}
       {showOptions && (
         <div className="mod-options">
           {Object.entries(mod.userConfig).map(([key, field]) => (
@@ -74,8 +78,14 @@ function ModCard({ mod }: { mod: ModEntry }) {
                 ? <input type="checkbox" checked={options[key] === true} onChange={(e) => setOption(key, e.target.checked)} />
                 : field.options
                   ? <select value={String(options[key] ?? "")} onChange={(e) => setOption(key, e.target.value)}>{field.options.map((o) => <option key={o}>{o}</option>)}</select>
-                  : <input type={field.type === "number" ? "number" : "text"} value={String(options[key] ?? "")}
-                      onChange={(e) => setOption(key, field.type === "number" ? Number(e.target.value) : e.target.value)} />}
+                  : <span className="mod-option-input">
+                      <input type={field.type === "number" ? "number" : "text"} value={String(options[key] ?? "")}
+                        onChange={(e) => setOption(key, field.type === "number" ? Number(e.target.value) : e.target.value)} />
+                      {pickerKind(field) && <button type="button" className="ghost small" onClick={async () => {
+                        const picked = await backend.pickPath(pickerKind(field)!, field.title ?? key);
+                        if (picked) setOption(key, picked);
+                      }}>Choose…</button>}
+                    </span>}
             </label>
           ))}
           <span className="muted">Options apply when the mod next starts{mod.enabled ? "; press Reload" : ""}.</span>
@@ -83,4 +93,13 @@ function ModCard({ mod }: { mod: ModEntry }) {
       )}
     </section>
   );
+}
+
+/** Which picker a setting gets: declared directory/file types, or a string
+ *  whose title or description says it's a folder or file. */
+function pickerKind(field: UserConfigField): "directory" | "file" | null {
+  if (field.type === "directory" || field.type === "file") return field.type;
+  if (field.type !== "string" || field.options) return null;
+  const text = `${field.title ?? ""} ${field.description ?? ""}`.toLowerCase();
+  return /\b(folder|directory)\b/.test(text) ? "directory" : /\b(file|path)\b/.test(text) ? "file" : null;
 }

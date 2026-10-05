@@ -240,13 +240,45 @@ export function ModDock({ panes, overlay }: { panes: ModPane[]; overlay?: boolea
 }
 
 /** Focused panes (confirm dialogs), toasts and status chips, over the whole window. */
-/** Mod status lines, drawn in each thread's header so they never cover a composer. */
-export function ModStatuses({ paneId }: { paneId: string }) {
+/** Mod status lines, drawn in the header of the thread hosting the mod. The
+ *  chevron opens or closes the mod's pane, or removes the badge. */
+export function ModStatuses({ paneId, columns }: { paneId: string; columns?: number }) {
   const mods = useMods();
   if (mods.hostPane !== paneId) return null;
-  const statuses = Object.entries(mods.runs).filter(([, r]) => r.status);
+  const statuses = Object.entries(mods.runs).filter(([name, r]) => r.status && !mods.hiddenStatus.includes(name));
   if (statuses.length === 0) return null;
-  return <>{statuses.map(([name, r]) => <span key={name} className="mod-status" title={name}>{r.status}</span>)}</>;
+  return <>{statuses.map(([name, r]) => <ModStatus key={name} paneId={paneId} name={name} status={r.status!} command={r.commands[0]?.name} columns={columns} open={mods.panes.some((p) => p.mod === name && !p.focus)} />)}</>;
+}
+
+function ModStatus({ paneId, name, status, command, columns, open }: { paneId: string; name: string; status: string; command?: string; columns?: number; open: boolean }) {
+  const [menu, setMenu] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const away = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setMenu(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(false); };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+  }, [menu]);
+  const toggle = () => {
+    setMenu(false);
+    if (open) for (const p of modHost.snapshot().panes.filter((p) => p.mod === name && !p.focus)) modHost.close(p);
+    else if (command) void modHost.run(paneId, { mod: name, name: command, args: "" }, columns ?? 100);
+  };
+  return (
+    <span ref={ref} className="mod-status-wrap">
+      <button type="button" className="mod-status" title={name} aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu((m) => !m)}>
+        {status} <span className="mod-status-chevron" aria-hidden>▾</span>
+      </button>
+      {menu && (
+        <div className="mod-status-menu" role="menu">
+          {command && <button type="button" role="menuitem" onClick={toggle}>{open ? `Close /${command} pane` : `Open /${command} pane`}</button>}
+          <button type="button" role="menuitem" onClick={() => { setMenu(false); modHost.hideStatus(name); }}>Remove status badge</button>
+        </div>
+      )}
+    </span>
+  );
 }
 
 export function ModOverlays() {

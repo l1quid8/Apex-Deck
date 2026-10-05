@@ -14,15 +14,21 @@ export const GRANTS: { id: Grant; label: string }[] = [
 ];
 
 export interface UserConfigField {
-  type: "string" | "number" | "boolean";
+  /** directory and file are strings Deck asks for with a picker. */
+  type: "string" | "number" | "boolean" | "directory" | "file";
   title?: string;
   description?: string;
   default?: unknown;
   options?: string[];
+  /** Turning the mod on waits until this has a value. */
+  required?: boolean;
 }
 
 export interface ModEntry {
+  /** Deck's installed copy, which is what runs. */
   dir: string;
+  /** The folder it was installed from, for reinstalling. */
+  source?: string;
   name: string;
   description: string;
   enabled: boolean;
@@ -56,6 +62,8 @@ export interface ModSnapshot {
   toasts: ModToast[];
   /** The chat pane that last ran a mod command: docked panes show there. */
   hostPane: string | null;
+  /** Mods whose status badge the person removed; running one of its commands brings it back. */
+  hiddenStatus: string[];
 }
 
 const KEY = "deck.mods";
@@ -71,7 +79,7 @@ function loadList(): ModEntry[] {
   }
 }
 
-let snapshot: ModSnapshot = { mods: [], runs: {}, panes: [], toasts: [], hostPane: null };
+let snapshot: ModSnapshot = { mods: [], runs: {}, panes: [], toasts: [], hostPane: null, hiddenStatus: [] };
 const listeners = new Set<() => void>();
 const workers = new Map<string, Worker>();
 const pendingCommands = new Map<number, (result: { text?: string }) => void>();
@@ -109,13 +117,16 @@ export const modHost = {
     for (const mod of snapshot.mods) if (mod.enabled) void boot(mod);
   },
 
-  /** Read a folder as a mod and add it, disabled. */
-  async add(dir: string): Promise<ModEntry> {
-    const source = await invoke<ModSource>("mod_read", { dir });
-    const entry = entryFrom(source);
-    if (snapshot.mods.some((m) => m.name === entry.name)) throw new Error(`A mod called ${entry.name} is already added`);
-    saveList([...snapshot.mods, entry]);
-    return entry;
+  /** Copy a folder into Deck's mods folder and add it, disabled. Installing
+   *  a mod that's already added replaces its files and keeps its settings. */
+  async add(from: string): Promise<ModEntry> {
+    const dir = await invoke<string>("mod_install", { source: from });
+    const entry = { ...entryFrom(await invoke<ModSource>("mod_read", { dir })), source: from };
+    const old = snapshot.mods.find((m) => m.name === entry.name);
+    const next = old ? { ...entry, enabled: old.enabled, grants: old.grants, options: old.options } : entry;
+    saveList(old ? snapshot.mods.map((m) => (m.name === entry.name ? next : m)) : [...snapshot.mods, next]);
+    if (old?.enabled) { stop(next.name); void boot(next); }
+    return next;
   },
 
   remove(name: string) {
@@ -161,7 +172,7 @@ export const modHost = {
   run(pane: string, command: { mod: string; name: string; args: string }, columns: number): Promise<{ text?: string }> {
     const worker = workers.get(command.mod);
     if (!worker) return Promise.resolve({ text: `${command.mod} isn't running` });
-    set({ hostPane: pane });
+    set({ hostPane: pane, hiddenStatus: snapshot.hiddenStatus.filter((m) => m !== command.mod) });
     const id = ++commandIds;
     return new Promise((done) => {
       pendingCommands.set(id, done);
@@ -187,6 +198,10 @@ export const modHost = {
     workers.get(pane.mod)?.postMessage({ type: "closed", pane: pane.id });
   },
 
+  hideStatus(mod: string) {
+    if (!snapshot.hiddenStatus.includes(mod)) set({ hiddenStatus: [...snapshot.hiddenStatus, mod] });
+  },
+
   dismissToast(id: number) {
     set({ toasts: snapshot.toasts.filter((t) => t.id !== id) });
   },
@@ -204,6 +219,34 @@ export function optionsOf(mod: ModEntry): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(mod.userConfig)) if (field.default !== undefined) out[key] = field.default;
   return { ...out, ...mod.options };
+}
+
+/** Claude Code installs a mod under ~/.claude/mods/<name>/, and a mod's path
+ *  settings often default there. When that path doesn't exist but Deck's copy
+ *  has the same file, point the setting at the copy. */
+async function withInstalledPaths(mod: ModEntry): Promise<Record<string, unknown>> {
+  const options = optionsOf(mod);
+  const prefix = `~/.claude/mods/${mod.name}/`;
+  const home = await invoke<string | null>("mod_env_get", { name: "HOME" }).catch(() => null);
+  const exists = (path: string) => invoke("mod_fs_stat", { path }).then(() => true, () => false);
+  for (const [key, value] of Object.entries(options)) {
+    if (typeof value !== "string" || !value.startsWith(prefix) || !home) continue;
+    const local = `${mod.dir}/${value.slice(prefix.length)}`;
+    if (!(await exists(home + value.slice(1))) && (await exists(local))) options[key] = local;
+  }
+  return options;
+}
+
+/** Why the mod can't be turned on yet, or "" when it can. */
+export function enableBlocker(mod: ModEntry): string {
+  const options = optionsOf(mod);
+  for (const [key, field] of Object.entries(mod.userConfig)) {
+    const value = options[key];
+    // "auto" finds things with Linux tools, so on a Mac it can't stand in for a value.
+    const unset = value === undefined || value === "" || (value === "auto" && /Mac/.test(navigator.platform));
+    if (field.required && unset) return `Set ${field.title ?? key} first${value === "auto" ? "; auto can't find it on macOS" : ""}.`;
+  }
+  return "";
 }
 
 function toast(mod: string, text: string, tone: ModToast["tone"] = "info") {
@@ -265,6 +308,7 @@ async function boot(mod: ModEntry) {
     setRun(mod.name, { state: "failed", error: "hooks/hooks.json names no modules" });
     return;
   }
+  const options = await withInstalledPaths(mod);
   const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module", name: `mod:${mod.name}` });
   workers.set(mod.name, worker);
   worker.onerror = (event) => setRun(mod.name, { state: "failed", error: event.message || "The mod's worker stopped" });
@@ -302,5 +346,5 @@ async function boot(mod: ModEntry) {
       case "toast": toast(mod.name, m.text); break;
     }
   };
-  worker.postMessage({ type: "load", name: mod.name, files: source.files, modules, options: optionsOf(mod) });
+  worker.postMessage({ type: "load", name: mod.name, files: source.files, modules, options });
 }
