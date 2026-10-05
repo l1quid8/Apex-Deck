@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:e2e": "cargo build -p apex-daemon && node --experimental-strip-types --test tests/e2e/*.e2e.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
