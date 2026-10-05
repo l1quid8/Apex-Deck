@@ -16,3 +16,5 @@ dirs = "7"
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["signal", "io-std", "fs"] }
+futures.workspace = true
+tokio-util = { version = "0.7", features = ["codec"] }

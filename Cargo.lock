@@ -77,9 +77,11 @@ dependencies = [
  "apex-adapters",
  "apex-host",
  "dirs",
+ "futures",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
