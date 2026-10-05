@@ -56,7 +56,21 @@ fn private_folder(data: &Path) -> Result<(), String> {
 }
 
 async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: DataLock) -> Result<(), String> {
-    let stop = signals::stop_requested()?;
+    let signalled = signals::stop_requested()?;
+    let exit_on_stdin_close = options.exit_on_stdin_close;
+    let stdin_closed = async move {
+        if exit_on_stdin_close {
+            stdin_closes().await
+        } else {
+            std::future::pending().await
+        }
+    };
+    let stop = async move {
+        tokio::select! {
+            _ = signalled => {}
+            _ = stdin_closed => {}
+        }
+    };
     tokio::pin!(stop);
     let token = identity::random_hex(32);
     files::write_private(&paths.data.join("daemon-token"), &format!("{token}\n"))?;
@@ -96,6 +110,15 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     let _ = std::fs::remove_file(&info_path);
     daemon.host.wind_down(signals::WIND_DOWN).await;
     Ok(())
+}
+
+/// Resolves when stdin reaches its end or fails: the app holding the other
+/// end quit or died. What it sends is ignored.
+async fn stdin_closes() {
+    use tokio::io::AsyncReadExt;
+    let mut stdin = tokio::io::stdin();
+    let mut buffer = [0u8; 1024];
+    while matches!(stdin.read(&mut buffer).await, Ok(n) if n > 0) {}
 }
 
 /// Log a failed accept and pause, so an error that repeats (out of file

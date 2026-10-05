@@ -4,8 +4,9 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--data-dir PATH]
+usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-stdin-close] [--data-dir PATH]
        apex-daemon --stdio [--attach] [--data-dir PATH]
+       apex-daemon data-dir [--data-dir PATH]
 
   serve            run the host and listen on a localhost WebSocket and a local socket
   --stdio          speak the protocol on stdin/stdout (for SSH); attaches to a running
@@ -14,6 +15,9 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--data-dir 
   --port N         WebSocket port (default: one the system picks, written to daemon.json)
   --bind ADDR      WebSocket address (default 127.0.0.1)
   --insecure-bind  allow a non-localhost --bind before device pairing exists
+  --exit-on-stdin-close
+                   with serve: stop when stdin closes (the desktop app holds it open)
+  data-dir         print the data folder the daemon would use, and exit
   --data-dir PATH  where chats and settings live (default: the desktop app's folder)";
 
 /// What the daemon was asked to do.
@@ -21,6 +25,8 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--data-dir 
 pub enum Action {
     Serve(ServeOptions),
     Stdio { attach: bool },
+    /// Print the data folder.
+    DataDir,
     Help,
     Version,
 }
@@ -31,11 +37,14 @@ pub struct ServeOptions {
     pub port: u16,
     pub bind: IpAddr,
     pub insecure_bind: bool,
+    /// Stop when stdin reaches its end, as when the app that started the
+    /// daemon quits or dies.
+    pub exit_on_stdin_close: bool,
 }
 
 impl Default for ServeOptions {
     fn default() -> Self {
-        ServeOptions { port: 0, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), insecure_bind: false }
+        ServeOptions { port: 0, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), insecure_bind: false, exit_on_stdin_close: false }
     }
 }
 
@@ -49,6 +58,7 @@ pub struct Cli {
 pub fn parse(args: &[String]) -> Result<Cli, String> {
     let mut serve = false;
     let mut stdio = false;
+    let mut print_data_dir = false;
     let mut attach = false;
     let mut help = false;
     let mut version = false;
@@ -61,6 +71,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         match arg.as_str() {
             "serve" => serve = true,
             "--stdio" => stdio = true,
+            "data-dir" => print_data_dir = true,
             "--attach" => attach = true,
             "-h" | "--help" => help = true,
             "-V" | "--version" => version = true,
@@ -79,6 +90,10 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 options.insecure_bind = true;
                 serve_flag.get_or_insert("--insecure-bind");
             }
+            "--exit-on-stdin-close" => {
+                options.exit_on_stdin_close = true;
+                serve_flag.get_or_insert("--exit-on-stdin-close");
+            }
             other => return Err(format!("unknown argument {other}\n\n{USAGE}")),
         }
     }
@@ -86,8 +101,16 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         Action::Help
     } else if version {
         Action::Version
-    } else if serve == stdio {
-        return Err(format!("say serve or --stdio\n\n{USAGE}"));
+    } else if usize::from(serve) + usize::from(stdio) + usize::from(print_data_dir) != 1 {
+        return Err(format!("say serve or --stdio, or data-dir\n\n{USAGE}"));
+    } else if print_data_dir {
+        if attach {
+            return Err("--attach goes with --stdio".into());
+        }
+        if let Some(flag) = serve_flag {
+            return Err(format!("{flag} goes with serve"));
+        }
+        Action::DataDir
     } else if serve {
         if attach {
             return Err("--attach goes with --stdio".into());
@@ -120,7 +143,7 @@ mod tests {
     #[test]
     fn serve_takes_a_port_an_address_and_the_insecure_switch() {
         let cli = parse(&["serve", "--port", "7000", "--bind", "0.0.0.0", "--insecure-bind"]).unwrap();
-        assert_eq!(cli.action, Action::Serve(ServeOptions { port: 7000, bind: "0.0.0.0".parse().unwrap(), insecure_bind: true }));
+        assert_eq!(cli.action, Action::Serve(ServeOptions { port: 7000, bind: "0.0.0.0".parse().unwrap(), insecure_bind: true, exit_on_stdin_close: false }));
     }
 
     #[test]
@@ -134,6 +157,23 @@ mod tests {
     fn the_data_dir_goes_before_or_after_the_action() {
         assert_eq!(parse(&["--data-dir", "/d", "serve"]).unwrap().data_dir, Some(PathBuf::from("/d")));
         assert_eq!(parse(&["--stdio", "--data-dir", "/d"]).unwrap().data_dir, Some(PathBuf::from("/d")));
+    }
+
+    #[test]
+    fn serve_may_exit_when_its_stdin_closes() {
+        let cli = parse(&["serve", "--exit-on-stdin-close"]).unwrap();
+        assert_eq!(cli.action, Action::Serve(ServeOptions { exit_on_stdin_close: true, ..ServeOptions::default() }));
+        assert!(!ServeOptions::default().exit_on_stdin_close);
+        assert!(parse(&["--stdio", "--exit-on-stdin-close"]).unwrap_err().contains("--exit-on-stdin-close"));
+    }
+
+    #[test]
+    fn data_dir_prints_the_folder() {
+        assert_eq!(parse(&["data-dir"]), Ok(Cli { action: Action::DataDir, data_dir: None }));
+        assert_eq!(parse(&["data-dir", "--data-dir", "/d"]), Ok(Cli { action: Action::DataDir, data_dir: Some(PathBuf::from("/d")) }));
+        assert!(parse(&["data-dir", "serve"]).unwrap_err().contains("data-dir"));
+        assert!(parse(&["data-dir", "--attach"]).unwrap_err().contains("--attach"));
+        assert!(parse(&["data-dir", "--port", "1"]).unwrap_err().contains("--port"));
     }
 
     #[test]

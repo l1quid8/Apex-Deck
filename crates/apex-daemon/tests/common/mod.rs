@@ -163,8 +163,9 @@ impl Process {
     /// `spawn`, letting `adjust` change the command first.
     pub fn spawn_with(args: &[&str], data: &Path, adjust: impl FnOnce(&mut Command)) -> (Process, Option<ChildStdin>, Option<std::process::ChildStdout>) {
         let mut command = daemon(args, data);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         adjust(&mut command);
-        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("the daemon starts");
+        let mut child = command.spawn().expect("the daemon starts");
         let stderr = Arc::new(Mutex::new(String::new()));
         let sink = Arc::clone(&stderr);
         let err = child.stderr.take().unwrap();
