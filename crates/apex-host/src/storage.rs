@@ -73,7 +73,7 @@ impl Store {
         self.write(&self.root.join("session.json"), session)
     }
 
-    /// App-wide settings, beside the session file. The frontend owns their shape.
+    /// App-wide settings, beside the session file. The host reads them as `documents::Settings`.
     pub fn settings(&self) -> Result<Option<serde_json::Value>, String> {
         self.read(&self.root.join("settings.json"))
     }

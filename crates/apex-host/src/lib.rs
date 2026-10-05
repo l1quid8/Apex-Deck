@@ -15,6 +15,7 @@ pub mod events;
 pub mod quit;
 pub mod host;
 pub mod command;
+pub mod documents;
 
 pub use command::Command;
 pub use host::{Host, HostPaths};

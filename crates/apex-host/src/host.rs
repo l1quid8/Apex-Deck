@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use apex_adapters::BuildContext;
 use apex_core::{Access, AgentTool, ConcurrentRoom, ModelChoice, ParticipantConfig, ParticipantId, Room, RoomEvent, RoomOptions, RoomSnapshot, TurnBatch};
 
+use crate::documents::{self, Session, Settings};
 use crate::events::{Bus, HostEvent};
 use crate::pty::{PtyManager, SpawnOptions};
 use crate::quit::QuitGate;
@@ -622,20 +623,41 @@ impl Host {
         paths_exist(targets, cwd)
     }
 
-    pub fn session_load(&self) -> Result<Option<serde_json::Value>, String> {
-        self.store.session()
+    /// The saved session, or `None` before the first save.
+    pub fn session(&self) -> Result<Option<Session>, String> {
+        self.store.session()?.map(Session::from_value).transpose()
     }
 
+    /// The saved settings, brought up to date, or `None` when there are none.
+    pub fn settings(&self) -> Result<Option<Settings>, String> {
+        let settings = self.store.settings()?.map(Settings::from_value).transpose()?;
+        // A session that can't be read only means nothing to migrate from.
+        let session = self.session().ok().flatten();
+        Ok(documents::migrate_settings(settings, session.as_ref()))
+    }
+
+    pub fn session_load(&self) -> Result<Option<serde_json::Value>, String> {
+        Ok(self.session()?.map(|session| session.to_value()))
+    }
+
+    /// Replace the whole session and tell every client.
     pub fn session_save(&self, session: serde_json::Value) -> Result<(), String> {
-        self.store.save_session(&session)
+        let session = Session::from_value(session)?.to_value();
+        self.store.save_session(&session)?;
+        self.emit(HostEvent::SessionChanged(session));
+        Ok(())
     }
 
     pub fn settings_load(&self) -> Result<Option<serde_json::Value>, String> {
-        self.store.settings()
+        Ok(self.settings()?.map(|settings| settings.to_value()))
     }
 
+    /// Replace all the settings and tell every client.
     pub fn settings_save(&self, settings: serde_json::Value) -> Result<(), String> {
-        self.store.save_settings(&settings)
+        let settings = Settings::from_value(settings)?.to_value();
+        self.store.save_settings(&settings)?;
+        self.emit(HostEvent::SettingsChanged(settings));
+        Ok(())
     }
 
     pub fn artifacts_load(&self, room: String) -> Result<Option<serde_json::Value>, String> {
@@ -1311,6 +1333,37 @@ mod host_tests {
         assert!(saved.starts_with(data.join("attachments").join("room-1")));
         assert_eq!(host.read_attachment(saved.to_string_lossy().into_owned()).unwrap(), b"hi");
         assert!(host.save_attachment("room-1", "big.bin", &vec![0; MAX_ATTACHMENT + 1]).is_err());
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn saving_the_session_or_settings_tells_every_client() {
+        use serde_json::json;
+        let (host, _runtime, data) = host("documents");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        host.session_save(json!({ "version": 1, "section": "code" })).unwrap();
+        host.settings_save(json!({ "confirmSteer": true })).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![
+            HostEvent::SessionChanged(json!({ "version": 1, "section": "code" })),
+            HostEvent::SettingsChanged(json!({ "confirmSteer": true })),
+        ]);
+        assert_eq!(host.session_load().unwrap(), Some(json!({ "version": 1, "section": "code" })));
+        assert!(host.session_save(json!("not a session")).is_err());
+        assert_eq!(seen.lock().unwrap().len(), 2, "a refused save tells no one");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn settings_load_picks_up_providers_an_old_session_turned_off() {
+        use serde_json::json;
+        let (host, _runtime, data) = host("migrate");
+        assert_eq!(host.settings_load().unwrap(), None);
+        host.session_save(json!({ "version": 1, "disabledProviders": ["grok"] })).unwrap();
+        assert_eq!(host.settings_load().unwrap(), Some(json!({ "disabledProviders": ["grok"] })));
+        host.settings_save(json!({ "disabledProviders": ["venice"], "confirmSteer": false })).unwrap();
+        assert_eq!(host.settings_load().unwrap(), Some(json!({ "disabledProviders": ["venice"], "confirmSteer": false })));
         let _ = std::fs::remove_dir_all(data);
     }
 }
