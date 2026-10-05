@@ -2,27 +2,45 @@
 //! Code's `/usage` screen calls. The endpoint is undocumented, so anything
 //! unexpected gives `None` and the meters stay as they were.
 
+use std::time::Duration;
+
 use apex_core::{AgentTool, PlanUsage, PlanWindow};
 use serde_json::Value;
+
+use crate::plan_cache::Failure;
 
 const URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
 /// Read Claude's plan usage with the login Claude Code saved.
-pub(crate) async fn read_plan() -> Result<PlanUsage, String> {
-    let token = access_token().await.ok_or("no Claude Code login found")?;
-    let body: Value = reqwest::Client::new()
+pub(crate) async fn read_plan() -> Result<PlanUsage, Failure> {
+    let short = |why: String| Failure::new(why, Failure::SHORT);
+    let token = access_token().await.ok_or_else(|| short("no Claude Code login found".into()))?;
+    let reply = reqwest::Client::new()
         .get(URL)
         .bearer_auth(token)
         .header("anthropic-beta", "oauth-2025-04-20")
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(Duration::from_secs(15))
         .send()
         .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?
+        .map_err(|e| short(e.to_string()))?;
+    if reply.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let wait = retry_after(reply.headers().get(reqwest::header::RETRY_AFTER)).unwrap_or(Failure::LIMITED);
+        return Err(Failure::new("the usage endpoint is rate limited (429)", wait));
+    }
+    let body: Value = reply
+        .error_for_status()
+        .map_err(|e| short(e.to_string()))?
         .json()
         .await
-        .map_err(|e| e.to_string())?;
-    parse(&body).ok_or_else(|| "the reply had no usage windows".to_string())
+        .map_err(|e| short(e.to_string()))?;
+    parse(&body).ok_or_else(|| short("the reply had no usage windows".into()))
+}
+
+/// A `Retry-After` given in seconds, kept between a minute and an hour. The date form
+/// isn't worth parsing here; the default wait covers it.
+fn retry_after(header: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
+    let seconds: u64 = header?.to_str().ok()?.trim().parse().ok()?;
+    Some(Duration::from_secs(seconds.clamp(60, 3600)))
 }
 
 /// Claude Code keeps its login in the macOS keychain, or in
@@ -110,6 +128,16 @@ mod tests {
     #[test]
     fn nothing_usable_gives_none() {
         assert!(parse(&json!({ "error": "nope" })).is_none());
+    }
+
+    #[test]
+    fn retry_after_is_read_in_seconds_and_kept_between_a_minute_and_an_hour() {
+        let value = |text: &str| reqwest::header::HeaderValue::from_str(text).unwrap();
+        assert_eq!(retry_after(Some(&value(" 120 "))), Some(Duration::from_secs(120)));
+        assert_eq!(retry_after(Some(&value("86400"))), Some(Duration::from_secs(3600)));
+        assert_eq!(retry_after(Some(&value("Wed, 21 Oct 2026 07:28:00 GMT"))), None);
+        assert_eq!(retry_after(Some(&value("1"))), Some(Duration::from_secs(60)));
+        assert_eq!(retry_after(None), None);
     }
 
     #[test]

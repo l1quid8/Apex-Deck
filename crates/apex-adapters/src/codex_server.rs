@@ -494,6 +494,7 @@ pub(crate) async fn run(
     if send(&mut stdin, &rate_limits_read(3)).await.is_ok() {
         if let Ok(result) = answer_within(&mut lines, 3, LIMITS_TIMEOUT).await {
             if let Some(plan) = codex_plan(&result["rateLimits"], false) {
+                crate::plan_cache::remember(&plan);
                 on_progress(Progress::Plan(&plan));
             }
         }

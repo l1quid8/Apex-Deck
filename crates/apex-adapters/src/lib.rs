@@ -17,6 +17,7 @@ mod codex_hook;
 mod events;
 mod mcp;
 mod openai;
+mod plan_cache;
 mod presets;
 
 use std::path::PathBuf;
@@ -41,7 +42,10 @@ pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressS
             events::Step::Activity(text) => on_progress(Progress::Activity(&text)),
             events::Step::Change(change) => on_progress(Progress::Change(&change)),
             events::Step::Context(context) => on_progress(Progress::Context(context)),
-            events::Step::Plan(plan) => on_progress(Progress::Plan(&plan)),
+            events::Step::Plan(plan) => {
+                plan_cache::remember(&plan);
+                on_progress(Progress::Plan(&plan))
+            }
         }
     }
 }
@@ -75,17 +79,32 @@ pub fn build(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Parti
 
 /// Read how much of a provider account's plan is used, without asking a
 /// model anything. Codex is asked through its app server; Claude through
-/// the endpoint behind Claude Code's `/usage`.
+/// the endpoint behind Claude Code's `/usage`. Every chat shares one
+/// answer per provider, so opening several at once reads only once, and a
+/// failed read is logged once and not retried until its wait is over.
 pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanUsage> {
-    if tool == AgentTool::ClaudeCode {
-        return claude_usage::read_plan()
-            .await
-            .map_err(|why| eprintln!("[apex-deck] could not read Claude plan limits: {why}"))
-            .ok();
-    }
-    if tool != AgentTool::Codex {
-        return None;
-    }
+    let name = match tool {
+        AgentTool::ClaudeCode => "Claude",
+        AgentTool::Codex => "Codex",
+        _ => return None,
+    };
+    let read = || async {
+        match tool {
+            AgentTool::ClaudeCode => claude_usage::read_plan().await,
+            _ => read_codex_plan(context).await.map_err(|why| plan_cache::Failure::new(why, plan_cache::Failure::SHORT)),
+        }
+    };
+    plan_cache::get(tool, read)
+        .await
+        .map_err(|failure| {
+            let wait = failure.wait.as_secs();
+            eprintln!("[apex-deck] could not read {name} plan limits: {}; trying again in {wait}s", failure.why)
+        })
+        .ok()
+        .flatten()
+}
+
+async fn read_codex_plan(context: &BuildContext) -> Result<PlanUsage, String> {
     let mut command = tokio::process::Command::new("codex");
     command.args(codex_server::ARGS).env("NO_COLOR", "1").env("TERM", "dumb");
     if let Some(path) = &context.path {
@@ -100,14 +119,8 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .ok()?;
-    match codex_server::read_plan(child).await {
-        Ok(plan) => Some(plan),
-        Err(why) => {
-            eprintln!("[apex-deck] could not read Codex plan limits: {why}");
-            None
-        }
-    }
+        .map_err(|e| format!("could not start codex: {e}"))?;
+    codex_server::read_plan(child).await
 }
 
 /// Splits a byte stream into text without cutting a multi-byte character in
