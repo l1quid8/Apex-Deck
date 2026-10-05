@@ -10,7 +10,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "apex-adapters"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "apex-core",
  "async-trait",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "apex-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "apex-daemon"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "apex-adapters",
  "apex-core",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "apex-host"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "apex-adapters",
  "apex-core",
