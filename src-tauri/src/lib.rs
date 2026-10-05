@@ -466,3 +466,20 @@ pub fn run() {
             _ => {}
         });
 }
+
+#[cfg(test)]
+mod tests {
+    /// The daemon takes `apex_host::Command`s, so every desktop command must
+    /// have one with the same name, and the other way round.
+    #[test]
+    fn every_desktop_command_has_a_host_command_of_the_same_name() {
+        let source = include_str!("lib.rs");
+        let start = source.find("generate_handler![").unwrap() + "generate_handler![".len();
+        let list = &source[start..start + source[start..].find(']').unwrap()];
+        let mut desktop: Vec<String> = list.split(',').map(|name| name.trim().to_string()).filter(|name| !name.is_empty()).collect();
+        let mut host = apex_host::command::names();
+        desktop.sort();
+        host.sort();
+        assert_eq!(desktop, host);
+    }
+}
