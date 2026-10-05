@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
 import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, windowsAtLaunch } from './hosts.mjs';
-import { tauriStorage } from './legacy.mjs';
+import { openTauriApps, tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
 import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon } from './sidecar.mjs';
@@ -483,12 +483,37 @@ function createWindow(host, beside) {
   return entry;
 }
 
+/**
+ * Whether no Tauri Apex Deck is open, asking for it to be quit while one is.
+ * v0.4.0 and before keep no lock on the data folder, so with both open each
+ * would save over the other's threads and settings.
+ */
+function oldAppClosed() {
+  while (openTauriApps().length > 0) {
+    const choice = dialog.showMessageBoxSync({
+      type: 'warning',
+      message: 'Quit the older Apex Deck first',
+      detail: 'An older Apex Deck (0.4.0 or before) is open. Both save the same threads and settings, so with both open, '
+        + 'changes in one can overwrite the other. Quit it, then choose Continue.',
+      buttons: ['Continue', 'Quit'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (choice === 1) return false;
+  }
+  return true;
+}
+
 app.whenReady().then(async () => {
   protocol.handle('app', (request) => {
     const file = appFile(dist, request.url);
     if (!file) return new Response('Not found', { status: 404 });
     return net.fetch(pathToFileURL(file).toString());
   });
+  if (!dataDir && !oldAppClosed()) {
+    app.exit(0);
+    return;
+  }
   const { state, warnings } = loadHosts(hostsFile());
   hosts = state;
   warnings.forEach((warning) => console.warn(`hosts: ${warning}`));

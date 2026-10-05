@@ -1,9 +1,11 @@
-// What the Tauri app (v0.4.0 and before) kept in its window's storage:
-// installed mods, model names typed before, sidebar widths and the like.
-// WebKit kept it, so the Electron window starts without it; preload.cjs
+// The Tauri app, v0.4.0 and before. What it kept in its window's storage
+// (installed mods, model names typed before, sidebar widths and the like)
+// lived in WebKit, so the Electron window starts without it; preload.cjs
 // copies it over once. The old files are only ever read from a copy, so a
-// Tauri app that is still open is not disturbed.
+// Tauri app that is still open is not disturbed. It also kept no lock on
+// the data folder, so main.mjs asks for it to be quit first.
 
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,4 +67,27 @@ export function tauriStorage(home = os.homedir()) {
     }
   }
   return items;
+}
+
+/**
+ * Each open Tauri build of Apex Deck: an `apex-deck` program in an app
+ * whose bundle id is this app's. `run` is execFileSync, or a stand-in.
+ */
+export function openTauriApps(run = execFileSync) {
+  let programs;
+  try {
+    programs = String(run('/bin/ps', ['-axo', 'comm='], { encoding: 'utf8' })).split('\n').map((line) => line.trim());
+  } catch {
+    return [];
+  }
+  return programs.filter((program) => {
+    const bundle = program.match(/^(.*\.app)\/Contents\/MacOS\/apex-deck$/)?.[1];
+    if (!bundle) return false;
+    try {
+      const plist = path.join(bundle, 'Contents/Info.plist');
+      return String(run('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', plist], { encoding: 'utf8' })).trim() === 'dev.apexdeck.app';
+    } catch {
+      return false;
+    }
+  });
 }

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { tauriStorage } from '../desktop/legacy.mjs';
+import { openTauriApps, tauriStorage } from '../desktop/legacy.mjs';
 
 /** A WebKit localStorage database for `origin` under a fake home, the way the Tauri window left it. */
 function webkitStorage(home, folder, origin, items, { wal = false } = {}) {
@@ -48,4 +48,21 @@ test('no Tauri storage, or storage that cannot be read, gives nothing', () => {
   fs.writeFileSync(path.join(dir, 'LocalStorage/localstorage.sqlite3'), 'not a database');
   assert.deepEqual(tauriStorage(home), {});
   fs.rmSync(home, { recursive: true });
+});
+
+test('an open Tauri build of Apex Deck is found by its bundle id, and nothing else is', () => {
+  const ids = {
+    '/Applications/Apex Deck.app/Contents/Info.plist': 'dev.apexdeck.app',
+    '/tmp/Preview Deck.app/Contents/Info.plist': 'dev.apexdeck.preview',
+  };
+  const run = (program, args) => {
+    if (program === '/bin/ps') {
+      return ['/Applications/Apex Deck.app/Contents/MacOS/apex-deck', '/tmp/Preview Deck.app/Contents/MacOS/apex-deck',
+        '/Applications/Apex Deck.app/Contents/MacOS/Apex Deck', '/Users/me/apex/target/debug/apex-deck', '/sbin/launchd', ''].join('\n');
+    }
+    if (!(args.at(-1) in ids)) throw new Error('no such file');
+    return `${ids[args.at(-1)]}\n`;
+  };
+  assert.deepEqual(openTauriApps(run), ['/Applications/Apex Deck.app/Contents/MacOS/apex-deck']);
+  assert.deepEqual(openTauriApps(() => { throw new Error('no ps'); }), []);
 });
