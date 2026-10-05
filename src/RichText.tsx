@@ -9,7 +9,7 @@ interface Props {
 }
 
 // A markdown link, [label](target), or a bare web address.
-const LINK = /\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()\]]+[^\s<>()\].,;:!?'"])/g;
+const LINK = /\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()\]`]+[^\s<>()\]`.,;:!?'"*_~])/g;
 
 const isWeb = (target: string) => /^https?:\/\//.test(target);
 

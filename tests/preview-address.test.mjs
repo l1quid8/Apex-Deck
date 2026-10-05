@@ -43,6 +43,13 @@ test("the internet, the LAN and repeats are left out", () => {
   assert.deepEqual(findServerUrls("http://localhost:3000/ and again http://localhost:3000/.\n"), ["http://localhost:3000/"]);
 });
 
+test("markdown around an address in a bot's reply is not part of it", () => {
+  assert.deepEqual(findServerUrls("ask a bot to mention `http://localhost:4173/`, and click"), ["http://localhost:4173/"]);
+  assert.deepEqual(findServerUrls("it loads:\n\n**http://localhost:4173/**\n"), ["http://localhost:4173/"]);
+  assert.deepEqual(findServerUrls("_http://localhost:3000/docs_ or ~~http://localhost:3001~~"), ["http://localhost:3000/docs", "http://localhost:3001/"]);
+  assert.deepEqual(findServerUrls("[the kit](http://localhost:4173/index.html)."), ["http://localhost:4173/index.html"]);
+});
+
 test("an address split across two chunks is found once it is whole", () => {
   const watch = new ServerWatch();
   assert.deepEqual(watch.feed("  Local:   http://localhost:51"), []);

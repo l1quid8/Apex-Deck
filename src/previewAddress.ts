@@ -47,13 +47,14 @@ export function hostLabel(address: string): string {
   }
 }
 
-const SERVER = /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[a-z0-9-]+\.localhost)(?::\d{2,5})?(?:\/[^\s'"<>)\]]*)?/giu;
+const SERVER = /(?<![a-z0-9])https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[a-z0-9-]+\.localhost)(?::\d{2,5})?(?:\/[^\s'"`<>)\]]*)?/giu;
 
 /** Local server addresses in text already stripped of escapes, with where each ends. */
 function matches(plain: string): { address: string; end: number }[] {
   const found: { address: string; end: number }[] = [];
   for (const match of plain.matchAll(SERVER)) {
-    const address = normalizeAddress(match[0].replace(/[.,;:!]+$/, ""));
+    // Sentence punctuation and markdown emphasis (**, _, ~~) at the end are not part of it.
+    const address = normalizeAddress(match[0].replace(/[.,;:!*_~]+$/, ""));
     if (address) found.push({ address, end: (match.index ?? 0) + match[0].length });
   }
   return found;

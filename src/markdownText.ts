@@ -179,7 +179,7 @@ export type Inline =
 // underscores and stars inside a path or address are left alone; they are
 // passed through as text for the link renderer to handle.
 const INLINE =
-  /(`+)(?!`)([\s\S]*?[^`])\1(?!`)|\[[^\]\n]+\]\([^)\s]+\)|https?:\/\/[^\s<>()\]]+|\*\*(?=\S)([\s\S]*?\S)\*\*(?!\*)|__(?=\S)([\s\S]*?\S)__|~~(?=\S)([\s\S]*?\S)~~|\*(?=[^\s*])([^*\n]*?[^\s*])\*|_(?=[^\s_])([^_\n]*?[^\s_])_/g;
+  /(`+)(?!`)([\s\S]*?[^`])\1(?!`)|\[[^\]\n]+\]\([^)\s]+\)|https?:\/\/[^\s<>()\]`]+|\*\*(?=\S)([\s\S]*?\S)\*\*(?!\*)|__(?=\S)([\s\S]*?\S)__|~~(?=\S)([\s\S]*?\S)~~|\*(?=[^\s*])([^*\n]*?[^\s*])\*|_(?=[^\s_])([^_\n]*?[^\s_])_/g;
 
 const isWordChar = (ch: string | undefined) => ch !== undefined && /[\p{L}\p{N}_]/u.test(ch);
 
