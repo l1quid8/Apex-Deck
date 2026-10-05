@@ -416,6 +416,17 @@ impl Room {
         self.baseline = None;
     }
 
+    /// Drop every message from `upto` on, as if they were never sent. Pins,
+    /// token totals and Always allow rules stay.
+    pub fn rewind(&mut self, upto: usize) {
+        if upto >= self.transcript.len() { return; }
+        self.transcript.truncate(upto);
+        for seen in self.cursors.values_mut() { *seen = (*seen).min(upto); }
+        self.last_targets.clear();
+        if self.compaction.as_ref().is_some_and(|c| c.upto > upto) { self.compaction = None; }
+        self.changes.retain(|c| c.seq < upto);
+    }
+
     /// Facts every model is given on every turn. They live outside the
     /// transcript, so `/clear` and `/compact` keep them.
     pub fn pins(&self) -> &[String] {

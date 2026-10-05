@@ -784,3 +784,16 @@ fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
     assert_eq!(room.usage().get(&id).map(|t| t.turns), Some(2), "/clear keeps what the thread has spent");
     assert!(snapshot.fork(1).usage.is_empty(), "a fork starts at zero");
 }
+
+#[test]
+fn rewind_drops_the_message_and_everything_after_but_keeps_pins() {
+    let mut room = Room::new(vec![], RoomOptions::default());
+    for text in ["one", "two", "three"] { block_on(room.post_human(text, &|_| {})); }
+    room.pin("keep me").unwrap();
+    room.rewind(1);
+    let snapshot = room.snapshot();
+    assert_eq!(snapshot.transcript.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["one"]);
+    assert_eq!(snapshot.pins, ["keep me"]);
+    room.rewind(5);
+    assert_eq!(room.snapshot().transcript.len(), 1);
+}

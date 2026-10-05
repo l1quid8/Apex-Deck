@@ -73,6 +73,8 @@ export interface Backend {
   roomRemoveParticipant(id: string, participant: string): Promise<void>;
   /** Empty the transcript, which is all the models see, and keep the participants. */
   roomClear(id: string): Promise<void>;
+  /** Delete every message from `upto` on; only while no bot is working. */
+  roomRewind(id: string, upto: number): Promise<void>;
   /** Pin a fact for every model in the chat. Resolves with all pins. */
   roomDiff(id: string): Promise<ThreadDiff>;
   exportThread(fileName: string, contents: string): Promise<string | null>;
@@ -175,6 +177,7 @@ async function tauriBackend(): Promise<Backend> {
     roomUpdateParticipant: (id, participant) => invoke("room_update_participant", { id, participant }),
     roomRemoveParticipant: (id, participant) => invoke("room_remove_participant", { id, participant }),
     roomClear: (id) => invoke("room_clear", { id }),
+    roomRewind: (id, upto) => invoke("room_rewind", { id, upto }),
     roomDiff: (id) => invoke("room_diff", { id }),
     exportThread: (fileName, contents) => invoke("export_thread", { fileName, contents }),
     saveAttachment: (room, name, bytes) => invoke("save_attachment", bytes, { headers: { "x-room": room, "x-name": name } }),
@@ -730,6 +733,16 @@ function demoBackend(): Backend {
       room.transcript = [];
       room.compaction = null;
       room.seq = 0;
+      room.last = [];
+      saveRoom(id);
+    },
+    roomRewind: async (id, upto) => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      if (upto >= room.transcript.length) return;
+      room.transcript = room.transcript.slice(0, upto);
+      if (room.compaction && room.compaction.upto > upto) room.compaction = null;
+      room.seq = upto;
       room.last = [];
       saveRoom(id);
     },

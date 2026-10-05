@@ -550,6 +550,19 @@ async fn room_clear(state: State<'_, AppState>, store: State<'_, Store>, id: Str
     save_room(&state, &store, &id).await
 }
 
+/// Retry: delete every message from `upto` on. The caller then runs a turn.
+#[tauri::command]
+async fn room_rewind(state: State<'_, AppState>, store: State<'_, Store>, id: String, upto: usize) -> Result<(), String> {
+    state.require_idle(&id)?;
+    {
+        let room = state.room(&id)?;
+        let mut room = room.lock().await;
+        state.require_idle(&id)?;
+        room.rewind(upto);
+    }
+    save_room(&state, &store, &id).await
+}
+
 /// Pin a fact for every model in this chat. Returns the pins now in place.
 /// A new pin applies from each participant's next request.
 #[tauri::command]
@@ -968,6 +981,7 @@ pub fn run() {
             room_update_participant,
             room_remove_participant,
             room_clear,
+            room_rewind,
             room_pin,
             room_unpin,
             room_compact,
