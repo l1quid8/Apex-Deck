@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
+import { connection, statusWords } from "./connection";
 import { SettingsPage, type SettingsSection } from "./SettingsPage";
 import { DEFAULT_SETTINGS, readSettings, type AppSettings } from "./settings";
 import { providerEnabled } from "./providers";
@@ -208,6 +209,15 @@ export function App() {
   const runStart = useRef(new Map<string, number>());
   /** Every open approval card, app-wide (approvals.ts). */
   const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
+  /** The Electron app's connection to its host, for the loading screen. */
+  const link = useSyncExternalStore(connection.subscribe, connection.get);
+  const [, countdown] = useState(0);
+  useEffect(() => {
+    // Count down to the next try.
+    if (link.status.kind !== "reconnecting") return;
+    const timer = setInterval(() => countdown((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [link.status]);
 
   useEffect(() => {
     let alive = true;
@@ -821,7 +831,8 @@ export function App() {
   if (!backend) return (
     <div className="loading">
       <img className="loading-mark" src="/branding/mark.svg" alt="Apex Deck" width="72" height="72" />
-      <span>{storageError || "Starting…"}</span>
+      <span>{storageError || (window.apexDeck ? statusWords(link.status, link.host, Date.now()) : "Starting…")}</span>
+      {!storageError && (link.status.kind === "reconnecting" || link.status.kind === "failed") && link.status.reason && <small className="loading-reason">{link.status.reason}</small>}
     </div>
   );
 

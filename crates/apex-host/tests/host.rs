@@ -171,3 +171,51 @@ fn winding_down_stops_running_agents_and_keeps_their_chat() {
     second.host.shutdown();
     let _ = std::fs::remove_dir_all(&data);
 }
+
+/// A window that reloads mid-turn opens its chats again; the turn running
+/// in the host must be the one it then sees and can stop.
+#[test]
+fn opening_a_room_again_mid_turn_keeps_the_running_room() {
+    let data = std::env::temp_dir().join(format!("apex-host-reopen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let pid_file = data.join("agent.pid");
+    let options = serde_json::to_value(RoomOptions::default()).unwrap();
+    let slow = serde_json::to_value(ParticipantConfig {
+        id: ParticipantId::new("slow"),
+        display_name: "slow".into(),
+        backend: Backend::Cli { program: "sh".into(), args: vec!["-c".into(), format!("echo $$ > {}; exec sleep 30", pid_file.display())] },
+        persona: String::new(),
+        access: Default::default(),
+        effort: None,
+        appearance: None,
+    })
+    .unwrap();
+
+    let running = Running::start(&data);
+    running.call(json!({ "cmd": "room_create", "args": { "id": "t1", "participants": [slow], "options": options, "cwd": null } })).unwrap();
+    let host = Arc::clone(&running.host);
+    running.runtime.spawn(async move { host.room_post("t1".into(), "@slow go".into()).await });
+    let start = Instant::now();
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&pid_file).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+            break pid;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "the agent never started");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let reopened = running.call(json!({ "cmd": "room_create", "args": { "id": "t1", "participants": [], "options": options, "cwd": null } })).unwrap();
+    let texts: Vec<&str> = reopened["transcript"].as_array().unwrap().iter().filter_map(|m| m["text"].as_str()).collect();
+    assert_eq!(texts, vec!["@slow go"]);
+    assert_eq!(reopened["participants"][0]["id"], "slow");
+
+    running.call(json!({ "cmd": "room_stop", "args": { "id": "t1", "participant": null } })).unwrap();
+    let start = Instant::now();
+    while alive(&pid) {
+        assert!(start.elapsed() < Duration::from_secs(5), "Stop didn't reach the turn that was running: {pid} is still alive");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    running.host.shutdown();
+    let _ = std::fs::remove_dir_all(&data);
+}

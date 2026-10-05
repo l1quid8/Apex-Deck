@@ -1,12 +1,14 @@
 import type { ToolServer } from "./types";
 // Everything the UI needs from the desktop shell goes through this
-// interface. Inside the desktop app it calls the Rust commands. In a plain
-// browser (npm run dev without Tauri) it falls back to a small stand-in so
-// the UI can be worked on without building the app.
+// interface. In the Electron app it talks to apex-daemon (electronShell.ts);
+// in the Tauri app it calls the Rust commands (tauriShell.ts). In a plain
+// browser (npm run dev alone) it falls back to a small stand-in so the UI
+// can be worked on without building the app.
 
 import { ruleFor, sameRule } from "./allowedRules";
-import { commandBackend } from "./commandBackend";
-import { tauriShell, tauriTransport } from "./tauriShell";
+import { commandBackend } from "./commandBackend.ts";
+import { electronBackend } from "./electronShell.ts";
+import { tauriShell, tauriTransport } from "./tauriShell.ts";
 import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
@@ -751,6 +753,7 @@ function demoBackend(): Backend {
 let cached: Promise<Backend> | null = null;
 
 export function getBackend(): Promise<Backend> {
-  cached ??= inTauri ? tauriBackend() : Promise.resolve(demoBackend());
+  const bridge = typeof window !== "undefined" ? window.apexDeck : undefined;
+  cached ??= bridge ? electronBackend(bridge) : inTauri ? tauriBackend() : Promise.resolve(demoBackend());
   return cached;
 }

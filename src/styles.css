@@ -120,6 +120,14 @@ textarea {
   color: var(--muted);
 }
 
+.loading-reason {
+  max-width: 520px;
+  margin-top: -8px;
+  text-align: center;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .app {
   height: 100%;
   display: flex;

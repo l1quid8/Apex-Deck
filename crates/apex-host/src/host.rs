@@ -239,6 +239,11 @@ impl Host {
     /// Open group chat `id`, restoring saved data before creating a new room.
     /// `cwd` is the workspace folder; command-line participants run there.
     pub fn room_create(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>) -> Result<RoomSnapshot, String> {
+        if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
+            // Already open, as when a window that reloaded opens its chats
+            // again: keep the room, and any turn it's running, as it is.
+            return Ok(handle.checkpoint.lock().unwrap().snapshot.clone());
+        }
         let saved = self.store.room(&id)?;
         let cwd = saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd);
         let context = BuildContext {
