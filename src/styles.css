@@ -2045,18 +2045,19 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .hand-off > button { padding: 3px 8px; font-size: 12px; white-space: nowrap; }
 .hand-off-menu { top: auto; bottom: calc(100% + 6px); }
 /* Now 3.4: Quote, Copy and Fork on every message; one ⋯ in a narrow pane. */
-.message-row { display: flex; align-items: flex-start; gap: 8px; }
-.message-row.actions-bottom { display: grid; grid-template-columns: minmax(0, 1fr); }
-.human-row.actions-bottom > .bubble { grid-column: 1; grid-row: 1; }
-.human-row.actions-bottom > .message-actions { grid-column: 1; grid-row: 2; justify-self: start; padding-top: 0; }
-.bot-row.actions-bottom { grid-template-columns: auto minmax(0, 1fr); }
-.bot-row.actions-bottom > .identicon { grid-column: 1; grid-row: 1; }
-.bot-row.actions-bottom > .bubble { grid-column: 2; grid-row: 1; }
-.bot-row.actions-bottom > .message-actions { grid-column: 2; grid-row: 2; justify-self: end; padding-top: 0; }
+/* Actions sit under the bubble: a bot's at bottom left, yours at bottom right. */
+.message-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; row-gap: 2px; }
+.human-row > .bubble { grid-column: 1; grid-row: 1; justify-self: end; }
+.human-row > .message-actions { grid-column: 1; grid-row: 2; justify-self: end; }
+.bot-row.message-row { grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; }
+.bot-row > .identicon { grid-column: 1; grid-row: 1; }
+.bot-row > .bubble { grid-column: 2; grid-row: 1; justify-self: start; }
+.bot-row > .message-actions { grid-column: 2; grid-row: 2; justify-self: start; }
 .human-row { align-self: flex-end; max-width: 85%; }
 .message-row > .bubble { min-width: 0; max-width: none; }
-.message-actions { flex: none; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 2px; padding-top: 8px; }
+.message-actions { flex: none; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 2px; }
 .message-more > .pane-menu { left: 0; right: auto; }
+.human-row .message-more > .pane-menu { left: auto; right: 0; }
 .msg-action, .msg-more { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .msg-action:hover:not(:disabled), .msg-action:focus-visible, .msg-more:hover:not(:disabled), .msg-more:focus-visible { color: var(--text); background: var(--panel); }
 .message-row .msg-action { opacity: 1; }

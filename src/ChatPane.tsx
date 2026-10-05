@@ -58,11 +58,6 @@ import type {
   TokenTotals,
 } from "./types";
 
-// Keep lengthy replies full-width, with their actions below the bubble.
-function bottomMessageActions(text: string): boolean {
-  return text.length > 500 || text.split("\n").length > 6;
-}
-
 interface Props {
   pane: Pane;
   /** The workspace folder. Command-line participants run here. */
@@ -1948,14 +1943,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <Markdown text={entry.summary.summary} onOpen={openTarget} />
             </details>
           ) : entry.message.speaker.kind === "human" ? (
-            <div key={`m${entry.message.seq}`} className={`message-row human-row${bottomMessageActions(entry.message.text) ? " actions-bottom" : ""}`} data-seq={entry.message.seq}>
+            <div key={`m${entry.message.seq}`} className="message-row human-row" data-seq={entry.message.seq}>
               {messageActions(entry.message)}
               <div className="bubble human">
                 <RichText text={entry.message.text} onOpen={openTarget} />
               </div>
             </div>
           ) : (
-            <div key={`m${entry.message.seq}`} className={`bot-row message-row${bottomMessageActions(entry.message.text) ? " actions-bottom" : ""}`}>
+            <div key={`m${entry.message.seq}`} className="bot-row message-row">
               <Avatar
                 seed={appearance(entry.message.speaker.id).seed}
                 color={color(entry.message.speaker.id)}
