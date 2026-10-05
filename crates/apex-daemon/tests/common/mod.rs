@@ -95,53 +95,40 @@ impl Frames {
     }
 }
 
-/// `apex-daemon --stdio` with its stdin and stdout as the connection.
-pub struct StdioClient {
-    pub child: Child,
-    stdin: Option<ChildStdin>,
+/// One protocol connection, whatever carries it.
+pub struct Conn {
+    send: Option<Box<dyn FnMut(String) + Send>>,
     pub frames: Frames,
-    pub stderr: Arc<Mutex<String>>,
     next_id: u64,
 }
 
-impl StdioClient {
-    pub fn spawn(args: &[&str], data: &Path) -> StdioClient {
-        StdioClient::spawn_with(args, data, &[])
-    }
-
-    pub fn spawn_with(args: &[&str], data: &Path, env: &[(&str, String)]) -> StdioClient {
-        let mut command = daemon(args, data);
-        command.envs(env.iter().map(|(k, v)| (k, v)));
-        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("the daemon starts");
-        let frames = Frames::from_lines(child.stdout.take().unwrap());
-        let stderr = Arc::new(Mutex::new(String::new()));
-        let sink = Arc::clone(&stderr);
-        let err = child.stderr.take().unwrap();
-        std::thread::spawn(move || {
-            for line in BufReader::new(err).lines().map_while(Result::ok) {
-                eprintln!("[daemon] {line}");
-                let mut all = sink.lock().unwrap();
-                all.push_str(&line);
-                all.push('\n');
-            }
-        });
-        let stdin = child.stdin.take();
-        StdioClient { child, stdin, frames, stderr, next_id: 1 }
+impl Conn {
+    pub fn new(send: impl FnMut(String) + Send + 'static, frames: Frames) -> Conn {
+        Conn { send: Some(Box::new(send)), frames, next_id: 1 }
     }
 
     pub fn send(&mut self, frame: Value) {
-        let stdin = self.stdin.as_mut().expect("input still open");
-        writeln!(stdin, "{frame}").unwrap();
-        stdin.flush().unwrap();
+        (self.send.as_mut().expect("input still open"))(frame.to_string());
+    }
+
+    /// Stop sending; the daemon sees the connection's input end.
+    pub fn close_input(&mut self) {
+        self.send.take();
+    }
+
+    /// Say hello with `args` added to `{protocol: 1}`; the whole reply frame.
+    pub fn hello_frame(&mut self, args: Value) -> Value {
+        let mut all = json!({ "protocol": 1 });
+        for (key, value) in args.as_object().cloned().unwrap_or_default() {
+            all[key] = value;
+        }
+        self.send(json!({ "id": 0, "cmd": "hello", "args": all }));
+        self.frames.next().expect("a hello reply")
     }
 
     pub fn hello(&mut self, since: Option<Value>) -> Value {
-        let mut args = json!({ "protocol": 1 });
-        if let Some(since) = since {
-            args["since"] = since;
-        }
-        self.send(json!({ "id": 0, "cmd": "hello", "args": args }));
-        let reply = self.frames.next().expect("a hello reply");
+        let args = since.map(|since| json!({ "since": since })).unwrap_or(json!({}));
+        let reply = self.hello_frame(args);
         assert!(reply.get("ok").is_some(), "hello refused: {reply}");
         reply["ok"].clone()
     }
@@ -158,9 +145,45 @@ impl StdioClient {
         };
         (events, result)
     }
+}
 
-    pub fn close_input(&mut self) {
-        self.stdin.take();
+/// A running daemon process, killed when dropped.
+pub struct Process {
+    pub child: Child,
+    pub stderr: Arc<Mutex<String>>,
+}
+
+impl Process {
+    pub fn spawn(args: &[&str], data: &Path, env: &[(&str, String)]) -> (Process, Option<ChildStdin>, Option<std::process::ChildStdout>) {
+        let mut command = daemon(args, data);
+        command.envs(env.iter().map(|(k, v)| (k, v)));
+        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("the daemon starts");
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let sink = Arc::clone(&stderr);
+        let err = child.stderr.take().unwrap();
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                eprintln!("[daemon] {line}");
+                let mut all = sink.lock().unwrap();
+                all.push_str(&line);
+                all.push('\n');
+            }
+        });
+        let (stdin, stdout) = (child.stdin.take(), child.stdout.take());
+        (Process { child, stderr }, stdin, stdout)
+    }
+
+    pub fn stderr(&self) -> String {
+        self.stderr.lock().unwrap().clone()
+    }
+
+    /// Wait for stderr to contain `text`.
+    pub fn wait_for_log(&self, text: &str) {
+        let start = Instant::now();
+        while !self.stderr().contains(text) {
+            assert!(start.elapsed() < PATIENCE, "the daemon never logged {text:?}; it said:\n{}", self.stderr());
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     pub fn wait(&mut self) -> ExitStatus {
@@ -173,13 +196,162 @@ impl StdioClient {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+
+    pub fn signal(&self, signal: &str) {
+        assert!(Command::new("kill").arg(format!("-{signal}")).arg(self.child.id().to_string()).status().unwrap().success());
+    }
 }
 
-impl Drop for StdioClient {
+impl Drop for Process {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// `apex-daemon --stdio` with its stdin and stdout as the connection.
+pub struct StdioClient {
+    pub process: Process,
+    pub conn: Conn,
+}
+
+impl StdioClient {
+    pub fn spawn(args: &[&str], data: &Path) -> StdioClient {
+        StdioClient::spawn_with(args, data, &[])
+    }
+
+    pub fn spawn_with(args: &[&str], data: &Path, env: &[(&str, String)]) -> StdioClient {
+        let (process, stdin, stdout) = Process::spawn(args, data, env);
+        let mut stdin = stdin.unwrap();
+        let conn = Conn::new(
+            move |line| {
+                // A daemon that already left is seen by the reader.
+                let _ = writeln!(stdin, "{line}").and_then(|_| stdin.flush());
+            },
+            Frames::from_lines(stdout.unwrap()),
+        );
+        StdioClient { process, conn }
+    }
+
+    pub fn stderr(&self) -> String {
+        self.process.stderr()
+    }
+
+    pub fn wait(&mut self) -> ExitStatus {
+        self.process.wait()
+    }
+}
+
+impl std::ops::Deref for StdioClient {
+    type Target = Conn;
+    fn deref(&self) -> &Conn {
+        &self.conn
+    }
+}
+
+impl std::ops::DerefMut for StdioClient {
+    fn deref_mut(&mut self) -> &mut Conn {
+        &mut self.conn
+    }
+}
+
+/// `apex-daemon serve`, started on a data folder and ready once `daemon.json` appears.
+pub struct Served {
+    pub process: Process,
+    pub info: Value,
+}
+
+impl Served {
+    pub fn start(data: &Path, extra: &[&str]) -> Served {
+        let _ = std::fs::remove_file(data.join("daemon.json"));
+        let mut args = vec!["serve"];
+        args.extend_from_slice(extra);
+        let (mut process, _, _) = Process::spawn(&args, data, &[]);
+        let start = Instant::now();
+        let info = loop {
+            if let Some(info) = std::fs::read_to_string(data.join("daemon.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+                break info;
+            }
+            if let Some(status) = process.child.try_wait().unwrap() {
+                panic!("the daemon exited ({status}) before it was ready:\n{}", process.stderr());
+            }
+            assert!(start.elapsed() < PATIENCE, "the daemon never wrote daemon.json:\n{}", process.stderr());
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        Served { process, info }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.info["port"].as_u64().expect("daemon.json names the port") as u16
+    }
+}
+
+/// A WebSocket connection; its frames are read on a thread.
+pub fn websocket(port: u16) -> Conn {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let (socket, _) = runtime.block_on(tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}"))).expect("the WebSocket connects");
+    let (mut write, mut read) = socket.split();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (in_tx, in_rx) = mpsc::channel();
+    runtime.spawn(async move {
+        while let Some(text) = out_rx.recv().await {
+            if write.send(Message::text(text)).await.is_err() {
+                return;
+            }
+        }
+        let _ = write.close().await;
+    });
+    runtime.spawn(async move {
+        while let Some(Ok(message)) = read.next().await {
+            if let Message::Text(text) = message {
+                if in_tx.send(serde_json::from_str(text.as_str()).expect("a JSON frame")).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    // The runtime lives as long as the writer can be used.
+    let runtime = Arc::new(runtime);
+    Conn::new(
+        move |line| {
+            let _keep = &runtime;
+            let _ = out_tx.send(line);
+        },
+        Frames::from_channel(in_rx),
+    )
+}
+
+/// One chat with a scripted agent, an approval answer and a terminal, the
+/// same over every transport. Ends by saving a session.
+pub fn chat_terminal_and_approval(conn: &mut Conn) {
+    let (_, snapshot) = conn.call("room_create", json!({ "id": "t1", "participants": [scripted("null", &["hello human"])], "options": options(), "cwd": null }));
+    assert_eq!(snapshot.unwrap()["transcript"], json!([]));
+    let (events, posted) = conn.call("room_post", json!({ "id": "t1", "text": "@null hi" }));
+    assert_eq!(posted, Ok(json!(null)));
+    assert_eq!(added_texts(&events, "t1"), vec!["@null hi", "hello human"]);
+    let seqs: Vec<u64> = events.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "numbered without gaps: {seqs:?}");
+
+    let (_, decided) = conn.call("room_decide", json!({ "id": "t1", "request": "r-1", "approve": true }));
+    assert_eq!(decided, Err("that request is no longer waiting for an answer".into()));
+
+    conn.call("pty_spawn", json!({ "id": "term", "agent": null, "cwd": null, "cols": 80, "rows": 24 })).1.unwrap();
+    conn.call("pty_write", json!({ "id": "term", "data": "echo apex-$((40+2))\n" })).1.unwrap();
+    conn.frames.until(|f| f["event"] == "pty-data" && f["payload"]["data"].as_str().unwrap_or_default().contains("apex-42"));
+    conn.call("pty_kill", json!({ "id": "term" })).1.unwrap();
+
+    conn.call("session_save", json!({ "session": { "version": 1, "panes": [{ "id": "t1", "kind": "chat" }] } })).1.unwrap();
+}
+
+/// After a restart: the chat from `chat_terminal_and_approval` and its session are back.
+pub fn chat_restored(conn: &mut Conn) {
+    let (_, restored) = conn.call("room_create", json!({ "id": "t1", "participants": [], "options": options(), "cwd": null }));
+    let restored = restored.unwrap();
+    let texts: Vec<&str> = restored["transcript"].as_array().unwrap().iter().filter_map(|m| m["text"].as_str()).collect();
+    assert_eq!(texts, vec!["@null hi", "hello human"]);
+    assert_eq!(conn.call("session_load", json!({})).1, Ok(json!({ "version": 1, "panes": [{ "id": "t1", "kind": "chat" }] })));
 }
 
 pub fn scripted(id: &str, lines: &[&str]) -> Value {
