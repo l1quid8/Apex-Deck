@@ -4,7 +4,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -151,6 +151,8 @@ impl Conn {
 pub struct Process {
     pub child: Child,
     pub stderr: Arc<Mutex<String>>,
+    /// Set once everything the daemon wrote to stderr has been read.
+    stderr_done: Arc<AtomicBool>,
 }
 
 impl Process {
@@ -167,7 +169,8 @@ impl Process {
         adjust(&mut command);
         let mut child = command.spawn().expect("the daemon starts");
         let stderr = Arc::new(Mutex::new(String::new()));
-        let sink = Arc::clone(&stderr);
+        let stderr_done = Arc::new(AtomicBool::new(false));
+        let (sink, done) = (Arc::clone(&stderr), Arc::clone(&stderr_done));
         let err = child.stderr.take().unwrap();
         std::thread::spawn(move || {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
@@ -176,9 +179,10 @@ impl Process {
                 all.push_str(&line);
                 all.push('\n');
             }
+            done.store(true, Ordering::SeqCst);
         });
         let (stdin, stdout) = (child.stdin.take(), child.stdout.take());
-        (Process { child, stderr }, stdin, stdout)
+        (Process { child, stderr, stderr_done }, stdin, stdout)
     }
 
     pub fn stderr(&self) -> String {
@@ -194,10 +198,17 @@ impl Process {
         }
     }
 
+    /// Wait for the daemon to exit, then briefly for the rest of its stderr,
+    /// which can still be in the pipe. An agent it left running may hold the
+    /// pipe open, so this doesn't wait for that forever.
     pub fn wait(&mut self) -> ExitStatus {
         let start = Instant::now();
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
+                let exited = Instant::now();
+                while !self.stderr_done.load(Ordering::SeqCst) && exited.elapsed() < Duration::from_secs(2) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
                 return status;
             }
             assert!(start.elapsed() < PATIENCE, "the daemon did not exit");
