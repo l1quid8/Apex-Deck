@@ -241,8 +241,9 @@ export function ModDock({ panes, overlay }: { panes: ModPane[]; overlay?: boolea
 
 /** Focused panes (confirm dialogs), toasts and status chips, over the whole window. */
 /** Mod status lines, drawn in each thread's header so they never cover a composer. */
-export function ModStatuses() {
+export function ModStatuses({ paneId }: { paneId: string }) {
   const mods = useMods();
+  if (mods.hostPane !== paneId) return null;
   const statuses = Object.entries(mods.runs).filter(([, r]) => r.status);
   if (statuses.length === 0) return null;
   return <>{statuses.map(([name, r]) => <span key={name} className="mod-status" title={name}>{r.status}</span>)}</>;
