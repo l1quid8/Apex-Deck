@@ -2392,7 +2392,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           placeholder={tldr ? "TL;DR mode: short answers" : copy.placeholder}
           disabled={!ready || participants.length === 0}
         />
-        <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`} onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
+        <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}
+          // Keep focus: collapsing the hint on pointer-down moves the pill before the click lands.
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
         {!busy && <div className="composer-hint"><span>{copy.hint}</span></div>}
