@@ -1,12 +1,12 @@
 # The Electron app
 
-Apex Deck's desktop app is moving from Tauri to Electron, so a real Chromium
-browser can be docked in the Preview pane. The Electron app does no work of
+Apex Deck's desktop app moved from Tauri to Electron in 0.5.0, so a real
+Chromium browser can be docked in the Preview pane. The Electron app does no work of
 its own: every thread, terminal and saved file lives in `apex-daemon`, on
 this Mac or on another machine you reach over SSH. The window is a client of
 the daemon, like the phone app will be.
 
-The Tauri app keeps working until the Electron app replaces it.
+The Tauri build still works but is no longer what ships.
 
 ## Run it while developing
 
@@ -25,7 +25,12 @@ same one the Tauri app uses) unless a daemon is already running there, in
 which case they use that one and leave it running when you quit.
 
 The Tauri app and the Electron app can't be open at the same time: the first
-one to open the data folder holds it, and the other says so.
+one to open the data folder holds it, and the other says so. Tauri builds up
+to 0.4.0 hold no lock, so the Electron app looks for one that's open and asks
+for it to be quit before it starts. On its first launch it also copies over
+what 0.4.0's window kept in its own storage (installed mods, model names typed
+before, sidebar widths), reading a copy of WebKit's database and leaving the
+original alone.
 
 Set `APEX_DECK_DATA_DIR=/some/folder` to run on another data folder; the
 Electron app then keeps its own files (the browser profile, `hosts.json`) in
@@ -34,11 +39,13 @@ Electron app then keeps its own files (the browser profile, `hosts.json`) in
 ## Build the app
 
 ```sh
-npm run desktop:package
+npm run desktop:package    # the app alone
+npm run desktop:dmg        # the app in a disk image, for a release
 ```
 
 This builds `apex-daemon` in release mode and the UI, then writes
-`release/mac-arm64/Apex Deck.app` (or `mac-x64` on Intel). The daemon is
+`release/mac-arm64/Apex Deck.app` (or `mac-x64` on Intel), and with
+`desktop:dmg` also `release/Apex-Deck_<version>_<arch>.dmg`. The daemon is
 inside it at `Contents/Resources/bin/apex-daemon`, and Codex's approval hook
 runs that same copy. The app is signed ad hoc, not notarized: the first time,
 open it with right-click → Open.

@@ -1,7 +1,7 @@
 {
   "name": "apex-deck",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
@@ -13,7 +13,8 @@
     "desktop": "cargo build -p apex-daemon && vite build && electron .",
     "desktop:dev": "cargo build -p apex-daemon && node desktop/dev.mjs",
     "desktop:smoke": "cargo build -p apex-daemon && vite build && node desktop/run-smoke.mjs",
-    "desktop:package": "cargo build --release -p apex-daemon && vite build && electron-builder --mac --dir"
+    "desktop:package": "cargo build --release -p apex-daemon && vite build && electron-builder --mac --dir",
+    "desktop:dmg": "cargo build --release -p apex-daemon && vite build && electron-builder --mac"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",

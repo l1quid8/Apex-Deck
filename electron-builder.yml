@@ -1,5 +1,6 @@
 # The Electron app: `npm run desktop:package` builds an unsigned
-# `release/mac-*/Apex Deck.app` with apex-daemon inside it.
+# `release/mac-*/Apex Deck.app` with apex-daemon inside it, and
+# `npm run desktop:dmg` puts that app in `release/Apex-Deck_<version>_<arch>.dmg`.
 appId: dev.apexdeck.app
 productName: Apex Deck
 directories:
@@ -20,7 +21,9 @@ extraResources:
 mac:
   icon: src-tauri/icons/icon.icns
   category: public.app-category.developer-tools
-  target: dir
+  target: dmg
   # Ad-hoc: unsigned, but Apple silicon runs it. Signing and notarization come later.
   identity: "-"
   hardenedRuntime: false
+dmg:
+  artifactName: Apex-Deck_${version}_${arch}.${ext}

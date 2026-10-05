@@ -21,7 +21,7 @@ edges.
   for you, or one of its threads is replying, it asks first.
 - **Terminal panes.** Real terminals in the workspace folder. Launch a plain
   shell, or any coding agent Apex Deck finds installed (the list is in
-  `src-tauri/src/agents.rs`). A second terminal of the same tool in a
+  `crates/apex-host/src/agents.rs`). A second terminal of the same tool in a
   workspace is numbered ("Codex 2"); double-click a name, or focus it and
   press F2, to rename it. When the program sets its own title, such as
   Claude Code's "Writing tests for auth", it shows muted after the name in
@@ -210,44 +210,42 @@ edges.
 ## Requirements
 
 - [Rust](https://rustup.rs) (stable)
-- [Node.js](https://nodejs.org) 20 or newer
-- The Tauri 2 system dependencies for your platform:
-  <https://tauri.app/start/prerequisites/>
+- [Node.js](https://nodejs.org) 22.13 or newer
 
 ## Run it
 
+The desktop app is Electron. Every thread, terminal and saved file lives in
+`apex-daemon`, on this Mac or on another machine you reach over SSH, and a
+real Chromium browser is docked in the Preview pane. See
+[docs/desktop.md](docs/desktop.md).
+
 ```sh
 npm install
-npm run tauri dev
+npx install-electron       # fetches Electron's binary now rather than on first use
+npm run desktop:dev        # Vite with hot reload, and Electron pointed at it
 ```
 
-The built app also accepts folders on the command line, so `apex-deck .`
-opens the current project as a workspace.
+To build the app, `npm run desktop:package` writes
+`release/mac-arm64/Apex Deck.app`, and `npm run desktop:dmg` puts it in
+`release/Apex-Deck_<version>_arm64.dmg`. Move the app to Applications and open
+it with right-click → **Open** the first time: it is signed ad hoc, not
+notarized. Coding agents still use the command-line tools installed and signed
+in on your Mac.
 
-To build an installable app:
+To run the daemon on a Linux server and use it from this Mac, see
+[docs/daemon-ubuntu.md](docs/daemon-ubuntu.md).
 
-```sh
-npm run tauri build
-```
+### Upgrading from 0.4.0
 
-The resulting `target/release/bundle/macos/Apex Deck.app` contains the interface
-and native backend. Move it to Applications and launch it normally; Node.js,
-a development server and an open terminal are not needed to run the packaged app.
-Coding agents still use the command-line tools installed and signed in on your Mac.
+0.4.0 was a Tauri app. The Electron app reads the same saved threads and
+settings, and on its first launch copies over what the old window kept for
+itself: installed mods, model names typed before and sidebar widths. Quit
+0.4.0 before opening it; if it is still open, the new app asks you to.
 
-### The Electron app
-
-The desktop app is moving to Electron, which runs everything in
-`apex-daemon` and docks a real Chromium browser in the Preview pane. It can
-also run on another machine's daemon over SSH. See [docs/desktop.md](docs/desktop.md).
-
-```sh
-npx install-electron
-npm run desktop:dev        # or: npm run desktop:package for Apex Deck.app
-```
-
-The Tauri app and the Electron app share their saved data and can't be open
-at the same time.
+The Tauri build (`npm run tauri dev`, `npm run tauri build`) still works but is
+no longer what ships. It needs the
+[Tauri 2 prerequisites](https://tauri.app/start/prerequisites/), and can't be
+open at the same time as the Electron app.
 
 To work on the interface alone, `npm run dev` opens it in a browser with a
 stand-in backend. Terminals only echo and chat replies are canned in that
@@ -439,7 +437,10 @@ description of how it should behave.
 |---|---|
 | `crates/apex-core` | Group chat logic: participants, transcript views, turn taking. No network or process code. |
 | `crates/apex-adapters` | Backends: OpenAI-compatible HTTP streaming and command-line tools. |
-| `src-tauri` | The desktop shell: terminal sessions, agent detection, and the commands the interface calls. |
+| `crates/apex-host` | Everything a host does: threads, terminals, agent detection, saved sessions and settings, and the commands the interface calls. |
+| `crates/apex-daemon` | `apex-daemon`, which runs a host for the desktop app, over SSH, or as a service on a server. |
+| `desktop` | The Electron app: windows, the docked browser, and the link from each window to a daemon. |
+| `src-tauri` | The Tauri app, no longer what ships; it forwards to `apex-host`. |
 | `src` | The interface (React and TypeScript, xterm.js for terminals). |
 | `src/layout.ts` | How panes are arranged: the layout tree and every change to it, with no interface code. |
 | `src/attention.ts` | When a pane counts as needing you: the rules for terminals and chats, with no interface code. |
