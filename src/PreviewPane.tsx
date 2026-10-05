@@ -24,6 +24,8 @@ interface Props {
   backend: Backend;
   /** False while the pane's section is off screen: polling stops and full window ends. */
   visible: boolean;
+  /** Something that isn't a menu or dialog is drawn over the deck (Settings); a docked page steps aside. */
+  behind?: boolean;
   servers: ServerChoice[];
   /** The terminal or thread this page's address came from, while it is still open. A thread counts as running. */
   source: { title: string; kind: "terminal" | "chat"; running: boolean } | null;
@@ -51,7 +53,7 @@ const BACK = svg(<path d="M15 5l-7 7 7 7" />);
 const FORWARD = svg(<path d="M9 5l7 7-7 7" />);
 const CORNERS = svg(<><path d="M4 9V4h5" /><path d="M20 9V4h-5" /><path d="M4 15v5h5" /><path d="M20 15v5h-5" /></>);
 
-export function PreviewPane({ pane, backend, visible, servers, source, openExternally, onOpenExternallyChange, onAddress, onStatus, onStartSource, onShowSource, onOpenInBrowser }: Props) {
+export function PreviewPane({ pane, backend, visible, behind = false, servers, source, openExternally, onOpenExternallyChange, onAddress, onStatus, onStartSource, onShowSource, onOpenInBrowser }: Props) {
   const address = pane.url ?? "";
   const host = address ? hostLabel(address) : "";
   const [typed, setTyped] = useState(address);
@@ -177,7 +179,7 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
       <div className="preview-body">
         {!address && <EmptyPage servers={servers} onPick={(server) => onAddress(pane.id, server.address, server.sourceId)} />}
         {docked && address && (
-          <BrowserView pane={pane.id} url={address} browser={docked} visible={visible && !failed} onState={setPage} />
+          <BrowserView pane={pane.id} url={address} browser={docked} visible={visible && !behind && !failed} onState={setPage} />
         )}
         {docked && address && failed && (
           <div className="preview-notice" role="status">

@@ -3,7 +3,7 @@
 // The window speaks the protocol itself (src/daemon/client.ts); main only
 // relays lines and does what needs the machine with the screen.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -243,8 +243,13 @@ handle('shell:startupFolders', async () => startupFolders(process.argv, app.isPa
 
 // ------------------------------------------------------------ quitting
 
-/** Quit now: the person chose to, nothing was running, or the window never answered. */
+/** Set once quitting is under way. */
+let finishing = false;
+
+/** Quit now: the person chose to, nothing was running, the window never answered, or the system is logging out. */
 async function finishQuit() {
+  if (finishing) return;
+  finishing = true;
   gate.confirm();
   // Sign-ins in the docked browser last: app.exit doesn't wait for Chromium to save them.
   await browser?.flush();
@@ -418,7 +423,24 @@ app.whenReady().then(async () => {
   }
 });
 
-// ⌘Q and Quit in the menu ask the window first.
+// ⌘Q and Quit in the menu ask the window first. Once quitting is decided,
+// it goes the one way that stops the daemon Deck started.
 app.on('before-quit', (event) => {
+  if (systemQuitting) return;
+  if (gate.confirmed) {
+    if (finishing) return;
+    event.preventDefault();
+    void finishQuit();
+    return;
+  }
   if (askToQuit()) event.preventDefault();
 });
+
+// Logging out, restarting or shutting down is never held, not even to wait
+// for the daemon: holding it would cancel the logout. The daemon Deck started
+// stops by itself when its stdin closes with the app.
+let systemQuitting = false;
+app.whenReady().then(() => powerMonitor.on('shutdown', () => {
+  systemQuitting = true;
+  gate.confirm();
+}));

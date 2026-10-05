@@ -142,3 +142,56 @@ fn serve_without_the_option_ignores_its_stdin() {
     assert!(conn.call("session_load", json!({})).1.is_ok());
     assert!(served.process.child.try_wait().unwrap().is_none(), "the daemon stopped when its stdin closed");
 }
+
+/// The app that started the daemon reads its stderr too; when the app dies,
+/// writing there fails, and the daemon must still stop its work and clean up.
+#[test]
+fn serve_cleans_up_when_the_app_reading_its_stderr_is_killed() {
+    let data = temp_dir();
+    std::fs::create_dir_all(&data.0).unwrap();
+    let (input, output) = (data.0.join("in"), data.0.join("err"));
+    for fifo in [&input, &output] {
+        assert!(Command::new("mkfifo").arg(fifo).status().unwrap().success());
+    }
+    // The shell holds the write end of the daemon's stdin and the read end of
+    // its stderr, as Electron does; it reads nothing, like an app that's gone.
+    let holder = Command::new("sh")
+        .arg("-c")
+        .arg(format!("exec 3>{} 4<{}; exec sleep 600", input.display(), output.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut holder = Killed(holder);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_apex-daemon"))
+        .args(["serve", "--exit-on-stdin-close", "--data-dir"])
+        .arg(&data.0)
+        .stdin(std::fs::File::open(&input).unwrap())
+        .stdout(Stdio::null())
+        .stderr(std::fs::OpenOptions::new().write(true).open(&output).unwrap())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while !data.0.join("daemon.json").exists() {
+        assert!(child.try_wait().unwrap().is_none(), "the daemon exited before it was ready");
+        assert!(start.elapsed() < PATIENCE, "the daemon never wrote daemon.json");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (_conn, agent, terminal) = busy(&data.0);
+    assert!(Command::new("kill").args(["-9", &holder.0.id().to_string()]).status().unwrap().success());
+    let _ = holder.0.wait();
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(start.elapsed() < WIND_DOWN + Duration::from_secs(5), "the daemon kept running after the app died");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "the daemon didn't stop cleanly: {status}");
+    assert!(!data.0.join("daemon.sock").exists());
+    assert!(!data.0.join("daemon.json").exists());
+    wait_until_dead(&agent);
+    wait_until_dead(&terminal);
+}

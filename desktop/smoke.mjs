@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { app, BrowserWindow, session } from 'electron';
+import { app, BrowserWindow, powerMonitor, session } from 'electron';
 import { PARTITION } from './browser.mjs';
 
 const OPTIONS = { policy: 'mention', max_bot_hops: 3 };
@@ -122,10 +122,18 @@ export async function runSmoke(win, { sidecar, browser }) {
       // A menu over the pane: the view steps aside for a picture of itself, and comes back.
       await page(`document.querySelector('button[aria-label="More actions for Preview"]').click(); return true;`);
       await until('the view to step aside for the menu', () => !browser.inspect('smoke-preview').shown, 5_000);
-      await until('the picture in its place', () => page(`return Boolean(document.querySelector('.browser-snapshot'))`), 5_000);
+      // The picture needs the window on screen and uncovered, which a smoke
+      // run can't promise; say whether it came rather than fail on it.
+      const pictured = await until('the picture in its place', () => page(`return Boolean(document.querySelector('.browser-snapshot'))`), 2_000).catch(() => false);
+      console.log(`smoke: ${pictured ? 'a picture of the page stood in for it' : 'no picture of the page (the window was not capturable)'}`);
       await page(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`);
       await until('the view to come back', () => browser.inspect('smoke-preview').shown, 5_000);
 
+      // Settings takes the deck's place; the page must not sit on top of it.
+      await page(`document.querySelector('button[aria-label="Settings"]').click(); return true;`);
+      await until('the view to step aside for Settings', () => !browser.inspect('smoke-preview').shown, 5_000);
+      await page(`document.querySelector('button[aria-label="Close settings"]').click(); return true;`);
+      await until('the view to come back after Settings', () => browser.inspect('smoke-preview').shown, 5_000);
 
       // A page that tries to take over the window or reach the bridge gets nowhere.
       await page(`await __deck.backend.browser.navigate('smoke-preview', ${JSON.stringify(`${site.url}/evil`)}); return true;`);
@@ -304,5 +312,26 @@ async function runAgain(win, sidecar) {
   if (cookies.length !== 1 || cookies[0].value !== 'kept') throw new Error(`the docked browser's cookie is gone (${JSON.stringify(cookies)})`);
   console.log('smoke: ok — a cookie set in the docked browser survives a restart of the app');
 
-  return quit(win, sidecar);
+  // Logging out or shutting down never waits on a question, even with a bot replying.
+  await contents.executeJavaScript(`(async () => {
+    window.__smoke = { events: [] };
+    await __deck.backend.onRoomEvent((room, event) => __smoke.events.push({ room, event }));
+    // Opened as the restored thread pane opens it, whichever gets there first.
+    await __deck.backend.roomCreate('smoke-busy', [], ${JSON.stringify(OPTIONS)}, '');
+    void __deck.backend.roomPost('smoke-busy', '@slow go').catch(() => {});
+  })()`);
+  while (!(await contents.executeJavaScript(`__smoke.events.some((e) => e.room === 'smoke-busy' && e.event.type === 'turn_started')`))) {
+    if (Date.now() - start > 60_000) throw new Error('the bot never started in the second launch');
+    await sleep(50);
+  }
+  await sleep(500);
+  const daemon = sidecar();
+  fs.writeFileSync(path.join(app.getPath('userData'), 'sidecar.pid'), String(daemon.child.pid));
+  console.log('smoke: logging out while a bot replies');
+  powerMonitor.emit('shutdown', { preventDefault() {} });
+  app.quit();
+  // The app should be gone well before this; a question means it waited.
+  await sleep(5_000);
+  const asked = await contents.executeJavaScript(`document.querySelector('[role=alertdialog] #confirm-title')?.textContent ?? ''`).catch(() => '');
+  throw new Error(`logging out didn't quit${asked ? `; it asked "${asked}"` : ''}`);
 }

@@ -1100,6 +1100,7 @@ export function App() {
                         pane={pane}
                         backend={backend}
                         visible={visible}
+                        behind={Boolean(settingsOpen)}
                         servers={serversFor(pane.workspaceId)}
                         source={sourceOf(pane)}
                         openExternally={settings.preview.openExternally}

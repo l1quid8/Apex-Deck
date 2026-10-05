@@ -107,7 +107,7 @@ test('on another machine: work goes on after quitting, paths are typed, files th
   const bridge = { shell: {
     startupFolders: async () => ['/Users/me/proj'],
     openExternal: async (url) => { opened.push(url); },
-    readLocalFile: async (path) => { if (path.endsWith('/dir')) throw new Error("Folders can't be sent to vps; drop the files in it instead."); return new Uint8Array([7, 8]); },
+    readLocalFile: async (path) => { if (path.endsWith('/dir')) throw new Error("Error invoking remote method 'shell:readLocalFile': Error: Folders can't be sent to vps; drop the files in it instead."); return new Uint8Array([7, 8]); },
   } };
   const transport = {
     call: async () => { throw new Error('not expected'); },
@@ -125,5 +125,12 @@ test('on another machine: work goes on after quitting, paths are typed, files th
   await assert.rejects(shell.openTarget('src/main.rs', '/srv/app', true), { message: "That file is on vps; Deck can't open it on this Mac." });
   assert.equal(await shell.copyAttachment('t', '/Users/me/Desktop/pic.png'), '/home/me/att/pic.png');
   assert.deepEqual(saved, [['t', 'pic.png', [7, 8]]]);
-  await assert.rejects(shell.copyAttachment('t', '/Users/me/dir'), /Folders can't be sent to vps/);
+  await assert.rejects(shell.copyAttachment('t', '/Users/me/dir'), { message: "Folders can't be sent to vps; drop the files in it instead." });
+});
+
+test("a refused connect reaches the banner in the daemon's own words", async () => {
+  const bridge = fakeBridge();
+  bridge.daemon.connect = async () => { throw new Error("Error invoking remote method 'daemon:connect': Error: /Users/me/Library/Application Support/dev.apexdeck.app: Apex Deck (pid 412) is using this folder"); };
+  const connect = bridgeConnect(bridge);
+  await assert.rejects(connect(), { message: '/Users/me/Library/Application Support/dev.apexdeck.app: Apex Deck (pid 412) is using this folder' });
 });

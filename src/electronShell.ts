@@ -77,7 +77,7 @@ export function bridgeConnect(bridge: Pick<DeckBridge, "daemon">): Connect {
     }
   });
   return async () => {
-    const gen = await bridge.daemon.connect();
+    const gen = await bridge.daemon.connect().catch((error: unknown) => { throw new Error(ipcWords(error)); });
     const me: NonNullable<typeof current> = { gen };
     current = me;
     if (early?.gen === gen) me.closed = early.reason;
@@ -98,6 +98,11 @@ export function bridgeConnect(bridge: Pick<DeckBridge, "daemon">): Connect {
   };
 }
 
+/** An error from main, without the "Error invoking remote method …" Electron puts in front. */
+export function ipcWords(error: unknown): string {
+  return String(error instanceof Error ? error.message : error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
+}
+
 export function toBase64(bytes: Uint8Array): string {
   let text = "";
   for (let at = 0; at < bytes.length; at += 0x8000) text += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
@@ -109,6 +114,15 @@ export function fromBase64(text: string): Uint8Array {
   const bytes = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
   return bytes;
+}
+
+/** `api` with each function's rejections in plain words (`ipcWords`). */
+function plainErrors<T extends object>(api: T): T {
+  return Object.fromEntries(Object.entries(api).map(([key, value]) => [key, typeof value !== "function" ? value
+    : (...args: unknown[]) => {
+      const result = value(...args);
+      return result instanceof Promise ? result.catch((error: unknown) => { throw new Error(ipcWords(error)); }) : result;
+    }])) as T;
 }
 
 /** Commands and events over the daemon's protocol; files as base64. */
@@ -136,7 +150,7 @@ export function electronShell(
   ask: (request: PathRequest) => Promise<string | null>,
 ): Shell & Pick<Backend, "onMenu"> {
   const call = transport.call.bind(transport);
-  const shell = bridge.shell;
+  const shell = plainErrors(bridge.shell);
   if (host.remote) {
     return {
       ...electronShell(bridge, transport, { ...host, remote: false }, ask),

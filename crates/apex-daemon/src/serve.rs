@@ -119,6 +119,19 @@ async fn stdin_closes() {
     let mut stdin = tokio::io::stdin();
     let mut buffer = [0u8; 1024];
     while matches!(stdin.read(&mut buffer).await, Ok(n) if n > 0) {}
+    // The app read our stderr too, and may be gone with it. Writing to a pipe
+    // nobody reads fails, and a failed eprintln! panics, which would end the
+    // daemon before it stops its agents. What's left to say goes nowhere.
+    quiet_stderr();
+}
+
+/// Point stderr at /dev/null.
+fn quiet_stderr() {
+    if let Ok(null) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
+        use std::os::fd::AsRawFd;
+        // SAFETY: dup2 onto fd 2 only replaces what stderr refers to.
+        unsafe { libc::dup2(null.as_raw_fd(), libc::STDERR_FILENO) };
+    }
 }
 
 /// Log a failed accept and pause, so an error that repeats (out of file

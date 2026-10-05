@@ -62,24 +62,29 @@ function finished(code, signal) {
   clearTimeout(timer);
   for (const dir of [data, `${data}-desktop`]) fs.rmSync(dir, { recursive: true, force: true });
   if (failed) console.error(`smoke: failed (${failed})`);
-  else console.log(options.ssh ? 'smoke: ok — quitting exits 0' : 'smoke: ok — the second launch quits cleanly too');
+  else console.log(options.ssh ? 'smoke: ok — quitting exits 0' : 'smoke: ok — logging out with a bot replying quits at once, and the daemon is gone');
   process.exit(failed ? 1 : 0);
 }
 app.on('exit', finished);
 
 /** Why the daemon the app started isn't cleanly gone, or ''. */
 function sidecarLeft() {
-  if (fs.existsSync(path.join(data, 'daemon.json'))) return 'daemon.json is still there';
   let pid;
   try {
     pid = Number(fs.readFileSync(`${data}-desktop/sidecar.pid`, 'utf8'));
   } catch {
     return 'the smoke run never reached the quit';
   }
-  try {
-    process.kill(pid, 0);
-    return `the daemon (pid ${pid}) is still running`;
-  } catch {
-    return '';
+  // After a logout the app goes at once and the daemon winds down after it,
+  // stopping bots and saving (up to its 10 s WIND_DOWN).
+  const until = Date.now() + 15_000;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return fs.existsSync(path.join(data, 'daemon.json')) ? 'daemon.json is still there' : '';
+    }
+    if (Date.now() > until) return `the daemon (pid ${pid}) is still running`;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
   }
 }

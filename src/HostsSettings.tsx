@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { Backend, HostEntry, HostsApi } from "./backend";
+import { ipcWords as words } from "./electronShell";
 
 // Settings → Hosts: this Mac, and other machines running apex-daemon that
 // Deck reaches with ssh. Switching reloads the window on the chosen host.
@@ -16,7 +17,6 @@ export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: Hos
     hosts.list().then(setList, () => setList([]));
     hosts.current().then((host) => setCurrent(host.id), () => setCurrent(""));
   }, [hosts]);
-  const words = (error: unknown) => String(error instanceof Error ? error.message : error).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
   const add = async () => {
     setProblem("");
     try {
