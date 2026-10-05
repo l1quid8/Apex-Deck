@@ -17,7 +17,7 @@ import { TerminalPane } from "./TerminalPane";
 import { PreviewPane, type ServerChoice } from "./PreviewPane";
 import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
 import { nextTitle, programTitle } from "./terminalTitle";
-import { hostLabel } from "./previewAddress";
+import { hostLabel, sameServer } from "./previewAddress";
 import { paneMenuItems, type PaneMenuAction } from "./paneMenu";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
@@ -505,7 +505,7 @@ export function App() {
    * Show a server in a Preview right of the terminal or thread it came from,
    * on that pane's deck, or focus the Preview already showing it there.
    * `auto` is a thread's bot naming a new server: the thread's own Preview
-   * moves to it, or one opens, and focus stays where you are.
+   * moves to it (unless it already shows that server), or one opens, and focus stays where you are.
    */
   const openPreview = (address: string, sourceId: string, auto = false) => {
     const source = panes.find((p) => p.id === sourceId);
@@ -518,6 +518,9 @@ export function App() {
     }
     const own = auto ? panes.find((p) => p.kind === "preview" && !p.closed && p.servedBy === sourceId && paneSection(p) === deck) : undefined;
     if (own) {
+      // Another page on the server it already shows is left alone: bots name
+      // paths in passing, and the page you're on shouldn't jump.
+      if (own.url && sameServer(own.url, address)) return;
       setPreviewAddress(own.id, address, sourceId);
       return;
     }

@@ -35,7 +35,18 @@ export function normalizeAddress(input: string): string | null {
   }
   if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) return null;
   if (url.hostname === "0.0.0.0") url.hostname = "localhost";
-  return url.href;
+  // Backticks encoded onto the end are a code span's closing mark that an
+  // older build kept, quoted back into the chat; no page ends in them.
+  return url.href.replace(/(?:%60)+$/i, "");
+}
+
+/** Whether two addresses are pages on the same server: same scheme, host and port. */
+export function sameServer(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
 }
 
 /** "localhost:5173" or "github.com"; "" for something that isn't an address. */

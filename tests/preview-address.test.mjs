@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ServerWatch, findServerUrls, hostLabel, isLocalHost, normalizeAddress } from "../src/previewAddress.ts";
+import { ServerWatch, findServerUrls, hostLabel, isLocalHost, normalizeAddress, sameServer } from "../src/previewAddress.ts";
 
 test("a port or a local host:port is a local server over http", () => {
   assert.equal(normalizeAddress("3000"), "http://localhost:3000/");
@@ -48,6 +48,20 @@ test("markdown around an address in a bot's reply is not part of it", () => {
   assert.deepEqual(findServerUrls("it loads:\n\n**http://localhost:4173/**\n"), ["http://localhost:4173/"]);
   assert.deepEqual(findServerUrls("_http://localhost:3000/docs_ or ~~http://localhost:3001~~"), ["http://localhost:3000/docs", "http://localhost:3001/"]);
   assert.deepEqual(findServerUrls("[the kit](http://localhost:4173/index.html)."), ["http://localhost:4173/index.html"]);
+});
+
+test("a backtick already encoded onto the end of an address is not part of it", () => {
+  // A bot quoting a link that an older build had broken.
+  assert.deepEqual(findServerUrls("it opened `http://localhost:4173/%60` instead"), ["http://localhost:4173/"]);
+  assert.equal(normalizeAddress("http://localhost:4173/%60%60"), "http://localhost:4173/");
+  assert.equal(normalizeAddress("http://localhost:3000/docs?tab=1%60"), "http://localhost:3000/docs?tab=1");
+  assert.equal(normalizeAddress("http://localhost:3000/a%60b"), "http://localhost:3000/a%60b");
+});
+
+test("another page on the same server is the same server", () => {
+  assert.equal(sameServer("http://localhost:4173/", "http://localhost:4173/%60"), true);
+  assert.equal(sameServer("http://localhost:4173/", "http://localhost:5173/"), false);
+  assert.equal(sameServer("http://localhost:4173/", "not an address"), false);
 });
 
 test("an address split across two chunks is found once it is whole", () => {
