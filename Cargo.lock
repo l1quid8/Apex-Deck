@@ -77,16 +77,10 @@ dependencies = [
  "apex-adapters",
  "apex-core",
  "apex-host",
- "base64 0.22.1",
- "futures",
- "portable-pty",
- "reqwest",
- "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
- "tokio",
 ]
 
 [[package]]
