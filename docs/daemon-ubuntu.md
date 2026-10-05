@@ -9,6 +9,15 @@ on Ubuntu 22.04 or 24.04 (no desktop needed) and start it at boot.
 Check the server's CPU first: `uname -m` prints `x86_64` (most VPSs) or
 `aarch64` (ARM: Hetzner CAX, Oracle Ampere).
 
+- **From a release:** each release from 0.5.0 on has `apex-daemon-linux-x86_64`
+  and `apex-daemon-linux-arm64` on its
+  [releases page](https://github.com/l1quid8/Apex-Deck/releases). On the
+  server, with the version you want:
+  ```sh
+  curl -fLo /tmp/apex-daemon https://github.com/l1quid8/Apex-Deck/releases/download/v0.5.0/apex-daemon-linux-$(uname -m | sed s/aarch64/arm64/)
+  sudo install -m 0755 /tmp/apex-daemon /usr/local/bin/apex-daemon && rm /tmp/apex-daemon
+  ```
+  Then skip to step 3.
 - **From CI:** open the repository's Actions tab, pick the latest `daemon`
   run, and download `apex-daemon-linux-x86_64` or `apex-daemon-linux-arm64`.
 - **Built on your Mac with Docker:**
