@@ -147,6 +147,8 @@ export interface HostEntry {
   ssh?: string;
   /** The daemon's command there. */
   command?: string;
+  /** A window is open on it. */
+  open?: boolean;
 }
 
 /** What a docked page is doing (desktop/browser.mjs). */
@@ -186,8 +188,10 @@ export interface HostsApi {
   /** Save a host; rejects with words when it can't be used. */
   add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
   remove(id: string): Promise<HostEntry[]>;
-  /** Switch to `id`; the window reloads on that host. */
+  /** Switch to `id`; the window reloads on that host, or the window already on it comes forward. */
   use(id: string): Promise<void>;
+  /** A window on `id` beside this one, or the one already on it brought forward. */
+  openWindow(id: string): Promise<void>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

@@ -153,6 +153,35 @@ export async function runSmoke(win, { sidecar, browser }) {
     }
   });
 
+  await step('a second window runs on another host, names it, and closes on its own', async () => {
+    const saved = () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'hosts.json'), 'utf8')).windows;
+    // A host nothing answers at, so the new window sits on its loading screen.
+    const list = await page(`return await __deck.backend.hosts.add({ name: 'nowhere', ssh: 'nowhere.invalid', command: 'apex-daemon' })`);
+    const id = list.find((host) => host.name === 'nowhere').id;
+    await page(`await __deck.backend.hosts.openWindow(${JSON.stringify(id)}); return true;`);
+    const other = await until('the second window', () => BrowserWindow.getAllWindows().find((w) => w !== win && w.getTitle() === 'Apex Deck — nowhere'));
+    const words = await until('the second window to name its host', async () => {
+      const shown = await other.webContents.executeJavaScript(`document.querySelector('.loading')?.innerText ?? ''`);
+      return /Reconnecting to nowhere|Can't connect to nowhere/.test(shown) && shown;
+    }, 30_000);
+    if (!/Use This Mac/.test(words)) throw new Error(`no way back to this Mac on: ${words.replace(/\s+/g, ' ')}`);
+    // Asking again brings that window forward instead of making another.
+    await page(`await __deck.backend.hosts.openWindow(${JSON.stringify(id)}); return true;`);
+    await sleep(300);
+    if (BrowserWindow.getAllWindows().length !== 2) throw new Error(`${BrowserWindow.getAllWindows().length} windows are open`);
+    const both = saved();
+    if (JSON.stringify(both) !== JSON.stringify(['local', id])) throw new Error(`hosts.json keeps windows ${JSON.stringify(both)}`);
+    const hosts = await page(`return await __deck.backend.hosts.list()`);
+    if (!hosts.every((host) => host.open)) throw new Error(`the list doesn't show both open: ${JSON.stringify(hosts)}`);
+    // Closing it asks nothing, and this window stays connected.
+    other.close();
+    await until('the second window to close', () => other.isDestroyed(), 5_000);
+    if (JSON.stringify(saved()) !== JSON.stringify(['local'])) throw new Error(`hosts.json keeps windows ${JSON.stringify(saved())}`);
+    await page(`await __deck.backend.hosts.remove(${JSON.stringify(id)}); return true;`);
+    if (await page(`return document.querySelector('.connection-banner')?.innerText ?? ''`)) throw new Error('this window lost its host');
+    if ((await page(`return (await __deck.backend.hosts.current()).id`)) !== 'local') throw new Error('this window moved');
+  });
+
   await step('quitting while an agent replies asks first', async () => {
     // A thread in the window, with a bot that takes its time.
     await page(`

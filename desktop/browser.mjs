@@ -37,17 +37,32 @@ function freeName(dir, name) {
   }
 }
 
+/** The saved profile every window's pages share, set up the first time it's asked for. */
+let shared = null;
+function sharedProfile(downloads) {
+  if (shared) return shared;
+  shared = sessions.fromPartition(PARTITION);
+  // Clipboard writes (a page's Copy button) and fullscreen video; nothing else.
+  const allowed = new Set(['clipboard-sanitized-write', 'fullscreen']);
+  shared.setPermissionRequestHandler((_contents, permission, done) => done(allowed.has(permission)));
+  shared.setPermissionCheckHandler((_contents, permission) => allowed.has(permission));
+  shared.on('will-download', (_event, item) => item.setSavePath(freeName(downloads(), item.getFilename())));
+  return shared;
+}
+
+/** Write cookies and other saved state to disk before the app exits. */
+export async function flushProfile() {
+  if (!shared) return;
+  await shared.cookies.flushStore().catch(() => {});
+  shared.flushStorageData();
+}
+
 /**
  * The docked pages of `win`. `send(channel, ...args)` reaches the Deck window:
  * `browser:state` (pane, state) and `browser:shortcut` (a key press the deck owns).
  */
 export function dockedBrowser({ win, send, downloads }) {
-  const profile = sessions.fromPartition(PARTITION);
-  // Clipboard writes (a page's Copy button) and fullscreen video; nothing else.
-  const allowed = new Set(['clipboard-sanitized-write', 'fullscreen']);
-  profile.setPermissionRequestHandler((_contents, permission, done) => done(allowed.has(permission)));
-  profile.setPermissionCheckHandler((_contents, permission) => allowed.has(permission));
-  profile.on('will-download', (_event, item) => item.setSavePath(freeName(downloads(), item.getFilename())));
+  sharedProfile(downloads);
 
   /** pane id → { view, shown } */
   const panes = new Map();
@@ -138,7 +153,7 @@ export function dockedBrowser({ win, send, downloads }) {
     close(pane) {
       const entry = panes.get(pane);
       if (!entry) return;
-      if (entry.shown) win.contentView.removeChildView(entry.view);
+      if (entry.shown && !win.isDestroyed()) win.contentView.removeChildView(entry.view);
       entry.view.webContents.close();
       panes.delete(pane);
     },
@@ -155,10 +170,9 @@ export function dockedBrowser({ win, send, downloads }) {
       const entry = panes.get(pane);
       return entry ? { shown: entry.shown, bounds: entry.view.getBounds(), contents: entry.view.webContents } : null;
     },
-    /** Write cookies and other saved state to disk before the app exits. */
-    async flush() {
-      await profile.cookies.flushStore().catch(() => {});
-      profile.flushStorageData();
+    /** Close every page, as the window closes. */
+    closeAll() {
+      for (const pane of [...panes.keys()]) this.close(pane);
     },
   };
 }

@@ -1,15 +1,16 @@
-// Apex Deck's Electron main process: the window, the app:// protocol that
-// serves the built UI, and a byte pipe between the window and apex-daemon.
-// The window speaks the protocol itself (src/daemon/client.ts); main only
-// relays lines and does what needs the machine with the screen.
+// Apex Deck's Electron main process: the windows, the app:// protocol that
+// serves the built UI, and a byte pipe between each window and apex-daemon.
+// A window speaks the protocol itself (src/daemon/client.ts); main only
+// relays lines and does what needs the machine with the screen. Each window
+// runs on one host, this Mac or another machine, so two can sit side by side.
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dockedBrowser } from './browser.mjs';
+import { dockedBrowser, flushProfile } from './browser.mjs';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
-import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost } from './hosts.mjs';
+import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, windowsAtLaunch } from './hosts.mjs';
 import { socketLink, sshLink } from './link.mjs';
 import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon } from './sidecar.mjs';
@@ -58,16 +59,21 @@ function ensureLocal() {
 // ------------------------------------------------------------ hosts
 
 const hostsFile = () => path.join(app.getPath('userData'), 'hosts.json');
-/** Saved hosts and the one in use (`last`); read once the app is ready. */
+/**
+ * Saved hosts, the one last chosen (`last`) and those with a window open
+ * (`windows`, for the next launch); read once the app is ready.
+ */
 let hosts = { version: 1, hosts: [], last: LOCAL };
 
-/** The saved host in use, or null for this Mac. */
-const remoteHost = () => hosts.hosts.find((host) => host.id === hosts.last) ?? null;
+/** The saved host `id`, or null for this Mac. */
+const remoteHost = (id) => hosts.hosts.find((host) => host.id === id) ?? null;
 
+/** Every host; `open` when a window is on it. */
 function hostList() {
+  const open = new Set([...windows.values()].map((entry) => entry.host));
   return [
-    { id: LOCAL, name: LOCAL_NAME, remote: false },
-    ...hosts.hosts.map(({ id, name, ssh, command }) => ({ id, name, ssh, command, remote: true })),
+    { id: LOCAL, name: LOCAL_NAME, remote: false, open: open.has(LOCAL) },
+    ...hosts.hosts.map(({ id, name, ssh, command }) => ({ id, name, ssh, command, remote: true, open: open.has(id) })),
   ];
 }
 
@@ -76,29 +82,68 @@ function writeHosts() {
   Menu.setApplicationMenu(menu());
 }
 
-const windowTitle = () => (remoteHost() ? `Apex Deck — ${remoteHost().name}` : 'Apex Deck');
+const windowTitle = (id) => (remoteHost(id) ? `Apex Deck — ${remoteHost(id).name}` : 'Apex Deck');
 
-/** Switch the window to host `id`: it reloads and connects there. */
-function useHost(id) {
-  if (id !== LOCAL && !hosts.hosts.some((host) => host.id === id)) throw new Error('There is no such host.');
-  hosts = { ...hosts, last: id };
+function knownHost(id) {
+  if (id !== LOCAL && !remoteHost(id)) throw new Error('There is no such host.');
+}
+
+/** Note which hosts have a window, for the next launch. */
+function rememberWindows() {
+  hosts = { ...hosts, windows: [...windows.values()].map((entry) => entry.host) };
   writeHosts();
-  if (!win || win.isDestroyed()) return;
-  win.setTitle(windowTitle());
-  for (const state of links.values()) state.link?.close();
-  win.webContents.reload();
+}
+
+/** Put `entry`'s window on host `id`: its pages close, and it reloads and connects there. */
+function moveWindow(entry, id) {
+  entry.host = id;
+  entry.win.setTitle(windowTitle(id));
+  entry.browser.closeAll();
+  links.get(entry.win.webContents.id)?.link?.close();
+  entry.win.webContents.reload();
+}
+
+/** Bring `entry`'s window to the front. */
+function front(entry) {
+  if (entry.win.isMinimized()) entry.win.restore();
+  entry.win.show();
+  entry.win.focus();
+}
+
+/** Switch `entry`'s window to host `id`, or bring forward the window already on it. */
+function useHost(entry, id) {
+  knownHost(id);
+  const other = [...windows.values()].find((e) => e !== entry && e.host === id);
+  if (other) return front(other);
+  hosts = { ...hosts, last: id };
+  if (entry.host !== id) moveWindow(entry, id);
+  rememberWindows();
+}
+
+/** A window on host `id`: the one already open there, or a new one beside `beside`. */
+function openWindow(id, beside) {
+  knownHost(id);
+  const open = [...windows.values()].find((e) => e.host === id);
+  if (open) return front(open);
+  hosts = { ...hosts, last: id };
+  createWindow(id, beside);
+  rememberWindows();
 }
 
 /** Each window's link to the daemon: a new generation on every connect. */
 const links = new Map();
 
-function fromUi(event) {
+/** The Deck window `event` came from, or null for anything else (a docked page, a sign-in popup). */
+function deckWindow(event) {
   const frame = event.senderFrame;
-  return Boolean(frame && UI_ORIGINS.has(originOf(frame.url)) && BrowserWindow.fromWebContents(event.sender));
+  if (!frame || !UI_ORIGINS.has(originOf(frame.url))) return null;
+  return windows.get(BrowserWindow.fromWebContents(event.sender)?.id) ?? null;
 }
+const fromUi = (event) => deckWindow(event) !== null;
 
 ipcMain.handle('daemon:connect', async (event) => {
-  if (!fromUi(event)) throw new Error('Not the Deck window.');
+  const entry = deckWindow(event);
+  if (!entry) throw new Error('Not the Deck window.');
   const contents = event.sender;
   let state = links.get(contents.id);
   if (!state) {
@@ -120,7 +165,7 @@ ipcMain.handle('daemon:connect', async (event) => {
       send('daemon:close', reason);
     },
   };
-  const remote = remoteHost();
+  const remote = remoteHost(entry.host);
   const link = remote ? sshLink(remote, handlers) : await socketLink((await ensureLocal()).socket, handlers);
   if (state.gen !== gen) {
     link.close();
@@ -140,30 +185,31 @@ ipcMain.on('daemon:close', (event, gen) => {
   if (fromUi(event) && state?.gen === gen) state.link?.close();
 });
 
-ipcMain.handle('connection:current', async () => {
-  const remote = remoteHost();
-  if (remote) return { id: remote.id, name: remote.name, remote: true, owned: false };
-  const daemon = await ensureLocal().catch(() => null);
-  return { id: LOCAL, name: LOCAL_NAME, remote: false, owned: daemon?.owned ?? true };
-});
-
 ipcMain.on('apex:smoke', (event) => { event.returnValue = smoke; });
 
 // ------------------------------------------------------------ the shell's jobs
 // What the person saves or opens lands on this machine, the one with the screen.
 
-/** The main window, once made. */
-let win = null;
+/** Every Deck window by BrowserWindow id: `{ win, host, browser, badge }`. */
+const windows = new Map();
 
-/** Handle `channel` only for the Deck window's own page. */
+/** Handle `channel` only for a Deck window's own page; `run` gets that window first. */
 function handle(channel, run) {
   ipcMain.handle(channel, (event, ...args) => {
-    if (!fromUi(event)) throw new Error('Not the Deck window.');
-    return run(...args);
+    const entry = deckWindow(event);
+    if (!entry) throw new Error('Not the Deck window.');
+    return run(entry, ...args);
   });
 }
 
-handle('shell:pickPath', async (kind, title) => {
+handle('connection:current', async ({ host }) => {
+  const remote = remoteHost(host);
+  if (remote) return { id: remote.id, name: remote.name, remote: true, owned: false };
+  const daemon = await ensureLocal().catch(() => null);
+  return { id: LOCAL, name: LOCAL_NAME, remote: false, owned: daemon?.owned ?? true };
+});
+
+handle('shell:pickPath', async ({ win }, kind, title) => {
   const picked = await dialog.showOpenDialog(win, {
     title: String(title || ''),
     properties: [kind === 'directory' ? 'openDirectory' : 'openFile', 'createDirectory'],
@@ -171,14 +217,14 @@ handle('shell:pickPath', async (kind, title) => {
   return picked.canceled ? null : (picked.filePaths[0] ?? null);
 });
 
-handle('shell:saveFile', async (name, contents) => {
+handle('shell:saveFile', async ({ win }, name, contents) => {
   const picked = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), safeName(name)) });
   if (picked.canceled || !picked.filePath) return null;
   await fs.promises.writeFile(picked.filePath, String(contents));
   return picked.filePath;
 });
 
-handle('shell:exportFile', async (name, contents) => {
+handle('shell:exportFile', async (_entry, name, contents) => {
   try {
     return writeNew(app.getPath('downloads'), name, String(contents));
   } catch (e) {
@@ -186,21 +232,21 @@ handle('shell:exportFile', async (name, contents) => {
   }
 });
 
-handle('shell:openArtifact', async (name, contents) => {
+handle('shell:openArtifact', async (_entry, name, contents) => {
   // Opened in its default app, outside the sandbox; kept apart from Downloads.
   const file = writeNew(path.join(app.getPath('userData'), 'exports'), name, String(contents));
   const problem = await shell.openPath(file);
   if (problem) throw new Error(problem);
 });
 
-handle('shell:openExternal', async (url) => openExternally(url));
+handle('shell:openExternal', async (_entry, url) => openExternally(url));
 
 /** The most a dropped file sent to another machine may be. */
 const SEND_LIMIT = 20 * 1024 * 1024;
 
-handle('shell:readLocalFile', async (file) => {
+handle('shell:readLocalFile', async ({ host }, file) => {
   // Only for sending a dropped file to another machine.
-  const remote = remoteHost();
+  const remote = remoteHost(host);
   if (!remote) throw new Error('This Mac reads its own files.');
   const info = await fs.promises.stat(String(file));
   if (info.isDirectory()) throw new Error(`Folders can't be sent to ${remote.name}; drop the files in it instead.`);
@@ -209,28 +255,31 @@ handle('shell:readLocalFile', async (file) => {
 });
 
 handle('connection:list', async () => hostList());
-handle('connection:add', async (host) => {
+handle('connection:add', async (_entry, host) => {
   const valid = validHost(host ?? {}, hosts.hosts.map((h) => h.name));
   hosts = { ...hosts, hosts: [...hosts.hosts, { id: `h-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, ...valid }] };
   writeHosts();
   return hostList();
 });
-handle('connection:remove', async (id) => {
-  const wasCurrent = hosts.last === id;
-  hosts = { ...hosts, hosts: hosts.hosts.filter((h) => h.id !== id) };
-  if (wasCurrent) useHost(LOCAL);
-  else writeHosts();
+handle('connection:remove', async (_entry, id) => {
+  hosts = { ...hosts, hosts: hosts.hosts.filter((h) => h.id !== id), last: hosts.last === id ? LOCAL : hosts.last };
+  // Its windows come back to this Mac.
+  for (const entry of windows.values()) if (entry.host === id) moveWindow(entry, LOCAL);
+  rememberWindows();
   return hostList();
 });
-handle('connection:use', async (id) => useHost(String(id)));
+handle('connection:use', async (entry, id) => useHost(entry, String(id)));
+handle('connection:openWindow', async (entry, id) => openWindow(String(id), entry));
 
-handle('shell:setBadge', async (count) => {
-  app.setBadgeCount(Math.max(0, Number(count) || 0));
+/** The dock's count: what every window is waiting on. */
+handle('shell:setBadge', async (entry, count) => {
+  entry.badge = Math.max(0, Number(count) || 0);
+  app.setBadgeCount([...windows.values()].reduce((sum, e) => sum + e.badge, 0));
 });
 
-handle('shell:attention', async (critical) => {
+handle('shell:attention', async ({ win }, critical) => {
   if (process.platform === 'darwin') app.dock?.bounce(critical ? 'critical' : 'informational');
-  else win?.flashFrame(true);
+  else win.flashFrame(true);
 });
 
 handle('shell:startupFolders', async () => startupFolders(process.argv, app.isPackaged, (folder) => {
@@ -252,7 +301,7 @@ async function finishQuit() {
   finishing = true;
   gate.confirm();
   // Sign-ins in the docked browser last: app.exit doesn't wait for Chromium to save them.
-  await browser?.flush();
+  await flushProfile();
   // The daemon Deck started ends with it; a daemon it found goes on.
   if (local?.owned) await local.stop();
   app.exit(0);
@@ -260,36 +309,42 @@ async function finishQuit() {
 
 const gate = new QuitGate({ letThrough: () => void finishQuit() });
 
-/** Hold a close or quit and ask the window; false when nothing holds it. */
-function askToQuit() {
+/**
+ * Hold a close or quit and ask a window; false when nothing holds it. Quitting
+ * asks `entry`, else a window on this Mac (its work is what stops), else the one in front.
+ */
+function askToQuit(entry) {
   const request = gate.request();
   if (request === null) return false;
-  if (win && !win.isDestroyed()) win.webContents.send('quit-requested', request);
+  const all = [...windows.values()];
+  const asked = entry ?? all.find((e) => e.host === LOCAL) ?? windows.get(BrowserWindow.getFocusedWindow()?.id) ?? all[0];
+  if (asked && !asked.win.isDestroyed()) asked.win.webContents.send('quit-requested', request);
   return true;
 }
 
-handle('shell:quitHeard', async (request) => gate.heard(Number(request)));
+handle('shell:quitHeard', async (_entry, request) => gate.heard(Number(request)));
 handle('shell:quitApp', async () => finishQuit());
 
 // ------------------------------------------------------------ the docked browser
 
-/** Made with the window. */
-let browser = null;
-
 const BOUNDS = (b) => ({ x: Math.round(Number(b?.x) || 0), y: Math.round(Number(b?.y) || 0), width: Math.max(0, Math.round(Number(b?.width) || 0)), height: Math.max(0, Math.round(Number(b?.height) || 0)) });
-handle('browser:show', async (pane, bounds, url) => browser.show(String(pane), BOUNDS(bounds), String(url ?? '')));
-handle('browser:hide', async (pane, snapshot) => browser.hide(String(pane), Boolean(snapshot)));
-handle('browser:navigate', async (pane, url) => browser.navigate(String(pane), String(url)));
-handle('browser:reload', async (pane) => browser.reload(String(pane)));
-handle('browser:back', async (pane) => browser.back(String(pane)));
-handle('browser:forward', async (pane) => browser.forward(String(pane)));
-handle('browser:close', async (pane) => browser.close(String(pane)));
+handle('browser:show', async ({ browser }, pane, bounds, url) => browser.show(String(pane), BOUNDS(bounds), String(url ?? '')));
+handle('browser:hide', async ({ browser }, pane, snapshot) => browser.hide(String(pane), Boolean(snapshot)));
+handle('browser:navigate', async ({ browser }, pane, url) => browser.navigate(String(pane), String(url)));
+handle('browser:reload', async ({ browser }, pane) => browser.reload(String(pane)));
+handle('browser:back', async ({ browser }, pane) => browser.back(String(pane)));
+handle('browser:forward', async ({ browser }, pane) => browser.forward(String(pane)));
+handle('browser:close', async ({ browser }, pane) => browser.close(String(pane)));
 ipcMain.on('browser:bounds', (event, pane, bounds) => {
-  if (fromUi(event)) browser?.bounds(String(pane), BOUNDS(bounds));
+  deckWindow(event)?.browser.bounds(String(pane), BOUNDS(bounds));
 });
 
+/** The Deck window in front, or any. */
+const frontWindow = () => windows.get(BrowserWindow.getFocusedWindow()?.id) ?? [...windows.values()].at(-1) ?? null;
+
 function menu() {
-  const toWindow = (action) => () => win?.webContents.send('menu', action);
+  const toWindow = (action) => () => frontWindow()?.win.webContents.send('menu', action);
+  const inFront = frontWindow();
   const mac = process.platform === 'darwin';
   return Menu.buildFromTemplate([
     ...(mac ? [{
@@ -328,10 +383,14 @@ function menu() {
         ...hostList().map((host) => ({
           label: host.name,
           type: 'radio',
-          checked: host.id === (remoteHost()?.id ?? LOCAL),
-          click: () => useHost(host.id),
+          checked: host.id === inFront?.host,
+          click: () => { const entry = frontWindow(); if (entry) useHost(entry, host.id); else openWindow(host.id); },
         })),
         { type: 'separator' },
+        {
+          label: 'Open in New Window',
+          submenu: hostList().map((host) => ({ label: host.name, click: () => openWindow(host.id, frontWindow()) })),
+        },
         { label: 'Manage Hosts…', click: toWindow('hosts') },
       ],
     },
@@ -347,13 +406,16 @@ function openExternally(url) {
   }
 }
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: 1400,
-    height: 900,
+/** A Deck window on host `host`, a step down and right of `beside` when given. */
+function createWindow(host, beside) {
+  const near = beside && !beside.win.isDestroyed() ? beside.win.getBounds() : null;
+  const win = new BrowserWindow({
+    width: near?.width ?? 1400,
+    height: near?.height ?? 900,
+    ...(near ? { x: near.x + 28, y: near.y + 28 } : {}),
     minWidth: 900,
     minHeight: 600,
-    title: windowTitle(),
+    title: windowTitle(host),
     show: !smoke,
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),
@@ -374,19 +436,32 @@ function createWindow() {
     openExternally(url);
     return { action: 'deny' };
   });
-  browser = dockedBrowser({
+  const browser = dockedBrowser({
     win,
     send: (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); },
     downloads: () => app.getPath('downloads'),
   });
+  const entry = { win, host, browser, badge: 0 };
+  windows.set(win.id, entry);
   // The window reloading takes the pages down with it; it shows them again as it comes back.
   win.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
     if ((details.isMainFrame ?? mainFrame) && !(details.isSameDocument ?? inPlace)) browser.hideAll();
   });
-  // The close button and ⌘W ask the window first, like Quit.
+  // Closing the last window asks it first, like Quit. Any other just closes:
+  // its host's work goes on, there or in this Mac's daemon.
   win.on('close', (event) => {
-    if (askToQuit()) event.preventDefault();
+    if (windows.size === 1 && askToQuit(entry)) event.preventDefault();
   });
+  win.on('closed', () => {
+    browser.closeAll();
+    windows.delete(win.id);
+    // Windows closing as the app quits stay in the list, to open next time.
+    if (!gate.confirmed && windows.size > 0) {
+      app.setBadgeCount([...windows.values()].reduce((sum, e) => sum + e.badge, 0));
+      rememberWindows();
+    }
+  });
+  win.on('focus', () => Menu.setApplicationMenu(menu()));
   if (smoke) {
     // On screen, so pages can be captured, but invisible, click-through and
     // never focused, so a smoke run doesn't get in the way.
@@ -395,7 +470,7 @@ function createWindow() {
     win.showInactive();
   }
   void win.loadURL(devUrl || 'app://deck/');
-  return win;
+  return entry;
 }
 
 app.whenReady().then(async () => {
@@ -408,10 +483,14 @@ app.whenReady().then(async () => {
   hosts = state;
   warnings.forEach((warning) => console.warn(`hosts: ${warning}`));
   Menu.setApplicationMenu(menu());
-  createWindow();
+  // Each window a step down from the one before, so none hides another.
+  const opened = [];
+  for (const host of windowsAtLaunch(hosts)) opened.push(createWindow(host, opened.at(-1)));
+  const [first] = opened;
+  rememberWindows();
   if (smoke) {
     const { runSmoke } = await import('./smoke.mjs');
-    const code = await runSmoke(win, { sidecar: () => local, browser }).catch((e) => {
+    const code = await runSmoke(first.win, { sidecar: () => local, browser: first.browser }).catch((e) => {
       console.error(`smoke: ${e.stack ?? e}`);
       return 1;
     });

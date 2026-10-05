@@ -29,6 +29,7 @@ import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { ConnectionBanner } from "./ConnectionBanner";
+import { HostSwitcher } from "./HostSwitcher";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
@@ -846,6 +847,13 @@ export function App() {
       <img className="loading-mark" src="/branding/mark.svg" alt="Apex Deck" width="72" height="72" />
       <span>{storageError || (window.apexDeck ? statusWords(link.status, link.host, Date.now()) : "Starting…")}</span>
       {!storageError && (link.status.kind === "reconnecting" || link.status.kind === "failed") && link.status.reason && <small className="loading-reason">{link.status.reason}</small>}
+      {/* Nothing else is on screen yet, so the way back to this Mac is here. */}
+      {!storageError && window.apexDeck && (link.status.kind === "reconnecting" || link.status.kind === "failed") && (
+        <div className="loading-actions">
+          <button onClick={() => connection.retryNow()}>Try now</button>
+          {link.host !== "This Mac" && <button onClick={() => void window.apexDeck?.connection.use("local")}>Use This Mac</button>}
+        </div>
+      )}
     </div>
   );
 
@@ -941,6 +949,7 @@ export function App() {
       <div className="body" ref={bodyRef}>
         {railOpen && (
           <aside className="rail" style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}>
+            {backend.hosts && <HostSwitcher hosts={backend.hosts} onManage={() => setSettingsOpen("hosts")} />}
             <div className="rail-head">
               <span>Workspaces</span>
               <button className="icon" onClick={addWorkspace} aria-label="Add workspace" title="Add a folder">

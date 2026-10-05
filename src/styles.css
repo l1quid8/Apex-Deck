@@ -2486,3 +2486,50 @@ button.mod-status:hover { color: var(--text); }
 /* The docked browser's place; the page itself is drawn over it by the app. */
 .browser-place { position: relative; flex: 1; min-width: 0; min-height: 0; }
 .browser-snapshot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+
+/* Hosts: which machine the window runs on, at the top of the rail. */
+.host-switch { position: relative; margin: -6px 0 14px; }
+.host-switch-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  text-align: left;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.host-switch-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.host-switch-caret { color: var(--muted); font-size: 11px; }
+.host-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--warn); }
+.host-dot.connected { background: var(--accent); }
+.host-dot.failed { background: var(--danger); }
+.host-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 45;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+.host-menu-row { display: flex; align-items: center; gap: 4px; border-radius: 6px; }
+.host-menu-row.current { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.host-menu button { background: transparent; border-color: transparent; font-size: 12px; }
+.host-menu button:hover:not(:disabled), .host-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.host-menu-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 6px 8px; text-align: left; }
+.host-menu-pick:disabled { opacity: 1; cursor: default; color: inherit; }
+.host-menu-check { width: 12px; flex: none; color: var(--accent); }
+.host-menu-words { display: flex; flex-direction: column; min-width: 0; }
+.host-menu-words small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host-menu-new { flex: none; padding: 4px 8px; color: var(--muted); }
+.host-menu-manage { text-align: left; padding: 6px 10px; }
+.host-menu .error { padding: 4px 8px; font-size: 12px; }
+.loading-actions { display: flex; gap: 8px; }

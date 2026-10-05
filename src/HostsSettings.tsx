@@ -4,7 +4,8 @@ import type { Backend, HostEntry, HostsApi } from "./backend";
 import { ipcWords as words } from "./electronShell";
 
 // Settings → Hosts: this Mac, and other machines running apex-daemon that
-// Deck reaches with ssh. Switching reloads the window on the chosen host.
+// Deck reaches with ssh. Connect reloads this window on the chosen host; New
+// window opens it beside this one.
 
 export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: HostsApi }) {
   const [list, setList] = useState<HostEntry[]>([]);
@@ -37,7 +38,8 @@ export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: Hos
             <small className="mono">{host.remote ? `ssh ${host.ssh} ${host.command} --stdio --attach` : "The daemon on this Mac"}</small>
           </div>
           <span className="host-actions">
-            {host.id !== current && <button onClick={() => void hosts.use(host.id)}>Connect</button>}
+            {host.id !== current && !host.open && <button onClick={() => void hosts.use(host.id)}>Connect</button>}
+            {host.id !== current && <button onClick={() => hosts.openWindow(host.id).then(() => hosts.list()).then(setList, (e) => setProblem(words(e)))}>{host.open ? "Show window" : "New window"}</button>}
             {host.remote && <button className="ghost" onClick={() => hosts.remove(host.id).then(setList, (e) => setProblem(words(e)))}>Remove</button>}
           </span>
         </div>

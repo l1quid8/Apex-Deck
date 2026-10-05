@@ -39,6 +39,17 @@ export function sshArgs(host) {
   ];
 }
 
+/**
+ * The hosts to open windows on at launch: those that had one when Deck last
+ * closed (`windows`), else the one last used, else This Mac.
+ */
+export function windowsAtLaunch(state) {
+  const known = new Set([LOCAL, ...state.hosts.map((host) => host.id)]);
+  const saved = Array.isArray(state.windows) ? state.windows : [state.last];
+  const open = [...new Set(saved.filter((id) => known.has(id)))];
+  return open.length > 0 ? open : [LOCAL];
+}
+
 const EMPTY = () => ({ version: 1, hosts: [], last: LOCAL });
 
 /** hosts.json: `{version: 1, hosts, last}`. Unknown fields are kept; hosts that fail `validHost` are dropped with a warning. */

@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
     add: (host) => ipcRenderer.invoke('connection:add', host),
     remove: (id) => ipcRenderer.invoke('connection:remove', id),
     use: (id) => ipcRenderer.invoke('connection:use', id),
+    openWindow: (id) => ipcRenderer.invoke('connection:openWindow', id),
   },
   shell: {
     pickPath: (kind, title) => ipcRenderer.invoke('shell:pickPath', kind, title),

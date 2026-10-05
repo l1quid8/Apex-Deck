@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validHost, sshArgs, loadHosts, saveHosts, LOCAL } from '../desktop/hosts.mjs';
+import { validHost, sshArgs, loadHosts, saveHosts, windowsAtLaunch, LOCAL } from '../desktop/hosts.mjs';
 
 test('a host needs a plain SSH destination', () => {
   assert.deepEqual(validHost({ name: ' vps ', ssh: 'me@vps.example.com' }, []), { name: 'vps', ssh: 'me@vps.example.com', command: 'apex-daemon' });
@@ -81,4 +81,13 @@ test('an unreadable hosts.json is set aside with a warning, not lost', () => {
     assert.match(warnings[0], /could not be read/);
     assert.ok(fs.readdirSync(path.dirname(t.file)).some((f) => f.startsWith('hosts.json.unreadable')));
   } finally { t.done(); }
+});
+
+test('Deck opens a window on each host that had one, once each, and on This Mac when none can be', () => {
+  const hosts = [{ id: 'h-1', name: 'vps', ssh: 'vps', command: 'apex-daemon' }];
+  // Saved before there were windows: the host last used.
+  assert.deepEqual(windowsAtLaunch({ hosts, last: 'h-1' }), ['h-1']);
+  assert.deepEqual(windowsAtLaunch({ hosts, last: LOCAL, windows: ['h-1', LOCAL, 'h-1'] }), ['h-1', LOCAL]);
+  assert.deepEqual(windowsAtLaunch({ hosts, last: 'h-1', windows: ['h-gone'] }), [LOCAL]);
+  assert.deepEqual(windowsAtLaunch({ hosts: [], last: LOCAL, windows: 'nonsense' }), [LOCAL]);
 });
