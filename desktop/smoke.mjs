@@ -16,6 +16,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * it started are gone.
  */
 export async function runSmoke(win, { sidecar }) {
+  if (process.env.APEX_DECK_SMOKE_HOST) return runRemoteSmoke(win);
   const contents = win.webContents;
   /** Run `code` in the window; it may await, and its value comes back. */
   const page = (code) => contents.executeJavaScript(`(async () => { ${code} })()`, true);
@@ -123,6 +124,92 @@ export async function runSmoke(win, { sidecar }) {
   const daemon = sidecar();
   if (!daemon?.owned) throw new Error('the smoke run should own its daemon');
   fs.writeFileSync(path.join(app.getPath('userData'), 'sidecar.pid'), String(daemon.child.pid));
+  console.log('smoke: quitting');
+  win.close();
+  return null;
+}
+
+/**
+ * The same window on a saved host over SSH (desktop/run-smoke.mjs --ssh):
+ * a chat, a connection that goes quiet mid-reply and comes back, and a
+ * daemon that stops. The commands that pause, resume, stop and start the
+ * server come from the environment.
+ */
+async function runRemoteSmoke(win) {
+  const { execSync } = await import('node:child_process');
+  const env = process.env;
+  const host = env.APEX_DECK_SMOKE_HOST;
+  const contents = win.webContents;
+  const page = (code) => contents.executeJavaScript(`(async () => { ${code} })()`, true);
+  async function until(what, test, ms = 30_000) {
+    const start = Date.now();
+    let last;
+    for (;;) {
+      try {
+        const value = await test();
+        if (value) return value;
+      } catch (e) {
+        last = e;
+      }
+      if (Date.now() - start > ms) throw new Error(`timed out waiting for ${what}${last ? ` (last error: ${last.message})` : ''}`);
+      await sleep(250);
+    }
+  }
+  async function step(name, run) {
+    const start = Date.now();
+    await run();
+    console.log(`smoke: ok — ${name} (${Date.now() - start} ms)`);
+  }
+  const run = (command) => { if (command) execSync(command, { stdio: 'inherit' }); };
+  const banner = () => page(`return document.querySelector('.connection-banner')?.innerText ?? ''`);
+  const room = `ssh-${Date.now()}`;
+
+  await step(`the window connects to ${host} over SSH`, async () => {
+    await until('the UI to connect', () => page(`return Boolean(window.__deck && !document.querySelector('.loading'))`), 60_000);
+    if (win.getTitle() !== `Apex Deck — ${host}`) throw new Error(`the title is "${win.getTitle()}"`);
+    const current = await page(`return await __deck.backend.hosts.current()`);
+    if (!current.remote || current.name !== host) throw new Error(`connected to ${JSON.stringify(current)}`);
+  });
+
+  await step('a chat there gets its reply', async () => {
+    await page(`
+      window.__smoke = { events: [] };
+      await __deck.backend.onRoomEvent((room, event) => __smoke.events.push({ room, event }));
+      await __deck.backend.roomCreate(${JSON.stringify(room)}, [${JSON.stringify(shell('bot', 'echo hello over ssh'))}], ${JSON.stringify(OPTIONS)}, '');
+      await __deck.backend.roomPost(${JSON.stringify(room)}, '@bot hi');
+      return true;`);
+    await until('the reply', () => page(`return __smoke.events.some((e) => e.event.type === 'message_added' && e.event.message.text === 'hello over ssh')`));
+  });
+
+  await step('a connection that goes quiet mid-reply comes back with the reply, once', async () => {
+    await page(`
+      await __deck.backend.roomAddParticipant(${JSON.stringify(room)}, ${JSON.stringify(shell('slow', 'sleep 20; echo after the pause'))});
+      void __deck.backend.roomPost(${JSON.stringify(room)}, '@slow go').catch(() => {});
+      return true;`);
+    await until('the turn to start', () => page(`return __smoke.events.some((e) => e.event.type === 'turn_started' && e.event.id === 'slow')`));
+    run(env.APEX_DECK_SMOKE_PAUSE);
+    const shown = await until('the banner', async () => /Reconnecting/.test(await banner()) && banner(), 90_000);
+    console.log(`smoke: the banner said: ${shown.replace(/\s+/g, ' ')}`);
+    await sleep(Math.max(0, 60_000 - 45_000));
+    run(env.APEX_DECK_SMOKE_RESUME);
+    await page(`return true`);
+    await until('the reply after the pause', () => page(`return __smoke.events.some((e) => e.event.type === 'message_added' && e.event.message.text === 'after the pause')`), 120_000);
+    await until('the banner to go', async () => (await banner()) === '', 60_000);
+    await sleep(2000);
+    const count = await page(`return __smoke.events.filter((e) => e.event.type === 'message_added' && e.event.message.text === 'after the pause').length`);
+    if (count !== 1) throw new Error(`the reply arrived ${count} times`);
+  });
+
+  await step('a stopped daemon is named in the banner', async () => {
+    run(env.APEX_DECK_SMOKE_STOP);
+    try {
+      const shown = await until('the daemon\'s words', async () => /apex-daemon/.test(await banner()) && banner(), 60_000);
+      console.log(`smoke: the banner said: ${shown.replace(/\s+/g, ' ')}`);
+    } finally {
+      run(env.APEX_DECK_SMOKE_START);
+    }
+  });
+
   console.log('smoke: quitting');
   win.close();
   return null;

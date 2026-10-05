@@ -221,9 +221,10 @@ test('start keeps trying through connections that close or fail before the welco
 test('a line that is not JSON closes the link and reconnects', async () => {
   const { daemon, statuses, timers } = await connected();
   const link = daemon.last();
-  link.receive('ssh: warning: something');
+  link.receive('Welcome to Ubuntu! (from ~/.bashrc)');
   assert.ok(link.closed);
   assert.equal(statuses.at(-1).kind, 'reconnecting');
+  assert.equal(statuses.at(-1).reason, 'The host sent something that isn\'t part of the protocol: "Welcome to Ubuntu! (from ~/.bashrc)". A shell startup file there may be printing it.');
   // The link's own close report afterwards changes nothing.
   link.drop('closed');
   assert.equal(statuses.at(-1).attempt, 1);

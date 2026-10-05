@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
-import { socketLink } from './link.mjs';
+import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost } from './hosts.mjs';
+import { socketLink, sshLink } from './link.mjs';
 import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon } from './sidecar.mjs';
 
@@ -53,6 +54,40 @@ function ensureLocal() {
   return starting;
 }
 
+// ------------------------------------------------------------ hosts
+
+const hostsFile = () => path.join(app.getPath('userData'), 'hosts.json');
+/** Saved hosts and the one in use (`last`); read once the app is ready. */
+let hosts = { version: 1, hosts: [], last: LOCAL };
+
+/** The saved host in use, or null for this Mac. */
+const remoteHost = () => hosts.hosts.find((host) => host.id === hosts.last) ?? null;
+
+function hostList() {
+  return [
+    { id: LOCAL, name: LOCAL_NAME, remote: false },
+    ...hosts.hosts.map(({ id, name, ssh, command }) => ({ id, name, ssh, command, remote: true })),
+  ];
+}
+
+function writeHosts() {
+  saveHosts(hostsFile(), hosts);
+  Menu.setApplicationMenu(menu());
+}
+
+const windowTitle = () => (remoteHost() ? `Apex Deck — ${remoteHost().name}` : 'Apex Deck');
+
+/** Switch the window to host `id`: it reloads and connects there. */
+function useHost(id) {
+  if (id !== LOCAL && !hosts.hosts.some((host) => host.id === id)) throw new Error('There is no such host.');
+  hosts = { ...hosts, last: id };
+  writeHosts();
+  if (!win || win.isDestroyed()) return;
+  win.setTitle(windowTitle());
+  for (const state of links.values()) state.link?.close();
+  win.webContents.reload();
+}
+
 /** Each window's link to the daemon: a new generation on every connect. */
 const links = new Map();
 
@@ -76,15 +111,16 @@ ipcMain.handle('daemon:connect', async (event) => {
   state.link?.close();
   state.link = null;
   const gen = ++state.gen;
-  const daemon = await ensureLocal();
   const send = (channel, ...args) => { if (!contents.isDestroyed()) contents.send(channel, gen, ...args); };
-  const link = await socketLink(daemon.socket, {
+  const handlers = {
     onLine: (line) => send('daemon:line', line),
     onClose: (reason) => {
       if (state.gen === gen) state.link = null;
       send('daemon:close', reason);
     },
-  });
+  };
+  const remote = remoteHost();
+  const link = remote ? sshLink(remote, handlers) : await socketLink((await ensureLocal()).socket, handlers);
   if (state.gen !== gen) {
     link.close();
     throw new Error('A newer connection replaced this one.');
@@ -104,8 +140,10 @@ ipcMain.on('daemon:close', (event, gen) => {
 });
 
 ipcMain.handle('connection:current', async () => {
+  const remote = remoteHost();
+  if (remote) return { id: remote.id, name: remote.name, remote: true, owned: false };
   const daemon = await ensureLocal().catch(() => null);
-  return { id: 'local', name: 'This Mac', remote: false, owned: daemon?.owned ?? true };
+  return { id: LOCAL, name: LOCAL_NAME, remote: false, owned: daemon?.owned ?? true };
 });
 
 ipcMain.on('apex:smoke', (event) => { event.returnValue = smoke; });
@@ -155,6 +193,35 @@ handle('shell:openArtifact', async (name, contents) => {
 });
 
 handle('shell:openExternal', async (url) => openExternally(url));
+
+/** The most a dropped file sent to another machine may be. */
+const SEND_LIMIT = 20 * 1024 * 1024;
+
+handle('shell:readLocalFile', async (file) => {
+  // Only for sending a dropped file to another machine.
+  const remote = remoteHost();
+  if (!remote) throw new Error('This Mac reads its own files.');
+  const info = await fs.promises.stat(String(file));
+  if (info.isDirectory()) throw new Error(`Folders can't be sent to ${remote.name}; drop the files in it instead.`);
+  if (info.size > SEND_LIMIT) throw new Error(`${path.basename(String(file))} is over 20 MB, too large to send to ${remote.name}.`);
+  return fs.promises.readFile(String(file));
+});
+
+handle('connection:list', async () => hostList());
+handle('connection:add', async (host) => {
+  const valid = validHost(host ?? {}, hosts.hosts.map((h) => h.name));
+  hosts = { ...hosts, hosts: [...hosts.hosts, { id: `h-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, ...valid }] };
+  writeHosts();
+  return hostList();
+});
+handle('connection:remove', async (id) => {
+  const wasCurrent = hosts.last === id;
+  hosts = { ...hosts, hosts: hosts.hosts.filter((h) => h.id !== id) };
+  if (wasCurrent) useHost(LOCAL);
+  else writeHosts();
+  return hostList();
+});
+handle('connection:use', async (id) => useHost(String(id)));
 
 handle('shell:setBadge', async (count) => {
   app.setBadgeCount(Math.max(0, Number(count) || 0));
@@ -230,6 +297,19 @@ function menu() {
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' },
       ],
     },
+    {
+      label: 'Host',
+      submenu: [
+        ...hostList().map((host) => ({
+          label: host.name,
+          type: 'radio',
+          checked: host.id === (remoteHost()?.id ?? LOCAL),
+          click: () => useHost(host.id),
+        })),
+        { type: 'separator' },
+        { label: 'Manage Hosts…', click: toWindow('hosts') },
+      ],
+    },
     { role: 'windowMenu' },
   ]);
 }
@@ -248,7 +328,7 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    title: 'Apex Deck',
+    title: windowTitle(),
     show: !smoke,
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),
@@ -283,6 +363,9 @@ app.whenReady().then(async () => {
     if (!file) return new Response('Not found', { status: 404 });
     return net.fetch(pathToFileURL(file).toString());
   });
+  const { state, warnings } = loadHosts(hostsFile());
+  hosts = state;
+  warnings.forEach((warning) => console.warn(`hosts: ${warning}`));
   Menu.setApplicationMenu(menu());
   createWindow();
   if (smoke) {

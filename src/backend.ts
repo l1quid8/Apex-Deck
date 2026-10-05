@@ -133,6 +133,29 @@ export interface Backend {
   call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   /** The Electron app's menu items that the window carries out, such as "settings". */
   onMenu?(cb: (action: string) => void): Promise<Unlisten>;
+  /** The machines this window can run on; the Electron app only. */
+  hosts?: HostsApi;
+}
+
+/** This Mac, or a saved host reached over SSH. */
+export interface HostEntry {
+  id: string;
+  name: string;
+  remote: boolean;
+  /** The SSH destination, for a saved host. */
+  ssh?: string;
+  /** The daemon's command there. */
+  command?: string;
+}
+
+export interface HostsApi {
+  current(): Promise<HostEntry & { owned: boolean }>;
+  list(): Promise<HostEntry[]>;
+  /** Save a host; rejects with words when it can't be used. */
+  add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
+  remove(id: string): Promise<HostEntry[]>;
+  /** Switch to `id`; the window reloads on that host. */
+  use(id: string): Promise<void>;
 }
 
 const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

@@ -28,6 +28,8 @@ import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withAppro
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { ConnectionBanner } from "./ConnectionBanner";
+import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
 import { workingFor } from "./composerStatus";
@@ -827,6 +829,7 @@ export function App() {
     let live = true;
     backend.onMenu((action) => {
       if (action === "settings") setSettingsOpen((open) => (open ? null : "general"));
+      if (action === "hosts") setSettingsOpen("hosts");
     }).then((unlisten) => (live ? (stop = unlisten) : unlisten()));
     return () => { live = false; stop?.(); };
   }, [backend]);
@@ -933,6 +936,7 @@ export function App() {
         </div>
       </header>
 
+      <ConnectionBanner backend={backend} />
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       <div className="body" ref={bodyRef}>
         {railOpen && (
@@ -1135,6 +1139,7 @@ export function App() {
         {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
+      <PathPrompt backend={backend} />
       <ModOverlays />
       {(undoable || undoableRemove) && (
         <div className="toasts">

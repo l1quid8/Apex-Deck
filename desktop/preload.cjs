@@ -36,6 +36,10 @@ contextBridge.exposeInMainWorld('apexDeck', {
   },
   connection: {
     current: () => ipcRenderer.invoke('connection:current'),
+    list: () => ipcRenderer.invoke('connection:list'),
+    add: (host) => ipcRenderer.invoke('connection:add', host),
+    remove: (id) => ipcRenderer.invoke('connection:remove', id),
+    use: (id) => ipcRenderer.invoke('connection:use', id),
   },
   shell: {
     pickPath: (kind, title) => ipcRenderer.invoke('shell:pickPath', kind, title),
@@ -46,6 +50,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
     setBadge: (count) => ipcRenderer.invoke('shell:setBadge', count),
     attention: (critical) => ipcRenderer.invoke('shell:attention', critical),
     startupFolders: () => ipcRenderer.invoke('shell:startupFolders'),
+    readLocalFile: (path) => ipcRenderer.invoke('shell:readLocalFile', path),
     onFileDrop: (cb) => {
       dropped.add(cb);
       return () => { dropped.delete(cb); };

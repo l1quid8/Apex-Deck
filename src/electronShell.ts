@@ -3,10 +3,11 @@
 // Electron's main process. Commands go over that link with DaemonClient; the
 // shell's own jobs go to main through the bridge.
 
-import type { Backend } from "./backend";
+import type { Backend, HostEntry } from "./backend";
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
 import { connection } from "./connection.ts";
 import { DaemonClient, type Connect, type Link } from "./daemon/client.ts";
+import { pathPrompt, type PathRequest } from "./typedPath.ts";
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
@@ -18,7 +19,11 @@ export interface DeckBridge {
     onClose(cb: (gen: number, reason: string) => void): void;
   };
   connection: {
-    current(): Promise<{ id: string; name: string; remote: boolean; owned: boolean }>;
+    current(): Promise<HostEntry & { owned: boolean }>;
+    list(): Promise<HostEntry[]>;
+    add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
+    remove(id: string): Promise<HostEntry[]>;
+    use(id: string): Promise<void>;
   };
   shell: {
     pickPath(kind: "directory" | "file", title: string): Promise<string | null>;
@@ -32,6 +37,8 @@ export interface DeckBridge {
     setBadge(count: number): Promise<void>;
     attention(critical: boolean): Promise<void>;
     startupFolders(): Promise<string[]>;
+    /** A file on this Mac, to send to a host on another machine. */
+    readLocalFile(path: string): Promise<Uint8Array>;
     onFileDrop(cb: (paths: string[], x: number, y: number) => void): () => void;
     onQuitRequested(cb: (request: number) => void): () => void;
     quitHeard(request: number): Promise<void>;
@@ -113,12 +120,39 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on">): Tran
   };
 }
 
-/** The shell's jobs: what the person saves or opens lands on this machine. */
-export function electronShell(bridge: Pick<DeckBridge, "shell">, transport: Transport, owned: boolean): Shell & Pick<Backend, "onMenu"> {
+/**
+ * The shell's jobs: what the person saves or opens lands on this machine.
+ * On a host on another machine, paths there are typed (`ask`), its files
+ * aren't opened here, and dropped files are sent there.
+ */
+export function electronShell(
+  bridge: Pick<DeckBridge, "shell">,
+  transport: Pick<Transport, "call" | "saveAttachment">,
+  host: { owned: boolean; remote: boolean; name: string },
+  ask: (request: PathRequest) => Promise<string | null>,
+): Shell & Pick<Backend, "onMenu"> {
   const call = transport.call.bind(transport);
   const shell = bridge.shell;
+  if (host.remote) {
+    return {
+      ...electronShell(bridge, transport, { ...host, remote: false }, ask),
+      // The work is on the other machine and goes on after this app quits.
+      quitStopsWork: false,
+      startupFolders: async () => [],
+      pickFolder: () => ask({ kind: "directory", title: "Add a workspace folder" }),
+      pickPath: (kind, title) => ask({ kind, title }),
+      openTarget: async (target) => {
+        if (/^https?:\/\//i.test(target)) return shell.openExternal(target);
+        throw new Error(`That file is on ${host.name}; Deck can't open it on this Mac.`);
+      },
+      copyAttachment: async (room, path) => {
+        const bytes = await shell.readLocalFile(path);
+        return transport.saveAttachment(room, path.split("/").pop() || "file", bytes);
+      },
+    };
+  }
   return {
-    quitStopsWork: owned,
+    quitStopsWork: host.owned,
     startupFolders: () => shell.startupFolders(),
     pickFolder: () => shell.pickPath("directory", "Add a workspace folder"),
     pickPath: (kind, title) => shell.pickPath(kind, title),
@@ -150,11 +184,19 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
     if (status.kind === "resync") location.reload();
   });
   await client.start();
+  connection.setRetry(() => client.retryNow());
   const current = await bridge.connection.current();
   connection.setHost(current.name);
   const transport = daemonTransport(client);
-  const { onMenu, ...shell } = electronShell(bridge, transport, current.owned);
-  const backend: Backend = { ...commandBackend(transport, shell), onMenu };
+  const { onMenu, ...shell } = electronShell(bridge, transport, current, (request) => pathPrompt.ask(request));
+  const hosts = {
+    current: () => bridge.connection.current(),
+    list: () => bridge.connection.list(),
+    add: (host: { name: string; ssh: string; command?: string }) => bridge.connection.add(host),
+    remove: (id: string) => bridge.connection.remove(id),
+    use: (id: string) => bridge.connection.use(id),
+  };
+  const backend: Backend = { ...commandBackend(transport, shell), onMenu, hosts };
   if (bridge.smoke) window.__deck = { backend };
   return backend;
 }

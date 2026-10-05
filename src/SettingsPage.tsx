@@ -8,14 +8,16 @@ import type { Backend } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
 import { FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
+import { HostsSettings } from "./HostsSettings";
 import { ModsSettings } from "./ModsSettings";
 import { shortcutList } from "./shortcuts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "providers" | "threads" | "terminal" | "mods" | "shortcuts";
+export type SettingsSection = "general" | "hosts" | "providers" | "threads" | "terminal" | "mods" | "shortcuts";
 
-const SECTIONS: { id: SettingsSection; label: string }[] = [
+const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
+  { id: "hosts", label: "Hosts" },
   { id: "providers", label: "Providers" },
   { id: "threads", label: "New threads" },
   { id: "terminal", label: "Terminal" },
@@ -53,7 +55,9 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
     return () => window.removeEventListener("keydown", key);
   }, [onClose]);
 
-  const index = SECTIONS.findIndex((s) => s.id === section);
+  // Hosts only exist in the Electron app.
+  const SECTIONS = ALL_SECTIONS.filter((s) => s.id !== "hosts" || backend.hosts);
+  const index = Math.max(0, SECTIONS.findIndex((s) => s.id === section));
   return <div className="settings">
     <aside className="settings-nav">
       <div className="settings-nav-head">
@@ -73,6 +77,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
           {LEADS[section] && <p>{LEADS[section]}</p>}
         </header>
         {section === "general" && <General backend={backend} />}
+        {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
         {section === "providers" && <Providers settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} />}
         {section === "threads" && <Threads settings={settings} onChange={onChange} />}
         {section === "terminal" && <TerminalSettings settings={settings} onChange={onChange} />}
@@ -84,6 +89,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
 }
 
 const LEADS: Partial<Record<SettingsSection, string>> = {
+  hosts: "The machine this window runs its threads and terminals on: this Mac, or another one over SSH.",
   providers: "Choose which tools appear when adding terminals and bots.",
   mods: "Claude Code mods that Deck runs itself and draws in its own window, for every bot.",
   threads: "Used when you create a thread. Threads you already have keep their own settings.",

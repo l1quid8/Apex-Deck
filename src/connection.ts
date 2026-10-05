@@ -12,6 +12,7 @@ export interface Connection {
 export function connectionStore() {
   let current: Connection = { status: { kind: "connecting" }, host: "This Mac" };
   const listeners = new Set<() => void>();
+  let retry = () => {};
   const change = (next: Connection) => {
     current = next;
     listeners.forEach((cb) => cb());
@@ -24,6 +25,9 @@ export function connectionStore() {
     },
     setStatus: (status: Status) => change({ ...current, status }),
     setHost: (host: string) => change({ ...current, host }),
+    /** Try to connect now instead of waiting. */
+    retryNow: () => retry(),
+    setRetry: (fn: () => void) => { retry = fn; },
   };
 }
 

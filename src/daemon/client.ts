@@ -177,7 +177,8 @@ export class DaemonClient {
       frame = JSON.parse(line);
     } catch {
       link.close();
-      this.lost("The host sent something that isn't part of the protocol.");
+      const shown = line.length > 80 ? `${line.slice(0, 80)}…` : line;
+      this.lost(`The host sent something that isn't part of the protocol: "${shown}". A shell startup file there may be printing it.`);
       return;
     }
     if (typeof frame.seq === "number" && typeof frame.event === "string") {

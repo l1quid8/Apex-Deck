@@ -168,6 +168,22 @@ textarea {
 .section-button.code.selected > span { color: #6ea2ff; }
 .section-button.threads.selected > span { color: var(--brand-mint); }
 .storage-error { padding: 8px 16px; color: var(--danger); border-bottom: 1px solid var(--line); }
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.connection-banner.failed strong { color: var(--danger); }
+.connection-words { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.connection-words small { color: var(--muted); overflow-wrap: anywhere; }
+.path-prompt input { margin-top: 6px; }
+.hosts .host-current { color: var(--muted); font-weight: normal; }
+.host-actions { display: flex; gap: 8px; }
+.host-add { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; }
+.host-add label { display: flex; flex-direction: column; gap: 4px; }
 .agents-section {
   display: flex;
   flex-direction: column;

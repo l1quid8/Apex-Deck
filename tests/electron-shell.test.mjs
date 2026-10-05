@@ -76,7 +76,7 @@ test('the shell saves and opens on this machine, and the host opens targets and 
   const bridge = { shell: Object.fromEntries(['pickPath', 'saveFile', 'exportFile', 'openArtifact', 'setBadge', 'attention', 'startupFolders', 'quitHeard', 'quitApp'].map((n) => [n, record(n)])) };
   const calls = [];
   const transport = { call: async (cmd, args) => { calls.push([cmd, args]); return null; } };
-  const shell = electronShell(bridge, transport, false);
+  const shell = electronShell(bridge, transport, { owned: false, remote: false, name: 'This Mac' }, async () => null);
   assert.equal(shell.quitStopsWork, false);
   await shell.pickFolder();
   assert.equal(await shell.artifactSave('a.md', 'x'), '/Users/me/Downloads/a.md');
@@ -100,4 +100,30 @@ test('the shell saves and opens on this machine, and the host opens targets and 
     ['open_target', { target: 'src/a.ts', cwd: '/w', reveal: true }],
     ['copy_attachment', { room: 't', path: '/Users/me/pic.png' }],
   ]);
+});
+
+test('on another machine: work goes on after quitting, paths are typed, files there stay there', async () => {
+  const opened = []; const asked = []; const saved = [];
+  const bridge = { shell: {
+    startupFolders: async () => ['/Users/me/proj'],
+    openExternal: async (url) => { opened.push(url); },
+    readLocalFile: async (path) => { if (path.endsWith('/dir')) throw new Error("Folders can't be sent to vps; drop the files in it instead."); return new Uint8Array([7, 8]); },
+  } };
+  const transport = {
+    call: async () => { throw new Error('not expected'); },
+    saveAttachment: async (room, name, bytes) => { saved.push([room, name, [...bytes]]); return '/home/me/att/pic.png'; },
+  };
+  const ask = async (request) => { asked.push(request); return '/srv/app'; };
+  const shell = electronShell(bridge, transport, { owned: false, remote: true, name: 'vps' }, ask);
+  assert.equal(shell.quitStopsWork, false);
+  assert.deepEqual(await shell.startupFolders(), []);
+  assert.equal(await shell.pickFolder(), '/srv/app');
+  assert.equal(await shell.pickPath('file', 'Choose a key file'), '/srv/app');
+  assert.deepEqual(asked, [{ kind: 'directory', title: 'Add a workspace folder' }, { kind: 'file', title: 'Choose a key file' }]);
+  await shell.openTarget('https://example.com/docs', '/srv/app', false);
+  assert.deepEqual(opened, ['https://example.com/docs']);
+  await assert.rejects(shell.openTarget('src/main.rs', '/srv/app', true), { message: "That file is on vps; Deck can't open it on this Mac." });
+  assert.equal(await shell.copyAttachment('t', '/Users/me/Desktop/pic.png'), '/home/me/att/pic.png');
+  assert.deepEqual(saved, [['t', 'pic.png', [7, 8]]]);
+  await assert.rejects(shell.copyAttachment('t', '/Users/me/dir'), /Folders can't be sent to vps/);
 });
