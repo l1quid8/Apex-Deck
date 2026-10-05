@@ -25,12 +25,16 @@ splits the Rust core into a host that local and remote clients share.
 - **Session and settings move into Rust.** Today `session_save` and
   `settings_save` store JSON built by the UI. The host becomes the owner; clients
   send edits as commands and receive change events.
-- **apex-daemon** (binary): `apex-daemon serve` (WebSocket, localhost by default),
-  `apex-daemon --stdio` (protocol over stdin/stdout, used through SSH and as the
-  Electron sidecar), `apex-daemon pair` (prints a QR code, phase 3).
+- **apex-daemon** (binary): `apex-daemon serve` (WebSocket, localhost by default,
+  plus a local socket), `apex-daemon --stdio` (protocol over stdin/stdout, used
+  through SSH and as the Electron sidecar; attaches to a running daemon through
+  the local socket when there is one), `apex-daemon pair` (prints a QR code,
+  phase 3). Runs on macOS and Ubuntu Server, with a systemd unit for servers.
 - **Protocol**: newline-delimited JSON. Request `{id, cmd, args}`, reply
-  `{id, ok|err}`, event `{seq, event}`. `hello {since_seq?}` returns a snapshot or
-  the events after `since_seq` from a bounded ring buffer.
+  `{id, ok|err}`, event `{seq, event}`. `hello {since?: {boot_id, seq}}` returns
+  a snapshot or the events after `seq` from a bounded ring buffer; it only
+  resumes when `boot_id` matches the running daemon, since `seq` restarts with
+  each boot.
 - **Electron**: main process spawns `apex-daemon --stdio` and relays to the
   renderer through a preload bridge. `src/backend.ts` gets a transport
   interface with `TauriTransport` (removed after migration) and `DaemonTransport`.
