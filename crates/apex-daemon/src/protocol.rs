@@ -86,10 +86,18 @@ where
     // is missed; live events at or before `written` are skipped.
     let bus = daemon.host.events();
     let mut events = bus.subscribe();
-    let replay = hello.since.filter(|since| since.boot_id == daemon.boot_id).and_then(|since| bus.since(since.seq));
-    let resumed = replay.is_some();
-    let replay = replay.unwrap_or_default();
-    let mut written = replay.last().map(|e| e.seq).unwrap_or_else(|| bus.last_seq());
+    let resume = hello.since.filter(|since| since.boot_id == daemon.boot_id).and_then(|since| Some((bus.since(since.seq)?, since.seq)));
+    let resumed = resume.is_some();
+    // Resuming, the client is at the last event replayed, or where it said
+    // it was when there's nothing to replay; reading `last_seq` again here
+    // would skip an event sent in between.
+    let (replay, mut written) = match resume {
+        Some((replay, since)) => {
+            let at = replay.last().map_or(since, |e| e.seq);
+            (replay, at)
+        }
+        None => (Vec::new(), bus.last_seq()),
+    };
     let welcome = json!({ "id": hello.id, "ok": {
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
     } });
@@ -357,6 +365,42 @@ mod tests {
         // Then live events, with nothing doubled.
         save_sessions(&mut first, 4..=4).await;
         assert_eq!(back.next().await.unwrap()["seq"], 4);
+    }
+
+    /// Resuming at the latest event while others keep coming: the client
+    /// must see every event after the one it named. Events come about every
+    /// 50 µs, so the replay is often empty and one can land just as the
+    /// session sets up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn resuming_at_the_latest_event_misses_nothing_that_follows() {
+        let (daemon, _data) = daemon();
+        let emitting = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let emitter = {
+            let (daemon, emitting) = (Arc::clone(&daemon), Arc::clone(&emitting));
+            std::thread::spawn(move || {
+                while emitting.load(std::sync::atomic::Ordering::SeqCst) {
+                    daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: "x".into() });
+                    let pause = std::time::Instant::now();
+                    while pause.elapsed() < Duration::from_micros(50) {
+                        std::hint::spin_loop();
+                    }
+                }
+            })
+        };
+        let mut skipped = Vec::new();
+        for _ in 0..3000 {
+            let mut back = connect_to(&daemon, Trust::Local);
+            let at = daemon.host.events().last_seq();
+            back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": at } } })).await;
+            assert_eq!(back.next().await.unwrap()["ok"]["resumed"], true);
+            let first = back.next().await.unwrap()["seq"].as_u64().unwrap();
+            if first != at + 1 {
+                skipped.push(at + 1);
+            }
+        }
+        emitting.store(false, std::sync::atomic::Ordering::SeqCst);
+        emitter.join().unwrap();
+        assert!(skipped.is_empty(), "events skipped right after resuming: {skipped:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
