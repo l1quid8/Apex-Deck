@@ -1,4 +1,5 @@
 use apex_daemon::cli::{self, Action};
+use apex_daemon::stdio;
 
 fn main() {
     // Codex runs this executable before each MCP call; see the adapters'
@@ -17,8 +18,19 @@ fn main() {
     match cli.action {
         Action::Help => println!("{}", cli::USAGE),
         Action::Version => println!("apex-daemon {}", env!("CARGO_PKG_VERSION")),
-        Action::Serve(_) | Action::Stdio { .. } => {
+        Action::Stdio { .. } => exit(stdio::run_in_process(cli.data_dir)),
+        Action::Serve(_) => {
             eprintln!("apex-daemon: not built yet");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn exit(result: Result<(), String>) -> ! {
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(why) => {
+            eprintln!("apex-daemon: {why}");
             std::process::exit(1);
         }
     }

@@ -5,3 +5,4 @@ pub mod cli;
 pub mod identity;
 pub mod paths;
 pub mod protocol;
+pub mod stdio;
