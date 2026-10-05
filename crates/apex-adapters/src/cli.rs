@@ -388,6 +388,7 @@ pub(crate) fn sign_in_hint(program: &str, summary: &str) -> Option<&'static str>
         "claude" => "To fix: open a Claude Code pane (or run `claude` in a terminal), type /login, finish signing in, then send your message again.",
         "codex" => "To fix: run `codex login` in a terminal pane, then send your message again.",
         "gemini" => "To fix: run `gemini` in a terminal pane, sign in when asked, then send your message again.",
+        "grok" => "To fix: run `grok login` in a terminal pane, then send your message again.",
         _ => "To fix: sign in to this tool in a terminal pane, then send your message again.",
     })
 }

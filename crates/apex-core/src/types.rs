@@ -46,6 +46,7 @@ pub enum AgentTool {
     ClaudeCode,
     Codex,
     Gemini,
+    Grok,
 }
 
 /// How a participant is reached.

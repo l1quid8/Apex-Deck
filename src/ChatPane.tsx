@@ -156,7 +156,7 @@ export function splitArgs(line: string): string[] {
   return out;
 }
 
-type PresetKey = "claude_code" | "codex" | "gemini" | "ollama" | "api" | "command" | "scripted";
+type PresetKey = "claude_code" | "codex" | "gemini" | "grok" | "ollama" | "api" | "command" | "scripted";
 
 interface Preset {
   key: PresetKey;
@@ -164,7 +164,7 @@ interface Preset {
   /** Every effort level the backend understands. Empty means it has no such setting. */
   efforts: string[];
   /** Set for presets that run a known coding agent. Its models are listed in models.ts. */
-  agent?: { tool: AgentTool; detectKey: string; modelNote: string; enforcesAccess: boolean };
+  agent?: { tool: AgentTool; detectKey: string; modelNote: string; enforcesAccess: boolean; asksFirst: boolean };
   /** Set for presets that call an HTTP API. */
   api?: { baseUrl: string; autoLoad: boolean };
 }
@@ -176,19 +176,25 @@ export const PRESETS: Preset[] = [
     key: "claude_code",
     label: "Claude Code",
     efforts: AGENT_EFFORTS.claude_code,
-    agent: { tool: "claude_code", detectKey: "claude", modelNote: "A short name such as opus follows the newest version. Pick a full name to stay on one version.", enforcesAccess: true },
+    agent: { tool: "claude_code", detectKey: "claude", modelNote: "A short name such as opus follows the newest version. Pick a full name to stay on one version.", enforcesAccess: true, asksFirst: true },
   },
   {
     key: "codex",
     label: "Codex",
     efforts: AGENT_EFFORTS.codex,
-    agent: { tool: "codex", detectKey: "codex", modelNote: "Your account may not offer every model; Codex says so in the chat if not.", enforcesAccess: true },
+    agent: { tool: "codex", detectKey: "codex", modelNote: "Your account may not offer every model; Codex says so in the chat if not.", enforcesAccess: true, asksFirst: true },
   },
   {
     key: "gemini",
     label: "Gemini CLI",
     efforts: AGENT_EFFORTS.gemini,
-    agent: { tool: "gemini", detectKey: "gemini", modelNote: "Names are from Google's model list. Gemini CLI says so in the chat if your account cannot use one.", enforcesAccess: false },
+    agent: { tool: "gemini", detectKey: "gemini", modelNote: "Names are from Google's model list. Gemini CLI says so in the chat if your account cannot use one.", enforcesAccess: false, asksFirst: false },
+  },
+  {
+    key: "grok",
+    label: "Grok",
+    efforts: AGENT_EFFORTS.grok,
+    agent: { tool: "grok", detectKey: "grok", modelNote: "The list follows the models Grok offers your account.", enforcesAccess: true, asksFirst: false },
   },
   { key: "ollama", label: "Ollama (local models)", efforts: API_EFFORTS, api: { baseUrl: "http://localhost:11434/v1", autoLoad: true } },
   { key: "api", label: "Other API (OpenAI-compatible)", efforts: API_EFFORTS, api: { baseUrl: "", autoLoad: false } },
@@ -196,7 +202,7 @@ export const PRESETS: Preset[] = [
   { key: "scripted", label: "Scripted (no model, for testing)", efforts: [] },
 ];
 
-const AGENT_LABEL: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI" };
+const AGENT_LABEL: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI", grok: "Grok" };
 
 interface Draft {
   appearance?: AgentAppearance;
@@ -216,7 +222,7 @@ interface Draft {
 /** `access` is the default from settings; a tool that can't ask first gets Read only. */
 function emptyDraft(preset: PresetKey, access: Access = "read"): Draft {
   const found = PRESETS.find((p) => p.key === preset);
-  const allowed = access === "ask" && !found?.agent?.enforcesAccess ? "read" : access;
+  const allowed = access === "ask" && !found?.agent?.asksFirst ? "read" : access;
   return { name: "", preset, model: "", effort: "", baseUrl: found?.api?.baseUrl ?? "", keyEnv: "", command: "", persona: "", access: allowed };
 }
 
@@ -1626,7 +1632,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const choosePreset = (key: PresetKey) => {
     const next = PRESETS.find((p) => p.key === key)!;
     // Only tools that enforce access themselves can stop and ask.
-    setDraft((d) => ({ ...emptyDraft(key), appearance: d.appearance, name: d.name, persona: d.persona, access: d.access === "ask" && !next.agent?.enforcesAccess ? "read" : d.access }));
+    setDraft((d) => ({ ...emptyDraft(key), appearance: d.appearance, name: d.name, persona: d.persona, access: d.access === "ask" && !next.agent?.asksFirst ? "read" : d.access }));
     // Model and effort names differ between backends, so they start empty.
     setApiModels([]);
     setModelNote("");
@@ -1696,7 +1702,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const provider = planProvider(p);
     const windows = provider ? plans[provider]?.windows : undefined;
     const plan = windows ? planLine(windows, new Date()) : null;
-    const reports = p.backend.kind === "agent" && p.backend.tool !== "gemini";
+    const reports = p.backend.kind === "agent" && p.backend.tool !== "gemini" && p.backend.tool !== "grok";
     const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
     return (
       <div className="usage-card" role="group" aria-label={`Usage for ${p.display_name}`}>
@@ -1735,7 +1741,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const addStarter = (starter: typeof STARTERS[number]) => {
     const start = PRESETS.find((p) => p.key === firstPreset)!;
     const name = uniqueName(starter.name, participants.map((p) => p.id), slug);
-    const built = draftToConfig({ ...emptyDraft(firstPreset), name, persona: starter.persona, access: starter.access === "ask" && !start.agent?.enforcesAccess ? "read" : starter.access });
+    const built = draftToConfig({ ...emptyDraft(firstPreset), name, persona: starter.persona, access: starter.access === "ask" && !start.agent?.asksFirst ? "read" : starter.access });
     if (typeof built === "string") return notify(built, "error");
     const config = { ...built, appearance: createAppearance(participants.map((p) => appearance(p.id))) };
     const next = [...participants, config];
@@ -1873,7 +1879,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               Access
               <select name="access" value={draft.access} onChange={(e) => set("access", e.target.value as Access)}>
                 <option value="read">Read only</option>
-                {preset.agent?.enforcesAccess && <option value="ask">Ask first (you approve each edit and command)</option>}
+                {preset.agent?.asksFirst && <option value="ask">Ask first (you approve each edit and command)</option>}
                 <option value="edits">Can edit files</option>
                 <option value="full">Full access (edits and runs commands without asking)</option>
               </select>
@@ -1938,7 +1944,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <label>Access
           <select name="quick-access" value={draft.access} onChange={(e) => set("access", e.target.value as Access)}>
             <option value="read">Read only</option>
-            {preset.agent?.enforcesAccess && <option value="ask">Ask first</option>}
+            {preset.agent?.asksFirst && <option value="ask">Ask first</option>}
             <option value="edits">Can edit files</option>
             <option value="full">Full access</option>
           </select>

@@ -72,7 +72,7 @@ export function reviewDraft(handle: string, draft: string): string {
   return draft.trim() ? `${ask}\n\n${draft}` : ask;
 }
 
-const TOOL_NAMES: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI" };
+const TOOL_NAMES: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI", grok: "Grok" };
 
 /** The tool a bot runs on, as the menu names it. */
 export function toolName(backend: ParticipantBackend): string {
@@ -83,8 +83,9 @@ export function toolName(backend: ParticipantBackend): string {
 }
 
 /**
- * Whether a bot can open a file in Deck's attachments folder. Claude Code and
- * Gemini CLI are given the folder (`--add-dir`, `--include-directories`);
+ * Whether a bot can open a file in Deck's attachments folder. Claude Code,
+ * Gemini CLI and Grok are given the folder (`--add-dir`,
+ * `--include-directories`, `--allow Read(...)`);
  * Codex's sandbox reads files anywhere, even at read only (checked with
  * `codex sandbox`); a custom command runs as you with no sandbox. API models
  * only see the conversation's text, and scripted bots read nothing.

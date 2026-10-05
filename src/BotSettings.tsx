@@ -45,7 +45,7 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
     window.addEventListener('resize', close);
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); window.removeEventListener('resize', close); };
   }, [anchor, close]);
-  const groups = tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : 'Gemini') : [];
+  const groups = tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : tool === 'grok' ? 'Grok' : 'Gemini') : [];
   const efforts = tool ? effortsFor(AGENT_EFFORTS[tool], groups, model) : API_EFFORTS;
   const supportedEffort = efforts.includes(effort) ? effort : '';
   const note = findModel(groups, model)?.note;

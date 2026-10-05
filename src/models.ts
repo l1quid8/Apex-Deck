@@ -39,6 +39,7 @@ export const AGENT_EFFORTS: Record<AgentTool, string[]> = {
   codex: CODEX_EFFORTS,
   // Gemini CLI has no effort setting on the command line.
   gemini: [],
+  grok: ["low", "medium", "high", "xhigh"],
 };
 
 const FABLE_NOTE = "Fable can bill usage credits on top of a subscription, and a chat turn cannot ask you first.";
@@ -136,6 +137,17 @@ export const AGENT_MODELS: Record<AgentTool, ModelGroup[]> = {
       models: [
         { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite" },
         { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
+      ],
+    },
+  ],
+  grok: [
+    {
+      label: "Grok",
+      models: [
+        { id: "grok-4.7", label: "Grok 4.7" },
+        { id: "grok-4.7-build-fast", label: "Grok 4.7 Fast" },
+        { id: "grok-4.6", label: "Grok 4.6" },
+        { id: "grok-4.5", label: "Grok 4.5", efforts: ["low", "medium", "high"] },
       ],
     },
   ],

@@ -20,6 +20,10 @@ pub fn installed_models(tool: AgentTool) -> Vec<ModelChoice> {
             .and_then(|home| std::fs::read_to_string(home.join("models_cache.json")).ok())
             .map(|text| codex_models_from_cache(&text))
             .unwrap_or_default(),
+        AgentTool::Grok => grok_home()
+            .and_then(|home| std::fs::read_to_string(home.join("models_cache.json")).ok())
+            .map(|text| grok_models_from_cache(&text))
+            .unwrap_or_default(),
         // Claude Code and Gemini CLI keep no list of models on disk.
         AgentTool::ClaudeCode | AgentTool::Gemini => Vec::new(),
     }
@@ -33,6 +37,69 @@ fn codex_home() -> Option<PathBuf> {
     }
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     Some(PathBuf::from(home).join(".codex"))
+}
+
+/// Where Grok keeps its settings: `$GROK_HOME`, or `.grok` in the home
+/// folder.
+fn grok_home() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("GROK_HOME").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".grok"))
+}
+
+/// Read the model list Grok saves after it asks the server what the
+/// signed-in account may use: a `models` map whose entries have an `info`
+/// with an `id`, a display `name`, a `hidden` flag and the effort levels
+/// the model accepts. As with Codex, only what is recognised is taken, and
+/// models Grok hides are left out. The map is unordered, so the list is put
+/// newest first by name: `grok-4.7`, `grok-4.7-build-fast`, `grok-4.6`.
+pub fn grok_models_from_cache(json: &str) -> Vec<ModelChoice> {
+    let Ok(root) = serde_json::from_str::<Value>(json) else { return Vec::new() };
+    let Some(models) = root.get("models").and_then(Value::as_object) else { return Vec::new() };
+
+    let mut found: Vec<ModelChoice> = Vec::new();
+    for (key, model) in models {
+        let info = model.get("info").unwrap_or(&Value::Null);
+        let id = info.get("id").and_then(Value::as_str).unwrap_or(key).trim();
+        let hidden = info.get("hidden").and_then(Value::as_bool).unwrap_or(false);
+        if id.is_empty() || hidden || found.iter().any(|m| m.id == id) {
+            continue;
+        }
+        let label = info
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && *name != id)
+            .map(str::to_string);
+        let efforts = match info.get("supports_reasoning_effort").and_then(Value::as_bool) {
+            Some(false) => Some(Vec::new()),
+            _ => info.get("reasoning_efforts").and_then(Value::as_array).map(|levels| {
+                let mut out: Vec<String> = Vec::new();
+                for level in levels {
+                    let name = level.get("id").and_then(Value::as_str).or_else(|| level.as_str());
+                    if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) {
+                        if !out.iter().any(|e| e == name) {
+                            out.push(name.to_string());
+                        }
+                    }
+                }
+                out
+            }),
+        };
+        found.push(ModelChoice { id: id.to_string(), label, efforts });
+    }
+    found.sort_by(|a, b| newest_first(&a.id, &b.id));
+    found
+}
+
+/// Higher version numbers first, and a name before its longer variants.
+fn newest_first(a: &str, b: &str) -> std::cmp::Ordering {
+    match a.chars().zip(b.chars()).find(|(x, y)| x != y) {
+        Some((x, y)) => y.cmp(&x),
+        None => a.len().cmp(&b.len()),
+    }
 }
 
 /// Read the model list Codex saves after it asks the server what the
@@ -129,6 +196,31 @@ mod tests {
         assert!(codex_models_from_cache("not json").is_empty());
         assert!(codex_models_from_cache(r#"{"models":"nope"}"#).is_empty());
         assert!(codex_models_from_cache(r#"[1,2,3]"#).is_empty());
+    }
+
+    #[test]
+    fn grok_models_are_read_newest_first_without_hidden_ones() {
+        let json = r#"{
+            "fetched_at": "2026-10-05T00:00:00Z",
+            "models": {
+                "grok-4.6": { "info": { "id": "grok-4.6", "name": "Grok 4.6", "hidden": false,
+                    "supports_reasoning_effort": true,
+                    "reasoning_efforts": [ { "id": "high", "label": "High" }, { "id": "low" } ] } },
+                "grok-4.7-fast": { "info": { "id": "grok-4.7-fast", "name": "grok-4.7-fast", "supports_reasoning_effort": false } },
+                "secret": { "info": { "id": "secret", "hidden": true } },
+                "grok-4.7": {}
+            }
+        }"#;
+        assert_eq!(
+            grok_models_from_cache(json),
+            vec![
+                ModelChoice { id: "grok-4.7".into(), label: None, efforts: None },
+                ModelChoice { id: "grok-4.7-fast".into(), label: None, efforts: Some(vec![]) },
+                ModelChoice { id: "grok-4.6".into(), label: Some("Grok 4.6".into()), efforts: Some(vec!["high".into(), "low".into()]) },
+            ]
+        );
+        assert!(grok_models_from_cache("not json").is_empty());
+        assert!(grok_models_from_cache(r#"{"models":[]}"#).is_empty());
     }
 
     #[test]

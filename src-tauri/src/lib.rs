@@ -1017,6 +1017,28 @@ fn copy_folder_attachment(dir: &std::path::Path, source: &std::path::Path) -> Re
     Ok(format!("{}/", target.to_string_lossy()))
 }
 
+/// Install a mod: copy its folder into Deck's own mods folder, replacing an
+/// earlier copy of the same mod, so it runs from that copy and the source can
+/// move. Returns the installed folder.
+#[tauri::command]
+async fn mod_install(app: AppHandle, source: String) -> Result<String, String> {
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("mods");
+    tokio::task::spawn_blocking(move || {
+        let staging = root.join(".incoming");
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+        let copied = std::path::PathBuf::from(copy_folder_attachment(&staging, std::path::Path::new(source.trim_end_matches('/')))?.trim_end_matches('/'));
+        let checked = mods::mod_read(copied.to_string_lossy().into_owned()).map_err(|e| { let _ = std::fs::remove_dir_all(&staging); e })?;
+        let name = checked.manifest.get("name").and_then(|n| n.as_str()).map(str::to_owned)
+            .unwrap_or_else(|| copied.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "mod".into()));
+        let target = root.join(export::safe_file_name(&name)?);
+        let _ = std::fs::remove_dir_all(&target);
+        std::fs::rename(&copied, &target).map_err(|e| format!("Could not install {name}: {e}"))?;
+        let _ = std::fs::remove_dir_all(&staging);
+        Ok(target.to_string_lossy().into_owned())
+    }).await.map_err(|e| e.to_string())?
+}
+
 /// What changed in the folder since this thread started, and who changed it.
 /// Reads the saved copy, so it answers while models are still working.
 #[tauri::command]
@@ -1157,6 +1179,7 @@ pub fn run() {
             quit_heard,
             quit_app,
             mods::mod_read,
+            mod_install,
             mods::mod_process_run,
             mods::mod_http_fetch,
             mods::mod_fs_write,

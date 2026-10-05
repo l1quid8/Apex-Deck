@@ -10,7 +10,7 @@ export function nameForModel(tool: string, toolLabel: string, model: string): st
     const family = CLAUDE_FAMILIES.find((f) => m.includes(f));
     return family ? family[0].toUpperCase() + family.slice(1) : "Claude";
   }
-  if (tool === "codex" || tool === "gemini" || !m) return plain;
+  if (tool === "codex" || tool === "gemini" || tool === "grok" || !m) return plain;
   const first = m.split(/[-:/\s[]/)[0];
   return first ? first[0].toUpperCase() + first.slice(1) : plain;
 }

@@ -27,7 +27,7 @@ export interface FileChange {
   removed: number;
 }
 
-export type AgentTool = "claude_code" | "codex" | "gemini";
+export type AgentTool = "claude_code" | "codex" | "gemini" | "grok";
 
 export type ParticipantBackend =
   | { kind: "open_ai_compatible"; base_url: string; model: string; api_key_env: string | null }

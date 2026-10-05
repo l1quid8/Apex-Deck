@@ -15,13 +15,15 @@ const STDIN_INSTRUCTION: &str =
     "Reply to the group chat conversation given on standard input. Follow the instructions at the top of it.";
 
 /// How to read what `tool` prints when run with the flags below. Claude
-/// Code and Codex are run in their event modes, which report the reply as
-/// it is written, each tool used, token counts and a proper error.
+/// Code, Codex and Grok are run in their event modes, which report the reply
+/// as it is written, each tool used, token counts and a proper error. Grok's
+/// event mode is the same as Claude Code's.
 pub(crate) fn output_format(tool: AgentTool) -> OutputFormat {
     match tool {
         AgentTool::ClaudeCode => OutputFormat::ClaudeStream,
         AgentTool::Codex => OutputFormat::CodexJson,
         AgentTool::Gemini => OutputFormat::Text,
+        AgentTool::Grok => OutputFormat::ClaudeStream,
     }
 }
 
@@ -133,6 +135,28 @@ pub fn agent_command(
             push(&["-p", STDIN_INSTRUCTION]);
             "gemini"
         }
+        AgentTool::Grok => {
+            // Grok does not read piped input in its one-shot mode, but it
+            // reads a prompt file, and standard input is one.
+            push(&["--prompt-file", "/dev/stdin", "--output-format", "streaming-messages-json", "--include-partial-messages"]);
+            if let Some(model) = model {
+                push(&["--model", model]);
+            }
+            if let Some(effort) = effort {
+                push(&["--effort", effort]);
+            }
+            if let Some(dir) = READABLE.get() {
+                push(&["--allow", &format!("Read({dir}/**)")]);
+            }
+            // Deny rules win over any allow rule in the person's own Grok
+            // settings. With nobody to ask, "ask first" means "do not".
+            match access {
+                Access::Read | Access::Ask => push(&["--deny", "Edit", "--deny", "Write", "--deny", "Bash"]),
+                Access::Edits => push(&["--allow", "Edit", "--allow", "Write", "--deny", "Bash"]),
+                Access::Full => push(&["--always-approve"]),
+            }
+            "grok"
+        }
     };
     (program.to_string(), args)
 }
@@ -160,7 +184,7 @@ mod tests {
 
     #[test]
     fn configured_mcp_servers_and_plugins_are_not_disabled() {
-        for tool in [AgentTool::ClaudeCode, AgentTool::Codex, AgentTool::Gemini] {
+        for tool in [AgentTool::ClaudeCode, AgentTool::Codex, AgentTool::Gemini, AgentTool::Grok] {
             for access in [Access::Read, Access::Ask, Access::Edits, Access::Full] {
                 let (_, args) = agent_command(tool, None, None, access);
                 for arg in args {
@@ -221,6 +245,20 @@ mod tests {
         assert_eq!(args, ["--model", "some-model", "-p", STDIN_INSTRUCTION]);
         let (_, args) = agent_command(AgentTool::Gemini, None, None, Access::Full);
         assert_eq!(args, ["-p", STDIN_INSTRUCTION]);
+    }
+
+    #[test]
+    fn grok_commands() {
+        let stream = ["--prompt-file", "/dev/stdin", "--output-format", "streaming-messages-json", "--include-partial-messages"];
+        let (program, args) = agent_command(AgentTool::Grok, Some("grok-4.7"), Some("high"), Access::Read);
+        assert_eq!(program, "grok");
+        assert_eq!(&args[..stream.len()], stream);
+        assert_eq!(&args[stream.len()..], ["--model", "grok-4.7", "--effort", "high", "--deny", "Edit", "--deny", "Write", "--deny", "Bash"]);
+        assert_eq!(line(AgentTool::Grok, None, Access::Ask), line(AgentTool::Grok, None, Access::Read));
+        let (_, args) = agent_command(AgentTool::Grok, None, None, Access::Edits);
+        assert_eq!(&args[stream.len()..], ["--allow", "Edit", "--allow", "Write", "--deny", "Bash"]);
+        let (_, args) = agent_command(AgentTool::Grok, None, None, Access::Full);
+        assert_eq!(&args[stream.len()..], ["--always-approve"]);
     }
 
     #[test]

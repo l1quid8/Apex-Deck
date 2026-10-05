@@ -15,6 +15,8 @@ export interface Backend {
   listToolServers(room: string, agent: string): Promise<ToolServer[]>;
   detectAgents(): Promise<AgentInfo[]>;
   pickFolder(): Promise<string | null>;
+  /** Ask for one folder or file, for a setting. */
+  pickPath(kind: "directory" | "file", title: string): Promise<string | null>;
   /** Folders passed on the command line when the app was started. */
   startupFolders(): Promise<string[]>;
   sessionLoad(): Promise<AppSession | null>;
@@ -147,6 +149,10 @@ async function tauriBackend(): Promise<Backend> {
     previewProbe: (address) => invoke<PreviewProbe>("preview_probe", { address }),
     pickFolder: async () => {
       const picked = await open({ directory: true, multiple: false, title: "Add a workspace folder" });
+      return typeof picked === "string" ? picked : null;
+    },
+    pickPath: async (kind, title) => {
+      const picked = await open({ directory: kind === "directory", multiple: false, title });
       return typeof picked === "string" ? picked : null;
     },
 
@@ -503,8 +509,10 @@ function demoBackend(): Backend {
       { key: "claude", label: "Claude Code", program: "claude", found: true },
       { key: "codex", label: "Codex", program: "codex", found: true },
       { key: "gemini", label: "Gemini CLI", program: "gemini", found: false },
+      { key: "grok", label: "Grok", program: "grok", found: false },
     ],
     pickFolder: async () => null,
+    pickPath: async () => null,
     startupFolders: async () => [],
     sessionLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.session.v1") ?? "null"),
     sessionSave: async (session) => { localStorage.setItem("apex-deck.demo.session.v1", JSON.stringify(session)); },
