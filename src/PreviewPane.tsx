@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
-import type { Backend } from "./backend";
+import type { Backend, BrowserState } from "./backend";
+import { BrowserView } from "./BrowserView";
 import { hostLabel, normalizeAddress } from "./previewAddress";
 import type { Pane, PreviewProbe } from "./types";
 
-// A web page beside your terminals or threads. The desktop side looks at the
-// address before the page loads (preview.rs), so a stopped server or a site
-// that refuses frames gets words instead of a blank box. See the spec, section 1.
+// A web page beside your terminals or threads. In the Electron app it's a
+// real browser docked in the pane (BrowserView). Elsewhere it's a frame, and
+// the desktop side looks at the address before the page loads (preview.rs),
+// so a stopped server or a site that refuses frames gets words instead of a
+// blank box. See the spec, section 1.
 
 /** A local server a terminal printed or a thread's bot mentioned, for the empty page. */
 export interface ServerChoice {
@@ -44,6 +47,8 @@ const svg = (paths: ReactNode) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths}</svg>
 );
 const RELOAD = svg(<><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></>);
+const BACK = svg(<path d="M15 5l-7 7 7 7" />);
+const FORWARD = svg(<path d="M9 5l7 7-7 7" />);
 const CORNERS = svg(<><path d="M4 9V4h5" /><path d="M20 9V4h-5" /><path d="M4 15v5h5" /><path d="M20 15v5h-5" /></>);
 
 export function PreviewPane({ pane, backend, visible, servers, source, openExternally, onOpenExternallyChange, onAddress, onStatus, onStartSource, onShowSource, onOpenInBrowser }: Props) {
@@ -58,6 +63,9 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
   const field = useRef<HTMLInputElement>(null);
   /** The address the browser was last opened for by itself, so it opens once. */
   const openedFor = useRef("");
+  /** The docked browser, in the Electron app. */
+  const docked = backend.browser;
+  const [page, setPage] = useState<BrowserState | null>(null);
 
   // Keep the field in step when the address changes from outside, e.g. a terminal's chip.
   useEffect(() => {
@@ -65,9 +73,9 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
     setError("");
   }, [address]);
 
-  // Look before loading, once per address and per Reload.
+  // Look before loading, once per address and per Reload. The docked browser loads it itself.
   useEffect(() => {
-    if (!address) return;
+    if (!address || docked) return;
     let live = true;
     setLook({ kind: "checking" });
     backend.previewProbe(address).then(
@@ -75,7 +83,7 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
       (reason) => { if (live) setLook({ kind: "invalid", reason: String(reason) }); },
     );
     return () => { live = false; };
-  }, [backend, address, frame]);
+  }, [backend, docked, address, frame]);
 
   // While nothing answers and the pane is on screen, look again every 2 s.
   useEffect(() => {
@@ -98,7 +106,19 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
     }
   }, [look, host, address, onOpenInBrowser]);
 
-  const status = !address ? "No page yet"
+  // A docked page that failed to load: try again every 2 s while it's on screen.
+  const failed = docked && page?.error && !page.loading ? page.error : null;
+  useEffect(() => {
+    if (!docked || !failed || !visible || !address) return;
+    const timer = setTimeout(() => void docked.navigate(pane.id, address), RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [docked, failed, visible, address, pane.id, page]);
+  useEffect(() => { setPage(null); }, [address]);
+  // The field follows the page as you click around in it.
+  useEffect(() => { if (page?.url && !page.url.startsWith("data:") && !page.error) setTyped(page.url); }, [page?.url, page?.error]);
+
+  const status = docked ? (!address ? "No page yet" : failed ? "Can't connect" : page?.loading ? "Loading…" : source ? `From ${source.title}` : page?.title ?? "")
+    : !address ? "No page yet"
     : look.kind === "checking" ? "Checking…"
     : look.kind === "ok" ? (source ? `From ${source.title}` : "")
     : look.kind === "refused" ? "Won't load here"
@@ -127,15 +147,24 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
       return;
     }
     setError("");
-    if (next === address) setFrame((n) => n + 1);
+    if (next === address) reload();
     else onAddress(pane.id, next);
+  };
+
+  const reload = () => {
+    if (docked) void docked.navigate(pane.id, address);
+    else setFrame((n) => n + 1);
   };
 
   return (
     <div className={full ? "preview full-window" : "preview"}>
       <div className="preview-bar">
         {full && <span className="preview-full-title">{pane.title}</span>}
-        <button className="icon small" disabled={!address} onClick={() => setFrame((n) => n + 1)} aria-label="Reload" title="Reload">{RELOAD}</button>
+        {docked && <>
+          <button className="icon small" disabled={!page?.canGoBack} onClick={() => void docked.back(pane.id)} aria-label="Back" title="Back">{BACK}</button>
+          <button className="icon small" disabled={!page?.canGoForward} onClick={() => void docked.forward(pane.id)} aria-label="Forward" title="Forward">{FORWARD}</button>
+        </>}
+        <button className="icon small" disabled={!address} onClick={reload} aria-label="Reload" title="Reload">{RELOAD}</button>
         <form onSubmit={submit}>
           <input ref={field} aria-label="Address" value={typed} placeholder="e.g. localhost:3000" spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => setTyped(event.target.value)} />
         </form>
@@ -147,11 +176,30 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
       {error && <p className="preview-error" role="alert">{error}</p>}
       <div className="preview-body">
         {!address && <EmptyPage servers={servers} onPick={(server) => onAddress(pane.id, server.address, server.sourceId)} />}
-        {address && look.kind === "ok" && (
+        {docked && address && (
+          <BrowserView pane={pane.id} url={address} browser={docked} visible={visible && !failed} onState={setPage} />
+        )}
+        {docked && address && failed && (
+          <div className="preview-notice" role="status">
+            <h2>Nothing is answering at {host}.</h2>
+            <p>
+              {source?.kind === "terminal" && !source.running ? `${source.title} has stopped. The page comes back by itself once the server answers again.`
+                : `${failed.description || "The page didn't load"}. It comes back by itself once the server answers.`}
+            </p>
+            {source && (
+              <div className="preview-actions">
+                {source.kind === "terminal" && !source.running && <button className="primary" onClick={onStartSource}>Start {source.title} again</button>}
+                <button onClick={onShowSource}>{source.kind === "chat" ? "Show thread" : "Show terminal"}</button>
+              </div>
+            )}
+            <span className="preview-retry">Checking every 2 s</span>
+          </div>
+        )}
+        {!docked && address && look.kind === "ok" && (
           <iframe key={frame} src={address} title={`Preview of ${host}`} sandbox={SANDBOX} referrerPolicy="no-referrer" />
         )}
-        {address && look.kind === "checking" && <p className="preview-checking" role="status">Checking {host}…</p>}
-        {address && (look.kind === "unreachable" || look.kind === "invalid") && (
+        {!docked && address && look.kind === "checking" && <p className="preview-checking" role="status">Checking {host}…</p>}
+        {!docked && address && (look.kind === "unreachable" || look.kind === "invalid") && (
           <div className="preview-notice" role="status">
             <h2>Nothing is answering at {host}.</h2>
             <p>
@@ -168,7 +216,7 @@ export function PreviewPane({ pane, backend, visible, servers, source, openExter
             {look.kind === "unreachable" && <span className="preview-retry">Checking every 2 s</span>}
           </div>
         )}
-        {address && look.kind === "refused" && (
+        {!docked && address && look.kind === "refused" && (
           <div className="preview-notice" role="status">
             <h2>{host} won't load inside the deck.</h2>
             <p>The site tells browsers not to show it inside other apps. Most sites with a sign-in do this.</p>

@@ -3,8 +3,10 @@
 // exit code; any failed check ends the run.
 
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
-import { app } from 'electron';
+import { app, BrowserWindow, session } from 'electron';
+import { PARTITION } from './browser.mjs';
 
 const OPTIONS = { policy: 'mention', max_bot_hops: 3 };
 const shell = (id, script) => ({ id, display_name: id, backend: { kind: 'cli', program: 'sh', args: ['-c', script] } });
@@ -15,8 +17,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * the person would; desktop/run-smoke.mjs then checks the app and the daemon
  * it started are gone.
  */
-export async function runSmoke(win, { sidecar }) {
+export async function runSmoke(win, { sidecar, browser }) {
   if (process.env.APEX_DECK_SMOKE_HOST) return runRemoteSmoke(win);
+  if (process.env.APEX_DECK_SMOKE_PHASE === 'again') return runAgain(win, sidecar);
   const contents = win.webContents;
   /** Run `code` in the window; it may await, and its value comes back. */
   const page = (code) => contents.executeJavaScript(`(async () => { ${code} })()`, true);
@@ -92,6 +95,55 @@ export async function runSmoke(win, { sidecar }) {
     await page(`await __deck.backend.ptyKill('smoke-term'); return true;`);
   });
 
+  await step('a Preview pane docks a real browser where its placeholder is', async () => {
+    const site = await serveSite();
+    try {
+      await page(`
+        await __deck.backend.sessionSave({
+          version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: '/tmp' }],
+          panes: [{ id: 'smoke-preview', workspaceId: 'ws-smoke', kind: 'preview', title: 'Preview', url: ${JSON.stringify(`${site.url}/`)}, deck: 'threads' }],
+          profiles: [], activeWorkspace: 'ws-smoke', focusedPane: 'smoke-preview', section: 'threads', layout: 'top',
+        });
+        return true;`);
+      contents.reload();
+      await sleep(200);
+      await ready();
+      const docked = await until('the page to show', () => {
+        const seen = browser.inspect('smoke-preview');
+        return seen?.shown && seen.contents.getURL().startsWith(site.url) && !seen.contents.isLoading() && seen;
+      });
+      const place = await page(`const r = document.querySelector('.browser-place').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height };`);
+      const zoom = contents.getZoomFactor();
+      for (const key of ['x', 'y', 'width', 'height']) {
+        if (Math.abs(docked.bounds[key] - place[key] * zoom) > 1) throw new Error(`the view is at ${JSON.stringify(docked.bounds)}, its place at ${JSON.stringify(place)}`);
+      }
+      if (await docked.contents.executeJavaScript(`document.body.innerText`) !== 'hello') throw new Error('the page did not render');
+
+      // A menu over the pane: the view steps aside for a picture of itself, and comes back.
+      await page(`document.querySelector('button[aria-label="More actions for Preview"]').click(); return true;`);
+      await until('the view to step aside for the menu', () => !browser.inspect('smoke-preview').shown, 5_000);
+      await until('the picture in its place', () => page(`return Boolean(document.querySelector('.browser-snapshot'))`), 5_000);
+      await page(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`);
+      await until('the view to come back', () => browser.inspect('smoke-preview').shown, 5_000);
+
+      // A page that tries to take over the window or reach the bridge gets nowhere.
+      await page(`await __deck.backend.browser.navigate('smoke-preview', ${JSON.stringify(`${site.url}/evil`)}); return true;`);
+      await until('the hostile page', () => {
+        const seen = browser.inspect('smoke-preview').contents;
+        return seen.getURL().endsWith('/evil') && !seen.isLoading();
+      });
+      await sleep(1000);
+      const after = browser.inspect('smoke-preview').contents;
+      if (!after.getURL().endsWith('/evil')) throw new Error(`the page went to ${after.getURL()}`);
+      if (contents.getURL() !== 'app://deck/') throw new Error(`the deck went to ${contents.getURL()}`);
+      if (BrowserWindow.getAllWindows().length !== 1) throw new Error('the page opened a window');
+      const reach = await after.executeJavaScript(`[typeof window.apexDeck, typeof require, typeof process].join(' ')`);
+      if (reach !== 'undefined undefined undefined') throw new Error(`the page can see: ${reach}`);
+    } finally {
+      site.close();
+    }
+  });
+
   await step('quitting while an agent replies asks first', async () => {
     // A thread in the window, with a bot that takes its time.
     await page(`
@@ -119,8 +171,15 @@ export async function runSmoke(win, { sidecar }) {
     await sleep(1000);
   });
 
-  // Quit with nothing running: the window answers, nothing is asked, and the
-  // app exits 0 after the daemon it started has wound down.
+  return quit(win, sidecar);
+}
+
+/**
+ * Quit with nothing running: the window answers, nothing is asked, and the
+ * app exits 0 after the daemon it started has wound down, which
+ * run-smoke.mjs checks by its pid.
+ */
+function quit(win, sidecar) {
   const daemon = sidecar();
   if (!daemon?.owned) throw new Error('the smoke run should own its daemon');
   fs.writeFileSync(path.join(app.getPath('userData'), 'sidecar.pid'), String(daemon.child.pid));
@@ -213,4 +272,35 @@ async function runRemoteSmoke(win) {
   console.log('smoke: quitting');
   win.close();
   return null;
+}
+
+/** Pages for the docked browser: one that signs in (sets a cookie), and one that misbehaves. */
+function serveSite() {
+  const server = http.createServer((request, response) => {
+    response.setHeader('content-type', 'text/html');
+    if (request.url === '/evil') {
+      response.end(`<title>evil</title><p>evil</p><script>
+        try { window.open('app://deck/'); } catch {}
+        try { window.open('file:///etc/passwd'); } catch {}
+        setTimeout(() => { try { top.location = 'app://deck/#taken'; } catch {} }, 50);
+      </script>`);
+      return;
+    }
+    response.end(`<title>smoke page</title><body>hello<script>document.cookie = 'deck_login=kept; max-age=86400; path=/';</script></body>`);
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() })));
+}
+
+/** The second launch on the same folders: the sign-in from the first is still there. */
+async function runAgain(win, sidecar) {
+  const contents = win.webContents;
+  const start = Date.now();
+  while (!(await contents.executeJavaScript(`Boolean(window.__deck && !document.querySelector('.loading'))`).catch(() => false))) {
+    if (Date.now() - start > 30_000) throw new Error('the second launch never connected');
+    await sleep(50);
+  }
+  const cookies = await session.fromPartition(PARTITION).cookies.get({ domain: '127.0.0.1', name: 'deck_login' });
+  if (cookies.length !== 1 || cookies[0].value !== 'kept') throw new Error(`the docked browser's cookie is gone (${JSON.stringify(cookies)})`);
+  console.log('smoke: ok — a cookie set in the docked browser survives a restart of the app');
+  return quit(win, sidecar);
 }

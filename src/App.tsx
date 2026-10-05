@@ -1132,7 +1132,7 @@ export function App() {
             className={overlayDetails ? "overlay" : ""}
             style={overlayDetails ? { right: `min(${detailsWidth}px, 100%)` } : undefined}
           />
-          <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100%)` : detailsWidth }} aria-label="Thread details">
+          <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100%)` : detailsWidth }} aria-label="Thread details">
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}

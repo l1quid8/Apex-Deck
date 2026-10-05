@@ -3,7 +3,7 @@
 // Electron's main process. Commands go over that link with DaemonClient; the
 // shell's own jobs go to main through the bridge.
 
-import type { Backend, HostEntry } from "./backend";
+import type { Backend, BrowserApi, HostEntry } from "./backend";
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
 import { connection } from "./connection.ts";
 import { DaemonClient, type Connect, type Link } from "./daemon/client.ts";
@@ -44,6 +44,10 @@ export interface DeckBridge {
     quitHeard(request: number): Promise<void>;
     quitApp(): Promise<void>;
     onMenu(cb: (action: string) => void): () => void;
+  };
+  browser: BrowserApi & {
+    /** Key presses in a docked page that the deck owns (desktop/browser-keys.mjs). */
+    onShortcut(cb: (press: KeyboardEventInit) => void): () => void;
   };
   smoke: boolean;
 }
@@ -196,7 +200,10 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
     remove: (id: string) => bridge.connection.remove(id),
     use: (id: string) => bridge.connection.use(id),
   };
-  const backend: Backend = { ...commandBackend(transport, shell), onMenu, hosts };
+  // A deck shortcut pressed in a docked page reaches the deck as if pressed here.
+  bridge.browser.onShortcut((press) => window.dispatchEvent(new KeyboardEvent("keydown", { ...press, bubbles: true, cancelable: true })));
+  const { onShortcut: _keys, ...browser } = bridge.browser;
+  const backend: Backend = { ...commandBackend(transport, shell), onMenu, hosts, browser };
   if (bridge.smoke) window.__deck = { backend };
   return backend;
 }

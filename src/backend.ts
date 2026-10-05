@@ -135,6 +135,7 @@ export interface Backend {
   onMenu?(cb: (action: string) => void): Promise<Unlisten>;
   /** The machines this window can run on; the Electron app only. */
   hosts?: HostsApi;
+  browser?: BrowserApi;
 }
 
 /** This Mac, or a saved host reached over SSH. */
@@ -146,6 +147,37 @@ export interface HostEntry {
   ssh?: string;
   /** The daemon's command there. */
   command?: string;
+}
+
+/** What a docked page is doing (desktop/browser.mjs). */
+export interface BrowserState {
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  /** Set when the page failed to load. */
+  error?: { code: number; description: string; url: string };
+}
+
+/** Window pixels. */
+export interface ViewBounds { x: number; y: number; width: number; height: number }
+
+/** The real browser docked in Preview panes; the Electron app only. */
+export interface BrowserApi {
+  /** Show the pane's page at `bounds`, loading `url` the first time or when it changed. */
+  show(pane: string, bounds: ViewBounds, url: string): Promise<void>;
+  bounds(pane: string, bounds: ViewBounds): void;
+  /** Take the page out of the window, keeping it. With `snapshot`, resolves with a picture of it. */
+  hide(pane: string, snapshot: boolean): Promise<string | null>;
+  navigate(pane: string, url: string): Promise<void>;
+  reload(pane: string): Promise<void>;
+  back(pane: string): Promise<void>;
+  forward(pane: string): Promise<void>;
+  close(pane: string): Promise<void>;
+  onState(cb: (pane: string, state: BrowserState) => void): () => void;
+  /** The window's zoom, to turn CSS pixels into window pixels. */
+  zoom(): number;
 }
 
 export interface HostsApi {

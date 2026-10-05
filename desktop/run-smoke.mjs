@@ -35,19 +35,30 @@ if (options.ssh) {
     env.PATH = `${bin}:${env.PATH}`;
   }
 }
-const app = spawn(electron, ['.'], { stdio: 'inherit', env });
+let app = spawn(electron, ['.'], { stdio: 'inherit', env });
+/** The second launch, on this Mac: what the first left behind is still there. */
+let again = !options.ssh;
 // The last check quits the app; one that never exits has failed.
-const timer = setTimeout(() => app.kill('SIGKILL'), options.ssh ? 600_000 : 120_000);
-app.on('exit', (code, signal) => {
-  clearTimeout(timer);
+const timer = setTimeout(() => app.kill('SIGKILL'), options.ssh ? 600_000 : 180_000);
+function finished(code, signal) {
   let failed = code !== 0 ? `exit ${code ?? signal}` : '';
   // On another host the app starts no daemon here.
   if (!failed && !options.ssh) failed = sidecarLeft();
+  if (!failed && again) {
+    again = false;
+    console.log('smoke: ok — quitting exits 0 and the daemon the app started is gone');
+    fs.rmSync(`${data}-desktop/sidecar.pid`, { force: true });
+    app = spawn(electron, ['.'], { stdio: 'inherit', env: { ...env, APEX_DECK_SMOKE_PHASE: 'again' } });
+    app.on('exit', finished);
+    return;
+  }
+  clearTimeout(timer);
   for (const dir of [data, `${data}-desktop`]) fs.rmSync(dir, { recursive: true, force: true });
   if (failed) console.error(`smoke: failed (${failed})`);
-  else console.log(options.ssh ? 'smoke: ok — quitting exits 0' : 'smoke: ok — quitting exits 0 and the daemon the app started is gone');
+  else console.log(options.ssh ? 'smoke: ok — quitting exits 0' : 'smoke: ok — the second launch quits cleanly too');
   process.exit(failed ? 1 : 0);
-});
+}
+app.on('exit', finished);
 
 /** Why the daemon the app started isn't cleanly gone, or ''. */
 function sidecarLeft() {

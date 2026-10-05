@@ -2,7 +2,7 @@
 // runs sandboxed with no Node; this is all it gets. Docked browser pages get
 // no preload at all.
 
-const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webFrame, webUtils } = require('electron');
 
 /** Listen on `channel` until the returned function is called. */
 function subscribe(channel, cb) {
@@ -59,6 +59,19 @@ contextBridge.exposeInMainWorld('apexDeck', {
     quitHeard: (request) => ipcRenderer.invoke('shell:quitHeard', request),
     quitApp: () => ipcRenderer.invoke('shell:quitApp'),
     onMenu: (cb) => subscribe('menu', cb),
+  },
+  browser: {
+    show: (pane, bounds, url) => ipcRenderer.invoke('browser:show', pane, bounds, url),
+    bounds: (pane, bounds) => ipcRenderer.send('browser:bounds', pane, bounds),
+    hide: (pane, snapshot) => ipcRenderer.invoke('browser:hide', pane, snapshot),
+    navigate: (pane, url) => ipcRenderer.invoke('browser:navigate', pane, url),
+    reload: (pane) => ipcRenderer.invoke('browser:reload', pane),
+    back: (pane) => ipcRenderer.invoke('browser:back', pane),
+    forward: (pane) => ipcRenderer.invoke('browser:forward', pane),
+    close: (pane) => ipcRenderer.invoke('browser:close', pane),
+    onState: (cb) => subscribe('browser:state', cb),
+    onShortcut: (cb) => subscribe('browser:shortcut', cb),
+    zoom: () => webFrame.getZoomFactor(),
   },
   smoke: ipcRenderer.sendSync('apex:smoke') === true,
 });

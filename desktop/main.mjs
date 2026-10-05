@@ -7,6 +7,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dockedBrowser } from './browser.mjs';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
 import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost } from './hosts.mjs';
 import { socketLink, sshLink } from './link.mjs';
@@ -245,6 +246,8 @@ handle('shell:startupFolders', async () => startupFolders(process.argv, app.isPa
 /** Quit now: the person chose to, nothing was running, or the window never answered. */
 async function finishQuit() {
   gate.confirm();
+  // Sign-ins in the docked browser last: app.exit doesn't wait for Chromium to save them.
+  await browser?.flush();
   // The daemon Deck started ends with it; a daemon it found goes on.
   if (local?.owned) await local.stop();
   app.exit(0);
@@ -262,6 +265,23 @@ function askToQuit() {
 
 handle('shell:quitHeard', async (request) => gate.heard(Number(request)));
 handle('shell:quitApp', async () => finishQuit());
+
+// ------------------------------------------------------------ the docked browser
+
+/** Made with the window. */
+let browser = null;
+
+const BOUNDS = (b) => ({ x: Math.round(Number(b?.x) || 0), y: Math.round(Number(b?.y) || 0), width: Math.max(0, Math.round(Number(b?.width) || 0)), height: Math.max(0, Math.round(Number(b?.height) || 0)) });
+handle('browser:show', async (pane, bounds, url) => browser.show(String(pane), BOUNDS(bounds), String(url ?? '')));
+handle('browser:hide', async (pane, snapshot) => browser.hide(String(pane), Boolean(snapshot)));
+handle('browser:navigate', async (pane, url) => browser.navigate(String(pane), String(url)));
+handle('browser:reload', async (pane) => browser.reload(String(pane)));
+handle('browser:back', async (pane) => browser.back(String(pane)));
+handle('browser:forward', async (pane) => browser.forward(String(pane)));
+handle('browser:close', async (pane) => browser.close(String(pane)));
+ipcMain.on('browser:bounds', (event, pane, bounds) => {
+  if (fromUi(event)) browser?.bounds(String(pane), BOUNDS(bounds));
+});
 
 function menu() {
   const toWindow = (action) => () => win?.webContents.send('menu', action);
@@ -349,10 +369,26 @@ function createWindow() {
     openExternally(url);
     return { action: 'deny' };
   });
+  browser = dockedBrowser({
+    win,
+    send: (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); },
+    downloads: () => app.getPath('downloads'),
+  });
+  // The window reloading takes the pages down with it; it shows them again as it comes back.
+  win.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
+    if ((details.isMainFrame ?? mainFrame) && !(details.isSameDocument ?? inPlace)) browser.hideAll();
+  });
   // The close button and ⌘W ask the window first, like Quit.
   win.on('close', (event) => {
     if (askToQuit()) event.preventDefault();
   });
+  if (smoke) {
+    // On screen, so pages can be captured, but invisible, click-through and
+    // never focused, so a smoke run doesn't get in the way.
+    win.setOpacity(0);
+    win.setIgnoreMouseEvents(true);
+    win.showInactive();
+  }
   void win.loadURL(devUrl || 'app://deck/');
   return win;
 }
@@ -370,7 +406,7 @@ app.whenReady().then(async () => {
   createWindow();
   if (smoke) {
     const { runSmoke } = await import('./smoke.mjs');
-    const code = await runSmoke(win, { sidecar: () => local }).catch((e) => {
+    const code = await runSmoke(win, { sidecar: () => local, browser }).catch((e) => {
       console.error(`smoke: ${e.stack ?? e}`);
       return 1;
     });
