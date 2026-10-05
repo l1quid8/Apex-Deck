@@ -5,9 +5,14 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = await fs.readFile(path.join(root, "src/main.tsx"), "utf8");
 const screens = [
-  ...source.matchAll(/\[\s*['"]([a-z-]+)['"],\s*['"]([^'"]+)['"]\s*\]/g),
+  ...source
+    .slice(
+      source.indexOf("export const screens"),
+      source.indexOf("] as const;"),
+    )
+    .matchAll(/\[\s*['"]([a-z-]+)['"],\s*['"]([^'"]+)['"]\s*\]/g),
 ]
-  .slice(0, 20)
+  .slice(0, 23)
   .map(([, id, title]) => ({ id, title }));
 const browser = await chromium.launch();
 const page = await browser.newPage({
@@ -28,11 +33,9 @@ for (const theme of ["dark", "light"]) {
     if (theme === "light")
       await page.getByRole("button", { name: "Dark", exact: true }).click();
     await page.waitForTimeout(180);
-    await page
-      .locator(".phone")
-      .screenshot({
-        path: path.join(root, "screenshots", `${theme}-${id}.png`),
-      });
+    await page.locator(".phone").screenshot({
+      path: path.join(root, "screenshots", `${theme}-${id}.png`),
+    });
     await page.addScriptTag({
       path: path.join(root, "node_modules/axe-core/axe.min.js"),
     });
@@ -73,10 +76,6 @@ for (const theme of ["dark", "light"]) {
     if (overflow) overflows.push({ theme, id });
   }
 }
-await fs.writeFile(
-  path.join(root, "verification-partial.json"),
-  JSON.stringify({ violations, smallTargets, overflows }, null, 2),
-);
 await page.goto(`${base}/#chat`);
 await page.getByRole("button", { name: "Type: default" }).click();
 await page
@@ -141,6 +140,21 @@ await page.goto(`${base}/#settings`);
 await page.getByRole("button", { name: "Unpair from this host" }).click();
 await page.getByRole("button", { name: "Unpair device", exact: true }).click();
 await expect(page.locator(".host-cards")).not.toContainText("Tyler’s MacBook");
+// Verify the four workspace destinations and Code tool drill-down.
+await page.goto(`${base}/#chat`);
+for (const label of ["Agents", "Code", "Threads", "Library"]) {
+  await page
+    .getByRole("navigation", { name: "Workspace sections" })
+    .getByRole("button", { name: label, exact: true })
+    .click();
+  await expect(page.locator(".phone h2")).toContainText(label);
+}
+await page
+  .getByRole("navigation", { name: "Workspace sections" })
+  .getByRole("button", { name: "Code", exact: true })
+  .click();
+await page.getByRole("button", { name: /Terminal Shell 01/ }).click();
+await expect(page.locator(".phone h2")).toHaveText("Terminal");
 // Real phone viewport, larger type, all routes must remain horizontally scroll-free.
 await page.setViewportSize({ width: 393, height: 852 });
 for (const { id } of screens) {
@@ -156,7 +170,7 @@ for (const { id } of screens) {
 }
 const report = {
   screens: screens.length,
-  screenshots: 43,
+  screenshots: screens.length * 2 + 3,
   consoleErrors: errors,
   axeViolations: violations,
   undersizedPhoneTargets: smallTargets,
@@ -168,7 +182,7 @@ await fs.writeFile(
   path.join(root, "verification.json"),
   JSON.stringify(report, null, 2),
 );
-const gallery = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Apex Deck iOS screenshot review</title><style>body{background:#090d12;color:#e4eaf0;font:15px system-ui;padding:30px}h1{color:#71e6b5}section{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:45px}img{width:275px;border:1px solid #24303d;border-radius:24px}a{color:#71e6b5}figure{margin:0}figcaption{padding:12px 0;color:#91a0af}</style><h1>Apex Deck · iOS mockups</h1><p>20 screens · dark and light · design only. <a href="../README.md">Design decisions</a></p>${screens.map((s) => `<h2>${s.title}</h2><section>${["dark", "light"].map((t) => `<figure><a href="${t}-${s.id}.png"><img loading="lazy" src="${t}-${s.id}.png" alt="${s.title}, ${t} appearance"></a><figcaption>${t}</figcaption></figure>`).join("")}</section>`).join("")}<h2>Large type and scope confirmation</h2><section><img src="large-chat.png" alt="Large type chat"><img src="sheet-always.png" alt="Always allow confirmation"></section></html>`;
+const gallery = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Apex Deck iOS screenshot review</title><style>body{background:#090d12;color:#e4eaf0;font:15px system-ui;padding:30px}h1{color:#71e6b5}section{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:45px}img{width:275px;border:1px solid #24303d;border-radius:24px}a{color:#71e6b5}figure{margin:0}figcaption{padding:12px 0;color:#91a0af}</style><h1>Apex Deck · iOS mockups</h1><p>${screens.length} screens · dark and light · design only. <a href="../README.md">Design decisions</a></p>${screens.map((s) => `<h2>${s.title}</h2><section>${["dark", "light"].map((t) => `<figure><a href="${t}-${s.id}.png"><img loading="lazy" src="${t}-${s.id}.png" alt="${s.title}, ${t} appearance"></a><figcaption>${t}</figcaption></figure>`).join("")}</section>`).join("")}<h2>Large type and scope confirmation</h2><section><img src="large-chat.png" alt="Large type chat"><img src="sheet-always.png" alt="Always allow confirmation"></section></html>`;
 await fs.writeFile(path.join(root, "screenshots", "index.html"), gallery);
 console.log(JSON.stringify(report, null, 2));
 await browser.close();

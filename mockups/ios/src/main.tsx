@@ -47,7 +47,10 @@ export const screens = [
   ["fingerprint", "Verify fingerprint"],
   ["nearby", "Nearby hosts"],
   ["hosts", "Your hosts"],
+  ["agents", "Agents"],
+  ["code", "Code workspace"],
   ["threads", "Workspace & threads"],
+  ["library", "Library"],
   ["chat", "Shared chat"],
   ["approval", "Approval notification"],
   ["command", "Command approval"],
@@ -99,6 +102,7 @@ function App() {
     [large, setLarge] = useState(false),
     [host, setHost] = useState("Tyler’s MacBook"),
     [pairMethod, setPairMethod] = useState("QR"),
+    [selectedAgent, setSelectedAgent] = useState("Codex"),
     [sheet, setSheet] = useState(""),
     [notice, setNotice] = useState(""),
     [decision, setDecision] = useState(""),
@@ -187,14 +191,17 @@ function App() {
     ssh: "welcome",
     fingerprint: "ssh",
     nearby: "welcome",
+    agents: "hosts",
+    code: "hosts",
+    library: "hosts",
     threads: "hosts",
     chat: "threads",
     approval: "chat",
     command: "chat",
-    terminal: "chat",
-    "terminal-full": "chat",
-    browser: "chat",
-    "browser-control": "chat",
+    terminal: "code",
+    "terminal-full": "code",
+    browser: "code",
+    "browser-control": "code",
     settings: "hosts",
     connecting: "hosts",
     reconnecting: "chat",
@@ -289,6 +296,10 @@ function App() {
     </section>
   );
   const threadNav = [
+    "agents",
+    "code",
+    "threads",
+    "library",
     "chat",
     "terminal",
     "terminal-full",
@@ -384,7 +395,9 @@ function App() {
                     "browser",
                     "browser-control",
                   ].includes(screen)
-                    ? "Threads"
+                    ? screen === "chat"
+                      ? "Threads"
+                      : "Code"
                     : "Back"}
                 </span>
               </button>
@@ -692,10 +705,177 @@ function App() {
                 </div>
               </>
             )}
+            {screen === "agents" && (
+              <>
+                <div className="eyebrow mint">
+                  {host.toUpperCase()} / APEX DECK
+                </div>
+                <h2>Agents</h2>
+                <p className="intro">Your team, in one shared room.</p>
+                <div className="section-label">
+                  IN THIS WORKSPACE <span>2 PARTICIPANTS</span>
+                </div>
+                {[
+                  [
+                    "Codex",
+                    "GPT · High reasoning",
+                    "Implementation partner",
+                    "Writing",
+                    "codex",
+                  ],
+                  [
+                    "Claude",
+                    "Sonnet · Default reasoning",
+                    "Design partner",
+                    "Ready",
+                    "claude",
+                  ],
+                ].map(([name, model, persona, status, appearance]) => (
+                  <button
+                    key={name}
+                    className="agent-card"
+                    onClick={() => {
+                      setSelectedAgent(name);
+                      setSheet("agent-profile");
+                    }}
+                  >
+                    <div className="host-top">
+                      <span className={`avatar ${appearance}`}>
+                        {name === "Codex" ? "C" : "✳"}
+                      </span>
+                      <h3>{name}</h3>
+                      <span className="host-state mint">● {status}</span>
+                    </div>
+                    <p>{model}</p>
+                    <div className="agent-persona">{persona}</div>
+                    <div className="host-bottom">
+                      <span>HOST MANAGED · WORKSPACE ACCESS</span>
+                      <ChevronRight size={18} />
+                    </div>
+                  </button>
+                ))}
+                <div className="group">
+                  {row(
+                    MessageSquare,
+                    "Reply policy",
+                    "Reply when mentioned · shared transcript",
+                    () => setSheet("reply-policy"),
+                  )}
+                </div>
+                <div className="quiet-note">
+                  <ShieldCheck size={18} />
+                  <span>
+                    Agent settings belong to the host.
+                    <br />
+                    This preview uses sample participants.
+                  </span>
+                </div>
+              </>
+            )}
+            {screen === "code" && (
+              <>
+                <div className="eyebrow mint">{host.toUpperCase()}</div>
+                <h2>Code</h2>
+                <p className="intro">Apex Deck · main branch</p>
+                <div className="group">
+                  {row(Folder, "Workspace files", "~/Projects/apex-deck", () =>
+                    setSheet("files"),
+                  )}
+                  {row(
+                    ShieldCheck,
+                    "Changes to review",
+                    "Navigation.tsx · 1 proposed edit",
+                    () => go("approval"),
+                    "1",
+                  )}
+                </div>
+                <div className="section-label">HOST TOOLS</div>
+                <div className="group">
+                  {row(
+                    Terminal,
+                    "Terminal",
+                    "Shell 01 · read-only output",
+                    () => go("terminal"),
+                  )}
+                  {row(Globe, "Browser", "View the host’s browser stream", () =>
+                    go("browser"),
+                  )}
+                </div>
+                <div className="group padded">
+                  <div className="eyebrow mint">LATEST BUILD</div>
+                  <h3>Ready to preview</h3>
+                  <p className="muted">
+                    128 modules transformed.
+                    <br />
+                    Build completed in 1.34 seconds.
+                  </p>
+                  {button(
+                    "Open browser preview",
+                    () => go("browser"),
+                    "primary wide",
+                  )}
+                </div>
+                <p className="footnote">
+                  Files and output stay on your host.
+                  <br />
+                  All tools here use mock data.
+                </p>
+              </>
+            )}
+            {screen === "library" && (
+              <>
+                <div className="eyebrow mint">
+                  {host.toUpperCase()} / APEX DECK
+                </div>
+                <h2>Library</h2>
+                <p className="intro">The work worth keeping close.</p>
+                <div className="section-label">
+                  RECENT ARTIFACTS <span>3 ITEMS</span>
+                </div>
+                <button
+                  className="library-preview"
+                  onClick={() => setSheet("image")}
+                >
+                  <img src="/preview.svg" alt="Saved navigation sketch" />
+                  <span>
+                    <strong>Navigation sketch</strong>
+                    <small>Image · Mobile navigation · Today</small>
+                  </span>
+                  <ChevronRight size={18} />
+                </button>
+                <div className="group">
+                  {row(
+                    Folder,
+                    "Remote client design",
+                    "Design note · saved from Claude",
+                    () => setSheet("design-note"),
+                  )}
+                  {row(
+                    Command,
+                    "Build summary",
+                    "Output · saved from Codex",
+                    () => setSheet("build-note"),
+                  )}
+                </div>
+                <div className="quiet-note">
+                  <Folder size={18} />
+                  <span>
+                    Artifacts stay attached to their workspace.
+                    <br />
+                    Open a conversation to keep working.
+                  </span>
+                </div>
+                {button(
+                  "Go to workspace threads",
+                  () => go("threads"),
+                  "plain wide",
+                )}
+              </>
+            )}
             {screen === "threads" && (
               <>
                 <div className="eyebrow mint">{host.toUpperCase()}</div>
-                <h2>Workspaces</h2>
+                <h2>Threads</h2>
                 <button
                   className="workspace"
                   onClick={() => setSheet("workspaces")}
@@ -1237,18 +1417,25 @@ function App() {
             <nav
               inert={!!sheet}
               className="bottom-tabs"
-              aria-label="Thread tools"
+              aria-label="Workspace sections"
             >
               {[
-                [MessageSquare, "Chat", "chat"],
-                [Terminal, "Terminal", "terminal"],
-                [Globe, "Browser", "browser"],
+                [Command, "Agents", "agents"],
+                [Terminal, "Code", "code"],
+                [MessageSquare, "Threads", "threads"],
+                [Folder, "Library", "library"],
               ].map(([Icon, label, id]) => {
                 const I = Icon as typeof Monitor;
                 const active =
                   screen === id ||
-                  screen === `${id}-full` ||
-                  screen === `${id}-control`;
+                  (id === "threads" && screen === "chat") ||
+                  (id === "code" &&
+                    [
+                      "terminal",
+                      "terminal-full",
+                      "browser",
+                      "browser-control",
+                    ].includes(screen));
                 return (
                   <button
                     key={id as string}
@@ -1286,6 +1473,11 @@ function App() {
                   <h3 id="sheet-title">
                     {
                       {
+                        "agent-profile": selectedAgent,
+                        "reply-policy": "Who replies?",
+                        files: "Workspace files",
+                        "design-note": "Remote client design",
+                        "build-note": "Build summary",
                         keys: "SSH keys",
                         workspaces: "Choose workspace",
                         agents: "In this room",
@@ -1307,6 +1499,109 @@ function App() {
                     <X size={20} />
                   </button>
                 </div>
+                {sheet === "agent-profile" && (
+                  <>
+                    <div className="eyebrow mint">HOST-MANAGED PARTICIPANT</div>
+                    <div className="group">
+                      {row(
+                        Command,
+                        "Model",
+                        selectedAgent === "Codex"
+                          ? "GPT · high reasoning"
+                          : "Sonnet · default reasoning",
+                        () =>
+                          setNotice(
+                            "Model picker preview · configured on host",
+                          ),
+                      )}
+                      {row(
+                        ShieldCheck,
+                        "Access",
+                        "Workspace · asks before tool calls",
+                        () =>
+                          setNotice(
+                            "Agent access is separate from this device’s permission",
+                          ),
+                      )}
+                      {row(
+                        MessageSquare,
+                        "Persona",
+                        selectedAgent === "Codex"
+                          ? "Implementation partner"
+                          : "Design partner",
+                        () =>
+                          setNotice("Persona editor preview · no host changes"),
+                      )}
+                    </div>
+                    {button(
+                      "Open shared thread",
+                      () => go("chat"),
+                      "primary wide",
+                    )}
+                  </>
+                )}
+                {sheet === "reply-policy" && (
+                  <>
+                    {[
+                      "Reply when mentioned",
+                      "Everyone replies",
+                      "Take turns",
+                    ].map((policy) =>
+                      row(
+                        MessageSquare,
+                        policy,
+                        policy === "Reply when mentioned"
+                          ? "Current · all participants see messages"
+                          : "Preview a host-managed response policy",
+                        () => {
+                          setSheet("");
+                          setNotice(`${policy} · mock policy preview`);
+                        },
+                      ),
+                    )}
+                  </>
+                )}
+                {sheet === "files" && (
+                  <div className="group">
+                    {[
+                      "src/mobile/Navigation.tsx",
+                      "src/ChatPane.tsx",
+                      "SPEC.md",
+                    ].map((file) =>
+                      row(Folder, file, "Mock file · tap to preview", () => {
+                        setSheet("design-note");
+                      }),
+                    )}
+                  </div>
+                )}
+                {sheet === "design-note" && (
+                  <>
+                    <div className="eyebrow mint">SAVED NOTE · CLAUDE</div>
+                    <p>
+                      Keep host identity visible across Agents, Code, Threads,
+                      and Library. Every participant shares the transcript.
+                    </p>
+                    <p className="muted">
+                      Code brings terminal output, browser previews, and
+                      proposed changes together. Library collects the artifacts
+                      from this workspace.
+                    </p>
+                    {button(
+                      "Open source conversation",
+                      () => go("chat"),
+                      "primary wide",
+                    )}
+                  </>
+                )}
+                {sheet === "build-note" && (
+                  <>
+                    <div className="eyebrow mint">SAVED OUTPUT · CODEX</div>
+                    <pre className="diff">
+                      ✓ 128 modules transformed.{"\n"}✓ built in 1.34s
+                    </pre>
+                    {button("Open Code", () => go("code"), "primary wide")}
+                  </>
+                )}
                 {sheet === "keys" &&
                   row(
                     KeyRound,

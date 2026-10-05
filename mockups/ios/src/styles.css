@@ -1531,3 +1531,65 @@ textarea {
 .toast button {
   pointer-events: auto;
 }
+.agent-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  padding: 18px;
+  border-radius: 18px;
+  margin-bottom: 14px;
+}
+.agent-card .avatar {
+  width: 40px;
+  height: 40px;
+  font-size: 19px;
+}
+.agent-card h3 {
+  margin: 0;
+  font-size: 20px;
+}
+.agent-card p {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 9px;
+}
+.agent-persona {
+  font-size: 13px;
+  margin-bottom: 19px;
+}
+.library-preview {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  text-align: left;
+  padding: 0;
+  overflow: hidden;
+  background: var(--panel);
+  margin-bottom: 16px;
+}
+.library-preview img {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  object-position: top;
+}
+.library-preview > span {
+  flex: 1;
+  padding: 16px;
+}
+.library-preview strong,
+.library-preview small {
+  display: block;
+}
+.library-preview small {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 7px;
+}
+.library-preview > svg {
+  margin: 18px;
+}
+.phone-content > .eyebrow + h2 {
+  margin-top: 13px;
+}

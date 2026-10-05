@@ -19,11 +19,14 @@ across the prototype. Screenshots are available in `screenshots/index.html`.
 ## Design brief
 
 The phone is a remote client of a host, either Electron desktop or apex-daemon.
-Use **Hosts → workspace and threads → shared conversation**, with a local bottom
-switcher for Chat, Terminal, and Browser inside a thread. This retains the host
-context and gives the three frequent destinations reachable controls. A global
-tab bar would scatter host context across unrelated destinations; a desktop
-sidebar would spend too much of the phone on navigation.
+Select a host, then use the bottom navigation **Agents | Code | Threads | Library**.
+Agents shows the host-managed team, models, reasoning, persona, and reply policy.
+Code groups workspace files, proposed changes, terminal output, and browser previews.
+Threads opens the workspace’s conversations, with shared chat nested inside it.
+Library collects saved images, design notes, and build output. The four destinations
+retain their active tab while drilling down: terminal/browser belong to Code;
+a conversation belongs to Threads. This makes the phone mirror Deck’s main sections
+without copying the desktop layout.
 
 Pairing offers QR, SSH, and LAN discovery, followed by identity confirmation.
 LAN discovery is not authorization. QR simulates the `apexdeck://pair?…` URI,
@@ -54,7 +57,7 @@ These questions do not select Tauri mobile or Capacitor.
 
 ## Decisions made for this review
 
-1. A host-scoped navigation stack, with a thread tool switcher rather than global tabs.
+1. Host-scoped bottom tabs in the requested order: Agents, Code, Threads, Library.
 2. Default device access is chat + approvals. The phone cannot promote itself.
 3. Identity confirmation follows every pairing path. Sample fingerprints are fake.
 4. “Always” uses a second sheet and names its scope before confirmation. Sample
@@ -114,7 +117,7 @@ npx playwright install chromium
 npm run capture
 ```
 
-`capture` takes dark and light phone screenshots of all 20 routes, the review
+`capture` takes dark and light phone screenshots of all 23 routes, the review
 index, larger chat text, and the always-allow sheet. It audits WCAG A/AA rules
 with axe, phone touch-target dimensions, horizontal overflow, JavaScript errors,
 and the core click flows. Its result is `verification.json`. The script reports
