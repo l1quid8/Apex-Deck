@@ -11,3 +11,4 @@ pub mod preview;
 pub mod pty;
 pub mod reply_images;
 pub mod storage;
+pub mod events;

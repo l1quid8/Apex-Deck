@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use apex_adapters::BuildContext;
 use apex_core::{Access, AgentTool, ModelChoice, ParticipantConfig, ParticipantId, Room, ConcurrentRoom, TurnBatch, RoomEvent, RoomOptions, RoomSnapshot};
-use serde::Serialize;
+use apex_host::events::{Bus, HostEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use apex_host::pty::{PtyManager, SpawnOptions};
@@ -71,22 +71,9 @@ impl AppState {
     }
 }
 
-#[derive(Clone, Serialize)]
-struct PtyData<'a> {
-    id: &'a str,
-    data: &'a str,
-}
-
-#[derive(Clone, Serialize)]
-struct PtyExit<'a> {
-    id: &'a str,
-    code: Option<u32>,
-}
-
-#[derive(Clone, Serialize)]
-struct RoomEventPayload<'a> {
-    room: &'a str,
-    event: RoomEvent,
+/// Send `event` to the window, through the host's numbered event bus.
+fn emit(app: &AppHandle, event: HostEvent) {
+    app.state::<Arc<Bus>>().emit(event);
 }
 
 // ---------------------------------------------------------------- startup
@@ -167,10 +154,10 @@ fn pty_spawn(
         &id,
         SpawnOptions { program, args, cwd, cols, rows },
         Box::new(move |data| {
-            let _ = out_app.emit("pty-data", PtyData { id: &out_id, data });
+            emit(&out_app, HostEvent::PtyData { id: out_id.clone(), data: data.to_string() });
         }),
         Box::new(move |code| {
-            let _ = exit_app.emit("pty-exit", PtyExit { id: &exit_id, code });
+            emit(&exit_app, HostEvent::PtyExit { id: exit_id, code });
         }),
     )
 }
@@ -208,7 +195,7 @@ fn read_plans(app: &AppHandle, room: &str, configs: &[ParticipantConfig], contex
         let (app, room, context) = (app.clone(), room.to_string(), context.clone());
         tauri::async_runtime::spawn(async move {
             if let Some(plan) = apex_adapters::plan_usage(tool, &context).await {
-                let _ = app.emit("room-event", RoomEventPayload { room: &room, event: RoomEvent::plan(&plan) });
+                emit(&app, HostEvent::Room { room: room.to_string(), event: RoomEvent::plan(&plan) });
             }
         });
     }
@@ -313,11 +300,11 @@ fn turn_sink<'a>(app: &'a AppHandle, id: &'a str, handle: &'a RoomHandle, error:
             *error.lock().unwrap() = Some(why.clone());
             handle.runtime.stop(None);
             handle.approvals.reject_all();
-            let _ = app.emit("room-event", RoomEventPayload { room: id, event: RoomEvent::Failed { id: ParticipantId::new("storage"), error: why } });
+            emit(app, HostEvent::Room { room: id.to_string(), event: RoomEvent::Failed { id: ParticipantId::new("storage"), error: why } });
             return;
         }
         if !handle.deleted.load(Ordering::SeqCst) {
-            let _ = app.emit("room-event", RoomEventPayload { room: id, event });
+            emit(app, HostEvent::Room { room: id.to_string(), event });
         }
     }
 }
@@ -373,7 +360,7 @@ async fn run_batch(app: &AppHandle, id: &str, handle: &RoomHandle, batch: TurnBa
     }
     let _room = handle.room.lock().await;
     if !handle.runtime.busy() && !handle.deleted.load(Ordering::SeqCst) {
-        let _ = app.emit("room-event", RoomEventPayload { room: id, event: RoomEvent::Idle });
+        emit(app, HostEvent::Room { room: id.to_string(), event: RoomEvent::Idle });
     }
     Ok(())
 }
@@ -398,7 +385,7 @@ async fn room_post_to(app: AppHandle, state: State<'_, AppState>, id: String, te
     let batch = prepare_post(&app, &id, &handle, &text, Some(targets)).await?;
     tauri::async_runtime::spawn(async move {
         if let Err(error) = run_batch(&app, &id, &handle, batch).await {
-            let _ = app.emit("room-event", RoomEventPayload { room: &id, event: RoomEvent::Failed { id: ParticipantId::new("storage"), error } });
+            emit(&app, HostEvent::Room { room: id.to_string(), event: RoomEvent::Failed { id: ParticipantId::new("storage"), error } });
         }
     });
     Ok(())
@@ -414,7 +401,7 @@ async fn room_turn(app: AppHandle, state: State<'_, AppState>, id: String, parti
     let batch = handle.runtime.begin_turn(participants, hops).await?;
     tauri::async_runtime::spawn(async move {
         if let Err(error) = run_batch(&app, &id, &handle, batch).await {
-            let _ = app.emit("room-event", RoomEventPayload { room: &id, event: RoomEvent::Failed { id: ParticipantId::new("storage"), error } });
+            emit(&app, HostEvent::Room { room: id.to_string(), event: RoomEvent::Failed { id: ParticipantId::new("storage"), error } });
         }
     });
     Ok(())
@@ -460,7 +447,7 @@ fn room_forget_allowed(app: AppHandle, state: State<'_, AppState>, store: State<
     if !handle.approvals.forget(&rule) { return Err("that was no longer always allowed".to_string()); }
     let event = RoomEvent::AllowedChanged { allowed: handle.approvals.allowed() };
     persist_event(handle, &store, &id, &event)?;
-    let _ = app.emit("room-event", RoomEventPayload { room: &id, event });
+    emit(&app, HostEvent::Room { room: id.to_string(), event });
     Ok(())
 }
 
@@ -668,7 +655,7 @@ async fn room_compact(app: AppHandle, state: State<'_, AppState>, store: State<'
         config.access = Access::Read;
         let summarizer = apex_adapters::build(config, &context);
         room.compact(summarizer.as_ref(), &|event| {
-            let _ = app.emit("room-event", RoomEventPayload { room: &id, event });
+            emit(&app, HostEvent::Room { room: id.to_string(), event });
         })
         .await?;
     }
@@ -1136,7 +1123,7 @@ async fn save_room(state: &AppState, store: &Store, id: &str) -> Result<(), Stri
 /// Ask the window about quit request `request`, and let the quit through if
 /// the window hasn't said it got it within `quit::ANSWER_TIME`.
 fn ask_to_quit(app: &AppHandle, request: u64) {
-    let _ = app.emit("quit-requested", request);
+    emit(app, HostEvent::QuitRequested(request));
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(quit::ANSWER_TIME);
@@ -1169,7 +1156,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(quit::QuitGate::default())
+        .manage(Arc::new(Bus::default()))
         .setup(|app| {
+            let window = app.handle().clone();
+            app.state::<Arc<Bus>>().listen(move |envelope| {
+                let _ = window.emit(envelope.event.name(), envelope.event.payload());
+            });
             let root = app.path().app_data_dir()?.join("saved-chats-v1");
             app.manage(Store::new(root));
             let snapshots = Arc::new(checkpoints::Snapshots::new(app.path().app_data_dir()?.join("snapshots")));
