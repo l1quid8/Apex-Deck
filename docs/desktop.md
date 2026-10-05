@@ -6,8 +6,6 @@ its own: every thread, terminal and saved file lives in `apex-daemon`, on
 this Mac or on another machine you reach over SSH. The window is a client of
 the daemon, like the phone app will be.
 
-The Tauri build still works but is no longer what ships.
-
 ## Run it while developing
 
 ```sh
@@ -21,13 +19,12 @@ does, from `app://deck/`.
 
 Both start `target/debug/apex-daemon serve --exit-on-stdin-close` on this
 Mac's data folder (`~/Library/Application Support/dev.apexdeck.app`, the
-same one the Tauri app uses) unless a daemon is already running there, in
+same one 0.4.0 used) unless a daemon is already running there, in
 which case they use that one and leave it running when you quit.
 
-The Tauri app and the Electron app can't be open at the same time: the first
-one to open the data folder holds it, and the other says so. Tauri builds up
-to 0.4.0 hold no lock, so the Electron app looks for one that's open and asks
-for it to be quit before it starts. On its first launch it also copies over
+Apex Deck 0.4.0 and earlier were a Tauri app and hold no lock on the data
+folder, so the Electron app looks for one that's open and asks for it to be
+quit before it starts. On its first launch it also copies over
 what 0.4.0's window kept in its own storage (installed mods, model names typed
 before, sidebar widths), reading a copy of WebKit's database and leaving the
 original alone.
@@ -74,8 +71,8 @@ there isn't running, the banner shows its own words about starting it.
 ### What's different on another machine
 
 - Quitting Deck doesn't stop anything there; agents and terminals go on.
-- Folders are typed, not picked: "Folder on vps" asks for a full path and
-  checks it exists there.
+- Folders are picked in a browser of that machine's folders, not Finder. A
+  daemon older than 0.5.0 can't list folders, so Deck asks for a typed path.
 - Files there can't be opened on this Mac; web links still open here.
 - Files you drop on a thread are copied there (up to 20 MB each; not folders).
 - Exports, saved artifacts and downloads land on this Mac.

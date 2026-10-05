@@ -19,7 +19,8 @@ impl Os {
     }
 }
 
-/// The folder Tauri's `app_data_dir()` gives the desktop app: on macOS
+/// The desktop app's data folder, where Tauri's `app_data_dir()` put it up to
+/// 0.4.0 and the Electron app still looks: on macOS
 /// `~/Library/Application Support/<id>`, elsewhere `$XDG_DATA_HOME/<id>`
 /// (only an absolute `XDG_DATA_HOME` counts), falling back to
 /// `~/.local/share/<id>`.

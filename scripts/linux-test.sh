@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Run the Rust tests on Ubuntu 24.04 in Docker, the way a headless server
-# builds them. The Tauri crate is left out: it needs webkit2gtk and goes away
-# with the Electron shell. The cargo registry and target folder live in named
-# volumes, so reruns only rebuild what changed.
+# builds them. The cargo registry and target folder live in named volumes, so
+# reruns only rebuild what changed.
 #
 # Usage: scripts/linux-test.sh [extra `cargo test` arguments]
 set -euo pipefail

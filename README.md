@@ -242,11 +242,6 @@ settings, and on its first launch copies over what the old window kept for
 itself: installed mods, model names typed before and sidebar widths. Quit
 0.4.0 before opening it; if it is still open, the new app asks you to.
 
-The Tauri build (`npm run tauri dev`, `npm run tauri build`) still works but is
-no longer what ships. It needs the
-[Tauri 2 prerequisites](https://tauri.app/start/prerequisites/), and can't be
-open at the same time as the Electron app.
-
 To work on the interface alone, `npm run dev` opens it in a browser with a
 stand-in backend. Terminals only echo and chat replies are canned in that
 mode; a badge in the title bar says so.
@@ -440,7 +435,7 @@ description of how it should behave.
 | `crates/apex-host` | Everything a host does: threads, terminals, agent detection, saved sessions and settings, and the commands the interface calls. |
 | `crates/apex-daemon` | `apex-daemon`, which runs a host for the desktop app, over SSH, or as a service on a server. |
 | `desktop` | The Electron app: windows, the docked browser, and the link from each window to a daemon. |
-| `src-tauri` | The Tauri app, no longer what ships; it forwards to `apex-host`. |
+| `build/icons` | The app icons the packaged app is built with. |
 | `src` | The interface (React and TypeScript, xterm.js for terminals). |
 | `src/layout.ts` | How panes are arranged: the layout tree and every change to it, with no interface code. |
 | `src/attention.ts` | When a pane counts as needing you: the rules for terminals and chats, with no interface code. |
@@ -454,7 +449,7 @@ description of how it should behave.
 The mark is a mint and cyan pixel diamond around a `>_` terminal prompt. It
 appears in the title bar, startup screen and welcome screen, and the browser
 preview uses it as its favicon. The native bundle uses the matching icon
-from `src-tauri/icons/icon.icns`; the PNG and Windows icon files there use
+from `build/icons/icon.icns`; the PNG and Windows icon files there use
 the same artwork, with the kit's simplified drawing at 64 pixels and below.
 
 The full source kit and its usage guide are in `branding/macos`, unchanged
@@ -466,10 +461,10 @@ from how it was delivered. Where each file in the app comes from:
 | `public/branding/logo-dark.svg`, `logo-light.svg` | `Vectors/LogoStackedDark.svg`, `LogoStackedLight.svg` |
 | `public/branding/logo-horizontal.svg` | `Vectors/LogoHorizontalDark.svg` |
 | `public/branding/menu-bar-template.svg` | `Vectors/MenuBarTemplate.svg` |
-| `public/branding/app-icon.png`, `src-tauri/icons/icon.png` | `PNG/AppIcon-1024.png` |
-| `src-tauri/icons/icon.icns` | `ApexDeck-32bit.icns` |
-| `src-tauri/icons/32x32.png`, `128x128.png`, `128x128@2x.png` | `PNG/AppIcon-32.png`, `AppIcon-128.png`, `AppIcon-256.png` |
-| `src-tauri/icons/icon.ico` | built from `PNG/AppIcon-16` to `AppIcon-256` |
+| `public/branding/app-icon.png`, `build/icons/icon.png` | `PNG/AppIcon-1024.png` |
+| `build/icons/icon.icns` | `ApexDeck-32bit.icns` |
+| `build/icons/32x32.png`, `128x128.png`, `128x128@2x.png` | `PNG/AppIcon-32.png`, `AppIcon-128.png`, `AppIcon-256.png` |
+| `build/icons/icon.ico` | built from `PNG/AppIcon-16` to `AppIcon-256` |
 
 The brand colors in `src/styles.css` (`--brand-mint`, `--brand-cyan`) are the
 kit's Mint `#3DEF91` and Cyan `#1ED7EE`. Light-background and horizontal

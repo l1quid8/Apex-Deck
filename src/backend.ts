@@ -1,14 +1,11 @@
 import type { ToolServer } from "./types";
 // Everything the UI needs from the desktop shell goes through this
-// interface. In the Electron app it talks to apex-daemon (electronShell.ts);
-// in the Tauri app it calls the Rust commands (tauriShell.ts). In a plain
-// browser (npm run dev alone) it falls back to a small stand-in so the UI
+// interface. In the Electron app it talks to apex-daemon (electronShell.ts).
+// In a plain browser (npm run dev alone) it falls back to a small stand-in so the UI
 // can be worked on without building the app.
 
 import { ruleFor, sameRule } from "./allowedRules";
-import { commandBackend } from "./commandBackend.ts";
 import { electronBackend } from "./electronShell.ts";
-import { tauriShell, tauriTransport } from "./tauriShell.ts";
 import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
@@ -194,13 +191,6 @@ export interface HostsApi {
   use(id: string): Promise<void>;
   /** A window on `id` beside this one, or the one already on it brought forward. */
   openWindow(id: string): Promise<void>;
-}
-
-const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-async function tauriBackend(): Promise<Backend> {
-  const transport = await tauriTransport();
-  return commandBackend(transport, tauriShell(transport));
 }
 
 /** A stand-in for the desktop shell. Terminals echo what you type and chat
@@ -419,10 +409,10 @@ function demoBackend(): Backend {
         }
         let reply = [
           `## Preview reply from ${p.display_name}`,
-          "This is **preview mode**: the desktop app sends your message to the *real* model. See [README.md](README.md) or `npm run tauri dev`.",
+          "This is **preview mode**: the desktop app sends your message to the *real* model. See [README.md](README.md) or `npm run desktop:dev`.",
           "1. Steps appear while a bot works\n2. Text is written live\n   - nested point with `code`\n3. The final reply replaces the draft",
           "| Tool | Live text |\n|---|---|\n| Claude Code | yes |\n| Codex | yes |",
-          "```sh\ncd ~/Downloads/apex-deck\nnpm run tauri dev\n```",
+          "```sh\ncd ~/Downloads/apex-deck\nnpm run desktop:dev\n```",
         ].join("\n\n");
         // Preview only: "relay" in your message makes each bot hand over to the
         // next one in the room ("relay all": to everyone else), so the round
@@ -829,6 +819,6 @@ let cached: Promise<Backend> | null = null;
 
 export function getBackend(): Promise<Backend> {
   const bridge = typeof window !== "undefined" ? window.apexDeck : undefined;
-  cached ??= bridge ? electronBackend(bridge) : inTauri ? tauriBackend() : Promise.resolve(demoBackend());
+  cached ??= bridge ? electronBackend(bridge) : Promise.resolve(demoBackend());
   return cached;
 }

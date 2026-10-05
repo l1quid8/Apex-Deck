@@ -5,7 +5,7 @@ appId: dev.apexdeck.app
 productName: Apex Deck
 directories:
   output: release
-  buildResources: src-tauri/icons
+  buildResources: build
 files:
   - package.json
   - desktop/**
@@ -19,7 +19,7 @@ extraResources:
   - from: target/release/apex-daemon
     to: bin/apex-daemon
 mac:
-  icon: src-tauri/icons/icon.icns
+  icon: build/icons/icon.icns
   category: public.app-category.developer-tools
   target: dmg
   # Ad-hoc: unsigned, but Apple silicon runs it. Signing and notarization come later.

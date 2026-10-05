@@ -1,6 +1,6 @@
 # apex-daemon on the systems it runs on: tests on Linux (x86_64 and arm64)
 # and macOS, then Linux release binaries. Built on Ubuntu 22.04 so the
-# binaries run on 22.04 and 24.04 servers. The Tauri app is not built here.
+# binaries run on 22.04 and 24.04 servers.
 name: daemon
 
 on:

@@ -137,7 +137,7 @@ the reason Codex gives for it.
 |---|---|
 | Light theme | later |
 | Keys in the operating system keychain instead of environment variables | later |
-| Editable agent list (today it is a table in `src-tauri/src/agents.rs`) | later |
+| Editable agent list (today it is a table in `crates/apex-host/src/agents.rs`) | later |
 
 Thread controls live in one right sidebar following the focused thread; narrow layouts overlay it. The header keeps a single row of chips. Pins remain above the conversation in an expandable, wrapping strip. The composer + menu offers mentions and commands, with `/` and `@` keyboard filtering.
 
@@ -152,7 +152,7 @@ Design: `docs/superpowers/specs/2026-10-05-remote-and-electron.md`.
 | `apex-daemon` daemon: WebSocket listener and `--stdio` mode, one JSON protocol with event sequence numbers and replay; systemd unit for Ubuntu | built (phase 2) |
 | Electron desktop shell on `apex-daemon`: the React UI as it was, the daemon as a sidecar, hosts over SSH, a real Chromium browser docked in the Preview pane (`docs/desktop.md`) | built (phase 3) |
 | Agents drive the docked browser over CDP, through a Deck MCP server that reaches it through the daemon, with approvals | next (phase 3b) |
-| Remove `src-tauri` once the Electron app has been used for real | next |
+| Remove `src-tauri`; the Electron app is the only desktop app | built (0.5.1) |
 | QR pairing, device keys, Settings → Devices, per-device permissions | later |
 | Phone app: SSH transport, iroh transport across NAT, mobile layout | later |
 | Push notifications for approvals; several hosts open at once | later |

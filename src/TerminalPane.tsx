@@ -117,7 +117,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
 
     // Each start runs under its own PTY id, "<pane id>:<generation>". The
     // desktop side forgets a PTY by id when its program exits
-    // (src-tauri/src/pty.rs), so reusing an id would let the old program's
+    // (crates/apex-host/src/pty.rs), so reusing an id would let the old program's
     // exit end the new one. See terminalRun.ts.
     let current: TerminalRun = STOPPED;
     let unregister = () => {};

@@ -12,9 +12,10 @@ Check the server's CPU first: `uname -m` prints `x86_64` (most VPSs) or
 - **From a release:** each release from 0.5.0 on has `apex-daemon-linux-x86_64`
   and `apex-daemon-linux-arm64` on its
   [releases page](https://github.com/l1quid8/Apex-Deck/releases). On the
-  server, with the version you want:
+  server, for the latest release (for another, put `download/v0.5.0` in
+  place of `latest/download`):
   ```sh
-  curl -fLo /tmp/apex-daemon https://github.com/l1quid8/Apex-Deck/releases/download/v0.5.0/apex-daemon-linux-$(uname -m | sed s/aarch64/arm64/)
+  curl -fLo /tmp/apex-daemon https://github.com/l1quid8/Apex-Deck/releases/latest/download/apex-daemon-linux-$(uname -m | sed s/aarch64/arm64/)
   sudo install -m 0755 /tmp/apex-daemon /usr/local/bin/apex-daemon && rm /tmp/apex-daemon
   ```
   Then skip to step 3.

@@ -1,5 +1,5 @@
-// The Backend as commands to a host plus a shell. The host (Tauri's Rust, or
-// apex-daemon) runs the commands; the shell does what belongs to the machine
+// The Backend as commands to a host plus a shell. The host (apex-daemon)
+// runs the commands; the shell does what belongs to the machine
 // with the screen: dialogs, saved files, the dock, file drops and quitting.
 
 import type { Backend } from "./backend";
@@ -9,7 +9,6 @@ import type { AgentInfo, AppSession, FolderListing, ModelChoice, PreviewProbe, R
 export interface Transport {
   call<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   listen<T>(event: string, cb: (payload: T) => void): Promise<() => void>;
-  /** Raw bytes over Tauri, base64 over the daemon. */
   saveAttachment(room: string, name: string, bytes: Uint8Array): Promise<string>;
   readAttachment(path: string): Promise<ArrayBuffer>;
 }

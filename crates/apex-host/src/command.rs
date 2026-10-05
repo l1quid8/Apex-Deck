@@ -217,6 +217,46 @@ mod tests {
         assert!(names.contains(&"mod_env_get".to_string()));
     }
 
+    /// The names in `call("…")` and `invoke<T>("…")` in a UI source file.
+    fn sent_by(source: &str) -> Vec<&str> {
+        let mut sent = Vec::new();
+        for (at, _) in source.match_indices("(\"") {
+            let mut before = &source[..at];
+            // Step back over a type argument, which may hold `<…>` of its own.
+            if before.ends_with('>') {
+                let mut depth = 0;
+                let Some(open) = before.char_indices().rev().find(|&(_, c)| {
+                    depth += match c { '>' => 1, '<' => -1, _ => 0 };
+                    depth == 0
+                }) else { continue };
+                before = &before[..open.0];
+            }
+            if before.ends_with(".call") || before.ends_with(" call") || before.ends_with(" invoke") {
+                let name = &source[at + 2..];
+                sent.push(&name[..name.find('"').unwrap()]);
+            }
+        }
+        sent
+    }
+
+    /// The Electron UI sends commands to the daemon by name, so each one it
+    /// sends must be one the host takes.
+    #[test]
+    fn every_command_the_ui_sends_is_one_the_host_takes() {
+        let names = names();
+        let sent: Vec<&str> = [
+            include_str!("../../../src/commandBackend.ts"),
+            include_str!("../../../src/electronShell.ts"),
+            include_str!("../../../src/mods/host.ts"),
+        ]
+        .into_iter()
+        .flat_map(sent_by)
+        .collect();
+        assert!(sent.len() > 40, "only found {sent:?}");
+        let unknown: Vec<&&str> = sent.iter().filter(|name| !names.iter().any(|n| n == *name)).collect();
+        assert!(unknown.is_empty(), "the host has no command named {unknown:?}");
+    }
+
     #[test]
     fn call_answers_with_the_methods_result_as_json() {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();

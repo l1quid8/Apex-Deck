@@ -28,7 +28,7 @@ const participant = { id: 'p', display_name: 'P', backend: { kind: 'scripted', l
 const rule = { kind: 'command', command: 'ls' };
 
 // Every command-backed method: how it's called, and the exact command and
-// arguments the Tauri backend has always sent for it.
+// arguments the host expects for it.
 const COMMANDS = [
   ['listToolServers', ['r', 'a'], 'list_tool_servers', { room: 'r', agent: 'a' }],
   ['detectAgents', [], 'agents_detect', undefined],

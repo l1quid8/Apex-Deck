@@ -8,7 +8,6 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
     "test:e2e": "cargo build -p apex-daemon && node --experimental-strip-types --test tests/e2e/*.e2e.mjs",
     "desktop": "cargo build -p apex-daemon && vite build && electron .",
     "desktop:dev": "cargo build -p apex-daemon && node desktop/dev.mjs",
@@ -17,8 +16,6 @@
     "desktop:dmg": "cargo build --release -p apex-daemon && vite build && electron-builder --mac"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.12.1",
-    "@tauri-apps/plugin-dialog": "^2.8.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "react": "^19.3.0",
@@ -26,7 +23,6 @@
     "sucrase": "^3.35.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.12.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
