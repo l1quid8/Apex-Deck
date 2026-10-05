@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Font Sampler</title>
+<style>
+  body { margin: 0; padding: 32px; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+  h1 { font-weight: 600; margin: 0 0 8px; }
+  p.sub { color: #888; margin: 0 0 24px; }
+  input { width: 100%; padding: 10px 12px; font-size: 16px; border-radius: 8px; border: 1px solid #333; background: #1b1b1b; color: #eee; box-sizing: border-box; margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .card { background: #1b1b1b; border: 1px solid #2a2a2a; border-radius: 12px; padding: 18px; }
+  .name { font: 12px ui-monospace, Menlo, monospace; color: #7aa2f7; margin-bottom: 10px; }
+  .sample { font-size: 26px; line-height: 1.25; word-break: break-word; }
+</style>
+</head>
+<body>
+  <h1>Font Sampler</h1>
+  <p class="sub">Type below to preview it in every font.</p>
+  <input id="text" value="The quick brown fox jumps over the lazy dog">
+  <div class="grid" id="grid"></div>
+<script>
+  const fonts = [
+    "Georgia, serif", "'Times New Roman', serif", "Palatino, serif", "Didot, serif",
+    "Helvetica, sans-serif", "Futura, sans-serif", "'Avenir Next', sans-serif", "Optima, sans-serif",
+    "'Gill Sans', sans-serif", "Menlo, monospace", "'Courier New', monospace", "'American Typewriter', serif",
+    "'Snell Roundhand', cursive", "'Marker Felt', fantasy", "Papyrus, fantasy", "Impact, sans-serif"
+  ];
+  const grid = document.getElementById("grid");
+  const input = document.getElementById("text");
+  grid.innerHTML = fonts.map(f =>
+    `<div class="card"><div class="name">${f.split(",")[0].replace(/'/g, "")}</div><div class="sample" style="font-family:${f.replace(/"/g, "")}"></div></div>`
+  ).join("");
+  const render = () => grid.querySelectorAll(".sample").forEach(el => el.textContent = input.value || " ");
+  input.addEventListener("input", render);
+  render();
+</script>
+</body>
+</html>

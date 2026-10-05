@@ -8,7 +8,8 @@ export type MenuItem =
   | { kind: "mention"; id: string; label: string; detail: string }
   | { kind: "command"; key: string; label: string; detail: string; command: Command | null }
   | { kind: "server"; agent: string; label: string; detail: string }
-  | { kind: "attach"; label: string; detail: string };
+  | { kind: "attach"; label: string; detail: string }
+  | { kind: "attach-folder"; label: string; detail: string };
 
 /** The `/word` or `@word` being typed at the caret. */
 export interface Trigger {
@@ -47,7 +48,7 @@ export function menuItems(trigger: Trigger | null, people: { id: string; display
     { kind: "mention", id: "all", label: "@all", detail: "Everyone answers" },
     ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
   ];
-  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, ...mentions, ...COMMANDS];
+  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, ...mentions, ...COMMANDS];
   const q = trigger.query;
   if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
   if (trigger.kind === "command") return COMMANDS.filter((c) => c.key.startsWith(q));

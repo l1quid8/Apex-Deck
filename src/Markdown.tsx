@@ -1,6 +1,6 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { parseBlocks, parseInline, type Block, type Inline } from "./markdownText";
+import { parseBlocks, parseInline, pathLike, type Block, type Inline } from "./markdownText";
 import { RichText } from "./RichText";
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   onOpen: (target: string, reveal?: boolean) => void;
   /** Extra controls for a code block's header, beside Copy. */
   codeAction?: (code: { language: string; text: string }) => ReactNode;
+  /** Whether a path in a code span exists; those that do become links. */
+  pathExists?: (path: string) => Promise<boolean>;
 }
 
 /**
@@ -18,9 +20,9 @@ interface Props {
  * Links are left to RichText, so they behave the same here as everywhere
  * else in the chat.
  */
-export function Markdown({ text, onOpen, codeAction }: Props) {
+export function Markdown({ text, onOpen, codeAction, pathExists }: Props) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
-  const inline = (source: string) => <InlineText source={source} onOpen={onOpen} />;
+  const inline = (source: string) => <InlineText source={source} onOpen={onOpen} pathExists={pathExists} />;
   return (
     <div className="md">
       {blocks.map((block, i) => (
@@ -30,14 +32,14 @@ export function Markdown({ text, onOpen, codeAction }: Props) {
   );
 }
 
-function InlineText({ source, onOpen }: { source: string; onOpen: Props["onOpen"] }) {
+function InlineText({ source, onOpen, pathExists }: { source: string; onOpen: Props["onOpen"]; pathExists?: Props["pathExists"] }) {
   const spans = useMemo(() => parseInline(source), [source]);
   const draw = (span: Inline, key: number): ReactNode => {
     switch (span.kind) {
       case "text":
         return <RichText key={key} text={span.text} onOpen={onOpen} />;
       case "code":
-        return <code key={key}>{span.text}</code>;
+        return pathExists && pathLike(span.text) ? <PathCode key={key} path={span.text.trim()} onOpen={onOpen} pathExists={pathExists} /> : <code key={key}>{span.text}</code>;
       case "bold":
         return <strong key={key}>{span.children.map(draw)}</strong>;
       case "italic":
@@ -47,6 +49,17 @@ function InlineText({ source, onOpen }: { source: string; onOpen: Props["onOpen"
     }
   };
   return <>{spans.map(draw)}</>;
+}
+
+/** A path in a code span: a link like any other once it's known to exist, plain code until then. */
+function PathCode({ path, onOpen, pathExists }: { path: string; onOpen: Props["onOpen"]; pathExists: NonNullable<Props["pathExists"]> }) {
+  const [real, setReal] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    pathExists(path).then((yes) => alive && setReal(yes), () => {});
+    return () => { alive = false; };
+  }, [path, pathExists]);
+  return <code>{real ? <RichText text={`[${path}](${path})`} onOpen={onOpen} /> : path}</code>;
 }
 
 function BlockView({ block, inline, codeAction }: { block: Block; inline: (source: string) => ReactNode; codeAction?: Props["codeAction"] }) {

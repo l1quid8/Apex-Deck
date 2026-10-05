@@ -21,6 +21,8 @@ export interface Artifact {
   title: string;
   kind: ArtifactKind;
   versions: ArtifactVersion[];
+  /** The workspace file it was read from, as the bot named it; absent for code from a reply. */
+  path?: string;
 }
 
 export interface ArtifactFile {
@@ -93,7 +95,8 @@ export function readArtifacts(raw: unknown): ArtifactFile {
     if (versions.length === 0) return [];
     seen.add(a.id);
     const title = typeof a.title === "string" && a.title.trim() ? a.title.trim().slice(0, 80) : titleFor(kind, versions[0].source);
-    return [{ id: a.id, title, kind, versions }];
+    const path = typeof a.path === "string" && a.path ? a.path : undefined;
+    return [path ? { id: a.id, title, kind, versions, path } : { id: a.id, title, kind, versions }];
   });
   return { version: 1, artifacts };
 }
@@ -112,6 +115,33 @@ export function addVersion(file: ArtifactFile, artifactId: string, version: NewV
   const n = artifact.versions.length + 1;
   const next: Artifact = { ...artifact, versions: [...artifact.versions, { n, ...version }] };
   return { file: { version: 1, artifacts: file.artifacts.map((a) => (a.id === artifactId ? next : a)) }, n };
+}
+
+/** The kind a file can open as, from its extension; null when it can't. */
+export function kindForPath(path: string): ArtifactKind | null {
+  const ext = path.match(/\.([A-Za-z]+)$/)?.[1]?.toLowerCase();
+  if (ext === "html" || ext === "htm") return "html";
+  if (ext === "svg") return "svg";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  return null;
+}
+
+/**
+ * A file a bot wrote: a new artifact for a new path, else a new version of
+ * the one already made from it. `added` is false when nothing changed.
+ */
+export function upsertFromFile(file: ArtifactFile, path: string, version: NewVersion, newId: string): { file: ArtifactFile; artifact: Artifact | null; added: boolean } {
+  const kind = kindForPath(path);
+  if (!kind || version.source.length > MAX_SOURCE) return { file, artifact: null, added: false };
+  const existing = file.artifacts.find((a) => a.path === path);
+  if (existing) {
+    const next = addVersion(file, existing.id, version);
+    const artifact = next.file.artifacts.find((a) => a.id === existing.id) ?? existing;
+    return { file: next.file, artifact, added: next.file !== file };
+  }
+  const made = addArtifact(file, newId, kind, version);
+  const artifact = { ...made.artifact, path };
+  return { file: { version: 1, artifacts: [...file.artifacts, artifact] }, artifact, added: true };
 }
 
 const lastAt = (artifact: Artifact) => artifact.versions[artifact.versions.length - 1].at;

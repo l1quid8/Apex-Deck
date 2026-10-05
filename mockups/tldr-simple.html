@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TL;DR mode mockup</title>
+<style>
+  :root {
+    --bg:#090d12; --panel:#0e141b; --panel-2:#151e28; --line:#24303d;
+    --text:#e4eaf0; --muted:#91a0af;
+    --hot:#ff4d8d; --amber:#ffb020; --violet:#a855f7;
+  }
+  @property --spin { syntax:'<angle>'; inherits:false; initial-value:0deg; }
+  * { box-sizing:border-box; }
+  body { margin:0; height:100vh; display:flex; flex-direction:column; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system, system-ui, sans-serif; }
+
+  #log { flex:1; overflow:auto; padding:24px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:70%; padding:10px 14px; border-radius:12px; background:var(--panel-2); border:1px solid var(--line); }
+  .msg.me { align-self:flex-end; }
+  .who { font-size:11px; color:var(--muted); margin-bottom:2px; }
+  .tag { margin-left:6px; padding:0 6px; border-radius:999px; font-size:10px; font-weight:800; color:#1a0710; background:linear-gradient(90deg, var(--hot), var(--amber)); }
+
+  .composer { padding:16px; border-top:1px solid var(--line); }
+
+  /* Border ring: plain line when off, spinning gradient + glow when on */
+  .ring { position:relative; padding:1px; border-radius:13px; background:var(--line); }
+  .ring::before { content:""; position:absolute; inset:0; border-radius:inherit; z-index:-1; filter:blur(14px); opacity:0; transition:opacity .4s; }
+  .on .ring, .on .ring::before {
+    background:conic-gradient(from var(--spin), var(--hot), var(--amber), var(--violet), var(--hot));
+    animation:spin 3s linear infinite;
+  }
+  .on .ring::before { opacity:.6; }
+  @keyframes spin { to { --spin:360deg; } }
+
+  .field { display:flex; align-items:center; gap:10px; padding:10px 10px 10px 14px; border-radius:12px; background:var(--panel); }
+  textarea { flex:1; resize:none; border:0; outline:0; background:transparent; color:var(--text); font:inherit; height:22px; }
+  textarea::placeholder { color:var(--muted); }
+  .on textarea::placeholder { color:rgba(255,176,32,.7); }
+
+  /* The pill: black & white when off, vibrant and glowing when on */
+  .pill { display:inline-flex; height:22px; padding:0; border:1px solid #3a3a3a; border-radius:999px; overflow:hidden; background:none; cursor:pointer; flex:none; transition:transform .15s, box-shadow .3s, border-color .3s; }
+  .pill:hover { transform:scale(1.08) rotate(-4deg); }
+  .pill span { display:flex; align-items:center; padding:0 7px; font-size:10px; font-weight:800; letter-spacing:.03em; transition:background .3s, color .3s; }
+  .pill .l { background:#f2f2f2; color:#111; }
+  .pill .r { background:#111; color:#f2f2f2; }
+  .on .pill { border-color:transparent; box-shadow:0 0 10px var(--hot), 0 0 22px rgba(255,176,32,.5); }
+  .on .pill .l { background:var(--hot); color:#fff; }
+  .on .pill .r { background:var(--amber); color:#1a0710; }
+
+  .send { height:30px; padding:0 14px; border:0; border-radius:8px; background:#71e6b5; color:#04211d; font-weight:700; cursor:pointer; }
+
+  /* Sending a TL;DR message wiggles the text box */
+  .on .ring.wiggle { animation:spin 3s linear infinite, wiggle .5s ease-in-out; }
+  @keyframes wiggle {
+    0%,100% { transform:none; }
+    20% { transform:rotate(-1.2deg) translateX(-4px); }
+    40% { transform:rotate(1.2deg) translateX(4px); }
+    60% { transform:rotate(-.8deg) translateX(-2px); }
+    80% { transform:rotate(.6deg) translateX(2px); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .on .ring, .on .ring::before, .on .ring.wiggle { animation:none; }
+    .pill:hover { transform:none; }
+  }
+</style>
+</head>
+<body>
+  <div id="log">
+    <div class="msg"><div class="who">Jigga</div>Click the pill or press ⌘⇧T to turn TL;DR mode on, then send something.</div>
+  </div>
+
+  <div class="composer" id="composer">
+    <div class="ring" id="ring">
+      <div class="field">
+        <textarea id="input" placeholder="Message the room…"></textarea>
+        <button class="pill" id="pill" aria-pressed="false" title="TL;DR mode (⌘⇧T)">
+          <span class="l">TL;</span><span class="r">DR</span>
+        </button>
+        <button class="send" id="send">Send</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const composer = document.getElementById('composer');
+  const ring = document.getElementById('ring');
+  const input = document.getElementById('input');
+  const pill = document.getElementById('pill');
+  const log = document.getElementById('log');
+  let on = false;
+
+  function toggle() {
+    on = !on;
+    composer.classList.toggle('on', on);
+    pill.setAttribute('aria-pressed', String(on));
+    input.placeholder = on ? 'TL;DR mode: short answers' : 'Message the room…';
+    input.focus();
+  }
+
+  function addMessage(who, text, tagged) {
+    const msg = document.createElement('div');
+    msg.className = 'msg' + (who === 'You' ? ' me' : '');
+    const head = document.createElement('div');
+    head.className = 'who';
+    head.textContent = who;
+    if (tagged) {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = 'TL;DR';
+      head.append(tag);
+    }
+    msg.append(head, text);
+    log.append(msg);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function send() {
+    const text = input.value.trim();
+    if (!text) return;
+    addMessage('You', text, on);
+    input.value = '';
+    if (on) {
+      ring.classList.remove('wiggle');
+      void ring.offsetWidth;
+      ring.classList.add('wiggle');
+    }
+    setTimeout(() => addMessage('Jigga', on
+      ? 'Short answer: yes. Ship it.'
+      : 'Great question! There are several angles to consider here. First, let me walk through the background…'), 600);
+  }
+
+  pill.addEventListener('click', toggle);
+  document.getElementById('send').addEventListener('click', send);
+  ring.addEventListener('animationend', (e) => { if (e.animationName === 'wiggle') ring.classList.remove('wiggle'); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); toggle(); }
+  });
+</script>
+</body>
+</html>

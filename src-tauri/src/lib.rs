@@ -784,6 +784,28 @@ fn open_target(target: String, cwd: Option<String>, reveal: Option<bool>) -> Res
     std::process::Command::new(program).args(args).spawn().map(|_| ()).map_err(|e| format!("could not open it: {e}"))
 }
 
+/// The largest workspace file read for the artifacts pane, in bytes.
+const MAX_WORKSPACE_READ: u64 = 512 * 1024;
+
+/// Read a text file a bot wrote, for the artifacts pane. None when it is
+/// missing, a folder, too large or not UTF-8.
+#[tauri::command]
+fn workspace_read(target: String, cwd: Option<String>) -> Option<String> {
+    let OpenTarget::Path(path) = resolve_target(&target, cwd.as_deref()).ok()? else { return None };
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_WORKSPACE_READ {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+/// Whether each path names a file or folder that exists, so only real
+/// paths in a message become links.
+#[tauri::command]
+fn paths_exist(targets: Vec<String>, cwd: Option<String>) -> Vec<bool> {
+    targets.iter().map(|t| matches!(resolve_target(t, cwd.as_deref()), Ok(OpenTarget::Path(_)))).collect()
+}
+
 #[tauri::command]
 fn session_load(store: State<'_, Store>) -> Result<Option<serde_json::Value>, String> {
     store.session()
@@ -926,8 +948,8 @@ fn save_attachment(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<S
 fn copy_attachment(app: AppHandle, room: String, path: String) -> Result<String, String> {
     let source = std::path::Path::new(&path);
     let meta = std::fs::metadata(source).map_err(|e| format!("Could not read {path}: {e}"))?;
-    if !meta.is_file() {
-        return Err("only files can be attached, not folders".into());
+    if meta.is_dir() {
+        return copy_folder_attachment(&attachment_dir(&app, &room)?, source);
     }
     if meta.len() > MAX_ATTACHMENT as u64 {
         return Err("files over 20 MB can't be attached".into());
@@ -936,6 +958,44 @@ fn copy_attachment(app: AppHandle, room: String, path: String) -> Result<String,
     let bytes = std::fs::read(source).map_err(|e| format!("Could not read {path}: {e}"))?;
     let path = export::write_new(&attachment_dir(&app, &room)?, name, &bytes).map_err(|e| format!("Could not save the attachment: {e}"))?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+const MAX_FOLDER_FILES: usize = 2000;
+const MAX_FOLDER: u64 = 100 * 1024 * 1024;
+/// Build output and caches that would only bloat a shared folder.
+const SKIPPED_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", ".DS_Store"];
+
+/// Copy a dropped or picked folder into the thread's attachments, skipping
+/// symlinks and build output. Returns the copy's path with a trailing slash,
+/// which is how the composer tells folders from files.
+fn copy_folder_attachment(dir: &std::path::Path, source: &std::path::Path) -> Result<String, String> {
+    let name = export::safe_file_name(source.file_name().and_then(|n| n.to_str()).ok_or("that folder has no usable name")?)?;
+    let target = (1..=u64::MAX).map(|n| dir.join(if n == 1 { name.clone() } else { format!("{name}-{n}") })).find(|p| !p.exists()).ok_or("no unused folder name was left")?;
+    let (mut files, mut bytes) = (0usize, 0u64);
+    let mut stack = vec![(source.to_path_buf(), target.clone())];
+    let result = (|| -> Result<(), String> {
+        while let Some((from, to)) = stack.pop() {
+            std::fs::create_dir_all(&to).map_err(|e| format!("Could not make {}: {e}", to.display()))?;
+            for entry in std::fs::read_dir(&from).map_err(|e| format!("Could not read {}: {e}", from.display()))? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let kind = entry.file_type().map_err(|e| e.to_string())?;
+                let file_name = entry.file_name();
+                if kind.is_symlink() || SKIPPED_DIRS.iter().any(|s| file_name == *s) { continue; }
+                if kind.is_dir() { stack.push((entry.path(), to.join(&file_name))); continue; }
+                files += 1;
+                bytes += entry.metadata().map_err(|e| e.to_string())?.len();
+                if files > MAX_FOLDER_FILES { return Err(format!("folders over {MAX_FOLDER_FILES} files can't be attached")); }
+                if bytes > MAX_FOLDER { return Err("folders over 100 MB can't be attached".into()); }
+                std::fs::copy(entry.path(), to.join(&file_name)).map_err(|e| format!("Could not copy {}: {e}", entry.path().display()))?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_dir_all(&target);
+        return Err(error);
+    }
+    Ok(format!("{}/", target.to_string_lossy()))
 }
 
 /// What changed in the folder since this thread started, and who changed it.
@@ -1073,6 +1133,8 @@ pub fn run() {
             api_models,
             agent_models,
             open_target,
+            workspace_read,
+            paths_exist,
             quit_heard,
             quit_app,
         ]);
@@ -1167,6 +1229,22 @@ mod tests {
         assert!(resolve_target("src/app.rs", None).is_err());
         assert!(resolve_target("javascript://alert(1)", None).is_err());
         assert!(resolve_target("ssh://host/x", Some(&cwd)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn workspace_files_are_read_and_checked_only_when_real() {
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("apex-deck-read-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("mockups")).unwrap();
+        std::fs::write(dir.join("mockups").join("pill.html"), "<p>hi</p>").unwrap();
+        std::fs::write(dir.join("big.md"), "x".repeat(MAX_WORKSPACE_READ as usize + 1)).unwrap();
+        let cwd = Some(dir.to_string_lossy().into_owned());
+
+        assert_eq!(workspace_read("mockups/pill.html".into(), cwd.clone()).as_deref(), Some("<p>hi</p>"));
+        assert_eq!(workspace_read("mockups".into(), cwd.clone()), None);
+        assert_eq!(workspace_read("big.md".into(), cwd.clone()), None);
+        assert_eq!(workspace_read("https://example.com".into(), cwd.clone()), None);
+        assert_eq!(paths_exist(vec!["mockups/pill.html:3".into(), "mockups".into(), "nope.md".into(), "https://x.com".into()], cwd), vec![true, true, false, false]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

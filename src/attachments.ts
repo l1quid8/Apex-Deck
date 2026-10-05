@@ -16,6 +16,9 @@ const IMAGE = /\.(png|jpe?g|gif|webp|heic|bmp|tiff?)$/i;
 
 export const isImage = (name: string) => IMAGE.test(name);
 
+/** Saved folders come back with a trailing slash. */
+export const isFolder = (path: string) => path.endsWith("/");
+
 /** A plain ASCII file name; pasted screenshots arrive as "image.png". */
 export function attachmentName(name: string, type = ""): string {
   const clean = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w.-]+/g, "-").replace(/^[-.]+|-+$/g, "").slice(-80);
@@ -24,8 +27,8 @@ export function attachmentName(name: string, type = ""): string {
   return `${clean || (ext ? "image" : "file")}${ext ? `.${ext}` : ""}`;
 }
 
-/** The message with one "Attached image: <path>" line per file. */
+/** The message with one "Attached image|file|folder: <path>" line each. */
 export function withAttachments(message: string, paths: string[]): string {
-  const lines = paths.map((p) => `Attached ${isImage(p) ? "image" : "file"}: ${p}`);
+  const lines = paths.map((p) => `Attached ${isFolder(p) ? "folder" : isImage(p) ? "image" : "file"}: ${p}`);
   return [message, lines.join("\n")].filter(Boolean).join("\n\n");
 }

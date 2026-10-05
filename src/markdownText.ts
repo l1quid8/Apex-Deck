@@ -237,3 +237,14 @@ export function parseInline(source: string): Inline[] {
   text(source.slice(from));
   return out;
 }
+
+// Extensions that make a bare name, with no folder, read as a file.
+const FILE_EXTENSIONS = /\.(html?|svg|md|markdown|txt|json|jsonc|toml|ya?ml|lock|css|scss|js|mjs|cjs|jsx|ts|tsx|rs|py|rb|go|java|kt|swift|c|h|cpp|hpp|sh|zsh|sql|xml|csv|png|jpe?g|gif|webp|pdf|ico|env|ini|cfg|conf)$/i;
+
+/** Whether a code span reads like a file or folder path, maybe with a line. Whether it exists is the desktop side's call. */
+export function pathLike(text: string): boolean {
+  const s = text.trim().replace(/(?::\d+(?::\d+)?|#L\d+(?:-L?\d+)?)$/, "");
+  if (!s || s.length > 300 || /[\s()[\]<>"'`{}|*?]|:\/\//.test(s)) return false;
+  if (s.includes("/")) return /[A-Za-z0-9_]/.test(s) && !/^\/+$/.test(s);
+  return /^[\w.-]+$/.test(s) && FILE_EXTENSIONS.test(s) && !s.startsWith(".") || /^\.[\w-]+(rc|ignore|env)$/.test(s);
+}

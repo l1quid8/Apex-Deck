@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TL;DR chill pill mockup</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --text:#e6e8ee; --dim:#8a90a0; --amber:#f5a524; --amber-soft:rgba(245,165,36,.35); }
+  * { box-sizing:border-box; }
+  body { margin:0; height:100vh; display:flex; flex-direction:column; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system, system-ui, sans-serif; }
+  header { padding:12px 20px; border-bottom:1px solid var(--line); color:var(--dim); font-size:12px; }
+  header b { color:var(--text); }
+  #log { flex:1; overflow:auto; padding:20px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:70%; padding:10px 14px; border-radius:12px; background:var(--panel); border:1px solid var(--line); position:relative; animation:in .3s ease-out; }
+  .msg.me { align-self:flex-end; background:#1e2330; }
+  .msg .who { font-size:11px; color:var(--dim); margin-bottom:2px; }
+  .tag { display:inline-flex; align-items:center; gap:4px; margin-left:6px; padding:0 7px; border-radius:999px; font-size:10px; font-weight:600; color:#1a1200; background:var(--amber); animation:pop .35s cubic-bezier(.3,1.6,.5,1); }
+  @keyframes in { from { opacity:0; transform:translateY(6px); } }
+  @keyframes pop { from { transform:scale(0); } }
+
+  .wrap { padding:16px 20px 22px; position:relative; }
+  .composer { position:relative; display:flex; align-items:flex-end; gap:8px; padding:10px 10px 10px 14px; background:var(--panel); border:1px solid var(--line); border-radius:14px; transition:border-color .4s, box-shadow .4s; }
+  .composer.on { border-color:var(--amber); animation:breathe 3.2s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { box-shadow:0 0 0 1px var(--amber-soft), 0 0 14px var(--amber-soft); } 50% { box-shadow:0 0 0 1px var(--amber-soft), 0 0 26px rgba(245,165,36,.55); } }
+  .ripple { position:absolute; width:20px; height:20px; border-radius:50%; background:var(--amber); opacity:.5; pointer-events:none; transform:translate(-50%,-50%) scale(0); animation:ripple .7s ease-out forwards; }
+  @keyframes ripple { to { transform:translate(-50%,-50%) scale(40); opacity:0; } }
+  .composer { overflow:visible; } .clip { position:absolute; inset:0; border-radius:14px; overflow:hidden; pointer-events:none; }
+
+  textarea { flex:1; resize:none; border:0; outline:0; background:transparent; color:var(--text); font:inherit; min-height:22px; max-height:140px; }
+  textarea::placeholder { color:var(--dim); transition:color .3s; }
+  .on textarea::placeholder { color:rgba(245,165,36,.65); }
+
+  .pill { position:relative; display:inline-flex; height:24px; border-radius:999px; overflow:visible; cursor:pointer; border:0; padding:0; background:none; flex:none; }
+  .pill .half { display:flex; align-items:center; height:24px; padding:0 8px; font-size:11px; font-weight:700; letter-spacing:.02em; transition:background .3s, color .3s; }
+  .pill .l { border-radius:999px 0 0 999px; background:#2b303c; color:var(--dim); }
+  .pill .r { border-radius:0 999px 999px 0; background:#232733; color:var(--dim); padding:0 7px; }
+  .pill:hover .half { color:var(--text); }
+  .on .pill .l { background:var(--amber); color:#1a1200; }
+  .on .pill .r { background:#fff4dc; color:#9a5d00; }
+  .pill .tip { position:absolute; bottom:32px; right:0; white-space:nowrap; font-size:11px; background:#000; color:var(--text); padding:3px 8px; border-radius:6px; opacity:0; transform:translateY(4px); transition:.15s; pointer-events:none; }
+  .pill:hover .tip { opacity:1; transform:none; }
+
+  .pill.drop { animation:drop .75s cubic-bezier(.3,.8,.4,1); }
+  @keyframes drop { 0% { transform:translateY(-120px) rotate(-200deg); } 55% { transform:translateY(0) rotate(0) scale(1.15,.85); } 70% { transform:translateY(-14px) scale(.95,1.05); } 82% { transform:translateY(0) scale(1.07,.93); } 90% { transform:translateY(-4px); } 100% { transform:none; } }
+  .on .pill:not(.drop):not(.spit) { animation:wobble var(--wob,3.5s) ease-in-out infinite; }
+  @keyframes wobble { 0%,82%,100% { transform:none; } 85% { transform:rotate(-9deg); } 88% { transform:rotate(8deg); } 91% { transform:rotate(-6deg); } 94% { transform:rotate(4deg); } }
+  .pill.spit { animation:spit .5s ease-in forwards; }
+  @keyframes spit { to { transform:translate(60px,-140px) rotate(540deg) scale(.4); opacity:0; } }
+
+  .send { flex:none; height:30px; padding:0 14px; border-radius:9px; border:0; background:#3b82f6; color:#fff; font-weight:600; cursor:pointer; }
+  .bubble { position:fixed; width:8px; height:8px; border-radius:50%; background:var(--amber); pointer-events:none; animation:fizz 1s ease-out forwards; }
+  @keyframes fizz { to { transform:translate(var(--dx), var(--dy)) scale(.2); opacity:0; } }
+  .hint { color:var(--dim); font-size:11px; margin-top:8px; }
+  kbd { border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:10px; }
+
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } .bubble, .ripple { display:none; } }
+</style>
+</head>
+<body>
+<header><b>Mockup:</b> TL;DR chill pill — drop on, impatient wobble, fizz on send, spit out on off</header>
+<div id="log">
+  <div class="msg"><div class="who">Null</div>Long thoughtful paragraph about tradeoffs, streaming tags, fallbacks, and also some more caveats you probably skimmed…</div>
+</div>
+<div class="wrap">
+  <div class="composer" id="composer">
+    <div class="clip" id="clip"></div>
+    <textarea id="ta" rows="1" placeholder="Message the room…"></textarea>
+    <button class="pill" id="pill" aria-pressed="false" title="">
+      <span class="half l">TL;DR</span><span class="half r">💊</span>
+      <span class="tip" id="tip">take a chill pill · ⌘⇧T</span>
+    </button>
+    <button class="send" id="send">Send</button>
+  </div>
+  <div class="hint">Click the pill or press <kbd>⌘⇧T</kbd>. Type a long message to see the wobble speed up. <kbd>Enter</kbd> sends.</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const comp = $('composer'), pill = $('pill'), ta = $('ta'), log = $('log');
+let on = false;
+
+function toggle() {
+  on = !on;
+  pill.setAttribute('aria-pressed', on);
+  pill.classList.remove('drop', 'spit');
+  void pill.offsetWidth;
+  if (on) {
+    comp.classList.add('on');
+    pill.classList.add('drop');
+    ta.placeholder = 'TL;DR mode: short answers.';
+    $('tip').textContent = 'chilling · ⌘⇧T to stop';
+    setTimeout(ripple, 400);
+    pill.addEventListener('animationend', () => pill.classList.remove('drop'), { once:true });
+  } else {
+    pill.classList.add('spit');
+    comp.classList.remove('on');
+    ta.placeholder = 'Message the room…';
+    $('tip').textContent = 'take a chill pill · ⌘⇧T';
+    setTimeout(() => { pill.classList.remove('spit'); pill.animate([{ transform:'scale(0)' }, { transform:'scale(1)' }], { duration:250, easing:'cubic-bezier(.3,1.6,.5,1)' }); }, 500);
+  }
+}
+
+function ripple() {
+  const c = $('clip').getBoundingClientRect(), p = pill.getBoundingClientRect();
+  const r = document.createElement('span');
+  r.className = 'ripple';
+  r.style.left = (p.left + p.width / 2 - c.left) + 'px';
+  r.style.top = (p.top + p.height / 2 - c.top) + 'px';
+  $('clip').appendChild(r);
+  setTimeout(() => r.remove(), 800);
+}
+
+function fizz() {
+  const p = pill.getBoundingClientRect();
+  for (let i = 0; i < 14; i++) {
+    const b = document.createElement('span');
+    b.className = 'bubble';
+    b.style.left = (p.left + p.width / 2 + (Math.random() * 30 - 15)) + 'px';
+    b.style.top = (p.top + 6) + 'px';
+    b.style.setProperty('--dx', (Math.random() * 80 - 60) + 'px');
+    b.style.setProperty('--dy', -(60 + Math.random() * 90) + 'px');
+    b.style.animationDelay = (i * 25) + 'ms';
+    b.style.width = b.style.height = (4 + Math.random() * 7) + 'px';
+    document.body.appendChild(b);
+    setTimeout(() => b.remove(), 1400);
+  }
+}
+
+function send() {
+  const text = ta.value.trim();
+  if (!text) return;
+  const m = document.createElement('div');
+  m.className = 'msg me';
+  m.innerHTML = '<div class="who">You' + (on ? '<span class="tag">💊 TL;DR</span>' : '') + '</div>';
+  m.appendChild(document.createTextNode(text));
+  if (on) fizz();
+  setTimeout(() => { log.appendChild(m); log.scrollTop = log.scrollHeight; }, on ? 350 : 0);
+  ta.value = ''; ta.style.height = ''; updateWobble();
+  setTimeout(() => {
+    const r = document.createElement('div');
+    r.className = 'msg';
+    r.innerHTML = '<div class="who">Jigga</div>' + (on ? 'Yes. Ship the pill. Done.' : 'Great question! Let me walk through several considerations, tradeoffs, and a short history of capsule-based UI…');
+    log.appendChild(r); log.scrollTop = log.scrollHeight;
+  }, 900);
+}
+
+function updateWobble() {
+  const words = ta.value.trim().split(/\s+/).filter(Boolean).length;
+  const speed = Math.max(0.6, 3.5 - words * 0.05);
+  pill.style.setProperty('--wob', speed + 's');
+}
+
+pill.onclick = toggle;
+$('send').onclick = send;
+ta.addEventListener('input', () => { ta.style.height = ''; ta.style.height = ta.scrollHeight + 'px'; updateWobble(); });
+ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+document.addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); toggle(); } });
+ta.focus();
+</script>
+</body>
+</html>

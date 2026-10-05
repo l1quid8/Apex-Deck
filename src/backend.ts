@@ -52,6 +52,10 @@ export interface Backend {
   /** Open a file, folder or web address in its default app. Relative paths are
    *  taken from `cwd`. With `reveal`, show the file in its folder instead. */
   openTarget(target: string, cwd: string | null, reveal: boolean): Promise<void>;
+  /** A text file in the workspace, for the artifacts pane. Null when missing, too large or not text. */
+  workspaceRead(target: string, cwd: string | null): Promise<string | null>;
+  /** Whether each path names a file or folder that exists. */
+  pathsExist(targets: string[], cwd: string | null): Promise<boolean[]>;
   roomPost(id: string, text: string): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
   roomPostTo(id: string, text: string, targets: string[]): Promise<void>;
@@ -157,6 +161,8 @@ async function tauriBackend(): Promise<Backend> {
     apiModels: (baseUrl, apiKeyEnv) => invoke<string[]>("api_models", { baseUrl, apiKeyEnv }),
     agentModels: (tool) => invoke<ModelChoice[]>("agent_models", { tool }),
     openTarget: (target, cwd, reveal) => invoke("open_target", { target, cwd, reveal }),
+    workspaceRead: (target, cwd) => invoke<string | null>("workspace_read", { target, cwd }),
+    pathsExist: (targets, cwd) => invoke<boolean[]>("paths_exist", { targets, cwd }),
     flagAttention: async (count, nudge) => {
       const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
       const main = getCurrentWindow();
@@ -609,6 +615,8 @@ function demoBackend(): Backend {
       if (/^https?:/.test(target)) window.open(target, "_blank", "noopener");
       else throw new Error("files cannot be opened in the browser demo");
     },
+    workspaceRead: async () => null,
+    pathsExist: async (targets) => targets.map(() => false),
     roomTargets: async (id, text) => targetsFor(id, text),
     roomPost: async (id, text) => postPreview(id, text, targetsFor(id, text)),
     roomPostTo: async (id, text, targets) => {

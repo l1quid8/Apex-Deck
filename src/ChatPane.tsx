@@ -5,7 +5,7 @@ import { BotSettings } from "./BotSettings";
 import type { AllowedRule, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { ArtifactsPanel, DEFAULT_VIEW, type PanelView } from "./ArtifactsPanel";
-import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindOf, pickVersion, readArtifacts, type ArtifactFile } from "./artifacts";
+import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindForPath, kindOf, pickVersion, readArtifacts, upsertFromFile, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress";
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
@@ -13,7 +13,7 @@ import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer,
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { findTrigger, insertAt } from "./composerMenu";
@@ -42,6 +42,7 @@ import { Markdown } from "./Markdown";
 import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
 import { attachmentName, withAttachments, type Attachment } from "./attachments";
+import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, hasMention, recipientLine, showsRecipientLine } from "./recipients";
 import { askerOf, hopNotice, letLabel, liveActions, retryFor, stillHere, type NoticeAction } from "./noticeActions";
@@ -382,6 +383,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const asks = useMemo(() => cardsByBot(roomCards), [roomCards]);
   /** Files the bots have changed since this chat was opened. */
   const [changes, setChanges] = useState<MadeChange[]>([]);
+  /** Files written this turn, by path, with who wrote them; see collectWritten. */
+  const written = useRef(new Map<string, string>());
+  const collectWritten = useRef<(bot: string) => void>(() => {});
   const showChanges = Boolean(details?.open && details.target === pane.id && !details.collapsed.changes);
   const showChangesRef = useRef(false);
   showChangesRef.current = showChanges;
@@ -542,6 +546,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const lastSeenRef = useRef(pane.lastSeenSeq);
   const filePicker = useRef<HTMLInputElement>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
+  const [tldr, setTldr] = useState(() => loadTldr(pane.id));
+  const toggleTldr = () => setTldr((on) => { saveTldr(pane.id, !on); return !on; });
+  const field = useRef<HTMLDivElement>(null);
   const saving = attached.some((a) => !a.path && !a.error);
   const sendable = attached.filter((a) => a.path);
   const activity = useRef(onActivity);
@@ -643,6 +650,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           reportApprovals();
           turnQueue.idle(event.id);
           heard.current.delete(event.id);
+          collectWritten.current(event.id);
           break;
         case "turn_started":
           turnQueue.started(event.id);
@@ -668,6 +676,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           break;
         case "changed":
           setChanges((list) => [...list, { seq: list.length, by: event.id, change: event.change }]);
+          written.current.set(event.change.path, event.id);
           break;
         case "allowed_changed":
           setAllowed(event.allowed);
@@ -799,6 +808,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (address && isLocalHost(new URL(address).hostname) && preview.current) return preview.current(address, false);
     backend.openTarget(target, cwd || null, reveal).catch((error) => notify(`Could not open ${target}: ${String(error)}`, "error"));
   };
+
+  // Paths named in code spans, asked about once per folder; a file written
+  // later is picked up when the thread is opened again.
+  const pathChecks = useMemo(() => new Map<string, Promise<boolean>>(), [cwd]);
+  const pathExists = useCallback((path: string) => {
+    let known = pathChecks.get(path);
+    if (!known) {
+      known = backend.pathsExist([path], cwd || null).then(([yes]) => Boolean(yes), () => false);
+      pathChecks.set(path, known);
+    }
+    return known;
+  }, [pathChecks, cwd]);
 
   /** Bring the transcript to where it should be after anything changed in it. */
   const settle = useRef(() => {});
@@ -1296,6 +1317,26 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       .then(() => setArtifactProblem(""), (error) => setArtifactProblem(`Couldn't save artifacts: ${String(error)}`));
   };
 
+  // Files a bot wrote that the pane can show become artifacts when its turn
+  // ends, or new versions of the ones already made from them. The pane
+  // isn't opened for them; the Artifacts button says there is something new.
+  const [unseenArtifacts, setUnseenArtifacts] = useState(0);
+  useEffect(() => { if (panel) setUnseenArtifacts(0); }, [panel]);
+  collectWritten.current = (bot: string) => {
+    const paths = [...written.current].filter(([path, by]) => by === bot && kindForPath(path)).map(([path]) => path);
+    for (const path of paths) written.current.delete(path);
+    if (paths.length === 0 || !artifactsReadable.current) return;
+    for (const path of paths) {
+      backend.workspaceRead(path, cwd || null).then((source) => {
+        if (source === null) return;
+        const out = upsertFromFile(latestArtifacts.current, path, { source, by: bot, seq: null, at: Date.now() }, `art-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
+        if (!out.added) return;
+        changeArtifacts(out.file);
+        setUnseenArtifacts((n) => n + 1);
+      }, () => {});
+    }
+  };
+
   const showVersion = (artifactId: string, n: number) => setPanel((view) => ({ ...(view ?? DEFAULT_VIEW), artifactId, n, list: false }));
 
   /** A person chose what to do with a code block in a finished reply. */
@@ -1403,7 +1444,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const box = composer.current?.parentElement?.getBoundingClientRect();
     if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
     for (const path of paths) {
-      const name = path.split("/").pop() || path;
+      const name = path.replace(/\/+$/, "").split("/").pop() || path;
       track(name, undefined, () => backend.copyAttachment(pane.id, path));
     }
   };
@@ -1465,7 +1506,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     stuck.current = true;
     setUnread(0);
     setDividerAt(null);
-    const message = withAttachments(parsed.text && replyText(postable(parsed.text), reply, participants.map((p) => p.id)), sendable.map((a) => a.path!));
+    const message = withTldr(withAttachments(parsed.text && replyText(postable(parsed.text), reply, participants.map((p) => p.id)), sendable.map((a) => a.path!)), tldr);
+    if (tldr) wiggle(field.current);
     setText(""); setReply(null);
     attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
     setAttached([]);
@@ -2015,7 +2057,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
 
 
-        {!profileMode && <div className="thread-counts">{artifacts.artifacts.length > 0 && <button className={panel ? "ghost small on" : "ghost small"} aria-pressed={panel !== null} onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>Artifacts · {artifacts.artifacts.length}</button>}{changes.length > 0 && <button className="ghost small" onClick={() => { details?.show("changes"); loadDiff(); }}>Changes · {new Set(changes.map(c => c.change.path)).size}</button>}</div>}
+        {!profileMode && <div className="thread-counts">{artifacts.artifacts.length > 0 && <button className={panel ? "ghost small on" : "ghost small"} aria-pressed={panel !== null} onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>Artifacts · {artifacts.artifacts.length}{unseenArtifacts > 0 && !panel && <span className="new-dot" aria-label={`${unseenArtifacts} new`} />}</button>}{changes.length > 0 && <button className="ghost small" onClick={() => { details?.show("changes"); loadDiff(); }}>Changes · {new Set(changes.map(c => c.change.path)).size}</button>}</div>}
       </div>
 
       {!profileMode && pins.length > 0 && pinControls}
@@ -2085,13 +2127,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <summary>
                 {entry.summary.by ? `Summarized by ${names.get(entry.summary.by) ?? entry.summary.by}` : "Summarized"} · the models see this instead of the messages above
               </summary>
-              <Markdown text={entry.summary.summary} onOpen={openTarget} />
+              <Markdown text={entry.summary.summary} onOpen={openTarget} pathExists={pathExists} />
             </details>
           ) : entry.message.speaker.kind === "human" ? (
             <div key={`m${entry.message.seq}`} className="message-row human-row" data-seq={entry.message.seq}>
               {messageActions(entry.message)}
               <div className="bubble human">
-                <RichText text={entry.message.text} onOpen={openTarget} />
+                {splitTldr(entry.message.text).tldr && <span className="tldr-tag" title="Sent in TL;DR mode">TL;DR</span>}
+                <RichText text={splitTldr(entry.message.text).text} onOpen={openTarget} />
               </div>
             </div>
           ) : (
@@ -2105,7 +2148,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
-                <Markdown text={entry.message.text} onOpen={openTarget} codeAction={(code) => artifactAction(entry.message, code)} />
+                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} />
               </div>
               {messageActions(entry.message)}
             </div>
@@ -2187,7 +2230,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                     else if (parsed.command.name === "compact") turnQueue.edit(item.id, "/compact", "compact");
                     else { turnQueue.remove(item.id); setText(e.target.value); runCommand(parsed.command); }
                   }} />
-              : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{item.text}</button>}
+              : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{splitTldr(item.text).text}</button>}
             <div className="q-meta">
               <span className="q-for">{queuePaused ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span></span>
               {queuePaused && <><i className="q-sep" /><button type="button" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume</button></>}
@@ -2233,7 +2276,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       )}
       </div>
 
-      {!profileMode && <div className="composer" ref={composer}
+      {!profileMode && <div className={tldr ? "composer tldr" : "composer"} ref={composer}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
         onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attachFiles(e.dataTransfer.files); } }}>
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
@@ -2262,9 +2305,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         {recipient && lineFits && <div className="recipient-line">
           To {recipient.to} · <ReplyPolicyPicker value={options.policy} label={recipient.reason} disabled={!ready || busy} onChange={policy => changeOptions({ ...options, policy })} />
         </div>}
-        <div className="composer-field">
+        <div className="composer-field" ref={field}>
           <ComposerMenu ref={composerMenu} participants={participants} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
+            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
             if (item.kind === "command" && item.command) {
               const draft = text;
               runCommand(item.command);
@@ -2292,6 +2336,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           onSelect={e => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
             if (composerMenu.current?.key(e)) return;
+            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); toggleTldr(); return; }
             // Esc stops every bot and keeps your draft, like Claude Code and Codex.
             if (e.key === "Escape" && busy) { e.preventDefault(); void turnQueue.halt(); return; }
             if (e.key === "Enter" && !e.shiftKey) {
@@ -2300,9 +2345,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             }
           }}
           rows={1}
-          placeholder={copy.placeholder}
+          placeholder={tldr ? "TL;DR mode: short answers" : copy.placeholder}
           disabled={!ready || participants.length === 0}
         />
+        <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`} onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
         {!busy && <div className="composer-hint"><span>{copy.hint}</span></div>}
