@@ -61,7 +61,8 @@ try {
   const desktop = mac + '-desktop'; const shim = path.join(root,'bin');
   fs.mkdirSync(desktop); fs.mkdirSync(shim);
   fs.writeFileSync(path.join(desktop,'hosts.json'),JSON.stringify({version:1,last:'at',windows:['at'],hosts:[{id:'at',name:'Production-Frankfurt-Primary-01',ssh:'fixture',command:bin}]}));
-  fs.writeFileSync(path.join(shim,'ssh'),`#!/bin/sh\nif [ -f ${q(path.join(root,'offline'))} ]; then echo 'fixture offline' >&2; exit 1; fi\necho $$ > ${q(path.join(root,'attach.pid'))}\nexec ${q(bin)} --stdio --attach --data-dir ${q(remote)}\n`,{mode:0o755});
+  // "other-fixture" reaches the Mac's daemon: a different machine, for Edit connection.
+  fs.writeFileSync(path.join(shim,'ssh'),`#!/bin/sh\nif [ -f ${q(path.join(root,'offline'))} ]; then echo 'fixture offline' >&2; exit 1; fi\ncase "$*" in *other-fixture*) exec ${q(bin)} --stdio --attach --data-dir ${q(mac)} ;; esac\necho $$ > ${q(path.join(root,'attach.pid'))}\nexec ${q(bin)} --stdio --attach --data-dir ${q(remote)}\n`,{mode:0o755});
   app = spawn(electron,['.'], {stdio:'inherit',env:{...process.env,PATH:`${shim}:${process.env.PATH}`,APEX_DECK_SMOKE:'1',APEX_DECK_MULTI_HOST_ROOT:root,APEX_DECK_DATA_DIR:mac,APEX_DECK_SMOKE_OUTPUT:out}});
   const timer=setTimeout(()=>app.kill('SIGKILL'),120000);
   const code=await new Promise(resolve=>app.once('exit',resolve));clearTimeout(timer);

@@ -27,6 +27,7 @@ import { nextTitle, programTitle } from "./terminalTitle";
 import { hostLabel, sameServer } from "./previewAddress";
 import { copyMenuItems, paneMenuItems, projectMenuItems, type CopyKind, type PaneMenuAction, type ProjectMenuAction } from "./paneMenu";
 import { ProjectSidebar } from "./Sidebar";
+import { ConnectionDialog, type ConnectionMode } from "./ConnectionDialog";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { archiveThreads, noteActive, setCollapsed, setUnread, toggleProjectPin, unarchiveThreads } from "./sidebarModel.ts";
 import { COPIED, folderCopyText, writeClipboard } from "./threadCopy.ts";
@@ -164,6 +165,8 @@ export function App() {
   }, []);
   /** Saved machines, for the sidebar's server names and Copy folder path. */
   const [hostList, setHostList] = useState<HostEntry[]>([]);
+  /** Edit connection… (or Add a server), while open. */
+  const [connectionDialog, setConnectionDialog] = useState<ConnectionMode | null>(null);
   /** Bumped by ⌘T to open the + New menu. */
   const [newMenuRequest, setNewMenuRequest] = useState(0);
   /** Bumped to start renaming from the pane head's ⋯ menu. */
@@ -886,11 +889,19 @@ export function App() {
     }));
   };
 
+  /** What a server holds, for Edit connection: "2 threads and 1 project". */
+  const hostUses = (hostId: string) => {
+    const own = workspaces.filter((w) => workspaceHost(w) === hostId && !w.hidden);
+    const threads = panes.filter((p) => p.kind === "chat" && own.some((w) => w.id === p.workspaceId) && !deleting.has(p.id)).length;
+    const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    return own.length || threads ? `${plural(threads, "thread")} and ${plural(own.length, "project")}` : "";
+  };
+
   /** Run what was chosen in a project's ⋯ menu. */
   const runProjectMenu = (workspace: Workspace, action: ProjectMenuAction) => {
     if (action === "pin") setWorkspaces((list) => toggleProjectPin(list, workspace.id));
     else if (action === "edit") setRenameRequests((all) => ({ ...all, [workspace.id]: (all[workspace.id] ?? 0) + 1 }));
-    else if (action === "connection") setSettingsOpen("hosts");
+    else if (action === "connection") setConnectionDialog({ kind: "edit", hostId: workspaceHost(workspace) });
     else if (action === "reveal") revealWorkspace(workspace);
     else if (action === "archive") {
       const own = panes.filter((p) => p.workspaceId === workspace.id && p.kind === "chat" && !p.archived && !deleting.has(p.id));
@@ -1278,6 +1289,10 @@ export function App() {
         {settingsOpen && <SettingsPage section={settingsOpen} onSection={setSettingsOpen} settings={settings} onChange={setSettings} agents={agents} profiles={profiles} backend={backend} onClose={closeSettings} />}
       </div>
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
+      {connectionDialog && backend.hosts && <ConnectionDialog mode={connectionDialog} hosts={hostList} api={backend.hosts}
+        uses={connectionDialog.kind === "edit" ? hostUses(connectionDialog.hostId) : ""}
+        onClose={() => setConnectionDialog(null)}
+        onSaved={(list, words) => { setHostList(list); setConnectionDialog(null); toast(words); }} />}
       <PathPrompt backend={backend} />
       <ModOverlays />
       {headMenu && (() => {
