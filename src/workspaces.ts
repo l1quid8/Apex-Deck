@@ -5,6 +5,7 @@
 // it back. These rules are plain functions so they can be tested on their own.
 
 import type { Pane, Workspace } from "./types";
+import { workspaceHost, workspaceFamily } from "./hostSession.ts";
 
 /** Workspaces listed in the rail. */
 export function shownWorkspaces(list: Workspace[]): Workspace[] {
@@ -63,16 +64,18 @@ export function renameWorkspace(list: Workspace[], id: string, name: string): Wo
  * path (a workspace with no folder) never matches. Returns the new list and
  * the workspace id for each path, in order.
  */
-export function addFolders(list: Workspace[], paths: string[], makeId: () => string, nameOf: (path: string) => string): { list: Workspace[]; ids: string[] } {
+export function addFolders(list: Workspace[], paths: string[], makeId: () => string, nameOf: (path: string) => string, hostId = "local", family?: string): { list: Workspace[]; ids: string[] } {
   let next = list;
   const ids: string[] = [];
   for (const path of paths) {
-    const existing = path ? next.find((w) => w.path === path) : undefined;
+    const existing = path ? next.find((w) => w.path === path && workspaceHost(w) === hostId) : undefined;
     if (existing) {
       if (existing.hidden) next = setHidden(next, existing.id, false);
       ids.push(existing.id);
     } else {
       const workspace: Workspace = { id: makeId(), name: nameOf(path), path };
+      if (hostId !== "local") workspace.hostId = hostId;
+      workspace.family = family ?? workspaceFamily(workspace);
       next = [...next, workspace];
       ids.push(workspace.id);
     }

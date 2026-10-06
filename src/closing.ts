@@ -116,7 +116,7 @@ export function loadedPanes(saved: unknown[], workspaceIds: string[]): Pane[] {
 
 /** Layouts are kept by "<workspace id>:<section>". Threads and Code are both saved, for workspaces still listed. */
 export function savedLayouts(layouts: Record<string, LayoutNode>, workspaceIds: string[]): Record<string, LayoutNode> {
-  const keep = new Set(workspaceIds.flatMap((id) => [`${id}:threads`, `${id}:code`]));
+  const keep = new Set([":threads", ":code", ...workspaceIds.flatMap((id) => [`${id}:threads`, `${id}:code`])]);
   return Object.fromEntries(Object.entries(layouts).filter(([key]) => keep.has(key)));
 }
 
@@ -132,9 +132,9 @@ export function restoredLayouts(saved: unknown, panes: Pane[]): Record<string, L
   for (const [key, value] of Object.entries(saved)) {
     const cut = key.lastIndexOf(":");
     const section = key.slice(cut + 1);
-    if (cut < 1 || (section !== "threads" && section !== "code")) continue;
+    if (cut < 0 || (section !== "threads" && section !== "code")) continue;
     const workspace = key.slice(0, cut);
-    const loaded = new Set(panes.filter((p) => p.workspaceId === workspace && paneSection(p) === section).map((p) => p.id));
+    const loaded = new Set(panes.filter((p) => (!workspace || p.workspaceId === workspace) && !p.closed && paneSection(p) === section).map((p) => p.id));
     let tree = validate(value);
     for (const id of leafIds(tree)) if (!loaded.has(id)) tree = removeLeaf(tree, id);
     if (tree) out[key] = tree;

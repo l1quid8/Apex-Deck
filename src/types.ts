@@ -125,6 +125,8 @@ export type AppSection = "agents" | "code" | "threads";
 
 export interface AppSession {
   version: 1;
+  importedHostSessions?: string[];
+  canvasVersion?: 1;
   workspaces: Workspace[];
   /** Saved threads, and each terminal as a descriptor (id, workspace, name,
    *  tool). Terminals come back Stopped: nothing is started on launch. */
@@ -261,6 +263,10 @@ export interface Workspace {
   path: string;
   /** A workspace removed from the list. Missing means `false`. Its threads stay saved. */
   hidden?: boolean;
+  /** Saved host ID; absent means This Mac. */
+  hostId?: string;
+  /** Project copies share a family; defaults to the folder basename. */
+  family?: string;
 }
 
 export type Layout = "top" | "left";

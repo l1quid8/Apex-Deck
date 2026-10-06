@@ -185,7 +185,7 @@ test("a thread keeps where you stopped reading; older files load without it", ()
 
 test("Threads and Code layouts are saved for workspaces still listed", () => {
   const layouts = { "w:threads": leaf("a"), "w:code": leaf("t"), "gone:code": leaf("x"), ":code": leaf("y"), "w:agents": leaf("z") };
-  assert.deepEqual(savedLayouts(layouts, ["w"]), { "w:threads": leaf("a"), "w:code": leaf("t") });
+  assert.deepEqual(savedLayouts(layouts, ["w"]), { "w:threads": leaf("a"), "w:code": leaf("t"), ":code": leaf("y") });
 });
 
 test("a saved layout drops panes that didn't load and gives their space to the rest", () => {
