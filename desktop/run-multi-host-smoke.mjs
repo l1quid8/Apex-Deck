@@ -58,6 +58,9 @@ try {
     restarting=true;
     void (async()=>{await stop(server);server=await daemon(remote);fs.writeFileSync(path.join(root,'restart-done'),'1');})().catch(error=>{console.error(error);app?.kill('SIGKILL');});
   });
+  // A small project folder for threads moved or forked there: the root holds the daemons' own data.
+  fs.mkdirSync(path.join(root,'work'));
+  fs.writeFileSync(path.join(root,'work','README.md'),'work folder for the multi-host smoke\n');
   const desktop = mac + '-desktop'; const shim = path.join(root,'bin');
   fs.mkdirSync(desktop); fs.mkdirSync(shim);
   fs.writeFileSync(path.join(desktop,'hosts.json'),JSON.stringify({version:1,last:'at',windows:['at'],hosts:[{id:'at',name:'Production-Frankfurt-Primary-01',ssh:'fixture',command:bin}]}));

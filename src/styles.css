@@ -2700,3 +2700,14 @@ button.mod-status:hover { color: var(--text); }
 .conn-spin { display: inline-block; width: 12px; height: 12px; margin-top: 2px; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: conn-spin .8s linear infinite; flex: none; }
 @keyframes conn-spin { to { transform: rotate(360deg); } }
 .connection-dialog .confirm-actions .conn-left { margin-right: auto; }
+/* Pick the machine, stage 3: where a thread runs. */
+.fork-line { display: flex; align-items: center; gap: 10px; margin: 16px 6px; color: var(--muted); font-size: 12px; }
+.fork-line::before, .fork-line::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.fork-line > svg { flex: none; }
+.fork-line > span { max-width: 72%; text-align: center; line-height: 1.45; }
+.move-ask { margin: 0 0 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); font-size: 12.5px; }
+.move-ask p { margin: 0 0 8px; line-height: 1.45; }
+.move-ask div { display: flex; gap: 6px; flex-wrap: wrap; }
+.deck-menu .check { margin-left: auto; padding-left: 10px; color: var(--accent); }
+.deck-menu .sub + .check { margin-left: 8px; padding-left: 0; }
+.deck-menu .menu-note { display: block; max-width: 270px; padding: 4px 9px 6px; color: var(--muted); font-size: 11px; line-height: 1.45; white-space: normal; }

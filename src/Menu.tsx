@@ -20,6 +20,10 @@ export interface MenuEntry {
   icon?: ReactNode;
   /** Opens these instead of acting. */
   submenu?: MenuEntry[];
+  /** The current choice: a ✓ at the right. */
+  checked?: boolean;
+  /** Not an action: a muted line of words. */
+  note?: boolean;
   onSelect?: () => void;
 }
 
@@ -62,7 +66,7 @@ function Items({ entries, open, onOpen, onPick }: { entries: MenuEntry[]; open: 
   return <>{entries.map((entry) => (
     <Fragment key={entry.key}>
       {entry.separated && <span className="pane-menu-sep" role="separator" />}
-      <button role="menuitem" className={[entry.danger ? "danger-text" : "", entry.submenu && open === entry.key ? "hl" : ""].filter(Boolean).join(" ") || undefined}
+      {entry.note ? <span className="menu-note">{entry.label}</span> : <button role="menuitem" className={[entry.danger ? "danger-text" : "", entry.submenu && open === entry.key ? "hl" : ""].filter(Boolean).join(" ") || undefined}
         disabled={entry.disabled} title={entry.reason || undefined} data-key={entry.key}
         aria-haspopup={entry.submenu ? "menu" : undefined} aria-expanded={entry.submenu ? open === entry.key : undefined}
         onMouseEnter={(event) => onOpen(entry.submenu ? entry.key : null, event.currentTarget)}
@@ -71,8 +75,9 @@ function Items({ entries, open, onOpen, onPick }: { entries: MenuEntry[]; open: 
         <span className="label">{entry.label}</span>
         {entry.side && <span className="sub">{entry.side}</span>}
         {entry.keys && <span className="keys">{entry.keys}</span>}
+        {entry.checked && <span className="check" aria-label="current">✓</span>}
         {entry.submenu && <span className="more" aria-hidden="true">›</span>}
-      </button>
+      </button>}
     </Fragment>
   ))}</>;
 }

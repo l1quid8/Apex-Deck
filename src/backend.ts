@@ -115,7 +115,7 @@ export interface Backend {
   roomFork(source: string, target: string, upto: number | null): Promise<void>;
   /** Make room `id` from a thread's snapshot on this machine: a fork from another machine,
    *  or a thread moved before it started. Usage, Always allow and edits stay behind. */
-  roomImport(id: string, snapshot: RoomSnapshot, cwd: string): Promise<void>;
+  roomImport(id: string, snapshot: RoomSnapshot, cwd: string, replace?: boolean): Promise<void>;
   /** Have a participant summarize the chat and show the models that summary
    *  in place of the messages so far. The transcript is kept. */
   roomCompact(id: string): Promise<void>;
@@ -749,7 +749,8 @@ function demoBackend(): Backend {
       const artifacts = localStorage.getItem(`apex-deck.demo.artifacts.${source}`);
       if (artifacts) localStorage.setItem(`apex-deck.demo.artifacts.${target}`, artifacts);
     },
-    roomImport: async (id, snapshot) => {
+    roomImport: async (id, snapshot, _cwd, replace = false) => {
+      if (replace) { rooms.delete(id); localStorage.removeItem(`apex-deck.demo.room.${id}`); }
       if (rooms.has(id) || localStorage.getItem(`apex-deck.demo.room.${id}`)) throw new Error("a thread with that id already exists");
       const transcript = snapshot.transcript ?? [];
       localStorage.setItem(`apex-deck.demo.room.${id}`, JSON.stringify({

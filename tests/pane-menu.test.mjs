@@ -7,10 +7,11 @@ const summary = (items) => items.map((i) => `${i.separated ? "| " : ""}${i.label
 
 test("a thread's menu is Codex's, with Deck's Share as PDF, Copy ›, Fork, Export and Delete", () => {
   const items = paneMenuItems("chat", idle, { address: "" }, { mac: true });
-  assert.deepEqual(summary(items), ["Rename", "Pin", "Mark as unread", "| Share as PDF", "Copy", "Fork", "Export", "| Archive", "Delete… (danger)"]);
-  assert.deepEqual(items.map((i) => i.keys ?? ""), ["⌥⌘R", "⌥⌘P", "⇧⌘U", "", "", "", "", "⇧⌘A", ""]);
-  assert.deepEqual(items.map((i) => i.action), ["rename", "pin", "mark_unread", "share_pdf", "copy", "fork", "export", "archive", "delete"]);
+  assert.deepEqual(summary(items), ["Rename", "Pin", "Mark as unread", "Project", "| Share as PDF", "Copy", "Fork", "Export", "| Archive", "Delete… (danger)"]);
+  assert.deepEqual(items.map((i) => i.keys ?? ""), ["⌥⌘R", "⌥⌘P", "⇧⌘U", "", "", "", "", "", "⇧⌘A", ""]);
+  assert.deepEqual(items.map((i) => i.action), ["rename", "pin", "mark_unread", "project", "share_pdf", "copy", "fork", "export", "archive", "delete"]);
   assert.equal(items.find((i) => i.action === "copy").submenu, true);
+  assert.equal(items.find((i) => i.action === "project").submenu, true);
   const marked = paneMenuItems("chat", idle, { address: "" }, { pinned: true, unread: true, mac: true });
   assert.equal(marked.find((i) => i.action === "pin").label, "Unpin");
   assert.equal(marked.find((i) => i.action === "mark_unread").label, "Mark as read");

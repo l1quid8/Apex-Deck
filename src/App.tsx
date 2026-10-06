@@ -31,6 +31,9 @@ import { ConnectionDialog, type ConnectionMode } from "./ConnectionDialog";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { archiveThreads, noteActive, setCollapsed, setUnread, toggleProjectPin, unarchiveThreads } from "./sidebarModel.ts";
 import { COPIED, folderCopyText, writeClipboard } from "./threadCopy.ts";
+import { chooseOutcome, pickerRows } from "./destinations.ts";
+import { historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
+import { loadRoomState } from "./roomRecovery.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, type Attention, type Signal } from "./attention";
@@ -167,6 +170,10 @@ export function App() {
   const [hostList, setHostList] = useState<HostEntry[]>([]);
   /** Edit connection… (or Add a server), while open. */
   const [connectionDialog, setConnectionDialog] = useState<ConnectionMode | null>(null);
+  /** A started thread pointed somewhere else: it asks New thread or Fork there. */
+  const [moveAsk, setMoveAsk] = useState<{ paneId: string; to: string } | null>(null);
+  /** Threads being moved or forked right now, so a second choice waits. */
+  const moving = useRef(new Set<string>());
   /** Bumped by ⌘T to open the + New menu. */
   const [newMenuRequest, setNewMenuRequest] = useState(0);
   /** Bumped to start renaming from the pane head's ⋯ menu. */
@@ -644,11 +651,13 @@ export function App() {
     setMaximized(null);
   };
 
-  const forkThread = async (source: Pane, title: string, upto: number | null) => {
+  const forkThread = async (source: Pane, title: string, upto: number | null, at: number) => {
     const id = newId("pane");
     if (!backend) throw new Error("The backend is not ready yet.");
     await backendFor(source).roomFork(source.id, id, upto);
-    setPanes((list) => [...list, { id, workspaceId: source.workspaceId, kind: "chat", title }]);
+    const sourceHost = workspaces.find((w) => w.id === source.workspaceId);
+    const fork = { from: source.id, title: source.title, host: hostNameFor(sourceHost ? workspaceHost(sourceHost) : "local"), at };
+    setPanes((list) => [...list, { id, workspaceId: source.workspaceId, kind: "chat", title, fork }]);
     setFocusedPane(id);
     setSection("threads");
     setMaximized(null);
@@ -883,10 +892,104 @@ export function App() {
     const ssh = hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh;
     return items.map((item) => ({
       key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, keys: item.keys,
-      submenu: item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(workspace?.path ?? "", ssh), id: pane.id })
-        .map((c) => ({ key: c.kind, label: c.label, side: c.side, disabled: c.disabled, reason: c.reason, onSelect: () => copyFromThread(pane, c.kind) })) : undefined,
+      submenu: item.action === "project" ? projectEntries(pane)
+        : item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(workspace?.path ?? "", ssh), id: pane.id })
+          .map((c) => ({ key: c.kind, label: c.label, side: c.side, disabled: c.disabled, reason: c.reason, onSelect: () => copyFromThread(pane, c.kind) })) : undefined,
       onSelect: item.submenu ? undefined : () => runPaneMenu(pane, item.action, from),
     }));
+  };
+
+  /** Whether a thread has started; one that hasn't reported yet counts by its saved activity. */
+  const startedOf = (pane: Pane) => threadStatus[pane.id]?.started ?? Boolean(pane.activeAt);
+  /** The machine a workspace runs on, and whether it can take work now. */
+  const reachable = (hostId: string) => {
+    if (hostId === "local" || !backend?.machines) return true;
+    try { return backend.machines.connection(hostId).get().status.kind === "connected"; } catch { return false; }
+  };
+  /** A thread's history and bots, read from where it runs now. */
+  const snapshotOf = async (pane: Pane) => {
+    const workspace = workspaces.find((w) => w.id === pane.workspaceId);
+    return (await loadRoomState(backendFor(pane), pane.id, [], settings.newThread, workspace?.path ?? "")).snapshot;
+  };
+  /** Point a thread at another project: an unstarted one moves there, a started one asks first. */
+  const choose = (pane: Pane, workspaceId: string) => {
+    const outcome = chooseOutcome(pane.workspaceId, workspaceId, startedOf(pane));
+    if (outcome === "move") void moveDraft(pane, workspaceId);
+    else if (outcome === "ask") { setMoveAsk({ paneId: pane.id, to: workspaceId }); focusPane(pane); }
+  };
+  /** Move a thread that hasn't started, with what was typed and its bots, to `workspaceId`. */
+  const moveDraft = async (pane: Pane, workspaceId: string) => {
+    const target = workspaces.find((w) => w.id === workspaceId);
+    const source = workspaces.find((w) => w.id === pane.workspaceId);
+    if (!target || !source || moving.current.has(pane.id)) return;
+    const [fromHost, toHost] = [workspaceHost(source), workspaceHost(target)];
+    if (!reachable(toHost)) { toast(`Can't reach ${hostNameFor(toHost)}, so ${pane.title} stays where it is.`); return; }
+    if (!reachable(fromHost)) { toast(`Can't reach ${hostNameFor(fromHost)} to bring ${pane.title} over. Try again once it's back.`); return; }
+    moving.current.add(pane.id);
+    try {
+      const snapshot = await snapshotOf(pane);
+      await placeThread({ from: backendFor(pane), to: backendFor({ workspaceId } as Pane), id: pane.id, snapshot, cwd: target.path, sameHost: fromHost === toHost, hostName: hostNameFor(toHost) });
+      setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, workspaceId } : p)));
+      setActiveWorkspace(workspaceId);
+    } catch (error) {
+      toast(`Couldn't move ${pane.title}: ${String(error).replace(/^Error: /, "")}`);
+    } finally {
+      moving.current.delete(pane.id);
+    }
+  };
+  /** Fork a thread into another project, on this machine or another: the history comes too, nothing runs until Send. */
+  const forkTo = async (source: Pane, workspaceId: string) => {
+    const target = workspaces.find((w) => w.id === workspaceId);
+    const from = workspaces.find((w) => w.id === source.workspaceId);
+    if (!target || !from) return;
+    const [fromHost, toHost] = [workspaceHost(from), workspaceHost(target)];
+    if (!reachable(toHost)) { toast(`Can't reach ${hostNameFor(toHost)}, so nothing was forked.`); return; }
+    if (!reachable(fromHost)) { toast(`Can't reach ${hostNameFor(fromHost)} to read ${source.title}'s history.`); return; }
+    try {
+      const snapshot = await snapshotOf(source);
+      const id = newId("pane");
+      await backendFor({ workspaceId } as Pane).roomImport(id, snapshot, target.path);
+      const crossed = fromHost !== toHost && historyHasAttachments(snapshot.transcript);
+      const fork = { from: source.id, title: source.title, host: hostNameFor(fromHost), at: snapshot.transcript.length, ...(crossed ? { crossed: true as const } : {}) };
+      setPanes((list) => [...list, { id, workspaceId, kind: "chat", title: `${source.title} (fork)`, fork }]);
+      setActiveWorkspace(workspaceId);
+      setFocusedPane(id);
+      setSection("threads");
+      setMaximized(null);
+    } catch (error) {
+      toast(unsupported(error, "room_import")
+        ? `${hostNameFor(toHost)}'s apex-daemon is too old to take a fork from another place. Update it there (docs/daemon-ubuntu.md).`
+        : `Couldn't fork ${source.title}: ${String(error).replace(/^Error: /, "")}`);
+    }
+  };
+  /** The prompt's words and actions for the pane that asked. */
+  const askFor = (pane: Pane) => {
+    if (!moveAsk || moveAsk.paneId !== pane.id) return undefined;
+    const to = workspaces.find((w) => w.id === moveAsk.to);
+    const here = workspaces.find((w) => w.id === pane.workspaceId);
+    if (!to || !here) return undefined;
+    return {
+      stays: hostNameFor(workspaceHost(here)), project: to.name, host: hostNameFor(workspaceHost(to)),
+      onNew: () => { setMoveAsk(null); addPane("chat", "Group chat", undefined, to.id); },
+      onFork: () => { setMoveAsk(null); void forkTo(pane, to.id); },
+      onCancel: () => setMoveAsk(null),
+    };
+  };
+  /** Project ›, in a thread's menu: every project, recent first; picking one moves an unstarted thread or asks. */
+  const projectEntries = (pane: Pane): MenuEntry[] => {
+    const here = workspaces.find((w) => w.id === pane.workspaceId);
+    const rows = pickerRows(workspaces, panes, pane.workspaceId, (hostId) => !reachable(hostId));
+    const stays = startedOf(pane)
+      ? `Picking one starts a new thread or a fork there. This thread stays on ${hostNameFor(here ? workspaceHost(here) : "local")}.`
+      : "This thread hasn't started, so it moves to the one you pick.";
+    return [
+      ...rows.map((row) => ({
+        key: row.workspace.id, label: row.workspace.name, side: row.hostId === "local" ? "" : hostNameFor(row.hostId),
+        checked: row.current, disabled: row.offline && !row.current, reason: row.offline ? `${hostNameFor(row.hostId)} can't be reached.` : "",
+        onSelect: () => choose(pane, row.workspace.id),
+      })),
+      { key: "note", label: stays, note: true, separated: true },
+    ];
   };
 
   /** What a server holds, for Edit connection: "2 threads and 1 project". */
@@ -1261,7 +1364,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>

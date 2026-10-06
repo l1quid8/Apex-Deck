@@ -45,6 +45,7 @@ import { recordApproval, approvalSignal, approvalSnapshot, cardsByBot, deadlineN
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
 import { exportFileName, exportHtml, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { lastReply } from "./threadCopy.ts";
+import { threadStarted } from "./destinations.ts";
 
 /** What a ⋯ menu can ask an open or closed thread to do. */
 export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown" | "copy_reply";
@@ -105,7 +106,9 @@ interface Props {
   profiles: ParticipantConfig[];
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
-  onFork?: (title: string, upto: number | null) => Promise<string>;
+  onFork?: (title: string, upto: number | null, at: number) => Promise<string>;
+  /** A started thread was pointed somewhere else: ask New thread or Fork there. */
+  moveAsk?: { stays: string; project: string; host: string; onNew(): void; onFork(): void; onCancel(): void };
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared after it is taken. */
   menuRequest?: { id: string; action: ThreadMenuRequest };
   /** Copy › text this thread built (as Markdown, or its last reply), for App to put on the clipboard. */
@@ -386,7 +389,7 @@ function fitHead(head: HTMLElement) {
     head.scrollWidth <= head.clientWidth && (!title || title.scrollWidth <= title.clientWidth || title.clientWidth >= TITLE_ROOM));
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -605,6 +608,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const lastSeenRef = useRef(pane.lastSeenSeq);
   const filePicker = useRef<HTMLInputElement>(null);
   const [attached, setAttached] = useState<Attachment[]>([]);
+  /** Send was pressed: from then on the thread has started and stays where it runs. */
+  const [sendingFirst, setSendingFirst] = useState(false);
+  /** Where the room was last opened, to tell a move to another machine or folder. */
+  const place = useRef<{ backend: Backend; cwd: string } | null>(null);
   const [tldr, setTldr] = useState(() => loadTldr(pane.id));
   const toggleTldr = () => setTldr((on) => { saveTldr(pane.id, !on); return !on; });
   const field = useRef<HTMLDivElement>(null);
@@ -843,6 +850,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         }
       }
     };
+    // App moved this thread before it started: it reopens where it runs now. Files
+    // attached on another machine stay there, so they come off the message.
+    const before = place.current;
+    place.current = { backend, cwd };
+    if (before && before.backend !== backend && attached.length > 0) {
+      setAttached([]);
+      notify("Attached files stay on the machine they were sent to. Attach them again here.");
+    }
     const recovery = createRoomRecovery({
       load: () => loadRoomState(backend, pane.id, pane.sample ? SAMPLE_BOTS : [], defaults.current.newThread, cwd),
       apply: (state) => {
@@ -916,9 +931,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       approvals.current?.(pane.id, null);
       backend.roomClose(pane.id).catch(() => {});
     };
-    // The room lives as long as the pane.
+    // The room lives as long as the pane, where the pane runs. A thread that
+    // hasn't started can be moved (App imports it there first), so it reopens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, profileMode]);
+  }, [pane.id, profileMode, backend, cwd]);
 
   // Keep the elapsed times moving while anything is running.
   const running = Object.keys(working).length > 0;
@@ -937,7 +953,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   // Paths named in code spans, asked about once per folder; a file written
   // later is picked up when the thread is opened again.
-  const pathChecks = useMemo(() => new Map<string, Promise<boolean>>(), [cwd]);
+  const pathChecks = useMemo(() => new Map<string, Promise<boolean>>(), [cwd, backend]);
   const pathExists = useCallback((path: string) => {
     let known = pathChecks.get(path);
     if (!known) {
@@ -945,13 +961,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       pathChecks.set(path, known);
     }
     return known;
-  }, [pathChecks, cwd]);
+  }, [pathChecks, cwd, backend]);
 
   // A model's picture may live outside the attachments folder (Codex keeps
   // its own); a copy is taken the first time it is shown.
   const readReplyImage = useCallback(
     (path: string) => backend.importReplyImage(pane.id, path).then(backend.readAttachment),
-    [pane.id],
+    [pane.id, backend],
   );
 
   /** Bring the transcript to where it should be after anything changed in it. */
@@ -1118,14 +1134,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
     else await backend.roomPostTo(pane.id, message, to, !manual);
   };
+  // The queue lives as long as the pane; a thread moved before it started runs somewhere else, so it asks the current backend.
+  const current = useRef(backend);
+  current.current = backend;
   const [turnQueue] = useState(() => new ParticipantQueues(
-    message => backend.roomTargets(pane.id, message),
+    message => current.current.roomTargets(pane.id, message),
     (message, to, kind, hops, manual) => dispatch.current(message, to, kind, hops, manual),
-    id => backend.roomStop(pane.id, id),
+    id => current.current.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused.`, "error"); },
-    () => !backend.host || hostCanMutate(backend.host.connection.get().status),
+    () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
   ));
   useEffect(() => {
     const store = backend.host?.connection;
@@ -1180,7 +1199,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   const forkAt = (title: string, upto: number | null) => {
     if (!onFork) return notify("Forking is available in workspace threads.", "error");
-    return onFork(title, upto)
+    return onFork(title, upto, upto ?? messagesOf(entries).length)
       .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
       .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
   };
@@ -1798,13 +1817,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (!backend.host || hostCanMutate(backend.host.connection.get().status)) { /* rechecked by queue acceptance */ } else return;
     if (tldr) wiggle(field.current);
     // ⌘↵ queues it, then steers it from the queue, so a cancelled prompt leaves it queued.
+    setSendingFirst(true);
     void turnQueue.send(message).then(id => {
       setText(current => current === text ? "" : current); setReply(null);
       attached.forEach(a => a.preview && URL.revokeObjectURL(a.preview));
       setAttached(current => current.filter(a => !attached.includes(a)));
       const item = turnQueue.items.find(queuedItem => queuedItem.id === id);
       if (steer && item) askToSteer(item);
-    }).catch(error => notify(String(error), "error"));
+    }).catch(error => { setSendingFirst(false); notify(String(error), "error"); });
   };
 
   /** Put an example in the composer without sending it. */
@@ -1885,8 +1905,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // For the sidebar: whether a bot has replied (Copy last reply) and when the newest message came (Recents).
   const transcriptFacts = useMemo(() => {
     const messages = messagesOf(entries);
-    return { hasReply: messages.some((m) => m.speaker.kind === "bot"), lastAt: messages.reduce((latest, m) => Math.max(latest, m.at ?? 0), 0) };
+    return { hasReply: messages.some((m) => m.speaker.kind === "bot"), lastAt: messages.reduce((latest, m) => Math.max(latest, m.at ?? 0), 0), count: messages.length };
   }, [entries]);
+  const started = threadStarted(transcriptFacts.count, pane.fork?.at ?? 0, sendingFirst);
+  // A fork's line sits after the history it copied: where it came from, and that nothing ran yet.
+  const copiedUpTo = pane.fork?.at ?? 0;
+  const forkAfter = useMemo(() => (copiedUpTo > 0 ? messagesOf(entries)[copiedUpTo - 1]?.seq ?? null : null), [entries, copiedUpTo]);
+  const forkLine = pane.fork && (copiedUpTo === 0 || forkAfter !== null) ? (
+    <div key="fork-line" className="fork-line" role="note">
+      {forkIcon}
+      <span>Forked from “{pane.fork.title}” on {pane.fork.host}.{started ? "" : " The history is copied; nothing runs until you send."}{pane.fork.crossed ? ` Attachments in it stay on ${pane.fork.host}.` : ""}</span>
+    </div>
+  ) : null;
   // The pane head's words (see headLine), and who is replying or stopped on a card, for App.
   const headBots: BotProgress[] = participants
     .filter((p) => working[p.id] && !asks[p.id]?.length)
@@ -1896,7 +1926,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       startedAt: working[p.id].startedAt,
       heardAt: isCommandLine(p.backend) ? heard.current.get(p.id) ?? working[p.id].startedAt : null,
     }));
-  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), ...transcriptFacts };
+  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), hasReply: transcriptFacts.hasReply, lastAt: transcriptFacts.lastAt, started };
   const statusKey = JSON.stringify(status);
   useEffect(() => { if (!profileMode) onStatus?.(pane.id, status); }, [statusKey]);
   // The title bar's + New agent opens the form here.
@@ -2420,6 +2450,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             </div>}
           </div>
         )}
+        {pane.fork && pane.fork.at === 0 && forkLine}
         {entries.flatMap((entry) => {
           const item = entry.kind === "notice" ? (
             <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}${entry.notice.action ? " with-action" : ""}`}>
@@ -2464,9 +2495,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             </div>
           );
           // "New since you looked" goes above the first reply you have not seen.
+          const after = entry.kind === "message" && entry.message.seq === forkAfter ? [forkLine] : [];
           return entry.kind === "message" && entry.message.seq === dividerAt
-            ? [<div key={`u${entry.message.seq}`} className="unseen-divider" role="separator" aria-label="New since you looked"><span>New since you looked</span></div>, item]
-            : [item];
+            ? [<div key={`u${entry.message.seq}`} className="unseen-divider" role="separator" aria-label="New since you looked"><span>New since you looked</span></div>, item, ...after]
+            : [item, ...after];
         })}
         {Object.entries(drafts).map(([id, partial]) => {
           const turn = working[id];
@@ -2592,6 +2624,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
+        {moveAsk && <div className="move-ask" role="group" aria-label="Open it somewhere else">
+          <p>This thread runs on <b>{moveAsk.stays}</b> and stays there. Open <b>{moveAsk.project}</b> on <b>{moveAsk.host}</b> as:</p>
+          <div>
+            <button type="button" className="primary" data-act="ask-new" onClick={moveAsk.onNew}>New thread</button>
+            <button type="button" data-act="ask-fork" onClick={moveAsk.onFork}>Fork this thread</button>
+            <button type="button" className="ghost" data-act="ask-cancel" onClick={moveAsk.onCancel}>Cancel</button>
+          </div>
+        </div>}
         {reply && <div className="quote-preview">
           <div className="quote-preview-copy"><span className="speaker">{reply.id ? `Quoting ${reply.name}` : "Quoting your message"}</span><blockquote>{reply.text}</blockquote></div>
           <span className="pane-menu-wrap hand-off">

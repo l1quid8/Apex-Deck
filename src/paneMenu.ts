@@ -5,7 +5,7 @@
 import type { PaneKind } from "./types";
 import { threadKeys } from "./shortcuts.ts";
 
-export type PaneMenuAction = "rename" | "pin" | "mark_unread" | "share_pdf" | "copy" | "start" | "copy_path" | "copy_address" | "close" | "fork" | "export" | "archive" | "delete";
+export type PaneMenuAction = "rename" | "pin" | "mark_unread" | "project" | "share_pdf" | "copy" | "start" | "copy_path" | "copy_address" | "close" | "fork" | "export" | "archive" | "delete";
 
 export interface PaneMenuItem {
   action: PaneMenuAction;
@@ -45,6 +45,7 @@ export function paneMenuItems(kind: PaneKind, terminal: TerminalMenuState, previ
       item("rename", "Rename", { keys: keys.rename }),
       item("pin", options.pinned ? "Unpin" : "Pin", { keys: keys.pin }),
       item("mark_unread", options.unread ? "Mark as read" : "Mark as unread", { keys: keys.mark_unread }),
+      item("project", "Project", { submenu: true }),
       item("share_pdf", "Share as PDF", { separated: true }),
       item("copy", "Copy", { submenu: true }),
       item("fork", "Fork"),

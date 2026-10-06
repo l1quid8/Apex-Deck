@@ -335,3 +335,22 @@ fn importing_a_snapshot_makes_a_fresh_room_without_usage_rules_or_changes() {
     host.host.shutdown();
     let _ = std::fs::remove_dir_all(data);
 }
+
+#[test]
+fn importing_with_replace_swaps_an_unstarted_room_for_one_in_another_folder() {
+    let data = std::env::temp_dir().join(format!("apex-host-replace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let elsewhere = data.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let host = Running::start(&data);
+    let draft = host.call(json!({"cmd":"room_create","args":{"id":"d","participants":[scripted("bot", &["hi"])],"options":RoomOptions::default(),"cwd":data.to_string_lossy()}})).unwrap();
+    // Without replace, an open id is refused; with it, the room is swapped in one step.
+    assert!(host.call(json!({"cmd":"room_import","args":{"id":"d","snapshot":draft,"cwd":elsewhere.to_string_lossy()}})).is_err());
+    host.call(json!({"cmd":"room_import","args":{"id":"d","snapshot":draft,"cwd":elsewhere.to_string_lossy(),"replace":true}})).unwrap();
+    let opened = host.call(json!({"cmd":"room_create","args":{"id":"d","participants":[],"options":RoomOptions::default()}})).unwrap();
+    assert_eq!(opened["participants"], draft["participants"]);
+    let store = apex_host::storage::Store::new(data.join("saved-chats-v1"));
+    assert_eq!(store.room("d").unwrap().unwrap().cwd.as_deref(), Some(elsewhere.to_string_lossy().as_ref()));
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}

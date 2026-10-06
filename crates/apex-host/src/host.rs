@@ -975,8 +975,10 @@ impl Host {
     /// Make room `id` from a thread's snapshot: a fork to this machine, or a
     /// thread moved here before it started. Its usage, Always allow rules and
     /// record of edits stay behind; they belong to the other folder.
-    pub fn room_import(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>) -> Result<(), String> {
-        if self.rooms.lock().unwrap().contains_key(&id) {
+    pub fn room_import(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: bool) -> Result<(), String> {
+        if replace {
+            self.room_delete(id.clone())?;
+        } else if self.rooms.lock().unwrap().contains_key(&id) {
             return Err("a thread with that id already exists".into());
         }
         let mut clean = snapshot.fork(snapshot.transcript.len());

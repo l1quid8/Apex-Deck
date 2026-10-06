@@ -257,6 +257,9 @@ export interface Pane {
   unread?: true;
   /** When its newest message arrived, in ms since the epoch, for Recents. */
   activeAt?: number;
+  /** A fork: the thread it came from, on which machine, and how many messages it copied.
+   *  `crossed` when the history came from another machine, whose attachments stayed there. */
+  fork?: { from: string; title: string; host: string; at: number; crossed?: true };
 }
 
 /** What a thread reports to App through ChatPane's `onStatus`. */
@@ -273,6 +276,8 @@ export interface ThreadStatus {
   hasReply?: boolean;
   /** When the newest message arrived, in ms since the epoch. */
   lastAt?: number;
+  /** A message was sent since the thread was made or forked: it stays where it runs. */
+  started?: boolean;
 }
 
 export interface Workspace {
