@@ -1,3 +1,4 @@
+import { fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
@@ -344,12 +345,23 @@ const STARTERS = [
 /** Below this width the artifacts panel covers the conversation instead of sitting beside it. */
 const NARROW_PX = 760;
 
+/** How much of each bot chip shows, most first. */
+const CHIP_STEPS = ["full", "levels", "names"] as const;
+/** How much of the pane's top line shows: then the count labels go, then the status words, then the server chip. */
+const HEAD_STEPS = ["full", "compact", "tight", "min"] as const;
+/** A thread title cut shorter than this makes the top line give up something else. */
+const TITLE_ROOM = 150;
+
 /** Show the most of each bot chip that lets the whole row fit: details, then usage levels, go first. Names alone may still scroll. */
 function fitChips(row: HTMLElement) {
-  for (const fit of ["full", "levels", "names"]) {
-    row.dataset.fit = fit;
-    if (row.scrollWidth <= row.clientWidth) return;
-  }
+  fitSteps(CHIP_STEPS, (step) => { row.dataset.fit = step; }, () => row.scrollWidth <= row.clientWidth);
+}
+
+/** Give up words on the pane's top line until it fits and the title keeps its room. */
+function fitHead(head: HTMLElement) {
+  const title = head.querySelector<HTMLElement>(".pane-title");
+  fitSteps(HEAD_STEPS, (step) => { head.dataset.fit = step; }, () =>
+    head.scrollWidth <= head.clientWidth && (!title || title.scrollWidth <= title.clientWidth || title.clientWidth >= TITLE_ROOM));
 }
 
 export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
@@ -1539,6 +1551,24 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return () => { live = false; unlisten?.(); };
   }, [backend]);
 
+  // Artifacts and Changes sit on the pane's top line, in the slot App leaves for them.
+  const [headSlot, setHeadSlot] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    setHeadSlot(root.current?.closest(".pane")?.querySelector<HTMLElement>(".pane-head .pane-counts") ?? null);
+  }, []);
+  // The top line refits when the pane resizes or anything on it changes: counts, status words, the server chip.
+  useEffect(() => {
+    const head = headSlot?.closest<HTMLElement>(".pane-head");
+    if (!head) return;
+    fitHead(head);
+    const resized = new ResizeObserver(() => fitHead(head));
+    resized.observe(head);
+    // Only text and children: fitting sets an attribute, which must not trigger another fit.
+    const changed = new MutationObserver(() => fitHead(head));
+    changed.observe(head, { childList: true, characterData: true, subtree: true });
+    return () => { resized.disconnect(); changed.disconnect(); };
+  }, [headSlot]);
+
   const [serverLists, setServerLists] = useState<Record<string, ToolServer[]>>({});
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [serverTargets, setServerTargets] = useState<string[]>([]);
@@ -2086,8 +2116,23 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </ul>}
     {removedNote && <p className="allowed-removed" role="status"><span aria-hidden="true">✓</span>{removedNote}</p>}
   </>;
+  const changedFiles = new Set(changes.map((c) => c.change.path)).size;
+  const newArtifacts = unseenArtifacts > 0 && !panel;
+  // Labels hide on a crowded top line, so each button names itself for screen readers.
+  const threadCounts = (
+    <div className="thread-counts">
+      {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${panel ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={panel !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>
+        <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
+      </button>}
+      {changes.length > 0 && <button className="ghost small" aria-label={`Changes · ${changedFiles}`} title="Changes" onClick={() => { details?.show("changes"); loadDiff(); }}>
+        <ChangesIcon /><span className="count-label">Changes · </span>{changedFiles}
+      </button>}
+    </div>
+  );
   return (
     <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
+      {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
+
       {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, top: rosterAnchor.top }}>{quickAddMenu}</span>}
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async config => {
         await backend.roomUpdateParticipant(pane.id, config);
@@ -2150,7 +2195,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
 
 
-        {!profileMode && <div className="thread-counts">{artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${panel ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={panel !== null} onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>Artifacts · {artifacts.artifacts.length}{unseenArtifacts > 0 && !panel && <span className="new-dot" aria-label={`${unseenArtifacts} new`} />}</button>}{changes.length > 0 && <button className="ghost small" onClick={() => { details?.show("changes"); loadDiff(); }}>Changes · {new Set(changes.map(c => c.change.path)).size}</button>}</div>}
       </div>
 
       {!profileMode && pins.length > 0 && pinControls}
@@ -2473,4 +2517,12 @@ function SteerArrow() {
 
 function TrashIcon() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" /></svg>;
+}
+
+function ArtifactsIcon() {
+  return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6M9 14l-2 2 2 2m6-4 2 2-2 2" /></svg>;
+}
+
+function ChangesIcon() {
+  return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 4v8M8 8h8M8 18h8" /></svg>;
 }

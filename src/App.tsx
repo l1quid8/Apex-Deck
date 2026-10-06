@@ -1079,6 +1079,9 @@ export function App() {
                     )}
                     <span className="spacer" />
                     {pane.kind === "chat" && <ModStatuses paneId={pane.id} />}
+                    {/* ChatPane puts Artifacts and Changes here. */}
+                    {pane.kind === "chat" && <span className="pane-counts" />}
+
                     <button className="icon small" onClick={() => setMaximized((m) => (m === pane.id ? null : pane.id))} aria-label={maximized === pane.id ? "Restore layout" : "Maximize pane"} title={maximized === pane.id ? "Restore layout" : "Maximize"}>
                       {maximized === pane.id ? "▣" : "□"}
                     </button>

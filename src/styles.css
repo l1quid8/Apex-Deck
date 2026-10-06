@@ -1758,8 +1758,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .thread-chat .chips { flex-wrap: nowrap; flex: 1; min-width: 0; overflow-x: auto; }
 .thread-chat .chip-wrap { flex: none; }
 .thread-chat .chip-name { white-space: nowrap; }
-.thread-chat .thread-counts { display: flex; flex: none; gap: 4px; }
-.thread-chat .thread-counts button { white-space: nowrap; font-size: 11px; }
 /* ChatPane picks data-fit from what the row has room for, so a wide pane full of bots still shows every one. */
 .thread-chat .chips[data-fit="levels"] .chip-meta:not(.chip-levels) { display: none; }
 .thread-chat .chips[data-fit="names"] .chip-meta { display: none; }
@@ -2558,3 +2556,14 @@ button.mod-status:hover { color: var(--text); }
 .host-menu-manage { text-align: left; padding: 6px 10px; }
 .host-menu .error { padding: 4px 8px; font-size: 12px; }
 .loading-actions { display: flex; gap: 8px; }
+
+/* Artifacts and Changes, on the pane's top line before the window buttons (ChatPane portals them in). */
+.pane-counts { display: contents; }
+.pane-head .thread-counts { display: flex; flex: none; gap: 4px; }
+.pane-head .thread-counts button { white-space: nowrap; font-size: 11px; line-height: 1.4; }
+.count-icon { display: none; margin-right: 4px; vertical-align: -2px; }
+/* ChatPane picks data-fit. A crowded top line gives up, in order: the count labels, the status words, then the server chip. */
+.pane-head:is([data-fit="compact"], [data-fit="tight"], [data-fit="min"]) .count-label { display: none; }
+.pane-head:is([data-fit="compact"], [data-fit="tight"], [data-fit="min"]) .count-icon { display: inline-block; }
+.pane-head:is([data-fit="tight"], [data-fit="min"]) .pane-folder { display: none; }
+.pane-head[data-fit="min"] .server-chip { display: none; }
