@@ -227,7 +227,10 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   const { onShortcut: _keys, ...browser } = bridge.browser;
   const localConnection = hostConnectionStore("local", "This Mac");
   localConnection.setRetry(() => client.retryNow());
-  client.onStatus(status => localConnection.setStatus(status));
+  client.onStatus(status => {
+    if (status.kind === "connected") localConnection.setHelper(client.helperVersion);
+    localConnection.setStatus(status);
+  });
   localConnection.setFinishResync(() => client.finishResync());
   const backend: Backend = guardHostWrites({ ...commandBackend(transport, shell), onMenu, hosts, browser,
     host: { id: "local", name: "This Mac", connection: localConnection } }, localConnection);
@@ -236,6 +239,8 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
     const remoteClient = new DaemonClient(connect);
     state.setRetry(() => remoteClient.retryNow());
     remoteClient.onStatus(status => {
+      // The version first, so the card never shows a connected host with last session's helper.
+      if (status.kind === "connected") state.setHelper(remoteClient.helperVersion);
       state.setStatus(status);
       if (status.kind === "connected") void machines.discover(host.id).catch(() => {});
     });

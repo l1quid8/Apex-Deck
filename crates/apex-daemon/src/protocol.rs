@@ -118,6 +118,8 @@ where
     };
     let welcome = json!({ "id": hello.id, "ok": {
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
+        // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
+        "version": env!("CARGO_PKG_VERSION"),
     } });
     if output.send(welcome.to_string()).await.is_err() {
         return;
@@ -358,7 +360,7 @@ mod tests {
     async fn hello_names_the_host_and_this_boot() {
         let mut client = connect(Trust::Local);
         let reply = client.hello().await;
-        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false } }));
+        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION") } }));
     }
 
     async fn save_sessions(client: &mut Client, versions: std::ops::RangeInclusive<u64>) {
@@ -377,7 +379,7 @@ mod tests {
 
         let mut back = connect_to(&daemon, Trust::Local);
         back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 1 } } })).await;
-        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true }));
+        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION") }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 2, "event": "session-changed", "payload": { "version": 2 } }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 3, "event": "session-changed", "payload": { "version": 3 } }));
         // Then live events, with nothing doubled.

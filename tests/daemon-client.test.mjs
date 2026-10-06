@@ -250,3 +250,16 @@ test('close stops everything', async () => {
   assert.deepEqual(timers.pending(), []);
   await assert.rejects(client.call('session_load'), { message: 'Not connected to the host.' });
 });
+
+test('the welcome tells which apex-daemon version answered; an older helper does not say', async () => {
+  const fresh = async (over) => {
+    const daemon = fakeDaemon(); const client = new DaemonClient(daemon.connect, { timers: fakeTimers() });
+    const started = client.start(); await tick();
+    assert.equal(client.helperVersion, undefined, 'unknown before any welcome');
+    daemon.last().receive({ id: daemon.last().sent[0].id, ok: welcome(over) });
+    await started;
+    return client.helperVersion;
+  };
+  assert.equal(await fresh({ version: '0.5.1' }), '0.5.1');
+  assert.equal(await fresh({}), null);
+});

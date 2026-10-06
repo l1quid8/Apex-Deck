@@ -22,6 +22,8 @@ export interface Welcome {
   protocol: number;
   last_seq: number;
   resumed: boolean;
+  /** The apex-daemon version. Helpers older than 0.5.1 don't send it. */
+  version?: string;
 }
 
 export type Status =
@@ -67,6 +69,11 @@ export class DaemonClient {
   /** Past the welcome on the current link. */
   private ready = false;
   private helloId = -1;
+  private helper: string | null | undefined = undefined;
+  /** The apex-daemon version from the latest welcome: null for a helper too old to say, undefined before any welcome. */
+  get helperVersion(): string | null | undefined {
+    return this.helper;
+  }
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
@@ -220,6 +227,7 @@ export class DaemonClient {
       return;
     }
     const wasConnected = this.bootId !== null;
+    this.helper = typeof welcome.version === "string" ? welcome.version : null;
     this.ready = true;
     this.attempt = 0;
     this.bootId = welcome.boot_id;
