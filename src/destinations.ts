@@ -80,5 +80,5 @@ export function shortName(name: string, room = 9): string {
   if (name.length <= room) return name;
   const head = Math.ceil((room - 1) / 2);
   const tail = Math.floor((room - 1) / 2);
-  return `${name.slice(0, head)}…${name.slice(name.length - tail)}`.replace(/-?…-?/, "…");
+  return `${name.slice(0, head)}…${name.slice(name.length - tail)}`.replace(/[-\s]?…[-\s]?/, "…");
 }

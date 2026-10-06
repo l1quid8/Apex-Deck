@@ -18,11 +18,12 @@ export interface NewMenuItem {
 /** A web page, offered on both decks. */
 const PREVIEW: NewMenuItem = { key: "preview", label: "Preview", detail: "a web page", kind: "preview", installed: true };
 
-/** `enabled` says whether a provider is switched on in Providers (see providers.ts). */
-export function newMenuItems(section: AppSection, agents: AgentInfo[], enabled: (key: string) => boolean, query: string): NewMenuItem[] {
+/** `enabled` says whether a provider is switched on in Providers (see providers.ts).
+ *  `where` names the project and machine a new thread opens in: "apex-deck on This Mac". */
+export function newMenuItems(section: AppSection, agents: AgentInfo[], enabled: (key: string) => boolean, query: string, where = ""): NewMenuItem[] {
   const items: NewMenuItem[] =
     section === "threads"
-      ? [{ key: "chat", label: "Group chat", detail: "new thread", kind: "chat", installed: true }, PREVIEW]
+      ? [{ key: "chat", label: "Group chat", detail: where ? `new thread in ${where}` : "new thread", kind: "chat", installed: true }, PREVIEW]
       : section === "code"
         ? [
             ...agents

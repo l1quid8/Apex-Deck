@@ -420,6 +420,36 @@ export async function runMultiHostSmoke(win) {
   await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
   fs.unlinkSync(path.join(root,'offline'));await page("__deck.backend.machines.connection('at').retryNow();return true;");
   await until('server back again',()=>page("return __deck.backend.machines.connection('at').get().status.kind==='connected'"));
+
+  // Stage 3: + New names where a new thread opens.
+  await page(`${pane('mac-thread')}.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true;`);
+  await page('document.querySelector(".new-menu > button").click();return true;');
+  await until('New menu',()=>page('return Boolean(document.querySelector(".new-menu-list"))'));
+  assert.match(await page('return document.querySelector(".new-menu-list").textContent'),/new thread in Mac thread on This Mac/);
+  await page('document.querySelector(".new-menu-filter").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
+  // Long names in narrow panes: the project and the server stay, shortened, with their full names on hover.
+  const renameProject=async(id,name)=>{
+    await page(`document.querySelector('.ws-row [data-workspace="${id}"]').closest('.ws-row').querySelector('[aria-haspopup=menu]').click();return true;`);
+    await page('[...document.querySelectorAll(".pane-menu [role=menuitem]")].find(b=>b.textContent.startsWith("Edit…")).click();return true;');
+    await until('rename field',()=>page('return Boolean(document.querySelector(".ws-row .thread-name-input"))'));
+    await page(`const input=document.querySelector('.ws-row .thread-name-input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(name)});input.dispatchEvent(new Event('input',{bubbles:true}));return true;`);
+    await page(`document.querySelector('.ws-row .thread-name-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return true;`);
+  };
+  await renameProject(serverProject,'apex-smoke-test-long-project');
+  await page(`document.querySelector('${serverRow} [aria-haspopup=menu]').click();return true;`);
+  await page('[...document.querySelectorAll(".pane-menu [role=menuitem]")].find(b=>b.textContent.startsWith("Edit connection")).click();return true;');
+  await until('edit dialog again',()=>page('return Boolean(document.querySelector(".connection-dialog"))'));
+  await field('name','Production-Frankfurt-Primary-01');
+  await act('save');
+  await until('long server name back',()=>page('return !document.querySelector(".connection-dialog")'));
+  const heads=await until('heads fitted',()=>page(`const out=[];for(const p of document.querySelectorAll('.pane')){if(!p.offsetWidth||!p.querySelector('.composer'))continue;const h=p.querySelector('.pane-head');const hr=h.getBoundingClientRect();const inside=el=>{if(!el||!el.offsetWidth)return false;const r=el.getBoundingClientRect();return r.left>=hr.left-1&&r.right<=hr.right+1;};const ws=h.querySelector('.pane-ws');const host=h.querySelector('.pane-host .hn');const buttons=[...h.querySelectorAll(':scope > .icon, :scope > .pane-menu-wrap')];out.push({id:p.dataset.paneId,fit:h.dataset.fit,ws:inside(ws),short:ws&&getComputedStyle(ws.querySelector('.nm-short')).display!=='none'?ws.querySelector('.nm-short').textContent:'',host:p.dataset.hostId==='at'?{inside:inside(host),title:host?.closest('.pane-host').title}:null,buttons:buttons.every(inside)});}return out.length>=3&&out;`));
+  await shot('narrow-headers');
+  for (const h of heads) {
+    assert.equal(h.ws,true,`project stays in ${h.id}`);
+    assert.equal(h.buttons,true,`buttons stay in ${h.id}`);
+    if (h.host) { assert.equal(h.host.inside,true,`server stays in ${h.id}`); assert.equal(h.host.title,'Production-Frankfurt-Primary-01'); }
+  }
+  assert.ok(heads.some(h=>h.short==='apex…ject'),`a narrow head shortens the long project name: ${JSON.stringify(heads.map(h=>[h.fit,h.short]))}`);
   console.log(`multi-host: ${oldHelper?'old-helper fallback':'current helper'} passed; running terminal reattached and completed PTY exited`);
   console.log('multi-host: ok — replies after Clear, interrupted load retry, rejected/expired snapshot-card UI, isolated drop, daemon restart recovery, preserved draft, remote upload, no replay, import remap, removal protection and canvas restore');
   return 0;

@@ -63,3 +63,10 @@ test("+ New offers a Preview on both decks", () => {
   assert.deepEqual(newMenuItems("code", agents, on([]), "preview")[0], item);
   assert.deepEqual(newMenuItems("threads", agents, on([]), "preview")[0], item);
 });
+
+test("Group chat says which project and machine the new thread opens in", () => {
+  const [chat] = newMenuItems("threads", [], () => true, "", "apex-deck on Hetzner-EU");
+  assert.equal(chat.detail, "new thread in apex-deck on Hetzner-EU");
+  assert.equal(newMenuItems("threads", [], () => true, "")[0].detail, "new thread");
+  assert.deepEqual(newMenuItems("threads", [], () => true, "hetzner", "apex-deck on Hetzner-EU").map((i) => i.key), ["chat"]);
+});

@@ -2771,3 +2771,32 @@ button.mod-status:hover { color: var(--text); }
 .composer-input { container-type: inline-size; }
 @container (max-width: 430px) { .tray-chip.files .lbl, .tray-chip.tools .lbl { display: none; } .tray-chip { padding: 3px 7px; } }
 @container (max-width: 330px) { .tray-chip.work .lbl { display: none; } }
+/* A pane's top line: the project (pill) and its server stay; the title and status words give way first.
+   At "min" a long project name shortens in the middle; the server name keeps 14 characters and its tooltip. */
+.pane-ws { display: inline-flex; align-items: center; gap: 5px; flex: none; max-width: 22ch; padding: 1px 8px; border-radius: 999px; background: var(--panel); color: var(--text); font-size: 11.5px; white-space: nowrap; }
+.pane-ws .fold { --cut: var(--panel); }
+.pane-ws .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pane-ws .nm-short { display: none; }
+.pane-host { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; min-width: 0; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.pane-host .tint { display: inline-grid; flex: none; }
+.pane-host .hn { overflow: hidden; text-overflow: ellipsis; max-width: 14ch; }
+.pane-head:is([data-fit="tight"], [data-fit="min"]) .pane-ws { padding: 1px 6px; }
+.pane-head:is([data-fit="tight"], [data-fit="min"]) .pane-host .tint { display: none; }
+.pane-head[data-fit="min"] .pane-ws .nm { display: none; }
+.pane-head[data-fit="min"] .pane-ws .nm-short { display: inline; }
+.pane-head[data-fit="min"] .pane-host .hn { max-width: 9ch; }
+/* Narrow panes: the buttons never move out; the project pill and server label shrink to a few letters with their tooltips. */
+.pane-head > .pane-menu-wrap, .pane-head > .icon { flex: none; }
+.pane-ws { flex: 0 1 auto; min-width: 3.2em; }
+.pane-host { flex: 0 1 auto; min-width: 2.8em; }
+.pane-host .hn { min-width: 0; }
+.pane-head[data-fit="min"] .pane-title { min-width: 3ch; }
+.pane-ws { overflow: hidden; }
+.pane-ws .nm-short { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* At the tightest step the short name is already short: it keeps its letters and the title gives way. */
+.pane-head[data-fit="min"] .pane-ws { flex-shrink: 0; }
+.pane-head[data-fit="min"] .pane-title { flex: 1 1 0; }
+/* Very narrow panes (six on screen): empty slots take no gap, and the line tightens before anything leaves it. */
+.pane-head > .pane-folder:empty, .pane-head > .pane-counts:empty { display: none; }
+.pane-head:is([data-fit="tight"], [data-fit="min"]) { gap: 5px; padding-left: 10px; padding-right: 8px; }
+.pane-head[data-fit="min"] .pane-ws { flex-shrink: 1; min-width: 4.4em; }

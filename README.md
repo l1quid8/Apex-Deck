@@ -28,6 +28,26 @@ edges.
   saved, **Undo** brings it straight back for 8 seconds, and later it comes
   back when you add the same folder again or choose it under
   **Removed · Show** at the foot of the rail.
+- **Where a thread runs.** Above every thread's message box sits Codex's
+  Work bar: the project, **Files**, **Tools**, and at the far right where it
+  runs (a laptop for This Mac, or the server's globe and name). The project
+  button (⌥⇧⌘O) opens a searchable list of Mac and server projects, with
+  **New server project**, **New project** and **Don't work in a project**.
+  **Work in** lists every machine, one row per folder, so two copies on one
+  server are both listed; a server with no copy asks for a folder there (a
+  separate copy: Deck doesn't copy files over), an offline one is greyed out,
+  and **Add server…** sets one up. A thread that hasn't started goes wherever
+  you point it, keeping what you typed and its bots. One that has started
+  stays where it is: pointing it elsewhere (from the Work bar or the thread
+  menu's **Project ›**) asks whether to start a **New thread** there or
+  **Fork this thread** there. A fork carries the history to any machine and
+  opens with a line saying where it came from; nothing runs until you send.
+  Files attached earlier in that history stay on the machine they were sent
+  to. **Files** lists files you dropped or browsed on this Mac (a server
+  thread gets a copy with your message); **Tools** lists the bots' servers,
+  apps and plugins on that machine and types `!name` into the message. A
+  server whose apex-daemon is older than this app can still take a new
+  thread, but not a fork's history, until its apex-daemon is updated.
 - **Terminal panes.** Real terminals in the workspace folder. Launch a plain
   shell, or any coding agent Apex Deck finds installed (the list is in
   `crates/apex-host/src/agents.rs`). A second terminal of the same tool in a

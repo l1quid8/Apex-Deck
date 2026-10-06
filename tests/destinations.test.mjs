@@ -58,4 +58,5 @@ test("long project names shorten in the middle, short ones stay", () => {
   assert.equal(shortName("apex-smoke-test"), "apex…test");
   assert.equal(shortName("apex-deck"), "apex-deck");
   assert.equal(shortName("staging-api-service"), "stag…vice");
+  assert.equal(shortName("Mac thread"), "Mac…read");
 });

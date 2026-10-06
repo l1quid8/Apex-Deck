@@ -17,19 +17,21 @@ interface Props {
   onManageProviders: () => void;
   /** Bumped by the keyboard shortcut to open the menu. */
   openRequest?: number;
+  /** Where a new thread opens: "apex-deck on This Mac". */
+  where?: string;
 }
 
 /**
  * + New, as a menu over the deck. Typing filters, the arrow keys move,
  * Enter opens, and Escape closes and puts focus back on the button.
  */
-export function NewMenu({ section, label, disabled, agents, disabledProviders, hasPanes, onShowPicker, onPick, onManageProviders, openRequest }: Props) {
+export function NewMenu({ section, label, disabled, agents, disabledProviders, hasPanes, onShowPicker, onPick, onManageProviders, openRequest, where = "" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
-  const items = newMenuItems(section, agents, (key) => providerEnabled(key, disabledProviders), query);
+  const items = newMenuItems(section, agents, (key) => providerEnabled(key, disabledProviders), query, where);
   const choosable = items.filter((item) => item.installed);
 
   const show = () => {

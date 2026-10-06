@@ -31,7 +31,8 @@ import { ConnectionDialog, type ConnectionMode } from "./ConnectionDialog";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { archiveThreads, hostTints, noteActive, setCollapsed, setUnread, toggleProjectPin, twinPath, unarchiveThreads } from "./sidebarModel.ts";
 import { COPIED, folderCopyText, writeClipboard } from "./threadCopy.ts";
-import { chooseOutcome, pickerRows, workInRows } from "./destinations.ts";
+import { chooseOutcome, pickerRows, shortName, workInRows } from "./destinations.ts";
+import { Glyph, ProjectFolder } from "./SidebarIcons";
 import type { WorkContext } from "./WorkBar";
 import { dotState } from "./hostFacts.ts";
 import { historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
@@ -1288,6 +1289,7 @@ export function App() {
           onPick={(item) => addPane(item.kind, item.kind === "chat" ? "Group chat" : item.label, item.agent)}
           onManageProviders={() => setSettingsOpen("providers")}
           openRequest={newMenuRequest}
+          where={current ? `${current.name} on ${hostNameFor(workspaceHost(current))}` : ""}
         />}</HostAgents>}
         <button className={settingsOpen ? "icon active" : "icon"} onClick={() => setSettingsOpen((open) => (open ? null : "general"))} aria-label="Settings" title="Settings (⌘,)" aria-pressed={!!settingsOpen}><DeckIcon name="settings" /></button>
         {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
@@ -1383,9 +1385,15 @@ export function App() {
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
+                    {/* The project and its machine always stay; the title and status words give way first. */}
+                    {workspace && <span className="pane-ws" title={`${workspace.name}${workspaceHost(workspace) === "local" ? "" : ` on ${hostNameFor(workspaceHost(workspace))}`}${workspace.path ? ` · ${workspace.path}` : ""}`}>
+                      <ProjectFolder tint={workspaceHost(workspace) === "local" ? undefined : tints.get(workspaceHost(workspace))} size={12} />
+                      <span className="nm">{workspace.name}</span><span className="nm-short">{shortName(workspace.name)}</span>
+                    </span>}
                     <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
-                    <span className="pane-project" title={workspace?.path}>{workspace?.name}</span>
-                    {paneBackend?.host && paneBackend.host.id !== "local" && <span className="pane-machine" title={paneBackend.host.name}>{paneBackend.host.name}</span>}
+                    {paneBackend?.host && paneBackend.host.id !== "local" && <span className="pane-host" title={paneBackend.host.name}>
+                      <span className="tint" style={{ color: tints.get(paneBackend.host.id) }}><Glyph name="globe" size={12} /></span><span className="hn">{paneBackend.host.name}</span>
+                    </span>}
                     {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
                     {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : pane.kind === "preview" ? previewStatus[pane.id] ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
