@@ -389,8 +389,11 @@ function fitChips(row: HTMLElement) {
 /** Give up words on the pane's top line until it fits and the title keeps its room. */
 function fitHead(head: HTMLElement) {
   const title = head.querySelector<HTMLElement>(".pane-title");
+  head.removeAttribute("data-flag-hidden");
   fitSteps(HEAD_STEPS, (step) => { head.dataset.fit = step; }, () =>
     head.scrollWidth <= head.clientWidth && (!title || title.scrollWidth <= title.clientWidth || title.clientWidth >= TITLE_ROOM));
+  // Still too wide at the last step: a flag ("New reply") goes rather than the buttons. The dot keeps its colour and names it.
+  head.toggleAttribute("data-flag-hidden", Boolean(head.querySelector(".flag")) && head.scrollWidth > head.clientWidth);
 }
 
 export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {

@@ -9,7 +9,7 @@ import { commandBackend } from '../../src/commandBackend.ts';
 import { createHostBackends } from '../../src/hostBackends.ts';
 import { createEventHub } from '../../src/eventHub.ts';
 import { socketLink } from './link.mjs';
-import { FolderMoveUnsupported, placeThread } from '../../src/threadMove.ts';
+import { FolderMoveUnsupported, MoveRefused, placeThread } from '../../src/threadMove.ts';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, ms = 10000) {
@@ -149,4 +149,36 @@ test('a move whose artifacts cannot be saved there leaves the thread whole where
   assert.equal(fs.existsSync(savedRoom(server.data, 't')), false);
   assert.deepEqual((await mac.backend.roomState('t')).snapshot.pins, ['use pnpm']);
   assert.deepEqual(await mac.backend.artifactsLoad('t'), page);
+});
+test('an older helper that still has a copy of the thread from an earlier move keeps it, and the thread stays whole here', { timeout: 30000 }, async t => {
+  const mac = await daemon(t); const server = await daemon(t); const [a, b] = folders(t);
+  // Left on the server by an earlier move whose delete never arrived.
+  await server.backend.roomCreate('t', [bot('left')], options, a);
+  await server.backend.roomClose('t');
+  await mac.backend.roomCreate('t', [bot('moved')], options, b);
+  await mac.backend.artifactsSave('t', page);
+  const snapshot = (await mac.backend.roomState('t')).snapshot;
+  // Its artifacts can't be saved there either, as when that disk is full.
+  const older = { ...server.backend,
+    roomImport: async () => { throw new Error('unknown variant `room_import`, expected one of `session_load`'); },
+    artifactsSave: async () => { throw new Error('No space left on device'); } };
+  await assert.rejects(placeThread({ from: mac.backend, to: older, id: 't', snapshot, cwd: b, sameHost: false, hostName: 'AT' }), MoveRefused);
+  const left = JSON.parse(fs.readFileSync(savedRoom(server.data, 't'), 'utf8'));
+  assert.equal(left.cwd, a);
+  assert.deepEqual(left.snapshot.participants.map(p => p.display_name), ['left']);
+  assert.deepEqual((await mac.backend.roomState('t')).snapshot.participants.map(p => p.display_name), ['moved']);
+  assert.deepEqual(await mac.backend.artifactsLoad('t'), page);
+});
+test('an older helper with nothing under that id takes a thread that has not started, with its bot and artifacts', { timeout: 30000 }, async t => {
+  const mac = await daemon(t); const server = await daemon(t); const [a, b] = folders(t);
+  await mac.backend.roomCreate('t', [bot('moved')], options, a);
+  await mac.backend.artifactsSave('t', page);
+  const snapshot = (await mac.backend.roomState('t')).snapshot;
+  const older = { ...server.backend, roomImport: async () => { throw new Error('unknown variant `room_import`, expected one of `session_load`'); } };
+  assert.equal(await placeThread({ from: mac.backend, to: older, id: 't', snapshot, cwd: b, sameHost: false, hostName: 'AT' }), 'recreated');
+  const there = JSON.parse(fs.readFileSync(savedRoom(server.data, 't'), 'utf8'));
+  assert.equal(there.cwd, b);
+  assert.deepEqual(there.snapshot.participants.map(p => p.display_name), ['moved']);
+  assert.deepEqual(await server.backend.artifactsLoad('t'), page);
+  assert.equal(fs.existsSync(savedRoom(mac.data, 't')), false);
 });

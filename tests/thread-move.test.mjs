@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FolderMoveUnsupported, placeThread, unsupported } from "../src/threadMove.ts";
+import { FolderMoveUnsupported, MoveRefused, placeThread, unsupported } from "../src/threadMove.ts";
 
 const snap = (transcript = []) => ({ participants: [{ id: "bot" }], options: { policy: "mention", max_bot_hops: 3 }, transcript, pins: [] });
 const page = { version: 1, artifacts: [{ id: "a1", title: "Page", kind: "html", versions: [{ n: 1, source: "<p>hi</p>", by: "bot", seq: 2, at: 1 }] }] };
@@ -8,8 +8,11 @@ const old = "unknown variant `room_import`, expected one of `session_load`";
 /** Stand-in machines that write every call, in order, to one shared log. */
 function machines() {
   const log = [];
-  const make = (name, { importError, createError, artifacts = null, saveError } = {}) => ({
+  /** `existing`: saved files there, by path, as a leftover from an earlier move would leave. */
+  const make = (name, { importError, createError, artifacts = null, saveError, existing = [] } = {}) => ({
     roomImport: async (...args) => { log.push([name, "import", ...args]); if (importError) throw new Error(importError); },
+    dataFolder: async () => { log.push([name, "data folder"]); return `/d/${name}`; },
+    pathsExist: async (targets) => { log.push([name, "exists", targets]); return targets.map((t) => existing.includes(t)); },
     roomCreate: async (...args) => { log.push([name, "create", ...args]); if (createError) throw new Error(createError); return snap(); },
     roomDelete: async (...args) => { log.push([name, "delete", ...args]); },
     artifactsLoad: async (...args) => { log.push([name, "artifacts", ...args]); return artifacts; },
@@ -48,17 +51,38 @@ test("an older helper without room_import still takes a thread with no history f
   assert.equal(await placeThread({ from: make("mac"), to: make("at", { importError: old }), id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" }), "recreated");
   assert.deepEqual(log, [
     ["at", "import", "t", snap(), "/srv/x", false],
+    ["at", "data folder"],
+    ["at", "exists", ["/d/at/rooms/74.json", "/d/at/rooms/74.artifacts.json"]],
     ["at", "create", "t", [{ id: "bot" }], { policy: "mention", max_bot_hops: 3 }, "/srv/x"],
     ["mac", "artifacts", "t"],
     ["mac", "delete", "t"],
   ]);
 });
 
+// An older helper's room_create opens a saved room of the same id as it is, so
+// a copy left there by an earlier move would stand in for this thread.
+for (const left of ["/d/at/rooms/74.json", "/d/at/rooms/74.artifacts.json"]) {
+  test(`an older helper that still has ${left.endsWith("artifacts.json") ? "artifacts" : "a saved thread"} under this id keeps it; nothing is made there or deleted anywhere`, async () => {
+    const { log, make } = machines();
+    const [from, to] = [make("mac", { artifacts: page }), make("at", { importError: old, saveError: "disk full", existing: [left] })];
+    await assert.rejects(placeThread({ from, to, id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" }),
+      (error) => error instanceof MoveRefused && /AT/.test(error.message));
+    assert.deepEqual(log.map(([machine, call]) => `${machine} ${call}`), ["at import", "at data folder", "at exists"]);
+  });
+}
+
+test("a current helper that already has this id refuses the import; it's offered as New thread and nothing is deleted", async () => {
+  const { log, make } = machines();
+  await assert.rejects(placeThread({ from: make("mac"), to: make("at", { importError: "a thread with that id already exists" }), id: "t", snapshot: snap(), cwd: "/x", sameHost: false, hostName: "AT" }),
+    (error) => error instanceof MoveRefused && /AT/.test(error.message));
+  assert.deepEqual(log.map(([machine, call]) => `${machine} ${call}`), ["at import"]);
+});
+
 test("an older helper won't move a thread to another folder on its own machine; nothing is deleted or made", async () => {
   const { log, make } = machines();
   const host = make("at", { importError: old, artifacts: page });
   await assert.rejects(placeThread({ from: host, to: host, id: "t", snapshot: snap(), cwd: "/srv/y", sameHost: true, hostName: "AT" }),
-    (error) => error instanceof FolderMoveUnsupported && /AT/.test(error.message));
+    (error) => error instanceof FolderMoveUnsupported && error instanceof MoveRefused && /AT/.test(error.message));
   assert.deepEqual(log, [["at", "import", "t", snap(), "/srv/y", true]]);
 });
 

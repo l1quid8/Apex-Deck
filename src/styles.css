@@ -2556,6 +2556,8 @@ button.mod-status:hover { color: var(--text); }
 .pane-head:is([data-fit="compact"], [data-fit="tight"], [data-fit="min"]) .count-icon { display: inline-block; }
 .pane-head:is([data-fit="tight"], [data-fit="min"]) .pane-folder { display: none; }
 .pane-head[data-fit="min"] .server-chip { display: none; }
+/* Last of all, only when the buttons would otherwise leave the line: the flag. The dot keeps its colour and its tooltip names it. */
+.pane-head[data-flag-hidden] .flag { display: none; }
 
 /* The message box: +, the text, TL;DR and Send on one line, with no outline. As the text wraps, the
    buttons stay beside its last line. The box lightens while you type in it, so you can tell which pane

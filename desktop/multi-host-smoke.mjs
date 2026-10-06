@@ -470,13 +470,21 @@ export async function runMultiHostSmoke(win) {
   await field('name','Production-Frankfurt-Primary-01');
   await act('save');
   await until('long server name back',()=>page('return !document.querySelector(".connection-dialog")'));
-  const heads=await until('heads fitted',()=>page(`const out=[];for(const p of document.querySelectorAll('.pane')){if(!p.offsetWidth||!p.querySelector('.composer'))continue;const h=p.querySelector('.pane-head');const hr=h.getBoundingClientRect();const inside=el=>{if(!el||!el.offsetWidth)return false;const r=el.getBoundingClientRect();return r.left>=hr.left-1&&r.right<=hr.right+1;};const ws=h.querySelector('.pane-ws');const host=h.querySelector('.pane-host .hn');const buttons=[...h.querySelectorAll(':scope > .icon, :scope > .pane-menu-wrap')];out.push({id:p.dataset.paneId,fit:h.dataset.fit,ws:inside(ws),short:ws&&getComputedStyle(ws.querySelector('.nm-short')).display!=='none'?ws.querySelector('.nm-short').textContent:'',host:p.dataset.hostId==='at'?{inside:inside(host),title:host?.closest('.pane-host').title}:null,buttons:buttons.every(inside)});}return out.length>=3&&out;`));
+  // A reply in a thread nobody is looking at flags its top line "New reply". The hidden smoke window may or
+  // may not have focus, so the flag is made here, in a narrow pane that isn't the focused one.
+  await page(`${pane('mac-thread')}.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true;`);
+  await send(draft,'@bot one more');
+  await until('a narrow pane flagged',()=>page(`return ${pane(draft)}.querySelector('.pane-head .flag')?.textContent==='New reply'`));
+  const heads=await until('heads fitted',()=>page(`const out=[];for(const p of document.querySelectorAll('.pane')){if(!p.offsetWidth||!p.querySelector('.composer'))continue;const h=p.querySelector('.pane-head');const hr=h.getBoundingClientRect();const inside=el=>{if(!el||!el.offsetWidth)return false;const r=el.getBoundingClientRect();return r.left>=hr.left-1&&r.right<=hr.right+1;};const ws=h.querySelector('.pane-ws');const host=h.querySelector('.pane-host .hn');const buttons=[...h.querySelectorAll(':scope > .icon, :scope > .pane-menu-wrap')];const flag=h.querySelector('.flag');out.push({id:p.dataset.paneId,fit:h.dataset.fit,width:Math.round(hr.width),ws:inside(ws),short:ws&&getComputedStyle(ws.querySelector('.nm-short')).display!=='none'?ws.querySelector('.nm-short').textContent:'',host:p.dataset.hostId==='at'?{inside:inside(host),title:host?.closest('.pane-host').title}:null,flag:flag&&{shown:inside(flag),hidden:h.hasAttribute('data-flag-hidden'),dot:h.querySelector(':scope > .dot').title},buttons:buttons.every(inside)});}return out.length>=3&&out;`));
   await shot('narrow-headers');
   for (const h of heads) {
     assert.equal(h.ws,true,`project stays in ${h.id}`);
-    assert.equal(h.buttons,true,`buttons stay in ${h.id}`);
+    assert.equal(h.buttons,true,`buttons stay in ${h.id}: ${JSON.stringify(h)}`);
     if (h.host) { assert.equal(h.host.inside,true,`server stays in ${h.id}`); assert.equal(h.host.title,'Production-Frankfurt-Primary-01'); }
   }
+  const flagged=heads.find(h=>h.id===draft);
+  assert.ok(flagged?.flag,`the narrow pane keeps its flag: ${JSON.stringify(flagged)}`);
+  assert.ok(flagged.flag.shown||(flagged.flag.hidden&&flagged.flag.dot==='New reply'),`the flag shows, or gives way to the dot, which names it: ${JSON.stringify(flagged)}`);
   assert.ok(heads.some(h=>h.short==='apex…ject'),`a narrow head shortens the long project name: ${JSON.stringify(heads.map(h=>[h.fit,h.short]))}`);
   console.log(`multi-host: ${oldHelper?'old-helper fallback':'current helper'} passed; running terminal reattached and completed PTY exited`);
   console.log('multi-host: ok — replies after Clear, interrupted load retry, rejected/expired snapshot-card UI, isolated drop, daemon restart recovery, preserved draft, remote upload, no replay, import remap, removal protection and canvas restore');

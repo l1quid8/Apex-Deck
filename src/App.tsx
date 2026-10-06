@@ -35,7 +35,7 @@ import { chooseOutcome, pickerRows, shortName, workInRows } from "./destinations
 import { Glyph, ProjectFolder } from "./SidebarIcons";
 import type { WorkContext } from "./WorkBar";
 import { dotState } from "./hostFacts.ts";
-import { FolderMoveUnsupported, historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
+import { MoveRefused, historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
 import { loadRoomState } from "./roomRecovery.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
@@ -950,7 +950,7 @@ export function App() {
       setMoveAsk((ask) => (ask?.paneId === pane.id ? null : ask));
       setActiveWorkspace(target.id);
     } catch (error) {
-      if (error instanceof FolderMoveUnsupported) { setMoveAsk({ paneId: pane.id, to: target, why: error.message }); focusPane(pane); }
+      if (error instanceof MoveRefused) { setMoveAsk({ paneId: pane.id, to: target, why: error.message }); focusPane(pane); }
       else toast(`Couldn't move ${pane.title}: ${String(error).replace(/^Error: /, "")}`);
     } finally {
       moving.current.delete(pane.id);
@@ -1386,7 +1386,7 @@ export function App() {
                   onMouseDown={() => { setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId); if (pane.unread) setPanes((list) => setUnread(list, pane.id, false)); }}
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
-                    <span className={`dot ${status}`} title={status} />
+                    <span className={`dot ${status}`} title={attention[pane.id] ? attention[pane.id].note || label(attention[pane.id].kind) : status} />
                     {/* The project and its machine always stay; the title and status words give way first. */}
                     {workspace && <span className="pane-ws" title={`${workspace.name}${workspaceHost(workspace) === "local" ? "" : ` on ${hostNameFor(workspaceHost(workspace))}`}${workspace.path ? ` · ${workspace.path}` : ""}`}>
                       <ProjectFolder tint={workspaceHost(workspace) === "local" ? undefined : tints.get(workspaceHost(workspace))} size={12} />
