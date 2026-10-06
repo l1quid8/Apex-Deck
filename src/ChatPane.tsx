@@ -18,7 +18,7 @@ import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer,
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
 import { slug } from "./slug";
 import { nameForModel, uniqueName } from "./quickAdd";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { findTrigger, insertAt } from "./composerMenu";
@@ -354,13 +354,13 @@ const viewport = () => ({ width: window.innerWidth, height: window.innerHeight }
 
 
 /** How much of each bot chip shows, most first. */
-const CHIP_STEPS = ["full", "levels", "names"] as const;
+const CHIP_STEPS = ["full", "levels", "names", "faces"] as const;
 /** How much of the pane's top line shows: then the count labels go, then the status words, then the server chip. */
 const HEAD_STEPS = ["full", "compact", "tight", "min"] as const;
 /** A thread title cut shorter than this makes the top line give up something else. */
 const TITLE_ROOM = 150;
 
-/** Show the most of each bot chip that lets the whole row fit: details, then usage levels, go first. Names alone may still scroll. */
+/** Show the most of each bot chip that lets the whole row fit: details, then usage levels, go first. Names go last; the avatars always stay. */
 function fitChips(row: HTMLElement) {
   fitSteps(CHIP_STEPS, (step) => { row.dataset.fit = step; }, () => row.scrollWidth <= row.clientWidth);
 }
@@ -979,8 +979,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
 
   const changeOptions = (next: RoomOptions) => {
-    setOptions(next);
-    backend.roomSetOptions(pane.id, next).catch((error) => notify(`Could not save chat settings: ${String(error)}`, "error"));
+    backend.roomSetOptions(pane.id, next).then(() => setOptions(next)).catch((error) => notify(`Could not save chat settings: ${String(error)}`, "error"));
   };
 
   /** Empty the chat so the models start fresh. The participants stay. */
@@ -1592,7 +1591,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     // A slower answer for older text is ignored once the text has changed.
     backend.roomTargets(pane.id, outgoing).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
     return () => { live = false; };
-  }, [backend, pane.id, text, reply, ready, participants]);
+  }, [backend, pane.id, text, reply, ready, participants, options.policy]);
   /** Who gets the message as it stands, for the placeholder. */
   const recipient = recipientName({
     targets: serverTargets,
@@ -2142,6 +2141,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     </div>
   );
   // The bots ride in the message box's bottom row, between + and TL;DR.
+  /** The bots the message goes to, as the room last answered. */
+  const lit = new Set(serverTargets);
   const botChips = (
     <div ref={chipRow} className="chips">
       {participants.map((p) => {
@@ -2156,16 +2157,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCard((open) => (open === p.id ? null : open)); }}
           onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
         >
-            <span className="chip" style={{ borderColor: color(p.id) }}>
-              <button className="chip-name" aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
+            <span className={lit.has(p.id) ? "chip to" : "chip"} style={{ "--who": color(p.id) } as CSSProperties}>
+              <button className="chip-name" onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
                 if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
                   setCard(null);
                   setQuickSettings(quickSettings?.id === p.id ? null : { id: p.id, anchor: event.currentTarget });
                 } else mention(p.id);
-              }} title={`Model and reasoning for ${p.display_name}`}>
+              }} title={lit.has(p.id) ? `${p.display_name} gets your message · model and reasoning` : `Model and reasoning for ${p.display_name}`}>
                 <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
                 <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
-                {p.display_name}
+                <span className="chip-label">{p.display_name}</span>
                 {pendingSettings[p.id] && <span className="settings-pending" role="status" aria-label="Settings pending for next reply" title="Settings apply to the next reply" />}
                 {queued.some(item => item.to.includes(p.id)) && <span className="chip-meta">{queued.filter(item => item.to.includes(p.id)).length} queued</span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
@@ -2186,8 +2187,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       })}
       {participants.length > 0 && (
         <span className="quick-add-wrap roster">
-          <button className="chip-add" disabled={!ready} aria-label="Add a bot" title="Add a bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { details?.show("form"); setAdding(true); } else { setRosterAnchor(aboveAnchor(e.currentTarget.getBoundingClientRect(), viewport(), QUICK_ADD_WIDTH, 8)); openQuickAdd("roster"); } }}>
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { details?.show("form"); setAdding(true); } else { setRosterAnchor(aboveAnchor(e.currentTarget.getBoundingClientRect(), viewport(), QUICK_ADD_WIDTH, 8)); openQuickAdd("roster"); } }}>
+            <PersonPlus /><span className="chip-add-label">Add bot</span>
           </button>
         </span>
       )}
@@ -2198,7 +2199,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
       {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 
-      {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom }}>{quickAddMenu}</span>}
+      {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom, "--room": `${window.innerHeight - rosterAnchor.bottom - 8}px` } as CSSProperties}>{quickAddMenu}</span>}
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async config => {
         await backend.roomUpdateParticipant(pane.id, config);
         setParticipants(list => list.map(p => p.id === config.id ? config : p));
@@ -2538,4 +2539,8 @@ function ArtifactsIcon() {
 
 function ChangesIcon() {
   return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 4v8M8 8h8M8 18h8" /></svg>;
+}
+
+function PersonPlus() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4" /><path d="M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1M19 8v6M16 11h6" /></svg>;
 }

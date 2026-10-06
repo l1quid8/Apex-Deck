@@ -225,6 +225,94 @@ export async function runSmoke(win, { sidecar, browser }) {
     if ((await page(`return (await __deck.backend.hosts.current()).id`)) !== 'local') throw new Error('this window moved');
   });
 
+  await step('two threads side by side keep every bot and Add bot in view', async () => {
+    const bots = ['reviewer-with-a-long-name', 'planner-with-a-long-name', 'implementer-long-name'].map((id) => shell(id, 'true'));
+    await page(`
+      await __deck.backend.roomCreate('smoke-bots-a', ${JSON.stringify(bots)}, ${JSON.stringify(OPTIONS)}, '');
+      await __deck.backend.roomCreate('smoke-bots-b', ${JSON.stringify(bots)}, ${JSON.stringify(OPTIONS)}, '');
+      await __deck.backend.sessionSave({
+        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: '/tmp' }],
+        panes: [
+          { id: 'smoke-bots-a', workspaceId: 'ws-smoke', kind: 'chat', title: 'Bots A' },
+          { id: 'smoke-bots-b', workspaceId: 'ws-smoke', kind: 'chat', title: 'Bots B' },
+        ],
+        profiles: ${JSON.stringify(Array.from({ length: 36 }, (_, i) => shell(`saved-agent-${i}-long-name`, 'true')))}, activeWorkspace: 'ws-smoke', focusedPane: 'smoke-bots-a', section: 'threads', layout: 'top',
+      });
+      return true;`);
+    contents.reload();
+    await sleep(200);
+    await ready();
+    // What is wrong with the message boxes right now, or '' when nothing is.
+    const problems = () => page(`
+      const panes = [...document.querySelectorAll('.pane')].filter((p) => p.offsetWidth > 0 && p.querySelector('.composer'));
+      if (panes.length !== 2) return panes.length + ' thread pane(s) showing, not 2';
+      const found = [];
+      for (const pane of panes) {
+        const name = pane.querySelector('.pane-title')?.textContent;
+        if (pane.querySelector('.thread-chat > .chat-bar')) found.push(name + ': the old bot row is still there');
+        const placeholder = pane.querySelector('.composer textarea').placeholder;
+        if (!placeholder.startsWith('Message ')) found.push(name + ': the placeholder says ' + JSON.stringify(placeholder));
+        const row = pane.querySelector('.composer-dock .chips');
+        const seats = [...pane.querySelectorAll('.composer-dock .chip'), pane.querySelector('.composer-dock .chip-add')];
+        if (!row || seats.length !== 4 || seats.includes(null)) { found.push(name + ': ' + seats.filter(Boolean).length + ' of 3 bots and Add bot in the message box'); continue; }
+        const box = row.getBoundingClientRect();
+        const cut = seats.filter((seat) => { const r = seat.getBoundingClientRect(); return r.width === 0 || r.left < box.left - 1 || r.right > box.right + 1; });
+        if (cut.length) found.push(name + ': ' + cut.length + ' badge(s) cut off ' + JSON.stringify({fit: row.dataset.fit, room: box.width, seats: seats.map(s => s.getBoundingClientRect().width), dock: pane.querySelector('.composer-dock').getBoundingClientRect().width}));
+      }
+      return found.join('; ');`);
+    const [width, height] = win.getContentSize();
+    try {
+      // 900 is the window's minimum width (desktop/main.mjs).
+      for (const w of [1600, 1200, 900]) {
+        win.setContentSize(w, height);
+        let problem = '';
+        await until(`the message boxes at ${w}px`, async () => (problem = await problems()) === '', 5_000)
+          .catch(() => { throw new Error(`at ${w}px: ${problem}`); });
+      }
+    } finally {
+      win.setContentSize(width, height);
+    }
+  });
+
+  await step('changing Who answers updates the placeholder and recipient badges', async () => {
+    await page(`document.querySelector('button[aria-label="Show thread details"]').click(); return true;`);
+    await until('the policy control', () => page(`return Boolean(document.querySelector('.chat-options select'))`));
+    await page(`
+      const control = document.querySelector('.chat-options select');
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      setter.call(control, 'everyone');
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;`);
+    await until('everyone in the placeholder', () => page(`
+      const pane = document.querySelector('.pane.focused') ?? document.querySelector('.pane');
+      return pane.querySelector('textarea').placeholder === 'Message everyone…' && pane.querySelectorAll('.chip.to').length === 3;`), 3_000);
+    await page(`document.querySelector('button[aria-label="Close thread details"]').click(); return true;`);
+  });
+
+  await step('Add bot stays on screen and saved agents remain clickable in a short window', async () => {
+    const [width, height] = win.getContentSize();
+    try {
+      win.setContentSize(900, 600);
+      await sleep(300);
+      await page(`document.querySelector('.composer-dock .chip-add').click(); return true;`);
+      await until('the saved agents', () => page(`return document.querySelectorAll('.roster-pop .quick-add-chip').length === 36`));
+      const problem = await page(`
+        const form = document.querySelector('.roster-pop .quick-add');
+        const rect = form.getBoundingClientRect();
+        if (rect.top < 8 || rect.bottom > innerHeight - 8) return 'form outside viewport: ' + JSON.stringify({ top: rect.top, bottom: rect.bottom, height: innerHeight });
+        if (form.scrollHeight <= form.clientHeight) return 'fixture did not exercise scrolling';
+        const first = form.querySelector('.quick-add-chip');
+        const r = first.getBoundingClientRect();
+        if (!first.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2))) return 'first saved agent is not clickable';
+        first.click();
+        return '';`);
+      if (problem) throw new Error(problem);
+      await until('the saved agent in the room', () => page(`return [...document.querySelectorAll('.composer-dock .chip')].some(b => b.textContent.includes('saved-agent-0-long-name'))`));
+    } finally {
+      win.setContentSize(width, height);
+    }
+  });
+
   await step('quitting while an agent replies asks first', async () => {
     // A thread in the window, with a bot that takes its time.
     await page(`

@@ -2565,11 +2565,24 @@ button.mod-status:hover { color: var(--text); }
 .composer-box:focus-within { border-color: var(--accent); }
 .composer-dock { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .composer-dock .composer-plus { width: 28px; height: 28px; font-size: 21px; }
-.composer-dock .chips { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.composer-dock .chips { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; gap: 4px; overflow-x: auto; scrollbar-width: none; }
 .composer-dock .chip-name { padding: 2px 8px 2px 3px; font-size: 12px; }
 .composer-dock .chip-meta { font-size: 11px; }
-.composer-dock .dock-spacer { flex: 1; min-width: 4px; }
+.composer-dock .dock-spacer { flex: none; }
 /* A badge's usage card floats above it, so the row's overflow never clips it. */
 .usage-card.above { position: fixed; top: auto; }
 .usage-card.above::before { inset: auto 0 -7px; }
-.quick-add-wrap.roster-pop .quick-add { top: auto; bottom: 0; }
+.quick-add-wrap.roster-pop .quick-add { top: auto; bottom: 0; max-height: var(--room); overflow-y: auto; }
+
+/* Each badge is outlined in its bot's colour; the bots your message goes to are lit. */
+.composer-dock .chip { border-color: color-mix(in srgb, var(--who) 30%, var(--line)); transition: background-color .15s, border-color .15s; }
+.composer-dock .chip.to { border-color: var(--who); background: color-mix(in srgb, var(--who) 13%, transparent); }
+/* Adding a bot is an empty seat with a person-plus, so it never reads as the attach button's +. */
+.composer-dock .quick-add-wrap.roster { flex: none; display: inline-flex; }
+.composer-dock .chip-add { width: auto; height: 23px; gap: 4px; margin-left: 2px; padding: 0 8px 0 6px; display: inline-flex; align-items: center; border: 1px dashed color-mix(in srgb, var(--muted) 55%, transparent); border-radius: 999px; font-size: 12px; }
+.composer-dock .chip-add:hover:not(:disabled), .composer-dock .chip-add[aria-expanded="true"] { border-style: solid; }
+.chips:not([data-fit="full"]) .chip-add-label { display: none; }
+.chips:not([data-fit="full"]) .chip-add { padding: 0 5px; }
+/* The narrowest step: the avatar and its status dot, with the name in the tooltip. */
+.thread-chat .chips[data-fit="faces"] .chip-meta, .thread-chat .chips[data-fit="faces"] .chip-label { display: none; }
+.thread-chat .chips[data-fit="faces"] .chip-name { gap: 3px; padding: 2px 3px 2px 2px; }
