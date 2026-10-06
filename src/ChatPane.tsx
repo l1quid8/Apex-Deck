@@ -978,8 +978,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (editing === id) closeForm(draft.preset);
   };
 
+  /** Counts finished saves, so the recipients are asked again once the room has the new Who answers. */
+  const [optionsSaved, setOptionsSaved] = useState(0);
   const changeOptions = (next: RoomOptions) => {
-    backend.roomSetOptions(pane.id, next).then(() => setOptions(next)).catch((error) => notify(`Could not save chat settings: ${String(error)}`, "error"));
+    // Show the change at once, so a second quick click builds on this one rather than on the saved copy.
+    setOptions(next);
+    backend.roomSetOptions(pane.id, next).then(() => setOptionsSaved(n => n + 1)).catch((error) => notify(`Could not save chat settings: ${String(error)}`, "error"));
   };
 
   /** Empty the chat so the models start fresh. The participants stay. */
@@ -1591,7 +1595,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     // A slower answer for older text is ignored once the text has changed.
     backend.roomTargets(pane.id, outgoing).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
     return () => { live = false; };
-  }, [backend, pane.id, text, reply, ready, participants, options.policy]);
+  }, [backend, pane.id, text, reply, ready, participants, optionsSaved]);
   /** Who gets the message as it stands, for the placeholder. */
   const recipient = recipientName({
     targets: serverTargets,
@@ -2168,7 +2172,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
                 <span className="chip-label">{p.display_name}</span>
                 {pendingSettings[p.id] && <span className="settings-pending" role="status" aria-label="Settings pending for next reply" title="Settings apply to the next reply" />}
-                {queued.some(item => item.to.includes(p.id)) && <span className="chip-meta">{queued.filter(item => item.to.includes(p.id)).length} queued</span>}
+                {queued.some(item => item.to.includes(p.id)) && <span className="chip-meta chip-queued" title="Messages waiting for this bot">{queued.filter(item => item.to.includes(p.id)).length}<span className="chip-queued-word"> queued</span></span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
                 <span className="chip-meta chip-description">{describe(p)}</span>
                 {(levels.context !== null || levels.plan !== null) && (

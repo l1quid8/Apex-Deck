@@ -330,6 +330,24 @@ export async function runSmoke(win, { sidecar, browser }) {
     await page(`void __deck.backend.roomPost('smoke-busy', '@slow go').catch(() => {}); return true;`);
     await until('the turn to start', () => page(`return __smoke.events.some((e) => e.room === 'smoke-busy' && e.event.type === 'turn_started')`));
     await sleep(500);
+    // A second message waits for the busy bot, and its badge shows the count at every fit step.
+    await page(`
+      const box = document.querySelector('.composer textarea');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, '@slow next');
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;`);
+    await page(`document.querySelector('.composer textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true;`);
+    await until('the queued count', () => page(`return Boolean(document.querySelector('.composer-dock .chip-queued'))`), 5_000);
+    const hidden = await page(`
+      const row = document.querySelector('.composer-dock .chips');
+      const was = row.dataset.fit;
+      const queued = row.querySelector('.chip-queued');
+      const steps = ['full', 'levels', 'names', 'faces'].filter((step) => { row.dataset.fit = step; return getComputedStyle(queued).display === 'none'; });
+      row.dataset.fit = was;
+      return steps.join(', ');`);
+    if (hidden) throw new Error(`the queued count is hidden at: ${hidden}`);
+    await page(`document.querySelector('button[aria-label="Remove queued message"]').click(); return true;`);
+    await until('the queue to empty', () => page(`return !document.querySelector('.composer-dock .chip-queued')`), 5_000);
     win.close();
     const asked = await until('the question', () => page(`return document.querySelector('[role=alertdialog] #confirm-title')?.textContent ?? ''`), 5_000);
     if (!/still running/.test(asked)) throw new Error(`asked "${asked}"`);

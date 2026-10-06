@@ -1756,8 +1756,9 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .thread-chat .chip-wrap { flex: none; }
 .thread-chat .chip-name { white-space: nowrap; }
 /* ChatPane picks data-fit from what the row has room for, so a wide pane full of bots still shows every one. */
-.thread-chat .chips[data-fit="levels"] .chip-meta:not(.chip-levels) { display: none; }
-.thread-chat .chips[data-fit="names"] .chip-meta { display: none; }
+/* The queued count stays at every step: it says a message is still waiting. */
+.thread-chat .chips[data-fit="levels"] .chip-meta:not(.chip-levels, .chip-queued) { display: none; }
+.thread-chat .chips[data-fit="names"] .chip-meta:not(.chip-queued) { display: none; }
 
 .composer-field { display: flex; align-items: center; gap: 8px; }
 .composer-tools { flex: none; }
@@ -2584,5 +2585,5 @@ button.mod-status:hover { color: var(--text); }
 .chips:not([data-fit="full"]) .chip-add-label { display: none; }
 .chips:not([data-fit="full"]) .chip-add { padding: 0 5px; }
 /* The narrowest step: the avatar and its status dot, with the name in the tooltip. */
-.thread-chat .chips[data-fit="faces"] .chip-meta, .thread-chat .chips[data-fit="faces"] .chip-label { display: none; }
+.thread-chat .chips[data-fit="faces"] .chip-meta:not(.chip-queued), .thread-chat .chips[data-fit="faces"] .chip-label, .thread-chat .chips[data-fit="faces"] .chip-queued-word { display: none; }
 .thread-chat .chips[data-fit="faces"] .chip-name { gap: 3px; padding: 2px 3px 2px 2px; }
