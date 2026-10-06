@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 pub enum HostEvent {
     /// Something happened in a group chat.
     #[serde(rename = "room-event")]
-    Room { room: String, event: RoomEvent },
+    Room { room: String, event: RoomEvent, #[serde(skip_serializing_if = "Option::is_none")] recovery_seq: Option<u64> },
     /// Terminal output.
     #[serde(rename = "pty-data")]
     PtyData { id: String, data: String },
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn payloads_keep_the_shapes_the_desktop_ui_reads() {
-        let room = HostEvent::Room { room: "r1".into(), event: RoomEvent::TurnStarted { id: ParticipantId::new("null") } };
+        let room = HostEvent::Room { room: "r1".into(), event: RoomEvent::TurnStarted { id: ParticipantId::new("null") }, recovery_seq: None };
         assert_eq!(room.name(), "room-event");
         assert_eq!(room.payload(), json!({ "room": "r1", "event": { "type": "turn_started", "id": "null" } }));
         let data = HostEvent::PtyData { id: "p".into(), data: "hi".into() };

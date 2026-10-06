@@ -1,7 +1,7 @@
 import { useHostConnection } from "./useHostConnection";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { hostCanMutate } from "./hostAvailability";
-import { createRoomRecovery, loadRoomState } from "./roomRecovery.ts";
+import { createRoomRecovery, createRoomTotalsRefresh, loadRoomState, loadRoomTotals, messageDedup, representedRoomEvent } from "./roomRecovery.ts";
 import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
@@ -659,6 +659,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     pendingLow.current.clear();
   };
 
+  const messageNumbers = useRef(messageDedup()).current;
+
   const notify = (message: string, tone: Notice["tone"] = "info", action?: NoticeAction) =>
     setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone, ...(action ? { action } : {}) } }]);
 
@@ -668,12 +670,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const nameOf = (id: string) => namesRef.current.get(id) ?? id;
     /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
     const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()));
-    const loadedSeq = new Set<number>();
+    let recoveredState: import("./types").RoomState | null = null;
+    const durableRecovery = createRoomTotalsRefresh({
+      load: () => loadRoomTotals(backend, pane.id),
+      apply: saved => {
+        if (!alive || !recoveredState || recoveredState.recovery_seq != null) return;
+        setUsed(saved.usage ?? {});
+        setChanges((saved.changes ?? []).map(c => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
+      },
+      fail: error => { if (alive) notify(`Could not refresh chat totals: ${String(error)}`, "error"); },
+    });
     const onEvent = (event: RoomEvent) => {
       if (!alive) return;
+      if (recoveredState && representedRoomEvent(recoveredState, event)) return;
       if (event.type === "message_added") {
-        if (loadedSeq.has(event.message.seq)) return;
-        loadedSeq.add(event.message.seq);
+        if (!messageNumbers.accept(event.message.seq)) return;
       }
       recordApproval(pane.id, event, backend.host?.id);
       activity.current(pane.id);
@@ -742,13 +753,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           reportApprovals();
           break;
         case "changed":
-          setChanges((list) => [...list, { seq: list.length, by: event.id, change: event.change }]);
+          if (recoveredState?.recovery_seq == null) void durableRecovery.refresh();
+          else setChanges((list) => [...list, { seq: list.length, by: event.id, change: event.change }]);
           written.current.set(event.change.path, event.id);
           break;
         case "allowed_changed":
           setAllowed(event.allowed);
           break;
         case "usage":
+          if (recoveredState?.recovery_seq == null) { void durableRecovery.refresh(); break; }
           setUsed((u) => {
             const before = u[event.id] ?? { input: 0, output: 0, turns: 0 };
             return { ...u, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1 } };
@@ -795,7 +808,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         case "compacted":
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
-          setEntries((list) => [...list, { kind: "summary", summary: { by: event.id, summary: event.summary, upto: event.upto } }]);
+          setEntries((list) => list.some(e => e.kind === "summary" && e.summary.upto === event.upto && e.summary.summary === event.summary)
+            ? list : [...list, { kind: "summary", summary: { by: event.id, summary: event.summary, upto: event.upto } }]);
           // Every model now sees the summary instead, so how full each window
           // is stays unknown until its next turn says.
           forgetContext();
@@ -828,7 +842,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       apply: (state) => {
         if (!alive) return;
         const saved = state.snapshot;
-        loadedSeq.clear(); saved.transcript.forEach(m => loadedSeq.add(m.seq));
+        recoveredState = state;
+        messageNumbers.restore(saved.transcript);
         forgetRoom(pane.id);
         state.approvals.forEach(ask => recordApproval(pane.id, { type: "approval_requested", ...ask }, backend.host?.id));
         setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], phase: "thinking" as const }])));
@@ -865,16 +880,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         notify(`Could not load the chat: ${String(error)}`, "error");
       },
       event: onEvent,
+      represented: representedRoomEvent,
     });
-    const unregister = registerRoom(pane.id, (event: RoomEvent) => { if (!recovery.capture(event)) onEvent(event); }, backend.host?.id);
+    const unregister = registerRoom(pane.id, (event: RoomEvent) => { if (!recovery.capture(event)) onEvent(event); }, backend.host?.id,
+      event => !recoveredState || !representedRoomEvent(recoveredState, event));
     const refresh = async () => {
       if (!alive) return;
       const state = backend.host?.connection.get();
       if (state && state.status.kind !== "connected" && state.status.kind !== "resync") return;
       setReady(false);
+      recoveredState = null; // a new daemon boot starts its room event numbers over
       await recovery.refresh();
     };
-    const offRecovery = backend.host?.connection.recover?.(refresh) ?? (() => {});
+    const offRecovery = backend.host?.connection.recover?.(refresh, recovery.pending) ?? (() => {});
     let offHub = () => {};
     void startHub(backend, backend.host?.id).then(off => {
       if (!alive) { off(); return; }
@@ -885,6 +903,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return () => {
       alive = false;
       recovery.dispose(); offRecovery();
+      durableRecovery.dispose();
       offHub();
       unregister();
       forgetRoom(pane.id);
@@ -1063,6 +1082,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     backend
       .roomClear(pane.id)
       .then(() => {
+        messageNumbers.truncate(0);
         setEntries([]);
         setPins(pinsAfterClear);
         setDividerAt(null);
@@ -1239,6 +1259,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+      if (request.chat) messageNumbers.truncate(message.seq);
       if (request.chat) setPins(list => list.filter(pin => { const seq = pinSource(pin); return seq === null || seq < message.seq; }));
       if (request.chat) setEntries((list) => {
         const first = list.findIndex((e) => e.kind === "message" && e.message.seq >= message.seq);
@@ -2473,9 +2494,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                     action={ask.action}
                     name={names.get(id) ?? id}
                     deadline={deadlineNote(ask.action.expires_at, now)}
-                    onDecide={(approve, always) => {
-                      backend.roomDecide(pane.id, ask.request, approve, always).catch((error) => notify(`Could not send your answer: ${String(error)}`, "error"));
-                    }}
+                    onDecide={(approve, always) => backend.roomDecide(pane.id, ask.request, approve, always)}
                   />
                 ))}
                 <div className={`working-line ${asks[id]?.length ? "asking" : quiet ? "quiet" : ""}`} role="status">

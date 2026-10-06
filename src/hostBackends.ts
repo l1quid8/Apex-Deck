@@ -23,6 +23,21 @@ const writes = new Set([
   "roomFork", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
   "generateImage", "importReplyImage", "artifactsSave",
 ]);
+const rawWrites = new Set([...writes].map(key => key.replace(/[A-Z]/g, letter => "_" + letter.toLowerCase())));
+/** Reject unavailable execution; recovery reads and harmless PTY probes remain available. */
+export function guardHostWrites(backend: Backend, connection: HostConnectionStore): Backend {
+  return new Proxy(backend, { get(target, key: string) {
+    const value = target[key as keyof Backend];
+    if (typeof value !== "function") return value;
+    return (...args: unknown[]) => {
+      const status = connection.get().status.kind;
+      const resize = key === "ptyResize" || (key === "call" && args[0] === "pty_resize");
+      if ((writes.has(key) || (key === "call" && rawWrites.has(String(args[0])))) && status !== "connected" && !(resize && status === "resync"))
+        return Promise.reject(new Error("Not connected to the host; nothing was queued."));
+      return (value as (...values: unknown[]) => unknown).apply(target, args);
+    };
+  } });
+}
 export function createHostBackends({ local, hosts, make }: { local: Backend; hosts: HostEntry[]; make(host: HostEntry, connection: ReturnType<typeof hostConnectionStore>): HostRuntime }): HostBackends {
   let known = new Map(hosts.filter(h => h.id !== "local").map(h => [h.id, h]));
   const runtimes = new Map<string, HostRuntime>(); const backends = new Map<string, Backend>();
@@ -66,13 +81,12 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
             if (key === "host") return { id: hostId, name: host.name, connection: r.connection };
             if (key === "browser") return local.browser;
             if (key === "quitStopsWork") return false;
-            const source = appMethods.has(key) ? local : target;
+            const source = appMethods.has(key) ? local : guardHostWrites(target, r.connection);
             const value = source[key as keyof Backend];
             if (typeof value !== "function") return value;
             return (...args: unknown[]) => {
               if (!known.has(hostId)) return Promise.reject(new Error("This host was removed."));
               if (key === "call" && ["session_save", "settings_save", "decision_key_save"].includes(String(args[0]))) return Promise.reject(new Error("App preferences are owned by This Mac."));
-              if (writes.has(key) && r.connection.get().status.kind !== "connected") return Promise.reject(new Error("Not connected to the host; nothing was queued."));
               return (value as (...args: unknown[]) => unknown).apply(source, args);
             };
           },

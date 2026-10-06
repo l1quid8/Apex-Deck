@@ -21,6 +21,17 @@ export function normalizeWorkspaces(value: unknown): Workspace[] {
   });
 }
 
+/** Validate untrusted server data before scheduling a React state update. */
+export function prepareHostSession(remote: unknown): Pick<AppSession, "version" | "workspaces" | "panes"> | null {
+  if (remote === null) return null;
+  if (!remote || typeof remote !== "object") throw new Error("Unreadable server session.");
+  const r = remote as Partial<AppSession>;
+  if (r.version !== 1 || !Array.isArray(r.workspaces) || !Array.isArray(r.panes)) throw new Error("Unreadable server session.");
+  const workspaces = normalizeWorkspaces(r.workspaces);
+  if (workspaces.length !== r.workspaces.length) throw new Error("Malformed server workspaces.");
+  return { version: 1, workspaces, panes: loadedPanes(r.panes, workspaces.map(w => w.id)) };
+}
+
 /** One atomic document: records and their migration marker are saved together. */
 export function mergeHostSession(local: AppSession, hostId: string, remote: unknown): { session: AppSession; conflicts: string[] } {
   if (!hostId || hostId === "local") throw new Error("A saved server is required for import.");
@@ -28,11 +39,8 @@ export function mergeHostSession(local: AppSession, hostId: string, remote: unkn
   const conflicts: string[] = [];
   const workspaces = [...local.workspaces]; const panes = [...local.panes];
   if (remote !== null) {
-    if (!remote || typeof remote !== "object") throw new Error("Unreadable server session.");
-    const r = remote as Partial<AppSession>;
-    if (r.version !== 1 || !Array.isArray(r.workspaces) || !Array.isArray(r.panes)) throw new Error("Unreadable server session.");
-    const imported = normalizeWorkspaces(r.workspaces);
-    if (imported.length !== r.workspaces.length) throw new Error("Malformed server workspaces.");
+    const r = prepareHostSession(remote)!;
+    const imported = r.workspaces;
     const taken = new Set(workspaces.map(w => w.id));
     const map = new Map<string, string>();
     for (const w of imported) {

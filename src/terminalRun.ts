@@ -54,6 +54,16 @@ export function exited(run: TerminalRun, generation: number, code: number | null
   return { state: "exited", generation, code, at };
 }
 
+/** Probe the old PTY with resize. Lost output does not mean its process ended. */
+export async function recoverLostRun(run: TerminalRun, probe: () => Promise<void>, at: number): Promise<TerminalRun> {
+  if (run.state !== "running") return run;
+  try { await probe(); return run; }
+  catch (error) {
+    if (/no terminal with id\b/i.test(String(error))) return exited(run, run.generation, null, at);
+    throw error;
+  }
+}
+
 /**
  * What a terminal's dot, the close question and the quit question see. A
  * program that is stopped or has exited reads "exited", so closing the pane

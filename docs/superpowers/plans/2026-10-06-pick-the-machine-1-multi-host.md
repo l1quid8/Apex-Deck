@@ -457,7 +457,7 @@ Store a small runtime event state beside each RoomHandle: active participant IDs
 
 Register event listeners before initial roomCreate/recovery. Capture events arriving during a state request and apply them after the returned snapshot, deduplicating seq/request IDs. Extract the snapshot-application path from ChatPane's mount effect so retry does not execute the cleanup that calls roomClose. Preserve input state and only replace server-derived transcript/participants/options/pins/usage/live state.
 
-After a connection resumes with a lost event history, increment only that host's revision, reload its mounted chats/artifacts and discovery, and acknowledge resync when they finish. A failing pane remains visibly unavailable. Do not restart terminals on resync; mark their run unavailable/stopped with an explicit Start action because their missed output cannot be reconstructed. Ordinary successful replay must not interrupt a surviving terminal.
+After a connection resumes with a lost event history, increment only that host's revision, reload its mounted chats/artifacts and discovery, and acknowledge resync when they finish. A failing pane remains visibly unavailable. Do not restart or kill terminals on resync. Probe the existing PTY with pty_resize: success retains the running process and reports lost output; "no terminal with id" marks it exited; other failures retain running accounting and retry on the next connection. Allow this resize probe during resync, while Send, terminal input and startup remain disabled. Ordinary successful replay must not interrupt a surviving terminal.
 
 Treat the first successful host connection as revision 1. ChatPane registers handlers on mount but waits for that revision before roomCreate; subsequent recovery does not call roomClose or remount. Probe room_state when available and fall back only on an unsupported-command response to room_create's snapshot. Existing Apex-Terminal helpers must remain usable without deploying/restarting a daemon. Ordinary SSH reconnect uses replay and retains live state. A lost-history resync with an old helper refreshes the transcript from room_create, clears stale live approvals and explains that live approval recovery needs a newer helper; it must not falsely lock every server thread. Provide compatible demo behavior.
 
@@ -778,3 +778,23 @@ The acceptance matrix covers every v8 caption and preserves the human's Work in 
 ## Reviewed corrections (Jigga, October 6)
 
 Accepted all seven corrections: optional room_state compatibility; initial connected revision before room loading; background launch imports; workspace collision remapping; edit/probe APIs deferred to Stage 2; Mac-only observer label with remote-enabled import warning; isolation checks await both positive replies.
+
+## Follow-up review corrections (Jigga)
+
+- Old helpers reconcile durable totals with at most one snapshot read in flight and one pending reread for events arriving meanwhile. Disposal discards late replies; events arriving as a read finishes still trigger their pending refresh.
+- Lost terminal history uses the compatible pty_resize probe described in Task 5, preserving live remote processes instead of killing them.
+- The room_forget_allowed regression exercises command dispatch, a bounded deadlock timeout, the emitted AllowedChanged event, immediate persistence and continued daemon responsiveness. Restoring the old recursive lock makes it fail.
+- Native multi-host smoke also runs with APEX_DECK_SMOKE_OLD_HELPER=1, which makes roomState report the old helper's unsupported-command response. Live approval injection remains an explicitly simulated newer-helper snapshot; it is not proof that old helpers recover live approvals.
+- Open folder on server is disabled with a tooltip until a supported remote-folder action exists; Copy remains Stage 2.
+- Real Apex-Terminal SSH acceptance remains pending the human's approval. Test fixtures never connect to it or install/restart its daemon.
+
+### Follow-up verification
+
+- `TMPDIR=/tmp npm test`: 533 passed, zero failures.
+- `TMPDIR=/tmp cargo test --workspace`: all suites passed, including the new bounded room_forget_allowed regression. A run without the short TMPDIR first failed `codex_hook::tests::deck_allowing_prints_nothing_and_deck_denying_blocks_with_its_reason`, `codex_hook::tests::every_failure_blocks_the_call`, and `codex_hook::tests::the_socket_folder_is_private_and_goes_with_the_turn` with the macOS SUN_LEN socket-path limit; the short-path run passed all three.
+- `TMPDIR=/tmp npm run test:e2e`: 4 passed, zero failures.
+- Production build and final `npx tsc --noEmit`: passed. Vite retains its existing large-chunk advisory.
+- Native two-daemon fixture smoke: current helper and `APEX_DECK_SMOKE_OLD_HELPER=1` both exited 0. Output is in `.superpowers/smoke/multi-host-current/` and `.superpowers/smoke/multi-host-old-helper/`.
+- Native terminal coverage opens an imported, stopped descriptor through the sidebar, verifies offline Start is disabled, starts it explicitly, injects a same-boot history-gap recovery and receives fresh output from the same PTY. A real fixture-link drop also checks an exited process on return. The missing-PTY probe branch without a replayed exit is covered in the unit regression.
+- The fixture disables hidden-window animation throttling and captures settled states without awaiting suspended animation frames. Its injected resyncs complete their own connection notification; actual daemon restarts still use the real client recovery path.
+- No real SSH acceptance, push, merge or installer build was performed. Reviewed follow-up corrections are included on the Stage 1 branch; real-server acceptance remains outstanding.

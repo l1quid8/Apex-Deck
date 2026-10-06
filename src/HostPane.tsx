@@ -17,3 +17,10 @@ export function HostPane({ backend, agents, children }: { backend: Backend; agen
   }, [backend]);
   return children(backend.host?.id === "local" || !backend.host ? agents : state.agents);
 }
+
+/** Discovery-only context for menus; it does not register room/PTY hubs. */
+export function HostAgents({ backend, agents, children }: { backend: Backend; agents: AgentInfo[]; children(found: AgentInfo[]): ReactNode }) {
+  const store = backend.host?.connection ?? demo;
+  const state = useSyncExternalStore(store.subscribe, store.get);
+  return children(backend.host?.id === "local" || !backend.host ? agents : state.agents);
+}

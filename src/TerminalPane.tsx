@@ -1,4 +1,5 @@
 import { hostCanMutate } from "./hostAvailability";
+import { useHostConnection } from "./useHostConnection";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -7,7 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Burst, QUIET_MS, waitingFor, type Attention } from "./attention";
 import type { Backend } from "./backend";
 import { registerPty } from "./hub";
-import { STOPPED, canStart, exitBar, exitLine, exitSignal, exited, ptyIdFor, started, startedAgainLine, stoppedNotice, type TerminalRun } from "./terminalRun";
+import { STOPPED, canStart, exitBar, exitLine, exitSignal, exited, ptyIdFor, recoverLostRun, started, startedAgainLine, stoppedNotice, type TerminalRun } from "./terminalRun";
 import { TitleThrottle, cleanTitle } from "./terminalTitle";
 import { ServerWatch } from "./previewAddress";
 import type { Pane } from "./types";
@@ -63,6 +64,8 @@ const THEME = {
 };
 
 export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
+  const connection = useHostConnection(backend);
+  const available = installed && hostCanMutate(connection.status);
   /** Fit the terminal to its pane and tell the program its new size. Set up with the terminal below. */
   const refit = useRef<() => void>(() => {});
   const host = useRef<HTMLDivElement>(null);
@@ -215,17 +218,40 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     const observer = new ResizeObserver(() => refit.current());
     observer.observe(element);
 
+    let recoveryPending = false;
+    let recoveryAlive = true;
     const offRecovery = backend.host?.connection.recover?.(async () => {
       if (current.state === "running" && backend.host?.connection.get().revision! > 1) {
-        term.write("\r\nOutput was lost while disconnected. Start a new terminal run to continue.\r\n");
-        report(exited(current, current.generation, null, Date.now()));
+        recoveryPending = true;
+        const lostRun = current;
+        try {
+          const recovered = await recoverLostRun(lostRun, () => backend.ptyResize(ptyIdFor(pane.id, lostRun.generation), term.cols, term.rows), Date.now());
+          if (!recoveryAlive) return;
+          recoveryPending = false;
+          if (current.state !== "running" || current.generation !== lostRun.generation) return;
+          if (recovered.state === "running") {
+            term.write("\r\nSome output was lost while disconnected. Reconnected to the running terminal.\r\n");
+          } else {
+            clearTimeout(quiet); clearTimeout(titleTimer);
+            latest.current.onTitle(pane.id, "");
+            latest.current.onSignal(pane.id, null);
+            waiting = false;
+            report(recovered);
+            term.write("\r\nSome output was lost while disconnected. The terminal has exited.\r\n");
+          }
+        } catch (error) {
+          if (recoveryAlive) term.write(`\r\nCould not reconnect to the terminal: ${String(error)}. It remains counted as running; reconnect to retry.\r\n`);
+          throw error;
+        }
       }
-    }) ?? (() => {});
+      else recoveryPending = false;
+    }, () => recoveryPending) ?? (() => {});
     // A terminal restored from the last session never starts by itself.
     if (startOnMount) start.current();
     else report(STOPPED);
 
     return () => {
+      recoveryAlive = false;
       offRecovery();
       observer.disconnect();
       clearTimeout(quiet);
@@ -269,7 +295,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
         <div className="terminal-stopped" role="status">
           <p>{notice.text}</p>
           <div className="terminal-stopped-actions">
-            <button className="primary" disabled={!installed} onClick={() => start.current()}>{notice.start}</button>
+            <button className="primary" disabled={!available} onClick={() => start.current()}>{notice.start}</button>
             <button onClick={() => onClose(pane.id)}>Close</button>
           </div>
         </div>
@@ -277,7 +303,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       {bar && (
         <div className="terminal-bar" role="status">
           <span className="terminal-bar-text">{bar.text}</span>
-          <button className="primary" disabled={!installed} onClick={() => start.current()}>{bar.start}</button>
+          <button className="primary" disabled={!available} onClick={() => start.current()}>{bar.start}</button>
           <button onClick={() => onClose(pane.id)}>Close</button>
         </div>
       )}

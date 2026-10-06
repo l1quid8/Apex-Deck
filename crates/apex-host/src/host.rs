@@ -19,6 +19,8 @@ use crate::{agents, changes, checkpoints, export, folders, images, mods, preview
 
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
+    /// Serializes snapshot reads with persistence and numbered event emission.
+    recovery: Arc<Mutex<u64>>,
     live: Arc<Mutex<LiveRoomState>>,
     pub(crate) observation_revision: Arc<AtomicU64>,
     pub(crate) room: Arc<futures::lock::Mutex<Room>>,
@@ -116,6 +118,30 @@ impl Host {
 
     fn room_event(&self, room: &str, event: RoomEvent) {
         if let Ok(handle) = self.handle(room) {
+            let mut seq = handle.recovery.lock().unwrap();
+            // Compaction emits before the final full snapshot is saved.
+            if let RoomEvent::Compacted { summary, upto, .. } = &event {
+                handle.checkpoint.lock().unwrap().snapshot.compaction = Some(apex_core::Compaction { summary: summary.clone(), upto: *upto });
+            }
+            *seq += 1;
+            self.emit_room_event(room, event, Some(&handle), Some(*seq));
+        } else {
+            self.emit_room_event(room, event, None, None);
+        }
+    }
+
+    fn persist_and_emit(&self, id: &str, handle: &RoomHandle, event: RoomEvent) -> Result<(), String> {
+        let mut seq = handle.recovery.lock().unwrap();
+        persist_event(handle, &self.store, id, &event)?;
+        if !handle.deleted.load(Ordering::SeqCst) {
+            *seq += 1;
+            self.emit_room_event(id, event, Some(handle), Some(*seq));
+        }
+        Ok(())
+    }
+
+    fn emit_room_event(&self, room: &str, event: RoomEvent, handle: Option<&RoomHandle>, recovery_seq: Option<u64>) {
+        if let Some(handle) = handle {
             let mut live = handle.live.lock().unwrap();
             match &event {
                 RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); }
@@ -132,7 +158,7 @@ impl Host {
                 _ => {}
             }
         }
-        self.emit(HostEvent::Room { room: room.to_string(), event });
+        self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
     }
 
     fn handle(&self, id: &str) -> Result<RoomHandle, String> {
@@ -307,16 +333,17 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, approvals, context });
+            .insert(id, RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, approvals, context });
         Ok(snapshot)
     }
 
     /// Read checkpoint and live requests without the mutex held by a running model.
     pub fn room_state(&self, id: String) -> Result<serde_json::Value, String> {
         let handle = self.handle(&id)?;
+        let seq = handle.recovery.lock().unwrap();
         let snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
         let live = handle.live.lock().unwrap();
-        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals}))
+        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals,"recovery_seq":*seq}))
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -337,15 +364,12 @@ impl Host {
             if let RoomEvent::ToolServers { id: agent, servers } = &event {
                 self.tool_servers.lock().unwrap().insert(format!("{id}:{}", agent.as_str()), servers.clone());
             }
-            if let Err(why) = persist_event(handle, &self.store, id, &event) {
+            if let Err(why) = self.persist_and_emit(id, handle, event) {
                 *error.lock().unwrap() = Some(why.clone());
                 handle.runtime.stop(None);
                 handle.approvals.reject_all();
                 self.room_event(id, RoomEvent::Failed { id: ParticipantId::new("storage"), error: why });
                 return;
-            }
-            if !handle.deleted.load(Ordering::SeqCst) {
-                self.room_event(id, event);
             }
         }
     }
@@ -463,8 +487,7 @@ impl Host {
     /// was settled another way (by stop, say) is an error the interface can
     /// ignore.
     pub fn room_decide(&self, id: String, request: String, approve: bool, always: Option<bool>) -> Result<(), String> {
-        let rooms = self.rooms.lock().unwrap();
-        let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
+        let handle = self.handle(&id)?;
         let decision = match (approve, always.unwrap_or(false)) {
             (false, _) => apex_core::Decision::Reject,
             (true, false) => apex_core::Decision::Approve,
@@ -483,8 +506,7 @@ impl Host {
         let handle = rooms.get(&id).ok_or_else(|| format!("no group chat with id {id}"))?;
         if !handle.approvals.forget(&rule) { return Err("that was no longer always allowed".to_string()); }
         let event = RoomEvent::AllowedChanged { allowed: handle.approvals.allowed() };
-        persist_event(handle, &self.store, &id, &event)?;
-        self.room_event(&id, event);
+        self.persist_and_emit(&id, &handle, event)?;
         Ok(())
     }
 
@@ -1023,6 +1045,7 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
 
 async fn checkpoint_room(handle: &RoomHandle, store: &Store, id: &str) -> Result<(), String> {
     let room = handle.room.lock().await;
+    let _boundary = handle.recovery.lock().unwrap();
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
     checkpoint.snapshot = room.snapshot();
@@ -1311,7 +1334,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
+        let handle = RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }

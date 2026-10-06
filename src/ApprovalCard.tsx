@@ -1,6 +1,6 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 
-import { ANSWER_LABEL, APPROVAL_CHOICES, decisionFor, kindLabel, scopeLine, type Answer } from "./approvalChoices";
+import { ANSWER_LABEL, APPROVAL_CHOICES, sendApprovalAnswer, kindLabel, scopeLine, type Answer } from "./approvalChoices";
 import type { FileChange, ProposedAction } from "./types";
 
 /** A diff drawn line by line: added lines green, removed lines red. */
@@ -33,7 +33,7 @@ interface CardProps {
   /** The bot's name, for the line that says what Always allow covers. */
   name: string;
   /** Called once with the person's answer. `always` stops the same thing being asked again. */
-  onDecide: (approve: boolean, always: boolean) => void;
+  onDecide: (approve: boolean, always: boolean) => void | Promise<void>;
   /** The request id and the bot that asked, put on the card so the thread can find it on screen. */
   request?: string;
   by?: string;
@@ -47,15 +47,17 @@ interface CardProps {
  */
 export function ApprovalCard({ action, deadline = null, name, onDecide, request, by, hostName = "This Mac", disabled = false }: CardProps) {
   const [answered, setAnswered] = useState<Answer | null>(null);
+  const pending = useRef(false);
+  const [error, setError] = useState("");
   /** Always allow is hovered or focused, so its scope line shows. */
   const [previewing, setPreviewing] = useState(false);
   const scopeId = useId();
   const preview = (on: boolean) => () => setPreviewing(on);
   const decide = (answer: Answer) => {
-    if (answered !== null || disabled || (action.expires_at != null && action.expires_at <= Date.now())) return;
-    setAnswered(answer);
-    const { approve, always } = decisionFor(answer);
-    onDecide(approve, always);
+    if (pending.current || answered !== null || disabled || (action.expires_at != null && action.expires_at <= Date.now())) return;
+    pending.current = true;
+    setError("");
+    void sendApprovalAnswer(answer, onDecide, setAnswered).catch(error => setError(`Could not send your answer: ${String(error)}`)).finally(() => { pending.current = false; });
   };
   return (
     <div className="approval" role="group" aria-label={`Allow or deny: ${action.title}`} data-request={request} data-by={by} data-answered={answered !== null ? "" : undefined}>
@@ -89,6 +91,7 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
         {deadline && <span className="approval-deadline">{deadline}</span>}
       </div>
       <p id={scopeId} className="approval-scope" hidden={!action.risky && !previewing}>{scopeLine(name, action)}</p>
+      {error && <p role="alert">{error}</p>}
     </div>
   );
 }

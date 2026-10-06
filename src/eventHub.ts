@@ -9,7 +9,7 @@ interface Hooks {
   notice?(message: string): void;
 }
 export function createEventHub(hooks: Hooks) {
-  const rooms = new Map<string, (event: RoomEvent) => void>(); const ptys = new Map<string, PtyHandlers>();
+  const rooms = new Map<string, { event(event: RoomEvent): void; accept?(event: RoomEvent): boolean }>(); const ptys = new Map<string, PtyHandlers>();
   const subscriptions = new Map<string, { refs: number; promise: Promise<(() => void)[]> }>();
   const key = (host: string, id: string) => JSON.stringify([host, id]);
   return {
@@ -25,7 +25,8 @@ export function createEventHub(hooks: Hooks) {
               if (event.type === "plan_usage") hooks.plan?.(host, event);
               const handler = rooms.get(key(host, room));
               if (!handler) return; // no global state may be changed by an unbound room
-              hooks.approval?.(host, room, event); handler(event); hooks.roomEvent?.(host, room, event);
+              if (handler.accept && !handler.accept(event)) return;
+              hooks.approval?.(host, room, event); handler.event(event); hooks.roomEvent?.(host, room, event);
               if (event.type === "approval_requested" && hooks.toolCall) {
                 void hooks.toolCall(host, room, event).then(deny => {
                   if (deny && rooms.get(key(host, room)) === handler) return backend.roomDecide(room, event.request, false).then(() => hooks.notice?.(deny));
@@ -40,8 +41,8 @@ export function createEventHub(hooks: Hooks) {
       state.refs++; const off = await state.promise; let active = true;
       return () => { if (!active) return; active = false; if (--state.refs === 0) { subscriptions.delete(host); off.forEach(fn => fn()); } };
     },
-    registerRoom(id: string, handler: (event: RoomEvent) => void, host = "local") {
-      const k = key(host, id); rooms.set(k, handler);
+    registerRoom(id: string, event: (event: RoomEvent) => void, host = "local", accept?: (event: RoomEvent) => boolean) {
+      const k = key(host, id); const handler = { event, accept }; rooms.set(k, handler);
       return () => { if (rooms.get(k) === handler) rooms.delete(k); };
     },
     registerPty(id: string, handlers: PtyHandlers, host = "local") {

@@ -216,7 +216,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 62);
+        assert_eq!(names.len(), 63);
+        assert!(names.contains(&"room_state".to_string()));
         assert!(names.contains(&"decision_key_save".to_string()));
         assert!(names.contains(&"session_load".to_string()));
         assert!(names.contains(&"mod_env_get".to_string()));

@@ -123,6 +123,7 @@ export interface Compaction {
 
 export type AppSection = "agents" | "code" | "threads";
 export interface RoomState {
+  recovery_seq?: number;
   snapshot: RoomSnapshot;
   active: string[];
   approvals: { id: string; request: string; action: ProposedAction }[];
@@ -163,7 +164,7 @@ export interface Message {
   at?: number;
 }
 
-export type RoomEvent =
+export type RoomEvent = { recovery_seq?: number } & (
   | { type: "message_added"; message: Message }
   | { type: "turn_started"; id: string }
   | { type: "participant_idle"; id: string }
@@ -192,7 +193,7 @@ export type RoomEvent =
   /** The models now see `summary` in place of the first `upto` messages. */
   | { type: "compacted"; id: string; summary: string; upto: number }
   | { type: "stopped" }
-  | { type: "idle" };
+  | { type: "idle" });
 
 /** One rate-limit window of a provider plan. */
 export interface PlanWindow {

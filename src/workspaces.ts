@@ -82,3 +82,19 @@ export function addFolders(list: Workspace[], paths: string[], makeId: () => str
   }
   return { list: next, ids };
 }
+
+/** A picker can remain open while background imports change the list. */
+export async function pickWorkspaceFolder({ pick, update, select, id, nameOf, hostId }: {
+  pick(): Promise<string | null>;
+  update(change: (current: Workspace[]) => Workspace[]): void;
+  select(id: string): void;
+  id: string; nameOf(path: string): string; hostId: string;
+}): Promise<void> {
+  const path = await pick();
+  if (!path) return;
+  update(current => {
+    const added = addFolders(current, [path], () => id, nameOf, hostId);
+    queueMicrotask(() => select(added.ids[0]));
+    return added.list;
+  });
+}

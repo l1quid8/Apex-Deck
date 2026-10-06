@@ -16,6 +16,14 @@ export function decisionFor(answer: Answer): { approve: boolean; always: boolean
   return { approve: answer !== "deny", always: answer === "always" };
 }
 
+/** Failed delivery is still unanswered, so the person can retry. */
+export async function sendApprovalAnswer(answer: Answer, send: (approve: boolean, always: boolean) => void | Promise<void>, update: (answer: Answer | null) => void): Promise<void> {
+  update(answer);
+  const { approve, always } = decisionFor(answer);
+  try { await send(approve, always); }
+  catch (error) { update(null); throw error; }
+}
+
 /** Said after the kind of action when it can cost money or go public. */
 export const RISKY_NOTE = " · can spend money or publish";
 

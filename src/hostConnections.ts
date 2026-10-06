@@ -9,11 +9,11 @@ export interface HostConnectionStore {
   get(): HostConnection;
   subscribe(listener: () => void): () => void;
   retryNow(): void;
-  recover?(callback: () => Promise<void>): () => void;
+  recover?(callback: () => Promise<void>, pending?: () => boolean): () => void;
 }
 export function hostConnectionStore(hostId: string, name: string) {
   let current: HostConnection = { hostId, name, status: { kind: "idle" }, revision: 0, agents: [], discovery: "idle" };
-  const listeners = new Set<() => void>(); const recovery = new Set<() => Promise<void>>();
+  const listeners = new Set<() => void>(); const recovery = new Map<() => Promise<void>, () => boolean>();
   let retry = () => {}; let finish = () => {}; let generation = 0;
   const change = (next: HostConnection) => { current = next; listeners.forEach(fn => fn()); };
   return {
@@ -21,13 +21,15 @@ export function hostConnectionStore(hostId: string, name: string) {
     subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn); }; },
     retryNow: () => retry(), setRetry(fn: () => void) { retry = fn; },
     setFinishResync(fn: () => void) { finish = fn; },
-    recover(fn: () => Promise<void>) { recovery.add(fn); return () => { recovery.delete(fn); }; },
+    recover(fn: () => Promise<void>, pending = () => false) { recovery.set(fn, pending); return () => { recovery.delete(fn); }; },
     setStatus(status: HostConnection["status"]) {
       const refresh = (status.kind === "connected" && current.revision === 0) || status.kind === "resync";
+      const resumed = status.kind === "connected" && current.status.kind !== "connected" && current.status.kind !== "resync";
       const ticket = ++generation;
       change({ ...current, status, revision: current.revision + (refresh ? 1 : 0) });
-      if (refresh) queueMicrotask(async () => {
-        await Promise.allSettled([...recovery].map(fn => fn()));
+      if (refresh || resumed) queueMicrotask(async () => {
+        if (generation !== ticket) return;
+        await Promise.allSettled([...recovery].filter(([, pending]) => refresh || pending()).map(([fn]) => fn()));
         if (generation === ticket && current.status.kind === "resync") finish();
       });
     },

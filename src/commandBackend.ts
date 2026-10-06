@@ -77,6 +77,6 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomCompact: (id) => call("room_compact", { id }),
     roomClose: (id) => call("room_close", { id }),
     roomDelete: (id) => call("room_delete", { id }),
-    onRoomEvent: (cb) => transport.listen<{ room: string; event: RoomEvent }>("room-event", (p) => cb(p.room, p.event)),
+    onRoomEvent: (cb) => transport.listen<{ room: string; event: RoomEvent; recovery_seq?: number }>("room-event", (p) => cb(p.room, p.recovery_seq == null ? p.event : { ...p.event, recovery_seq: p.recovery_seq })),
   };
 }

@@ -13,7 +13,8 @@
     "desktop:dev": "cargo build -p apex-daemon && node desktop/dev.mjs",
     "desktop:smoke": "cargo build -p apex-daemon && vite build && node desktop/run-smoke.mjs",
     "desktop:package": "cargo build --release -p apex-daemon && vite build && node scripts/package-mac.mjs --dir",
-    "desktop:dmg": "cargo build --release -p apex-daemon && vite build && node scripts/package-mac.mjs"
+    "desktop:dmg": "cargo build --release -p apex-daemon && vite build && node scripts/package-mac.mjs",
+    "desktop:smoke:multi-host": "cargo build -p apex-daemon && vite build && node --experimental-strip-types desktop/run-multi-host-smoke.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

@@ -63,6 +63,61 @@ fn scripted(id: &str, lines: &[&str]) -> Value {
 }
 
 #[test]
+fn room_state_identifies_events_already_in_its_snapshot() {
+    let data = std::env::temp_dir().join(format!("apex-host-boundary-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let host = Running::start(&data);
+    host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default()}})).unwrap();
+    host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot first"}})).unwrap();
+    let state = host.call(json!({"cmd":"room_state","args":{"id":"r"}})).unwrap();
+    let boundary = state["recovery_seq"].as_u64().expect("snapshot must carry its event boundary");
+    let events: Vec<Value> = host.events().iter().filter(|e| e.name()=="room-event").map(|e| e.payload()).collect();
+    assert!(!events.is_empty());
+    assert!(events.iter().all(|e| e["recovery_seq"].as_u64().unwrap() <= boundary));
+    host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot second"}})).unwrap();
+    let latest = host.events().iter().filter(|e| e.name()=="room-event").last().unwrap().payload();
+    assert!(latest["recovery_seq"].as_u64().unwrap() > boundary);
+    assert_eq!(state["snapshot"]["transcript"].as_array().unwrap().len(),2);
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn forgetting_an_always_allowed_rule_returns_emits_and_persists() {
+    let data = std::env::temp_dir().join(format!("apex-host-forget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let first = Running::start(&data);
+    let mut snapshot = first.call(json!({"cmd":"room_create","args":{"id":"r","participants":[],"options":RoomOptions::default()}})).unwrap();
+    first.host.shutdown();
+    drop(first);
+    let rule = json!({"by":"bot","kind":"command","title":"Run a command","what":"npm test","allowed_at":0,"risky":false});
+    snapshot["allowed"] = json!([rule.clone()]);
+    let store = apex_host::storage::Store::new(data.join("saved-chats-v1"));
+    store.save_room("r", &apex_host::storage::SavedRoom { cwd: None, snapshot: serde_json::from_value(snapshot).unwrap() }).unwrap();
+
+    let host = Running::start(&data);
+    let opened = host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[],"options":RoomOptions::default()}})).unwrap();
+    assert_eq!(opened["allowed"].as_array().unwrap().len(), 1);
+    let target = Arc::clone(&host.host);
+    let runtime = host.runtime.handle().clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let to_forget = rule.clone();
+    let worker = std::thread::spawn(move || {
+        let command = Command::from_json(json!({"cmd":"room_forget_allowed","args":{"id":"r","rule":to_forget}})).unwrap();
+        let _ = send.send(runtime.block_on(target.call(command)));
+    });
+    receive.recv_timeout(Duration::from_secs(2)).expect("forgetting must not deadlock on the rooms lock").unwrap();
+    worker.join().unwrap();
+    assert!(host.events().iter().any(|event| matches!(event, HostEvent::Room { room, event: apex_core::RoomEvent::AllowedChanged { allowed }, .. } if room == "r" && allowed.is_empty())));
+    assert!(store.room("r").unwrap().unwrap().snapshot.allowed.is_empty(), "removal is persisted immediately");
+    let state = host.call(json!({"cmd":"room_state","args":{"id":"r"}})).unwrap();
+    assert!(state["snapshot"]["allowed"].as_array().map(|list| list.is_empty()).unwrap_or(true));
+    assert_eq!(host.call(json!({"cmd":"room_forget_allowed","args":{"id":"r","rule":rule}})), Err("that was no longer always allowed".into()));
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
 fn a_chat_a_terminal_an_approval_and_a_restart() {
     let data = std::env::temp_dir().join(format!("apex-host-e2e-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
@@ -75,7 +130,7 @@ fn a_chat_a_terminal_an_approval_and_a_restart() {
     assert_eq!(snapshot["transcript"], json!([]));
     first.call(json!({ "cmd": "room_post", "args": { "id": "t1", "text": "@null hi" } })).unwrap();
     let room_events: Vec<Value> = first.events().into_iter().filter_map(|e| match e {
-        HostEvent::Room { room, event } if room == "t1" => Some(serde_json::to_value(event).unwrap()),
+        HostEvent::Room { room, event, .. } if room == "t1" => Some(serde_json::to_value(event).unwrap()),
         _ => None,
     }).collect();
     let texts: Vec<&str> = room_events.iter().filter(|e| e["type"] == "message_added").filter_map(|e| e["message"]["text"].as_str()).collect();

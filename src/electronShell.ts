@@ -5,7 +5,7 @@
 
 import type { Backend, BrowserApi, HostEntry } from "./backend";
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
-import { createHostBackends } from "./hostBackends.ts";
+import { createHostBackends, guardHostWrites } from "./hostBackends.ts";
 import { hostConnectionStore } from "./hostConnections.ts";
 import { connection } from "./connection.ts";
 import { DaemonClient, type Connect, type Link } from "./daemon/client.ts";
@@ -229,8 +229,8 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   localConnection.setRetry(() => client.retryNow());
   client.onStatus(status => localConnection.setStatus(status));
   localConnection.setFinishResync(() => client.finishResync());
-  const backend: Backend = { ...commandBackend(transport, shell), onMenu, hosts, browser,
-    host: { id: "local", name: "This Mac", connection: localConnection } };
+  const backend: Backend = guardHostWrites({ ...commandBackend(transport, shell), onMenu, hosts, browser,
+    host: { id: "local", name: "This Mac", connection: localConnection } }, localConnection);
   const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: (host, state) => {
     const connect = bridgeConnect(bridge, host.id);
     const remoteClient = new DaemonClient(connect);

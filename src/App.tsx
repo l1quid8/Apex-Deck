@@ -1,7 +1,7 @@
 import { canvasPanes } from "./canvasPanes.ts";
-import { normalizeWorkspaces, mergeHostSession, migrateCanvasLayouts, workspaceHost } from "./hostSession.ts";
+import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceHost } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
-import { HostPane } from "./HostPane";
+import { HostPane, HostAgents } from "./HostPane";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
@@ -40,7 +40,7 @@ import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidt
 import { workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
-import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
+import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -304,7 +304,7 @@ export function App() {
     let alive = true;
     void backend.hosts.list().then(hosts => Promise.allSettled(hosts.filter(h => h.remote && !sessionRef.current?.importedHostSessions?.includes(h.id)).map(async host => {
       try {
-        const remote = await backend.machines!.legacySession(host.id);
+        const remote = prepareHostSession(await backend.machines!.legacySession(host.id));
         const settings = await backend.machines!.legacySettings(host.id).catch(() => null) as { decision?: { enabled?: boolean } } | null;
         if (!alive) return;
         if (settings?.decision?.enabled) setMigrationNotice(`${host.name}'s decision observer is enabled in its own settings. Deck's observer switch controls This Mac's threads only.`);
@@ -479,12 +479,8 @@ export function App() {
       setActiveWorkspace(workspace.id);
       return;
     }
-    const picked = await (backend.machines?.get(hostId) ?? backend).pickFolder();
-    if (!picked) return;
-    // A folder already listed is reused; one removed from the list comes back.
-    const { list, ids } = addFolders(workspaces, [picked], () => newId("ws"), folderName, hostId);
-    setWorkspaces(list);
-    setActiveWorkspace(ids[0]);
+    await pickWorkspaceFolder({ pick: () => (backend.machines?.get(hostId) ?? backend).pickFolder(),
+      update: setWorkspaces, select: setActiveWorkspace, id: newId("ws"), nameOf: folderName, hostId });
   };
 
   /** Take a workspace off the list. Nothing is deleted: its threads stay saved
@@ -819,7 +815,10 @@ export function App() {
 
   /** Show a workspace's folder in Finder. */
   const revealWorkspace = (workspace: Workspace) => {
-    backend?.openTarget(workspace.path, null, true).catch((error) => setStorageError(`Could not show ${workspace.name} in Finder: ${String(error)}`));
+    try {
+      const destination = backendFor({ workspaceId: workspace.id } as Pane);
+      void destination.openTarget(workspace.path, null, true).catch(error => setStorageError(`Could not show ${workspace.name}: ${String(error)}`));
+    } catch (error) { setStorageError(String(error)); }
   };
 
   /** Run what was chosen in a pane's ⋯ menu. */
@@ -960,14 +959,16 @@ export function App() {
     </div>
   );
 
-  const picker = (
+  let creationBackend: Backend | null = backend;
+  try { if (current) creationBackend = backendFor({ workspaceId: current.id } as Pane); } catch { creationBackend = null; }
+  const picker = (pickerAgents: AgentInfo[]) => (
     <div className="picker">
       <div className="empty-emblem"><DeckIcon name={section === "threads" ? "chat" : "spark"} size={30} /></div>
       <span className="eyebrow">{current?.name} / {section === "threads" ? "Threads" : "Code"}</span>
       <h2>{section === "threads" ? "Great work starts with a conversation." : "Your next idea. Ready to run."}</h2>
       <p className="muted">{section === "threads" ? "Bring your bots into one conversation. Chats are saved automatically." : `Run your coding tools side by side in ${current?.name}.`}</p>
       <div className={`picker-grid ${section === "threads" ? "single" : ""}`}>
-        {section === "code" && agents.filter((agent) => providerEnabled(agent.key, disabledProviders)).map((agent) => (
+        {section === "code" && pickerAgents.filter((agent) => providerEnabled(agent.key, disabledProviders)).map((agent) => (
           <button key={agent.key} disabled={!agent.found} onClick={() => addPane("terminal", agent.label, agent.key)} title={agent.found ? `Runs ${agent.program}` : `${agent.program} was not found on this computer`}>
             <strong>{agent.label}</strong>
             <span>{agent.found ? agent.program : "not installed"}</span>
@@ -1036,18 +1037,18 @@ export function App() {
           </div>
         )}
         {section === "agents" && <button className="primary" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
-        {section !== "agents" && <NewMenu
+        {section !== "agents" && creationBackend && <HostAgents backend={creationBackend} agents={agents}>{hostAgents => <NewMenu
           section={section}
           label="+ New ▾"
           disabled={!current}
-          agents={agents}
+          agents={hostAgents}
           disabledProviders={disabledProviders}
           hasPanes={visiblePanes.length > 0}
           onShowPicker={() => setPicking(true)}
           onPick={(item) => addPane(item.kind, item.kind === "chat" ? "Group chat" : item.label, item.agent)}
           onManageProviders={() => setSettingsOpen("providers")}
           openRequest={newMenuRequest}
-        />}
+        />}</HostAgents>}
         <button className={settingsOpen ? "icon active" : "icon"} onClick={() => setSettingsOpen((open) => (open ? null : "general"))} aria-label="Settings" title="Settings (⌘,)" aria-pressed={!!settingsOpen}><DeckIcon name="settings" /></button>
         {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
         </div>
@@ -1094,7 +1095,7 @@ export function App() {
                       {paneMenu === workspace.id && (
                         <span className="pane-menu" role="menu" data-menu={workspace.id} style={menuPlace} onKeyDown={onMenuKey} onBlur={menuBlur}>
                           <button role="menuitem" onClick={() => { setPaneMenu(null); rename(); }}>Rename</button>
-                          <button role="menuitem" disabled={!workspace.path} title={workspace.path ? undefined : "This workspace has no folder"} onClick={() => { setPaneMenu(null); revealWorkspace(workspace); }}>Reveal in Finder</button>
+                          <button role="menuitem" disabled={!workspace.path || workspaceHost(workspace) !== "local"} title={workspaceHost(workspace) !== "local" ? "This Mac can't open server folders." : workspace.path ? undefined : "This workspace has no folder"} onClick={() => { setPaneMenu(null); revealWorkspace(workspace); }}>{workspaceHost(workspace) !== "local" ? "Open folder on server" : "Reveal in Finder"}</button>
                           <span className="pane-menu-sep" role="separator" />
                           <button role="menuitem" className="danger-text" onClick={() => { setPaneMenu(null); removeWorkspace(workspace); }}>Remove from list…</button>
                         </span>
@@ -1103,7 +1104,8 @@ export function App() {
                   </div>
                   {own.map((pane) => {
                     const menuId = `rail:${pane.id}`;
-                    const menuItems = paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, agents), tool: toolName(pane.agent, agents), folder: workspace.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned });
+                    let menuBackend: Backend | null = null;
+                    try { menuBackend = backendFor(pane); } catch {}
                     return (
                     <div role="button" tabIndex={0} key={pane.id} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}
                       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const opener = event.currentTarget.querySelector<HTMLElement>(".pane-row-more"); if (opener) openMenu(menuId, opener); }}
@@ -1123,7 +1125,7 @@ export function App() {
                       {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note}>{label(attention[pane.id].kind)}</span>}
                       <span className="pane-menu-wrap" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
                         <button className="icon small pane-row-more" onClick={(event) => toggleMenu(menuId, event)} aria-label={`More for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === menuId} title="More">⋯</button>
-                        {drawPaneMenu(menuId, menuItems, pane, "rail")}
+                        {menuBackend && <HostAgents backend={menuBackend} agents={agents}>{found => drawPaneMenu(menuId, paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, found), tool: toolName(pane.agent, found), folder: workspace.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned }), pane, "rail")}</HostAgents>}
                       </span>
                     </div>
                     );
@@ -1175,7 +1177,9 @@ export function App() {
               <div className="welcome-capabilities"><span>01 / Agents</span><span>02 / Code</span><span>03 / Threads</span></div>
             </div>
           )}
-          {section !== "agents" && current && (picking || visiblePanes.length === 0) && picker}
+          {section !== "agents" && current && (picking || visiblePanes.length === 0) && (creationBackend
+            ? <HostAgents backend={creationBackend} agents={agents}>{picker}</HostAgents>
+            : <div className="picker"><p>This workspace's machine is unavailable.</p></div>)}
 
           {/* Every pane of every workspace stays mounted so its session keeps
               running. Panes outside the current view are only hidden. */}
@@ -1220,7 +1224,7 @@ export function App() {
                       <button className="icon small" onClick={(event) => toggleMenu(`head:${pane.id}`, event)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === `head:${pane.id}`} title="More">
                         ⋯
                       </button>
-                      {drawPaneMenu(`head:${pane.id}`, paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, agents), tool: toolName(pane.agent, agents), folder: workspace?.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned }), pane, "head")}
+                      {paneBackend && <HostAgents backend={paneBackend} agents={agents}>{found => drawPaneMenu(`head:${pane.id}`, paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, found), tool: toolName(pane.agent, found), folder: workspace?.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned }), pane, "head")}</HostAgents>}
                     </span>
                     <button className="icon small" onClick={() => closePane(pane.id)} aria-label={`Close ${pane.title}`} title={pane.kind === "chat" ? "Close (the thread stays in the list)" : "Close"}>
                       ×
