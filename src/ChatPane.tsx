@@ -344,6 +344,14 @@ const STARTERS = [
 /** Below this width the artifacts panel covers the conversation instead of sitting beside it. */
 const NARROW_PX = 760;
 
+/** Show the most of each bot chip that lets the whole row fit: details, then usage levels, go first. Names alone may still scroll. */
+function fitChips(row: HTMLElement) {
+  for (const fit of ["full", "levels", "names"]) {
+    row.dataset.fit = fit;
+    if (row.scrollWidth <= row.clientWidth) return;
+  }
+}
+
 export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
@@ -1454,6 +1462,23 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return () => observer.disconnect();
   }, []);
 
+  // The bot chips refit when the row resizes or any chip's text changes.
+  const chipRow = useRef<HTMLDivElement>(null);
+  const chipText = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const row = chipRow.current;
+    if (!row || row.textContent === chipText.current) return;
+    chipText.current = row.textContent;
+    fitChips(row);
+  });
+  useEffect(() => {
+    const row = chipRow.current;
+    if (!row) return;
+    const observer = new ResizeObserver(() => fitChips(row));
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, []);
+
   // The newest local server address a bot mentioned, for the chip in the pane
   // head. Only finished replies are messages; text still streaming is not, so
   // a half-written address never makes a chip.
@@ -2088,7 +2113,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       }} /> }
       {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} />} />, details.slot)}
       <div className="chat-bar">
-        <div className="chips">
+        <div ref={chipRow} className="chips">
           {!profileMode && participants.map((p) => {
             const levels = levelsFor(p.id);
             return (

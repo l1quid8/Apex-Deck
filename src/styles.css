@@ -1760,8 +1760,9 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .thread-chat .chip-name { white-space: nowrap; }
 .thread-chat .thread-counts { display: flex; flex: none; gap: 4px; }
 .thread-chat .thread-counts button { white-space: nowrap; font-size: 11px; }
-@container (max-width: 850px) { .thread-chat .chip-meta:not(.chip-levels) { display: none; } }
-@container (max-width: 480px) { .thread-chat .chip-levels { display: none; } }
+/* ChatPane picks data-fit from what the row has room for, so a wide pane full of bots still shows every one. */
+.thread-chat .chips[data-fit="levels"] .chip-meta:not(.chip-levels) { display: none; }
+.thread-chat .chips[data-fit="names"] .chip-meta { display: none; }
 
 .composer-field { display: flex; align-items: center; gap: 8px; }
 .composer-tools { flex: none; }
