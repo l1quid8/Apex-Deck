@@ -364,16 +364,17 @@ export async function runMultiHostSmoke(win) {
   fs.unlinkSync(path.join(root,'offline'));await page("__deck.backend.machines.connection('at').retryNow();return true;");
   await until('server back',()=>page("return __deck.backend.machines.connection('at').get().status.kind==='connected'"));
 
-  // Stage 3: the Work bar above every thread's message box.
-  const tray=id=>`${pane(id)}.querySelector('.tray')`;
-  assert.equal(await page(`return ${tray('mac-thread')}.querySelector('.tray-chip.proj .pname').textContent`),'Mac thread');
-  assert.equal(await page(`return Boolean(${tray('mac-thread')}.querySelector('.tray-chip.work .lock'))`),true,'a started thread shows the lock');
-  assert.equal(await page(`return ${tray('server-thread')}.querySelector('.tray-chip.work .lbl').textContent`),'Frankfurt');
+  // Stage 3: the Work bar sits inside an empty thread's message box. A started thread's machine is fixed, so it has none.
+  const tray=id=>`${pane(id)}.querySelector('.composer-box > .tray')`;
+  assert.equal(await page(`return Boolean(${pane('mac-thread')}.querySelector('.tray'))`),false,'a started thread has no Work bar');
+  assert.equal(await page(`return Boolean(${pane('server-thread')}.querySelector('.tray'))`),false);
   // An empty thread asks what to work on; its project name opens the picker.
   const fresh=await newDraft();
   assert.match(await page(`return ${pane(fresh)}.querySelector('.empty .ask').textContent`),/What should we work on in Mac thread\?/);
   assert.match(await page(`return ${pane(fresh)}.querySelector('.empty .where').textContent`),/^On This Mac · /);
-  assert.equal(await page(`return Boolean(${tray(fresh)}.querySelector('.tray-chip.work .lock'))`),false);
+  assert.equal(await page(`return ${tray(fresh)}.querySelector('.tray-chip.proj .pname').textContent`),'Mac thread');
+  assert.equal(await page(`return ${tray(fresh)}.querySelector('.tray-chip.work .lbl').textContent`),'This Mac');
+  await shot('work-bar-new-thread');
   await page(`${pane(fresh)}.querySelector('.empty .pick-name').click();return true;`);
   await until('project picker',()=>page(`return Boolean(document.querySelector('.tray-pop.picker input'))`));
   assert.equal(await page(`return document.querySelector('.tray-pop .pk-row[data-workspace="${macProjectId}"] .check')!==null`),true,'the current project has its ✓');
@@ -412,28 +413,30 @@ export async function runMultiHostSmoke(win) {
   await until('it reopened there',()=>page(`return !${pane(fresh)}.querySelector('[aria-label="Add bot"]')?.disabled`));
   // ⌥⇧⌘O opens the picker of the thread in use.
   await page(`${pane('mac-thread')}.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true;`);
+  const macDraft=await newDraft();
+  await page(`${pane(macDraft)}.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true;`);
   await page(`window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyO',key:'Ø',metaKey:true,altKey:true,shiftKey:true,bubbles:true,cancelable:true}));return true;`);
   await until('shortcut opens the picker',()=>page(`return Boolean(document.querySelector('.tray-pop.picker'))`));
   await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
   await until('picker closed',()=>page(`return !document.querySelector('.tray-pop')`));
   // Work in lists every machine, one row per folder; the server row is the copy of this project there.
-  await page(`${tray('mac-thread')}.querySelector('.tray-chip.work').click();return true;`);
+  await page(`${tray(macDraft)}.querySelector('.tray-chip.work').click();return true;`);
   await until('Work in',()=>page(`return Boolean(document.querySelector('.tray-pop .work-menu'))`));
   const rows=await page(`return [...document.querySelectorAll('.tray-pop .work-menu [role=menuitemradio]')].map(r=>[r.dataset.hostId,r.dataset.workspace,r.getAttribute('aria-checked')])`);
   assert.deepEqual(rows,[['local',macProjectId,'true'],['at','at:shared-workspace-id:1','false']]);
-  assert.match(await page(`return document.querySelector('.tray-pop .work-menu').textContent`),/This thread stays on This Mac/);
+  assert.doesNotMatch(await page(`return document.querySelector('.tray-pop .work-menu').textContent`),/This thread stays on/);
   assert.ok(await page(`return [...document.querySelectorAll('.tray-pop .work-menu [role=menuitem]')].some(b=>b.textContent.includes('Add server…'))`));
   await shot('work-in');
   await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
   // Files: recent files from this Mac attach with a click.
   const readme=path.join(root,'work','README.md');
   await page(`__deck.recentFiles.remember(${JSON.stringify(readme)});return true;`);
-  await page(`${tray('mac-thread')}.querySelector('.tray-chip.files').click();return true;`);
+  await page(`${tray(macDraft)}.querySelector('.tray-chip.files').click();return true;`);
   await until('Files list',()=>page(`return [...document.querySelectorAll('.tray-pop.files .pk-row .nm')].some(n=>n.textContent==='README.md')`));
   await page(`[...document.querySelectorAll('.tray-pop.files .pk-row')].find(r=>r.querySelector('.nm')?.textContent==='README.md').click();return true;`);
-  await until('file attached',()=>page(`return [...${pane('mac-thread')}.querySelectorAll('.attachments .attachment')].some(a=>a.textContent.includes('README.md')&&a.getAttribute('aria-busy')!=='true')&&${tray('mac-thread')}.querySelector('.tray-chip.files .count')?.textContent==='1'`));
+  await until('file attached',()=>page(`return [...${pane(macDraft)}.querySelectorAll('.attachments .attachment')].some(a=>a.textContent.includes('README.md')&&a.getAttribute('aria-busy')!=='true')&&${tray(macDraft)}.querySelector('.tray-chip.files .count')?.textContent==='1'`));
   // Tools lists the bots' servers, apps and plugins here; these shell bots have none.
-  await page(`${tray('server-thread')}.querySelector('.tray-chip.tools').click();return true;`);
+  await page(`${tray(fresh)}.querySelector('.tray-chip.tools').click();return true;`);
   await until('Tools',()=>page(`return document.querySelector('.tray-pop.tools')?.textContent.includes('From the bots in this thread, on Frankfurt')`));
   await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
   // Offline: the server's Work in row is disabled, and the current one keeps its ✓.
@@ -441,7 +444,7 @@ export async function runMultiHostSmoke(win) {
   for (const line of execFileSync('ps',['-ax','-o','pid=,command=']).toString().split('\n'))
     if (line.includes('--attach') && line.includes(path.join(root,'server'))) { try { process.kill(Number(line.trim().split(/\s+/)[0]),'SIGTERM'); } catch {} }
   await until('server offline again',()=>page("return __deck.backend.machines.connection('at').get().status.kind!=='connected'"));
-  await page(`${tray('server-thread')}.querySelector('.tray-chip.work').click();return true;`);
+  await page(`${tray(fresh)}.querySelector('.tray-chip.work').click();return true;`);
   await until('Work in while offline',()=>page(`return Boolean(document.querySelector('.tray-pop .work-menu'))`));
   assert.deepEqual(await page(`const r=document.querySelector('.tray-pop .work-menu [data-host-id="at"]');return [r.disabled,r.getAttribute('aria-checked'),Boolean(r.querySelector('.check'))]`),[true,'true',true]);
   await shot('work-in-offline');

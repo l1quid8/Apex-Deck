@@ -2802,3 +2802,8 @@ button.mod-status:hover { color: var(--text); }
 .pane-head > .pane-folder:empty, .pane-head > .pane-counts:empty { display: none; }
 .pane-head:is([data-fit="tight"], [data-fit="min"]) { gap: 5px; padding-left: 10px; padding-right: 8px; }
 .pane-head[data-fit="min"] .pane-ws { flex-shrink: 1; min-width: 4.4em; }
+/* A new thread's project and machine row sits inside the message box, under the text. */
+.composer-box.with-tray { flex-wrap: wrap; }
+.composer-box.with-tray > .tray { order: 2; flex-basis: 100%; margin: 0; padding: 2px 0 3px; border: 0; border-radius: 0; background: none; }
+.composer-box.with-tray > .tray .tray-chip { color: var(--muted); padding: 2px 8px; }
+.composer-box.with-tray > .tray .tray-chip:hover, .composer-box.with-tray > .tray .tray-chip.on { color: var(--text); }
