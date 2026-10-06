@@ -233,12 +233,14 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   localConnection.setFinishResync(() => client.finishResync());
   const backend: Backend = { ...commandBackend(transport, shell), onMenu, hosts, browser,
     host: { id: "local", name: "This Mac", connection: localConnection } };
-  const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: host => {
+  const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: (host, state) => {
     const connect = bridgeConnect(bridge, host.id);
     const remoteClient = new DaemonClient(connect);
-    const state = hostConnectionStore(host.id, host.name);
     state.setRetry(() => remoteClient.retryNow());
-    remoteClient.onStatus(status => state.setStatus(status));
+    remoteClient.onStatus(status => {
+      state.setStatus(status);
+      if (status.kind === "connected") void machines.discover(host.id).catch(() => {});
+    });
     state.setFinishResync(() => remoteClient.finishResync());
     const remoteTransport = daemonTransport(remoteClient);
     const remoteShell = electronShell(bridge, remoteTransport, { ...host, owned: false }, request => pathPrompt.ask(request));

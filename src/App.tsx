@@ -1,3 +1,7 @@
+import { canvasPanes } from "./canvasPanes.ts";
+import { normalizeWorkspaces, mergeHostSession, migrateCanvasLayouts, workspaceHost } from "./hostSession.ts";
+import { paneDestination } from "./paneHost.ts";
+import { HostPane } from "./HostPane";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
@@ -29,14 +33,13 @@ import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withAppro
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { ConnectionBanner } from "./ConnectionBanner";
 import { HostSwitcher } from "./HostSwitcher";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
 import { workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, openPanes, paneSection, quitQuestion, removeCounts, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
 import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
@@ -118,9 +121,14 @@ export function App() {
   const saveQueue = useRef(Promise.resolve());
   const [backend, setBackend] = useState<Backend | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>(loadWorkspaces);
+  const [records, setRecords] = useState<{ workspaces: Workspace[]; panes: Pane[]; importedHostSessions: string[] }>({workspaces: loadWorkspaces(), panes: [], importedHostSessions: []});
+  const { workspaces, panes, importedHostSessions } = records;
+  const setWorkspaces = useCallback((next: Workspace[] | ((old: Workspace[]) => Workspace[])) => setRecords(r => ({ ...r, workspaces: typeof next === "function" ? next(r.workspaces) : next })), []);
+  const setPanes = useCallback((next: Pane[] | ((old: Pane[]) => Pane[])) => setRecords(r => ({ ...r, panes: typeof next === "function" ? next(r.panes) : next })), []);
+  const sessionRef = useRef<AppSession | null>(null);
+  const [migrationNotice, setMigrationNotice] = useState("");
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
-  const [panes, setPanes] = useState<Pane[]>([]);
+
   /** Where you stopped reading each thread, saved with it for "New since you looked". */
   const onThreadSeen = useCallback((paneId: string, seq: number) => setPanes((list) => (
     list.some((p) => p.id === paneId && p.lastSeenSeq !== seq) ? list.map((p) => (p.id === paneId ? { ...p, lastSeenSeq: seq } : p)) : list
@@ -243,7 +251,7 @@ export function App() {
     getBackend().then(async (b) => {
       await startHub(b);
       if (!b.demo) modHost.start();
-      const found = await b.detectAgents().catch(() => []);
+      const found = await (b.machines ? b.machines.discover() : b.detectAgents()).catch(() => []);
       const folders = await b.startupFolders().catch(() => []);
       const saved = await b.sessionLoad();
       const savedSettings = await b.settingsLoad().then((raw) => ({ raw }), (error) => ({ error }));
@@ -256,7 +264,7 @@ export function App() {
         setStorageError(`Could not read settings: ${String(savedSettings.error)}. Defaults are in use and the file has been kept.`);
       }
       setAgents(found);
-      const known = saved?.workspaces ?? loadWorkspaces();
+      const known = normalizeWorkspaces(saved?.workspaces ?? loadWorkspaces());
       setWorkspaces(known);
       const loaded = loadedPanes(saved?.panes ?? [], known.map((w) => w.id));
       restored.current = new Set(loaded.filter((p) => p.kind === "terminal").map((p) => p.id));
@@ -268,7 +276,9 @@ export function App() {
       setDetailsCollapsed(saved?.threadDetailsCollapsed ?? {});
       // A layout that cannot be read is dropped and rebuilt from the panes,
       // and panes that didn't load are taken out of the rest.
-      setLayouts(restoredLayouts(saved?.layouts, loaded));
+      const migrated = migrateCanvasLayouts({ version: 1, workspaces: known, panes: loaded, profiles: [], activeWorkspace: saved?.activeWorkspace ?? null, focusedPane: saved?.focusedPane ?? null, section: saved?.section ?? "threads", layout: saved?.layout ?? "top", layouts: saved?.layouts });
+      setLayouts(restoredLayouts(migrated.layouts, loaded));
+      setRecords(r => ({ ...r, importedHostSessions: saved?.importedHostSessions ?? [] }));
       setActiveWorkspace(saved?.activeWorkspace ?? known[0]?.id ?? null);
       setFocusedPane(saved?.focusedPane ?? null);
       if (folders.length > 0) {
@@ -287,14 +297,36 @@ export function App() {
     };
   }, []);
 
+  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map(w => w.id)), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
+  sessionRef.current = currentSession;
+  useEffect(() => {
+    if (!backend?.machines || !backend.hosts) return;
+    let alive = true;
+    void backend.hosts.list().then(hosts => Promise.allSettled(hosts.filter(h => h.remote && !sessionRef.current?.importedHostSessions?.includes(h.id)).map(async host => {
+      try {
+        const remote = await backend.machines!.legacySession(host.id);
+        const settings = await backend.machines!.legacySettings(host.id).catch(() => null) as { decision?: { enabled?: boolean } } | null;
+        if (!alive) return;
+        if (settings?.decision?.enabled) setMigrationNotice(`${host.name}'s decision observer is enabled in its own settings. Deck's observer switch controls This Mac's threads only.`);
+        setRecords(old => {
+          const merged = mergeHostSession({ ...sessionRef.current!, ...old }, host.id, remote);
+          merged.session.panes.filter(p => p.kind === "terminal").forEach(p => restored.current.add(p.id));
+          if (merged.conflicts.length) queueMicrotask(() => setMigrationNotice(`Imported ${host.name}; remapped/skipped conflicting IDs: ${merged.conflicts.join(", ")}`));
+          return { workspaces: merged.session.workspaces, panes: merged.session.panes, importedHostSessions: merged.session.importedHostSessions! };
+        });
+      } catch (error) { if (alive) setMigrationNotice(`Saved chats on ${host.name} could not be imported: ${String(error)}. Deck will retry at next launch.`); }
+    })));
+    return () => { alive = false; };
+  }, [backend]);
+
   useEffect(() => {
     if (!backend) return;
     saveWorkspaces(workspaces);
-    const session: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map((w) => w.id)), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed };
+    const session = sessionRef.current!;
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed]);
+  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed, importedHostSessions]);
 
   // settings.json, beside the session file. Written in order, like the session.
   useEffect(() => {
@@ -377,7 +409,7 @@ export function App() {
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
   const listed = useMemo(() => listedPanes(panes, workspaces), [panes, workspaces]);
-  const visiblePanes = useMemo(() => openPanes(panes, deleting).filter((p) => p.workspaceId === activeWorkspace && paneSection(p) === section), [panes, deleting, activeWorkspace, section]);
+  const visiblePanes = useMemo(() => canvasPanes(panes, workspaces, deleting, section), [panes, workspaces, deleting, section]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
   useEffect(() => {
     if (focusedPane && panes.some((p) => p.id === focusedPane && p.kind === "chat")) setRecentThreads((recent) => (recent[0] === focusedPane ? recent : noteFocus(recent, focusedPane)));
@@ -389,7 +421,7 @@ export function App() {
 
   // The arrangement of the panes in view. Panes that were added or closed
   // since it was last stored are worked in here, so it always matches.
-  const key = layoutKey(activeWorkspace, section);
+  const key = layoutKey(null, section);
   const visibleIds = visiblePanes.map((p) => p.id).join("\n");
   const tree = useMemo(() => {
     const box = gridArea.current?.getBoundingClientRect();
@@ -429,7 +461,14 @@ export function App() {
     requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-workspace="${id}"]`)?.focus());
   };
 
-  const addWorkspace = async () => {
+  const backendFor = (pane: Pane): Backend => {
+    if (!backend) throw new Error("The backend is not ready yet.");
+    const { hostId } = paneDestination(pane, workspaces);
+    if (backend.machines) return backend.machines.get(hostId);
+    if (hostId !== "local") throw new Error("This server is unavailable.");
+    return backend;
+  };
+  const addWorkspace = async (_event?: unknown, hostId = "local") => {
     if (!backend) return;
     if (backend.demo) {
       // The preview has no folders to pick, so every workspace is new.
@@ -438,10 +477,10 @@ export function App() {
       setActiveWorkspace(workspace.id);
       return;
     }
-    const picked = await backend.pickFolder();
+    const picked = await (backend.machines?.get(hostId) ?? backend).pickFolder();
     if (!picked) return;
     // A folder already listed is reused; one removed from the list comes back.
-    const { list, ids } = addFolders(workspaces, [picked], () => newId("ws"), folderName);
+    const { list, ids } = addFolders(workspaces, [picked], () => newId("ws"), folderName, hostId);
     setWorkspaces(list);
     setActiveWorkspace(ids[0]);
   };
@@ -566,7 +605,7 @@ export function App() {
     const title = nextTitle("Preview", panes.filter((p) => p.workspaceId === source.workspaceId && p.kind === "preview").map((p) => p.title));
     const preview: Pane = { id, workspaceId: source.workspaceId, kind: "preview", title, url: address, servedBy: sourceId };
     if (deck === "threads") preview.deck = "threads";
-    const key = layoutKey(source.workspaceId, deck);
+    const key = layoutKey(null, deck);
     setPanes((list) => [...list, preview]);
     setLayouts((all) => (all[key] && leafIds(all[key]).includes(sourceId) ? { ...all, [key]: insertBeside(all[key], sourceId, id, "right") } : all));
     if (auto) return;
@@ -580,7 +619,7 @@ export function App() {
   const forkThread = async (source: Pane, title: string, upto: number | null) => {
     const id = newId("pane");
     if (!backend) throw new Error("The backend is not ready yet.");
-    await backend.roomFork(source.id, id, upto);
+    await backendFor(source).roomFork(source.id, id, upto);
     setPanes((list) => [...list, { id, workspaceId: source.workspaceId, kind: "chat", title }]);
     setFocusedPane(id);
     setSection("threads");
@@ -710,7 +749,7 @@ export function App() {
         deleteTimers.current.set(pane.id, setTimeout(async () => {
           deleteTimers.current.delete(pane.id);
           try {
-            await backend?.roomDelete(pane.id);
+            await backendFor(pane).roomDelete(pane.id);
             setPanes((list) => list.filter((p) => p.id !== pane.id));
           } catch (error) {
             setStorageError(`Could not delete ${pane.title}: ${String(error)}`);
@@ -877,8 +916,8 @@ export function App() {
     void backend.quitHeard(request).catch(() => {});
     const nameOf = (workspaceId: string) => workspaces.find((w) => w.id === workspaceId)?.name ?? "";
     const busy = stillRunning(
-      listed.filter((p) => p.kind === "terminal").map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
-      listed.filter((p) => p.kind === "chat" && !deleting.has(p.id)).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
+      listed.filter((p) => p.kind === "terminal" && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), agent: Boolean(p.agent), exited: !isRunning(runs[p.id]), status: statusOf(p) })),
+      listed.filter((p) => p.kind === "chat" && !deleting.has(p.id) && workspaces.some(w => w.id === p.workspaceId && workspaceHost(w) === "local")).map((p) => ({ title: p.title, workspace: nameOf(p.workspaceId), status: threadStatus[p.id] })),
     );
     const asked = quitQuestion(busy, backend.quitStopsWork);
     if (asked) setQuestion({ ...asked, onConfirm: quitNow });
@@ -968,7 +1007,13 @@ export function App() {
         <AttentionMenu
           items={attentionItems}
           onOpen={(paneId) => { const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane); }}
-          onDecide={(room, request, approve) => backend.roomDecide(room, request, approve, false)}
+          onDecide={async (room, request, approve) => {
+            const pane = panes.find(p => p.id === room); const card = openCards(room).find(c => c.request === request);
+            if (!pane || !card) throw new Error("That approval is no longer available.");
+            const b = backendFor(pane);
+            if ((card.hostId ?? "local") !== (b.host?.id ?? "local") || (card.action.expires_at != null && card.action.expires_at <= Date.now())) throw new Error("That approval is no longer available.");
+            await b.roomDecide(room, request, approve, false);
+          }}
           onMarkReadySeen={() => setAttention(clearReady)}
         />
         </div>
@@ -1005,7 +1050,7 @@ export function App() {
         </div>
       </header>
 
-      <ConnectionBanner backend={backend} />
+      {migrationNotice && <div className="connection-banner" role="status">{migrationNotice}<button onClick={() => setMigrationNotice("")}>Dismiss</button></div>}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       <div className="body" ref={bodyRef}>
         {railOpen && (
@@ -1139,16 +1184,21 @@ export function App() {
               const rect = maximized === pane.id ? FULL : placed.get(pane.id);
               const status = statusOf(pane);
               const workspace = workspaces.find((w) => w.id === pane.workspaceId);
+              let paneBackend: Backend | null = null; let destinationError = "";
+              try { paneBackend = backendFor(pane); } catch (error) { destinationError = String(error); }
               return (
                 <section
                   key={pane.id}
+                  data-pane-id={pane.id} data-host-id={workspace ? workspaceHost(workspace) : "missing"}
                   className={`pane ${pane.id === focusedPane ? "focused" : ""} ${paneDrag.dragging === pane.id ? "lifted" : ""}`}
                   style={visible && rect ? paneStyle(rect) : { display: "none" }}
-                  onMouseDown={() => setFocusedPane(pane.id)}
+                  onMouseDown={() => { setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId); }}
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
                     <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
+                    <span className="pane-project" title={workspace?.path}>{workspace?.name}</span>
+                    {paneBackend?.host && paneBackend.host.id !== "local" && <span className="pane-machine" title={paneBackend.host.name}>{paneBackend.host.name}</span>}
                     {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
                     {!attention[pane.id] && <span className="pane-folder">{pane.kind === "chat" ? threadStatus[pane.id]?.text ?? "" : pane.kind === "preview" ? previewStatus[pane.id] ?? "" : status === "working" ? workingFor(runStart.current.get(pane.id) ?? Date.now(), Date.now()) : stateWord(runs[pane.id], false)}</span>}
                     {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note || label(attention[pane.id].kind)}>{attention[pane.id].note || label(attention[pane.id].kind)}</span>}
@@ -1176,12 +1226,12 @@ export function App() {
                     </button>
                   </div>
                   <div className="pane-body">
-                    {pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={backend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, agents)} toolLabel={toolName(pane.agent, agents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
+                    {!paneBackend ? <div role="alert">{destinationError}</div> : <HostPane backend={paneBackend} agents={agents}>{hostAgents => pane.kind === "terminal" ? (
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={paneBackend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, hostAgents)} toolLabel={toolName(pane.agent, hostAgents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
                     ) : pane.kind === "preview" ? (
                       <PreviewPane
                         pane={pane}
-                        backend={backend}
+                        backend={paneBackend}
                         visible={visible}
                         behind={Boolean(settingsOpen)}
                         servers={serversFor(pane.workspaceId)}
@@ -1195,8 +1245,8 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
-                    )}
+                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                    )}</HostPane>}
                   </div>
                 </section>
               );

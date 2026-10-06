@@ -65,12 +65,12 @@ export function savedPanes(panes: Pane[]): Pane[] {
       return rest;
     }
     if (p.kind === "preview") {
-      const preview: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "preview", title: p.title, url: p.url ?? "" };
+      const preview: Pane = { ...(p.closed ? { closed: true } : {}), id: p.id, workspaceId: p.workspaceId, kind: "preview", title: p.title, url: p.url ?? "" };
       if (p.servedBy) preview.servedBy = p.servedBy;
       if (p.deck === "threads") preview.deck = "threads";
       return withPin(preview, p.pinned);
     }
-    const terminal: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "terminal", title: p.title };
+    const terminal: Pane = { ...(p.closed ? { closed: true } : {}), id: p.id, workspaceId: p.workspaceId, kind: "terminal", title: p.title };
     if (p.agent) terminal.agent = p.agent;
     return withPin(terminal, p.pinned);
   });
@@ -100,7 +100,7 @@ export function loadedPanes(saved: unknown[], workspaceIds: string[]): Pane[] {
     if (p.kind === "preview") {
       if (typeof p.title !== "string" || !p.title.trim()) return [];
       seen.add(p.id);
-      const preview: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "preview", title: p.title, url: typeof p.url === "string" ? normalizeAddress(p.url) ?? "" : "" };
+      const preview: Pane = { ...(p.closed ? { closed: true } : {}), id: p.id, workspaceId: p.workspaceId, kind: "preview", title: p.title, url: typeof p.url === "string" ? normalizeAddress(p.url) ?? "" : "" };
       if (typeof p.servedBy === "string" && p.servedBy) preview.servedBy = p.servedBy;
       if (p.deck === "threads") preview.deck = "threads";
       return [withPin(preview, p.pinned)];
@@ -108,7 +108,7 @@ export function loadedPanes(saved: unknown[], workspaceIds: string[]): Pane[] {
     if (p.kind !== "terminal" || typeof p.title !== "string" || !p.title.trim()) return [];
     if (p.agent != null && typeof p.agent !== "string") return [];
     seen.add(p.id);
-    const terminal: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "terminal", title: p.title };
+    const terminal: Pane = { ...(p.closed ? { closed: true } : {}), id: p.id, workspaceId: p.workspaceId, kind: "terminal", title: p.title };
     if (p.agent) terminal.agent = p.agent;
     return [withPin(terminal, p.pinned)];
   });

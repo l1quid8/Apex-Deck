@@ -23,7 +23,7 @@ const writes = new Set([
   "roomFork", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
   "generateImage", "importReplyImage", "artifactsSave",
 ]);
-export function createHostBackends({ local, hosts, make }: { local: Backend; hosts: HostEntry[]; make(host: HostEntry): HostRuntime }): HostBackends {
+export function createHostBackends({ local, hosts, make }: { local: Backend; hosts: HostEntry[]; make(host: HostEntry, connection: ReturnType<typeof hostConnectionStore>): HostRuntime }): HostBackends {
   let known = new Map(hosts.filter(h => h.id !== "local").map(h => [h.id, h]));
   const runtimes = new Map<string, HostRuntime>(); const backends = new Map<string, Backend>();
   const idle = new Map<string, ReturnType<typeof hostConnectionStore>>();
@@ -33,7 +33,8 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
     const host = known.get(hostId); if (!host) throw new Error("This host is unavailable or was removed.");
     let r = runtimes.get(hostId);
     if (!r) {
-      r = make(host); runtimes.set(hostId, r);
+      if (!idle.has(hostId)) idle.set(hostId, hostConnectionStore(hostId, host.name));
+      r = make(host, idle.get(hostId)!); runtimes.set(hostId, r);
       // Startup is independent; commands reject while offline rather than waiting in a queue.
       void r.start().catch(() => {});
     }

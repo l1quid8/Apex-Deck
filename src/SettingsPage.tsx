@@ -240,7 +240,7 @@ function DecisionSettingsPanel({ settings, onChange, backend }: { settings: AppS
   const [saving, setSaving] = useState(false);
   const change = (next: Partial<typeof decision>) => onChange({ ...settings, decision: { ...decision, ...next } });
   return <>
-    <div className="settings-subhead"><h3>Decision observer</h3><p>Jev or Clef suggests who should reply. Deck keeps its current routing. Enabling this sends recent room text to the selected provider; recommendations are saved in decisions.jsonl.</p></div>
+    <div className="settings-subhead"><h3>Decision observer · This Mac’s threads</h3><p>Jev or Clef suggests who should reply. Deck keeps its current routing. Enabling this sends recent room text to the selected provider; recommendations are saved in decisions.jsonl.</p></div>
     <div className="settings-card">
       <Row label="Observe unaddressed messages" note="Off by default. Explicit @mentions skip the observer."><input type="checkbox" aria-label="Enable decision observer" disabled={backend.demo} checked={decision.enabled} onChange={(e) => change({ enabled: e.target.checked })} /></Row>
       <Row label="Decision provider"><select aria-label="Decision provider" value={decision.provider} disabled={saving || backend.demo} onChange={(e) => { setKey(""); setStatus(""); change({ provider: e.target.value as typeof decision.provider, enabled: false }); }}><option value="jev">TypeSafe / Jev</option><option value="openrouter">OpenRouter / Clef</option><option value="cloudflare">Cloudflare / Clef</option></select></Row>
