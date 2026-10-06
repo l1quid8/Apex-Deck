@@ -1,4 +1,4 @@
-# The Electron app: `npm run desktop:package` builds an unsigned
+# The Electron app: `npm run desktop:package` builds a signed
 # `release/mac-*/Apex Deck.app` with apex-daemon inside it, and
 # `npm run desktop:dmg` puts that app in `release/Apex-Deck_<version>_<arch>.dmg`.
 appId: dev.apexdeck.app
@@ -22,7 +22,8 @@ mac:
   icon: build/icons/icon.icns
   category: public.app-category.developer-tools
   target: dmg
-  # Ad-hoc: unsigned, but Apple silicon runs it. Signing and notarization come later.
+  # A bare electron-builder run signs ad hoc; scripts/package-mac.mjs passes
+  # the Developer ID identity instead when the keychain has one.
   identity: "-"
   hardenedRuntime: false
 dmg:

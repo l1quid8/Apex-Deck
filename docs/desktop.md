@@ -44,8 +44,11 @@ This builds `apex-daemon` in release mode and the UI, then writes
 `release/mac-arm64/Apex Deck.app` (or `mac-x64` on Intel), and with
 `desktop:dmg` also `release/Apex-Deck_<version>_<arch>.dmg`. The daemon is
 inside it at `Contents/Resources/bin/apex-daemon`, and Codex's approval hook
-runs that same copy. The app is signed ad hoc, not notarized: the first time,
-open it with right-click → Open.
+runs that same copy. Builds use a Developer ID certificate when the build
+Mac’s keychain has one, so macOS keeps permissions such as Full Disk Access
+across rebuilds. Otherwise they are signed ad hoc;
+`APEX_DECK_SIGN_IDENTITY=-` forces ad hoc. Neither mode is notarized. If macOS
+blocks the app, use System Settings → Privacy & Security → **Open Anyway**.
 
 ## Run on another machine over SSH
 

@@ -228,9 +228,12 @@ npm run desktop:dev        # Vite with hot reload, and Electron pointed at it
 To build the app, `npm run desktop:package` writes
 `release/mac-arm64/Apex Deck.app`, and `npm run desktop:dmg` puts it in
 `release/Apex-Deck_<version>_arm64.dmg`. Move the app to Applications and open
-it with right-click → **Open** the first time: it is signed ad hoc, not
-notarized. Coding agents still use the command-line tools installed and signed
-in on your Mac.
+it; if macOS blocks it, use System Settings → Privacy & Security →
+**Open Anyway**. Builds use a Developer ID certificate when the build Mac’s
+keychain has one, so macOS keeps permissions such as Full Disk Access across
+rebuilds. Otherwise they are signed ad hoc; `APEX_DECK_SIGN_IDENTITY=-` forces
+ad hoc. Neither mode is notarized. Coding agents still use the command-line
+tools installed and signed in on your Mac.
 
 To run the daemon on a Linux server and use it from this Mac, see
 [docs/daemon-ubuntu.md](docs/daemon-ubuntu.md).
