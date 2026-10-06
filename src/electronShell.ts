@@ -5,6 +5,8 @@
 
 import type { Backend, BrowserApi, HostEntry } from "./backend";
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
+import { createHostBackends } from "./hostBackends.ts";
+import { hostConnectionStore } from "./hostConnections.ts";
 import { connection } from "./connection.ts";
 import { DaemonClient, type Connect, type Link } from "./daemon/client.ts";
 import { pathPrompt, type PathRequest } from "./typedPath.ts";
@@ -205,8 +207,7 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   const client = new DaemonClient(bridgeConnect(bridge));
   client.onStatus((status) => {
     connection.setStatus(status);
-    // The events missed while away are gone; start over from the host's state.
-    if (status.kind === "resync") location.reload();
+
   });
   // Named before connecting, so a host that can't be reached is called by its own name.
   const current = await bridge.connection.current();
@@ -226,7 +227,27 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   // A deck shortcut pressed in a docked page reaches the deck as if pressed here.
   bridge.browser.onShortcut((press) => window.dispatchEvent(new KeyboardEvent("keydown", { ...press, bubbles: true, cancelable: true })));
   const { onShortcut: _keys, ...browser } = bridge.browser;
-  const backend: Backend = { ...commandBackend(transport, shell), onMenu, hosts, browser };
+  const localConnection = hostConnectionStore("local", "This Mac");
+  localConnection.setRetry(() => client.retryNow());
+  client.onStatus(status => localConnection.setStatus(status));
+  const backend: Backend = { ...commandBackend(transport, shell), onMenu, hosts, browser,
+    host: { id: "local", name: "This Mac", connection: localConnection } };
+  const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: host => {
+    const connect = bridgeConnect(bridge, host.id);
+    const remoteClient = new DaemonClient(connect);
+    const state = hostConnectionStore(host.id, host.name);
+    state.setRetry(() => remoteClient.retryNow());
+    remoteClient.onStatus(status => state.setStatus(status));
+    const remoteTransport = daemonTransport(remoteClient);
+    const remoteShell = electronShell(bridge, remoteTransport, { ...host, owned: false }, request => pathPrompt.ask(request));
+    return { backend: commandBackend(remoteTransport, remoteShell), connection: state,
+      start: () => remoteClient.start(), close: () => { remoteClient.close(); connect.dispose(); } };
+  } });
+  backend.machines = machines;
+  const oldAdd = hosts.add;
+  hosts.add = async host => { const list = await oldAdd(host); machines.setHosts(list); return list; };
+  const oldRemove = hosts.remove;
+  hosts.remove = async id => { const list = await oldRemove(id); machines.dispose(id); machines.setHosts(list); return list; };
   if (bridge.smoke) window.__deck = { backend };
   return backend;
 }

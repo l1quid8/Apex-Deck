@@ -11,6 +11,8 @@ import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, FolderL
 type Unlisten = () => void;
 
 export interface Backend {
+  host?: { id: string; name: string; connection: import("./hostConnections").HostConnectionStore };
+  machines?: import("./hostBackends").HostBackends;
   /** True when running in a browser with no desktop shell behind it. */
   demo: boolean;
   listToolServers(room: string, agent: string): Promise<ToolServer[]>;
@@ -149,6 +151,7 @@ export interface HostEntry {
   ssh?: string;
   /** The daemon's command there. */
   command?: string;
+  daemonHostId?: string;
   /** A window is open on it. */
   open?: boolean;
 }
