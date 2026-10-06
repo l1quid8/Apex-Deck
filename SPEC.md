@@ -147,7 +147,7 @@ Design: `docs/superpowers/specs/2026-10-05-remote-and-electron.md`.
 
 | Feature | State |
 |---|---|
-| Embedded Chromium browser that agents drive over CDP (Electron spike in `spikes/electron-browser/`) | proven by spike |
+| Embedded Chromium browser that agents drive over CDP (proven by an Electron spike, commit `c69f664`; removed once phase 3 shipped it) | proven by spike |
 | Rust host logic moved out of `src-tauri` into an `apex-host` crate; session and settings owned by Rust | built (phase 1) |
 | `apex-daemon` daemon: WebSocket listener and `--stdio` mode, one JSON protocol with event sequence numbers and replay; systemd unit for Ubuntu | built (phase 2) |
 | Electron desktop shell on `apex-daemon`: the React UI as it was, the daemon as a sidecar, hosts over SSH, a real Chromium browser docked in the Preview pane (`docs/desktop.md`) | built (phase 3) |
