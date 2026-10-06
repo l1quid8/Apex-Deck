@@ -15,3 +15,5 @@ tokio.workspace = true
 futures.workspace = true
 reqwest = { version = "0.13", features = ["json", "stream"] }
 base64 = "0.22"
+
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }

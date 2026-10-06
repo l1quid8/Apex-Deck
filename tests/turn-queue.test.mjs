@@ -128,3 +128,15 @@ test('a new message after Stop goes straight out; queued ones still wait', async
   await q.send('@jigga fresh'); await tick();
   assert.deepEqual(sent, ['@jigga fresh']);
 });
+
+test('participant steering marks recipients manual while normal messages keep routing provenance', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async () => ['null'], async (...args) => { sent.push(args); }, async () => {}, () => {});
+  await q.send('ordinary');
+  q.idle('null');
+  await q.steer('null', 'manual');
+  await tick();
+  assert.equal(sent[0][4], undefined);
+  assert.equal(sent[1][4], true);
+});

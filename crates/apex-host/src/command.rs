@@ -23,6 +23,7 @@ pub enum Command {
     SessionSave { session: Value },
     SettingsLoad {},
     SettingsSave { settings: Value },
+    DecisionKeySave { provider: String, key: String },
     ArtifactsLoad { room: String },
     ArtifactsSave { room: String, artifacts: Value },
     ArtifactExport { name: String, contents: String, path: Option<String> },
@@ -50,7 +51,7 @@ pub enum Command {
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     RoomPost { id: String, text: String },
     RoomTargets { id: String, text: String },
-    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId> },
+    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default)] routed: bool },
     RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize> },
     RoomStop { id: String, participant: Option<ParticipantId> },
     RoomDecide { id: String, request: String, approve: bool, always: Option<bool> },
@@ -109,6 +110,7 @@ impl Host {
             SessionSave { session } => reply(self.session_save(session)?),
             SettingsLoad {} => reply(self.settings_load()?),
             SettingsSave { settings } => reply(self.settings_save(settings)?),
+            DecisionKeySave { provider, key } => reply(crate::decision::save_credential(&provider, &key)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
             ArtifactExport { name, contents, path } => reply(self.artifact_export(name, contents, path)?),
@@ -137,7 +139,7 @@ impl Host {
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
             RoomPost { id, text } => reply(self.room_post(id, text).await?),
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
-            RoomPostTo { id, text, targets } => reply(self.room_post_to(id, text, targets).await?),
+            RoomPostTo { id, text, targets, routed } => reply(self.room_post_to(id, text, targets, routed).await?),
             RoomTurn { id, participants, hops } => reply(self.room_turn(id, participants, hops).await?),
             RoomStop { id, participant } => { self.room_stop(id, participant); reply(()) },
             RoomDecide { id, request, approve, always } => reply(self.room_decide(id, request, approve, always)?),
@@ -212,7 +214,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 61);
+        assert_eq!(names.len(), 62);
+        assert!(names.contains(&"decision_key_save".to_string()));
         assert!(names.contains(&"session_load".to_string()));
         assert!(names.contains(&"mod_env_get".to_string()));
     }
