@@ -19,6 +19,7 @@ use crate::{agents, changes, checkpoints, export, folders, images, mods, preview
 
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
+    live: Arc<Mutex<LiveRoomState>>,
     pub(crate) observation_revision: Arc<AtomicU64>,
     pub(crate) room: Arc<futures::lock::Mutex<Room>>,
     runtime: ConcurrentRoom,
@@ -30,6 +31,12 @@ pub(crate) struct RoomHandle {
     approvals: Arc<apex_core::ApprovalDesk>,
     /// Where this room's command-line participants run.
     context: BuildContext,
+}
+
+#[derive(Default)]
+struct LiveRoomState {
+    active: std::collections::BTreeSet<String>,
+    approvals: Vec<serde_json::Value>,
 }
 
 /// Where the host keeps its files.
@@ -108,6 +115,23 @@ impl Host {
     }
 
     fn room_event(&self, room: &str, event: RoomEvent) {
+        if let Ok(handle) = self.handle(room) {
+            let mut live = handle.live.lock().unwrap();
+            match &event {
+                RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); }
+                RoomEvent::ApprovalRequested { id, request, action } => {
+                    live.approvals.retain(|a| a["request"].as_str() != Some(request.as_str()));
+                    live.approvals.push(serde_json::json!({"id":id,"request":request,"action":action}));
+                }
+                RoomEvent::ApprovalResolved { request, .. } => { live.approvals.retain(|a| a["request"].as_str() != Some(request.as_str())); }
+                RoomEvent::ParticipantIdle { id } | RoomEvent::Failed { id, .. } => {
+                    live.active.remove(id.as_str());
+                    live.approvals.retain(|a| a["id"].as_str() != Some(id.as_str()));
+                }
+                RoomEvent::Idle | RoomEvent::Stopped => { live.active.clear(); live.approvals.clear(); }
+                _ => {}
+            }
+        }
         self.emit(HostEvent::Room { room: room.to_string(), event });
     }
 
@@ -283,8 +307,16 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, approvals, context });
+            .insert(id, RoomHandle { live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, approvals, context });
         Ok(snapshot)
+    }
+
+    /// Read checkpoint and live requests without the mutex held by a running model.
+    pub fn room_state(&self, id: String) -> Result<serde_json::Value, String> {
+        let handle = self.handle(&id)?;
+        let snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
+        let live = handle.live.lock().unwrap();
+        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals}))
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -1279,7 +1311,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { observation_revision: Arc::default(), stop: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
+        let handle = RoomHandle { live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }

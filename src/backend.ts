@@ -51,6 +51,7 @@ export interface Backend {
 
   /** `cwd` is the workspace folder; command-line participants run there. */
   roomCreate(id: string, participants: ParticipantConfig[], options: RoomOptions, cwd: string): Promise<RoomSnapshot>;
+  roomState?(id: string): Promise<import("./types").RoomState>;
   /** Model names offered by an OpenAI-compatible server. */
   apiModels(baseUrl: string, apiKeyEnv: string | null): Promise<string[]>;
   /** Models a coding agent lists for the account it is signed in to. Empty if it keeps no list. */

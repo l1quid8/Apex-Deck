@@ -30,6 +30,7 @@ const rule = { kind: 'command', command: 'ls' };
 // Every command-backed method: how it's called, and the exact command and
 // arguments the host expects for it.
 const COMMANDS = [
+  ['roomState', ['r'], 'room_state', { id: 'r' }],
   ['listToolServers', ['r', 'a'], 'list_tool_servers', { room: 'r', agent: 'a' }],
   ['detectAgents', [], 'agents_detect', undefined],
   ['sessionLoad', [], 'session_load', undefined],

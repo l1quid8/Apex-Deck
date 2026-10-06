@@ -45,6 +45,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     onPtyExit: (cb) => transport.listen<{ id: string; code: number | null }>("pty-exit", (p) => cb(p.id, p.code)),
 
     roomCreate: (id, participants, options, cwd) => call<RoomSnapshot>("room_create", { id, participants, options, cwd: cwd || null }),
+    roomState: (id) => call("room_state", { id }),
     apiModels: (baseUrl, apiKeyEnv) => call<string[]>("api_models", { baseUrl, apiKeyEnv }),
     agentModels: (tool) => call<ModelChoice[]>("agent_models", { tool }),
     workspaceRead: (target, cwd) => call<string | null>("workspace_read", { target, cwd }),

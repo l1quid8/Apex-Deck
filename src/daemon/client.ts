@@ -74,6 +74,7 @@ export class DaemonClient {
   private status: Status = { kind: "connecting" };
   /** Where we are, once a welcome came; resuming needs both. */
   private bootId: string | null = null;
+  private hostId = "";
   private lastSeq = 0;
   private attempt = 0;
   private retryTimer: unknown = null;
@@ -137,6 +138,11 @@ export class DaemonClient {
     const link = this.link;
     this.drop(LOST);
     link?.close();
+  }
+
+  /** Recovery has read this host's rooms; ordinary commands can resume. */
+  finishResync(): void {
+    if (this.ready && this.status.kind === "resync") this.setStatus({ kind: "connected", hostId: this.hostId });
   }
 
   private setStatus(status: Status) {
@@ -217,6 +223,7 @@ export class DaemonClient {
     this.ready = true;
     this.attempt = 0;
     this.bootId = welcome.boot_id;
+    this.hostId = welcome.host_id;
     // Resuming, the replay that follows starts after where we were.
     if (!welcome.resumed) this.lastSeq = welcome.last_seq;
     if (wasConnected && !welcome.resumed) this.setStatus({ kind: "resync" });

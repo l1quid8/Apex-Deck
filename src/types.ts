@@ -122,6 +122,12 @@ export interface Compaction {
 }
 
 export type AppSection = "agents" | "code" | "threads";
+export interface RoomState {
+  snapshot: RoomSnapshot;
+  active: string[];
+  approvals: { id: string; request: string; action: ProposedAction }[];
+  live?: boolean;
+}
 
 export interface AppSession {
   version: 1;

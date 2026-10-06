@@ -219,3 +219,27 @@ fn opening_a_room_again_mid_turn_keeps_the_running_room() {
     running.host.shutdown();
     let _ = std::fs::remove_dir_all(&data);
 }
+
+#[test]
+fn room_state_is_read_only_and_restores_without_live_work() {
+    let data = std::env::temp_dir().join(format!("apex-room-state-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let first = Running::start(&data);
+    first.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default(),"cwd":null}})).unwrap();
+    let state = first.call(json!({"cmd":"room_state","args":{"id":"r"}})).unwrap();
+    assert_eq!(state["active"], json!([]));
+    assert_eq!(state["approvals"], json!([]));
+    assert_eq!(state["snapshot"]["transcript"], json!([]));
+    assert!(first.events().is_empty(), "reading state must not run a participant");
+    assert!(first.call(json!({"cmd":"room_state","args":{"id":"missing"}})).is_err());
+    first.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot hi"}})).unwrap();
+    drop(first);
+    let second = Running::start(&data);
+    second.call(json!({"cmd":"room_create","args":{"id":"r","participants":[],"options":RoomOptions::default(),"cwd":null}})).unwrap();
+    let state = second.call(json!({"cmd":"room_state","args":{"id":"r"}})).unwrap();
+    assert_eq!(state["snapshot"]["transcript"].as_array().unwrap().len(), 2);
+    assert_eq!(state["active"], json!([]));
+    assert_eq!(state["approvals"], json!([]));
+    drop(second);
+    std::fs::remove_dir_all(data).unwrap();
+}

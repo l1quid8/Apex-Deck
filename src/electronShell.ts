@@ -230,6 +230,7 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   const localConnection = hostConnectionStore("local", "This Mac");
   localConnection.setRetry(() => client.retryNow());
   client.onStatus(status => localConnection.setStatus(status));
+  localConnection.setFinishResync(() => client.finishResync());
   const backend: Backend = { ...commandBackend(transport, shell), onMenu, hosts, browser,
     host: { id: "local", name: "This Mac", connection: localConnection } };
   const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: host => {
@@ -238,6 +239,7 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
     const state = hostConnectionStore(host.id, host.name);
     state.setRetry(() => remoteClient.retryNow());
     remoteClient.onStatus(status => state.setStatus(status));
+    state.setFinishResync(() => remoteClient.finishResync());
     const remoteTransport = daemonTransport(remoteClient);
     const remoteShell = electronShell(bridge, remoteTransport, { ...host, owned: false }, request => pathPrompt.ask(request));
     return { backend: commandBackend(remoteTransport, remoteShell), connection: state,

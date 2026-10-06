@@ -1,3 +1,4 @@
+import { createRoomRecovery, loadRoomState } from "./roomRecovery.ts";
 import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
@@ -37,7 +38,7 @@ import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
-import { approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
+import { recordApproval, approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
 import { exportFileName, exportHtml, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { DiffPanel } from "./DiffPanel";
@@ -662,7 +663,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const nameOf = (id: string) => namesRef.current.get(id) ?? id;
     /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
     const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()));
-    const unregister = registerRoom(pane.id, (event: RoomEvent) => {
+    const loadedSeq = new Set<number>();
+    const onEvent = (event: RoomEvent) => {
+      if (!alive) return;
+      if (event.type === "message_added") {
+        if (loadedSeq.has(event.message.seq)) return;
+        loadedSeq.add(event.message.seq);
+      }
+      recordApproval(pane.id, event, backend.host?.id);
       activity.current(pane.id);
       const heardId = heardFrom(event);
       if (heardId) heard.current.set(heardId, Date.now());
@@ -809,13 +817,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           break;
         }
       }
-    }, backend.host?.id);
-    let offHub = () => {};
-    void startHub(backend, backend.host?.id).then(off => { if (alive) offHub = off; else off(); });
-    backend
-      .roomCreate(pane.id, pane.sample ? SAMPLE_BOTS : [], defaults.current.newThread, cwd)
-      .then((saved) => {
+    };
+    const recovery = createRoomRecovery({
+      load: () => loadRoomState(backend, pane.id, pane.sample ? SAMPLE_BOTS : [], defaults.current.newThread, cwd),
+      apply: (state) => {
         if (!alive) return;
+        const saved = state.snapshot;
+        loadedSeq.clear(); saved.transcript.forEach(m => loadedSeq.add(m.seq));
+        forgetRoom(pane.id);
+        state.approvals.forEach(ask => recordApproval(pane.id, { type: "approval_requested", ...ask }, backend.host?.id));
+        setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], phase: "thinking" as const }])));
+        state.active.forEach(id => turnQueue.started(id));
+        setBusy(state.active.length > 0 || turnQueue.active);
+        setDrafts({});
         setChanges((saved.changes ?? []).map((c) => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
         setParticipants(saved.participants);
         setOptions(saved.options);
@@ -827,7 +841,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
-        setEntries(restored);
+        setEntries(old => [...restored, ...old.filter(e => e.kind === "notice")]);
         // Open at "New since you looked" when replies came in after you last looked.
         const seen = seenList(saved.transcript);
         const from = firstUnseen(seen, lastSeenRef.current);
@@ -838,15 +852,34 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         }
         setLoadError("");
         setReady(true);
-      })
-      .catch((error) => {
+        reportApprovals();
+      },
+      fail: error => {
         if (!alive) return;
-        const message = String(error);
-        setLoadError(message);
-        notify(`Could not create the chat: ${message}`, "error");
-      });
+        setReady(false); setLoadError(String(error));
+        notify(`Could not load the chat: ${String(error)}`, "error");
+      },
+      event: onEvent,
+    });
+    const unregister = registerRoom(pane.id, (event: RoomEvent) => { if (!recovery.capture(event)) onEvent(event); }, backend.host?.id);
+    const refresh = async () => {
+      if (!alive) return;
+      const state = backend.host?.connection.get();
+      if (state && state.status.kind !== "connected" && state.status.kind !== "resync") return;
+      setReady(false);
+      await recovery.refresh();
+    };
+    const offRecovery = backend.host?.connection.recover?.(refresh) ?? (() => {});
+    let offHub = () => {};
+    void startHub(backend, backend.host?.id).then(off => {
+      if (!alive) { off(); return; }
+      offHub = off;
+      // Connected already, or browser demo. Otherwise first connection runs refresh.
+      if (!backend.host || backend.host.connection.get().revision > 0) void refresh();
+    });
     return () => {
       alive = false;
+      recovery.dispose(); offRecovery();
       offHub();
       unregister();
       forgetRoom(pane.id);
