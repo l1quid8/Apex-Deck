@@ -2,9 +2,9 @@ import { canvasPanes } from "./canvasPanes.ts";
 import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceHost } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
 import { HostPane, HostAgents } from "./HostPane";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
-import { getBackend, type Backend } from "./backend";
+import { getBackend, type Backend, type HostEntry } from "./backend";
 import { connection, statusWords } from "./connection";
 import { SettingsPage, type SettingsSection } from "./SettingsPage";
 import { DEFAULT_SETTINGS, readSettings, type AppSettings } from "./settings";
@@ -12,7 +12,7 @@ import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { DetailsHost } from "./ThreadDetails";
 import { ThreadName } from "./ThreadName";
-import { ChatPane } from "./ChatPane";
+import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
 import { ModOverlays, ModStatuses, OPEN_SETTINGS_EVENT } from "./ModView";
 import { modHost } from "./mods/host";
 import { startHub } from "./hub";
@@ -25,22 +25,24 @@ import { PreviewPane, type ServerChoice } from "./PreviewPane";
 import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
 import { nextTitle, programTitle } from "./terminalTitle";
 import { hostLabel, sameServer } from "./previewAddress";
-import { paneMenuItems, type PaneMenuAction, type PaneMenuItem } from "./paneMenu";
-import { pinnedFirst } from "./railOrder";
+import { copyMenuItems, paneMenuItems, projectMenuItems, type CopyKind, type PaneMenuAction, type ProjectMenuAction } from "./paneMenu";
+import { ProjectSidebar } from "./Sidebar";
+import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
+import { archiveThreads, noteActive, setCollapsed, setUnread, toggleProjectPin, unarchiveThreads } from "./sidebarModel.ts";
+import { COPIED, folderCopyText, writeClipboard } from "./threadCopy.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
-import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
+import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { WorkspaceHostMenu } from "./WorkspaceHostMenu";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
 import { workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
-import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
-import { activeAfter, addFolders, hiddenWorkspaces, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
+import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
+import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -50,16 +52,8 @@ const WORKING_WINDOW_MS = 1500;
 let counter = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
 
-function placeMenu(anchor: HTMLElement): CSSProperties {
-  const rect = anchor.getBoundingClientRect();
-  const width = 200;
-  const height = 260;
-  let top = rect.bottom + 4;
-  if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 4);
-  let left = Math.min(rect.right, window.innerWidth - 8) - width;
-  if (left < 8) left = 8;
-  return { position: "fixed", top, left, right: "auto" };
-}
+/** macOS prints ⌘ shortcuts; elsewhere Ctrl+Shift. */
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
 function loadWorkspaces(): Workspace[] {
   try {
@@ -89,8 +83,8 @@ export function folderName(path: string): string {
 const layoutKey = (workspace: string | null, section: AppSection) => `${workspace ?? ""}:${section}`;
 
 const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
-/** The `paneMenu` id of the rail's Removed · Show menu. */
-const REMOVED_MENU = "removed-workspaces";
+/** How long a toast without Undo stays up. */
+const TOAST_MS = 4000;
 
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
@@ -101,7 +95,11 @@ export function App() {
   const [newAgentRequest, setNewAgentRequest] = useState(0);
   /** What each thread reports: its head's words, and who is replying or stopped on a card. */
   const [threadStatus, setThreadStatus] = useState<Record<string, ThreadStatus>>({});
-  const onThreadStatus = useCallback((paneId: string, status: ThreadStatus) => setThreadStatus((all) => (JSON.stringify(all[paneId]) === JSON.stringify(status) ? all : { ...all, [paneId]: status })), []);
+  const onThreadStatus = useCallback((paneId: string, status: ThreadStatus) => {
+    setThreadStatus((all) => (JSON.stringify(all[paneId]) === JSON.stringify(status) ? all : { ...all, [paneId]: status }));
+    // The newest message's time, saved with the thread, orders Recents.
+    if (status.lastAt) setPanes((list) => noteActive(list, paneId, status.lastAt!));
+  }, []);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const disabledProviders = settings.disabledProviders;
   /** The settings section shown, or null while the deck is. */
@@ -154,8 +152,18 @@ export function App() {
   /** The latest workspace removed from the list, offered for undo with the threads that were open. */
   const [undoableRemove, setUndoableRemove] = useState<{ id: string; name: string; reopen: string[] } | null>(null);
   const removeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  /** The pane whose ⋯ menu is open. */
-  const [paneMenu, setPaneMenu] = useState<string | null>(null);
+  /** The pane head whose ⋯ menu is open. The sidebar keeps its own menus. */
+  const [headMenu, setHeadMenu] = useState<{ id: string; anchor: MenuAnchor; opener: HTMLElement | null } | null>(null);
+  /** Short notes at the bottom: what was copied, archived, saved. Some offer Undo. */
+  const [toasts, setToasts] = useState<{ id: number; text: string; undo?: () => void }[]>([]);
+  const toastSeq = useRef(0);
+  const toast = useCallback((text: string, undo?: () => void) => {
+    const id = ++toastSeq.current;
+    setToasts((all) => [...all.slice(-2), { id, text, undo }]);
+    setTimeout(() => setToasts((all) => all.filter((t) => t.id !== id)), undo ? UNDO_MS : TOAST_MS);
+  }, []);
+  /** Saved machines, for the sidebar's server names and Copy folder path. */
+  const [hostList, setHostList] = useState<HostEntry[]>([]);
   /** Bumped by ⌘T to open the + New menu. */
   const [newMenuRequest, setNewMenuRequest] = useState(0);
   /** Bumped to start renaming from the pane head's ⋯ menu. */
@@ -164,10 +172,9 @@ export function App() {
   const [railRename, setRailRename] = useState<Record<string, number>>({});
   /** Bumped to start a terminal again from its ⋯ menu. */
   const [startRequests, setStartRequests] = useState<Record<string, number>>({});
-  /** Fork, Export or Share chosen in a ⋯ menu. Cleared once the thread takes it. */
-  const [threadRequests, setThreadRequests] = useState<Record<string, { id: string; action: "fork" | "export" | "share_pdf" } | undefined>>({});
+  /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared once the thread takes it. */
+  const [threadRequests, setThreadRequests] = useState<Record<string, { id: string; action: ThreadMenuRequest } | undefined>>({});
   const menuSeq = useRef(0);
-  const [menuPlace, setMenuPlace] = useState<CSSProperties | undefined>(undefined);
   const [railOpen, setRailOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
@@ -329,6 +336,14 @@ export function App() {
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
   }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed, importedHostSessions]);
 
+  // The saved machines, for server names in the sidebar. Settings can change them.
+  useEffect(() => {
+    if (!backend?.hosts || settingsOpen) return;
+    let alive = true;
+    backend.hosts.list().then((list) => { if (alive) setHostList(list); }, () => {});
+    return () => { alive = false; };
+  }, [backend, settingsOpen]);
+
   // settings.json, beside the session file. Written in order, like the session.
   useEffect(() => {
     if (!backend || !settingsRead.current) return;
@@ -451,12 +466,10 @@ export function App() {
     setMaximized(null);
   };
   const shownList = shownWorkspaces(workspaces);
-  const hiddenList = hiddenWorkspaces(workspaces);
   const current = shownList.find((w) => w.id === activeWorkspace) ?? null;
 
   /** Put a removed workspace back on the list and show it. Its threads come back closed. */
   const bringBack = (id: string) => {
-    setPaneMenu(null);
     setWorkspaces((list) => setHidden(list, id, false));
     setActiveWorkspace(id);
     requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-workspace="${id}"]`)?.focus());
@@ -485,7 +498,7 @@ export function App() {
 
   /** Take a workspace off the list. Nothing is deleted: its threads stay saved
    *  and closed, and its terminals end. Asks first only while something in it runs. */
-  const removeWorkspace = (workspace: Workspace) => {
+  const removeWorkspace = (workspace: Workspace, always = false) => {
     const own = panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id));
     const counts = removeCounts(
       own.filter((p) => p.kind === "terminal").map((p) => statusOf(p)),
@@ -502,7 +515,8 @@ export function App() {
       setUndoableRemove({ id: workspace.id, name: workspace.name, reopen });
       removeTimer.current = setTimeout(() => setUndoableRemove((u) => (u?.id === workspace.id ? null : u)), UNDO_MS);
     };
-    const asked = removeQuestion(workspace.name, counts);
+    // The sidebar's Remove project… always asks; other removals ask only while something runs.
+    const asked = always ? removeProjectQuestion(workspace.name, counts) : removeQuestion(workspace.name, counts);
     if (asked) setQuestion({ ...asked, onConfirm: remove });
     else remove();
   };
@@ -532,11 +546,12 @@ export function App() {
 
   const renamePane = (id: string, title: string) => setPanes(list => list.map(p => p.id === id ? {...p, title} : p));
 
-  const addPane = (kind: Pane["kind"], title: string, agent?: string) => {
-    if (!activeWorkspace) return;
+  const addPane = (kind: Pane["kind"], title: string, agent?: string, workspaceId = activeWorkspace) => {
+    if (!workspaceId) return;
     // A second terminal or preview of the same name in a workspace is numbered: "Codex 2", "Preview 2".
-    const name = kind === "chat" ? title : nextTitle(title, panes.filter((p) => p.workspaceId === activeWorkspace && p.kind === kind).map((p) => p.title));
-    const pane: Pane = { id: newId("pane"), workspaceId: activeWorkspace, kind, title: name, agent };
+    const name = kind === "chat" ? title : nextTitle(title, panes.filter((p) => p.workspaceId === workspaceId && p.kind === kind).map((p) => p.title));
+    const pane: Pane = { id: newId("pane"), workspaceId, kind, title: name, agent };
+    if (workspaceId !== activeWorkspace) setActiveWorkspace(workspaceId);
     // A Preview stays on the deck it was added from.
     if (kind === "preview" && section === "threads") pane.deck = "threads";
     setPanes((list) => [...list, pane]);
@@ -544,6 +559,18 @@ export function App() {
     setSection(paneSection(pane));
     setMaximized(null);
     setPicking(false);
+  };
+
+  /** The sidebar's New thread (or terminal) in a project. */
+  const newIn = (workspace: Workspace) => {
+    if (section === "code") {
+      // A terminal needs a tool chosen, so the project's picker opens.
+      setActiveWorkspace(workspace.id);
+      setPicking(true);
+      setMaximized(null);
+      return;
+    }
+    addPane("chat", "Group chat", undefined, workspace.id);
   };
 
   /** A Preview's address changed. A typed address has no source terminal or thread. */
@@ -661,9 +688,10 @@ export function App() {
   // eye to the icon.
   const flagged = useRef(0);
   useEffect(() => {
-    const live = Object.keys(attention).filter((id) => listed.some((p) => p.id === id));
+    // Archived threads are put away: they don't flag the app either.
+    const live = Object.keys(attention).filter((id) => listed.some((p) => p.id === id && !p.archived));
     if (live.length !== Object.keys(attention).length) {
-      setAttention((all) => Object.fromEntries(Object.entries(all).filter(([id]) => listed.some((p) => p.id === id))));
+      setAttention((all) => Object.fromEntries(Object.entries(all).filter(([id]) => listed.some((p) => p.id === id && !p.archived))));
       return;
     }
     // The icon counts what needs you or failed; Ready shows only in the title bar and rail.
@@ -687,7 +715,7 @@ export function App() {
   }, [tick, attention, approvalState, listed, backend]);
 
   const attentionItems: AttentionItem[] = listed
-    .filter((pane) => attention[pane.id])
+    .filter((pane) => attention[pane.id] && !pane.archived)
     .map((pane) => ({
       paneId: pane.id,
       title: pane.title,
@@ -769,50 +797,6 @@ export function App() {
     setUndoable(null);
   };
 
-  // A ⋯ menu closes on a click elsewhere or Escape. Escape puts focus back on
-  // the button that opened it.
-  const menuOpener = useRef<HTMLElement | null>(null);
-  const openMenu = (id: string, anchor: HTMLElement) => {
-    menuOpener.current = anchor;
-    setMenuPlace(placeMenu(anchor));
-    setPaneMenu((open) => (open === id ? null : id));
-  };
-  const toggleMenu = (id: string, event: ReactMouseEvent<HTMLElement>) => {
-    event.stopPropagation();
-    openMenu(id, event.currentTarget);
-  };
-  const onMenuKey = (event: ReactKeyboardEvent<HTMLElement>) => {
-    event.stopPropagation();
-    const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
-    const index = items.indexOf(document.activeElement as HTMLButtonElement);
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const step = event.key === "ArrowDown" ? 1 : -1;
-      items[(index + step + items.length) % items.length]?.focus();
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      setPaneMenu(null);
-      menuOpener.current?.focus();
-    }
-  };
-  const menuBlur = (event: ReactFocusEvent<HTMLElement>) => {
-    const menu = event.currentTarget;
-    if (menu.contains(event.relatedTarget as Node | null)) return;
-    setTimeout(() => { if (!menu.contains(document.activeElement)) setPaneMenu(null); }, 0);
-  };
-  useEffect(() => {
-    if (!paneMenu) return;
-    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".pane-menu-wrap, .pane-menu")) setPaneMenu(null); };
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape" && !(event.target as Element).closest?.(".pane-menu")) { setPaneMenu(null); menuOpener.current?.focus(); } };
-    window.addEventListener("mousedown", away);
-    window.addEventListener("keydown", key);
-    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key); };
-  }, [paneMenu]);
-  useEffect(() => {
-    if (!paneMenu) return;
-    document.querySelector<HTMLElement>(`[data-menu="${CSS.escape(paneMenu)}"] [role="menuitem"]:not(:disabled)`)?.focus();
-  }, [paneMenu]);
-
   /** Show a workspace's folder in Finder. */
   const revealWorkspace = (workspace: Workspace) => {
     try {
@@ -821,40 +805,110 @@ export function App() {
     } catch (error) { setStorageError(String(error)); }
   };
 
+  /** The workspace and machine of a pane, for its menus. */
+  const hostOfPane = (pane: Pane) => {
+    const workspace = workspaces.find((w) => w.id === pane.workspaceId);
+    return { workspace, hostId: workspace ? workspaceHost(workspace) : "local" };
+  };
+  /** Agents found on a pane's machine; a server's never borrow the Mac's. */
+  const agentsOn = (hostId: string): AgentInfo[] => {
+    if (hostId === "local" || !backend?.machines) return agents;
+    try { return backend.machines.connection(hostId).get().agents; } catch { return []; }
+  };
+  /** Put text on the clipboard and say what happened; never claims a copy that didn't happen. */
+  const copyOut = (text: string, kind: CopyKind) => {
+    void writeClipboard(text, navigator.clipboard).then((ok) => toast(ok ? `Copied ${COPIED[kind]}.` : "Couldn't reach the clipboard, so nothing was copied."));
+  };
+  const onThreadCopy = useCallback((text: string, kind: "markdown" | "reply") => {
+    if (!text) { toast("There's nothing to copy yet."); return; }
+    copyOut(text, kind);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const copyFromThread = (pane: Pane, kind: CopyKind) => {
+    const { workspace, hostId } = hostOfPane(pane);
+    if (kind === "path") copyOut(folderCopyText(workspace?.path ?? "", hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh), "path");
+    else if (kind === "id") copyOut(pane.id, "id");
+    else {
+      // The thread builds its own text, open or closed; it stays where it is.
+      const id = `${++menuSeq.current}`;
+      setThreadRequests((all) => ({ ...all, [pane.id]: { id, action: kind === "markdown" ? "copy_markdown" : "copy_reply" } }));
+    }
+  };
+  /** Archive threads, take them off the deck, and offer Undo. */
+  const archive = (list: Pane[], words: string) => {
+    const ids = list.map((p) => p.id);
+    if (ids.length === 0) return;
+    setPanes((all) => archiveThreads(all, ids));
+    for (const id of ids) { forgetServer(id); takeOff(id); }
+    toast(words, () => setPanes((all) => unarchiveThreads(all, ids)));
+  };
+  const restoreArchived = (pane: Pane) => {
+    setPanes((all) => unarchiveThreads(all, [pane.id]));
+    focusPane({ ...pane, archived: undefined, closed: true });
+  };
+
   /** Run what was chosen in a pane's ⋯ menu. */
   const runPaneMenu = (pane: Pane, action: PaneMenuAction, from: "rail" | "head" = "head") => {
     const bump = (all: Record<string, number>) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 });
     if (action === "rename") {
-      if (from === "rail") setRailRename(bump);
-      else setRenameRequests(bump);
+      if (from === "rail") {
+        // The row to rename is under its project unless it is pinned: make sure it's showing.
+        if (!pane.pinned) setWorkspaces((list) => setCollapsed(list, pane.workspaceId, false));
+        setRailRename(bump);
+      } else setRenameRequests(bump);
     } else if (action === "pin") setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, pinned: p.pinned ? undefined : true } : p)));
+    else if (action === "mark_unread") setPanes((list) => setUnread(list, pane.id, !pane.unread));
     else if (action === "start") setStartRequests(bump);
     else if (action === "copy_path") {
       const path = workspaces.find((w) => w.id === pane.workspaceId)?.path;
-      if (path) navigator.clipboard?.writeText(path).catch(() => {});
+      if (path) copyOut(path, "path");
     } else if (action === "copy_address") {
-      if (pane.url) navigator.clipboard?.writeText(pane.url).catch(() => {});
+      if (pane.url) void writeClipboard(pane.url, navigator.clipboard).then((ok) => toast(ok ? "Copied the address." : "Couldn't reach the clipboard, so nothing was copied."));
     } else if (action === "close") closePane(pane.id);
     else if (action === "fork" || action === "export" || action === "share_pdf") {
       if (pane.closed) focusPane(pane);
       const id = `${++menuSeq.current}`;
       setThreadRequests((all) => ({ ...all, [pane.id]: { id, action } }));
-    } else if (action === "delete") deleteThread(pane);
+    } else if (action === "archive") archive([pane], `Archived ${pane.title}.`);
+    else if (action === "delete") deleteThread(pane);
   };
 
-  const drawPaneMenu = (id: string, items: PaneMenuItem[], pane: Pane, from: "rail" | "head") => paneMenu === id ? (
-    <span className="pane-menu" role="menu" data-menu={id} style={menuPlace} onKeyDown={onMenuKey} onBlur={menuBlur} onClick={(event) => event.stopPropagation()}>
-      {items.map((item) => (
-        <Fragment key={item.action}>
-          {item.separated && <span className="pane-menu-sep" role="separator" />}
-          <button role="menuitem" className={item.danger ? "danger-text" : undefined} disabled={item.disabled} title={item.reason || undefined} onClick={(event) => { event.stopPropagation(); setPaneMenu(null); runPaneMenu(pane, item.action, from); }}>{item.label}</button>
-        </Fragment>
-      ))}
-    </span>
-  ) : null;
+  /** A pane's ⋯ menu, on its head or its sidebar row. */
+  const paneMenuEntries = (pane: Pane, from: "rail" | "head"): MenuEntry[] => {
+    const { workspace, hostId } = hostOfPane(pane);
+    const found = agentsOn(hostId);
+    const items = paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, found), tool: toolName(pane.agent, found), folder: workspace?.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned, unread: pane.unread, mac: isMac });
+    const ssh = hostId === "local" ? undefined : hostList.find((h) => h.id === hostId)?.ssh;
+    return items.map((item) => ({
+      key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, keys: item.keys,
+      submenu: item.submenu ? copyMenuItems({ hasReply: !!threadStatus[pane.id]?.hasReply, path: folderCopyText(workspace?.path ?? "", ssh), id: pane.id })
+        .map((c) => ({ key: c.kind, label: c.label, side: c.side, disabled: c.disabled, reason: c.reason, onSelect: () => copyFromThread(pane, c.kind) })) : undefined,
+      onSelect: item.submenu ? undefined : () => runPaneMenu(pane, item.action, from),
+    }));
+  };
+
+  /** Run what was chosen in a project's ⋯ menu. */
+  const runProjectMenu = (workspace: Workspace, action: ProjectMenuAction) => {
+    if (action === "pin") setWorkspaces((list) => toggleProjectPin(list, workspace.id));
+    else if (action === "edit") setRenameRequests((all) => ({ ...all, [workspace.id]: (all[workspace.id] ?? 0) + 1 }));
+    else if (action === "connection") setSettingsOpen("hosts");
+    else if (action === "reveal") revealWorkspace(workspace);
+    else if (action === "archive") {
+      const own = panes.filter((p) => p.workspaceId === workspace.id && p.kind === "chat" && !p.archived && !deleting.has(p.id));
+      archive(own, `Archived ${own.length} thread${own.length === 1 ? "" : "s"} in ${workspace.name}.`);
+    } else if (action === "remove") removeWorkspace(workspace, true);
+  };
+  const projectMenuEntries = (workspace: Workspace): MenuEntry[] => projectMenuItems({
+    pinned: workspace.pinned, remote: workspaceHost(workspace) !== "local", path: workspace.path,
+    threads: panes.filter((p) => p.workspaceId === workspace.id && p.kind === "chat" && !p.archived && !deleting.has(p.id)).length,
+  }).map((item) => ({ key: item.action, label: item.label, disabled: item.disabled, reason: item.reason, danger: item.danger, separated: item.separated, onSelect: () => runProjectMenu(workspace, item.action) }));
 
   const focusPane = (pane: Pane) => {
-    if (pane.closed) setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, closed: false } : p)));
+    // Opening a thread reads it, and brings it out of the archive.
+    if (pane.closed || pane.unread || pane.archived) setPanes((list) => list.map((p) => {
+      if (p.id !== pane.id) return p;
+      const { unread: _read, archived: _out, ...rest } = p;
+      return { ...rest, closed: false };
+    }));
     setActiveWorkspace(pane.workspaceId);
     setSection(paneSection(pane));
     setPicking(false);
@@ -895,6 +949,10 @@ export function App() {
     } else if (action.kind === "cycle_pane") {
       const next = cyclePane(leafIds(tree).filter((id) => shown.some((p) => p.id === id)), focusedPane, action.step);
       if (next) { setFocusedPane(next); if (maximized) setMaximized(next); }
+    } else if (action.kind === "thread") {
+      // ⌥⌘R, ⌥⌘P, ⇧⌘U and ⇧⌘A act on the thread in use, as its ⋯ menu would.
+      const pane = panes.find((p) => p.id === focusedPane && p.kind === "chat");
+      if (pane) runPaneMenu(pane, action.action, "head");
     } else if (action.kind === "maximize") {
       if (focusedPane && visiblePanes.some((p) => p.id === focusedPane)) setMaximized((m) => (m === focusedPane ? null : focusedPane));
     }
@@ -1058,98 +1116,40 @@ export function App() {
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
       <div className="body" ref={bodyRef}>
         {railOpen && (
-          <aside className="rail" style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}>
-            <div className="rail-head">
-              <span>Workspaces</span>
-              <WorkspaceHostMenu backend={backend} choose={hostId => addWorkspace(undefined, hostId)} manage={() => setSettingsOpen("hosts")} />
-            </div>
-            {shownList.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
-            {shownList.map((workspace) => {
-              const own = section === "agents" ? [] : pinnedFirst(panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && paneSection(p) === section));
-              const inside = panes
-                .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
-                .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
-              const flag = workspaceFlag(inside, section === "code" ? "Code" : section === "threads" ? "Threads" : null);
-              const openWorkspace = () => { setActiveWorkspace(workspace.id); if (section === "agents") setSection(lastDeck); };
-              const rename = () => setRenameRequests((all) => ({ ...all, [workspace.id]: (all[workspace.id] ?? 0) + 1 }));
-              return (
-                <div key={workspace.id} className="ws">
-                  <div className={`ws-row ${workspace.id === activeWorkspace ? "active" : ""}`}>
-                    {/* A div, not a button, so the name inside can be renamed in place (as pane rows do). */}
-                    <div role="button" tabIndex={0} data-workspace={workspace.id} className="ws-name" title={workspace.path || workspace.name}
-                      aria-label={[workspace.name, flag?.title].filter(Boolean).join(", ")}
-                      onClick={openWorkspace}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openWorkspace(); }
-                        else if (event.key === "F2") { event.preventDefault(); rename(); }
-                      }}>
-                      <DeckIcon name="folder" size={16} />
-                      <ThreadName className="ws-label" title={workspace.name} label="Workspace name" tooltip={workspace.path || workspace.name} renameRequest={renameRequests[workspace.id]} onRename={(name) => setWorkspaces((list) => renameWorkspace(list, workspace.id, name))} />
-                      {workspace.hostId && <span className="workspace-host" title={workspace.hostId}>{backend.hosts ? hostNameFor(workspace.hostId) : workspace.hostId}</span>}
-                      {flag && <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span>}
-                    </div>
-                    <span className="pane-menu-wrap">
-                      <button className="icon small" onClick={(event) => toggleMenu(workspace.id, event)} aria-label={`More for ${workspace.name}`} aria-haspopup="menu" aria-expanded={paneMenu === workspace.id} title="More">
-                        ⋯
-                      </button>
-                      {paneMenu === workspace.id && (
-                        <span className="pane-menu" role="menu" data-menu={workspace.id} style={menuPlace} onKeyDown={onMenuKey} onBlur={menuBlur}>
-                          <button role="menuitem" onClick={() => { setPaneMenu(null); rename(); }}>Rename</button>
-                          <button role="menuitem" disabled={!workspace.path || workspaceHost(workspace) !== "local"} title={workspaceHost(workspace) !== "local" ? "This Mac can't open server folders." : workspace.path ? undefined : "This workspace has no folder"} onClick={() => { setPaneMenu(null); revealWorkspace(workspace); }}>{workspaceHost(workspace) !== "local" ? "Open folder on server" : "Reveal in Finder"}</button>
-                          <span className="pane-menu-sep" role="separator" />
-                          <button role="menuitem" className="danger-text" onClick={() => { setPaneMenu(null); removeWorkspace(workspace); }}>Remove from list…</button>
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                  {own.map((pane) => {
-                    const menuId = `rail:${pane.id}`;
-                    let menuBackend: Backend | null = null;
-                    try { menuBackend = backendFor(pane); } catch {}
-                    return (
-                    <div role="button" tabIndex={0} key={pane.id} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}
-                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const opener = event.currentTarget.querySelector<HTMLElement>(".pane-row-more"); if (opener) openMenu(menuId, opener); }}
-                      onKeyDown={(event) => {
-                        if (event.target !== event.currentTarget) return;
-                        if (event.key === "Enter") { event.preventDefault(); focusPane(pane); }
-                        else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-                          event.preventDefault();
-                          const opener = event.currentTarget.querySelector<HTMLElement>(".pane-row-more");
-                          if (opener) openMenu(menuId, opener);
-                        }
-                      }}>
-                      <span className={`dot ${statusOf(pane)}`} title={statusOf(pane)} />
-                      {pane.pinned && <svg className="pin-mark" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" role="img" aria-label="Pinned"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" /><path d="M12 16v6" /></svg>}
-                      <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={railRename[pane.id]} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
-                      {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
-                      {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note}>{label(attention[pane.id].kind)}</span>}
-                      <span className="pane-menu-wrap" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-                        <button className="icon small pane-row-more" onClick={(event) => toggleMenu(menuId, event)} aria-label={`More for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === menuId} title="More">⋯</button>
-                        {menuBackend && <HostAgents backend={menuBackend} agents={agents}>{found => drawPaneMenu(menuId, paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, found), tool: toolName(pane.agent, found), folder: workspace.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned }), pane, "rail")}</HostAgents>}
-                      </span>
-                    </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-            {hiddenList.length > 0 && (
-              <div className="rail-foot">
-                <span>Removed ({hiddenList.length})</span>
-                <span aria-hidden="true">·</span>
-                <span className="pane-menu-wrap">
-                  <button className="ghost" onClick={(event) => toggleMenu(REMOVED_MENU, event)} aria-label="Show removed workspaces" aria-haspopup="menu" aria-expanded={paneMenu === REMOVED_MENU}>Show</button>
-                  {paneMenu === REMOVED_MENU && (
-                    <span className="pane-menu" role="menu" aria-label="Removed workspaces" data-menu={REMOVED_MENU} style={menuPlace} onKeyDown={onMenuKey} onBlur={menuBlur}>
-                      {hiddenList.map((workspace) => (
-                        <button key={workspace.id} role="menuitem" title={workspace.path || workspace.name} onClick={() => bringBack(workspace.id)}>{workspace.name}</button>
-                      ))}
-                    </span>
-                  )}
-                </span>
-              </div>
-            )}
-          </aside>
+          <ProjectSidebar
+            backend={backend}
+            section={section}
+            panes={panes}
+            workspaces={workspaces}
+            deleting={deleting}
+            activeWorkspace={activeWorkspace}
+            focusedPane={focusedPane}
+            hosts={hostList}
+            attention={attention}
+            threadStatus={threadStatus}
+            statusOf={statusOf}
+            programOf={programOf}
+            paneRename={railRename}
+            workspaceRename={renameRequests}
+            paneMenu={(pane) => paneMenuEntries(pane, "rail")}
+            projectMenu={projectMenuEntries}
+            onOpenPane={focusPane}
+            onTogglePin={(pane) => runPaneMenu(pane, "pin", "rail")}
+            onRenamePane={renamePane}
+            onRenameWorkspace={(id, name) => setWorkspaces((list) => renameWorkspace(list, id, name))}
+            onProjectClick={(workspace) => {
+              // In Agents a project opens on the deck; elsewhere its row folds like Codex's.
+              if (section === "agents") { setActiveWorkspace(workspace.id); setSection(lastDeck); }
+              else setWorkspaces((list) => setCollapsed(list, workspace.id, !workspace.collapsed));
+            }}
+            onProjectPin={(workspace) => setWorkspaces((list) => toggleProjectPin(list, workspace.id))}
+            onNewIn={newIn}
+            onAddWorkspace={(hostId) => addWorkspace(undefined, hostId)}
+            onManageHosts={() => setSettingsOpen("hosts")}
+            onBringBack={bringBack}
+            onRestore={restoreArchived}
+            style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}
+          />
         )}
         {railOpen && (
           <SidebarHandle
@@ -1197,7 +1197,7 @@ export function App() {
                   data-pane-id={pane.id} data-host-id={workspace ? workspaceHost(workspace) : "missing"}
                   className={`pane ${pane.id === focusedPane ? "focused" : ""} ${paneDrag.dragging === pane.id ? "lifted" : ""}`}
                   style={visible && rect ? paneStyle(rect) : { display: "none" }}
-                  onMouseDown={() => { setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId); }}
+                  onMouseDown={() => { setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId); if (pane.unread) setPanes((list) => setUnread(list, pane.id, false)); }}
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={status} />
@@ -1221,10 +1221,10 @@ export function App() {
                       {maximized === pane.id ? "▣" : "□"}
                     </button>
                     <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
-                      <button className="icon small" onClick={(event) => toggleMenu(`head:${pane.id}`, event)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === `head:${pane.id}`} title="More">
+                      <button className="icon small" disabled={!paneBackend} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={headMenu?.id === pane.id} title="More"
+                        onClick={(event) => { const opener = event.currentTarget; setHeadMenu((open) => (open?.id === pane.id ? null : { id: pane.id, anchor: { rect: opener.getBoundingClientRect() }, opener })); }}>
                         ⋯
                       </button>
-                      {paneBackend && <HostAgents backend={paneBackend} agents={agents}>{found => drawPaneMenu(`head:${pane.id}`, paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, found), tool: toolName(pane.agent, found), folder: workspace?.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned }), pane, "head")}</HostAgents>}
                     </span>
                     <button className="icon small" onClick={() => closePane(pane.id)} aria-label={`Close ${pane.title}`} title={pane.kind === "chat" ? "Close (the thread stays in the list)" : "Close"}>
                       ×
@@ -1250,7 +1250,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
@@ -1280,7 +1280,11 @@ export function App() {
       {question && <ConfirmDialog question={question} onCancel={() => setQuestion(null)} />}
       <PathPrompt backend={backend} />
       <ModOverlays />
-      {(undoable || undoableRemove) && (
+      {headMenu && (() => {
+        const pane = panes.find((p) => p.id === headMenu.id);
+        return pane ? <MenuList id={`head:${pane.id}`} entries={paneMenuEntries(pane, "head")} anchor={headMenu.anchor} opener={headMenu.opener} onClose={() => setHeadMenu(null)} /> : null;
+      })()}
+      {(undoable || undoableRemove || toasts.length > 0) && (
         <div className="toasts">
           {undoable && (
             <div className="toast" role="status">
@@ -1294,6 +1298,12 @@ export function App() {
               <button onClick={undoRemove}>Undo</button>
             </div>
           )}
+          {toasts.map((t) => (
+            <div key={t.id} className="toast" role="status">
+              <span>{t.text}</span>
+              {t.undo && <button onClick={() => { t.undo!(); setToasts((all) => all.filter((x) => x.id !== t.id)); }}>Undo</button>}
+            </div>
+          ))}
         </div>
       )}
     </div>

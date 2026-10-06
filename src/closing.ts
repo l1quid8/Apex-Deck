@@ -182,20 +182,35 @@ function busySentence(noun: string, doing: string, active: number, waiting: numb
  * to remove it at once because nothing in it is running. Clauses whose
  * count is 0 are left out.
  */
-export function removeQuestion(name: string, counts: RemoveCounts): { title: string; body: string; action: string } | null {
+/** What removing a workspace ends now; "" when nothing in it runs. */
+function endingNow(counts: RemoveCounts): string {
   const terminals = counts.working + counts.waiting;
   const threads = counts.replying + counts.asking;
-  if (terminals + threads === 0) return null;
-  const body = [
+  return [
     busySentence("terminal", "working", counts.working, counts.waiting),
     terminals === 0 ? "" : terminals === 1 ? "It ends now." : "They end now.",
     busySentence("thread", "replying", counts.replying, counts.asking),
     threads === 0 ? "" : threads === 1 ? "It stops now." : "They stop now.",
+  ].filter(Boolean).join(" ");
+}
+
+export function removeQuestion(name: string, counts: RemoveCounts): { title: string; body: string; action: string } | null {
+  const ending = endingNow(counts);
+  if (!ending) return null;
+  const body = [
+    ending,
     counts.threads === 0 ? "" : counts.threads === 1
       ? "Its thread stays saved and comes back if you add the folder again."
       : `Its ${counts.threads} threads stay saved and come back if you add the folder again.`,
   ].filter(Boolean).join(" ");
   return { title: `Remove ${name} from the list?`, body, action: "Remove from list" };
+}
+
+/** The sidebar's Remove project… always asks: what ends now, if anything, and that nothing is deleted. */
+export function removeProjectQuestion(name: string, counts: RemoveCounts): { title: string; body: string; action: string } {
+  const kept = counts.threads === 0 ? "Its folder isn't deleted."
+    : `Its folder isn't deleted, and its ${counts.threads === 1 ? "thread stays" : `${counts.threads} threads stay`} saved; Undo or Removed › Show brings it back.`;
+  return { title: `Remove ${name} from the list?`, body: [endingNow(counts), kept].filter(Boolean).join(" "), action: "Remove project" };
 }
 
 // ------------------------------------------------------------- quitting

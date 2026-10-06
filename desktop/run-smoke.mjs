@@ -69,7 +69,8 @@ function finished(code, signal) {
     return;
   }
   clearTimeout(timer);
-  for (const dir of [data, `${data}-desktop`, `${data}-tauri`]) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  // Chromium's helpers can still be writing the profile for a moment after the app exits.
+  for (const dir of [data, `${data}-desktop`, `${data}-tauri`]) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   if (failed) console.error(`smoke: failed (${failed})`);
   else console.log(options.ssh ? 'smoke: ok — quitting exits 0' : 'smoke: ok — logging out with a bot replying quits at once, and the daemon is gone');
   process.exit(failed ? 1 : 0);

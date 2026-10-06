@@ -33,6 +33,45 @@ export async function runMultiHostSmoke(win) {
   await until('Mac ready',()=>page('return Boolean(window.__deck && !document.querySelector(".loading"))'));
   await until('automatic remote import',()=>page('return [...document.querySelectorAll(".pane-row")].some(r=>r.textContent.includes("Server thread"))'));
   assert.equal(BrowserWindow.getAllWindows().length,1);
+  // Stage 2: the Codex-style sidebar.
+  const sections=()=>page('return [...document.querySelectorAll(".rail .rail-sec")].map(s=>s.dataset.sec).join()');
+  await until('codex sidebar',async()=>(await sections())==='pinned,projects');
+  const serverRow='.ws-row[data-host-id="at"]';
+  assert.equal(await page(`return document.querySelector('${serverRow} .host-name').textContent`),'Production-Frankfurt-Primary-01');
+  assert.equal(await page(`return document.querySelector('${serverRow} .host-name').title`),'Production-Frankfurt-Primary-01');
+  assert.equal(await page(`return Boolean(document.querySelector('${serverRow} .fold-globe'))`),true);
+  assert.equal(await page('return Boolean(document.querySelector(\'.ws-row[data-host-id="local"] .fold-globe\'))'),false);
+  assert.equal(await page('return [...document.querySelectorAll(".pane-row.flat")].find(r=>r.textContent.includes("Server thread")).querySelector(".globe-end")!==null'),true);
+  assert.equal(await page('return [...document.querySelectorAll(".pane-row.flat")].find(r=>r.textContent.includes("Mac thread")).querySelector(".globe-end")'),null);
+  await until('server dot connected',()=>page(`return document.querySelector('${serverRow} .hdot').classList.contains('on')`));
+  assert.equal(await page("return __deck.backend.machines.connection('at').get().helper"),JSON.parse(fs.readFileSync('package.json','utf8')).version);
+  const hover=sel=>page(`const el=document.querySelector(${JSON.stringify(sel)});el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,relatedTarget:null}));return true;`);
+  const unhover=sel=>page(`const el=document.querySelector(${JSON.stringify(sel)});el.dispatchEvent(new MouseEvent('mouseout',{bubbles:true,relatedTarget:document.body}));return true;`);
+  await hover(`${serverRow} .ws-name`);
+  await until('project card',()=>page('return document.querySelector(".hover-card")?.innerText.includes("Production-Frankfurt-Primary-01 · 1 thread")'));
+  assert.ok((await page('return document.querySelector(".hover-card").innerText')).includes(root));
+  await shot('sidebar-project-card');
+  await unhover(`${serverRow} .ws-name`);
+  await until('project card closes',()=>page('return !document.querySelector(".hover-card")'));
+  const serverPinned='.pane-row.flat[data-pane-row="server-thread"]';
+  await page(`document.querySelector('${serverPinned} [aria-haspopup=menu]').click();return true;`);
+  const menuLabels=()=>page('return [...document.querySelectorAll(".pane-menu [role=menuitem]")].map(b=>b.querySelector(".label")?.textContent??b.textContent).join("|")');
+  assert.equal(await menuLabels(),'Rename|Unpin|Mark as unread|Share as PDF|Copy|Fork|Export|Archive|Delete…');
+  assert.equal(await page('return [...document.querySelectorAll(".pane-menu [role=menuitem] .keys")].map(k=>k.textContent).join()'),'⌥⌘R,⌥⌘P,⇧⌘U,⇧⌘A');
+  await page('[...document.querySelectorAll(".pane-menu [role=menuitem]")].find(b=>b.textContent.startsWith("Copy")).click();return true;');
+  await until('copy submenu',()=>page('return document.querySelectorAll(".pane-submenu [role=menuitem]").length===4'));
+  assert.equal(await page('return [...document.querySelectorAll(".pane-submenu [role=menuitem] .sub")].map(s=>s.textContent).join("|")'),`fixture:${root}|server-thread`);
+  await shot('sidebar-thread-menu-copy');
+  await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
+  await until('menu closed',()=>page('return !document.querySelector(".pane-menu")'));
+  await page(`document.querySelector('${serverPinned}').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:120,clientY:140}));return true;`);
+  await until('right-click menu',async()=>(await menuLabels())==='Rename|Unpin|Mark as unread|Share as PDF|Copy|Fork|Export|Archive|Delete…');
+  await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
+  await until('menu closed again',()=>page('return !document.querySelector(".pane-menu")'));
+  await page(`document.querySelector('${serverRow} [aria-haspopup=menu]').click();return true;`);
+  assert.equal(await menuLabels(),'Pin|Edit…|Edit connection…|Archive threads|Remove project…');
+  await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
+  await until('project menu closed',()=>page('return !document.querySelector(".pane-menu")'));
   const oldHelper=process.env.APEX_DECK_SMOKE_OLD_HELPER==='1';
   await page(`const b=__deck.backend.machines.get('at');window.__originalRoomState=b.roomState;window.__oldHelperCalls=0;window.__loadRoomState=${oldHelper}?async()=>{window.__oldHelperCalls++;throw Error('unknown variant \u0060room_state\u0060, expected room_create');}:b.roomState;b.roomState=window.__loadRoomState;${oldHelper ? "__deck.backend.machines.connection('at').setStatus({kind:'resync'});" : ''}return true;`);
   if(oldHelper) {
@@ -52,10 +91,8 @@ export async function runMultiHostSmoke(win) {
   await until('import saved atomically',async()=>{const s=await page('return await __deck.backend.sessionLoad()');return s.canvasVersion===1&&s.importedHostSessions.includes('at');});
   assert.equal(fs.readFileSync(remoteSession,'utf8'),original);
   assert.equal(await page('const s=await __deck.backend.sessionLoad();return s.workspaces.find(w=>w.hostId==="at").id!=="shared-workspace-id"'),true);
-  await page('const row=[...document.querySelectorAll(".ws-row")].find(r=>r.textContent.includes("Server thread"));row.querySelector("[aria-haspopup=menu]").click();return true;');
-  assert.equal(await page('return [...document.querySelectorAll("[role=menuitem]")].find(b=>b.textContent==="Open folder on server").disabled'),true);
-  assert.match(await page('return [...document.querySelectorAll("[role=menuitem]")].find(b=>b.textContent==="Open folder on server").title'),/server folders/);
-  await page('document.querySelector(".ws-row [aria-expanded=true]").click();return true;');
+  await until('recents after replies',async()=>(await sections())==='pinned,projects,recents');
+  assert.equal(await page('return [...document.querySelectorAll(".pane-row.flat")].filter(r=>r.textContent.includes("Server thread")).every(r=>r.querySelector(".globe-end"))'),true);
   await shot('connected');
   // Clear reuses message numbers. Exercise the actual composer after truncation.
   await send('mac-thread','/clear');

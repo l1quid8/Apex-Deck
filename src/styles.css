@@ -2606,3 +2606,83 @@ button.mod-status:hover { color: var(--text); }
 .approval-host { max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
 .approval, .approval-detail { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .pane-body .connection-banner { flex-wrap: wrap; min-width: 0; }
+
+/* Pick the machine, stage 2: the Codex-style sidebar (v8 mockup). Pinned,
+   Projects and Recents; a server's project shows its name, a connection dot
+   and its coloured globe; rows show ⋯ and pin on hover; cards open beside. */
+.rail { padding: 14px 10px; }
+.rail-sec { display: flex; align-items: center; gap: 4px; padding: 12px 8px 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.rail > .rail-sec:first-child { padding-top: 0; }
+.rail-sec-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; }
+.rail-sec-toggle svg { opacity: 0; transition: opacity .12s; }
+.rail-sec:hover .rail-sec-toggle svg, .rail-sec-toggle:focus-visible svg, .rail-sec-toggle[aria-expanded="false"] svg { opacity: 1; }
+.rail-sec .workspace-host-menu { margin-left: auto; }
+.rail-sec .workspace-host-menu > .icon { width: 22px; height: 22px; padding: 0; font-size: 14px; }
+.ws { margin-bottom: 2px; }
+.ws-row { position: relative; }
+.ws-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.ws-row.lit { background: var(--panel-2); border-color: var(--line); }
+.ws-name { padding: 7px 10px; gap: 9px; }
+.ws-label { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.ws-label .ws-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-label .twin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 400 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.host-tag { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; padding-left: 8px; min-width: 0; color: var(--muted); font-size: 11.5px; font-weight: 400; white-space: nowrap; }
+.host-tag .host-name { overflow: hidden; text-overflow: ellipsis; max-width: 14ch; }
+.hdot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; background: #5b6672; }
+.hdot.on { background: #2fbf71; }
+.hdot.wait { background: var(--warn); }
+.hdot.idle { background: transparent; box-shadow: inset 0 0 0 1.5px #5b6672; }
+.row-acts { display: none; align-items: center; gap: 2px; margin-left: auto; flex: none; }
+.ws-row > .row-acts { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); }
+.ws-row:hover .host-tag, .ws-row.lit .host-tag, .ws-row:focus-within .host-tag { visibility: hidden; }
+.ws-row:hover > .row-acts, .ws-row.lit > .row-acts, .ws-row:focus-within > .row-acts { display: inline-flex; }
+.act { display: inline-grid; place-items: center; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
+.act:hover, .act.on, .act[aria-expanded="true"] { color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); }
+.act.on { color: var(--accent); }
+.fold { --cut: var(--panel); position: relative; display: inline-grid; flex: none; color: var(--muted); }
+.fold .fold-globe { position: absolute; right: -3px; bottom: -3px; width: 11px; height: 11px; border-radius: 50%; background: var(--cut); display: grid; place-items: center; }
+.ws-row.active .fold, .ws-row.lit .fold, .hover-card .fold, .deck-menu .fold { --cut: var(--panel-2); }
+.ws-row.active .fold, .ws-row.lit .fold { color: var(--text); }
+.pane-row { position: relative; padding: 6px 10px 6px 24px; }
+.pane-row.flat { padding-left: 10px; }
+.pane-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.pane-row.lit { background: var(--panel-2); color: var(--text); }
+.pane-row .row-acts { margin-left: 4px; }
+.pane-row:hover > .row-acts, .pane-row.lit > .row-acts, .pane-row:focus-within > .row-acts { display: inline-flex; }
+.pane-row:hover > .globe-end, .pane-row.lit > .globe-end { display: none; }
+.pane-row.on-canvas .pane-row-title { color: var(--text); }
+.pane-row.unread .pane-row-title { color: var(--text); font-weight: 600; }
+.unread-mark { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--accent); }
+.pane-row-clip { flex: 1 1 0; min-width: 0; overflow: hidden; }
+.pane-row-clip > .pane-row-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-row:hover .pane-row-clip > .pane-row-title, .pane-row.lit .pane-row-clip > .pane-row-title { display: inline-block; overflow: visible; text-overflow: clip; transform: translateX(var(--shift, 0px)); transition: transform 2.2s linear .3s; }
+.no-threads { padding: 2px 10px 8px 37px; color: color-mix(in srgb, var(--muted) 62%, transparent); font-size: 12px; }
+.globe-end { display: inline-grid; place-items: center; margin-left: auto; flex: none; }
+.rail-foot { flex-wrap: wrap; }
+.rail-foot-item { display: inline-flex; align-items: center; gap: 6px; }
+.rail-foot-item + .rail-foot-item { margin-left: 8px; }
+/* Hover cards: beside the rail, at the row's height. */
+.hover-card { position: fixed; z-index: 80; width: 300px; padding: 6px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); box-shadow: 0 18px 50px #000a; font-size: 12.5px; }
+.card-row { display: flex; align-items: flex-start; gap: 9px; padding: 5px 12px; color: var(--text); line-height: 1.45; }
+.card-row > svg, .card-row > .fold, .card-row > span:first-child:not(.grow) { flex: none; margin-top: 2px; color: var(--muted); }
+.card-row .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.card-row .side { margin-left: auto; color: var(--muted); display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.card-row.title { font-weight: 600; font-size: 13px; }
+.card-row .mono { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.card-row.warn > svg { color: var(--warn); }
+.card-row.bad > svg { color: var(--danger); }
+.hover-card hr { border: 0; border-top: 1px solid var(--line); margin: 5px 12px; }
+/* Menus with shortcuts and a Copy › submenu. */
+.deck-menu { z-index: 90; min-width: 230px; padding: 4px; border-radius: 10px; box-shadow: 0 18px 50px #000a; }
+.deck-menu button[role="menuitem"] { display: flex; align-items: center; gap: 9px; width: 100%; padding: 6px 9px; border-radius: 6px; font-size: 12.5px; white-space: nowrap; }
+.deck-menu button[role="menuitem"].hl { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.deck-menu button[role="menuitem"]:disabled { opacity: .45; cursor: default; }
+.deck-menu .label { flex: 0 1 auto; }
+.deck-menu .keys { margin-left: auto; padding-left: 16px; color: var(--muted); font-size: 11.5px; letter-spacing: .05em; }
+.deck-menu .sub { margin-left: auto; padding-left: 14px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.deck-menu .more { margin-left: auto; color: var(--muted); }
+.deck-menu .sub + .more, .deck-menu .keys + .more { margin-left: 8px; }
+/* A long server name gives way before the project's own name does. */
+.ws-name .ws-label { flex: 0 1 auto; }
+.ws-name .host-tag { flex: 0 4 auto; }
+.ws-name .host-tag .host-name { min-width: 3ch; }

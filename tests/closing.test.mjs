@@ -256,3 +256,17 @@ test('quitting asks nothing when the work goes on without this app', () => {
   assert.ok(quitQuestion(busy, true));
   assert.equal(quitQuestion(busy, false), null);
 });
+
+test("Remove project… always asks, and says the folder and threads are kept", async () => {
+  const { removeProjectQuestion } = await import("../src/closing.ts");
+  const idle = { working: 0, waiting: 0, replying: 0, asking: 0, threads: 2 };
+  const q = removeProjectQuestion("apex-deck", idle);
+  assert.equal(q.title, "Remove apex-deck from the list?");
+  assert.match(q.body, /folder isn't deleted/);
+  assert.match(q.body, /2 threads stay saved/);
+  assert.equal(q.action, "Remove project");
+  const busy = removeProjectQuestion("apex-deck", { ...idle, working: 1 });
+  assert.match(busy.body, /It ends now\./);
+  assert.match(busy.body, /folder isn't deleted/);
+  assert.match(removeProjectQuestion("empty", { ...idle, threads: 0 }).body, /^Its folder isn't deleted\.$/);
+});
