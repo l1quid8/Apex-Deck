@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use apex_adapters::BuildContext;
@@ -19,10 +19,11 @@ use crate::{agents, changes, checkpoints, export, folders, images, mods, preview
 
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
-    room: Arc<futures::lock::Mutex<Room>>,
+    pub(crate) observation_revision: Arc<AtomicU64>,
+    pub(crate) room: Arc<futures::lock::Mutex<Room>>,
     runtime: ConcurrentRoom,
     checkpoint: Arc<Mutex<SavedRoom>>,
-    deleted: Arc<AtomicBool>,
+    pub(crate) deleted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     /// Actions the room's participants have proposed and are waiting on.
     /// Reached without the transcript lock while a provider is running.
@@ -282,7 +283,7 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, approvals, context });
+            .insert(id, RoomHandle { observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, approvals, context });
         Ok(snapshot)
     }
 
@@ -318,6 +319,7 @@ impl Host {
     }
 
     async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>) -> Result<TurnBatch, String> {
+        let observation_revision = handle.observation_revision.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let room = handle.room.lock().await;
             if let Some(cwd) = handle.context.cwd.clone() {
@@ -341,6 +343,11 @@ impl Host {
         let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         checkpoint_room(handle, &self.store, id).await?;
+        let snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
+        if matches!(apex_core::parse_mentions(text, &snapshot.participants), apex_core::MentionTarget::None) {
+            let settings = self.settings_load().ok().flatten().unwrap_or_default();
+            crate::decision::observe(&self.runtime, self.paths.data.clone(), id.to_string(), handle.clone(), snapshot, settings, observation_revision);
+        }
         Ok(batch)
     }
 
@@ -397,6 +404,7 @@ impl Host {
     /// rounds that may follow: `None` keeps the room's limit, `Some(0)` buys
     /// exactly one reply each.
     pub async fn room_turn(self: &Arc<Self>, id: String, participants: Vec<ParticipantId>, hops: Option<usize>) -> Result<(), String> {
+        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(&id)?;
         let batch = handle.runtime.begin_turn(participants, hops).await?;
         self.run_batch_in_background(id, handle, batch);
@@ -405,6 +413,7 @@ impl Host {
 
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
         if let Ok(handle) = self.handle(&id) {
+            handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             handle.runtime.stop(participant.as_ref());
             if let Some(participant) = participant { handle.approvals.reject_for(&participant); }
             else {
@@ -456,6 +465,7 @@ impl Host {
     }
 
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
+        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         let name = participant.id.clone();
         let context = self.room_context(&id)?;
@@ -477,6 +487,7 @@ impl Host {
     /// Replace a participant's settings (model, effort, access, persona)
     /// without removing it from the chat.
     pub async fn room_update_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
+        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         let name = participant.id.clone();
         let context = self.room_context(&id)?;
         self.read_plans(&id, std::slice::from_ref(&participant), &context);
@@ -502,6 +513,7 @@ impl Host {
     }
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
+        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         {
             let room = self.room(&id)?;
@@ -514,6 +526,7 @@ impl Host {
 
     /// Empty a chat's transcript, keeping its participants and settings.
     pub async fn room_clear(&self, id: String) -> Result<(), String> {
+        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         {
             let room = self.room(&id)?;
@@ -529,6 +542,7 @@ impl Host {
 
     /// Retry: delete every message from `upto` on. The caller then runs a turn.
     pub async fn room_rewind(&self, id: String, upto: usize) -> Result<(), String> {
+        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         {
             let room = self.room(&id)?;
@@ -553,6 +567,7 @@ impl Host {
     /// ones that didn't exist), and with `chat`, delete message `at` and
     /// everything after it. Returns the files it couldn't put back.
     pub async fn room_revert(&self, id: String, at: usize, bot: Option<ParticipantId>, chat: bool, files: Vec<String>) -> Result<Vec<String>, String> {
+        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         let cwd = self.room_context(&id)?.cwd;
         let room = self.room(&id)?;
@@ -695,7 +710,8 @@ impl Host {
     }
 
     /// Replace all the settings and tell every client.
-    pub fn settings_save(&self, settings: serde_json::Value) -> Result<(), String> {
+    pub fn settings_save(&self, mut settings: serde_json::Value) -> Result<(), String> {
+        crate::decision::save_key(&mut settings)?;
         let settings = Settings::from_value(settings)?.to_value();
         self.store.save_settings(&settings)?;
         self.emit(HostEvent::SettingsChanged(settings));
@@ -1260,7 +1276,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { stop: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
+        let handle = RoomHandle { observation_revision: Arc::default(), stop: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }

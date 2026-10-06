@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Backend } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
-import { FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
+import { DEFAULT_DECISION, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
 import { ModsSettings } from "./ModsSettings";
 import { shortcutList } from "./shortcuts";
@@ -146,6 +146,7 @@ function Providers({ settings, onChange, agents, profiles, backend }: { settings
     if (keys.length > 0) backend.envPresent(keys.map((k) => k.name)).then(setPresent, () => setPresent(null));
   }, [backend, keys]);
   return <>
+    <DecisionSettingsPanel settings={settings} onChange={onChange} backend={backend} />
     <div className="settings-card provider-grid">
       {rows.map((row) => <label key={row.key}>
         <input type="checkbox" checked={providerEnabled(row.key, disabled)} onChange={(e) => setDisabled(e.target.checked ? disabled.filter((id) => id !== row.key) : [...disabled, row.key])} />
@@ -229,5 +230,28 @@ function Shortcuts() {
       {shortcutList(mac).map((s) => <div key={s.label} className="settings-row compact"><span>{s.label}</span><kbd>{s.keys}</kbd></div>)}
     </div>
     {!mac && <p className="settings-note">On macOS these use ⌘.</p>}
+  </>;
+}
+
+function DecisionSettingsPanel({ settings, onChange, backend }: { settings: AppSettings; onChange: (s: AppSettings) => void; backend: Backend }) {
+  const decision = settings.decision ?? DEFAULT_DECISION;
+  const [key, setKey] = useState("");
+  const [status, setStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+  const change = (next: Partial<typeof decision>) => onChange({ ...settings, decision: { ...decision, ...next } });
+  return <>
+    <div className="settings-subhead"><h3>Decision observer</h3><p>Jev or Clef suggests who should reply. Deck keeps its current routing. Enabling this sends recent room text to the selected provider; recommendations are saved in decisions.jsonl.</p></div>
+    <div className="settings-card">
+      <Row label="Observe unaddressed messages" note="Off by default. Explicit @mentions skip the observer."><input type="checkbox" aria-label="Enable decision observer" disabled={backend.demo} checked={decision.enabled} onChange={(e) => change({ enabled: e.target.checked })} /></Row>
+      <Row label="Decision provider"><select aria-label="Decision provider" value={decision.provider} disabled={saving || backend.demo} onChange={(e) => { setKey(""); setStatus(""); change({ provider: e.target.value as typeof decision.provider, enabled: false }); }}><option value="jev">TypeSafe / Jev</option><option value="openrouter">OpenRouter / Clef</option><option value="cloudflare">Cloudflare / Clef</option></select></Row>
+      {decision.provider === "cloudflare" && <Row label="Cloudflare account ID"><input aria-label="Cloudflare account ID" value={decision.accountId} onChange={(e) => change({ accountId: e.target.value })} /></Row>}
+      <Row label="API key" note="Saved in the host’s OS credential store, outside chat and settings files."><input type="password" aria-label="Decision API key" autoComplete="off" disabled={saving || backend.demo} value={key} onChange={(e) => setKey(e.target.value)} /></Row>
+      <Row label="Save credential" note={status || (backend.demo ? "Available in the desktop app." : "On remote hosts, the key is stored on that host.")}><button disabled={!key.trim() || saving || backend.demo} onClick={async () => {
+        setSaving(true); setStatus("");
+        try { await backend.settingsSave({ ...settings, decision, decisionApiKey: key }); setKey(""); setStatus("Key saved."); }
+        catch { setStatus("Could not save key. Check the host’s credential store."); }
+        finally { setSaving(false); }
+      }}>{saving ? "Saving…" : "Save key"}</button></Row>
+    </div>
   </>;
 }
