@@ -25,7 +25,7 @@ import { nameForModel, uniqueName } from "./quickAdd";
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
-import { findTrigger, insertAt } from "./composerMenu";
+import { appendToolToken, findTrigger, insertAt } from "./composerMenu";
 import { createPortal } from "react-dom";
 import { ThreadDetails, type DetailsHost } from "./ThreadDetails";
 import type { Backend } from "./backend";
@@ -1803,7 +1803,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (!workTools.some((t) => t.token === server.token)) workTools.push({ token: server.token, label: server.label, bot: p.display_name });
   }
   const useTool = (token: string) => {
-    setText((current) => { const base = current.replace(/\s+$/, ""); return `${base}${base ? " " : ""}!${token} `; });
+    setText((current) => appendToolToken(current, token));
     requestAnimationFrame(() => { const end = input.current?.value.length ?? 0; input.current?.focus(); input.current?.setSelectionRange(end, end); });
   };
   const requestedServers = parseServerRequests(text).map(s => s.name);

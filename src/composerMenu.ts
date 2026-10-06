@@ -87,3 +87,9 @@ export function insertAt(text: string, trigger: Trigger | null, caret: number, i
   const pad = before && !/\s$/.test(before) ? " " : "";
   return { text: before + pad + insert + text.slice(caret), caret: caret + pad.length + insert.length };
 }
+
+/** The Work bar's Tools: `!token` at the end of what was typed, ready for more. */
+export function appendToolToken(text: string, token: string): string {
+  const base = text.replace(/\s+$/, "");
+  return `${base}${base ? " " : ""}!${token} `;
+}

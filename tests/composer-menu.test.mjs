@@ -66,3 +66,10 @@ test('Enter in the message box only picks from a menu typed open', () => {
   assert.equal(boxKeyGoesToMenu(false), true);
   assert.equal(boxKeyGoesToMenu(true), false);
 });
+
+test("Tools in the Work bar adds !token at the end of what was typed", async () => {
+  const { appendToolToken } = await import("../src/composerMenu.ts");
+  assert.equal(appendToolToken("", "github"), "!github ");
+  assert.equal(appendToolToken("look at the PR  ", "github"), "look at the PR !github ");
+  assert.equal(appendToolToken("use !vercel ", "github"), "use !vercel !github ");
+});
