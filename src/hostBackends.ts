@@ -78,7 +78,7 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
         const host = known.get(hostId)!;
         b = new Proxy(r.backend, {
           get(target, key: string) {
-            if (key === "host") return { id: hostId, name: host.name, connection: r.connection };
+            if (key === "host") return { id: hostId, name: (known.get(hostId) ?? host).name, connection: r.connection };
             if (key === "browser") return local.browser;
             if (key === "quitStopsWork") return false;
             const source = appMethods.has(key) ? local : guardHostWrites(target, r.connection);
@@ -111,7 +111,14 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
     },
     async legacySession(hostId) { return (await connected(hostId)).backend.sessionLoad(); },
     async legacySettings(hostId) { return (await connected(hostId)).backend.settingsLoad(); },
-    setHosts(list) { known = new Map(list.filter(h => h.id !== "local").map(h => [h.id, h])); },
+    setHosts(list) {
+      known = new Map(list.filter(h => h.id !== "local").map(h => [h.id, h]));
+      // A renamed server keeps its connection; only the name it shows changes.
+      for (const [id, h] of known) {
+        (runtimes.get(id)?.connection as { rename?(name: string): void } | undefined)?.rename?.(h.name);
+        idle.get(id)?.rename(h.name);
+      }
+    },
     dispose(hostId) { known.delete(hostId); runtimes.get(hostId)?.close(); runtimes.delete(hostId); backends.delete(hostId); idle.delete(hostId); },
   };
 }

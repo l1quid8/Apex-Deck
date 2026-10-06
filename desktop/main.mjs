@@ -14,7 +14,7 @@ import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, assertHostUnused } 
 import { openTauriApps, tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
-import { bindHostIdentity, checkWelcome, verifiedLink } from './hostIdentity.mjs';
+import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon } from './sidecar.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
@@ -284,6 +284,41 @@ handle('connection:add', async (_entry, host) => {
   hosts = { ...hosts, hosts: [...hosts.hosts, { id: `h-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, ...valid }] };
   writeHosts();
   return hostList();
+});
+/** Say hello at candidate SSH settings; nothing else runs there. */
+const probeHost = ({ ssh, command }) => probeWelcome((handlers) => sshLink({ ssh, command }, handlers));
+/** Edit connection's Test: which daemon answers at these settings. Saves nothing. */
+handle('connection:check', async (_entry, fields) => {
+  const valid = validHost({ name: 'check', ...(fields ?? {}) }, []);
+  const welcome = await probeHost(valid);
+  return { daemonHostId: checkWelcome(undefined, { protocol: 1, ...welcome }), version: typeof welcome?.version === 'string' ? welcome.version : null };
+});
+/**
+ * Edit connection's Save. A new address or command is probed first, and the
+ * edit is applied to the hosts saved when the probe returns, so a rename,
+ * removal or second edit made meanwhile is never overwritten.
+ */
+handle('connection:update', async (_entry, id, fields) => {
+  const host = remoteHost(id);
+  if (!host) return { ok: false, reason: 'changed', words: 'There is no such server.' };
+  const before = { name: host.name, ssh: host.ssh, command: host.command };
+  let valid;
+  try { valid = validHost(fields ?? {}, hosts.hosts.filter((h) => h.id !== id).map((h) => h.name)); }
+  catch (e) { return { ok: false, reason: 'invalid', words: e.message }; }
+  let probed = null;
+  if (valid.ssh !== host.ssh || valid.command !== host.command) {
+    try { probed = await probeHost(valid); }
+    catch (e) { return { ok: false, reason: 'unreachable', words: `Couldn't reach ${valid.ssh}: ${e.message} Nothing is saved until Deck can check that it is the same machine.` }; }
+  }
+  try {
+    const next = applyHostUpdate(hosts, id, fields, { before, probed });
+    saveHosts(hostsFile(), next);
+    hosts = next;
+    Menu.setApplicationMenu(menu());
+    return { ok: true, hosts: hostList() };
+  } catch (e) {
+    return { ok: false, reason: e.code ?? 'invalid', words: e.message };
+  }
 });
 handle('connection:references', async (entry, ids) => {
   if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string')) throw new Error('Invalid workspace host references.');

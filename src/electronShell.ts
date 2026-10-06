@@ -3,7 +3,7 @@
 // Electron's main process. Commands go over that link with DaemonClient; the
 // shell's own jobs go to main through the bridge.
 
-import type { Backend, BrowserApi, HostEntry } from "./backend";
+import type { Backend, BrowserApi, HostEntry, HostUpdateResult } from "./backend";
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
 import { createHostBackends, guardHostWrites } from "./hostBackends.ts";
 import { hostConnectionStore } from "./hostConnections.ts";
@@ -26,6 +26,8 @@ export interface DeckBridge {
     add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
     remove(id: string): Promise<HostEntry[]>;
     references(hostIds: string[]): Promise<void>;
+    check(fields: { ssh: string; command?: string }): Promise<{ daemonHostId: string; version: string | null }>;
+    update(id: string, fields: { name: string; ssh: string; command?: string }): Promise<HostUpdateResult>;
   };
   shell: {
     pickPath(kind: "directory" | "file", title: string): Promise<string | null>;
@@ -221,6 +223,8 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
     add: (host: { name: string; ssh: string; command?: string }) => bridge.connection.add(host),
     remove: (id: string) => bridge.connection.remove(id),
     references: (hostIds: string[]) => bridge.connection.references(hostIds),
+    check: (fields: { ssh: string; command?: string }) => bridge.connection.check(fields),
+    update: (id: string, fields: { name: string; ssh: string; command?: string }) => bridge.connection.update(id, fields),
   };
   // A deck shortcut pressed in a docked page reaches the deck as if pressed here.
   bridge.browser.onShortcut((press) => window.dispatchEvent(new KeyboardEvent("keydown", { ...press, bubbles: true, cancelable: true })));
@@ -253,6 +257,17 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   backend.machines = machines;
   const oldAdd = hosts.add;
   hosts.add = async host => { const list = await oldAdd(host); machines.setHosts(list); return list; };
+  const oldUpdate = hosts.update;
+  hosts.update = async (id, fields) => {
+    const result = await oldUpdate(id, fields);
+    if (result.ok) {
+      machines.setHosts(result.hosts);
+      // A server that couldn't be reached tries its new address now.
+      const kind = machines.connection(id).get().status.kind;
+      if (kind === "reconnecting" || kind === "failed") machines.connection(id).retryNow();
+    }
+    return result;
+  };
   const oldRemove = hosts.remove;
   hosts.remove = async id => { const list = await oldRemove(id); machines.dispose(id); machines.setHosts(list); return list; };
   if (bridge.smoke) window.__deck = { backend };

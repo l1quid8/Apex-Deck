@@ -55,6 +55,8 @@ contextBridge.exposeInMainWorld('apexDeck', {
     add: (host) => ipcRenderer.invoke('connection:add', host),
     remove: (id) => ipcRenderer.invoke('connection:remove', id),
     references: (ids) => ipcRenderer.invoke('connection:references', ids),
+    check: (fields) => ipcRenderer.invoke('connection:check', fields),
+    update: (id, fields) => ipcRenderer.invoke('connection:update', id, fields),
   },
   shell: {
     pickPath: (kind, title) => ipcRenderer.invoke('shell:pickPath', kind, title),

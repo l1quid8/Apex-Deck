@@ -195,7 +195,16 @@ export interface HostsApi {
   add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
   remove(id: string): Promise<HostEntry[]>;
   references?(hostIds: string[]): Promise<void>;
+  /** Which daemon answers at these SSH settings. Only says hello; saves nothing. */
+  check?(fields: { ssh: string; command?: string }): Promise<{ daemonHostId: string; version: string | null }>;
+  /** Save a server's name, address or command. A new address must reach the same machine. */
+  update?(id: string, fields: { name: string; ssh: string; command?: string }): Promise<HostUpdateResult>;
 }
+
+/** What Edit connection's Save did. `different` offers Add as a new server. */
+export type HostUpdateResult =
+  | { ok: true; hosts: HostEntry[] }
+  | { ok: false; reason: "unreachable" | "different" | "known" | "changed" | "invalid"; words: string };
 
 /** A stand-in for the desktop shell. Terminals echo what you type and chat
  *  participants answer with a canned line. Nothing here talks to a model. */

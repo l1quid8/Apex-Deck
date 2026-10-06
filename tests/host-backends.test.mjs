@@ -71,3 +71,13 @@ test('PTY resize probes pass during resync while terminal input and startup rema
   await assert.rejects(remote.ptyResize('remote:1',90,30),/queued/);
   assert.equal(seen.length,3);
 });
+
+test('renaming a saved host reaches its live backend and its connection store', () => {
+  const registry = mod.createHostBackends({ local: {}, hosts: [{ id: 'at', name: 'AT', remote: true }], make: (host, connection) => ({ backend: {}, connection, start: async () => {}, close() {} }) });
+  const idle = registry.connection('at');
+  const remote = registry.get('at');
+  registry.setHosts([{ id: 'at', name: 'Renamed', remote: true }]);
+  assert.equal(remote.host.name, 'Renamed');
+  assert.equal(registry.connection('at').get().name, 'Renamed');
+  assert.equal(idle.get().name, 'Renamed');
+});
