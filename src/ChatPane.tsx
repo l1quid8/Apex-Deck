@@ -26,7 +26,7 @@ import { createPortal } from "react-dom";
 import { ThreadDetails, type DetailsHost } from "./ThreadDetails";
 import type { Backend } from "./backend";
 import { providerEnabled, providerForConfig } from "./providers";
-import { registerRoom } from "./hub";
+import { registerRoom, startHub } from "./hub";
 import { rememberModel, rememberedModels } from "./modelMemory";
 import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups } from "./models";
 import { Picker, type PickerGroup } from "./Picker";
@@ -416,7 +416,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [contextFill, setContextFill] = useState<Record<string, ContextFill>>({});
   /** Goes up on each /compact, to play the left side's refill. */
   const [compactions, setCompactions] = useState(0);
-  const plans = usePlans();
+  const plans = usePlans(backend.host?.id);
   /** The chip whose usage card is open. */
   const [card, setCard] = useState<string | null>(null);
   /** Where the hovered bot's usage card sits: above its badge, at the bottom of the pane. */
@@ -809,7 +809,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           break;
         }
       }
-    });
+    }, backend.host?.id);
+    let offHub = () => {};
+    void startHub(backend, backend.host?.id).then(off => { if (alive) offHub = off; else off(); });
     backend
       .roomCreate(pane.id, pane.sample ? SAMPLE_BOTS : [], defaults.current.newThread, cwd)
       .then((saved) => {
@@ -845,6 +847,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       });
     return () => {
       alive = false;
+      offHub();
       unregister();
       forgetRoom(pane.id);
       approvals.current?.(pane.id, null);

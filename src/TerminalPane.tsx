@@ -180,7 +180,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
           else if (waiting) latest.current.onSignal(pane.id, null);
           waiting = false;
         },
-      });
+      }, backend.host?.id);
       // Starting again deals with whatever the last run was flagged for.
       latest.current.onSignal(pane.id, null);
       waiting = false;

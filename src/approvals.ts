@@ -15,6 +15,7 @@ import type { ProposedAction, RoomEvent } from "./types";
 
 /** One card waiting for an answer. */
 export interface OpenCard {
+  hostId?: string;
   /** The thread it is in: the chat pane's id, which is also its room id. */
   room: string;
   /** The bot that asked. */
@@ -37,12 +38,13 @@ function withRoom(state: ApprovalState, room: string, cards: readonly OpenCard[]
 }
 
 /** The cards after one room event. Events that neither open nor close a card change nothing. */
-export function applyApprovalEvent(state: ApprovalState, room: string, event: RoomEvent, now: number): ApprovalState {
+export function applyApprovalEvent(state: ApprovalState, room: string, event: RoomEvent, now: number, hostId?: string): ApprovalState {
   const cards = state[room] ?? NONE;
+  if (cards.some(c => (c.hostId ?? "local") !== (hostId ?? "local"))) return state;
   switch (event.type) {
     case "approval_requested":
       if (cards.some((card) => card.request === event.request)) return state;
-      return withRoom(state, room, [...cards, { room, participant: event.id, request: event.request, action: event.action, at: now }]);
+      return withRoom(state, room, [...cards, { room, participant: event.id, request: event.request, action: event.action, at: now, ...(hostId ? { hostId } : {}) }]);
     case "approval_resolved": {
       const left = cards.filter((card) => card.request !== event.request);
       return left.length === cards.length ? state : withRoom(state, room, left);
@@ -68,8 +70,8 @@ function publish(next: ApprovalState) {
 }
 
 /** Feed one room event to the store. hub.ts calls this for every event. */
-export function recordApproval(room: string, event: RoomEvent): void {
-  publish(applyApprovalEvent(state, room, event, Date.now()));
+export function recordApproval(room: string, event: RoomEvent, hostId?: string): void {
+  publish(applyApprovalEvent(state, room, event, Date.now(), hostId));
 }
 
 /** Take down a thread's cards, as when its pane goes away. */
