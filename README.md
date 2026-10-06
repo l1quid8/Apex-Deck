@@ -11,14 +11,23 @@ edges.
 
 ## What works in 0.1
 
-- **Workspaces.** Add project folders. Each one keeps its own set of panes,
-  and panes keep running when you switch to another workspace. A
-  workspace's ⋯ menu renames it, shows its folder in Finder, or removes it
-  from the list. Removing never deletes anything: its threads stay saved,
-  **Undo** brings it straight back for 8 seconds, and later it comes back
-  when you add the same folder again or choose it under **Removed · Show**
-  at the foot of the rail. Its terminals end; if one is working or waiting
-  for you, or one of its threads is replying, it asks first.
+- **Projects.** Add project folders, on this Mac or on a server you reach
+  over SSH. The sidebar works like Codex's: **Pinned**, **Projects** and
+  **Recents**. A server's project shows the server's name, a dot (green
+  connected, gray can't be reached) and a coloured globe on its folder; its
+  threads in Pinned and Recents end with that globe. Two folders with one
+  name on one machine each show their path. Rest the pointer on a project
+  for a card with its machine, thread count, folder, whether the server can
+  be reached (with Retry) and whether its apex-daemon is older than the app.
+  A project's ⋯ menu (or right-click) has **Pin**, **Edit…** (rename),
+  **Edit connection…** for a server or **Reveal in Finder** for the Mac,
+  **Archive threads** and **Remove project…**. Edit connection checks that a
+  new address still reaches the same machine, by the host ID its apex-daemon
+  reports, so a server's threads never move; a different machine can only be
+  added as a new server. Removing never deletes anything: its threads stay
+  saved, **Undo** brings it straight back for 8 seconds, and later it comes
+  back when you add the same folder again or choose it under
+  **Removed · Show** at the foot of the rail.
 - **Terminal panes.** Real terminals in the workspace folder. Launch a plain
   shell, or any coding agent Apex Deck finds installed (the list is in
   `crates/apex-host/src/agents.rs`). A second terminal of the same tool in a
@@ -50,9 +59,15 @@ edges.
   pane can be maximized and restored or closed, and its head says what it is
   doing: Working, Idle, Exited or Stopped for a terminal, and how many bots a thread
   has. Closing a thread only takes it off the deck: it stays saved and listed
-  in the rail, and clicking it opens it again. A thread's ⋯ menu has
-  **Rename**, **Fork**, **Export** and **Delete thread…**; deleting asks
-  once, and **Undo** brings it back for 8 seconds. A terminal that is working or waiting for you asks before it
+  in the rail, and clicking it opens it again. A thread's ⋯ menu (or
+  right-click) has **Rename** (⌥⌘R), **Pin** (⌥⌘P), **Mark as unread**
+  (⇧⌘U), **Share as PDF**, **Copy ›** (the thread as Markdown, the last
+  reply, the folder path with its server, the thread ID), **Fork**,
+  **Export**, **Archive** (⇧⌘A) and **Delete…**; deleting asks once, and
+  **Undo** brings it back for 8 seconds. Archived threads leave every list
+  and come back from **Archived · Show**. Resting the pointer on a thread
+  shows its full title, machine, project, how long ago it was active and
+  who is in it. A terminal that is working or waiting for you asks before it
   closes.
 - **Quitting.** Closing the window, ⌘W, ⌘Q and Quit in the app menu ask
   first while a coding agent's terminal is open, a shell is working or
