@@ -1195,14 +1195,14 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .md-code pre {
   margin: 0;
   padding: 10px 12px;
-  overflow-x: auto;
   line-height: 1.55;
 }
 .md-code pre code {
   background: transparent;
   padding: 0;
   font-size: 12.5px;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .md-table {
   overflow-x: auto;
