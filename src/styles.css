@@ -1043,7 +1043,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   .bubble, .bot-row { max-width: 95%; }
   .chat-options label { flex-wrap: wrap; }
   .composer { padding: 10px; gap: 8px; }
-  .composer-hint > span:last-child { display: none; }
+  .composer-hint .hint-text { display: none; }
   .welcome-capabilities { gap: 14px; }
 }
 @media (max-width: 480px) {
@@ -1714,7 +1714,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 
 .thread-name-input { min-width: 0; width: 160px; max-width: 100%; padding: 3px 6px; font: inherit; }
 .pane-title[role="button"], .pane-row-title[role="button"] { cursor: text; }
-.composer-actions { display: flex; flex-direction: column; gap: 6px; }
 
 .pins { flex-shrink: 0; min-width: 0; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
 .pins-label { color: var(--muted); cursor: pointer; width: fit-content; }
@@ -1754,8 +1753,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .thread-details .changes { position: static; width: auto; border: 0; padding: 0; background: transparent; }
 .thread-details .changes-head { padding: 0; flex-wrap: wrap; }
 .thread-details .changes-note, .thread-details .changes-empty { padding: 0; }
-.thread-chat .chat-bar { flex-wrap: nowrap; padding: 8px 12px; min-width: 0; container-type: inline-size; }
-.thread-chat .chips { flex-wrap: nowrap; flex: 1; min-width: 0; overflow-x: auto; }
 .thread-chat .chip-wrap { flex: none; }
 .thread-chat .chip-name { white-space: nowrap; }
 /* ChatPane picks data-fit from what the row has room for, so a wide pane full of bots still shows every one. */
@@ -1784,7 +1781,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .attachment > button { position: absolute; top: 2px; right: 2px; background: #000a; border-radius: 4px; }
 
 /* Per-participant turns keep the composer compact at every activity level. */
-.composer-actions { flex-direction: row; align-items: flex-start; position: relative; }
 .participant-status { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--muted); }
 .participant-status.thinking, .participant-status.writing { background: #92b0c9; }
 .participant-status.tool { background: #cbb079; }
@@ -1942,7 +1938,7 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
 .quick-add-wrap.details .quick-add { left: 0; width: min(296px, 86vw); }
 .quick-add-wrap.roster { align-self: center; }
 .quick-add-wrap.roster-pop { position: fixed; z-index: 40; }
-.quick-add-wrap.roster-pop .quick-add { top: 0; left: 0; }
+.quick-add-wrap.roster-pop .quick-add { left: 0; }
 .chip-add { width: 30px; height: 30px; min-height: 0; padding: 0; border-radius: 50%; display: inline-grid; place-items: center; background: transparent; border: none; color: var(--muted); }
 .chip-add:hover:not(:disabled), .chip-add[aria-expanded="true"] { color: var(--text); background: var(--panel-2); }
 .quick-add label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); min-width: 0; }
@@ -1975,7 +1971,6 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 }
 
 /* Composer actions: one round button, Send when idle and Stop all while a bot works. */
-.composer-actions { align-items: center; align-self: flex-end; }
 
 /* Thread details: what the person chose "Always allow" for. */
 .allowed-empty { margin: 0; font-size: 12px; }
@@ -1987,12 +1982,10 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 
 /* Composer: one rounded box holding +, text, and Send, all on one line. */
 .composer { padding: 10px 16px; align-items: flex-end; }
-.composer-field { align-items: flex-end; gap: 4px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
-.composer-field:focus-within { border-color: var(--accent); }
+.composer-field { align-items: flex-end; }
 .composer-field > textarea { border: 0; background: transparent; box-shadow: none; outline: none; padding: 8px 6px; line-height: 20px; }
 .composer-plus { width: 36px; height: 36px; flex: none; }
-.composer-actions { align-self: flex-end; margin-bottom: 0; }
-.composer-actions > button, .composer > button { min-height: 46px; height: 46px; border-radius: 12px; }
+.composer > button { min-height: 46px; height: 46px; border-radius: 12px; }
 .composer-input { position: relative; }
 /* Hint floats below the box so it never pushes Send out of line. */
 .composer:focus-within { padding-bottom: 28px; }
@@ -2348,17 +2341,16 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .queued-inline .steer-pop .row .ghost { border: 1px solid var(--line); }
 
 /* The round button is an exact circle; the composer's 46px button rule must not reach it. */
-.composer-actions > button.round-send { width: 36px; height: 36px; min-width: 36px; min-height: 36px; max-height: 36px; aspect-ratio: 1; align-self: center; padding: 0; border-radius: 50%; border: 0; display: inline-grid; place-items: center; background: var(--accent); color: #fff; flex: none; }
-.composer-actions > button.round-send:hover:not(:disabled) { filter: brightness(1.1); }
-.composer-actions > button.round-send:disabled { opacity: .4; }
-.composer-actions > button.round-send.stop { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 55%, transparent); }
-.composer-actions > button.round-send.stop:hover { background: color-mix(in srgb, var(--danger) 26%, transparent); filter: none; }
+.composer-dock > button.round-send { width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-height: 30px; aspect-ratio: 1; align-self: center; padding: 0; border-radius: 50%; border: 0; display: inline-grid; place-items: center; background: var(--accent); color: #fff; flex: none; }
+.composer-dock > button.round-send:hover:not(:disabled) { filter: brightness(1.1); }
+.composer-dock > button.round-send:disabled { opacity: .4; }
+.composer-dock > button.round-send.stop { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 55%, transparent); }
+.composer-dock > button.round-send.stop:hover { background: color-mix(in srgb, var(--danger) 26%, transparent); filter: none; }
 /* A long placeholder stays on one line in a narrow pane instead of wrapping out of view. */
 .composer-field > textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* What ↵ does sits under the round button; only while typing, like the hint. */
-.composer-actions { position: relative; }
-.send-key { display: none; position: absolute; top: 100%; right: 0; margin-top: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; }
-.composer:focus-within .send-key { display: block; }
+.send-key { display: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.composer:focus-within .send-key { display: inline; }
 
 /* Retry / Revert confirmation under a message's actions. */
 .message-actions { position: relative; }
@@ -2406,15 +2398,15 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   33% { box-shadow: 0 0 16px -4px var(--tldr-amber), 0 0 26px -8px var(--tldr-violet); }
   66% { box-shadow: 0 0 16px -4px var(--tldr-violet), 0 0 26px -8px var(--tldr-hot); }
 }
-.composer.tldr .composer-field, .composer.tldr .composer-field:focus-within {
+.composer.tldr .composer-box, .composer.tldr .composer-box:focus-within {
   border-color: transparent;
   background: linear-gradient(var(--panel-2), var(--panel-2)) padding-box, conic-gradient(from var(--tldr-spin), var(--tldr-hot), var(--tldr-amber), var(--tldr-violet), var(--tldr-hot)) border-box;
   animation: tldr-spin 3s linear infinite, tldr-glow 3s linear infinite;
 }
-.composer.tldr .composer-field > textarea::placeholder { color: color-mix(in srgb, var(--tldr-amber) 70%, transparent); }
+.composer.tldr .composer-box textarea::placeholder { color: color-mix(in srgb, var(--tldr-amber) 70%, transparent); }
 /* Sized in em so the pill grows from 7.5px (off) to 8.75px (on); ::before keeps it clickable when tiny. */
-.composer-field > .tldr-pill { position: relative; flex: none; align-self: center; display: inline-flex; height: 2.2em; min-height: 0; margin-right: 3px; padding: 0; font-size: 7.5px; border: 1px solid #3a3a3a; border-radius: 999px; background: none; cursor: pointer; filter: grayscale(1); transition: font-size .25s, box-shadow .3s, border-color .3s, filter .3s; }
-.composer-field > .tldr-pill::before { content: ""; position: absolute; inset: -8px -6px; }
+.composer-dock > .tldr-pill { position: relative; flex: none; align-self: center; display: inline-flex; height: 2.2em; min-height: 0; margin-right: 3px; padding: 0; font-size: 7.5px; border: 1px solid #3a3a3a; border-radius: 999px; background: none; cursor: pointer; filter: grayscale(1); transition: font-size .25s, box-shadow .3s, border-color .3s, filter .3s; }
+.composer-dock > .tldr-pill::before { content: ""; position: absolute; inset: -8px -6px; }
 @keyframes tldr-pill-wiggle {
   0%, 100% { transform: none; }
   20% { transform: rotate(-10deg) scale(1.08); }
@@ -2422,14 +2414,14 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   60% { transform: rotate(-6deg) scale(1.05); }
   80% { transform: rotate(3deg); }
 }
-.composer-field > .tldr-pill:hover { animation: tldr-pill-wiggle .5s ease-in-out; }
+.composer-dock > .tldr-pill:hover { animation: tldr-pill-wiggle .5s ease-in-out; }
 .tldr-pill span { display: flex; align-items: center; padding: 0 .7em; font-weight: 800; letter-spacing: .03em; }
 .tldr-pill span:first-child { border-radius: 999px 0 0 999px; background: var(--tldr-hot); color: #fff; }
 .tldr-pill span:last-child { border-radius: 0 999px 999px 0; background: var(--tldr-amber); color: #1a0710; }
-.composer-field > .tldr-pill[aria-pressed="true"] { font-size: 8.75px; border-color: transparent; filter: none; box-shadow: 0 0 7px var(--tldr-hot), 0 0 15px color-mix(in srgb, var(--tldr-amber) 50%, transparent); }
+.composer-dock > .tldr-pill[aria-pressed="true"] { font-size: 8.75px; border-color: transparent; filter: none; box-shadow: 0 0 7px var(--tldr-hot), 0 0 15px color-mix(in srgb, var(--tldr-amber) 50%, transparent); }
 @media (prefers-reduced-motion: reduce) {
-  .composer.tldr .composer-field, .composer.tldr .composer-field:focus-within { animation: none; box-shadow: 0 0 16px -4px var(--tldr-hot), 0 0 26px -8px var(--tldr-amber); }
-  .composer-field > .tldr-pill:hover { animation: none; }
+  .composer.tldr .composer-box, .composer.tldr .composer-box:focus-within { animation: none; box-shadow: 0 0 16px -4px var(--tldr-hot), 0 0 26px -8px var(--tldr-amber); }
+  .composer-dock > .tldr-pill:hover { animation: none; }
 }
 
 /* Something new in the artifacts pane since it was last open. */
@@ -2567,3 +2559,17 @@ button.mod-status:hover { color: var(--text); }
 .pane-head:is([data-fit="compact"], [data-fit="tight"], [data-fit="min"]) .count-icon { display: inline-block; }
 .pane-head:is([data-fit="tight"], [data-fit="min"]) .pane-folder { display: none; }
 .pane-head[data-fit="min"] .server-chip { display: none; }
+
+/* The message box: the text on top, then one row of +, the bots, TL;DR and Send. */
+.composer-box { display: flex; flex-direction: column; gap: 2px; padding: 2px 6px 5px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+.composer-box:focus-within { border-color: var(--accent); }
+.composer-dock { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.composer-dock .composer-plus { width: 28px; height: 28px; font-size: 21px; }
+.composer-dock .chips { flex: 0 1 auto; min-width: 0; flex-wrap: nowrap; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.composer-dock .chip-name { padding: 2px 8px 2px 3px; font-size: 12px; }
+.composer-dock .chip-meta { font-size: 11px; }
+.composer-dock .dock-spacer { flex: 1; min-width: 4px; }
+/* A badge's usage card floats above it, so the row's overflow never clips it. */
+.usage-card.above { position: fixed; top: auto; }
+.usage-card.above::before { inset: auto 0 -7px; }
+.quick-add-wrap.roster-pop .quick-add { top: auto; bottom: 0; }

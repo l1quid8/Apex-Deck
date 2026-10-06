@@ -1,3 +1,4 @@
+import { aboveAnchor } from "./floating";
 import { fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
@@ -345,6 +346,13 @@ const STARTERS = [
 /** Below this width the artifacts panel covers the conversation instead of sitting beside it. */
 const NARROW_PX = 760;
 
+/** The widest a bot's usage card gets (.usage-card max-width). */
+const USAGE_CARD_WIDTH = 340;
+/** The Add bot form's width (.quick-add). */
+const QUICK_ADD_WIDTH = 330;
+const viewport = () => ({ width: window.innerWidth, height: window.innerHeight });
+
+
 /** How much of each bot chip shows, most first. */
 const CHIP_STEPS = ["full", "levels", "names"] as const;
 /** How much of the pane's top line shows: then the count labels go, then the status words, then the server chip. */
@@ -407,6 +415,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const plans = usePlans();
   /** The chip whose usage card is open. */
   const [card, setCard] = useState<string | null>(null);
+  /** Where the hovered bot's usage card sits: above its badge, at the bottom of the pane. */
+  const [cardAt, setCardAt] = useState<{ left: number; bottom: number } | null>(null);
+  const hoverCard = (id: string, badge: HTMLElement) => { setCard(id); setCardAt(aboveAnchor(badge.getBoundingClientRect(), viewport(), USAGE_CARD_WIDTH)); };
+
   /** What each bot has proposed and is waiting on a yes or no for, from the app-wide store (approvals.ts). */
   const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
   const roomCards = openCards(pane.id, approvalState);
@@ -466,7 +478,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** Where the quick add menu is open: under the empty thread's button, or in the sidebar. */
   const [quickAdd, setQuickAdd] = useState<"empty" | "details" | "roster" | null>(null);
   // The chip row scrolls sideways, which clips anything absolutely positioned inside it, so the roster menu is placed against the viewport.
-  const [rosterAnchor, setRosterAnchor] = useState<{ left: number; top: number } | null>(null);
+  const [rosterAnchor, setRosterAnchor] = useState<{ left: number; bottom: number } | null>(null);
   /** True once the person types a name, so choosing a model stops renaming the bot. */
   const nameTouched = useRef(false);
   useEffect(() => {
@@ -1757,7 +1769,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const canCompact = ready && !busy && participants.length > 0;
 
   /** The usage card for a chip: context, plan, session tokens, and a way to compact. */
-  const usageCard = (p: ParticipantConfig) => {
+  const usageCard = (p: ParticipantConfig, at?: { left: number; bottom: number } | null) => {
     const fill = contextFill[p.id];
     const provider = planProvider(p);
     const windows = provider ? plans[provider]?.windows : undefined;
@@ -1765,7 +1777,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const reports = p.backend.kind === "agent" && p.backend.tool !== "gemini" && p.backend.tool !== "grok";
     const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
     return (
-      <div className="usage-card" role="group" aria-label={`Usage for ${p.display_name}`}>
+      <div className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
         <div className="usage-row">
           <span className="usage-label">Context</span>
           <span className={isLow(contextLevel(fill)) ? "usage-low" : undefined}>{fill ? contextLine(fill) : reports ? "Not reported yet. The next reply says." : "Not reported by this provider"}</span>
@@ -2129,31 +2141,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </button>}
     </div>
   );
-  return (
-    <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
-      {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
-
-      {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, top: rosterAnchor.top }}>{quickAddMenu}</span>}
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async config => {
-        await backend.roomUpdateParticipant(pane.id, config);
-        setParticipants(list => list.map(p => p.id === config.id ? config : p));
-        if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
-      }} /> }
-      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} />} />, details.slot)}
-      <div className="chat-bar">
-        <div ref={chipRow} className="chips">
-          {!profileMode && participants.map((p) => {
-            const levels = levelsFor(p.id);
-            return (
-            <span
-              className="chip-wrap"
-              key={p.id}
-              onMouseEnter={() => setCard(p.id)}
-              onMouseLeave={() => setCard((open) => (open === p.id ? null : open))}
-              onFocus={() => setCard(p.id)}
-              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCard((open) => (open === p.id ? null : open)); }}
-              onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
-            >
+  // The bots ride in the message box's bottom row, between + and TL;DR.
+  const botChips = (
+    <div ref={chipRow} className="chips">
+      {participants.map((p) => {
+        const levels = levelsFor(p.id);
+        return (
+        <span
+          className="chip-wrap"
+          key={p.id}
+          onMouseEnter={(e) => hoverCard(p.id, e.currentTarget)}
+          onMouseLeave={() => setCard((open) => (open === p.id ? null : open))}
+          onFocus={(e) => hoverCard(p.id, e.currentTarget)}
+          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCard((open) => (open === p.id ? null : open)); }}
+          onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
+        >
             <span className="chip" style={{ borderColor: color(p.id) }}>
               <button className="chip-name" aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
                 if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
@@ -2178,24 +2180,32 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               </button>
 
             </span>
-            {card === p.id && !quickSettings && usageCard(p)}
-            </span>
-            );
-          })}
-          {/* An empty library offers its own button inside the starter card. */}
-          {profileMode && (participants.length > 0 || adding) && addButton}
-          {!profileMode && participants.length > 0 && (
-            <span className="quick-add-wrap roster">
-              <button className="chip-add" disabled={!ready} aria-label="Add a bot" title="Add a bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { details?.show("form"); setAdding(true); } else { const r = e.currentTarget.getBoundingClientRect(); setRosterAnchor({ left: r.left, top: r.bottom + 8 }); openQuickAdd("roster"); } }}>
-                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-              </button>
-            </span>
-          )}
-        </div>
+        {card === p.id && !quickSettings && usageCard(p, cardAt)}
+        </span>
+        );
+      })}
+      {participants.length > 0 && (
+        <span className="quick-add-wrap roster">
+          <button className="chip-add" disabled={!ready} aria-label="Add a bot" title="Add a bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { details?.show("form"); setAdding(true); } else { setRosterAnchor(aboveAnchor(e.currentTarget.getBoundingClientRect(), viewport(), QUICK_ADD_WIDTH, 8)); openQuickAdd("roster"); } }}>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+          </button>
+        </span>
+      )}
+    </div>
+  );
 
+  return (
+    <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
+      {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 
-
-      </div>
+      {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom }}>{quickAddMenu}</span>}
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async config => {
+        await backend.roomUpdateParticipant(pane.id, config);
+        setParticipants(list => list.map(p => p.id === config.id ? config : p));
+        if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
+      }} /> }
+      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} />} />, details.slot)}
+      {profileMode && <div className="chat-bar"><div className="chips">{(participants.length > 0 || adding) && addButton}</div></div>}
 
       {!profileMode && pins.length > 0 && pinControls}
 
@@ -2441,22 +2451,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
         </div>}
-        <div className="composer-field" ref={field}>
-          <ComposerMenu ref={composerMenu} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
-            if (item.kind === "attach") return filePicker.current?.click();
-            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
-            if (item.kind === "command" && item.command) {
-              const draft = text;
-              runCommand(item.command);
-              setText(trigger ? text.slice(trigger.end) : draft);
-
-            } else {
-              const next = insertAt(text, trigger, caret, `${item.label} `);
-              setText(next.text); setCaret(next.caret);
-              requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
-            }
-            input.current?.focus();
-          }} />
+        <div className="composer-box" ref={field}>
+          <div className="composer-field">
         <textarea
           ref={input}
           aria-label="Message the room"
@@ -2484,19 +2480,36 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           placeholder={copy.placeholder}
           disabled={!ready || participants.length === 0}
         />
+          </div>
+          <div className="composer-dock">
+          <ComposerMenu ref={composerMenu} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+            if (item.kind === "attach") return filePicker.current?.click();
+            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
+            if (item.kind === "command" && item.command) {
+              const draft = text;
+              runCommand(item.command);
+              setText(trigger ? text.slice(trigger.end) : draft);
+
+            } else {
+              const next = insertAt(text, trigger, caret, `${item.label} `);
+              setText(next.text); setCaret(next.caret);
+              requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
+            }
+            input.current?.focus();
+          }} />
+            {botChips}
+            <span className="dock-spacer" />
         <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}
           // Keep focus: collapsing the hint on pointer-down moves the pill before the click lands.
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
-        </div>
-        {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
-        {!busy && <div className="composer-hint"><span>{copy.hint}</span></div>}
-        </div>
-        <div className="composer-actions">
           {busy
             ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) void turnQueue.halt(); }}><StopSquare size={12} /></button>
             : <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
-          <span className="send-key" aria-hidden="true">{copy.keys}</span>
+          </div>
+        </div>
+        {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
+        <div className="composer-hint">{!busy && <span className="hint-text">{copy.hint}</span>}<span className="send-key" aria-hidden="true">{copy.keys}</span></div>
         </div>
       </div>}
     </div>

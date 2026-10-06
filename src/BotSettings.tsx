@@ -1,3 +1,4 @@
+import { popoverTop } from './floating';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
@@ -29,7 +30,7 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
   useLayoutEffect(() => {
     const rect = anchor.getBoundingClientRect();
     const height = root.current?.offsetHeight ?? 260;
-    setPosition({ top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - height - 8)), left: Math.max(8, Math.min(rect.left, window.innerWidth - 328)) });
+    setPosition({ top: popoverTop(rect, height, window.innerHeight), left: Math.max(8, Math.min(rect.left, window.innerWidth - 328)) });
     root.current?.querySelector<HTMLElement>('[aria-checked="true"], input, select')?.focus();
   }, [anchor]);
   useEffect(() => {
