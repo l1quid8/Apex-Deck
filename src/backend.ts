@@ -194,10 +194,7 @@ export interface HostsApi {
   /** Save a host; rejects with words when it can't be used. */
   add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
   remove(id: string): Promise<HostEntry[]>;
-  /** Switch to `id`; the window reloads on that host, or the window already on it comes forward. */
-  use(id: string): Promise<void>;
-  /** A window on `id` beside this one, or the one already on it brought forward. */
-  openWindow(id: string): Promise<void>;
+  references?(hostIds: string[]): Promise<void>;
 }
 
 /** A stand-in for the desktop shell. Terminals echo what you type and chat

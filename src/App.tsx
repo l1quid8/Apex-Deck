@@ -33,7 +33,7 @@ import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withAppro
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { HostSwitcher } from "./HostSwitcher";
+import { WorkspaceHostMenu } from "./WorkspaceHostMenu";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
@@ -321,6 +321,7 @@ export function App() {
 
   useEffect(() => {
     if (!backend) return;
+    void backend.hosts?.references?.(workspaces.map(workspaceHost)).catch(() => {});
     saveWorkspaces(workspaces);
     const session = sessionRef.current!;
     // Keep writes in order so a slow old save cannot overwrite newer state.
@@ -461,6 +462,7 @@ export function App() {
     requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-workspace="${id}"]`)?.focus());
   };
 
+  const hostNameFor = (hostId: string) => { try { return backend?.machines?.connection(hostId).get().name ?? hostId; } catch { return hostId; } };
   const backendFor = (pane: Pane): Backend => {
     if (!backend) throw new Error("The backend is not ready yet.");
     const { hostId } = paneDestination(pane, workspaces);
@@ -698,7 +700,7 @@ export function App() {
       program: programOf(pane),
       signal: attention[pane.id],
       cards: pane.kind === "chat" ? openCards(pane.id, approvalState) : undefined,
-      hostName: workspaces.find(w => w.id === pane.workspaceId)?.hostId ? backend?.machines?.connection(workspaces.find(w => w.id === pane.workspaceId)?.hostId).get().name : "This Mac",
+      hostName: hostNameFor(workspaces.find(w => w.id === pane.workspaceId)?.hostId ?? "local"),
       available: (() => { try { return !backendFor(pane).host || backendFor(pane).host!.connection.get().status.kind === "connected"; } catch { return false; } })(),
     }));
   const sectionFlags = {
@@ -953,7 +955,6 @@ export function App() {
       {!storageError && window.apexDeck && (link.status.kind === "reconnecting" || link.status.kind === "failed") && (
         <div className="loading-actions">
           <button onClick={() => connection.retryNow()}>Try now</button>
-          {link.host !== "This Mac" && <button onClick={() => void window.apexDeck?.connection.use("local")}>Use This Mac</button>}
         </div>
       )}
     </div>
@@ -1057,12 +1058,9 @@ export function App() {
       <div className="body" ref={bodyRef}>
         {railOpen && (
           <aside className="rail" style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}>
-            {backend.hosts && <HostSwitcher hosts={backend.hosts} onManage={() => setSettingsOpen("hosts")} />}
             <div className="rail-head">
               <span>Workspaces</span>
-              <button className="icon" onClick={addWorkspace} aria-label="Add workspace" title="Add a folder">
-                +
-              </button>
+              <WorkspaceHostMenu backend={backend} choose={hostId => addWorkspace(undefined, hostId)} manage={() => setSettingsOpen("hosts")} />
             </div>
             {shownList.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
             {shownList.map((workspace) => {
@@ -1086,6 +1084,7 @@ export function App() {
                       }}>
                       <DeckIcon name="folder" size={16} />
                       <ThreadName className="ws-label" title={workspace.name} label="Workspace name" tooltip={workspace.path || workspace.name} renameRequest={renameRequests[workspace.id]} onRename={(name) => setWorkspaces((list) => renameWorkspace(list, workspace.id, name))} />
+                      {workspace.hostId && <span className="workspace-host" title={workspace.hostId}>{backend.hosts ? hostNameFor(workspace.hostId) : workspace.hostId}</span>}
                       {flag && <span className={`flag-count ${flag.worst ?? ""}`} title={flag.title} aria-label={flag.title}>{flag.text}</span>}
                     </div>
                     <span className="pane-menu-wrap">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import type { Backend, HostEntry, HostsApi } from "./backend";
 import { ipcWords as words } from "./electronShell";
@@ -9,14 +9,12 @@ import { ipcWords as words } from "./electronShell";
 
 export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: HostsApi }) {
   const [list, setList] = useState<HostEntry[]>([]);
-  const [current, setCurrent] = useState("");
   const [name, setName] = useState("");
   const [ssh, setSsh] = useState("");
   const [command, setCommand] = useState("apex-daemon");
   const [problem, setProblem] = useState("");
   useEffect(() => {
     hosts.list().then(setList, () => setList([]));
-    hosts.current().then((host) => setCurrent(host.id), () => setCurrent(""));
   }, [hosts]);
   const add = async () => {
     setProblem("");
@@ -31,19 +29,7 @@ export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: Hos
   };
   return (
     <div className="settings-card hosts">
-      {list.map((host) => (
-        <div key={host.id} className="settings-row">
-          <div className="settings-label">
-            <strong>{host.name}{host.id === current && <span className="host-current"> · Connected</span>}</strong>
-            <small className="mono">{host.remote ? `ssh ${host.ssh} ${host.command} --stdio --attach` : "The daemon on this Mac"}</small>
-          </div>
-          <span className="host-actions">
-            {host.id !== current && !host.open && <button onClick={() => void hosts.use(host.id)}>Connect</button>}
-            {host.id !== current && <button onClick={() => hosts.openWindow(host.id).then(() => hosts.list()).then(setList, (e) => setProblem(words(e)))}>{host.open ? "Show window" : "New window"}</button>}
-            {host.remote && <button className="ghost" onClick={() => hosts.remove(host.id).then(setList, (e) => setProblem(words(e)))}>Remove</button>}
-          </span>
-        </div>
-      ))}
+      {list.map(host => <HostRow key={host.id} backend={backend} host={host} remove={() => hosts.remove(host.id).then(setList, e => setProblem(words(e)))} />)}
       <form className="host-add" onSubmit={(event) => { event.preventDefault(); void add(); }}>
         <strong>Add a host</strong>
         <small className="muted">
@@ -58,4 +44,10 @@ export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: Hos
       </form>
     </div>
   );
+}
+
+function HostRow({ backend, host, remove }: { backend: Backend; host: HostEntry; remove(): void }) {
+  const c = backend.machines?.connection(host.id);
+  const state = useSyncExternalStore(c?.subscribe ?? (() => () => {}), c?.get ?? (() => null));
+  return <div className="settings-row"><div className="settings-label"><strong>{host.name} · {state?.status.kind ?? "connected"}</strong><small className="mono">{host.remote ? `ssh ${host.ssh} ${host.command} --stdio --attach` : "The daemon on this Mac"}</small></div><span className="host-actions"><button onClick={() => { backend.machines?.get(host.id); c?.retryNow(); }}>Retry</button>{host.remote && <button className="ghost" onClick={remove}>Remove</button>}</span></div>;
 }

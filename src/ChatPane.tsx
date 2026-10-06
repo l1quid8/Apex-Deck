@@ -832,9 +832,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         forgetRoom(pane.id);
         state.approvals.forEach(ask => recordApproval(pane.id, { type: "approval_requested", ...ask }, backend.host?.id));
         setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], phase: "thinking" as const }])));
-        state.active.forEach(id => turnQueue.started(id));
+        turnQueue.state = {}; state.active.forEach(id => turnQueue.started(id));
         setBusy(state.active.length > 0 || turnQueue.active);
-        setDrafts({});
+        setDrafts(Object.fromEntries(state.active.map(id => [id, ""])));
         setChanges((saved.changes ?? []).map((c) => ({ seq: c.seq, by: c.by, change: { path: c.path, added: c.added, removed: c.removed, diff: "" } })));
         setParticipants(saved.participants);
         setOptions(saved.options);
@@ -2623,7 +2623,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           }}
           rows={1}
           placeholder={copy.placeholder}
-          disabled={!ready || participants.length === 0}
+          disabled={!roomReady || participants.length === 0}
         />
           </div>
         <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}

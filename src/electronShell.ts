@@ -25,8 +25,7 @@ export interface DeckBridge {
     list(): Promise<HostEntry[]>;
     add(host: { name: string; ssh: string; command?: string }): Promise<HostEntry[]>;
     remove(id: string): Promise<HostEntry[]>;
-    use(id: string): Promise<void>;
-    openWindow(id: string): Promise<void>;
+    references(hostIds: string[]): Promise<void>;
   };
   shell: {
     pickPath(kind: "directory" | "file", title: string): Promise<string | null>;
@@ -221,8 +220,7 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
     list: () => bridge.connection.list(),
     add: (host: { name: string; ssh: string; command?: string }) => bridge.connection.add(host),
     remove: (id: string) => bridge.connection.remove(id),
-    use: (id: string) => bridge.connection.use(id),
-    openWindow: (id: string) => bridge.connection.openWindow(id),
+    references: (hostIds: string[]) => bridge.connection.references(hostIds),
   };
   // A deck shortcut pressed in a docked page reaches the deck as if pressed here.
   bridge.browser.onShortcut((press) => window.dispatchEvent(new KeyboardEvent("keydown", { ...press, bubbles: true, cancelable: true })));

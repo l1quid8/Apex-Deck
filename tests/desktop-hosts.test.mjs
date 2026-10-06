@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { validHost, sshArgs, loadHosts, saveHosts, windowsAtLaunch, LOCAL } from '../desktop/hosts.mjs';
+import { validHost, sshArgs, loadHosts, saveHosts, windowsAtLaunch, assertHostUnused, LOCAL } from '../desktop/hosts.mjs';
 
 test('a host needs a plain SSH destination', () => {
   assert.deepEqual(validHost({ name: ' vps ', ssh: 'me@vps.example.com' }, []), { name: 'vps', ssh: 'me@vps.example.com', command: 'apex-daemon' });
@@ -83,11 +83,18 @@ test('an unreadable hosts.json is set aside with a warning, not lost', () => {
   } finally { t.done(); }
 });
 
-test('Deck opens a window on each host that had one, once each, and on This Mac when none can be', () => {
+test('legacy host windows always launch one Mac-owned canvas', () => {
   const hosts = [{ id: 'h-1', name: 'vps', ssh: 'vps', command: 'apex-daemon' }];
   // Saved before there were windows: the host last used.
-  assert.deepEqual(windowsAtLaunch({ hosts, last: 'h-1' }), ['h-1']);
-  assert.deepEqual(windowsAtLaunch({ hosts, last: LOCAL, windows: ['h-1', LOCAL, 'h-1'] }), ['h-1', LOCAL]);
+  assert.deepEqual(windowsAtLaunch({ hosts, last: 'h-1' }), [LOCAL]);
+  assert.deepEqual(windowsAtLaunch({ hosts, last: LOCAL, windows: ['h-1', LOCAL, 'h-1'] }), [LOCAL]);
   assert.deepEqual(windowsAtLaunch({ hosts, last: 'h-1', windows: ['h-gone'] }), [LOCAL]);
   assert.deepEqual(windowsAtLaunch({ hosts: [], last: LOCAL, windows: 'nonsense' }), [LOCAL]);
+});
+test('removal includes hidden saved workspaces and unsaved renderer references',()=>{
+  assert.throws(()=>assertHostUnused('at',{workspaces:[{hostId:'at',hidden:true}]},[]),/saved/i);
+  assert.throws(()=>assertHostUnused('at',{workspaces:[]},['at']),/saved/i);
+  assert.throws(()=>assertHostUnused('at',null,[]),/verify/i);
+  assert.throws(()=>assertHostUnused('at',{workspaces:[]},null),/verify/i);
+  assert.doesNotThrow(()=>assertHostUnused('unused',{workspaces:[{hostId:'at'}]},['at']));
 });

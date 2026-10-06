@@ -2592,3 +2592,17 @@ button.mod-status:hover { color: var(--text); }
 /* The narrowest step: the avatar and its status dot, with the name in the tooltip. */
 .thread-chat .chips[data-fit="faces"] .chip-meta:not(.chip-queued), .thread-chat .chips[data-fit="faces"] .chip-label, .thread-chat .chips[data-fit="faces"] .chip-queued-word { display: none; }
 .thread-chat .chips[data-fit="faces"] .chip-name { gap: 3px; padding: 2px 3px 2px 2px; }
+
+/* Fixed project destinations remain legible when several panes share the canvas. */
+.pane-project, .pane-machine, .workspace-host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
+.pane-project { max-width: 100px; flex: 0 1 100px; }
+.pane-machine { max-width: 130px; flex: 0 1 130px; }
+.pane-head > button, .pane-head > .pane-menu-wrap { flex-shrink: 0; }
+.workspace-host { max-width: 110px; }
+.workspace-host-menu { position: relative; }
+.workspace-machine-menu { position: absolute; top: 100%; right: 0; z-index: 90; width: 260px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 32px #0005; }
+.workspace-machine-menu button { display: block; width: 100%; text-align: left; }
+.workspace-machine-menu strong, .workspace-machine-menu p { display: block; padding: 6px; }
+.approval-host { max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.approval, .approval-detail { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.pane-body .connection-banner { flex-wrap: wrap; min-width: 0; }

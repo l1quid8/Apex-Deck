@@ -196,33 +196,20 @@ export async function runSmoke(win, { sidecar, browser }) {
     }
   });
 
-  await step('a second window runs on another host, names it, and closes on its own', async () => {
-    const saved = () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'hosts.json'), 'utf8')).windows;
-    // A host nothing answers at, so the new window sits on its loading screen.
+  await step('machine chooser replaces window switching and does not reload the canvas', async () => {
     const list = await page(`return await __deck.backend.hosts.add({ name: 'nowhere', ssh: 'nowhere.invalid', command: 'apex-daemon' })`);
-    const id = list.find((host) => host.name === 'nowhere').id;
-    await page(`await __deck.backend.hosts.openWindow(${JSON.stringify(id)}); return true;`);
-    const other = await until('the second window', () => BrowserWindow.getAllWindows().find((w) => w !== win && w.getTitle() === 'Apex Deck — nowhere'));
-    const words = await until('the second window to name its host', async () => {
-      const shown = await other.webContents.executeJavaScript(`document.querySelector('.loading')?.innerText ?? ''`);
-      return /Reconnecting to nowhere|Can't connect to nowhere/.test(shown) && shown;
-    }, 30_000);
-    if (!/Use This Mac/.test(words)) throw new Error(`no way back to this Mac on: ${words.replace(/\s+/g, ' ')}`);
-    // Asking again brings that window forward instead of making another.
-    await page(`await __deck.backend.hosts.openWindow(${JSON.stringify(id)}); return true;`);
-    await sleep(300);
-    if (BrowserWindow.getAllWindows().length !== 2) throw new Error(`${BrowserWindow.getAllWindows().length} windows are open`);
-    const both = saved();
-    if (JSON.stringify(both) !== JSON.stringify(['local', id])) throw new Error(`hosts.json keeps windows ${JSON.stringify(both)}`);
-    const hosts = await page(`return await __deck.backend.hosts.list()`);
-    if (!hosts.every((host) => host.open)) throw new Error(`the list doesn't show both open: ${JSON.stringify(hosts)}`);
-    // Closing it asks nothing, and this window stays connected.
-    other.close();
-    await until('the second window to close', () => other.isDestroyed(), 5_000);
-    if (JSON.stringify(saved()) !== JSON.stringify(['local'])) throw new Error(`hosts.json keeps windows ${JSON.stringify(saved())}`);
+    const id = list.find(host => host.name === 'nowhere').id;
+    const before = await page('return [...document.querySelectorAll(".pane")].map(p => p.dataset.paneId)');
+    await page('window.__hostMenuSentinel = "kept"; document.querySelector("[data-add-workspace]").click(); return true;');
+    if (!await page('return Boolean(document.querySelector("[data-machine-menu] [data-host-id=local]"))')) throw Error('missing machine chooser');
+    if (!await page(`return Boolean(document.querySelector('[data-machine-menu] [data-host-id="${id}"]'))`)) throw Error('missing saved host');
+    await page('document.querySelector("[data-machine-menu]").dispatchEvent(new KeyboardEvent("keydown", {key:"Escape",bubbles:true})); return true;');
+    if (await page('return Boolean(document.querySelector("[data-machine-menu]"))')) throw Error('Escape did not close menu');
+    if (await page('return window.__hostMenuSentinel') !== 'kept') throw Error('window reloaded');
+    const after = await page('return [...document.querySelectorAll(".pane")].map(p => p.dataset.paneId)');
+    if (JSON.stringify(before) !== JSON.stringify(after)) throw Error('canvas changed');
+    if (BrowserWindow.getAllWindows().length !== 1) throw Error('host menu made another window');
     await page(`await __deck.backend.hosts.remove(${JSON.stringify(id)}); return true;`);
-    if (await page(`return document.querySelector('.connection-banner')?.innerText ?? ''`)) throw new Error('this window lost its host');
-    if ((await page(`return (await __deck.backend.hosts.current()).id`)) !== 'local') throw new Error('this window moved');
   });
 
   await step('two threads side by side keep every bot and Add bot in view', async () => {
@@ -252,12 +239,12 @@ export async function runSmoke(win, { sidecar, browser }) {
         if (pane.querySelector('.thread-chat > .chat-bar')) found.push(name + ': the old bot row is still there');
         const placeholder = pane.querySelector('.composer textarea').placeholder;
         if (!placeholder.startsWith('Message ')) found.push(name + ': the placeholder says ' + JSON.stringify(placeholder));
-        const row = pane.querySelector('.composer-dock .chips');
-        const seats = [...pane.querySelectorAll('.composer-dock .chip'), pane.querySelector('.composer-dock .chip-add')];
+        const row = pane.querySelector('.composer .chips');
+        const seats = [...pane.querySelectorAll('.composer .chip'), pane.querySelector('.composer .chip-add')];
         if (!row || seats.length !== 4 || seats.includes(null)) { found.push(name + ': ' + seats.filter(Boolean).length + ' of 3 bots and Add bot in the message box'); continue; }
         const box = row.getBoundingClientRect();
         const cut = seats.filter((seat) => { const r = seat.getBoundingClientRect(); return r.width === 0 || r.left < box.left - 1 || r.right > box.right + 1; });
-        if (cut.length) found.push(name + ': ' + cut.length + ' badge(s) cut off ' + JSON.stringify({fit: row.dataset.fit, room: box.width, seats: seats.map(s => s.getBoundingClientRect().width), dock: pane.querySelector('.composer-dock').getBoundingClientRect().width}));
+        if (cut.length) found.push(name + ': ' + cut.length + ' badge(s) cut off ' + JSON.stringify({fit: row.dataset.fit, room: box.width, seats: seats.map(s => s.getBoundingClientRect().width), dock: pane.querySelector('.composer').getBoundingClientRect().width}));
       }
       return found.join('; ');`);
     const [width, height] = win.getContentSize();
@@ -267,7 +254,7 @@ export async function runSmoke(win, { sidecar, browser }) {
         win.setContentSize(w, height);
         let problem = '';
         await until(`the message boxes at ${w}px`, async () => (problem = await problems()) === '', 5_000)
-          .catch(() => { throw new Error(`at ${w}px: ${problem}`); });
+          .catch(async () => { console.error("smoke: room loading diagnostics", await page('return {connection: __deck.backend.machines.connection().get(), chats: [...document.querySelectorAll(".thread-chat")].map(c => c.innerText.slice(0, 600))}')); throw new Error(`at ${w}px: ${problem}`); });
       }
     } finally {
       win.setContentSize(width, height);
@@ -294,7 +281,7 @@ export async function runSmoke(win, { sidecar, browser }) {
     try {
       win.setContentSize(900, 600);
       await sleep(300);
-      await page(`document.querySelector('.composer-dock .chip-add').click(); return true;`);
+      await page(`document.querySelector('.composer .chip-add').click(); return true;`);
       await until('the saved agents', () => page(`return document.querySelectorAll('.roster-pop .quick-add-chip').length === 36`));
       const problem = await page(`
         const form = document.querySelector('.roster-pop .quick-add');
@@ -307,7 +294,7 @@ export async function runSmoke(win, { sidecar, browser }) {
         first.click();
         return '';`);
       if (problem) throw new Error(problem);
-      await until('the saved agent in the room', () => page(`return [...document.querySelectorAll('.composer-dock .chip')].some(b => b.textContent.includes('saved-agent-0-long-name'))`));
+      await until('the saved agent in the room', () => page(`return [...document.querySelectorAll('.composer .chip')].some(b => b.textContent.includes('saved-agent-0-long-name'))`));
     } finally {
       win.setContentSize(width, height);
     }
@@ -337,9 +324,9 @@ export async function runSmoke(win, { sidecar, browser }) {
       box.dispatchEvent(new Event('input', { bubbles: true }));
       return true;`);
     await page(`document.querySelector('.composer textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true;`);
-    await until('the queued count', () => page(`return Boolean(document.querySelector('.composer-dock .chip-queued'))`), 5_000);
+    await until('the queued count', () => page(`return Boolean(document.querySelector('.composer .chip-queued'))`), 5_000);
     const hidden = await page(`
-      const row = document.querySelector('.composer-dock .chips');
+      const row = document.querySelector('.composer .chips');
       const was = row.dataset.fit;
       const queued = row.querySelector('.chip-queued');
       const steps = ['full', 'levels', 'names', 'faces'].filter((step) => { row.dataset.fit = step; return getComputedStyle(queued).display === 'none'; });
@@ -347,7 +334,7 @@ export async function runSmoke(win, { sidecar, browser }) {
       return steps.join(', ');`);
     if (hidden) throw new Error(`the queued count is hidden at: ${hidden}`);
     await page(`document.querySelector('button[aria-label="Remove queued message"]').click(); return true;`);
-    await until('the queue to empty', () => page(`return !document.querySelector('.composer-dock .chip-queued')`), 5_000);
+    await until('the queue to empty', () => page(`return !document.querySelector('.composer .chip-queued')`), 5_000);
     win.close();
     const asked = await until('the question', () => page(`return document.querySelector('[role=alertdialog] #confirm-title')?.textContent ?? ''`), 5_000);
     if (!/still running/.test(asked)) throw new Error(`asked "${asked}"`);

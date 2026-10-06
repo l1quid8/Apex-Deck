@@ -43,11 +43,12 @@ export function sshArgs(host) {
  * The hosts to open windows on at launch: those that had one when Deck last
  * closed (`windows`), else the one last used, else This Mac.
  */
-export function windowsAtLaunch(state) {
-  const known = new Set([LOCAL, ...state.hosts.map((host) => host.id)]);
-  const saved = Array.isArray(state.windows) ? state.windows : [state.last];
-  const open = [...new Set(saved.filter((id) => known.has(id)))];
-  return open.length > 0 ? open : [LOCAL];
+export function windowsAtLaunch(_state) { return [LOCAL]; }
+
+export function assertHostUnused(id, session, references) {
+  if (id === LOCAL) throw new Error("This Mac cannot be removed.");
+  if (!session || !Array.isArray(session.workspaces) || references == null) throw new Error("Could not verify the saved workspace list; the server was kept.");
+  if (session.workspaces.some(w => w.hostId === id) || references.includes(id)) throw new Error("This server has saved workspaces or threads. Remove those references before removing it.");
 }
 
 const EMPTY = () => ({ version: 1, hosts: [], last: LOCAL });

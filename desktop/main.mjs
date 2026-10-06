@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
-import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, windowsAtLaunch } from './hosts.mjs';
+import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, assertHostUnused } from './hosts.mjs';
 import { openTauriApps, tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
@@ -77,7 +77,7 @@ function hostList() {
   const open = new Set([...windows.values()].map((entry) => entry.host));
   return [
     { id: LOCAL, name: LOCAL_NAME, remote: false, open: open.has(LOCAL) },
-    ...hosts.hosts.map(({ id, name, ssh, command }) => ({ id, name, ssh, command, remote: true, open: open.has(id) })),
+    ...hosts.hosts.map(host => ({ ...host, remote: true })),
   ];
 }
 
@@ -86,25 +86,12 @@ function writeHosts() {
   Menu.setApplicationMenu(menu());
 }
 
-const windowTitle = (id) => (remoteHost(id) ? `Apex Deck — ${remoteHost(id).name}` : 'Apex Deck');
-
 function knownHost(id) {
   if (id !== LOCAL && !remoteHost(id)) throw new Error('There is no such host.');
 }
-
-/** Note which hosts have a window, for the next launch. */
 function rememberWindows() {
-  hosts = { ...hosts, windows: [...windows.values()].map((entry) => entry.host) };
+  hosts = { ...hosts, last: LOCAL, windows: [LOCAL] };
   writeHosts();
-}
-
-/** Put `entry`'s window on host `id`: its pages close, and it reloads and connects there. */
-function moveWindow(entry, id) {
-  entry.host = id;
-  entry.win.setTitle(windowTitle(id));
-  entry.browser.closeAll();
-  links.destroy(entry.win.webContents.id);
-  entry.win.webContents.reload();
 }
 
 /** Bring `entry`'s window to the front. */
@@ -112,26 +99,6 @@ function front(entry) {
   if (entry.win.isMinimized()) entry.win.restore();
   entry.win.show();
   entry.win.focus();
-}
-
-/** Switch `entry`'s window to host `id`, or bring forward the window already on it. */
-function useHost(entry, id) {
-  knownHost(id);
-  const other = [...windows.values()].find((e) => e !== entry && e.host === id);
-  if (other) return front(other);
-  hosts = { ...hosts, last: id };
-  if (entry.host !== id) moveWindow(entry, id);
-  rememberWindows();
-}
-
-/** A window on host `id`: the one already open there, or a new one beside `beside`. */
-function openWindow(id, beside) {
-  knownHost(id);
-  const open = [...windows.values()].find((e) => e.host === id);
-  if (open) return front(open);
-  hosts = { ...hosts, last: id };
-  createWindow(id, beside);
-  rememberWindows();
 }
 
 /** Each window can connect to many saved execution hosts. */
@@ -318,15 +285,23 @@ handle('connection:add', async (_entry, host) => {
   writeHosts();
   return hostList();
 });
-handle('connection:remove', async (_entry, id) => {
-  hosts = { ...hosts, hosts: hosts.hosts.filter((h) => h.id !== id), last: hosts.last === id ? LOCAL : hosts.last };
-  // Its windows come back to this Mac.
-  for (const entry of windows.values()) if (entry.host === id) moveWindow(entry, LOCAL);
-  rememberWindows();
+handle('connection:references', async (entry, ids) => {
+  if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string')) throw new Error('Invalid workspace host references.');
+  entry.references = [...new Set(ids)];
+});
+handle('connection:remove', async (entry, id) => {
+  knownHost(id);
+  const daemon = await ensureLocal();
+  const file = path.join(path.dirname(daemon.socket), 'saved-chats-v1', 'session.json');
+  let session;
+  try { session = JSON.parse(await fs.promises.readFile(file, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') session = { workspaces: [] }; else throw new Error('Could not read the saved workspace list; the server was kept.'); }
+  assertHostUnused(id, session, entry.references);
+  const next = { ...hosts, hosts: hosts.hosts.filter(h => h.id !== id), last: LOCAL, windows: [LOCAL] };
+  saveHosts(hostsFile(), next); hosts = next; links.removeHost(id);
+  Menu.setApplicationMenu(menu());
   return hostList();
 });
-handle('connection:use', async (entry, id) => useHost(entry, String(id)));
-handle('connection:openWindow', async (entry, id) => openWindow(String(id), entry));
 
 /** The dock's count: what every window is waiting on. */
 handle('shell:setBadge', async (entry, count) => {
@@ -401,7 +376,6 @@ const frontWindow = () => windows.get(BrowserWindow.getFocusedWindow()?.id) ?? [
 
 function menu() {
   const toWindow = (action) => () => frontWindow()?.win.webContents.send('menu', action);
-  const inFront = frontWindow();
   const mac = process.platform === 'darwin';
   return Menu.buildFromTemplate([
     ...(mac ? [{
@@ -434,23 +408,7 @@ function menu() {
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' },
       ],
     },
-    {
-      label: 'Host',
-      submenu: [
-        ...hostList().map((host) => ({
-          label: host.name,
-          type: 'radio',
-          checked: host.id === inFront?.host,
-          click: () => { const entry = frontWindow(); if (entry) useHost(entry, host.id); else openWindow(host.id); },
-        })),
-        { type: 'separator' },
-        {
-          label: 'Open in New Window',
-          submenu: hostList().map((host) => ({ label: host.name, click: () => openWindow(host.id, frontWindow()) })),
-        },
-        { label: 'Manage Hosts…', click: toWindow('hosts') },
-      ],
-    },
+    { label: 'Servers', submenu: [{ label: 'Manage Servers…', click: toWindow('hosts') }] },
     { role: 'windowMenu' },
   ]);
 }
@@ -472,7 +430,7 @@ function createWindow(host, beside) {
     ...(near ? { x: near.x + 28, y: near.y + 28 } : {}),
     minWidth: 900,
     minHeight: 600,
-    title: windowTitle(host),
+    title: 'Apex Deck',
     show: !smoke,
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),
@@ -498,7 +456,7 @@ function createWindow(host, beside) {
     send: (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); },
     downloads: () => app.getPath('downloads'),
   });
-  const entry = { win, host, browser, badge: 0 };
+  const entry = { win, host: LOCAL, browser, badge: 0, references: null };
   windows.set(win.id, entry);
   // The window reloading takes the pages down with it; it shows them again as it comes back.
   win.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
@@ -566,12 +524,10 @@ app.whenReady().then(async () => {
   warnings.forEach((warning) => console.warn(`hosts: ${warning}`));
   Menu.setApplicationMenu(menu());
   // Each window a step down from the one before, so none hides another.
-  const opened = [];
-  for (const host of windowsAtLaunch(hosts)) opened.push(createWindow(host, opened.at(-1)));
-  const [first] = opened;
+  const first = createWindow(LOCAL);
   rememberWindows();
   if (smoke) {
-    const { runSmoke } = await import('./smoke.mjs');
+    const { runSmoke } = env.APEX_DECK_MULTI_HOST_ROOT ? { runSmoke: (await import('./multi-host-smoke.mjs')).runMultiHostSmoke } : await import('./smoke.mjs');
     const code = await runSmoke(first.win, { sidecar: () => local, browser: first.browser }).catch((e) => {
       console.error(`smoke: ${e.stack ?? e}`);
       return 1;
