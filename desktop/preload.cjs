@@ -43,11 +43,11 @@ try {
 
 contextBridge.exposeInMainWorld('apexDeck', {
   daemon: {
-    connect: () => ipcRenderer.invoke('daemon:connect'),
-    send: (gen, line) => ipcRenderer.send('daemon:send', gen, line),
-    close: (gen) => ipcRenderer.send('daemon:close', gen),
-    onLine: (cb) => { subscribe('daemon:line', cb); },
-    onClose: (cb) => { subscribe('daemon:close', cb); },
+    connect: (hostId) => ipcRenderer.invoke('daemon:connect', hostId),
+    send: (hostId, gen, line) => ipcRenderer.send('daemon:send', hostId, gen, line),
+    close: (hostId, gen) => ipcRenderer.send('daemon:close', hostId, gen),
+    onLine: (cb) => subscribe('daemon:line', cb),
+    onClose: (cb) => subscribe('daemon:close', cb),
   },
   connection: {
     current: () => ipcRenderer.invoke('connection:current'),

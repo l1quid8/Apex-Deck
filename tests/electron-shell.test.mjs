@@ -15,15 +15,15 @@ function fakeBridge() {
   let lineCb, closeCb; let next = 0; const sent = []; const closed = []; const hold = [];
   return {
     sent, closed,
-    emitLine: (gen, line) => lineCb(gen, line),
-    emitClose: (gen, reason) => closeCb(gen, reason),
+    emitLine: (gen, line) => lineCb("local", gen, line),
+    emitClose: (gen, reason) => closeCb("local", gen, reason),
     holdNext: () => new Promise((release) => hold.push(release)),
     daemon: {
       connect: async () => { const gen = ++next; while (hold.length) await hold.shift()(); return gen; },
-      send: (gen, line) => sent.push([gen, line]),
-      close: (gen) => closed.push(gen),
-      onLine: (cb) => { lineCb = cb; },
-      onClose: (cb) => { closeCb = cb; },
+      send: (_host, gen, line) => sent.push([gen, line]),
+      close: (_host, gen) => closed.push(gen),
+      onLine: (cb) => { lineCb = cb; return ()=>{}; },
+      onClose: (cb) => { closeCb = cb; return ()=>{}; },
     },
   };
 }

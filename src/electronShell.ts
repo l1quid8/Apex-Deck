@@ -12,11 +12,11 @@ import { pathPrompt, type PathRequest } from "./typedPath.ts";
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
   daemon: {
-    connect(): Promise<number>;
-    send(gen: number, line: string): void;
-    close(gen: number): void;
-    onLine(cb: (gen: number, line: string) => void): void;
-    onClose(cb: (gen: number, reason: string) => void): void;
+    connect(hostId: string): Promise<number>;
+    send(hostId: string, gen: number, line: string): void;
+    close(hostId: string, gen: number): void;
+    onLine(cb: (hostId: string, gen: number, line: string) => void): () => void;
+    onClose(cb: (hostId: string, gen: number, reason: string) => void): () => void;
   };
   connection: {
     current(): Promise<HostEntry & { owned: boolean }>;
@@ -64,14 +64,16 @@ declare global {
 }
 
 /** Each connect gets a new generation from main; lines and closes for older ones are ignored. */
-export function bridgeConnect(bridge: Pick<DeckBridge, "daemon">): Connect {
+export function bridgeConnect(bridge: Pick<DeckBridge, "daemon">, hostId = "local"): Connect & { dispose(): void } {
   let current: { gen: number; line?: (line: string) => void; close?: (reason: string) => void; closed?: string } | null = null;
   // A close can come before the link is handed over; it's kept for then.
   let early: { gen: number; reason: string } | null = null;
-  bridge.daemon.onLine((gen, line) => {
+  const offLine = bridge.daemon.onLine((incomingHost, gen, line) => {
+    if (incomingHost !== hostId) return;
     if (current?.gen === gen) current.line?.(line);
   });
-  bridge.daemon.onClose((gen, reason) => {
+  const offClose = bridge.daemon.onClose((incomingHost, gen, reason) => {
+    if (incomingHost !== hostId) return;
     if (current?.gen === gen) {
       if (current.close) current.close(reason);
       else current.closed = reason;
@@ -79,15 +81,15 @@ export function bridgeConnect(bridge: Pick<DeckBridge, "daemon">): Connect {
       early = { gen, reason };
     }
   });
-  return async () => {
-    const gen = await bridge.daemon.connect().catch((error: unknown) => { throw new Error(ipcWords(error)); });
+  const connect: Connect = async () => {
+    const gen = await bridge.daemon.connect(hostId).catch((error: unknown) => { throw new Error(ipcWords(error)); });
     const me: NonNullable<typeof current> = { gen };
     current = me;
     if (early?.gen === gen) me.closed = early.reason;
     early = null;
     const link: Link = {
-      send: (line) => bridge.daemon.send(gen, line),
-      close: () => bridge.daemon.close(gen),
+      send: (line) => bridge.daemon.send(hostId, gen, line),
+      close: () => bridge.daemon.close(hostId, gen),
       onLine: (cb) => { me.line = cb; },
       onClose: (cb) => {
         me.close = cb;
@@ -99,6 +101,7 @@ export function bridgeConnect(bridge: Pick<DeckBridge, "daemon">): Connect {
     };
     return link;
   };
+  return Object.assign(connect, { dispose: () => { offLine(); offClose(); current = null; } });
 }
 
 /** An error from main, without the "Error invoking remote method …" Electron puts in front. */

@@ -13,6 +13,8 @@ import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
 import { LOCAL, LOCAL_NAME, loadHosts, saveHosts, validHost, windowsAtLaunch } from './hosts.mjs';
 import { openTauriApps, tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
+import { createHostLinks } from './hostLinks.mjs';
+import { bindHostIdentity, checkWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon } from './sidecar.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
@@ -101,7 +103,7 @@ function moveWindow(entry, id) {
   entry.host = id;
   entry.win.setTitle(windowTitle(id));
   entry.browser.closeAll();
-  links.get(entry.win.webContents.id)?.link?.close();
+  links.destroy(entry.win.webContents.id);
   entry.win.webContents.reload();
 }
 
@@ -132,60 +134,57 @@ function openWindow(id, beside) {
   rememberWindows();
 }
 
-/** Each window's link to the daemon: a new generation on every connect. */
-const links = new Map();
+/** Each window can connect to many saved execution hosts. */
+const links = createHostLinks({
+  open: async (hostId, handlers) => {
+    knownHost(hostId);
+    const remote = remoteHost(hostId);
+    return verifiedLink({
+      open: callbacks => remote ? sshLink(remote, callbacks) : ensureLocal().then(d => socketLink(d.socket, callbacks)),
+      handlers,
+      accept: welcome => {
+        if (!remote) { checkWelcome(undefined, welcome); return; }
+        const next = bindHostIdentity(hosts, hostId, welcome);
+        saveHosts(hostsFile(), next); // persist before the renderer can send anything
+        hosts = next;
+      },
+    });
+  },
+  emit: (contentsId, hostId, gen, channel, value) => {
+    const entry = [...windows.values()].find(e => e.win.webContents.id === contentsId);
+    if (entry && !entry.win.webContents.isDestroyed()) entry.win.webContents.send(channel, hostId, gen, value);
+  },
+});
 
-/** The Deck window `event` came from, or null for anything else (a docked page, a sign-in popup). */
+/** The Deck window event came from, never a docked page or child frame. */
 function deckWindow(event) {
   const frame = event.senderFrame;
-  if (!frame || !UI_ORIGINS.has(originOf(frame.url))) return null;
+  if (!frame || frame !== event.sender.mainFrame || !UI_ORIGINS.has(originOf(frame.url))) return null;
   return windows.get(BrowserWindow.fromWebContents(event.sender)?.id) ?? null;
 }
-const fromUi = (event) => deckWindow(event) !== null;
-
-ipcMain.handle('daemon:connect', async (event) => {
-  const entry = deckWindow(event);
-  if (!entry) throw new Error('Not the Deck window.');
+const fromUi = event => deckWindow(event) !== null;
+const watchedContents = new Set();
+ipcMain.handle('daemon:connect', async (event, hostId = LOCAL) => {
+  if (!fromUi(event)) throw new Error('Not the Deck window.');
+  knownHost(hostId);
   const contents = event.sender;
-  let state = links.get(contents.id);
-  if (!state) {
-    state = { gen: 0, link: null };
-    links.set(contents.id, state);
-    contents.once('destroyed', () => {
-      state.link?.close();
-      links.delete(contents.id);
-    });
+  if (!watchedContents.has(contents.id)) {
+    watchedContents.add(contents.id);
+    contents.once('destroyed', () => { links.destroy(contents.id); watchedContents.delete(contents.id); });
+    contents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => { if (mainFrame) links.destroy(contents.id); });
   }
-  state.link?.close();
-  state.link = null;
-  const gen = ++state.gen;
-  const send = (channel, ...args) => { if (!contents.isDestroyed()) contents.send(channel, gen, ...args); };
-  const handlers = {
-    onLine: (line) => send('daemon:line', line),
-    onClose: (reason) => {
-      if (state.gen === gen) state.link = null;
-      send('daemon:close', reason);
-    },
-  };
-  const remote = remoteHost(entry.host);
-  const link = remote ? sshLink(remote, handlers) : await socketLink((await ensureLocal()).socket, handlers);
-  if (state.gen !== gen) {
-    link.close();
-    throw new Error('A newer connection replaced this one.');
+  return links.connect(contents.id, hostId);
+});
+ipcMain.on('daemon:send', (event, hostId, gen, line) => {
+  if (!fromUi(event) || typeof line !== 'string') return;
+  let frame; try { frame = JSON.parse(line); } catch { return; }
+  if (hostId !== LOCAL && ['session_save', 'settings_save', 'decision_key_save'].includes(frame.cmd)) {
+    event.sender.send('daemon:line', hostId, gen, JSON.stringify({ id: frame.id, err: 'App preferences are owned by This Mac.' }));
+    return;
   }
-  state.link = link;
-  return gen;
+  links.send(event.sender.id, hostId, gen, line);
 });
-
-ipcMain.on('daemon:send', (event, gen, line) => {
-  const state = links.get(event.sender.id);
-  if (fromUi(event) && state?.gen === gen && typeof line === 'string') state.link?.send(line);
-});
-
-ipcMain.on('daemon:close', (event, gen) => {
-  const state = links.get(event.sender.id);
-  if (fromUi(event) && state?.gen === gen) state.link?.close();
-});
+ipcMain.on('daemon:close', (event, hostId, gen) => { if (fromUi(event)) links.close(event.sender.id, hostId, gen); });
 
 ipcMain.on('apex:smoke', (event) => { event.returnValue = smoke; });
 

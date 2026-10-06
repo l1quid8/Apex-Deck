@@ -74,7 +74,7 @@ export function loadHosts(file) {
   const hosts = [];
   for (const host of Array.isArray(saved.hosts) ? saved.hosts : []) {
     try {
-      if (typeof host?.id !== 'string' || !host.id || host.id === LOCAL) throw new Error('it has no id');
+      if (typeof host?.id !== 'string' || !host.id || host.id === LOCAL || hosts.some(h => h.id === host.id)) throw new Error('it has no unique id');
       hosts.push({ ...host, ...validHost(host, hosts.map((h) => h.name)) });
     } catch (e) {
       warnings.push(`Left out the saved host ${JSON.stringify(host?.name ?? host?.id ?? '')}: ${e.message}`);
