@@ -12,8 +12,8 @@
     "desktop": "cargo build -p apex-daemon && vite build && electron .",
     "desktop:dev": "cargo build -p apex-daemon && node desktop/dev.mjs",
     "desktop:smoke": "cargo build -p apex-daemon && vite build && node desktop/run-smoke.mjs",
-    "desktop:package": "cargo build --release -p apex-daemon && vite build && electron-builder --mac --dir",
-    "desktop:dmg": "cargo build --release -p apex-daemon && vite build && electron-builder --mac"
+    "desktop:package": "cargo build --release -p apex-daemon && vite build && node scripts/package-mac.mjs --dir",
+    "desktop:dmg": "cargo build --release -p apex-daemon && vite build && node scripts/package-mac.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
