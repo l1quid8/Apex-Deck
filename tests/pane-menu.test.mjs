@@ -1,14 +1,37 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { paneMenuItems } from "../src/paneMenu.ts";
+import { paneMenuItems, copyMenuItems, projectMenuItems } from "../src/paneMenu.ts";
 
 const idle = { running: false, installed: true, tool: "Codex", folder: "/Users/tyler/apex-deck" };
 const summary = (items) => items.map((i) => `${i.separated ? "| " : ""}${i.label}${i.disabled ? " (off)" : ""}${i.danger ? " (danger)" : ""}`);
 
-test("a thread's menu offers Rename, Pin, Share as PDF, Fork, Export, then Delete thread…", () => {
-  assert.deepEqual(summary(paneMenuItems("chat", idle)), ["Rename", "Pin to top", "Share as PDF", "Fork", "Export", "| Delete thread… (danger)"]);
-  assert.deepEqual(paneMenuItems("chat", idle).map((i) => i.action), ["rename", "pin", "share_pdf", "fork", "export", "delete"]);
-  assert.equal(paneMenuItems("chat", idle, { address: "" }, { pinned: true }).find((i) => i.action === "pin").label, "Unpin");
+test("a thread's menu is Codex's, with Deck's Share as PDF, Copy ›, Fork, Export and Delete", () => {
+  const items = paneMenuItems("chat", idle, { address: "" }, { mac: true });
+  assert.deepEqual(summary(items), ["Rename", "Pin", "Mark as unread", "| Share as PDF", "Copy", "Fork", "Export", "| Archive", "Delete… (danger)"]);
+  assert.deepEqual(items.map((i) => i.keys ?? ""), ["⌥⌘R", "⌥⌘P", "⇧⌘U", "", "", "", "", "⇧⌘A", ""]);
+  assert.deepEqual(items.map((i) => i.action), ["rename", "pin", "mark_unread", "share_pdf", "copy", "fork", "export", "archive", "delete"]);
+  assert.equal(items.find((i) => i.action === "copy").submenu, true);
+  const marked = paneMenuItems("chat", idle, { address: "" }, { pinned: true, unread: true, mac: true });
+  assert.equal(marked.find((i) => i.action === "pin").label, "Unpin");
+  assert.equal(marked.find((i) => i.action === "mark_unread").label, "Mark as read");
+  assert.equal(paneMenuItems("chat", idle).find((i) => i.action === "rename").keys, "Ctrl+Alt+Shift+R");
+});
+
+test("Copy › copies Markdown, the last reply, the folder with its server, and the thread ID", () => {
+  const items = copyMenuItems({ hasReply: false, path: "root@hetzner-eu:/root/apex-deck", id: "pane-1" });
+  assert.deepEqual(items.map((i) => [i.kind, i.label, i.side, i.disabled]), [
+    ["markdown", "Copy as Markdown", "", false], ["reply", "Copy last reply", "", true],
+    ["path", "Copy folder path", "root@hetzner-eu:/root/apex-deck", false], ["id", "Copy thread ID", "pane-1", false]]);
+  assert.equal(items[1].reason, "No reply yet.");
+  assert.equal(copyMenuItems({ hasReply: true, path: "", id: "x" })[2].disabled, true);
+  assert.equal(copyMenuItems({ hasReply: true, path: "", id: "x" })[1].disabled, false);
+});
+
+test("a project's menu: Pin, Edit…, then Edit connection… for a server or Reveal in Finder for the Mac", () => {
+  const sum = (items) => items.map((i) => `${i.separated ? "| " : ""}${i.label}${i.disabled ? " (off)" : ""}${i.danger ? " (danger)" : ""}`);
+  assert.deepEqual(sum(projectMenuItems({ remote: true, path: "/root/x", threads: 2 })), ["Pin", "Edit…", "| Edit connection…", "| Archive threads", "| Remove project… (danger)"]);
+  assert.deepEqual(sum(projectMenuItems({ remote: false, path: "", threads: 0, pinned: true })), ["Unpin", "Edit…", "| Reveal in Finder (off)", "| Archive threads (off)", "| Remove project… (danger)"]);
+  assert.deepEqual(projectMenuItems({ remote: false, path: "/a", threads: 1 }).map((i) => i.action), ["pin", "edit", "reveal", "archive", "remove"]);
 });
 
 test("a terminal's menu offers Rename, Pin, Start again, Copy folder path, then Close", () => {

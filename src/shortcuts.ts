@@ -12,7 +12,12 @@ export type DeckAction =
   | { kind: "next_attention" }
   | { kind: "cycle_pane"; step: 1 | -1 }
   | { kind: "maximize" }
-  | { kind: "settings" };
+  | { kind: "settings" }
+  /** Acts on the thread in use, as the sidebar's ⋯ menu would. */
+  | { kind: "thread"; action: ThreadKey };
+
+/** The thread actions that have keys. */
+export type ThreadKey = "rename" | "pin" | "mark_unread" | "archive";
 
 /** The parts of a key event that decide a shortcut. `code` is the physical key, such as "KeyT". */
 export interface KeyPress {
@@ -31,6 +36,8 @@ interface Binding {
   action: DeckAction;
   /** On macOS this one takes Shift as well. Elsewhere Shift is part of every shortcut. */
   macShift?: boolean;
+  /** This one takes Option (Alt) as well, everywhere. */
+  macAlt?: boolean;
 }
 
 /** Every deck shortcut. The settings page lists this same table. */
@@ -45,22 +52,37 @@ const BINDINGS: Binding[] = [
   { code: "BracketRight", key: "]", label: "Next pane", action: { kind: "cycle_pane", step: 1 } },
   { code: "Enter", key: "↩", label: "Maximize or restore pane", action: { kind: "maximize" }, macShift: true },
   { code: "Comma", key: ",", label: "Settings", action: { kind: "settings" } },
+  { code: "KeyR", key: "R", label: "Rename thread", action: { kind: "thread", action: "rename" }, macAlt: true },
+  { code: "KeyP", key: "P", label: "Pin or unpin thread", action: { kind: "thread", action: "pin" }, macAlt: true },
+  { code: "KeyU", key: "U", label: "Mark thread unread", action: { kind: "thread", action: "mark_unread" }, macShift: true },
+  { code: "KeyA", key: "A", label: "Archive thread", action: { kind: "thread", action: "archive" }, macShift: true },
 ];
 
 export function shortcutFor(press: KeyPress, mac: boolean): DeckAction | null {
-  if (press.altKey) return null;
   const command = mac ? press.metaKey && !press.ctrlKey : press.ctrlKey && press.shiftKey && !press.metaKey;
   if (!command) return null;
   const binding = BINDINGS.find((b) => b.code === press.code);
-  if (!binding || (mac && press.shiftKey !== !!binding.macShift)) return null;
+  if (!binding || press.altKey !== !!binding.macAlt || (mac && press.shiftKey !== !!binding.macShift)) return null;
   return binding.action;
+}
+
+/** A binding as printed, modifiers in Apple's order on macOS: ⌥⇧⌘. */
+function keysOf(b: Binding, mac: boolean): string {
+  if (mac) return `${b.macAlt ? "⌥" : ""}${b.macShift ? "⇧" : ""}⌘${b.key}`;
+  return `Ctrl+${b.macAlt ? "Alt+" : ""}Shift+${b.key === "↩" ? "Enter" : b.key}`;
+}
+
+/** The thread shortcuts as menus print them. */
+export function threadKeys(mac: boolean): Record<ThreadKey, string> {
+  const keys = {} as Record<ThreadKey, string>;
+  for (const b of BINDINGS) if (b.action.kind === "thread") keys[b.action.action] = keysOf(b, mac);
+  return keys;
 }
 
 /** The shortcuts as the settings page shows them, with the composer's own keys last. */
 export function shortcutList(mac: boolean): { label: string; keys: string; composer?: true }[] {
-  const keys = (key: string, shift = false) => (mac ? `⌘${shift ? "⇧" : ""}${key}` : `Ctrl+Shift+${key === "↩" ? "Enter" : key}`);
   return [
-    ...BINDINGS.map((b) => ({ label: b.label, keys: keys(b.key, b.macShift) })),
+    ...BINDINGS.map((b) => ({ label: b.label, keys: keysOf(b, mac) })),
     { label: "Steer a working bot, in the composer", keys: mac ? "⌘↩" : "Ctrl+Enter", composer: true },
   ];
 }

@@ -51,9 +51,25 @@ test("⌘, opens settings", () => {
 test("the list shown in settings comes from the same table the keys use", () => {
   const mac = shortcutList(true);
   assert.deepEqual(mac.find((s) => s.label === "New thread"), { label: "New thread", keys: "⌘N" });
-  assert.deepEqual(mac.find((s) => s.label === "Maximize or restore pane"), { label: "Maximize or restore pane", keys: "⌘⇧↩" });
+  assert.deepEqual(mac.find((s) => s.label === "Maximize or restore pane"), { label: "Maximize or restore pane", keys: "⇧⌘↩" });
   assert.deepEqual(mac.find((s) => s.label === "Settings"), { label: "Settings", keys: "⌘," });
   assert.deepEqual(shortcutList(false).find((s) => s.label === "Next pane"), { label: "Next pane", keys: "Ctrl+Shift+]" });
   // Every listed deck shortcut really fires.
-  for (const s of mac.filter((s) => !s.composer)) assert.ok(s.keys.startsWith("⌘"), s.label);
+  for (const s of mac.filter((s) => !s.composer)) assert.match(s.keys, /^[⌥⇧]*⌘.$/u, s.label);
+});
+
+test("thread shortcuts act on the focused thread", () => {
+  const mac = (code, extra) => shortcutFor(press(code, { metaKey: true, ...extra }), true);
+  assert.deepEqual(mac("KeyR", { altKey: true }), { kind: "thread", action: "rename" });
+  assert.deepEqual(mac("KeyP", { altKey: true }), { kind: "thread", action: "pin" });
+  assert.deepEqual(mac("KeyU", { shiftKey: true }), { kind: "thread", action: "mark_unread" });
+  assert.deepEqual(mac("KeyA", { shiftKey: true }), { kind: "thread", action: "archive" });
+  assert.equal(mac("KeyR", {}), null);
+  assert.equal(mac("KeyT", { altKey: true }), null);
+  assert.equal(mac("KeyU", {}), null);
+  assert.deepEqual(shortcutFor(press("KeyR", { ctrlKey: true, shiftKey: true, altKey: true }), false), { kind: "thread", action: "rename" });
+  assert.equal(shortcutFor(press("KeyR", { ctrlKey: true, shiftKey: true }), false), null);
+  assert.deepEqual(shortcutList(true).find((s) => s.label === "Mark thread unread"), { label: "Mark thread unread", keys: "⇧⌘U" });
+  assert.deepEqual(shortcutList(true).find((s) => s.label === "Rename thread"), { label: "Rename thread", keys: "⌥⌘R" });
+  assert.deepEqual(shortcutList(false).find((s) => s.label === "Rename thread"), { label: "Rename thread", keys: "Ctrl+Alt+Shift+R" });
 });
