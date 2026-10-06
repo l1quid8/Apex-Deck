@@ -345,6 +345,8 @@ const STARTERS = [
 
 /** Below this width the artifacts panel covers the conversation instead of sitting beside it. */
 const NARROW_PX = 760;
+/** A message box narrower than this stacks its text above +, TL;DR and Send. */
+const STACK_PX = 330;
 
 /** The widest a bot's usage card gets (.usage-card max-width). */
 const USAGE_CARD_WIDTH = 340;
@@ -591,6 +593,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [tldr, setTldr] = useState(() => loadTldr(pane.id));
   const toggleTldr = () => setTldr((on) => { saveTldr(pane.id, !on); return !on; });
   const field = useRef<HTMLDivElement>(null);
+  // A very narrow box puts the text on its own line, with +, TL;DR and Send under it.
+  const [stacked, setStacked] = useState(false);
+  useEffect(() => {
+    const box = field.current;
+    if (!box) return;
+    const observer = new ResizeObserver(([entry]) => { if (entry.contentRect.width) setStacked(entry.contentRect.width < STACK_PX); });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
   const saving = attached.some((a) => !a.path && !a.error);
   const sendable = attached.filter((a) => a.path);
   const activity = useRef(onActivity);
@@ -2465,7 +2476,23 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
         </div>}
-        <div className="composer-box" ref={field}>
+        {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows. */}
+        <div className={stacked ? "composer-box stacked" : "composer-box"} ref={field}>
+          <ComposerMenu ref={composerMenu} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+            if (item.kind === "attach") return filePicker.current?.click();
+            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
+            if (item.kind === "command" && item.command) {
+              const draft = text;
+              runCommand(item.command);
+              setText(trigger ? text.slice(trigger.end) : draft);
+
+            } else {
+              const next = insertAt(text, trigger, caret, item.kind === "tools" ? "!" : `${item.label} `);
+              setText(next.text); setCaret(next.caret);
+              requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
+            }
+            input.current?.focus();
+          }} />
           <div className="composer-field">
         <textarea
           ref={input}
@@ -2495,23 +2522,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           disabled={!ready || participants.length === 0}
         />
           </div>
-          <div className="composer-dock">
-          <ComposerMenu ref={composerMenu} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
-            if (item.kind === "attach") return filePicker.current?.click();
-            if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
-            if (item.kind === "command" && item.command) {
-              const draft = text;
-              runCommand(item.command);
-              setText(trigger ? text.slice(trigger.end) : draft);
-
-            } else {
-              const next = insertAt(text, trigger, caret, item.kind === "tools" ? "!" : `${item.label} `);
-              setText(next.text); setCaret(next.caret);
-              requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
-            }
-            input.current?.focus();
-          }} />
-            <span className="dock-spacer" />
         <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}
           // Keep focus in the message box, so you can type straight after.
           onPointerDown={(e) => e.preventDefault()}
@@ -2519,7 +2529,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           {busy
             ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) void turnQueue.halt(); }}><StopSquare size={12} /></button>
             : <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
-          </div>
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
         {botChips}
