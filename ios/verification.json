@@ -1,0 +1,9 @@
+{
+  "screens": 43,
+  "screenshots": 89,
+  "consoleErrors": [],
+  "axeViolations": [],
+  "undersizedPhoneTargets": [],
+  "horizontalOverflows": [],
+  "flows": "19 machine presets, draft persistence, locked machine choice, same-machine identity check, offline send, independent server connection, pretend clipboard; QR pairing, SSH key + fingerprint, mention + attach + send, approval once + deny, modal Escape, browser control, terminal toolbar, unpair"
+}

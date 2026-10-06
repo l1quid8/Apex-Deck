@@ -1,0 +1,18 @@
+import {chromium,expect} from '@playwright/test';
+import {pathToFileURL} from 'node:url';
+import path from 'node:path';
+const browser=await chromium.launch();
+const page=await browser.newPage({viewport:{width:393,height:852}});
+const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+await page.goto(pathToFileURL(path.resolve('../docs/mockups/pick-the-machine-ios-v1.html')).href+'#pick-seven');
+await expect(page.getByRole('dialog',{name:'Work in'})).toBeVisible();
+await expect(page.getByRole('dialog')).toContainText('Lab-Pi');
+await page.screenshot({path:'screenshots/export-mobile.png'});
+await page.getByRole('button',{name:'Close sheet'}).click();
+await expect(page.getByRole('textbox',{name:'Message this thread'})).toBeVisible();
+await page.goto(pathToFileURL(path.resolve('../docs/mockups/pick-the-machine-ios-v1.html')).href+'#pick-eighteen');
+await expect(page.getByRole('button',{name:'Type: large',exact:true})).toBeVisible();
+await expect(page.locator('.mf-name-short')).toBeVisible();
+if(errors.length)throw Error(errors.join('\n'));
+console.log('Self-contained export loaded and worked without a dev server');
+await browser.close();
