@@ -25,7 +25,8 @@ test('an overlay covers the pane when it overlaps by a pixel or more, not when i
 test('the docked browser hands the deck its own shortcuts and nothing else', () => {
   const mac = DECK_KEYS.every(({ code, shift }) => shortcutFor({ code, metaKey: true, ctrlKey: false, shiftKey: shift, altKey: false }, true));
   assert.ok(mac, 'every key the browser passes on is a deck shortcut');
-  assert.equal(DECK_KEYS.length, shortcutList(true).filter((s) => !s.composer).length, 'and every deck shortcut is passed on');
+  // Thread shortcuts act on a focused thread, and a page is in a Preview, so the page keeps those keys.
+  assert.equal(DECK_KEYS.length, shortcutList(true).filter((s) => !s.composer && !s.thread).length, 'and every deck shortcut is passed on');
   for (const code of ['KeyC', 'KeyV', 'KeyX', 'KeyA', 'KeyZ', 'KeyF']) assert.ok(!DECK_KEYS.some((k) => k.code === code), code);
 });
 

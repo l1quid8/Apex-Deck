@@ -80,9 +80,9 @@ export function threadKeys(mac: boolean): Record<ThreadKey, string> {
 }
 
 /** The shortcuts as the settings page shows them, with the composer's own keys last. */
-export function shortcutList(mac: boolean): { label: string; keys: string; composer?: true }[] {
+export function shortcutList(mac: boolean): { label: string; keys: string; composer?: true; thread?: true }[] {
   return [
-    ...BINDINGS.map((b) => ({ label: b.label, keys: keysOf(b, mac) })),
+    ...BINDINGS.map((b) => (b.action.kind === "thread" ? { label: b.label, keys: keysOf(b, mac), thread: true as const } : { label: b.label, keys: keysOf(b, mac) })),
     { label: "Steer a working bot, in the composer", keys: mac ? "⌘↩" : "Ctrl+Enter", composer: true },
   ];
 }

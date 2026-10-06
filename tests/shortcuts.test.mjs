@@ -69,7 +69,7 @@ test("thread shortcuts act on the focused thread", () => {
   assert.equal(mac("KeyU", {}), null);
   assert.deepEqual(shortcutFor(press("KeyR", { ctrlKey: true, shiftKey: true, altKey: true }), false), { kind: "thread", action: "rename" });
   assert.equal(shortcutFor(press("KeyR", { ctrlKey: true, shiftKey: true }), false), null);
-  assert.deepEqual(shortcutList(true).find((s) => s.label === "Mark thread unread"), { label: "Mark thread unread", keys: "⇧⌘U" });
-  assert.deepEqual(shortcutList(true).find((s) => s.label === "Rename thread"), { label: "Rename thread", keys: "⌥⌘R" });
-  assert.deepEqual(shortcutList(false).find((s) => s.label === "Rename thread"), { label: "Rename thread", keys: "Ctrl+Alt+Shift+R" });
+  assert.deepEqual(shortcutList(true).find((s) => s.label === "Mark thread unread"), { label: "Mark thread unread", keys: "⇧⌘U", thread: true });
+  assert.deepEqual(shortcutList(true).find((s) => s.label === "Rename thread"), { label: "Rename thread", keys: "⌥⌘R", thread: true });
+  assert.deepEqual(shortcutList(false).find((s) => s.label === "Rename thread"), { label: "Rename thread", keys: "Ctrl+Alt+Shift+R", thread: true });
 });
