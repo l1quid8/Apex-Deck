@@ -25,6 +25,8 @@ export function Diff({ text }: { text: string }) {
 }
 
 interface CardProps {
+  hostName?: string;
+  disabled?: boolean;
   action: ProposedAction;
   /** "Denied automatically in 6m" for a call Codex's hook will deny; null for everything else. */
   deadline?: string | null;
@@ -43,14 +45,14 @@ interface CardProps {
  * says what Always allow would cover; others say it while Always allow is
  * hovered or focused.
  */
-export function ApprovalCard({ action, deadline = null, name, onDecide, request, by }: CardProps) {
+export function ApprovalCard({ action, deadline = null, name, onDecide, request, by, hostName = "This Mac", disabled = false }: CardProps) {
   const [answered, setAnswered] = useState<Answer | null>(null);
   /** Always allow is hovered or focused, so its scope line shows. */
   const [previewing, setPreviewing] = useState(false);
   const scopeId = useId();
   const preview = (on: boolean) => () => setPreviewing(on);
   const decide = (answer: Answer) => {
-    if (answered !== null) return;
+    if (answered !== null || disabled || (action.expires_at != null && action.expires_at <= Date.now())) return;
     setAnswered(answer);
     const { approve, always } = decisionFor(answer);
     onDecide(approve, always);
@@ -58,6 +60,7 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
   return (
     <div className="approval" role="group" aria-label={`Allow or deny: ${action.title}`} data-request={request} data-by={by} data-answered={answered !== null ? "" : undefined}>
       <div className="approval-head">
+        <span className="approval-host" title={hostName}>Runs on {hostName}</span>
         <span className="approval-kind">{kindLabel(action)}</span>
         <strong>{action.title}</strong>
       </div>
@@ -71,7 +74,7 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
               data-answer={answer}
               className={answer === "once" ? "primary" : answer === "deny" ? "danger" : "ghost"}
               onClick={() => decide(answer)}
-              disabled={answered !== null}
+              disabled={answered !== null || disabled || (action.expires_at != null && action.expires_at <= Date.now())}
               aria-describedby={always ? scopeId : undefined}
               onMouseEnter={always ? preview(true) : undefined}
               onMouseLeave={always ? preview(false) : undefined}

@@ -4,6 +4,7 @@
 import type { FolderListing } from "./types";
 
 export interface PathRequest {
+  hostId?: string;
   kind: "directory" | "file";
   title: string;
 }
@@ -41,7 +42,7 @@ function parentPath(path: string): string {
 
 export function pathPromptStore() {
   let current: (PathRequest & { resolve: (path: string | null) => void }) | null = null;
-  let last: string | null = null;
+  const last = new Map<string, string>();
   const listeners = new Set<() => void>();
   const change = (next: typeof current) => {
     current = next;
@@ -50,7 +51,7 @@ export function pathPromptStore() {
   return {
     get: (): PathRequest | null => current,
     /** The folder the last answer was in, so the next question opens there. Null for home. */
-    startAt: (): string | null => last,
+    startAt: (hostId = "local"): string | null => last.get(hostId) ?? null,
     subscribe(cb: () => void) {
       listeners.add(cb);
       return () => { listeners.delete(cb); };
@@ -64,7 +65,7 @@ export function pathPromptStore() {
       const asked = current;
       if (!asked) return;
       const chosen = path === null ? null : path.trim();
-      if (chosen) last = parentPath(chosen);
+      if (chosen) last.set(asked.hostId ?? "local", parentPath(chosen));
       change(null);
       asked.resolve(chosen);
     },

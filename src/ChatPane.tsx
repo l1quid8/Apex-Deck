@@ -1,3 +1,6 @@
+import { useHostConnection } from "./useHostConnection";
+import { ConnectionBanner } from "./ConnectionBanner";
+import { hostCanMutate } from "./hostAvailability";
 import { createRoomRecovery, loadRoomState } from "./roomRecovery.ts";
 import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
@@ -516,7 +519,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [formError, setFormError] = useState("");
   /** The id of the participant being edited, or null when adding a new one. */
   const [editing, setEditing] = useState<string | null>(null);
-  const [ready, setReady] = useState(profileMode);
+  const [roomReady, setReady] = useState(profileMode);
+  const hostConnection = useHostConnection(backend);
+  const ready = roomReady && hostCanMutate(hostConnection.status);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => { if (profileMode) setParticipants(profiles); }, [profiles, profileMode]);
@@ -1092,9 +1097,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     (message, to, kind, hops, manual) => dispatch.current(message, to, kind, hops, manual),
     id => backend.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
-    items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },
+    items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
     error => { notify(`Could not send: ${String(error)}. Affected queues are paused.`, "error"); },
+    () => !backend.host || hostCanMutate(backend.host.connection.get().status),
   ));
+  useEffect(() => {
+    const store = backend.host?.connection;
+    if (!store) return;
+    const changed = () => turnQueue.availabilityChanged();
+    changed(); return store.subscribe(changed);
+  }, [backend, turnQueue]);
   /** This thread's own steer choice, over Settings. */
   const [steerChoice, setSteerChoice] = useState<ThreadSteer>(() => threadSteer(pane.id));
   const chooseSteer = (choice: ThreadSteer) => { setSteerChoice(choice); saveThreadSteer(pane.id, choice); };
@@ -1451,6 +1463,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     let live = true;
     artifactsReadable.current = false;
     setArtifactsLoaded(false);
+    if (hostConnection.revision === 0 && backend.host) return;
     backend.artifactsLoad(pane.id).then(
       (raw) => {
         if (!live) return;
@@ -1467,7 +1480,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       },
     );
     return () => { live = false; };
-  }, [backend, pane.id, profileMode]);
+  }, [backend, pane.id, profileMode, hostConnection.revision]);
 
   const changeArtifacts = (next: ArtifactFile) => {
     latestArtifacts.current = next;
@@ -1725,6 +1738,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     ? resolveServerRequests(requestedServers, serverTargets.flatMap(id => serverLists[id])).unknown : [];
 
   const send = async (steer = false) => {
+    if (!ready) return;
     panelDismissed.current = false;
     const targetIds = await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
     const invalid = targetIds.length && targetIds.every(id => serverLists[id] !== undefined)
@@ -1752,12 +1766,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const hooked = parsed.text ? await modHost.promptSubmit(pane.id, parsed.text) : { text: parsed.text };
     if (hooked.deny) { notify(hooked.deny, "error"); return; }
     const message = withTldr(withAttachments(hooked.text && replyText(postable(hooked.text), reply, participants.map((p) => p.id)), sendable.map((a) => a.path!)), tldr);
+    if (!backend.host || hostCanMutate(backend.host.connection.get().status)) { /* rechecked by queue acceptance */ } else return;
     if (tldr) wiggle(field.current);
-    setText(""); setReply(null);
-    attached.forEach((a) => a.preview && URL.revokeObjectURL(a.preview));
-    setAttached([]);
     // ⌘↵ queues it, then steers it from the queue, so a cancelled prompt leaves it queued.
     void turnQueue.send(message).then(id => {
+      setText(current => current === text ? "" : current); setReply(null);
+      attached.forEach(a => a.preview && URL.revokeObjectURL(a.preview));
+      setAttached(current => current.filter(a => !attached.includes(a)));
       const item = turnQueue.items.find(queuedItem => queuedItem.id === id);
       if (steer && item) askToSteer(item);
     }).catch(error => notify(String(error), "error"));
@@ -2308,6 +2323,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   return (
     <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
+      {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 
       {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom, "--room": `${window.innerHeight - rosterAnchor.bottom - 8}px` } as CSSProperties}>{quickAddMenu}</span>}
@@ -2450,6 +2466,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 )}
                 {(asks[id] ?? []).map((ask) => (
                   <ApprovalCard
+                    hostName={backend.host?.name ?? "This Mac"} disabled={!ready}
                     key={ask.request}
                     request={ask.request}
                     by={id}

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import type { Backend } from "./backend";
-import { connection } from "./connection";
+import { useHostConnection } from "./useHostConnection";
+import { hostCanMutate } from "./hostAvailability";
+import type { PathRequest } from "./typedPath";
 import { folderRows, listingUnsupported, pathPrompt } from "./typedPath";
 import type { FolderListing } from "./types";
 
@@ -11,7 +13,14 @@ const FILE_ICON = <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="t
 /** Picks a folder or file on a host on another machine by looking through its folders. */
 export function PathPrompt({ backend }: { backend: Backend }) {
   const request = useSyncExternalStore(pathPrompt.subscribe, pathPrompt.get);
-  const { host } = useSyncExternalStore(connection.subscribe, connection.get);
+  if (!request) return null;
+  let target: Backend;
+  try { target = backend.machines?.get(request.hostId) ?? backend; }
+  catch (error) { return <div className="confirm-backdrop"><div role="alert">{String(error)}<button onClick={() => pathPrompt.answer(null)}>Cancel</button></div></div>; }
+  return <HostPathPrompt key={request.hostId ?? "local"} backend={target} request={request} />;
+}
+function HostPathPrompt({ backend, request }: { backend: Backend; request: PathRequest }) {
+  const { name: host, status } = useHostConnection(backend);
   const [listing, setListing] = useState<FolderListing | null>(null);
   const [typed, setTyped] = useState("");
   const [file, setFile] = useState<string | null>(null);
@@ -56,27 +65,28 @@ export function PathPrompt({ backend }: { backend: Backend }) {
     setHidden(false);
     setProblem("");
     setTypeOnly(false);
-    if (!request) return;
-    const start = pathPrompt.startAt();
+    const start = pathPrompt.startAt(request.hostId);
     // The last folder may be gone; home is always there.
-    void open(start).then((ok) => { if (!ok && start) void open(null); });
+    void open(start).then((ok) => { if (!ok && start && pathPrompt.get() === request) void open(null); });
+    return () => { asked.current++; };
   }, [request, open]);
 
-  if (!request) return null;
   const what = request.kind === "directory" ? "Folder" : "File";
   const rows = listing ? folderRows(listing, request.kind, hidden) : [];
   const chosen = typeOnly ? typed.trim() || null : request.kind === "directory" ? listing?.path ?? null : file;
   const cancel = () => pathPrompt.answer(null);
   const choose = async () => {
-    if (!chosen || loading) return;
+    if (!chosen || loading || !hostCanMutate(status)) return;
+    const token = asked.current;
     if (typeOnly) {
       if (!chosen.startsWith("/")) return setProblem("Use a full path, starting with /.");
       setLoading(true);
       const [there] = await backend.pathsExist([chosen], null).catch(() => [false]);
+      if (token !== asked.current || pathPrompt.get() !== request) return;
       setLoading(false);
       if (!there) return setProblem(`Nothing is at ${chosen} on ${host}.`);
     }
-    pathPrompt.answer(chosen);
+    if (pathPrompt.get() === request) pathPrompt.answer(chosen);
   };
   return (
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) cancel(); }}>
@@ -108,7 +118,7 @@ export function PathPrompt({ backend }: { backend: Backend }) {
                 <button type="button" className={row.path === file ? "selected" : undefined} aria-pressed={row.folder ? undefined : row.path === file}
                   title={row.folder ? `Open ${row.name}` : row.name}
                   onClick={() => row.folder ? void open(row.path) : setFile(row.path)}
-                  onDoubleClick={() => { if (!row.folder) pathPrompt.answer(row.path); }}>
+                  onDoubleClick={() => { if (!row.folder && hostCanMutate(status) && pathPrompt.get() === request) pathPrompt.answer(row.path); }}>
                   {row.folder ? FOLDER_ICON : FILE_ICON}
                   <span>{row.name}</span>
                 </button>
@@ -124,7 +134,7 @@ export function PathPrompt({ backend }: { backend: Backend }) {
         {problem && <span id="path-prompt-problem" className="error" role="alert">{problem}</span>}
         <div className="confirm-actions">
           <button type="button" onClick={cancel}>Cancel</button>
-          <button type="submit" className="primary" disabled={!chosen || loading}>{typeOnly ? (loading ? "Checking…" : "Choose") : request.kind === "directory" ? "Choose this folder" : "Choose"}</button>
+          <button type="submit" className="primary" disabled={!chosen || loading || !hostCanMutate(status)}>{typeOnly ? (loading ? "Checking…" : "Choose") : request.kind === "directory" ? "Choose this folder" : "Choose"}</button>
         </div>
       </form>
     </div>

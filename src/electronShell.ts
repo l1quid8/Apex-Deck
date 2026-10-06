@@ -43,7 +43,7 @@ export interface DeckBridge {
     attention(critical: boolean): Promise<void>;
     startupFolders(): Promise<string[]>;
     /** A file on this Mac, to send to a host on another machine. */
-    readLocalFile(path: string): Promise<Uint8Array>;
+    readLocalFile(hostId: string, path: string): Promise<Uint8Array>;
     onFileDrop(cb: (paths: string[], x: number, y: number) => void): () => void;
     onQuitRequested(cb: (request: number) => void): () => void;
     quitHeard(request: number): Promise<void>;
@@ -154,7 +154,7 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on">): Tran
 export function electronShell(
   bridge: Pick<DeckBridge, "shell">,
   transport: Pick<Transport, "call" | "saveAttachment">,
-  host: { owned: boolean; remote: boolean; name: string },
+  host: { id?: string; owned: boolean; remote: boolean; name: string },
   ask: (request: PathRequest) => Promise<string | null>,
 ): Shell & Pick<Backend, "onMenu"> {
   const call = transport.call.bind(transport);
@@ -165,14 +165,14 @@ export function electronShell(
       // The work is on the other machine and goes on after this app quits.
       quitStopsWork: false,
       startupFolders: async () => [],
-      pickFolder: () => ask({ kind: "directory", title: "Add a workspace folder" }),
-      pickPath: (kind, title) => ask({ kind, title }),
+      pickFolder: () => ask({ hostId: host.id ?? "local", kind: "directory", title: "Add a workspace folder" }),
+      pickPath: (kind, title) => ask({ hostId: host.id ?? "local", kind, title }),
       openTarget: async (target) => {
         if (/^https?:\/\//i.test(target)) return shell.openExternal(target);
         throw new Error(`That file is on ${host.name}; Deck can't open it on this Mac.`);
       },
       copyAttachment: async (room, path) => {
-        const bytes = await shell.readLocalFile(path);
+        const bytes = await shell.readLocalFile(host.id ?? "local", path);
         return transport.saveAttachment(room, path.split("/").pop() || "file", bytes);
       },
     };

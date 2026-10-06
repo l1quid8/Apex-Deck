@@ -67,7 +67,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
     setBadge: (count) => ipcRenderer.invoke('shell:setBadge', count),
     attention: (critical) => ipcRenderer.invoke('shell:attention', critical),
     startupFolders: () => ipcRenderer.invoke('shell:startupFolders'),
-    readLocalFile: (path) => ipcRenderer.invoke('shell:readLocalFile', path),
+    readLocalFile: (hostId, path) => ipcRenderer.invoke('shell:readLocalFile', hostId, path),
     onFileDrop: (cb) => {
       dropped.add(cb);
       return () => { dropped.delete(cb); };

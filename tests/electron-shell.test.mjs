@@ -107,19 +107,19 @@ test('on another machine: work goes on after quitting, paths are typed, files th
   const bridge = { shell: {
     startupFolders: async () => ['/Users/me/proj'],
     openExternal: async (url) => { opened.push(url); },
-    readLocalFile: async (path) => { if (path.endsWith('/dir')) throw new Error("Error invoking remote method 'shell:readLocalFile': Error: Folders can't be sent to vps; drop the files in it instead."); return new Uint8Array([7, 8]); },
+    readLocalFile: async (hostId, path) => { assert.equal(hostId, 'at'); if (path.endsWith('/dir')) throw new Error("Error invoking remote method 'shell:readLocalFile': Error: Folders can't be sent to vps; drop the files in it instead."); return new Uint8Array([7, 8]); },
   } };
   const transport = {
     call: async () => { throw new Error('not expected'); },
     saveAttachment: async (room, name, bytes) => { saved.push([room, name, [...bytes]]); return '/home/me/att/pic.png'; },
   };
   const ask = async (request) => { asked.push(request); return '/srv/app'; };
-  const shell = electronShell(bridge, transport, { owned: false, remote: true, name: 'vps' }, ask);
+  const shell = electronShell(bridge, transport, { id: 'at', owned: false, remote: true, name: 'vps' }, ask);
   assert.equal(shell.quitStopsWork, false);
   assert.deepEqual(await shell.startupFolders(), []);
   assert.equal(await shell.pickFolder(), '/srv/app');
   assert.equal(await shell.pickPath('file', 'Choose a key file'), '/srv/app');
-  assert.deepEqual(asked, [{ kind: 'directory', title: 'Add a workspace folder' }, { kind: 'file', title: 'Choose a key file' }]);
+  assert.deepEqual(asked, [{ hostId: 'at', kind: 'directory', title: 'Add a workspace folder' }, { hostId: 'at', kind: 'file', title: 'Choose a key file' }]);
   await shell.openTarget('https://example.com/docs', '/srv/app', false);
   assert.deepEqual(opened, ['https://example.com/docs']);
   await assert.rejects(shell.openTarget('src/main.rs', '/srv/app', true), { message: "That file is on vps; Deck can't open it on this Mac." });

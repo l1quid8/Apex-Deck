@@ -301,7 +301,7 @@ handle('shell:openExternal', async (_entry, url) => openExternally(url));
 /** The most a dropped file sent to another machine may be. */
 const SEND_LIMIT = 20 * 1024 * 1024;
 
-handle('shell:readLocalFile', async ({ host }, file) => {
+handle('shell:readLocalFile', async (_entry, host, file) => {
   // Only for sending a dropped file to another machine.
   const remote = remoteHost(host);
   if (!remote) throw new Error('This Mac reads its own files.');

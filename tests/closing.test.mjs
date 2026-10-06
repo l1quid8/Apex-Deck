@@ -54,7 +54,7 @@ test("a closed thread stays saved", () => {
 test("terminals are saved as descriptors: id, workspace, name and tool only", () => {
   const saved = savedPanes([term("t1", { title: "Codex 2", agent: "codex", closed: true, extra: "x" }), term("t2", { title: "Terminal" })]);
   assert.deepEqual(saved, [
-    { id: "t1", workspaceId: "w", kind: "terminal", title: "Codex 2", agent: "codex" },
+    { id: "t1", workspaceId: "w", kind: "terminal", title: "Codex 2", agent: "codex", closed: true },
     { id: "t2", workspaceId: "w", kind: "terminal", title: "Terminal" },
   ]);
   // Written as JSON, a plain shell has no agent field at all.
@@ -98,7 +98,7 @@ test("malformed or repeated panes in a session file are left out and the rest lo
   ];
   assert.deepEqual(loadedPanes(saved, ["w"]), [
     { id: "ok", workspaceId: "w", kind: "terminal", title: "Codex", agent: "codex" },
-    { id: "null-agent", workspaceId: "w", kind: "terminal", title: "null-agent" },
+    { id: "null-agent", workspaceId: "w", kind: "terminal", title: "null-agent", closed: true },
   ]);
 });
 

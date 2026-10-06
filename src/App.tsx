@@ -698,6 +698,8 @@ export function App() {
       program: programOf(pane),
       signal: attention[pane.id],
       cards: pane.kind === "chat" ? openCards(pane.id, approvalState) : undefined,
+      hostName: workspaces.find(w => w.id === pane.workspaceId)?.hostId ? backend?.machines?.connection(workspaces.find(w => w.id === pane.workspaceId)?.hostId).get().name : "This Mac",
+      available: (() => { try { return !backendFor(pane).host || backendFor(pane).host!.connection.get().status.kind === "connected"; } catch { return false; } })(),
     }));
   const sectionFlags = {
     code: summarize(attentionItems.filter((i) => i.where === "Code").map((i) => i.signal)),

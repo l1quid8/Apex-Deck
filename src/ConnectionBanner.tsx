@@ -1,11 +1,12 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useHostConnection } from "./useHostConnection";
+import { useEffect, useState } from "react";
 
 import type { Backend } from "./backend";
-import { connection, statusWords } from "./connection";
+import { statusWords } from "./connection";
 
 /** Shown across the top while the window has lost its host. */
 export function ConnectionBanner({ backend }: { backend: Backend }) {
-  const { status, host } = useSyncExternalStore(connection.subscribe, connection.get);
+  const { status, name: host } = useHostConnection(backend);
   const [, setNow] = useState(0);
   useEffect(() => {
     // Count down to the next try.
@@ -13,7 +14,7 @@ export function ConnectionBanner({ backend }: { backend: Backend }) {
     const timer = setInterval(() => setNow((n) => n + 1), 1000);
     return () => clearInterval(timer);
   }, [status]);
-  if (status.kind === "connected" || status.kind === "connecting") return null;
+  if (status.kind === "connected") return null;
   const reason = status.kind === "reconnecting" || status.kind === "failed" ? status.reason : "";
   return (
     <div className={`connection-banner ${status.kind}`} role="status" aria-live="polite">
@@ -21,8 +22,8 @@ export function ConnectionBanner({ backend }: { backend: Backend }) {
         <strong>{statusWords(status, host, Date.now())}</strong>
         {reason && <small className="mono">{reason}</small>}
       </div>
-      {(status.kind === "reconnecting" || status.kind === "failed") && <button onClick={() => connection.retryNow()}>Try now</button>}
-      {status.kind === "failed" && backend.hosts && host !== "This Mac" && <button onClick={() => void backend.hosts?.use("local")}>Use This Mac</button>}
+      {(status.kind === "reconnecting" || status.kind === "failed") && <button onClick={() => backend.host?.connection.retryNow()}>Try now</button>}
+      <small>Send is off until it reconnects; nothing is queued.</small>
     </div>
   );
 }

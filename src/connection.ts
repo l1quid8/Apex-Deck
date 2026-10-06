@@ -35,8 +35,9 @@ export function connectionStore() {
 export const connection = connectionStore();
 
 /** What to say about `status`; `now` counts down to the next try. */
-export function statusWords(status: Status, host: string, now: number): string {
+export function statusWords(status: Status | { kind: "idle" }, host: string, now: number): string {
   switch (status.kind) {
+    case "idle": return `${host} has not connected yet.`;
     case "connecting": return `Connecting to ${host}…`;
     case "connected": return `Connected to ${host}.`;
     case "reconnecting": {

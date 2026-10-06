@@ -1,3 +1,4 @@
+import { hostCanMutate } from "./hostAvailability";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -127,7 +128,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     const throttle = new TitleThrottle();
     let titleTimer: ReturnType<typeof setTimeout> | undefined;
     const titled = term.onTitleChange((raw) => {
-      if (current.state !== "running") return;
+      if (current.state !== "running" || (backend.host && !hostCanMutate(backend.host.connection.get().status))) return;
       clearTimeout(titleTimer);
       const now = Date.now();
       const shown = throttle.offer(cleanTitle(raw), now);
@@ -145,6 +146,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     const ptyId = () => ptyIdFor(pane.id, current.generation);
 
     start.current = () => {
+      if (backend.host && !hostCanMutate(backend.host.connection.get().status)) return;
       if (!canStart(current) || !latest.current.installed) return;
       const again = current.generation > 0;
       const next = started(current, Date.now());
@@ -208,16 +210,23 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     refit.current = () => {
       if (!hasSize()) return;
       fit.fit();
-      if (current.state === "running") backend.ptyResize(ptyId(), term.cols, term.rows).catch(() => {});
+      if (current.state === "running" && (!backend.host || hostCanMutate(backend.host.connection.get().status))) backend.ptyResize(ptyId(), term.cols, term.rows).catch(() => {});
     };
     const observer = new ResizeObserver(() => refit.current());
     observer.observe(element);
 
+    const offRecovery = backend.host?.connection.recover?.(async () => {
+      if (current.state === "running" && backend.host?.connection.get().revision! > 1) {
+        term.write("\r\nOutput was lost while disconnected. Start a new terminal run to continue.\r\n");
+        report(exited(current, current.generation, null, Date.now()));
+      }
+    }) ?? (() => {});
     // A terminal restored from the last session never starts by itself.
     if (startOnMount) start.current();
     else report(STOPPED);
 
     return () => {
+      offRecovery();
       observer.disconnect();
       clearTimeout(quiet);
       clearTimeout(titleTimer);

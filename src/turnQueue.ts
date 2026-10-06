@@ -49,6 +49,9 @@ export interface ParticipantMessage extends QueuedMessage { to: string[] }
 /** One FIFO per recipient. Multi-recipient messages wait until every target
  * is free, then post once. Other participants can continue independently. */
 export class ParticipantQueues {
+  connectionPaused = false;
+  private availabilityEpoch = 0;
+  private available: () => boolean;
   items: ParticipantMessage[] = [];
   state: Record<string, "idle" | "working"> = {};
   paused = new Set<string>();
@@ -62,13 +65,20 @@ export class ParticipantQueues {
   private stop: (id?: string) => Promise<void>;
   private changed: (items: ParticipantMessage[]) => void;
   private failed: (error: unknown) => void;
-  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}) {
+  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true) {
     this.targets = targets; this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
+    this.available = available;
+  }
+  private requireAvailable(epoch = this.availabilityEpoch) { if (!this.available() || epoch !== this.availabilityEpoch) throw new Error("Not connected to the host; nothing was queued."); }
+  availabilityChanged() {
+    if (!this.available()) { this.availabilityEpoch++; if (this.items.length || this.active) this.connectionPaused = true; this.publish(); }
   }
   get active() { return Object.values(this.state).includes("working"); }
   send(text: string, kind: TurnKind = "message"): Promise<number> {
     const accepted = this.accepting.then(async () => {
+      this.requireAvailable(); const epoch = this.availabilityEpoch;
       const to = await this.targets(text);
+      this.requireAvailable(epoch);
       const id = ++this.serial;
       // Stop pauses a bot so what was queued for it waits. A new message to a
       // stopped bot with nothing waiting is the person going on with it.
@@ -82,14 +92,17 @@ export class ParticipantQueues {
   started(id: string) { this.state[id] = "working"; this.publish(); }
   idle(id: string) { this.state[id] = "idle"; this.publish(); void this.drain(); }
   error(id: string) { this.paused.add(id); this.publish(); }
-  resume(id?: string) { if (id) { this.paused.delete(id); this.halted.delete(id); } else { this.paused.clear(); this.halted.clear(); } this.publish(); void this.drain(); }
+  resume(id?: string) { if (!this.available()) return; this.connectionPaused = false; if (id) { this.paused.delete(id); this.halted.delete(id); } else { this.paused.clear(); this.halted.clear(); } this.publish(); void this.drain(); }
   async edit(id: number, text: string, kind: TurnKind = "message") {
+    this.requireAvailable(); const epoch = this.availabilityEpoch;
     const to = await this.targets(text);
+    this.requireAvailable(epoch);
     this.items = this.items.map(item => item.id === id ? {...item, text, kind, to} : item);
     this.publish(); void this.drain();
   }
   remove(id: number) { this.items = this.items.filter(item => item.id !== id); this.publish(); }
   async steer(id: string, text: string) {
+    this.requireAvailable();
     this.paused.add(id);
     this.items.unshift({id: ++this.serial, text, kind: "message", to: [id], manual: true}); this.publish();
     try { if (this.state[id] === "working") await this.stop(id); this.resume(id); }
@@ -97,6 +110,7 @@ export class ParticipantQueues {
   }
   /** Send a queued message now: stop its bots mid-turn and put it first. */
   async steerQueued(id: number) {
+    this.requireAvailable();
     const item = this.items.find(x => x.id === id);
     if (!item) return;
     item.to.forEach(target => this.paused.add(target));
@@ -111,6 +125,7 @@ export class ParticipantQueues {
    *  you chose to go on with them. `hops` caps the bot-to-bot rounds that
    *  may follow; null keeps the room's limit. */
   turn(to: string[], hops: number | null) {
+    if (!this.available()) return;
     for (const id of to) this.paused.delete(id);
     this.items.unshift({ id: ++this.serial, text: "", kind: "turn", to, hops });
     this.publish(); void this.drain();
@@ -122,11 +137,13 @@ export class ParticipantQueues {
   }
   private publish() { this.changed([...this.items]); }
   private async drain() {
+    if (!this.available() || this.connectionPaused) return;
     if (this.draining) { this.rerun = true; return; }
     this.draining = true;
     try {
       const blocked = new Set<string>();
       for (const item of [...this.items]) {
+        if (!this.available() || this.connectionPaused) break;
         if (item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working") || (item.kind === "compact" && this.active)) {
           if (item.kind === "compact") break;
           item.to.forEach(id => blocked.add(id)); continue;

@@ -17,6 +17,8 @@ export interface AttentionItem {
   signal: Signal;
   /** A thread's open approval cards, oldest first. */
   cards?: readonly OpenCard[];
+  hostName?: string;
+  available?: boolean;
 }
 
 interface Props {
@@ -171,13 +173,13 @@ export function AttentionMenu({ items, onOpen, onDecide, onMarkReadySeen }: Prop
                 </button>
                 {card && view && view.kind !== "open" && (
                   <div className="answer-strip" data-strip={item.paneId}>
-                    <span className="answer-kind">{view.label}</span>
+                    <span className="answer-kind">{view.label} · Runs on {item.hostName ?? "This Mac"}</span>
                     {view.kind === "command"
                       ? <code className="answer-command">{view.command}</code>
                       : <><span className="answer-summary">{view.summary}</span><Diff text={view.diff} /></>}
                     <div className="answer-actions">
-                      <button className="primary" disabled={waiting} onClick={() => decide(item, card, true)}>Allow once</button>
-                      <button className="danger" disabled={waiting} onClick={() => decide(item, card, false)}>Deny</button>
+                      <button className="primary" disabled={waiting || item.available === false} onClick={() => decide(item, card, true)}>Allow once</button>
+                      <button className="danger" disabled={waiting || item.available === false} onClick={() => decide(item, card, false)}>Deny</button>
                       <button className="ghost" onClick={() => go(item.paneId)}>Open thread</button>
                     </div>
                     {next && <span className="answer-next">{next}</span>}
