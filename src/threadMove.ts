@@ -16,10 +16,12 @@ type Room = Pick<Backend, "roomImport" | "roomCreate" | "roomDelete">;
  * Put thread `id` from `snapshot` on `to`, in folder `cwd`. On the same host
  * the room is replaced in one step; on another, the old copy is deleted after
  * the new one exists. An older helper without room_import can still take a
- * thread with no history: a fresh room with the same bots and options.
+ * thread with no history: a fresh room with the same bots and options. On the
+ * same host that room is deleted first, so if the new one can't be made it is
+ * made again in `fromCwd`, where the thread still is.
  */
-export async function placeThread({ from, to, id, snapshot, cwd, sameHost, hostName }: {
-  from: Room; to: Room; id: string; snapshot: RoomSnapshot; cwd: string; sameHost: boolean; hostName: string;
+export async function placeThread({ from, to, id, snapshot, cwd, fromCwd, sameHost, hostName }: {
+  from: Room; to: Room; id: string; snapshot: RoomSnapshot; cwd: string; fromCwd: string; sameHost: boolean; hostName: string;
 }): Promise<"imported" | "recreated"> {
   let how: "imported" | "recreated" = "imported";
   try {
@@ -29,8 +31,17 @@ export async function placeThread({ from, to, id, snapshot, cwd, sameHost, hostN
     if (snapshot.transcript.length > 0) {
       throw new Error(`${hostName}'s apex-daemon is too old to take a thread's history. Update it there (docs/daemon-ubuntu.md).`);
     }
-    if (sameHost) await to.roomDelete(id);
-    await to.roomCreate(id, snapshot.participants, snapshot.options, cwd);
+    if (sameHost) {
+      try {
+        await to.roomDelete(id);
+        await to.roomCreate(id, snapshot.participants, snapshot.options, cwd);
+      } catch (failed) {
+        await to.roomCreate(id, snapshot.participants, snapshot.options, fromCwd).catch(() => {});
+        throw failed;
+      }
+    } else {
+      await to.roomCreate(id, snapshot.participants, snapshot.options, cwd);
+    }
     how = "recreated";
   }
   if (!sameHost) await from.roomDelete(id).catch(() => {});

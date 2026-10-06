@@ -974,17 +974,34 @@ impl Host {
 
     /// Make room `id` from a thread's snapshot: a fork to this machine, or a
     /// thread moved here before it started. Its usage, Always allow rules and
-    /// record of edits stay behind; they belong to the other folder.
+    /// record of edits stay behind; they belong to the other folder. With
+    /// `replace` the saved room is written over in one step and only then
+    /// closed, so a failed write leaves it whole and open. Artifacts stay.
     pub fn room_import(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: bool) -> Result<(), String> {
-        if replace {
-            self.room_delete(id.clone())?;
-        } else if self.rooms.lock().unwrap().contains_key(&id) {
-            return Err("a thread with that id already exists".into());
-        }
         let mut clean = snapshot.fork(snapshot.transcript.len());
         clean.changes.clear();
         clean.baseline = None;
-        self.store.import_room(&id, &SavedRoom { cwd: cwd.filter(|c| !c.is_empty()), snapshot: clean })
+        let saved = SavedRoom { cwd: cwd.filter(|c| !c.is_empty()), snapshot: clean };
+        if !replace {
+            if self.rooms.lock().unwrap().contains_key(&id) {
+                return Err("a thread with that id already exists".into());
+            }
+            return self.store.import_room(&id, &saved);
+        }
+        match self.handle(&id) {
+            // Under the checkpoint lock no event of the old room saves over the
+            // new copy, and once it is written none ever will.
+            Ok(handle) => {
+                let _checkpoint = handle.checkpoint.lock().unwrap();
+                self.store.save_room(&id, &saved)?;
+                handle.deleted.store(true, Ordering::SeqCst);
+            }
+            Err(_) => self.store.save_room(&id, &saved)?,
+        }
+        self.room_close(id.clone());
+        // Its checkpoints are of the old folder.
+        self.snapshots.delete(&id);
+        Ok(())
     }
 
     async fn save_room(&self, id: &str) -> Result<(), String> {

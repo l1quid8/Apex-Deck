@@ -344,13 +344,58 @@ fn importing_with_replace_swaps_an_unstarted_room_for_one_in_another_folder() {
     std::fs::create_dir_all(&elsewhere).unwrap();
     let host = Running::start(&data);
     let draft = host.call(json!({"cmd":"room_create","args":{"id":"d","participants":[scripted("bot", &["hi"])],"options":RoomOptions::default(),"cwd":data.to_string_lossy()}})).unwrap();
+    let artifacts = json!({"version":1,"artifacts":[{"id":"a1","title":"Page","kind":"html","versions":[{"n":1,"source":"<p>hi</p>","by":"bot","seq":1,"at":0}]}]});
+    host.call(json!({"cmd":"artifacts_save","args":{"room":"d","artifacts":artifacts}})).unwrap();
     // Without replace, an open id is refused; with it, the room is swapped in one step.
     assert!(host.call(json!({"cmd":"room_import","args":{"id":"d","snapshot":draft,"cwd":elsewhere.to_string_lossy()}})).is_err());
     host.call(json!({"cmd":"room_import","args":{"id":"d","snapshot":draft,"cwd":elsewhere.to_string_lossy(),"replace":true}})).unwrap();
+    // Same thread on the same machine: its artifacts stay with it.
+    assert_eq!(host.call(json!({"cmd":"artifacts_load","args":{"room":"d"}})).unwrap(), artifacts);
     let opened = host.call(json!({"cmd":"room_create","args":{"id":"d","participants":[],"options":RoomOptions::default()}})).unwrap();
     assert_eq!(opened["participants"], draft["participants"]);
+    // It answers in the new folder, and nothing of the old room writes the old one back.
+    host.call(json!({"cmd":"room_post","args":{"id":"d","text":"@bot hello"}})).unwrap();
+    assert!(host.wait_for(Duration::from_secs(5), |e| matches!(e, HostEvent::Room { room, event: apex_core::RoomEvent::Idle, .. } if room == "d")));
     let store = apex_host::storage::Store::new(data.join("saved-chats-v1"));
-    assert_eq!(store.room("d").unwrap().unwrap().cwd.as_deref(), Some(elsewhere.to_string_lossy().as_ref()));
+    let saved = store.room("d").unwrap().unwrap();
+    assert_eq!(saved.cwd.as_deref(), Some(elsewhere.to_string_lossy().as_ref()));
+    assert_eq!(saved.snapshot.transcript.len(), 2);
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_replace_that_cannot_be_saved_leaves_the_thread_open_and_saved_where_it_was() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = std::env::temp_dir().join(format!("apex-host-replace-fails-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let elsewhere = data.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let host = Running::start(&data);
+    // An unstarted fork: history from its source, open in its first folder.
+    host.call(json!({"cmd":"room_create","args":{"id":"source","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default(),"cwd":data.to_string_lossy()}})).unwrap();
+    host.call(json!({"cmd":"room_post","args":{"id":"source","text":"@bot first"}})).unwrap();
+    assert!(host.wait_for(Duration::from_secs(5), |e| matches!(e, HostEvent::Room { room, event: apex_core::RoomEvent::Idle, .. } if room == "source")));
+    let snapshot = host.call(json!({"cmd":"room_state","args":{"id":"source"}})).unwrap()["snapshot"].clone();
+    host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":snapshot,"cwd":data.to_string_lossy()}})).unwrap();
+    host.call(json!({"cmd":"room_create","args":{"id":"fork","participants":[],"options":RoomOptions::default()}})).unwrap();
+
+    // The new copy can't be written: the saved-chats folder takes no new files.
+    let rooms = data.join("saved-chats-v1").join("rooms");
+    std::fs::set_permissions(&rooms, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let moved = host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":snapshot,"cwd":elsewhere.to_string_lossy(),"replace":true}}));
+    std::fs::set_permissions(&rooms, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(moved.is_err());
+
+    // Still saved with its history in its first folder, and still open there.
+    let store = apex_host::storage::Store::new(data.join("saved-chats-v1"));
+    let saved = store.room("fork").unwrap().unwrap();
+    assert_eq!(saved.cwd.as_deref(), Some(data.to_string_lossy().as_ref()));
+    assert_eq!(saved.snapshot.transcript.len(), 2);
+    host.call(json!({"cmd":"room_post","args":{"id":"fork","text":"@bot again"}})).unwrap();
+    assert!(host.wait_for(Duration::from_secs(5), |e| matches!(e, HostEvent::Room { room, event: apex_core::RoomEvent::Idle, .. } if room == "fork")));
+    assert_eq!(store.room("fork").unwrap().unwrap().snapshot.transcript.len(), 4);
     host.host.shutdown();
     let _ = std::fs::remove_dir_all(data);
 }

@@ -945,7 +945,7 @@ export function App() {
     moving.current.add(pane.id);
     try {
       const snapshot = await snapshotOf(pane, source);
-      await placeThread({ from: hostBackend(fromHost), to: hostBackend(toHost), id: pane.id, snapshot, cwd: target.path, sameHost: fromHost === toHost, hostName: hostNameFor(toHost) });
+      await placeThread({ from: hostBackend(fromHost), to: hostBackend(toHost), id: pane.id, snapshot, cwd: target.path, fromCwd: source.path, sameHost: fromHost === toHost, hostName: hostNameFor(toHost) });
       setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, workspaceId: target.id } : p)));
       setActiveWorkspace(target.id);
     } catch (error) {

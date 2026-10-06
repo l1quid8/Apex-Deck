@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { placeThread, unsupported } from "../src/threadMove.ts";
 
 const snap = (transcript = []) => ({ participants: [{ id: "bot" }], options: { policy: "mention", max_bot_hops: 3 }, transcript, pins: [] });
-function fake(name, { importError } = {}) {
+function fake(name, { importError, createErrorIn } = {}) {
   const calls = [];
   return {
     calls,
     roomImport: async (...args) => { calls.push(["import", ...args]); if (importError) throw new Error(importError); },
-    roomCreate: async (...args) => { calls.push(["create", ...args]); return snap(); },
+    roomCreate: async (...args) => { calls.push(["create", ...args]); if (args[3] === createErrorIn) throw new Error("disk full"); return snap(); },
     roomDelete: async (...args) => { calls.push(["delete", ...args]); },
   };
 }
@@ -34,8 +34,18 @@ test("an older helper without room_import still takes a thread with no history, 
   assert.deepEqual(to.calls[1], ["create", "t", [{ id: "bot" }], { policy: "mention", max_bot_hops: 3 }, "/srv/x"]);
   assert.deepEqual(from.calls, [["delete", "t"]]);
   const same = fake("at", { importError: old });
-  await placeThread({ from: same, to: same, id: "t", snapshot: snap(), cwd: "/srv/y", sameHost: true, hostName: "AT" });
+  await placeThread({ from: same, to: same, id: "t", snapshot: snap(), cwd: "/srv/y", fromCwd: "/srv/x", sameHost: true, hostName: "AT" });
   assert.deepEqual(same.calls.map((c) => c[0]), ["import", "delete", "create"]);
+});
+
+test("an older helper that can't make the room in the new folder gets it back in the old one", async () => {
+  const same = fake("at", { importError: "unknown variant `room_import`", createErrorIn: "/srv/y" });
+  await assert.rejects(placeThread({ from: same, to: same, id: "t", snapshot: snap(), cwd: "/srv/y", fromCwd: "/srv/x", sameHost: true, hostName: "AT" }), /disk full/);
+  assert.deepEqual(same.calls.slice(1), [
+    ["delete", "t"],
+    ["create", "t", [{ id: "bot" }], { policy: "mention", max_bot_hops: 3 }, "/srv/y"],
+    ["create", "t", [{ id: "bot" }], { policy: "mention", max_bot_hops: 3 }, "/srv/x"],
+  ]);
 });
 
 test("history can't go to an older helper; nothing is deleted when placing fails", async () => {
