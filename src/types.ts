@@ -267,6 +267,12 @@ export interface ThreadStatus {
   replying: string[];
   /** Display names of bots stopped on an open approval card. */
   waiting: string[];
+  /** Display names of every bot in the thread, for its hover card. */
+  who?: string[];
+  /** A bot has replied at least once, so Copy last reply has something to copy. */
+  hasReply?: boolean;
+  /** When the newest message arrived, in ms since the epoch. */
+  lastAt?: number;
 }
 
 export interface Workspace {

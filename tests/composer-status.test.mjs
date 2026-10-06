@@ -21,8 +21,8 @@ const bots = [
 ];
 
 test("a thread reports who is replying and who is stopped on a card", () => {
-  assert.deepEqual(threadStatusOf(bots, ["null", "jigga"], ["null"]), { text: "3 bots · replying", replying: ["Jigga"], waiting: ["Null"] });
-  assert.deepEqual(threadStatusOf(bots, [], []), { text: "3 bots", replying: [], waiting: [] });
+  assert.deepEqual(threadStatusOf(bots, ["null", "jigga"], ["null"]), { text: "3 bots · replying", replying: ["Jigga"], waiting: ["Null"], who: bots.map((b) => b.display_name) });
+  assert.deepEqual(threadStatusOf(bots, [], []), { text: "3 bots", replying: [], waiting: [], who: bots.map((b) => b.display_name) });
 });
 
 test("the head's words stay as they were", () => {
@@ -32,7 +32,7 @@ test("the head's words stay as they were", () => {
 });
 
 test("names follow the room's order, and bots no longer in the room are left out", () => {
-  assert.deepEqual(threadStatusOf(bots, ["ada", "null", "gone"], ["gone"]), { text: "3 bots · replying", replying: ["Null", "Ada"], waiting: [] });
+  assert.deepEqual(threadStatusOf(bots, ["ada", "null", "gone"], ["gone"]), { text: "3 bots · replying", replying: ["Null", "Ada"], waiting: [], who: bots.map((b) => b.display_name) });
 });
 
 const bot = (name, doing, startedAt = 0, heardAt = null) => ({ name, doing, startedAt, heardAt });

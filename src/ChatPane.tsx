@@ -44,6 +44,10 @@ import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { recordApproval, approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
 import { exportFileName, exportHtml, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
+import { lastReply } from "./threadCopy.ts";
+
+/** What a ⋯ menu can ask an open or closed thread to do. */
+export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown" | "copy_reply";
 import { DiffPanel } from "./DiffPanel";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
@@ -102,8 +106,10 @@ interface Props {
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
   onFork?: (title: string, upto: number | null) => Promise<string>;
-  /** Fork, Export or Share chosen in a ⋯ menu. Cleared after it is taken. */
-  menuRequest?: { id: string; action: "fork" | "export" | "share_pdf" };
+  /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared after it is taken. */
+  menuRequest?: { id: string; action: ThreadMenuRequest };
+  /** Copy › text this thread built (as Markdown, or its last reply), for App to put on the clipboard. */
+  onCopy?: (text: string, kind: "markdown" | "reply") => void;
   /** The request was taken, so a remount must not run it again. */
   onMenuDone?: (id: string) => void;
   disabledProviders: string[];
@@ -380,7 +386,7 @@ function fitHead(head: HTMLElement) {
     head.scrollWidth <= head.clientWidth && (!title || title.scrollWidth <= title.clientWidth || title.clientWidth >= TITLE_ROOM));
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, menuRequest, onMenuDone, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -1464,6 +1470,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     onMenuDone?.(id);
     if (menuRequest.action === "fork") void forkAt(`${pane.title} (fork)`, null);
     else if (menuRequest.action === "share_pdf") void sharePdf();
+    else if (menuRequest.action === "copy_markdown") onCopy?.(exportMarkdown(threadExport(), new Date()), "markdown");
+    else if (menuRequest.action === "copy_reply") onCopy?.(lastReply(messagesOf(entries)), "reply");
     else void saveExport("markdown").then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } }).catch((error) => notify(`Could not export: ${String(error)}`, "error"));
   }, [menuRequest, ready, loadError]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1874,6 +1882,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       return { ...d, model, effort: known && !known.includes(d.effort) ? "" : d.effort };
     });
 
+  // For the sidebar: whether a bot has replied (Copy last reply) and when the newest message came (Recents).
+  const transcriptFacts = useMemo(() => {
+    const messages = messagesOf(entries);
+    return { hasReply: messages.some((m) => m.speaker.kind === "bot"), lastAt: messages.reduce((latest, m) => Math.max(latest, m.at ?? 0), 0) };
+  }, [entries]);
   // The pane head's words (see headLine), and who is replying or stopped on a card, for App.
   const headBots: BotProgress[] = participants
     .filter((p) => working[p.id] && !asks[p.id]?.length)
@@ -1883,7 +1896,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       startedAt: working[p.id].startedAt,
       heardAt: isCommandLine(p.backend) ? heard.current.get(p.id) ?? working[p.id].startedAt : null,
     }));
-  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now) };
+  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), ...transcriptFacts };
   const statusKey = JSON.stringify(status);
   useEffect(() => { if (!profileMode) onStatus?.(pane.id, status); }, [statusKey]);
   // The title bar's + New agent opens the form here.

@@ -37,6 +37,7 @@ export function threadStatusOf(bots: { id: string; display_name: string }[], wor
     text: `${count}${working.length > 0 ? " · replying" : ""}`,
     replying: bots.filter((bot) => working.includes(bot.id) && !asking.includes(bot.id)).map((bot) => bot.display_name),
     waiting: bots.filter((bot) => asking.includes(bot.id)).map((bot) => bot.display_name),
+    who: bots.map((bot) => bot.display_name),
   };
 }
 
