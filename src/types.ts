@@ -251,6 +251,12 @@ export interface Pane {
   /** The seq of the newest message you saw at the bottom of this thread, or
    *  -1 after /clear. Missing in sessions saved before it existed: no divider. */
   lastSeenSeq?: number;
+  /** A thread put away: closed, and listed only under Archived. */
+  archived?: true;
+  /** Marked unread; cleared when the thread is opened. */
+  unread?: true;
+  /** When its newest message arrived, in ms since the epoch, for Recents. */
+  activeAt?: number;
 }
 
 /** What a thread reports to App through ChatPane's `onStatus`. */
@@ -274,6 +280,10 @@ export interface Workspace {
   hostId?: string;
   /** Project copies share a family; defaults to the folder basename. */
   family?: string;
+  /** Kept at the top of the sidebar's Projects. */
+  pinned?: true;
+  /** Its threads are folded away in the sidebar. */
+  collapsed?: true;
 }
 
 export type Layout = "top" | "left";

@@ -15,6 +15,8 @@ export function normalizeWorkspaces(value: unknown): Workspace[] {
     ids.add(v.id);
     const w: Workspace = { id: v.id, name: v.name, path: v.path };
     if (v.hidden === true) w.hidden = true;
+    if (v.pinned === true) w.pinned = true;
+    if (v.collapsed === true) w.collapsed = true;
     if (v.hostId && v.hostId !== "local") w.hostId = v.hostId;
     w.family = typeof v.family === "string" && v.family ? v.family : workspaceFamily(w);
     return [w];
