@@ -112,25 +112,23 @@ impl Store {
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let fork = SavedRoom { cwd, snapshot: saved.snapshot.fork(upto.unwrap_or(saved.snapshot.transcript.len())) };
-        let bytes = serde_json::to_vec_pretty(&fork).map_err(|e| e.to_string())?;
-        use std::io::Write;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)] {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { e.to_string() })?;
-        if let Err(e) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
-            let _ = std::fs::remove_file(&path);
-            return Err(format!("Could not save fork: {e}"));
-        }
+        write_new(&path, &fork).map_err(|e| e.replace("Could not save", "Could not save fork"))?;
         // A fork keeps the thread's artifacts. Copied directly: the write lock is already held.
         match std::fs::copy(self.artifacts_path(source), self.artifacts_path(target)) {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("Could not copy the thread's artifacts: {e}")),
         }
+        std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
+    }
+
+    /// Save a new room `id`. Refuses an id that already has a saved room.
+    pub fn import_room(&self, id: &str, saved: &SavedRoom) -> Result<(), String> {
+        let _guard = self.writes.lock().unwrap();
+        let path = self.room_path(id);
+        let parent = path.parent().unwrap();
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        write_new(&path, saved)?;
         std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
     }
 
@@ -256,4 +254,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("session.json")).unwrap(), "broken saved file");
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+/// Write a room file that must not exist yet, private to this user, flushed to disk.
+fn write_new(path: &Path, saved: &SavedRoom) -> Result<(), String> {
+    use std::io::Write;
+    let bytes = serde_json::to_vec_pretty(saved).map_err(|e| e.to_string())?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { "a thread with that id already exists".into() } else { e.to_string() })?;
+    if let Err(e) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+        let _ = std::fs::remove_file(path);
+        return Err(format!("Could not save: {e}"));
+    }
+    Ok(())
 }

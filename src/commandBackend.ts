@@ -74,6 +74,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomPin: (id, fact) => call<string[]>("room_pin", { id, fact }),
     roomUnpin: (id, index) => call<string[]>("room_unpin", { id, index }),
     roomFork: (source, target, upto) => call("room_fork", { source, target, upto }),
+    roomImport: (id, snapshot, cwd) => call("room_import", { id, snapshot, cwd: cwd || null }),
     roomCompact: (id) => call("room_compact", { id }),
     roomClose: (id) => call("room_close", { id }),
     roomDelete: (id) => call("room_delete", { id }),

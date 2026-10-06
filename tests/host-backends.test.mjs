@@ -81,3 +81,10 @@ test('renaming a saved host reaches its live backend and its connection store', 
   assert.equal(registry.connection('at').get().name, 'Renamed');
   assert.equal(idle.get().name, 'Renamed');
 });
+
+test('importing a thread onto an offline host is refused, not queued', async () => {
+  const c = store.hostConnectionStore('at', 'AT'); let imports = 0;
+  const registry = mod.createHostBackends({ local: {}, hosts: [{ id: 'at', name: 'AT' }], make: () => ({ backend: { roomImport: async () => imports++ }, connection: c, start: async () => {}, close() {} }) });
+  await assert.rejects(registry.get('at').roomImport('f', { transcript: [] }, '/x'), /connect|nothing was queued/i);
+  assert.equal(imports, 0);
+});

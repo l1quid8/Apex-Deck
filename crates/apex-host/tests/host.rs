@@ -298,3 +298,40 @@ fn room_state_is_read_only_and_restores_without_live_work() {
     drop(second);
     std::fs::remove_dir_all(data).unwrap();
 }
+
+#[test]
+fn importing_a_snapshot_makes_a_fresh_room_without_usage_rules_or_changes() {
+    let data = std::env::temp_dir().join(format!("apex-host-import-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let host = Running::start(&data);
+    // A thread with history on "another machine": two messages, a pin, and things a fork leaves behind.
+    host.call(json!({"cmd":"room_create","args":{"id":"source","participants":[scripted("bot", &["reply"])],"options":RoomOptions::default()}})).unwrap();
+    host.call(json!({"cmd":"room_post","args":{"id":"source","text":"@bot first"}})).unwrap();
+    assert!(host.wait_for(Duration::from_secs(5), |e| matches!(e, HostEvent::Room { room, event: apex_core::RoomEvent::Idle, .. } if room == "source")));
+    host.call(json!({"cmd":"room_pin","args":{"id":"source","fact":"keep this"}})).unwrap();
+    let state = host.call(json!({"cmd":"room_state","args":{"id":"source"}})).unwrap();
+    let mut snapshot = state["snapshot"].clone();
+    assert_eq!(snapshot["transcript"].as_array().unwrap().len(), 2);
+    snapshot["usage"] = json!({"bot":{"input":5,"output":7,"turns":1}});
+    snapshot["allowed"] = json!([{"by":"bot","kind":"command","title":"Run","what":"ls","allowed_at":0}]);
+    snapshot["changes"] = json!([{"by":"bot","path":"a.txt","added":1,"removed":0,"seq":1}]);
+    snapshot["baseline"] = json!("somewhere-else");
+
+    host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":snapshot,"cwd":data.to_string_lossy()}})).unwrap();
+    let opened = host.call(json!({"cmd":"room_create","args":{"id":"fork","participants":[],"options":RoomOptions::default()}})).unwrap();
+    assert_eq!(opened["transcript"], state["snapshot"]["transcript"]);
+    assert_eq!(opened["participants"], state["snapshot"]["participants"]);
+    assert_eq!(opened["pins"], json!(["keep this"]));
+    assert!(opened.get("usage").map_or(true, |u| u.as_object().unwrap().is_empty()), "a fork starts without usage");
+    assert!(opened.get("allowed").map_or(true, |a| a.as_array().unwrap().is_empty()), "nor Always allow rules");
+    assert!(opened["changes"].as_array().map_or(true, |c| c.is_empty()), "its folder is another one");
+    assert!(opened["baseline"].is_null());
+    // The new room answers in its own folder.
+    host.call(json!({"cmd":"room_post","args":{"id":"fork","text":"@bot again"}})).unwrap();
+    assert!(host.wait_for(Duration::from_secs(5), |e| matches!(e, HostEvent::Room { room, event: apex_core::RoomEvent::Idle, .. } if room == "fork")));
+    // An id already in use, open or saved, is refused.
+    assert!(host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":state["snapshot"],"cwd":null}})).is_err());
+    assert!(host.call(json!({"cmd":"room_import","args":{"id":"source","snapshot":state["snapshot"],"cwd":null}})).is_err());
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}

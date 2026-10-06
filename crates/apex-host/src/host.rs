@@ -972,6 +972,19 @@ impl Host {
         self.store.fork_room(&source, &target, upto, cwd)
     }
 
+    /// Make room `id` from a thread's snapshot: a fork to this machine, or a
+    /// thread moved here before it started. Its usage, Always allow rules and
+    /// record of edits stay behind; they belong to the other folder.
+    pub fn room_import(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>) -> Result<(), String> {
+        if self.rooms.lock().unwrap().contains_key(&id) {
+            return Err("a thread with that id already exists".into());
+        }
+        let mut clean = snapshot.fork(snapshot.transcript.len());
+        clean.changes.clear();
+        clean.baseline = None;
+        self.store.import_room(&id, &SavedRoom { cwd: cwd.filter(|c| !c.is_empty()), snapshot: clean })
+    }
+
     async fn save_room(&self, id: &str) -> Result<(), String> {
         checkpoint_room(&self.handle(id)?, &self.store, id).await
     }

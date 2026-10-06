@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use apex_core::{AgentTool, AllowedRule, ParticipantConfig, ParticipantId, RoomOptions};
+use apex_core::{AgentTool, AllowedRule, ParticipantConfig, ParticipantId, RoomOptions, RoomSnapshot};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::Value;
@@ -40,6 +40,8 @@ pub enum Command {
     PtyKill { id: String },
     RoomDiff { id: String },
     RoomFork { source: String, target: String, upto: Option<usize> },
+    /// A thread's snapshot made into a new room here: a fork to this machine, or a thread moved before it started.
+    RoomImport { id: String, snapshot: RoomSnapshot, cwd: Option<String> },
     ExportThread { file_name: String, contents: String },
     /// The desktop sends raw bytes; over the wire `data` is base64.
     SaveAttachment { room: String, name: String, data: String },
@@ -128,6 +130,7 @@ impl Host {
             PtyKill { id } => { self.pty_kill(id); reply(()) },
             RoomDiff { id } => reply(self.room_diff(id).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),
+            RoomImport { id, snapshot, cwd } => reply(self.room_import(id, snapshot, cwd)?),
             ExportThread { file_name, contents } => reply(self.export_thread(file_name, contents)?),
             SaveAttachment { room, name, data } => {
                 let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| format!("the attachment could not be read: {e}"))?;
@@ -216,7 +219,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 63);
+        assert_eq!(names.len(), 64);
+        assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_state".to_string()));
         assert!(names.contains(&"decision_key_save".to_string()));
         assert!(names.contains(&"session_load".to_string()));

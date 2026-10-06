@@ -20,7 +20,7 @@ const appMethods = new Set([
 const writes = new Set([
   "roomPost", "roomPostTo", "roomTurn", "roomDecide", "roomSetOptions", "roomForgetAllowed", "roomAddParticipant",
   "roomUpdateParticipant", "roomRemoveParticipant", "roomClear", "roomRewind", "roomRevert", "roomPin", "roomUnpin",
-  "roomFork", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
+  "roomFork", "roomImport", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
   "generateImage", "importReplyImage", "artifactsSave",
 ]);
 const rawWrites = new Set([...writes].map(key => key.replace(/[A-Z]/g, letter => "_" + letter.toLowerCase())));
