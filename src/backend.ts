@@ -92,6 +92,8 @@ export interface Backend {
   /** Pin a fact for every model in the chat. Resolves with all pins. */
   roomDiff(id: string): Promise<ThreadDiff>;
   exportThread(fileName: string, contents: string): Promise<string | null>;
+  /** A PDF of the chat. Throws when this backend cannot make one. Null means the person cancelled. */
+  exportPdf(fileName: string, html: string): Promise<string | null>;
   /** Save a pasted or picked file for this thread. Resolves with its path. */
   saveAttachment(room: string, name: string, bytes: Uint8Array): Promise<string>;
   /** Copy a file dropped on the window into this thread's attachments. */
@@ -694,6 +696,7 @@ function demoBackend(): Backend {
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
       return null;
     },
+    exportPdf: async () => { throw new Error("PDFs are saved in the desktop app"); },
     // The browser keeps no files, so the "path" is only a name to show.
     saveAttachment: async (_room, name) => `/preview/attachments/${name}`,
     copyAttachment: async (_room, path) => path,

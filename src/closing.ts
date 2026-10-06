@@ -50,18 +50,29 @@ export function paneSection(pane: Pick<Pane, "kind" | "deck">): "code" | "thread
  * time is still written, so quitting before the time is up keeps it: the
  * delete only happens when the time runs out.
  */
+/** Only a real pin is written. `false`, missing, and junk are left off. */
+function withPin(pane: Pane, pinned: unknown): Pane {
+  if (pinned === true) pane.pinned = true;
+  return pane;
+}
+
 export function savedPanes(panes: Pane[]): Pane[] {
   return panes.map((p) => {
-    if (p.kind === "chat") return p;
+    if (p.kind === "chat") {
+      if (p.pinned === true) return p;
+      if (!("pinned" in p)) return p;
+      const { pinned: _drop, ...rest } = p;
+      return rest;
+    }
     if (p.kind === "preview") {
       const preview: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "preview", title: p.title, url: p.url ?? "" };
       if (p.servedBy) preview.servedBy = p.servedBy;
       if (p.deck === "threads") preview.deck = "threads";
-      return preview;
+      return withPin(preview, p.pinned);
     }
     const terminal: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "terminal", title: p.title };
     if (p.agent) terminal.agent = p.agent;
-    return terminal;
+    return withPin(terminal, p.pinned);
   });
 }
 
@@ -82,7 +93,9 @@ export function loadedPanes(saved: unknown[], workspaceIds: string[]): Pane[] {
     if (typeof p.workspaceId !== "string" || !workspaceIds.includes(p.workspaceId)) return [];
     if (p.kind === "chat") {
       seen.add(p.id);
-      return [p.closed ? (p as Pane) : { ...(p as Pane), closed: false }];
+      const chat: Pane = p.closed ? { ...(p as Pane) } : { ...(p as Pane), closed: false };
+      delete chat.pinned;
+      return [withPin(chat, p.pinned)];
     }
     if (p.kind === "preview") {
       if (typeof p.title !== "string" || !p.title.trim()) return [];
@@ -90,14 +103,14 @@ export function loadedPanes(saved: unknown[], workspaceIds: string[]): Pane[] {
       const preview: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "preview", title: p.title, url: typeof p.url === "string" ? normalizeAddress(p.url) ?? "" : "" };
       if (typeof p.servedBy === "string" && p.servedBy) preview.servedBy = p.servedBy;
       if (p.deck === "threads") preview.deck = "threads";
-      return [preview];
+      return [withPin(preview, p.pinned)];
     }
     if (p.kind !== "terminal" || typeof p.title !== "string" || !p.title.trim()) return [];
     if (p.agent != null && typeof p.agent !== "string") return [];
     seen.add(p.id);
     const terminal: Pane = { id: p.id, workspaceId: p.workspaceId, kind: "terminal", title: p.title };
     if (p.agent) terminal.agent = p.agent;
-    return [terminal];
+    return [withPin(terminal, p.pinned)];
   });
 }
 

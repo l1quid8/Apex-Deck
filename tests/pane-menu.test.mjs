@@ -5,14 +5,15 @@ import { paneMenuItems } from "../src/paneMenu.ts";
 const idle = { running: false, installed: true, tool: "Codex", folder: "/Users/tyler/apex-deck" };
 const summary = (items) => items.map((i) => `${i.separated ? "| " : ""}${i.label}${i.disabled ? " (off)" : ""}${i.danger ? " (danger)" : ""}`);
 
-test("a thread's menu offers Rename, Fork, Export, then Delete thread… in danger text", () => {
-  assert.deepEqual(summary(paneMenuItems("chat", idle)), ["Rename", "Fork", "Export", "| Delete thread… (danger)"]);
-  assert.deepEqual(paneMenuItems("chat", idle).map((i) => i.action), ["rename", "fork", "export", "delete"]);
+test("a thread's menu offers Rename, Pin, Share as PDF, Fork, Export, then Delete thread…", () => {
+  assert.deepEqual(summary(paneMenuItems("chat", idle)), ["Rename", "Pin to top", "Share as PDF", "Fork", "Export", "| Delete thread… (danger)"]);
+  assert.deepEqual(paneMenuItems("chat", idle).map((i) => i.action), ["rename", "pin", "share_pdf", "fork", "export", "delete"]);
+  assert.equal(paneMenuItems("chat", idle, { address: "" }, { pinned: true }).find((i) => i.action === "pin").label, "Unpin");
 });
 
-test("a terminal's menu offers Rename, Start again, Copy folder path, then Close", () => {
-  assert.deepEqual(summary(paneMenuItems("terminal", idle)), ["Rename", "Start again", "Copy folder path", "| Close"]);
-  assert.deepEqual(paneMenuItems("terminal", idle).map((i) => i.action), ["rename", "start", "copy_path", "close"]);
+test("a terminal's menu offers Rename, Pin, Start again, Copy folder path, then Close", () => {
+  assert.deepEqual(summary(paneMenuItems("terminal", idle)), ["Rename", "Pin to top", "Start again", "Copy folder path", "| Close"]);
+  assert.deepEqual(paneMenuItems("terminal", idle).map((i) => i.action), ["rename", "pin", "start", "copy_path", "close"]);
 });
 
 test("Start again is off while the program runs, and says why", () => {
@@ -42,9 +43,10 @@ test("Close is never turned off, so a busy terminal can always be closed (it ask
 test("a preview's menu renames, copies its address and closes", () => {
   const terminal = { running: false, installed: true, tool: "", folder: "" };
   const items = paneMenuItems("preview", terminal, { address: "http://localhost:5173/" });
-  assert.deepEqual(items.map((i) => i.action), ["rename", "copy_address", "close"]);
-  assert.equal(items[1].disabled, false);
-  const empty = paneMenuItems("preview", terminal, { address: "" });
-  assert.equal(empty[1].disabled, true);
-  assert.equal(empty[1].reason, "No page yet.");
+  assert.deepEqual(items.map((i) => i.action), ["rename", "pin", "copy_address", "close"]);
+  const copy = items.find((i) => i.action === "copy_address");
+  assert.equal(copy.disabled, false);
+  const empty = paneMenuItems("preview", terminal, { address: "" }).find((i) => i.action === "copy_address");
+  assert.equal(empty.disabled, true);
+  assert.equal(empty.reason, "No page yet.");
 });

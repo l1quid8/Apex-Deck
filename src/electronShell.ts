@@ -32,6 +32,8 @@ export interface DeckBridge {
     saveFile(name: string, contents: string): Promise<string | null>;
     /** Into Downloads under a name not yet taken. */
     exportFile(name: string, contents: string): Promise<string>;
+    /** Render HTML to a PDF in Downloads. Null is not used; failure throws. */
+    exportPdf(name: string, html: string): Promise<string>;
     /** Write to the exports folder and open in its default app. */
     openArtifact(name: string, contents: string): Promise<void>;
     openExternal(url: string): Promise<void>;
@@ -178,6 +180,7 @@ export function electronShell(
     artifactSave: (name, contents) => shell.saveFile(name, contents),
     artifactOpenExternal: (name, contents) => shell.openArtifact(name, contents),
     exportThread: (fileName, contents) => shell.exportFile(fileName, contents),
+    exportPdf: (fileName, html) => shell.exportPdf(fileName, html),
     // The host opens files on this Mac, as it always has.
     openTarget: (target, cwd, reveal) => call("open_target", { target, cwd, reveal }),
     copyAttachment: (room, path) => call("copy_attachment", { room, path }),

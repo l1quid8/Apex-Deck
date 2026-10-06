@@ -1046,7 +1046,7 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   .rail { width: 128px; }
   .rail-head { padding-left: 2px; padding-right: 2px; font-size: 9px; }
   .ws-name { font-size: 11px; gap: 5px; padding: 8px 5px; }
-  .ws-row > .pane-menu-wrap > .icon { opacity: 1; }
+  .ws-row > .pane-menu-wrap > .icon, .pane-row > .pane-menu-wrap > .icon { opacity: 1; }
   .pane-row { padding-left: 10px; font-size: 11px; }
   .chat-options select { max-width: 100%; }
   .chat-bar { padding: 10px; }
@@ -1373,6 +1373,12 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.pin-mark { flex: none; color: var(--accent); }
+.pane-row > .pane-menu-wrap { margin-left: auto; flex: none; }
+.pane-row > .pane-menu-wrap > .icon { opacity: 0; }
+.pane-row:hover > .pane-menu-wrap > .icon,
+.pane-row:focus-within > .pane-menu-wrap > .icon,
+.pane-row .icon[aria-expanded="true"] { opacity: 1; }
 .flag-count {
   flex: none;
   min-width: 17px;

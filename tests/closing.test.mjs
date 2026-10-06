@@ -31,6 +31,22 @@ test("a thread waiting out its undo time is still saved, so quitting keeps it", 
   assert.deepEqual(savedPanes(panes).filter((p) => p.kind === "chat").map((p) => p.id), ["a", "gone-soon"]);
 });
 
+test("a pin is kept for every pane kind and junk pins are dropped", () => {
+  const saved = savedPanes([
+    chat("a", { pinned: true, closed: true }),
+    term("t", { title: "Codex", agent: "codex", pinned: true }),
+    { id: "p", workspaceId: "w", kind: "preview", title: "Preview", url: "http://localhost:1/", pinned: true },
+  ]);
+  assert.equal(saved[0].pinned, true);
+  assert.equal(saved[1].pinned, true);
+  assert.equal(saved[2].pinned, true);
+  const loaded = loadedPanes(saved, ["w"]);
+  assert.deepEqual(loaded.map((p) => p.pinned), [true, true, true]);
+  assert.equal(loadedPanes([chat("b", { pinned: "yes" })], ["w"])[0].pinned, undefined);
+  assert.equal(loadedPanes([term("t2", { title: "T", pinned: false })], ["w"])[0].pinned, undefined);
+  assert.equal("pinned" in savedPanes([term("t3", { title: "T", pinned: 1 })])[0], false);
+});
+
 test("a closed thread stays saved", () => {
   assert.deepEqual(savedPanes([chat("a", { closed: true })]).map((p) => p.closed), [true]);
 });

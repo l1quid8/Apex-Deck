@@ -14,7 +14,7 @@ export interface Transport {
 }
 
 export type Shell = Pick<Backend, "pickFolder" | "pickPath" | "startupFolders" | "artifactSave"
-  | "artifactOpenExternal" | "exportThread" | "openTarget" | "copyAttachment" | "flagAttention"
+  | "artifactOpenExternal" | "exportThread" | "exportPdf" | "openTarget" | "copyAttachment" | "flagAttention"
   | "requestCriticalAttention" | "onFileDrop" | "onQuitRequested" | "quitHeard" | "quitApp"
   | "quitStopsWork">;
 

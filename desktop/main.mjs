@@ -4,7 +4,7 @@
 // relays lines and does what needs the machine with the screen. Each window
 // runs on one host, this Mac or another machine, so two can sit side by side.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, session, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,6 +15,7 @@ import { openTauriApps, tauriStorage } from './legacy.mjs';
 import { socketLink, sshLink } from './link.mjs';
 import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon } from './sidecar.mjs';
+import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
@@ -239,6 +240,52 @@ handle('shell:exportFile', async (_entry, name, contents) => {
     return writeNew(app.getPath('downloads'), name, String(contents));
   } catch (e) {
     throw new Error(`Could not save the export: ${e.message}`);
+  }
+});
+
+handle('shell:exportPdf', async (_entry, name, html) => {
+  const documentUrl = `data:text/html;charset=utf-8,${encodeURIComponent(String(html ?? ''))}`;
+  const partition = `pdf-export-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const ses = session.fromPartition(partition);
+  const block = (details, callback) => callback({ cancel: !pdfRequestAllowed(details.url, documentUrl) });
+  ses.webRequest.onBeforeRequest(block);
+  ses.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  ses.setPermissionCheckHandler(() => false);
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      partition,
+      javascript: false,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
+    },
+  });
+  const contents = win.webContents;
+  const stopNav = (event) => event.preventDefault();
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  contents.on('will-navigate', stopNav);
+  contents.on('will-redirect', stopNav);
+  contents.on('will-attach-webview', stopNav);
+  ses.on('will-download', stopNav);
+  const job = beginPdfExport();
+  try {
+    const printed = await new Promise((resolve, reject) => {
+      job.arm(30_000, () => {
+        if (!win.isDestroyed()) win.destroy();
+        reject(new Error('Making the PDF took too long.'));
+      });
+      win.loadURL(documentUrl).then(() => contents.printToPDF({
+        printBackground: true,
+        pageSize: pdfPageSize(app.getLocale()),
+      })).then(resolve, reject);
+    });
+    if (!job.commit()) throw new Error('Making the PDF took too long.');
+    return writeNew(app.getPath('downloads'), name, Buffer.from(printed));
+  } finally {
+    job.abort();
+    if (!win.isDestroyed()) win.destroy();
   }
 });
 

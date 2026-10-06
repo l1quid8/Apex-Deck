@@ -39,7 +39,7 @@ import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
-import { exportFileName, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
+import { exportFileName, exportHtml, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { DiffPanel } from "./DiffPanel";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
@@ -98,8 +98,10 @@ interface Props {
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
   onFork?: (title: string, upto: number | null) => Promise<string>;
-  /** Fork or Export chosen in the pane's ⋯ menu; `n` goes up on each choice. */
-  menuRequest?: { action: "fork" | "export"; n: number };
+  /** Fork, Export or Share chosen in a ⋯ menu. Cleared after it is taken. */
+  menuRequest?: { id: string; action: "fork" | "export" | "share_pdf" };
+  /** The request was taken, so a remount must not run it again. */
+  onMenuDone?: (id: string) => void;
   disabledProviders: string[];
   /** Settings › New threads: what a thread never saved before starts with. */
   newThread?: RoomOptions;
@@ -374,7 +376,7 @@ function fitHead(head: HTMLElement) {
     head.scrollWidth <= head.clientWidth && (!title || title.scrollWidth <= title.clientWidth || title.clientWidth >= TITLE_ROOM));
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, menuRequest, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, menuRequest, onMenuDone, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -514,6 +516,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** The id of the participant being edited, or null when adding a new one. */
   const [editing, setEditing] = useState<string | null>(null);
   const [ready, setReady] = useState(profileMode);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => { if (profileMode) setParticipants(profiles); }, [profiles, profileMode]);
   /** The window has focus; a thread counts as watched only then. */
@@ -831,9 +834,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           opening.current = true;
           setUnread(unseenCount(seen, from));
         }
+        setLoadError("");
         setReady(true);
       })
-      .catch((error) => notify(`Could not create the chat: ${String(error)}`, "error"));
+      .catch((error) => {
+        if (!alive) return;
+        const message = String(error);
+        setLoadError(message);
+        notify(`Could not create the chat: ${message}`, "error");
+      });
     return () => {
       alive = false;
       unregister();
@@ -1298,14 +1307,45 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {goBackPop(message)}
     </span>;
   };
+  const threadExport = (): ThreadExport => ({ title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries) });
+  /** Save the thread. Resolves with the path, "" when the browser started a download, or null if nothing was saved. */
+  const saveExport = async (format: "markdown" | "json"): Promise<string | null> => {
+    const at = new Date();
+    const thread = threadExport();
+    const contents = format === "json" ? exportJson(thread, at) : exportMarkdown(thread, at);
+    const path = await backend.exportThread(exportFileName(pane.title, format, at), contents);
+    if (path) return path;
+    return backend.demo ? "" : null;
+  };
   /** Save the thread to Downloads as Markdown or JSON, then show the file. */
   const exportAs = (format: "markdown" | "json") => {
-    const at = new Date();
-    const thread: ThreadExport = { title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries) };
-    const contents = format === "json" ? exportJson(thread, at) : exportMarkdown(thread, at);
-    backend.exportThread(exportFileName(pane.title, format, at), contents)
+    saveExport(format)
       .then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } })
       .catch((error) => notify(`Could not export: ${String(error)}`, "error"));
+  };
+  const sharePdf = async () => {
+    const at = new Date();
+    const thread = threadExport();
+    try {
+      const path = await backend.exportPdf(exportFileName(pane.title, "pdf", at), exportHtml(thread, at));
+      if (path) {
+        notify(`Saved PDF to ${path}`);
+        openTarget(path, true);
+        return;
+      }
+      notify("The PDF was not saved.", "error");
+    } catch (error) {
+      let markdown: string | null = null;
+      try {
+        markdown = await saveExport("markdown");
+      } catch (fallback) {
+        notify(`Could not save a PDF or a Markdown file: ${String(fallback)}`, "error");
+        return;
+      }
+      if (markdown) notify(`Couldn't make a PDF, saved Markdown instead: ${String(error)} (${markdown})`, "error");
+      else if (markdown === "") notify(`Couldn't make a PDF, saved Markdown instead: ${String(error)}`, "error");
+      else notify(`Could not save a PDF or a Markdown file: ${String(error)}`, "error");
+    }
   };
   /** Commands run locally and never reach the models. */
   const runCommand = (command: Command) => {
@@ -1338,14 +1378,25 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
     }
   };
-  // Fork or Export chosen in the pane's ⋯ menu.
-  const lastMenu = useRef(menuRequest?.n ?? 0);
+  // Fork, Export or Share from a ⋯ menu. Wait until the transcript has loaded.
+  // Tell App as soon as it is taken so closing and reopening cannot run it twice.
+  const takenMenu = useRef("");
   useEffect(() => {
-    if (!menuRequest || menuRequest.n === lastMenu.current) return;
-    lastMenu.current = menuRequest.n;
+    if (!menuRequest || menuRequest.id === takenMenu.current) return;
+    if (!ready) {
+      if (!loadError) return;
+      takenMenu.current = menuRequest.id;
+      notify(`Couldn't open this chat, so nothing was saved: ${loadError}`, "error");
+      onMenuDone?.(menuRequest.id);
+      return;
+    }
+    takenMenu.current = menuRequest.id;
+    const id = menuRequest.id;
+    onMenuDone?.(id);
     if (menuRequest.action === "fork") void forkAt(`${pane.title} (fork)`, null);
-    else exportAs("markdown");
-  }, [menuRequest]); // eslint-disable-line react-hooks/exhaustive-deps
+    else if (menuRequest.action === "share_pdf") void sharePdf();
+    else void saveExport("markdown").then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } }).catch((error) => notify(`Could not export: ${String(error)}`, "error"));
+  }, [menuRequest, ready, loadError]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Artifacts: code from replies, opened on request, saved beside the thread.
   // A file that can't be read is never written over. See artifacts.ts.

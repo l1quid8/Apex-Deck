@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 
 import { getBackend, type Backend } from "./backend";
 import { connection, statusWords } from "./connection";
@@ -21,7 +21,8 @@ import { PreviewPane, type ServerChoice } from "./PreviewPane";
 import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
 import { nextTitle, programTitle } from "./terminalTitle";
 import { hostLabel, sameServer } from "./previewAddress";
-import { paneMenuItems, type PaneMenuAction } from "./paneMenu";
+import { paneMenuItems, type PaneMenuAction, type PaneMenuItem } from "./paneMenu";
+import { pinnedFirst } from "./railOrder";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, workspaceFlag, type Attention, type Signal } from "./attention";
@@ -45,6 +46,17 @@ const WORKING_WINDOW_MS = 1500;
 
 let counter = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
+
+function placeMenu(anchor: HTMLElement): CSSProperties {
+  const rect = anchor.getBoundingClientRect();
+  const width = 200;
+  const height = 260;
+  let top = rect.bottom + 4;
+  if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 4);
+  let left = Math.min(rect.right, window.innerWidth - 8) - width;
+  if (left < 8) left = 8;
+  return { position: "fixed", top, left, right: "auto" };
+}
 
 function loadWorkspaces(): Workspace[] {
   try {
@@ -138,12 +150,16 @@ export function App() {
   const [paneMenu, setPaneMenu] = useState<string | null>(null);
   /** Bumped by ⌘T to open the + New menu. */
   const [newMenuRequest, setNewMenuRequest] = useState(0);
-  /** Bumped to start renaming a thread from its ⋯ menu. */
+  /** Bumped to start renaming from the pane head's ⋯ menu. */
   const [renameRequests, setRenameRequests] = useState<Record<string, number>>({});
+  /** Bumped to start renaming from the sidebar row, so the head editor stays closed. */
+  const [railRename, setRailRename] = useState<Record<string, number>>({});
   /** Bumped to start a terminal again from its ⋯ menu. */
   const [startRequests, setStartRequests] = useState<Record<string, number>>({});
-  /** Fork or Export chosen in a thread's ⋯ menu; `n` goes up on each choice. */
-  const [threadRequests, setThreadRequests] = useState<Record<string, { action: "fork" | "export"; n: number }>>({});
+  /** Fork, Export or Share chosen in a ⋯ menu. Cleared once the thread takes it. */
+  const [threadRequests, setThreadRequests] = useState<Record<string, { id: string; action: "fork" | "export" | "share_pdf" } | undefined>>({});
+  const menuSeq = useRef(0);
+  const [menuPlace, setMenuPlace] = useState<CSSProperties | undefined>(undefined);
   const [railOpen, setRailOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
@@ -685,7 +701,7 @@ export function App() {
   const deleteThread = (pane: Pane) => {
     setQuestion({
       title: `Delete ${pane.title}?`,
-      body: "Its messages, pins and temp files are removed.",
+      body: "Its messages, pins and temp files are removed. This can't be undone after a few seconds.",
       action: "Delete thread",
       onConfirm: () => {
         setDeleting((set) => new Set(set).add(pane.id));
@@ -717,17 +733,45 @@ export function App() {
   // A ⋯ menu closes on a click elsewhere or Escape. Escape puts focus back on
   // the button that opened it.
   const menuOpener = useRef<HTMLElement | null>(null);
-  const toggleMenu = (id: string, event: ReactMouseEvent<HTMLElement>) => {
-    menuOpener.current = event.currentTarget;
+  const openMenu = (id: string, anchor: HTMLElement) => {
+    menuOpener.current = anchor;
+    setMenuPlace(placeMenu(anchor));
     setPaneMenu((open) => (open === id ? null : id));
+  };
+  const toggleMenu = (id: string, event: ReactMouseEvent<HTMLElement>) => {
+    event.stopPropagation();
+    openMenu(id, event.currentTarget);
+  };
+  const onMenuKey = (event: ReactKeyboardEvent<HTMLElement>) => {
+    event.stopPropagation();
+    const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + step + items.length) % items.length]?.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setPaneMenu(null);
+      menuOpener.current?.focus();
+    }
+  };
+  const menuBlur = (event: ReactFocusEvent<HTMLElement>) => {
+    const menu = event.currentTarget;
+    if (menu.contains(event.relatedTarget as Node | null)) return;
+    setTimeout(() => { if (!menu.contains(document.activeElement)) setPaneMenu(null); }, 0);
   };
   useEffect(() => {
     if (!paneMenu) return;
-    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".pane-menu-wrap")) setPaneMenu(null); };
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { setPaneMenu(null); menuOpener.current?.focus(); } };
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".pane-menu-wrap, .pane-menu")) setPaneMenu(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape" && !(event.target as Element).closest?.(".pane-menu")) { setPaneMenu(null); menuOpener.current?.focus(); } };
     window.addEventListener("mousedown", away);
     window.addEventListener("keydown", key);
     return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key); };
+  }, [paneMenu]);
+  useEffect(() => {
+    if (!paneMenu) return;
+    document.querySelector<HTMLElement>(`[data-menu="${CSS.escape(paneMenu)}"] [role="menuitem"]:not(:disabled)`)?.focus();
   }, [paneMenu]);
 
   /** Show a workspace's folder in Finder. */
@@ -736,9 +780,12 @@ export function App() {
   };
 
   /** Run what was chosen in a pane's ⋯ menu. */
-  const runPaneMenu = (pane: Pane, action: PaneMenuAction) => {
+  const runPaneMenu = (pane: Pane, action: PaneMenuAction, from: "rail" | "head" = "head") => {
     const bump = (all: Record<string, number>) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 });
-    if (action === "rename") setRenameRequests(bump);
+    if (action === "rename") {
+      if (from === "rail") setRailRename(bump);
+      else setRenameRequests(bump);
+    } else if (action === "pin") setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, pinned: p.pinned ? undefined : true } : p)));
     else if (action === "start") setStartRequests(bump);
     else if (action === "copy_path") {
       const path = workspaces.find((w) => w.id === pane.workspaceId)?.path;
@@ -746,9 +793,23 @@ export function App() {
     } else if (action === "copy_address") {
       if (pane.url) navigator.clipboard?.writeText(pane.url).catch(() => {});
     } else if (action === "close") closePane(pane.id);
-    else if (action === "fork" || action === "export") setThreadRequests((all) => ({ ...all, [pane.id]: { action, n: (all[pane.id]?.n ?? 0) + 1 } }));
-    else if (action === "delete") deleteThread(pane);
+    else if (action === "fork" || action === "export" || action === "share_pdf") {
+      if (pane.closed) focusPane(pane);
+      const id = `${++menuSeq.current}`;
+      setThreadRequests((all) => ({ ...all, [pane.id]: { id, action } }));
+    } else if (action === "delete") deleteThread(pane);
   };
+
+  const drawPaneMenu = (id: string, items: PaneMenuItem[], pane: Pane, from: "rail" | "head") => paneMenu === id ? (
+    <span className="pane-menu" role="menu" data-menu={id} style={menuPlace} onKeyDown={onMenuKey} onBlur={menuBlur} onClick={(event) => event.stopPropagation()}>
+      {items.map((item) => (
+        <Fragment key={item.action}>
+          {item.separated && <span className="pane-menu-sep" role="separator" />}
+          <button role="menuitem" className={item.danger ? "danger-text" : undefined} disabled={item.disabled} title={item.reason || undefined} onClick={(event) => { event.stopPropagation(); setPaneMenu(null); runPaneMenu(pane, item.action, from); }}>{item.label}</button>
+        </Fragment>
+      ))}
+    </span>
+  ) : null;
 
   const focusPane = (pane: Pane) => {
     if (pane.closed) setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, closed: false } : p)));
@@ -958,7 +1019,7 @@ export function App() {
             </div>
             {shownList.length === 0 && <p className="muted rail-empty">Add a folder to get started.</p>}
             {shownList.map((workspace) => {
-              const own = section === "agents" ? [] : panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && paneSection(p) === section);
+              const own = section === "agents" ? [] : pinnedFirst(panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id) && paneSection(p) === section));
               const inside = panes
                 .filter((p) => p.workspaceId === workspace.id && attention[p.id] && !deleting.has(p.id))
                 .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: attention[p.id] }));
@@ -985,7 +1046,7 @@ export function App() {
                         ⋯
                       </button>
                       {paneMenu === workspace.id && (
-                        <span className="pane-menu" role="menu">
+                        <span className="pane-menu" role="menu" data-menu={workspace.id} style={menuPlace} onKeyDown={onMenuKey} onBlur={menuBlur}>
                           <button role="menuitem" onClick={() => { setPaneMenu(null); rename(); }}>Rename</button>
                           <button role="menuitem" disabled={!workspace.path} title={workspace.path ? undefined : "This workspace has no folder"} onClick={() => { setPaneMenu(null); revealWorkspace(workspace); }}>Reveal in Finder</button>
                           <span className="pane-menu-sep" role="separator" />
@@ -994,14 +1055,33 @@ export function App() {
                       )}
                     </span>
                   </div>
-                  {own.map((pane) => (
-                    <div role="button" tabIndex={0} key={pane.id} onKeyDown={e => {if(e.key === "Enter") focusPane(pane);}} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}>
+                  {own.map((pane) => {
+                    const menuId = `rail:${pane.id}`;
+                    const menuItems = paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, agents), tool: toolName(pane.agent, agents), folder: workspace.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned });
+                    return (
+                    <div role="button" tabIndex={0} key={pane.id} className={`pane-row ${pane.id === focusedPane && !pane.closed ? "focused" : ""} ${pane.closed ? "closed" : ""}`} title={pane.closed ? "Closed. Click to open it again." : undefined} onClick={() => focusPane(pane)}
+                      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); const opener = event.currentTarget.querySelector<HTMLElement>(".pane-row-more"); if (opener) openMenu(menuId, opener); }}
+                      onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
+                        if (event.key === "Enter") { event.preventDefault(); focusPane(pane); }
+                        else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                          event.preventDefault();
+                          const opener = event.currentTarget.querySelector<HTMLElement>(".pane-row-more");
+                          if (opener) openMenu(menuId, opener);
+                        }
+                      }}>
                       <span className={`dot ${statusOf(pane)}`} title={statusOf(pane)} />
-                      <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
+                      {pane.pinned && <svg className="pin-mark" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" role="img" aria-label="Pinned"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" /><path d="M12 16v6" /></svg>}
+                      <ThreadName className="pane-row-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={railRename[pane.id]} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
                       {programOf(pane) && <span className="program-title">· {programOf(pane)}</span>}
                       {attention[pane.id] && <span className={`flag ${attention[pane.id].kind}`} title={attention[pane.id].note}>{label(attention[pane.id].kind)}</span>}
+                      <span className="pane-menu-wrap" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+                        <button className="icon small pane-row-more" onClick={(event) => toggleMenu(menuId, event)} aria-label={`More for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === menuId} title="More">⋯</button>
+                        {drawPaneMenu(menuId, menuItems, pane, "rail")}
+                      </span>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               );
             })}
@@ -1012,7 +1092,7 @@ export function App() {
                 <span className="pane-menu-wrap">
                   <button className="ghost" onClick={(event) => toggleMenu(REMOVED_MENU, event)} aria-label="Show removed workspaces" aria-haspopup="menu" aria-expanded={paneMenu === REMOVED_MENU}>Show</button>
                   {paneMenu === REMOVED_MENU && (
-                    <span className="pane-menu" role="menu" aria-label="Removed workspaces">
+                    <span className="pane-menu" role="menu" aria-label="Removed workspaces" data-menu={REMOVED_MENU} style={menuPlace} onKeyDown={onMenuKey} onBlur={menuBlur}>
                       {hiddenList.map((workspace) => (
                         <button key={workspace.id} role="menuitem" title={workspace.path || workspace.name} onClick={() => bringBack(workspace.id)}>{workspace.name}</button>
                       ))}
@@ -1086,19 +1166,10 @@ export function App() {
                       {maximized === pane.id ? "▣" : "□"}
                     </button>
                     <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
-                      <button className="icon small" onClick={(event) => toggleMenu(pane.id, event)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === pane.id} title="More">
+                      <button className="icon small" onClick={(event) => toggleMenu(`head:${pane.id}`, event)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={paneMenu === `head:${pane.id}`} title="More">
                         ⋯
                       </button>
-                      {paneMenu === pane.id && (
-                        <span className="pane-menu" role="menu">
-                          {paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, agents), tool: toolName(pane.agent, agents), folder: workspace?.path ?? "" }, { address: pane.url ?? "" }).map((item) => (
-                            <Fragment key={item.action}>
-                              {item.separated && <span className="pane-menu-sep" role="separator" />}
-                              <button role="menuitem" className={item.danger ? "danger-text" : undefined} disabled={item.disabled} title={item.reason || undefined} onClick={() => { setPaneMenu(null); runPaneMenu(pane, item.action); }}>{item.label}</button>
-                            </Fragment>
-                          ))}
-                        </span>
-                      )}
+                      {drawPaneMenu(`head:${pane.id}`, paneMenuItems(pane.kind, { running: isRunning(runs[pane.id]), installed: toolInstalled(pane.agent, agents), tool: toolName(pane.agent, agents), folder: workspace?.path ?? "" }, { address: pane.url ?? "" }, { pinned: pane.pinned }), pane, "head")}
                     </span>
                     <button className="icon small" onClick={() => closePane(pane.id)} aria-label={`Close ${pane.title}`} title={pane.kind === "chat" ? "Close (the thread stays in the list)" : "Close"}>
                       ×
@@ -1124,7 +1195,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane onStatus={onThreadStatus} menuRequest={threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto) => forkThread(pane, title, upto)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}
                   </div>
                 </section>

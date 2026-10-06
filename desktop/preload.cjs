@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
     pickPath: (kind, title) => ipcRenderer.invoke('shell:pickPath', kind, title),
     saveFile: (name, contents) => ipcRenderer.invoke('shell:saveFile', name, contents),
     exportFile: (name, contents) => ipcRenderer.invoke('shell:exportFile', name, contents),
+    exportPdf: (name, html) => ipcRenderer.invoke('shell:exportPdf', name, html),
     openArtifact: (name, contents) => ipcRenderer.invoke('shell:openArtifact', name, contents),
     openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
     setBadge: (count) => ipcRenderer.invoke('shell:setBadge', count),

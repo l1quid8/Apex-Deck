@@ -14,7 +14,7 @@ function recording() {
   };
 }
 
-const SHELL_KEYS = ['pickFolder', 'pickPath', 'startupFolders', 'artifactSave', 'artifactOpenExternal', 'exportThread', 'openTarget',
+const SHELL_KEYS = ['pickFolder', 'pickPath', 'startupFolders', 'artifactSave', 'artifactOpenExternal', 'exportThread', 'exportPdf', 'openTarget',
   'copyAttachment', 'flagAttention', 'requestCriticalAttention', 'onFileDrop', 'onQuitRequested', 'quitHeard', 'quitApp'];
 
 function stubShell() {

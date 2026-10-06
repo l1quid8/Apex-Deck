@@ -235,6 +235,8 @@ export interface Pane {
   deck?: "code" | "threads";
   /** A thread taken off the deck. It stays saved and listed in the rail. */
   closed?: boolean;
+  /** Kept at the top of its sidebar list. Does not change order on the deck. */
+  pinned?: boolean;
   /** A sample thread: its room starts with scripted bots. */
   sample?: boolean;
   /** The seq of the newest message you saw at the bottom of this thread, or
