@@ -38,3 +38,9 @@ test("hosts to open in the browser are kept lower case, once each", () => {
   assert.deepEqual(readSettings({ preview: { openExternally: ["GitHub.com", "github.com", 4, " "] } }).preview.openExternally, ["github.com"]);
   assert.deepEqual(readSettings({ preview: "broken" }).preview.openExternally, []);
 });
+
+test("decision settings default off and reject unsupported providers", () => {
+  const read = readSettings({ decision: { enabled: true, provider: "evil", accountId: 4, apiKey: "must not persist" } });
+  assert.deepEqual(read.decision, { enabled: false, provider: "jev", accountId: "" });
+  assert.deepEqual(readSettings({ decision: { enabled: true, provider: "openrouter", accountId: "" } }).decision, { enabled: true, provider: "openrouter", accountId: "" });
+});

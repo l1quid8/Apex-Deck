@@ -87,3 +87,39 @@ test('a client chats, resumes after a drop mid-turn, and is told to resync after
   daemon = await serve(data);
   await until('the resync', () => statuses.at(-1) === 'resync');
 });
+
+test('decision settings round-trip through the daemon, remain off by default, and reject an empty secret', { timeout: 30_000 }, async (t) => {
+  const data = fs.mkdtempSync('/tmp/ade-dec-');
+  const daemon = await serve(data);
+  const client = new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
+  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
+  await client.start();
+  const settings = { version: 1, confirmSteer: true, decision: { enabled: false, provider: 'jev', accountId: '' } };
+  await client.call('settings_save', { settings });
+  assert.deepEqual(await client.call('settings_load'), settings);
+  await assert.rejects(client.call('decision_key_save', { provider: 'jev', key: '' }), /API key must not be empty/);
+  assert.deepEqual(await client.call('settings_load'), settings);
+  assert.ok(!fs.readFileSync(path.join(data, 'saved-chats-v1', 'settings.json'), 'utf8').includes('decisionApiKey'));
+  await client.call('room_create', { id: 'decision-off', options, cwd: null, participants: [shell('bot', 'echo observer does not route')] });
+  await client.call('room_post', { id: 'decision-off', text: 'hello' });
+  assert.equal(fs.existsSync(path.join(data, 'decisions.jsonl')), false);
+});
+
+test('manual steer and picture targets bypass observation even with a broken provider', { timeout: 30_000 }, async (t) => {
+  const data = fs.mkdtempSync('/tmp/ade-dec-manual-');
+  const daemon = await serve(data);
+  const client = new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
+  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
+  await client.start();
+  await client.call('settings_save', { settings: { decision: { enabled: true, provider: 'cloudflare', accountId: '../invalid' } } });
+  await client.call('room_create', { id: 'manual', options, cwd: null, participants: [shell('bot', 'echo reply')] });
+  await client.call('room_post_to', { id: 'manual', text: 'steer without mention', targets: ['bot'] });
+  await client.call('room_post_to', { id: 'manual', text: 'Picture from camera', targets: [] });
+  assert.equal(fs.existsSync(path.join(data, 'decisions.jsonl')), false);
+  await client.call('room_post', { id: 'manual', text: 'ordinary routed message' });
+  await until('provider failure observation', () => fs.existsSync(path.join(data, 'decisions.jsonl')));
+  const rows = fs.readFileSync(path.join(data, 'decisions.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].error);
+  assert.deepEqual(rows[0].deck_targets, ['bot']);
+});

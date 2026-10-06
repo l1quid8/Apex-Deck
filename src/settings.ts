@@ -5,7 +5,11 @@
 
 import type { Access, ParticipantConfig, RoomOptions, TurnPolicy } from "./types";
 
+export interface DecisionSettings { enabled: boolean; provider: "jev" | "openrouter" | "cloudflare"; accountId: string; }
+export const DEFAULT_DECISION: DecisionSettings = { enabled: false, provider: "jev", accountId: "" };
+
 export interface AppSettings {
+  decision?: DecisionSettings;
   version: 1;
   /** Tools hidden from the add menus and bot form. */
   disabledProviders: string[];
@@ -50,6 +54,11 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
   const terminal = record(saved.terminal);
   const d = DEFAULT_SETTINGS;
   return {
+    ...(saved.decision ? { decision: {
+      enabled: record(saved.decision).enabled === true && ["jev", "openrouter", "cloudflare"].includes(String(record(saved.decision).provider)),
+      provider: (["jev", "openrouter", "cloudflare"].includes(String(record(saved.decision).provider)) ? record(saved.decision).provider : "jev") as DecisionSettings["provider"],
+      accountId: typeof record(saved.decision).accountId === "string" ? record(saved.decision).accountId as string : "",
+    } } : {}),
     version: 1,
     disabledProviders: strings(saved.disabledProviders) ?? strings(legacyDisabled) ?? [],
     newThread: {
