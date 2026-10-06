@@ -10,41 +10,49 @@ export function unsupported(error: unknown, command: string): boolean {
   return new RegExp(`unknown variant [\`'"]?${command}|unknown command.*${command}|unsupported.*${command}`, "i").test(String(error));
 }
 
-type Room = Pick<Backend, "roomImport" | "roomCreate" | "roomDelete">;
+/** An older helper can't put a thread in another folder on its machine without deleting it first, so it isn't asked to. */
+export class FolderMoveUnsupported extends Error {
+  constructor(hostName: string) {
+    super(`${hostName}'s apex-daemon is too old to move a thread to another folder there.`);
+  }
+}
+
+type Room = Pick<Backend, "roomImport" | "roomCreate" | "roomDelete" | "artifactsLoad" | "artifactsSave">;
 
 /**
  * Put thread `id` from `snapshot` on `to`, in folder `cwd`. On the same host
- * the room is replaced in one step; on another, the old copy is deleted after
- * the new one exists. An older helper without room_import can still take a
- * thread with no history: a fresh room with the same bots and options. On the
- * same host that room is deleted first, so if the new one can't be made it is
- * made again in `fromCwd`, where the thread still is.
+ * the room is replaced in one step and keeps its artifacts. On another, the
+ * artifacts are saved there too, and only then is the old copy deleted. An
+ * older helper without room_import can still take a thread with no history
+ * or pins from another machine: a fresh room with the same bots and options.
+ * It can't change a room's folder without deleting the room first, so a move
+ * on its own machine throws FolderMoveUnsupported and nothing changes.
  */
-export async function placeThread({ from, to, id, snapshot, cwd, fromCwd, sameHost, hostName }: {
-  from: Room; to: Room; id: string; snapshot: RoomSnapshot; cwd: string; fromCwd: string; sameHost: boolean; hostName: string;
+export async function placeThread({ from, to, id, snapshot, cwd, sameHost, hostName }: {
+  from: Room; to: Room; id: string; snapshot: RoomSnapshot; cwd: string; sameHost: boolean; hostName: string;
 }): Promise<"imported" | "recreated"> {
   let how: "imported" | "recreated" = "imported";
   try {
     await to.roomImport(id, snapshot, cwd, sameHost);
   } catch (error) {
     if (!unsupported(error, "room_import")) throw error;
-    if (snapshot.transcript.length > 0) {
-      throw new Error(`${hostName}'s apex-daemon is too old to take a thread's history. Update it there (docs/daemon-ubuntu.md).`);
+    if (sameHost) throw new FolderMoveUnsupported(hostName);
+    if (snapshot.transcript.length > 0 || (snapshot.pins?.length ?? 0) > 0) {
+      throw new Error(`${hostName}'s apex-daemon is too old to take a thread's history or pins. Update it there (docs/daemon-ubuntu.md).`);
     }
-    if (sameHost) {
-      try {
-        await to.roomDelete(id);
-        await to.roomCreate(id, snapshot.participants, snapshot.options, cwd);
-      } catch (failed) {
-        await to.roomCreate(id, snapshot.participants, snapshot.options, fromCwd).catch(() => {});
-        throw failed;
-      }
-    } else {
-      await to.roomCreate(id, snapshot.participants, snapshot.options, cwd);
-    }
+    await to.roomCreate(id, snapshot.participants, snapshot.options, cwd);
     how = "recreated";
   }
-  if (!sameHost) await from.roomDelete(id).catch(() => {});
+  if (sameHost) return how;
+  try {
+    const artifacts = await from.artifactsLoad(id);
+    if (artifacts != null) await to.artifactsSave(id, artifacts);
+  } catch (error) {
+    // The copy there is new, so it goes; the thread stays whole where it was.
+    await to.roomDelete(id).catch(() => {});
+    throw error;
+  }
+  await from.roomDelete(id).catch(() => {});
   return how;
 }
 

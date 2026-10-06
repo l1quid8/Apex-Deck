@@ -35,7 +35,7 @@ import { chooseOutcome, pickerRows, shortName, workInRows } from "./destinations
 import { Glyph, ProjectFolder } from "./SidebarIcons";
 import type { WorkContext } from "./WorkBar";
 import { dotState } from "./hostFacts.ts";
-import { historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
+import { FolderMoveUnsupported, historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
 import { loadRoomState } from "./roomRecovery.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
@@ -176,8 +176,8 @@ export function App() {
   const [hostList, setHostList] = useState<HostEntry[]>([]);
   /** Edit connection… (or Add a server), while open. */
   const [connectionDialog, setConnectionDialog] = useState<ConnectionMode | null>(null);
-  /** A started thread pointed somewhere else: it asks New thread or Fork there. */
-  const [moveAsk, setMoveAsk] = useState<{ paneId: string; to: Workspace } | null>(null);
+  /** A started thread pointed somewhere else: it asks New thread or Fork there. With `why`, it couldn't move and only New thread is offered. */
+  const [moveAsk, setMoveAsk] = useState<{ paneId: string; to: Workspace; why?: string } | null>(null);
   /** Bumped by ⌥⇧⌘O to open a thread's project picker. */
   const [pickerRequests, setPickerRequests] = useState<Record<string, number>>({});
   /** Threads being moved or forked right now, so a second choice waits. */
@@ -945,11 +945,13 @@ export function App() {
     moving.current.add(pane.id);
     try {
       const snapshot = await snapshotOf(pane, source);
-      await placeThread({ from: hostBackend(fromHost), to: hostBackend(toHost), id: pane.id, snapshot, cwd: target.path, fromCwd: source.path, sameHost: fromHost === toHost, hostName: hostNameFor(toHost) });
+      await placeThread({ from: hostBackend(fromHost), to: hostBackend(toHost), id: pane.id, snapshot, cwd: target.path, sameHost: fromHost === toHost, hostName: hostNameFor(toHost) });
       setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, workspaceId: target.id } : p)));
+      setMoveAsk((ask) => (ask?.paneId === pane.id ? null : ask));
       setActiveWorkspace(target.id);
     } catch (error) {
-      toast(`Couldn't move ${pane.title}: ${String(error).replace(/^Error: /, "")}`);
+      if (error instanceof FolderMoveUnsupported) { setMoveAsk({ paneId: pane.id, to: target, why: error.message }); focusPane(pane); }
+      else toast(`Couldn't move ${pane.title}: ${String(error).replace(/^Error: /, "")}`);
     } finally {
       moving.current.delete(pane.id);
     }
@@ -1037,9 +1039,9 @@ export function App() {
     const here = workspaces.find((w) => w.id === pane.workspaceId);
     if (!here) return undefined;
     return {
-      stays: hostNameFor(workspaceHost(here)), project: to.name, host: hostNameFor(workspaceHost(to)),
+      stays: hostNameFor(workspaceHost(here)), project: to.name, host: hostNameFor(workspaceHost(to)), why: moveAsk.why,
       onNew: () => { setMoveAsk(null); addPane("chat", "Group chat", undefined, to.id); },
-      onFork: () => { setMoveAsk(null); void forkTo(pane, to); },
+      onFork: moveAsk.why ? undefined : () => { setMoveAsk(null); void forkTo(pane, to); },
       onCancel: () => setMoveAsk(null),
     };
   };

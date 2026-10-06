@@ -382,6 +382,34 @@ export async function runMultiHostSmoke(win) {
   await shot('work-bar-picker');
   await page(`document.querySelector('.tray-pop .pk-row[data-workspace="${serverProject}"]').click();return true;`);
   await until('picked project moves the empty thread',()=>page(`return ${pane(fresh)}.dataset.hostId==='at'&&${tray(fresh)}.querySelector('.tray-chip.work .lbl')?.textContent==='Frankfurt'`));
+  // An older helper can't put a thread in another folder on its machine without deleting it
+  // first, so it isn't asked to: the thread stays whole, and a new thread there is offered.
+  await page("const b=__deck.backend.machines.get('at');window.__realImport=b.roomImport;b.roomImport=async()=>{throw Error('unknown variant `room_import`, expected one of `session_load`');};return true;");
+  const serverOriginal='at:shared-workspace-id:1';
+  await projectMenu(`.pane-row[data-pane-row="${fresh}"]`);
+  await page(`document.querySelector('.pane-submenu [data-key="${serverOriginal}"]').click();return true;`);
+  await until('an older helper asks instead of moving',()=>page(`return Boolean(${pane(fresh)}.querySelector('.move-ask'))`));
+  assert.match(await page(`return ${pane(fresh)}.querySelector('.move-ask').textContent`),/too old to move a thread to another folder there/);
+  assert.equal(await page(`return Boolean(${pane(fresh)}.querySelector('.move-ask [data-act="ask-fork"]'))`),false);
+  await shot('old-helper-move-ask');
+  assert.ok((await page(`return ${pane(fresh)}.querySelector('.pane-ws').title`)).endsWith(listed));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'server','saved-chats-v1','rooms',`${Buffer.from(fresh).toString('hex')}.json`),'utf8')).cwd,listed);
+  const beforeNew=await paneIds();
+  await page(`${pane(fresh)}.querySelector('.move-ask [data-act="ask-new"]').click();return true;`);
+  const opened=await until('a new thread in the other folder',async()=>(await paneIds()).find(x=>!beforeNew.includes(x)));
+  await until('it opened in the other folder there',()=>page(`const p=${pane(opened)};return p.dataset.hostId==='at'&&p.querySelector('.pane-ws').title.endsWith(${JSON.stringify(serverCopy)})`));
+  assert.equal(await page(`return Boolean(${pane(fresh)}.querySelector('.move-ask'))`),false);
+  await page(`${pane(opened)}.querySelector('.pane-head [aria-label^="Close"]').click();return true;`);
+  await until('the extra thread closed',()=>page(`return ${pane(opened)}.offsetWidth===0`));
+  // Asked again, then a helper that can: one replace there moves it, and the question goes away.
+  const pickOriginal=async()=>{await projectMenu(`.pane-row[data-pane-row="${fresh}"]`);await page(`document.querySelector('.pane-submenu [data-key="${serverOriginal}"]').click();return true;`);};
+  await pickOriginal();
+  await until('asked again',()=>page(`return Boolean(${pane(fresh)}.querySelector('.move-ask'))`));
+  await page("__deck.backend.machines.get('at').roomImport=window.__realImport;return true;");
+  await pickOriginal();
+  await until('moved to the other folder there, without the question',()=>page(`const p=${pane(fresh)};return p.querySelector('.pane-ws').title.endsWith(${JSON.stringify(serverCopy)})&&!p.querySelector('.move-ask')`));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'server','saved-chats-v1','rooms',`${Buffer.from(fresh).toString('hex')}.json`),'utf8')).cwd,serverCopy);
+  await until('it reopened there',()=>page(`return !${pane(fresh)}.querySelector('[aria-label="Add bot"]')?.disabled`));
   // ⌥⇧⌘O opens the picker of the thread in use.
   await page(`${pane('mac-thread')}.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true;`);
   await page(`window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyO',key:'Ø',metaKey:true,altKey:true,shiftKey:true,bubbles:true,cancelable:true}));return true;`);

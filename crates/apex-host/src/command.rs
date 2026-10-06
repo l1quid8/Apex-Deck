@@ -41,7 +41,7 @@ pub enum Command {
     RoomDiff { id: String },
     RoomFork { source: String, target: String, upto: Option<usize> },
     /// A thread's snapshot made into a new room here: a fork to this machine, or a thread moved before it started.
-    /// With `replace`, a room already called `id` here is deleted first, as when a thread that hasn't started moves to another folder.
+    /// With `replace`, a room already called `id` here is written over in one step and then closed, as when a thread that hasn't started moves to another folder.
     RoomImport { id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: Option<bool> },
     ExportThread { file_name: String, contents: String },
     /// The desktop sends raw bytes; over the wire `data` is base64.

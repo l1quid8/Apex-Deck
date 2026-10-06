@@ -9,6 +9,7 @@ import { commandBackend } from '../../src/commandBackend.ts';
 import { createHostBackends } from '../../src/hostBackends.ts';
 import { createEventHub } from '../../src/eventHub.ts';
 import { socketLink } from './link.mjs';
+import { FolderMoveUnsupported, placeThread } from '../../src/threadMove.ts';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, ms = 10000) {
@@ -33,7 +34,8 @@ async function daemon(t) {
       const finished = await Promise.race([stopped.then(() => true), pause(5000).then(() => false)]);
       if (!finished) { child.kill('SIGKILL'); await Promise.race([stopped, pause(1000)]); }
     }
-    fs.rmSync(data, { recursive: true, force: true });
+    // Checkpoint git runs started by the daemon can still be finishing in its data folder.
+    fs.rmSync(data, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   await until(() => {
     if (spawnError || exit !== null) throw new Error(spawnError || error || 'daemon exited');
@@ -99,4 +101,52 @@ test('real host backends isolate a drop and do not replay rejected text', { time
     e.type === 'message_added' && e.message.text === 'server-reply'), false);
   assert.equal(heard.some(([host, e]) => host === 'h-at' &&
     e.type === 'message_added' && e.message.text === 'mac-reply'), false);
+});
+
+// Moving a thread that hasn't started: what it had must still be somewhere whole.
+const page = { version: 1, artifacts: [{ id: 'a1', title: 'Page', kind: 'html', versions: [{ n: 1, source: '<p>hi</p>', by: 'bot', seq: 2, at: 1 }] }] };
+const savedRoom = (data, id) => path.join(data, 'saved-chats-v1', 'rooms', `${Buffer.from(id).toString('hex')}.json`);
+function folders(t) {
+  const root = fs.mkdtempSync('/tmp/adf-');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  return ['a', 'b'].map(name => { const dir = path.join(root, name); fs.mkdirSync(dir); return dir; });
+}
+/** A cleared thread: no messages, but its bot, a pin and an artifact. */
+async function cleared(backend, folder) {
+  await backend.roomCreate('t', [bot('kept')], options, folder);
+  await backend.roomPin('t', 'use pnpm');
+  await backend.artifactsSave('t', page);
+  return (await backend.roomState('t')).snapshot;
+}
+test('an older helper keeps a thread whole when it cannot move it to another folder', { timeout: 30000 }, async t => {
+  const server = await daemon(t); const [a, b] = folders(t);
+  // An apex-daemon from before room_import: the same daemon without that command.
+  const older = { ...server.backend, roomImport: async () => { throw new Error('unknown variant `room_import`, expected one of `session_load`'); } };
+  const snapshot = await cleared(server.backend, a);
+  await assert.rejects(placeThread({ from: older, to: older, id: 't', snapshot, cwd: b, sameHost: true, hostName: 'AT' }), FolderMoveUnsupported);
+  const after = (await server.backend.roomState('t')).snapshot;
+  assert.deepEqual(after.participants.map(p => p.display_name), ['kept']);
+  assert.deepEqual(after.pins, ['use pnpm']);
+  assert.deepEqual(await server.backend.artifactsLoad('t'), page);
+  assert.equal(JSON.parse(fs.readFileSync(savedRoom(server.data, 't'), 'utf8')).cwd, a);
+});
+test('a thread moved to another machine takes its bot, pins and artifacts, and the old copy goes', { timeout: 30000 }, async t => {
+  const mac = await daemon(t); const server = await daemon(t); const [a, b] = folders(t);
+  const snapshot = await cleared(mac.backend, a);
+  assert.equal(await placeThread({ from: mac.backend, to: server.backend, id: 't', snapshot, cwd: b, sameHost: false, hostName: 'AT' }), 'imported');
+  const there = await server.backend.roomCreate('t', [], options, b);
+  assert.deepEqual(there.participants.map(p => p.display_name), ['kept']);
+  assert.deepEqual(there.pins, ['use pnpm']);
+  assert.deepEqual(await server.backend.artifactsLoad('t'), page);
+  assert.equal(fs.existsSync(savedRoom(mac.data, 't')), false);
+  assert.equal(await mac.backend.artifactsLoad('t'), null);
+});
+test('a move whose artifacts cannot be saved there leaves the thread whole where it was', { timeout: 30000 }, async t => {
+  const mac = await daemon(t); const server = await daemon(t); const [a, b] = folders(t);
+  const full = { ...server.backend, artifactsSave: async () => { throw new Error('No space left on device'); } };
+  const snapshot = await cleared(mac.backend, a);
+  await assert.rejects(placeThread({ from: mac.backend, to: full, id: 't', snapshot, cwd: b, sameHost: false, hostName: 'AT' }), /No space left/);
+  assert.equal(fs.existsSync(savedRoom(server.data, 't')), false);
+  assert.deepEqual((await mac.backend.roomState('t')).snapshot.pins, ['use pnpm']);
+  assert.deepEqual(await mac.backend.artifactsLoad('t'), page);
 });

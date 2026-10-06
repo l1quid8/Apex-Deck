@@ -111,8 +111,8 @@ interface Props {
   onFork?: (title: string, upto: number | null, at: number) => Promise<string>;
   /** The Work bar above the message box: project, Files, Tools and where it runs. Threads only. */
   work?: WorkContext;
-  /** A started thread was pointed somewhere else: ask New thread or Fork there. */
-  moveAsk?: { stays: string; project: string; host: string; onNew(): void; onFork(): void; onCancel(): void };
+  /** A started thread was pointed somewhere else: ask New thread or Fork there. With `why`, it couldn't move there, and Fork isn't offered. */
+  moveAsk?: { stays: string; project: string; host: string; why?: string; onNew(): void; onFork?(): void; onCancel(): void };
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared after it is taken. */
   menuRequest?: { id: string; action: ThreadMenuRequest };
   /** Copy › text this thread built (as Markdown, or its last reply), for App to put on the clipboard. */
@@ -2656,10 +2656,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
         {moveAsk && <div className="move-ask" role="group" aria-label="Open it somewhere else">
-          <p>This thread runs on <b>{moveAsk.stays}</b> and stays there. Open <b>{moveAsk.project}</b> on <b>{moveAsk.host}</b> as:</p>
+          <p>{moveAsk.why
+            ? <>{moveAsk.why} This thread stays where it is. Open <b>{moveAsk.project}</b> as:</>
+            : <>This thread runs on <b>{moveAsk.stays}</b> and stays there. Open <b>{moveAsk.project}</b> on <b>{moveAsk.host}</b> as:</>}</p>
           <div>
             <button type="button" className="primary" data-act="ask-new" onClick={moveAsk.onNew}>New thread</button>
-            <button type="button" data-act="ask-fork" onClick={moveAsk.onFork}>Fork this thread</button>
+            {moveAsk.onFork && <button type="button" data-act="ask-fork" onClick={moveAsk.onFork}>Fork this thread</button>}
             <button type="button" className="ghost" data-act="ask-cancel" onClick={moveAsk.onCancel}>Cancel</button>
           </div>
         </div>}
