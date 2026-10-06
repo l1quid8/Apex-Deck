@@ -75,3 +75,14 @@ test('empty markdown uses fallback title and participants and omits pins', () =>
   assert.ok(md.includes('Participants: none.'));
   assert.ok(!md.includes('## Pinned'));
 });
+
+test('the PDF page draws bot avatars inline and keeps the human side plain', () => {
+  const html = exportHtml({
+    title: 'T', participants: [{ id: 'jigga', display_name: 'Jigga', appearance: { seed: 's', color: '#22c55e' } }],
+    transcript: [{ speaker: { kind: 'human' }, text: 'hi' }, { speaker: { kind: 'agent', id: 'jigga' }, text: 'yo' }],
+    pins: [], compaction: null,
+  }, new Date());
+  assert.equal((html.match(/<svg class="avatar"/g) ?? []).length, 1);
+  assert.match(html, /fill="#22c55e"/);
+  assert.doesNotMatch(html, /https?:|src=/);
+});

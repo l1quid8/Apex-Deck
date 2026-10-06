@@ -279,6 +279,7 @@ handle('shell:exportPdf', async (_entry, name, html) => {
       win.loadURL(documentUrl).then(() => contents.printToPDF({
         printBackground: true,
         pageSize: pdfPageSize(app.getLocale()),
+        margins: { marginType: 'none' },
       })).then(resolve, reject);
     });
     if (!job.commit()) throw new Error('Making the PDF took too long.');
