@@ -10,4 +10,12 @@ export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(version) },
   clearScreen: false,
   server: { watch: { ignored: ["**/target/**"] } },
+  build: {
+    rollupOptions: {
+      input: {
+        main: new URL("./index.html", import.meta.url).pathname,
+        phone: new URL("./phone.html", import.meta.url).pathname,
+      },
+    },
+  },
 });

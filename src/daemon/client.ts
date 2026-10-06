@@ -90,11 +90,15 @@ export class DaemonClient {
   private closed = false;
   private started: Promise<Welcome> | null = null;
   private resolveStarted: ((welcome: Welcome) => void) | null = null;
+  /** Sent with hello on a WebSocket. The desktop's stdio link doesn't use one. */
+  private readonly token: string | null;
 
-  constructor(connect: Connect, options: { delay?: (attempt: number) => number; timers?: Timers } = {}) {
+  constructor(connect: Connect, options: { delay?: (attempt: number) => number; timers?: Timers; token?: string } = {}) {
     this.connect = connect;
     this.delay = options.delay ?? backoff;
     this.timers = options.timers ?? realTimers;
+    const token = options.token?.trim() ?? "";
+    this.token = token ? token : null;
   }
 
   /** Connect, retrying until the first welcome. */
@@ -180,6 +184,7 @@ export class DaemonClient {
     });
     this.helloId = this.nextId++;
     const args: Record<string, unknown> = { protocol: PROTOCOL };
+    if (this.token) args.token = this.token;
     if (this.bootId !== null) args.since = { boot_id: this.bootId, seq: this.lastSeq };
     link.send(JSON.stringify({ id: this.helloId, cmd: "hello", args }));
   }
