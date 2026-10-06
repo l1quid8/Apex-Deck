@@ -113,3 +113,24 @@ test("while quoting, the placeholder suggests what to ask", () => {
   assert.equal(composerCopy(true, false, { quoting: true }).placeholder, "e.g. Check this against the tests and say what breaks");
   assert.match(composerCopy(true, false, { quoting: true }).keys, /↵ queue/);
 });
+
+test("the placeholder names who gets the message", () => {
+  assert.equal(composerCopy(false, false, { to: "Jigga" }).placeholder, "Message Jigga…");
+  assert.equal(composerCopy(false, false, { to: "everyone" }).placeholder, "Message everyone…");
+  assert.equal(composerCopy(true, false, { to: "Jigga" }).placeholder, "Queue for Jigga… (⌘↵ steers)");
+  assert.equal(composerCopy(false, false, { to: "Jigga", tldr: true }).placeholder, "TL;DR to Jigga: short answers");
+  // A queued TL;DR message still waits; the glowing box already says TL;DR.
+  assert.equal(composerCopy(true, false, { to: "Jigga", tldr: true }).placeholder, "Queue for Jigga… (⌘↵ steers)");
+});
+
+test("before the room answers, the placeholder speaks to the room", () => {
+  assert.equal(composerCopy(false, false).placeholder, "Message the room…");
+  assert.equal(composerCopy(false, false, { to: null, tldr: true }).placeholder, "TL;DR mode: short answers");
+  assert.equal(composerCopy(true, false, { to: null }).placeholder, "Queue a message… (⌘↵ steers)");
+});
+
+test("quoting and an empty room keep their own placeholders", () => {
+  assert.equal(composerCopy(false, false, { to: "Jigga", quoting: true }).placeholder, "e.g. Check this against the tests and say what breaks");
+  assert.equal(composerCopy(false, false, { to: "Jigga", tldr: true, quoting: true }).placeholder, "e.g. Check this against the tests and say what breaks");
+  assert.equal(composerCopy(false, true, { to: "Jigga" }).placeholder, "Add a model to start");
+});

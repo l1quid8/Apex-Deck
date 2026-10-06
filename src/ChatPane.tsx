@@ -1,6 +1,6 @@
 import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
-import { ReplyPolicyPicker, REPLY_POLICIES } from "./ReplyPolicyPicker";
+import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
@@ -48,7 +48,7 @@ import { attachedImages, attachmentName, replyImages, withAttachments, type Atta
 import { AttachedImages } from "./AttachedImages";
 import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
-import { exampleRows, hasMention, recipientLine, showsRecipientLine } from "./recipients";
+import { exampleRows, recipientName } from "./recipients";
 import { askerOf, hopNotice, letLabel, liveActions, retryFor, stillHere, type NoticeAction } from "./noticeActions";
 import { parseComposer, parseQueueEdit, postable, type Command } from "./commands";
 import type {
@@ -521,19 +521,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [unread, setUnread] = useState(0);
   /** The chat's root element; its pane's size decides what fits. */
   const root = useRef<HTMLDivElement>(null);
-  /** False in a pane under 260px tall, where the recipient line is hidden. */
-  const [lineFits, setLineFits] = useState(true);
-  useEffect(() => {
-    const paneBox = root.current?.closest<HTMLElement>(".pane");
-    if (!paneBox) return;
-    const observer = new ResizeObserver(() => {
-      // A hidden pane measures nothing; keep what it had.
-      if (paneBox.offsetWidth === 0 && paneBox.offsetHeight === 0) return;
-      setLineFits(showsRecipientLine(paneBox.offsetHeight));
-    });
-    observer.observe(paneBox);
-    return () => observer.disconnect();
-  }, []);
   /** Open approval cards wholly out of view, oldest first. */
   const [cardsAway, setCardsAway] = useState<CardBox[]>([]);
   /** Find the open cards on screen and note which are out of view. */
@@ -604,7 +591,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // replying, and bots stopped on an approval card waiting for you.
   /** You have written in this thread, so the room may have someone you addressed last. */
   const addressedBefore = messagesOf(entries).some((m) => m.speaker.kind === "human");
-  const copy = composerCopy(busy, participants.length === 0, { firstMessage: participants.length >= 2 && !addressedBefore, quoting: Boolean(reply) });
   /** Who a quote will lead with right now, for its Send to ▾ button. */
   const quoteTo = reply ? quoteLead(text.trim(), reply, participants.map((p) => p.id)) : null;
 
@@ -1556,25 +1542,22 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [serverLists, setServerLists] = useState<Record<string, ToolServer[]>>({});
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [serverTargets, setServerTargets] = useState<string[]>([]);
-  /** The text `serverTargets` was worked out for, so the recipient line never mixes a new draft with an old answer. */
-  const [targetsText, setTargetsText] = useState("");
   useEffect(() => {
     if (!ready || !participants.length) return;
     let live = true;
     // Ask about the message as it will be sent, with a quote's leading handle.
     const outgoing = reply ? replyText(text, reply, participants.map((p) => p.id)) : text;
     // A slower answer for older text is ignored once the text has changed.
-    backend.roomTargets(pane.id, outgoing).then(ids => { if (live) { setServerTargets(ids); setTargetsText(outgoing); } }).catch(() => {});
+    backend.roomTargets(pane.id, outgoing).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
     return () => { live = false; };
   }, [backend, pane.id, text, reply, ready, participants]);
-  const recipient = recipientLine({
+  /** Who gets the message as it stands, for the placeholder. */
+  const recipient = recipientName({
     targets: serverTargets,
     roster: participants.map((p) => ({ id: p.id, name: p.display_name })),
     policy: options.policy,
-    mentioned: hasMention(targetsText, participants.map((p) => p.id)),
-    addressedBefore,
-    busy: participants.filter((p) => working[p.id]).map((p) => p.id),
   });
+  const copy = composerCopy(busy, participants.length === 0, { firstMessage: participants.length >= 2 && !addressedBefore, quoting: Boolean(reply), to: recipient, tldr });
   const serverMenuOpen = findTrigger(text, caret)?.kind === "server";
   useEffect(() => {
     if (!ready) return;
@@ -2414,9 +2397,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
         </div>}
-        {recipient && lineFits && <div className="recipient-line">
-          To {recipient.to} · <ReplyPolicyPicker value={options.policy} label={recipient.reason} disabled={!ready || busy} onChange={policy => changeOptions({ ...options, policy })} />
-        </div>}
         <div className="composer-field" ref={field}>
           <ComposerMenu ref={composerMenu} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
@@ -2457,7 +2437,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             }
           }}
           rows={1}
-          placeholder={tldr ? "TL;DR mode: short answers" : copy.placeholder}
+          placeholder={copy.placeholder}
           disabled={!ready || participants.length === 0}
         />
         <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}

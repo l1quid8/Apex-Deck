@@ -1,6 +1,5 @@
-// Who gets the message in the composer, and why, for the line above the
-// message box. The room decides (roomTargets); this explains its answer in
-// the room's own terms. Mentions follow crates/apex-core/src/mention.rs.
+// Who gets the message in the composer, for its placeholder and its lit bot
+// badges. The room decides (roomTargets); this names its answer.
 
 import type { TurnPolicy } from "./types";
 import { joinNames } from "./composerStatus.ts";
@@ -47,37 +46,16 @@ export interface RecipientInput {
   /** Everyone in the room, in roster order. */
   roster: { id: string; name: string }[];
   policy: TurnPolicy;
-  /** The message @mentions someone, or everyone. */
-  mentioned: boolean;
-  /** You have written in this thread before, so the room may have someone you addressed last. */
-  addressedBefore: boolean;
-  /** Bots at work now. A message to one of them waits in the queue. */
-  busy: string[];
 }
 
-/** The line above the message box: "To Null · last addressed", plus " · queued (busy)" when a recipient is at work. */
-export interface RecipientLine {
-  /** "Null", "Null and Ada", "everyone", "Jigga, then Null". */
-  to: string;
-  /** you mentioned, last addressed, first in the room, everyone at once, or everyone in turn. */
-  reason: string;
-  queued: boolean;
-}
-
-export function recipientLine(input: RecipientInput): RecipientLine | null {
-  const { targets, roster, policy, mentioned, addressedBefore, busy } = input;
+/** Who gets the message: "Null", "Null and Ada", "everyone", "Jigga, then Null". Null without bots or a target. */
+export function recipientName({ targets, roster, policy }: RecipientInput): string | null {
   if (roster.length === 0 || targets.length === 0) return null;
   const name = (id: string) => roster.find((p) => p.id === id)?.name ?? id;
-  const everyone = roster.length > 1 && roster.every((p) => targets.includes(p.id));
   // Everyone in turn answers one at a time, each seeing the reply before it.
-  const to = policy === "round_robin" && targets.length > 1
-    ? targets.map(name).join(", then ")
-    : everyone ? "everyone" : joinNames(targets.map(name));
-  const reason = mentioned ? "you mentioned"
-    : policy === "everyone" ? "everyone at once"
-    : policy === "round_robin" ? "everyone in turn"
-    : addressedBefore ? "last addressed" : "first in the room";
-  return { to, reason, queued: targets.some((id) => busy.includes(id)) };
+  if (policy === "round_robin" && targets.length > 1) return targets.map(name).join(", then ");
+  const everyone = roster.length > 1 && roster.every((p) => targets.includes(p.id));
+  return everyone ? "everyone" : joinNames(targets.map(name));
 }
 
 /** Starter rows for an empty room, built from a real handle. Clicking one puts `text` in the composer; it is never sent for you. */
@@ -87,9 +65,3 @@ export function exampleRows(ids: string[]): { label: string; text: string }[] {
     .map((text) => ({ label: `e.g. ${text}`, text }));
 }
 
-/** Below this pane height the recipient line is hidden, to leave room for the conversation. */
-export const MIN_LINE_HEIGHT = 260;
-
-export function showsRecipientLine(paneHeight: number): boolean {
-  return paneHeight >= MIN_LINE_HEIGHT;
-}

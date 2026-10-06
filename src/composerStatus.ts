@@ -11,13 +11,19 @@ export function waitingVerb(count: number): string {
   return count === 1 ? "is waiting for you" : "are waiting for you";
 }
 
-/** What the composer says Enter will do, so the placeholder and hint never disagree. */
-export function composerCopy(busy: boolean, empty: boolean, extra: { firstMessage?: boolean; quoting?: boolean } = {}): { placeholder: string; hint: string; keys: string } {
+/**
+ * What the composer says Enter will do, so the placeholder and hint never
+ * disagree. `to` names who gets the message (recipientName). The placeholder
+ * only shows in an empty box, so it names whoever gets a message with no @.
+ */
+export function composerCopy(busy: boolean, empty: boolean, extra: { firstMessage?: boolean; quoting?: boolean; to?: string | null; tldr?: boolean } = {}): { placeholder: string; hint: string; keys: string } {
   if (empty) return { placeholder: "Add a model to start", hint: "@ who answers · ! which tools", keys: "⇧↵ new line" };
+  const { to } = extra;
   // While quoting, the placeholder suggests what to ask about the quote.
-  const placeholder = extra.quoting
-    ? "e.g. Check this against the tests and say what breaks"
-    : busy ? "Queue a message… (⌘↵ steers)" : "Message the room. @name picks who answers.";
+  const placeholder = extra.quoting ? "e.g. Check this against the tests and say what breaks"
+    : busy ? (to ? `Queue for ${to}… (⌘↵ steers)` : "Queue a message… (⌘↵ steers)")
+    : extra.tldr ? (to ? `TL;DR to ${to}: short answers` : "TL;DR mode: short answers")
+    : to ? `Message ${to}…` : "Message the room…";
   if (busy) return { placeholder, hint: "@ who answers · ! which tools", keys: "↵ queue · ⌘↵ steer" };
   if (extra.firstMessage) return { placeholder, hint: "@all asks everyone · / for commands", keys: "↵ send · ⇧↵ new line" };
   return { placeholder, hint: "@ who answers · ! which tools", keys: "↵ send · ⇧↵ new line" };

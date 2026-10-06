@@ -2066,15 +2066,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .unseen-divider::before, .unseen-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 
 /* Now 3.2: who gets your message, and why. */
-.recipient-line { margin: 0 0 4px 2px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.reply-policy-trigger { border: 0; background: transparent; color: inherit; font: inherit; padding: 1px 3px; border-radius: 3px; }
-.reply-policy-trigger:hover:not(:disabled), .reply-policy-trigger[aria-expanded="true"] { background: var(--panel-2); color: var(--text); }
-.reply-policy-chevron { margin-left: 3px; opacity: 0; }
-.reply-policy-trigger:hover .reply-policy-chevron, .reply-policy-trigger:focus-visible .reply-policy-chevron, .reply-policy-trigger[aria-expanded="true"] .reply-policy-chevron { opacity: 1; }
-.reply-policy-menu { position: fixed; z-index: 100; width: max-content; max-width: calc(100vw - 16px); padding: 3px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 8px 24px #0006; }
-.reply-policy-menu button { display: flex; align-items: center; gap: 5px; width: 100%; border: 0; background: transparent; text-align: left; padding: 5px 7px; font-size: 11px; }
-.reply-policy-menu button span { width: 11px; }
-.reply-policy-menu button:hover, .reply-policy-menu button:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .link-button { padding: 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; cursor: pointer; }
 .link-button:hover:not(:disabled) { background: none; color: var(--text); text-decoration-color: currentColor; }
 .example-rows { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin-top: 16px; }

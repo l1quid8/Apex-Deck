@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { exampleRows, handleFor, hasMention, mentionTarget, recipientLine, showsRecipientLine } from "../src/recipients.ts";
+import { exampleRows, handleFor, hasMention, mentionTarget, recipientName } from "../src/recipients.ts";
 
 test("mentions follow the room's rules", () => {
   const ids = ["null", "jigga", "sol-6.1"];
@@ -22,29 +22,28 @@ test("an @ inside a word is not a mention", () => {
 });
 
 const roster = [{ id: "jigga", name: "Jigga" }, { id: "null", name: "Null" }];
-const line = (extra) => recipientLine({ targets: ["null"], roster, policy: "mention", mentioned: false, addressedBefore: true, busy: [], ...extra });
+const to = (extra) => recipientName({ targets: ["null"], roster, policy: "mention", ...extra });
 
-test("the recipient line says who gets the message and why", () => {
-  assert.deepEqual(line({ mentioned: true }), { to: "Null", reason: "you mentioned", queued: false });
-  assert.deepEqual(line({}), { to: "Null", reason: "last addressed", queued: false });
-  assert.deepEqual(line({ targets: ["jigga"], addressedBefore: false }), { to: "Jigga", reason: "first in the room", queued: false });
-  assert.deepEqual(line({ targets: ["jigga", "null"], policy: "everyone" }), { to: "everyone", reason: "everyone at once", queued: false });
-  assert.deepEqual(line({ targets: ["jigga", "null"], policy: "round_robin" }), { to: "Jigga, then Null", reason: "everyone in turn", queued: false });
+test("the composer names who gets the message", () => {
+  assert.equal(to({}), "Null");
+  assert.equal(to({ targets: ["jigga", "null"] }), "everyone");
+  assert.equal(to({ targets: ["jigga", "null"], policy: "everyone" }), "everyone");
+  assert.equal(to({ targets: ["jigga", "null"], policy: "round_robin" }), "Jigga, then Null");
+  assert.equal(to({ targets: ["null"], policy: "round_robin" }), "Null");
 });
 
-test("a busy recipient means the message waits", () => {
-  assert.equal(line({ busy: ["null"] }).queued, true);
-  assert.equal(line({ busy: ["jigga"] }).queued, false);
+test("a room of one is never everyone", () => {
+  assert.equal(to({ roster: [{ id: "null", name: "Null" }] }), "Null");
 });
 
-test("no line without bots or a target", () => {
-  assert.equal(line({ roster: [], targets: [] }), null);
-  assert.equal(line({ targets: [] }), null);
+test("no name without bots or a target", () => {
+  assert.equal(to({ roster: [], targets: [] }), null);
+  assert.equal(to({ targets: [] }), null);
 });
 
 test("bots mentioned together are joined like a sentence", () => {
   const three = [...roster, { id: "ada", name: "Ada" }];
-  assert.equal(line({ roster: three, targets: ["null", "ada"], mentioned: true }).to, "Null and Ada");
+  assert.equal(to({ roster: three, targets: ["null", "ada"] }), "Null and Ada");
 });
 
 test("examples use a real handle", () => {
@@ -56,7 +55,3 @@ test("examples use a real handle", () => {
   assert.deepEqual(exampleRows([]), []);
 });
 
-test("the line hides in a pane under 260px tall", () => {
-  assert.equal(showsRecipientLine(259), false);
-  assert.equal(showsRecipientLine(260), true);
-});
