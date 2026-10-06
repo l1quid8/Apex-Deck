@@ -9,7 +9,8 @@ export type MenuItem =
   | { kind: "command"; key: string; label: string; detail: string; command: Command | null }
   | { kind: "server"; agent: string; label: string; detail: string }
   | { kind: "attach"; label: string; detail: string }
-  | { kind: "attach-folder"; label: string; detail: string };
+  | { kind: "attach-folder"; label: string; detail: string }
+  | { kind: "tools"; label: string; detail: string };
 
 /** The `/word` or `@word` being typed at the caret. */
 export interface Trigger {
@@ -55,11 +56,25 @@ export function menuItems(trigger: Trigger | null, people: { id: string; display
     { kind: "mention", id: "all", label: "@all", detail: "Everyone answers" },
     ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
   ];
-  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, ...mentions, ...commands];
+  // Tools types the ! that opens the list of servers, apps and plugins.
+  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, { kind: "tools", label: "Tools", detail: "Pick a server, app or plugin to use" }, ...mentions, ...commands];
   const q = trigger.query;
   if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
   if (trigger.kind === "command") return commands.filter((c) => c.key.startsWith(q));
   return mentions.filter((m) => m.kind === "mention" && (m.id.toLowerCase().startsWith(q) || m.detail.toLowerCase().startsWith(q)));
+}
+
+/** Whether a click closes the menu. One you opened by typing / @ or ! stays
+ *  while you click in the message box to move the caret; one opened with "+"
+ *  closes there like anywhere else, so Enter can't pick from it unseen. */
+export function clickCloses(openedWithPlus: boolean, inMenu: boolean, inBox: boolean): boolean {
+  return !inMenu && (openedWithPlus || !inBox);
+}
+
+/** Whether a key pressed in the message box goes to the menu. Only one you
+ *  opened by typing there does; one opened with "+" has its own search field. */
+export function boxKeyGoesToMenu(openedWithPlus: boolean): boolean {
+  return !openedWithPlus;
 }
 
 /** Replace the trigger (or append at the caret) with `insert`. */

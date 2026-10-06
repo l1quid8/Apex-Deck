@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findTrigger, insertAt, menuItems } from '../src/composerMenu.ts';
+import { boxKeyGoesToMenu, clickCloses, findTrigger, insertAt, menuItems } from '../src/composerMenu.ts';
 
 const people = [{ id: 'null', display_name: 'Null' }, { id: 'jigga', display_name: 'Jigga' }];
 
@@ -25,13 +25,20 @@ test('items filter by kind and prefix', () => {
   assert.deepEqual(menuItems(findTrigger('@j', 2), people).map(i => i.label), ['@jigga']);
   assert.deepEqual(menuItems(findTrigger('@a', 2), people).map(i => i.label), ['@all']);
   const all = menuItems(null, people).map(i => i.label);
-  assert.deepEqual(all, ['Photo or file', 'Folder', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json']);
+  assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json']);
 });
 
 test('picking replaces the trigger, or inserts at the caret from "+"', () => {
   assert.deepEqual(insertAt('hey @nu what', findTrigger('hey @nu what', 7), 7, '@null '), { text: 'hey @null what', caret: 10 });
   assert.deepEqual(insertAt('hey', null, 3, '@all '), { text: 'hey @all ', caret: 9 });
   assert.deepEqual(insertAt('', null, 0, '@all '), { text: '@all ', caret: 5 });
+});
+
+test('Tools in the "+" menu types the ! that opens the tool list', () => {
+  const typed = insertAt('check', null, 5, '!');
+  assert.deepEqual(typed, { text: 'check !', caret: 7 });
+  assert.equal(findTrigger(typed.text, typed.caret)?.kind, 'server');
+  assert.equal(findTrigger('!', 1)?.kind, 'server');
 });
 
 test('mod commands show up after the built-in ones and are inserted, not run', () => {
@@ -42,4 +49,20 @@ test('mod commands show up after the built-in ones and are inserted, not run', (
   const all = menuItems(findTrigger('/', 1), people, [], mods).map(i => i.label);
   assert.deepEqual(all, ['/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/hl']);
   assert.deepEqual(findTrigger('/my-mod2', 8), { kind: 'command', query: 'my-mod2', start: 0, end: 8 });
+});
+
+test('a menu opened with "+" closes when you click in the message box', () => {
+  assert.equal(clickCloses(true, false, true), true);
+  assert.equal(clickCloses(true, false, false), true);
+  assert.equal(clickCloses(true, true, false), false);
+});
+
+test('a menu typed open stays while you click in the message box', () => {
+  assert.equal(clickCloses(false, false, true), false);
+  assert.equal(clickCloses(false, false, false), true);
+});
+
+test('Enter in the message box only picks from a menu typed open', () => {
+  assert.equal(boxKeyGoesToMenu(false), true);
+  assert.equal(boxKeyGoesToMenu(true), false);
 });

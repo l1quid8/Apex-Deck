@@ -954,8 +954,6 @@ textarea {
   min-height: 0;
 }
 .composer-field > textarea { max-height: 200px; overflow-y: auto; }
-.composer .composer-hint { display: none; }
-.composer:focus-within .composer-hint { display: flex; }
 
 @media (max-width: 720px) {
   .titlebar { flex-wrap: wrap; }
@@ -1017,7 +1015,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .empty p { font-size: 13px; line-height: 1.8; }
 .empty .eyebrow { font-size: 9px; }
 .composer-input { flex: 1; min-width: 0; }
-.composer-hint { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; color: var(--muted); font-size: 11px; }
 .composer > button { min-height: 40px; }
 .chip button:hover { background: #ffffff09; }
 .chip button:focus-visible { outline-offset: -3px; }
@@ -1043,7 +1040,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   .bubble, .bot-row { max-width: 95%; }
   .chat-options label { flex-wrap: wrap; }
   .composer { padding: 10px; gap: 8px; }
-  .composer-hint .hint-text { display: none; }
   .welcome-capabilities { gap: 14px; }
 }
 @media (max-width: 480px) {
@@ -1988,9 +1984,6 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 .composer-plus { width: 36px; height: 36px; flex: none; }
 .composer > button { min-height: 46px; height: 46px; border-radius: 12px; }
 .composer-input { position: relative; }
-/* Hint floats below the box so it never pushes Send out of line. */
-.composer:focus-within { padding-bottom: 28px; }
-.composer:focus-within .composer-hint { position: absolute; top: 100%; left: 0; right: 0; margin-top: 6px; }
 .allowed-copy > .allowed-what { color: var(--text); }
 .allowed-copy > .allowed-what.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .allowed-copy > .allowed-when { font-size: 11px; }
@@ -2349,9 +2342,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .composer-dock > button.round-send.stop:hover { background: color-mix(in srgb, var(--danger) 26%, transparent); filter: none; }
 /* A long placeholder stays on one line in a narrow pane instead of wrapping out of view. */
 .composer-field > textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* What ↵ does sits under the round button; only while typing, like the hint. */
-.send-key { display: none; margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
-.composer:focus-within .send-key { display: inline; }
 
 /* Retry / Revert confirmation under a message's actions. */
 .message-actions { position: relative; }
@@ -2561,27 +2551,28 @@ button.mod-status:hover { color: var(--text); }
 .pane-head:is([data-fit="tight"], [data-fit="min"]) .pane-folder { display: none; }
 .pane-head[data-fit="min"] .server-chip { display: none; }
 
-/* The message box: the text on top, then one row of +, the bots, TL;DR and Send. */
+/* The message box: the text on top, then +, TL;DR and Send. The bots get their own row under it. */
 .composer-box { display: flex; flex-direction: column; gap: 2px; padding: 2px 6px 5px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
 .composer-box:focus-within { border-color: var(--accent); }
 .composer-dock { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .composer-dock .composer-plus { width: 28px; height: 28px; font-size: 21px; }
-.composer-dock .chips { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; gap: 4px; overflow-x: auto; scrollbar-width: none; }
-.composer-dock .chip-name { padding: 2px 8px 2px 3px; font-size: 12px; }
-.composer-dock .chip-meta { font-size: 11px; }
-.composer-dock .dock-spacer { flex: none; }
+.composer-dock .dock-spacer { flex: 1; }
+.composer-bots { margin-top: 6px; padding: 0 2px; flex-wrap: nowrap; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.composer-bots:empty { display: none; }
+.composer-bots .chip-name { padding: 2px 8px 2px 3px; font-size: 12px; }
+.composer-bots .chip-meta { font-size: 11px; }
 /* A badge's usage card floats above it, so the row's overflow never clips it. */
 .usage-card.above { position: fixed; top: auto; }
 .usage-card.above::before { inset: auto 0 -7px; }
 .quick-add-wrap.roster-pop .quick-add { top: auto; bottom: 0; max-height: var(--room); overflow-y: auto; }
 
 /* Each badge is outlined in its bot's colour; the bots your message goes to are lit. */
-.composer-dock .chip { border-color: color-mix(in srgb, var(--who) 30%, var(--line)); transition: background-color .15s, border-color .15s; }
-.composer-dock .chip.to { border-color: var(--who); background: color-mix(in srgb, var(--who) 13%, transparent); }
+.composer-bots .chip { border-color: color-mix(in srgb, var(--who) 30%, var(--line)); transition: background-color .15s, border-color .15s; }
+.composer-bots .chip.to { border-color: var(--who); background: color-mix(in srgb, var(--who) 13%, transparent); }
 /* Adding a bot is an empty seat with a person-plus, so it never reads as the attach button's +. */
-.composer-dock .quick-add-wrap.roster { flex: none; display: inline-flex; }
-.composer-dock .chip-add { width: auto; height: 23px; gap: 4px; margin-left: 2px; padding: 0 8px 0 6px; display: inline-flex; align-items: center; border: 1px dashed color-mix(in srgb, var(--muted) 55%, transparent); border-radius: 999px; font-size: 12px; }
-.composer-dock .chip-add:hover:not(:disabled), .composer-dock .chip-add[aria-expanded="true"] { border-style: solid; }
+.composer-bots .quick-add-wrap.roster { flex: none; display: inline-flex; }
+.composer-bots .chip-add { width: auto; height: 23px; gap: 4px; margin-left: 2px; padding: 0 8px 0 6px; display: inline-flex; align-items: center; border: 1px dashed color-mix(in srgb, var(--muted) 55%, transparent); border-radius: 999px; font-size: 12px; }
+.composer-bots .chip-add:hover:not(:disabled), .composer-bots .chip-add[aria-expanded="true"] { border-style: solid; }
 .chips:not([data-fit="full"]) .chip-add-label { display: none; }
 .chips:not([data-fit="full"]) .chip-add { padding: 0 5px; }
 /* The narrowest step: the avatar and its status dot, with the name in the tooltip. */

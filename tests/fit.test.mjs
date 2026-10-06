@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fitSteps } from "../src/fit.ts";
+import { fitHeight, fitSteps } from "../src/fit.ts";
 
 /** A row whose width depends on the step applied to it, in `room` pixels of space. */
 const fitRow = (room, widths) => {
@@ -24,4 +24,29 @@ test("steps are tried in order and stop at the first that fits", () => {
   const tried = [];
   fitSteps(["full", "levels", "names"], (step) => tried.push(step), () => tried.at(-1) === "levels");
   assert.deepEqual(tried, ["full", "levels"]);
+});
+
+/** A message box with the sizes the browser reports; hidden, it reports all zeros. */
+const textBox = ({ shown, lines }) => {
+  const box = { style: { height: "" } };
+  const sized = () => (box.style.height === "auto" ? 16 + lines * 20 : parseInt(box.style.height, 10) || 36);
+  Object.defineProperties(box, {
+    clientWidth: { get: () => (shown ? 600 : 0) },
+    clientHeight: { get: () => (shown ? sized() : 0) },
+    offsetHeight: { get: () => (shown ? sized() : 0) },
+    scrollHeight: { get: () => (shown ? 16 + lines * 20 : 0) },
+  });
+  return box;
+};
+
+test("a message box grows to fit its text", () => {
+  const box = textBox({ shown: true, lines: 3 });
+  fitHeight(box);
+  assert.equal(box.style.height, "76px");
+});
+
+test("a hidden message box keeps its height instead of shrinking to nothing", () => {
+  const box = textBox({ shown: false, lines: 1 });
+  fitHeight(box);
+  assert.equal(box.style.height, "");
 });

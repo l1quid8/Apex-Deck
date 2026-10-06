@@ -1,5 +1,5 @@
 import { aboveAnchor } from "./floating";
-import { fitSteps } from "./fit";
+import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
@@ -533,11 +533,22 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const composer = useRef<HTMLDivElement>(null);
   // Grow the message box with its text, up to the CSS max-height.
   useLayoutEffect(() => {
+    if (input.current) fitHeight(input.current);
+  }, [text]);
+  // Refit when its width changes: a pane opened from hiding, or resized so
+  // the text wraps differently. Height changes are its own and are skipped.
+  useEffect(() => {
     const box = input.current;
     if (!box) return;
-    box.style.height = "auto";
-    box.style.height = `${box.scrollHeight + box.offsetHeight - box.clientHeight}px`;
-  }, [text]);
+    let width = box.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (box.clientWidth === width) return;
+      width = box.clientWidth;
+      fitHeight(box);
+    });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
   /** Whether the transcript sat at its bottom when it was last scrolled. New
    *  content follows only then; scrolled up, the transcript keeps your place. */
   const stuck = useRef(true);
@@ -613,8 +624,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const color = (id: string) => appearance(id).color;
   // Who is at work right now, for the line above the composer: bots still
   // replying, and bots stopped on an approval card waiting for you.
-  /** You have written in this thread, so the room may have someone you addressed last. */
-  const addressedBefore = messagesOf(entries).some((m) => m.speaker.kind === "human");
   /** Who a quote will lead with right now, for its Send to ▾ button. */
   const quoteTo = reply ? quoteLead(text.trim(), reply, participants.map((p) => p.id)) : null;
 
@@ -1602,7 +1611,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     roster: participants.map((p) => ({ id: p.id, name: p.display_name })),
     policy: options.policy,
   });
-  const copy = composerCopy(busy, participants.length === 0, { firstMessage: participants.length >= 2 && !addressedBefore, quoting: Boolean(reply), to: recipient, tldr });
+  const copy = composerCopy(busy, participants.length === 0, { quoting: Boolean(reply), to: recipient, tldr });
   const serverMenuOpen = findTrigger(text, caret)?.kind === "server";
   useEffect(() => {
     if (!ready) return;
@@ -2144,11 +2153,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </button>}
     </div>
   );
-  // The bots ride in the message box's bottom row, between + and TL;DR.
+  // The bots sit in their own row under the message box.
   /** The bots the message goes to, as the room last answered. */
   const lit = new Set(serverTargets);
   const botChips = (
-    <div ref={chipRow} className="chips">
+    <div ref={chipRow} className="chips composer-bots">
       {participants.map((p) => {
         const levels = levelsFor(p.id);
         return (
@@ -2496,16 +2505,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               setText(trigger ? text.slice(trigger.end) : draft);
 
             } else {
-              const next = insertAt(text, trigger, caret, `${item.label} `);
+              const next = insertAt(text, trigger, caret, item.kind === "tools" ? "!" : `${item.label} `);
               setText(next.text); setCaret(next.caret);
               requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
             }
             input.current?.focus();
           }} />
-            {botChips}
             <span className="dock-spacer" />
         <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}
-          // Keep focus: collapsing the hint on pointer-down moves the pill before the click lands.
+          // Keep focus in the message box, so you can type straight after.
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
           {busy
@@ -2514,7 +2522,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </div>
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
-        <div className="composer-hint">{!busy && <span className="hint-text">{copy.hint}</span>}<span className="send-key" aria-hidden="true">{copy.keys}</span></div>
+        {botChips}
         </div>
       </div>}
     </div>

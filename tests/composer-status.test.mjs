@@ -9,10 +9,8 @@ test("names join the way a sentence would", () => {
   assert.equal(joinNames(["Opus", "Codex", "Gemini"]), "Opus, Codex and Gemini");
 });
 
-test("placeholder and hint say what Enter does", () => {
-  assert.match(composerCopy(true, false).keys, /↵ queue · ⌘↵ steer/);
+test("the placeholder says what Enter does", () => {
   assert.equal(composerCopy(true, false).placeholder, "Queue a message… (⌘↵ steers)");
-  assert.match(composerCopy(false, false).keys, /↵ send · ⇧↵ new line/);
   assert.equal(composerCopy(false, true).placeholder, "Add a model to start");
 });
 
@@ -102,16 +100,9 @@ test("the waiting verb agrees with the count", () => {
   assert.equal(waitingVerb(2), "are waiting for you");
 });
 
-test("before the first message in a room of two or more bots, the hint teaches @all", () => {
-  assert.equal(composerCopy(false, false, { firstMessage: true }).hint, "@all asks everyone · / for commands");
-  assert.equal(composerCopy(false, false).hint, "@ who answers · ! which tools");
-  assert.match(composerCopy(true, false, { firstMessage: true }).keys, /↵ queue/);
-});
-
 test("while quoting, the placeholder suggests what to ask", () => {
   assert.equal(composerCopy(false, false, { quoting: true }).placeholder, "e.g. Check this against the tests and say what breaks");
   assert.equal(composerCopy(true, false, { quoting: true }).placeholder, "e.g. Check this against the tests and say what breaks");
-  assert.match(composerCopy(true, false, { quoting: true }).keys, /↵ queue/);
 });
 
 test("the placeholder names who gets the message", () => {

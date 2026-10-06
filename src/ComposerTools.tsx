@@ -1,6 +1,6 @@
 import type { ToolServer } from "./types";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { menuItems, type MenuItem, type Trigger } from "./composerMenu";
+import { boxKeyGoesToMenu, clickCloses, menuItems, type MenuItem, type Trigger } from "./composerMenu";
 
 export type ComposerMenuHandle = { key: (event: React.KeyboardEvent) => boolean };
 export const ComposerMenu = forwardRef<ComposerMenuHandle, {
@@ -29,7 +29,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
     if (open) search.current?.focus();
     if (!visible) return;
     const dismiss = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node) && !(event.target instanceof HTMLTextAreaElement)) close();
+      if (clickCloses(open, Boolean(root.current?.contains(event.target as Node)), event.target instanceof HTMLTextAreaElement)) close();
     };
     document.addEventListener("pointerdown", dismiss);
     return () => document.removeEventListener("pointerdown", dismiss);
@@ -45,12 +45,21 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
     }
     return false;
   };
-  useImperativeHandle(ref, () => ({ key }));
+  /** Keys from the message box. Typing there closes a menu opened with "+",
+   *  and the key does what it would anyway: Enter sends. */
+  const boxKey = (event: React.KeyboardEvent) => {
+    if (boxKeyGoesToMenu(open)) return key(event);
+    if (!visible) return false;
+    close();
+    if (event.key === "Escape") { event.preventDefault(); return true; }
+    return false;
+  };
+  useImperativeHandle(ref, () => ({ key: boxKey }));
   return <div className="composer-tools" ref={root}>
-    <button type="button" className="icon composer-plus" aria-label="Photos, commands and mentions" aria-expanded={visible} aria-haspopup="dialog"
+    <button type="button" className="icon composer-plus" aria-label="Files, tools, commands and mentions" aria-expanded={visible} aria-haspopup="dialog"
       onClick={() => { if (visible) close(); else { setOpen(true); setQuery(""); setSelected(0); } }}>+</button>
     {visible && <div className="composer-menu" role="dialog" aria-label="Commands and mentions" onKeyDown={key}>
-      {open && <input ref={search} aria-label="Find command or participant" placeholder="Find a command or @name…" value={query} onChange={e => setQuery(e.target.value)} />}
+      {open && <input ref={search} aria-label="Find command or participant" placeholder="Find a tool, command or @name…" value={query} onChange={e => setQuery(e.target.value)} />}
       <div role="listbox" aria-label="Available commands and mentions">
         {entries.map((item, index) => <button type="button" role="option" aria-selected={index === selected} key={item.kind === "server" ? `${item.agent}:${item.label}` : item.label}
           onPointerDown={e => e.preventDefault()} onPointerMove={() => setSelected(index)} onClick={() => pick(item)}>
