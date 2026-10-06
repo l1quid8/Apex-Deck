@@ -1,6 +1,6 @@
 // The mod runtime: loads a Claude Code mod (a plugin whose hooks/hooks.json
 // names `modules`) and runs its `register(on)` against Deck as the "desktop"
-// surface. It has no window or Tauri access of its own: everything that
+// surface. It has no window or Electron access of its own: everything that
 // reaches the machine or the screen goes through `host`, which the worker
 // wires to postMessage. Pure, so tests drive it directly.
 

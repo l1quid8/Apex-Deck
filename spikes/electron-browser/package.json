@@ -1,7 +1,0 @@
-{
-  "name": "apex-electron-browser-spike",
-  "private": true,
-  "main": "main.js",
-  "scripts": { "start": "electron .", "test": "SPIKE_AUTOTEST=1 electron ." },
-  "devDependencies": { "electron": "^38.0.0" }
-}

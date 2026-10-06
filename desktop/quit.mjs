@@ -1,4 +1,4 @@
-// Asking before quitting, as apex-host/src/quit.rs does for the Tauri app.
+// Asking before quitting, the same way apex-host/src/quit.rs does.
 // The window's close button, ⌘W, ⌘Q and Quit in the menu come here first: the
 // window gets `quit-requested` with a number and answers at once with
 // `quitHeard`, then asks the person or calls `quitApp`. A window that hasn't

@@ -23,7 +23,7 @@ Use `ApexDeckMark` for the colored symbol. `ApexDeckLogo`, `ApexDeckHorizontal`,
 
 `ApexDeckMenuBar` is an 18-point monochrome template with transparent background and template rendering intent. If loading its PNG directly, set `NSImage.isTemplate = true` so macOS can adapt its color. For a status item, use the 18-point logical size rather than the raw Retina pixel size.
 
-## Tauri or other native packaging
+## Electron or other native packaging
 
 Use `ApexDeck-32bit.icns` as the macOS bundle icon and `PNG/AppIcon-1024.png` as a high-resolution PNG source. This deliverable is an asset kit; application integration is a separate step.
 
