@@ -7,6 +7,8 @@ export async function runMultiHostSmoke(win) {
   // Keep xterm rendering and UI timers active in the hidden test window.
   win.webContents.setBackgroundThrottling(false);
   const root=process.env.APEX_DECK_MULTI_HOST_ROOT;
+  // The seeded project's copies (run-multi-host-smoke.mjs): same folder name on each machine.
+  const serverCopy=path.join(root,'server-copy','project');
   const remoteSession=path.join(root,'server','saved-chats-v1','session.json');
   const original=fs.readFileSync(remoteSession,'utf8');
   const page=code=>win.webContents.executeJavaScript(`(async()=>{${code}})()`,true);
@@ -51,7 +53,7 @@ export async function runMultiHostSmoke(win) {
   const unhover=sel=>page(`const el=document.querySelector(${JSON.stringify(sel)});el.dispatchEvent(new MouseEvent('mouseout',{bubbles:true,relatedTarget:document.body}));return true;`);
   await hover(`${serverRow} .ws-name`);
   await until('project card',()=>page('return document.querySelector(".hover-card")?.innerText.includes("Production-Frankfurt-Primary-01 · 1 thread")'));
-  assert.ok((await page('return document.querySelector(".hover-card").innerText')).includes(root));
+  assert.ok((await page('return document.querySelector(".hover-card").innerText')).includes(serverCopy));
   await shot('sidebar-project-card');
   await unhover(`${serverRow} .ws-name`);
   await until('project card closes',()=>page('return !document.querySelector(".hover-card")'));
@@ -62,7 +64,7 @@ export async function runMultiHostSmoke(win) {
   assert.equal(await page('return [...document.querySelectorAll(".pane-menu [role=menuitem] .keys")].map(k=>k.textContent).join()'),'⌥⌘R,⌥⌘P,⇧⌘U,⇧⌘A');
   await page('[...document.querySelectorAll(".pane-menu [role=menuitem]")].find(b=>b.textContent.startsWith("Copy")).click();return true;');
   await until('copy submenu',()=>page('return document.querySelectorAll(".pane-submenu [role=menuitem]").length===4'));
-  assert.equal(await page('return [...document.querySelectorAll(".pane-submenu [role=menuitem] .sub")].map(s=>s.textContent).join("|")'),`fixture:${root}|server-thread`);
+  assert.equal(await page('return [...document.querySelectorAll(".pane-submenu [role=menuitem] .sub")].map(s=>s.textContent).join("|")'),`fixture:${serverCopy}|server-thread`);
   await shot('sidebar-thread-menu-copy');
   await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
   await until('menu closed',()=>page('return !document.querySelector(".pane-menu")'));
@@ -110,7 +112,7 @@ export async function runMultiHostSmoke(win) {
   await until('markdown copied',()=>page('return window.__copied.some(t=>t.startsWith("# Server thread")&&t.includes("server-native-reply"))'));
   await until('copy toast',()=>toastSaid('Copied the thread as Markdown.'));
   await copyItem(serverPinned,'Copy folder path');
-  await until('server folder copied with its destination',()=>page(`return window.__copied.includes(${JSON.stringify('fixture:'+root)})`));
+  await until('server folder copied with its destination',()=>page(`return window.__copied.includes(${JSON.stringify('fixture:'+serverCopy)})`));
   await copyItem(serverPinned,'Copy last reply');
   await until('last reply copied',()=>page('return window.__copied.some(t=>t.trim()==="server-native-reply")'));
   await page('window.__clipboardOk=false;return true;');
@@ -297,7 +299,7 @@ export async function runMultiHostSmoke(win) {
   await until('rename field',()=>page('return Boolean(document.querySelector(".ws-row .thread-name-input"))'));
   await page(`const input=document.querySelector('.ws-row .thread-name-input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Server thread');input.dispatchEvent(new Event('input',{bubbles:true}));return true;`);
   await page(`document.querySelector('.ws-row .thread-name-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return true;`);
-  await until('each copy shows its folder',()=>page(`return [...document.querySelectorAll('${serverRow} .twin')].map(t=>t.textContent).sort().join('|')===${JSON.stringify([root,listed].sort().join('|'))}`));
+  await until('each copy shows its folder',()=>page(`return [...document.querySelectorAll('${serverRow} .twin')].map(t=>t.textContent).sort().join('|')===${JSON.stringify([serverCopy,listed].sort().join('|'))}`));
   // Pin acts on the row it was chosen from: the second copy moves to the top of Projects.
   await page(`[...document.querySelectorAll('${serverRow}')].find(r=>r.querySelector('.twin')?.textContent===${JSON.stringify(listed)}).querySelector('[aria-haspopup=menu]').click();return true;`);
   await page('[...document.querySelectorAll(".pane-menu [role=menuitem]")].find(b=>b.textContent==="Pin").click();return true;');
@@ -305,6 +307,7 @@ export async function runMultiHostSmoke(win) {
   await shot('sidebar-two-copies');
 
   // Stage 3: an unstarted thread goes where it's pointed, with its text and its bots.
+  const macProjectId='shared-workspace-id';
   // Threads go to the small work folder on the server (its project id is new, so read it from the session).
   const serverProject=await page(`return (await __deck.backend.sessionLoad()).workspaces.find(w=>w.hostId==='at'&&w.path.endsWith('/work')).id`);
   const paneIds=()=>page('return [...document.querySelectorAll(".pane")].map(p=>p.dataset.paneId)');
@@ -331,9 +334,7 @@ export async function runMultiHostSmoke(win) {
   assert.equal(await page(`return ${pane(draft)}.querySelector('textarea').value`),'@bot hello there');
   await assert.rejects(page(`return await __deck.backend.roomState(${JSON.stringify(draft)})`));
   await send(draft,'@bot hello there');
-  try { await until('the moved thread answers on the server',()=>page(`return ${pane(draft)}.querySelector('.transcript').innerText.includes('moved-reply')`)); }
-  catch (error) { console.log('DIAG-POST', JSON.stringify(await page(`const b=__deck.backend.machines.get('at');const r=await Promise.race([b.roomPostTo(${JSON.stringify(draft)},'@bot probe',['bot'],false).then(()=>'posted',e=>'rejected '+e),new Promise(ok=>setTimeout(()=>ok('hung 5s'),5000))]);const st=await b.roomState(${JSON.stringify(draft)}).catch(e=>String(e));return {r,transcript:st.snapshot&&st.snapshot.transcript.map(m=>m.text),active:st.active}`)));
-    console.log('DIAG', JSON.stringify(await page(`const st=await __deck.backend.machines.get('at').roomState(${JSON.stringify(draft)}).catch(e=>String(e));return {server:st&&st.snapshot?{transcript:st.snapshot.transcript,active:st.active,participants:st.snapshot.participants.map(p=>p.id)}:st,notices:[...${pane(draft)}.querySelectorAll('.notice')].map(n=>n.textContent),queue:[...${pane(draft)}.querySelectorAll('.queue, .queued, .q-text')].map(n=>n.textContent)}`))); throw error; }
+  await until('the moved thread answers on the server',()=>page(`return ${pane(draft)}.querySelector('.transcript').innerText.includes('moved-reply')`));
   await shot('moved-to-server');
   // A started thread stays: pointing it elsewhere asks New thread or Fork, and Fork carries the history.
   await projectMenu(macPinned);
@@ -362,6 +363,63 @@ export async function runMultiHostSmoke(win) {
   await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
   fs.unlinkSync(path.join(root,'offline'));await page("__deck.backend.machines.connection('at').retryNow();return true;");
   await until('server back',()=>page("return __deck.backend.machines.connection('at').get().status.kind==='connected'"));
+
+  // Stage 3: the Work bar above every thread's message box.
+  const tray=id=>`${pane(id)}.querySelector('.tray')`;
+  assert.equal(await page(`return ${tray('mac-thread')}.querySelector('.tray-chip.proj .pname').textContent`),'Mac thread');
+  assert.equal(await page(`return Boolean(${tray('mac-thread')}.querySelector('.tray-chip.work .lock'))`),true,'a started thread shows the lock');
+  assert.equal(await page(`return ${tray('server-thread')}.querySelector('.tray-chip.work .lbl').textContent`),'Frankfurt');
+  // An empty thread asks what to work on; its project name opens the picker.
+  const fresh=await newDraft();
+  assert.match(await page(`return ${pane(fresh)}.querySelector('.empty .ask').textContent`),/What should we work on in Mac thread\?/);
+  assert.match(await page(`return ${pane(fresh)}.querySelector('.empty .where').textContent`),/^On This Mac · /);
+  assert.equal(await page(`return Boolean(${tray(fresh)}.querySelector('.tray-chip.work .lock'))`),false);
+  await page(`${pane(fresh)}.querySelector('.empty .pick-name').click();return true;`);
+  await until('project picker',()=>page(`return Boolean(document.querySelector('.tray-pop.picker input'))`));
+  assert.equal(await page(`return document.querySelector('.tray-pop .pk-row[data-workspace="${macProjectId}"] .check')!==null`),true,'the current project has its ✓');
+  await page(`const input=document.querySelector('.tray-pop.picker input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'/work');input.dispatchEvent(new Event('input',{bubbles:true}));return true;`);
+  await until('search finds the server folder',()=>page(`const rows=[...document.querySelectorAll('.tray-pop.picker .pk-row[data-workspace]')];return rows.length===1&&rows[0].dataset.workspace===${JSON.stringify(serverProject)}`));
+  await shot('work-bar-picker');
+  await page(`document.querySelector('.tray-pop .pk-row[data-workspace="${serverProject}"]').click();return true;`);
+  await until('picked project moves the empty thread',()=>page(`return ${pane(fresh)}.dataset.hostId==='at'&&${tray(fresh)}.querySelector('.tray-chip.work .lbl')?.textContent==='Frankfurt'`));
+  // ⌥⇧⌘O opens the picker of the thread in use.
+  await page(`${pane('mac-thread')}.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true;`);
+  await page(`window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyO',key:'Ø',metaKey:true,altKey:true,shiftKey:true,bubbles:true,cancelable:true}));return true;`);
+  await until('shortcut opens the picker',()=>page(`return Boolean(document.querySelector('.tray-pop.picker'))`));
+  await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
+  await until('picker closed',()=>page(`return !document.querySelector('.tray-pop')`));
+  // Work in lists every machine, one row per folder; the server row is the copy of this project there.
+  await page(`${tray('mac-thread')}.querySelector('.tray-chip.work').click();return true;`);
+  await until('Work in',()=>page(`return Boolean(document.querySelector('.tray-pop .work-menu'))`));
+  const rows=await page(`return [...document.querySelectorAll('.tray-pop .work-menu [role=menuitemradio]')].map(r=>[r.dataset.hostId,r.dataset.workspace,r.getAttribute('aria-checked')])`);
+  assert.deepEqual(rows,[['local',macProjectId,'true'],['at','at:shared-workspace-id:1','false']]);
+  assert.match(await page(`return document.querySelector('.tray-pop .work-menu').textContent`),/This thread stays on This Mac/);
+  assert.ok(await page(`return [...document.querySelectorAll('.tray-pop .work-menu [role=menuitem]')].some(b=>b.textContent.includes('Add server…'))`));
+  await shot('work-in');
+  await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
+  // Files: recent files from this Mac attach with a click.
+  const readme=path.join(root,'work','README.md');
+  await page(`__deck.recentFiles.remember(${JSON.stringify(readme)});return true;`);
+  await page(`${tray('mac-thread')}.querySelector('.tray-chip.files').click();return true;`);
+  await until('Files list',()=>page(`return [...document.querySelectorAll('.tray-pop.files .pk-row .nm')].some(n=>n.textContent==='README.md')`));
+  await page(`[...document.querySelectorAll('.tray-pop.files .pk-row')].find(r=>r.querySelector('.nm')?.textContent==='README.md').click();return true;`);
+  await until('file attached',()=>page(`return [...${pane('mac-thread')}.querySelectorAll('.attachments .attachment')].some(a=>a.textContent.includes('README.md')&&a.getAttribute('aria-busy')!=='true')&&${tray('mac-thread')}.querySelector('.tray-chip.files .count')?.textContent==='1'`));
+  // Tools lists the bots' servers, apps and plugins here; these shell bots have none.
+  await page(`${tray('server-thread')}.querySelector('.tray-chip.tools').click();return true;`);
+  await until('Tools',()=>page(`return document.querySelector('.tray-pop.tools')?.textContent.includes('From the bots in this thread, on Frankfurt')`));
+  await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
+  // Offline: the server's Work in row is disabled, and the current one keeps its ✓.
+  fs.writeFileSync(path.join(root,'offline'),'1');
+  for (const line of execFileSync('ps',['-ax','-o','pid=,command=']).toString().split('\n'))
+    if (line.includes('--attach') && line.includes(path.join(root,'server'))) { try { process.kill(Number(line.trim().split(/\s+/)[0]),'SIGTERM'); } catch {} }
+  await until('server offline again',()=>page("return __deck.backend.machines.connection('at').get().status.kind!=='connected'"));
+  await page(`${tray('server-thread')}.querySelector('.tray-chip.work').click();return true;`);
+  await until('Work in while offline',()=>page(`return Boolean(document.querySelector('.tray-pop .work-menu'))`));
+  assert.deepEqual(await page(`const r=document.querySelector('.tray-pop .work-menu [data-host-id="at"]');return [r.disabled,r.getAttribute('aria-checked'),Boolean(r.querySelector('.check'))]`),[true,'true',true]);
+  await shot('work-in-offline');
+  await page('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));return true;');
+  fs.unlinkSync(path.join(root,'offline'));await page("__deck.backend.machines.connection('at').retryNow();return true;");
+  await until('server back again',()=>page("return __deck.backend.machines.connection('at').get().status.kind==='connected'"));
   console.log(`multi-host: ${oldHelper?'old-helper fallback':'current helper'} passed; running terminal reattached and completed PTY exited`);
   console.log('multi-host: ok — replies after Clear, interrupted load retry, rejected/expired snapshot-card UI, isolated drop, daemon restart recovery, preserved draft, remote upload, no replay, import remap, removal protection and canvas restore');
   return 0;

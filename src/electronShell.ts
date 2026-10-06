@@ -10,6 +10,7 @@ import { hostConnectionStore } from "./hostConnections.ts";
 import { connection } from "./connection.ts";
 import { DaemonClient, type Connect, type Link } from "./daemon/client.ts";
 import { pathPrompt, type PathRequest } from "./typedPath.ts";
+import { recentFiles } from "./recentFiles.ts";
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
@@ -62,7 +63,7 @@ declare global {
   interface Window {
     apexDeck?: DeckBridge;
     /** Set for the smoke test (desktop/smoke.mjs) only. */
-    __deck?: { backend: Backend };
+    __deck?: { backend: Backend; recentFiles?: typeof recentFiles };
   }
 }
 
@@ -270,6 +271,6 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   };
   const oldRemove = hosts.remove;
   hosts.remove = async id => { const list = await oldRemove(id); machines.dispose(id); machines.setHosts(list); return list; };
-  if (bridge.smoke) window.__deck = { backend };
+  if (bridge.smoke) window.__deck = { backend, recentFiles };
   return backend;
 }

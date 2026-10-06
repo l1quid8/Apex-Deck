@@ -9,6 +9,9 @@ import { socketLink } from '../tests/e2e/link.mjs';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const root = fs.mkdtempSync('/tmp/adh-');
 const mac = path.join(root, 'mac'); const remote = path.join(root, 'server');
+// Each machine's copy of the seeded project: same folder name (one project family), apart from the daemons' data.
+const project = { mac: path.join(root, 'mac-copy', 'project'), server: path.join(root, 'server-copy', 'project') };
+for (const dir of Object.values(project)) fs.mkdirSync(dir, { recursive: true });
 const bin = path.resolve('target/debug/apex-daemon');
 const children = new Set();
 const out = path.resolve(process.env.APEX_DECK_SMOKE_OUTPUT || '.superpowers/smoke/multi-host');
@@ -35,22 +38,22 @@ async function stop(child) {
 }
 const options = { policy: 'mention', max_bot_hops: 0 };
 const bot = reply => ({ id:'bot',display_name:'Bot',backend:{kind:'cli',program:'sh',args:['-c',`echo ${reply}`]} });
-async function seed(data, id, title, reply) {
+async function seed(data, id, title, reply, folder) {
   const client = new DaemonClient(() => socketLink(path.join(data,'daemon.sock')));
   try {
     await client.start();
-    await client.call('room_create', {id,participants:[bot(reply)],options,cwd:root});
+    await client.call('room_create', {id,participants:[bot(reply)],options,cwd:folder});
     const panes=[{id,workspaceId:'shared-workspace-id',kind:'chat',title,pinned:true}];
     if(id==='server-thread')panes.push({id:'server-terminal',workspaceId:'shared-workspace-id',kind:'terminal',title:'Server terminal',closed:true});
-    await client.call('session_save', {session:{version:1,workspaces:[{id:'shared-workspace-id',name:title,path:root}],panes,profiles:[],activeWorkspace:'shared-workspace-id',focusedPane:id,section:'threads',layout:'left'}});
+    await client.call('session_save', {session:{version:1,workspaces:[{id:'shared-workspace-id',name:title,path:folder}],panes,profiles:[],activeWorkspace:'shared-workspace-id',focusedPane:id,section:'threads',layout:'left'}});
   } finally { client.close(); }
 }
 const q = text => `'${text.replaceAll("'", "'\\''")}'`;
 let app; let restartWatch;
 try {
   const localSeed = await daemon(mac); let server = await daemon(remote);
-  await seed(mac,'mac-thread','Mac thread','mac-native-reply');
-  await seed(remote,'server-thread','Server thread','server-native-reply');
+  await seed(mac,'mac-thread','Mac thread','mac-native-reply',project.mac);
+  await seed(remote,'server-thread','Server thread','server-native-reply',project.server);
   await stop(localSeed);
   let restarting=false;
   restartWatch=fs.watch(root,(_event,file)=>{

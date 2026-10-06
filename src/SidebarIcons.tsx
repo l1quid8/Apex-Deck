@@ -16,6 +16,14 @@ const PATHS = {
   chevDown: <path d="m6 9 6 6 6-6" />,
   chevRight: <path d="m9 6 6 6-6 6" />,
   terminal: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3M12 15h5" /></>,
+  search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
+  plus: <path d="M12 5v14M5 12h14" />,
+  x: <path d="M6 6l12 12M18 6 6 18" />,
+  lock: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></>,
+  image: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="2" /><path d="m21 16-5-5-9 9" /></>,
+  doc: <><path d="M14 3H6v18h12V7Z" /><path d="M14 3v4h4M9 13h6M9 17h4" /></>,
+  folderPlus: <><path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9H3V7Z" /><path d="M12 11v6M9 14h6" /></>,
+  plug: <><path d="M9 3v5M15 3v5" /><path d="M6 8h12v3a6 6 0 0 1-12 0V8Z" /><path d="M12 17v4" /></>,
 } as const;
 
 export type GlyphName = keyof typeof PATHS;

@@ -17,7 +17,7 @@ export type DeckAction =
   | { kind: "thread"; action: ThreadKey };
 
 /** The thread actions that have keys. */
-export type ThreadKey = "rename" | "pin" | "mark_unread" | "archive";
+export type ThreadKey = "rename" | "pin" | "mark_unread" | "archive" | "project";
 
 /** The parts of a key event that decide a shortcut. `code` is the physical key, such as "KeyT". */
 export interface KeyPress {
@@ -56,6 +56,7 @@ const BINDINGS: Binding[] = [
   { code: "KeyP", key: "P", label: "Pin or unpin thread", action: { kind: "thread", action: "pin" }, macAlt: true },
   { code: "KeyU", key: "U", label: "Mark thread unread", action: { kind: "thread", action: "mark_unread" }, macShift: true },
   { code: "KeyA", key: "A", label: "Archive thread", action: { kind: "thread", action: "archive" }, macShift: true },
+  { code: "KeyO", key: "O", label: "Change the thread's project", action: { kind: "thread", action: "project" }, macAlt: true, macShift: true },
 ];
 
 export function shortcutFor(press: KeyPress, mac: boolean): DeckAction | null {

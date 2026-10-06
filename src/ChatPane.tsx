@@ -46,6 +46,8 @@ import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allow
 import { exportFileName, exportHtml, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
 import { lastReply } from "./threadCopy.ts";
 import { threadStarted } from "./destinations.ts";
+import { WorkBar, type WorkContext, type WorkTool } from "./WorkBar";
+import { recentFiles } from "./recentFiles.ts";
 
 /** What a ⋯ menu can ask an open or closed thread to do. */
 export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown" | "copy_reply";
@@ -107,6 +109,8 @@ interface Props {
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
   onFork?: (title: string, upto: number | null, at: number) => Promise<string>;
+  /** The Work bar above the message box: project, Files, Tools and where it runs. Threads only. */
+  work?: WorkContext;
   /** A started thread was pointed somewhere else: ask New thread or Fork there. */
   moveAsk?: { stays: string; project: string; host: string; onNew(): void; onFork(): void; onCancel(): void };
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared after it is taken. */
@@ -389,7 +393,7 @@ function fitHead(head: HTMLElement) {
     head.scrollWidth <= head.clientWidth && (!title || title.scrollWidth <= title.clientWidth || title.clientWidth >= TITLE_ROOM));
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -1725,8 +1729,20 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     for (const path of paths) {
       const name = path.replace(/\/+$/, "").split("/").pop() || path;
       track(name, undefined, () => backend.copyAttachment(pane.id, path));
+      // Files (not folders) dropped from this Mac come back in the Work bar's Files list.
+      if (!path.endsWith("/")) recentFiles.remember(path);
     }
   };
+  /** Attach a file on this Mac by its path: Files' list and Browse all. A server thread gets a copy. */
+  const attachPath = (path: string) => {
+    const name = path.replace(/\/+$/, "").split("/").pop() || path;
+    track(name, undefined, () => backend.copyAttachment(pane.id, path));
+    recentFiles.remember(path);
+    input.current?.focus();
+  };
+  const recent = useSyncExternalStore(recentFiles.subscribe, recentFiles.get);
+  /** The opening question's project name opens the picker too. */
+  const [askPicker, setAskPicker] = useState(0);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let live = true;
@@ -1781,6 +1797,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     }).catch(error => { if (live) setServerErrors(errors => ({...errors, [p.id]: String(error)})); });
     return () => { live = false; };
   }, [backend, pane.id, ready, participants, serverMenuOpen]);
+  // Tools in the Work bar: every bot's servers, apps and plugins here, once each.
+  const workTools: WorkTool[] = [];
+  for (const p of participants) for (const server of serverLists[p.id] ?? []) {
+    if (!workTools.some((t) => t.token === server.token)) workTools.push({ token: server.token, label: server.label, bot: p.display_name });
+  }
+  const useTool = (token: string) => {
+    setText((current) => { const base = current.replace(/\s+$/, ""); return `${base}${base ? " " : ""}!${token} `; });
+    requestAnimationFrame(() => { const end = input.current?.value.length ?? 0; input.current?.focus(); input.current?.setSelectionRange(end, end); });
+  };
   const requestedServers = parseServerRequests(text).map(s => s.name);
   const unknownServers = serverTargets.length && serverTargets.every(id => serverLists[id] !== undefined)
     ? resolveServerRequests(requestedServers, serverTargets.flatMap(id => serverLists[id])).unknown : [];
@@ -2436,7 +2461,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           <div className="empty">
             <div className="empty-emblem"><DeckIcon name="chat" size={26} /></div>
             <span className="eyebrow">A fresh perspective starts here</span>
-            <h3>{participants.length === 0 ? "Build your thinking team." : "The room is yours."}</h3>
+            {work ? <>
+              {/* Codex's opening question: the project's name opens the picker. */}
+              <h3 className="ask">What should we work on in <button type="button" className="pick-name" onClick={() => setAskPicker((n) => n + 1)}>{work.project.name}</button>?</h3>
+              <p className="where">{!work.project.path ? "No project: the bots work without a project folder."
+                : work.project.hostId === "local" ? `On This Mac · ${work.project.path}`
+                : `On ${work.project.hostName} · ${work.project.path}${work.workRows.some((r) => r.hostId === "local" && r.workspaceId) ? " · a separate copy from your Mac's" : ""}`}</p>
+            </> : <h3>{participants.length === 0 ? "Build your thinking team." : "The room is yours."}</h3>}
             <p>
               {participants.length === 0
                 ? "Add two or more models, then ask them something. Each one sees the whole conversation."
@@ -2652,6 +2683,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
           </div>)}
         </div>}
+        {work && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
+          toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
+          onAttach={attachPath} onTool={useTool}
+          onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows. */}
         <div className={stacked ? "composer-box stacked" : "composer-box"} ref={field}>
           <ComposerMenu ref={composerMenu} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {

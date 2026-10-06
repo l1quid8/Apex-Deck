@@ -73,3 +73,9 @@ test("thread shortcuts act on the focused thread", () => {
   assert.deepEqual(shortcutList(true).find((s) => s.label === "Rename thread"), { label: "Rename thread", keys: "⌥⌘R", thread: true });
   assert.deepEqual(shortcutList(false).find((s) => s.label === "Rename thread"), { label: "Rename thread", keys: "Ctrl+Alt+Shift+R", thread: true });
 });
+
+test("⌥⇧⌘O changes the project of the thread in use", () => {
+  assert.deepEqual(shortcutFor(press("KeyO", { metaKey: true, altKey: true, shiftKey: true }), true), { kind: "thread", action: "project" });
+  assert.equal(shortcutFor(press("KeyO", { metaKey: true, altKey: true }), true), null);
+  assert.deepEqual(shortcutList(true).find((s) => s.label === "Change the thread's project"), { label: "Change the thread's project", keys: "⌥⇧⌘O", thread: true });
+});
