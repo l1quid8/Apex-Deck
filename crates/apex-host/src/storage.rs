@@ -122,12 +122,16 @@ impl Store {
         std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
     }
 
-    /// Save a new room `id`. Refuses an id that already has a saved room.
+    /// Save a new room `id`. Refuses an id that already has a saved room, or
+    /// only its artifacts: a failed move deletes what it made, and they're not.
     pub fn import_room(&self, id: &str, saved: &SavedRoom) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         let path = self.room_path(id);
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        if std::fs::symlink_metadata(self.artifacts_path(id)).is_ok() {
+            return Err("a thread with that id already exists".into());
+        }
         write_new(&path, saved)?;
         std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
     }

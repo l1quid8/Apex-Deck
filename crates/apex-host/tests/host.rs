@@ -337,6 +337,25 @@ fn importing_a_snapshot_makes_a_fresh_room_without_usage_rules_or_changes() {
 }
 
 #[test]
+fn importing_over_leftover_artifacts_is_refused_and_keeps_them() {
+    let data = std::env::temp_dir().join(format!("apex-host-leftover-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let host = Running::start(&data);
+    // An earlier move left only this thread's artifacts behind.
+    let artifacts = json!({"version":1,"artifacts":[{"id":"a1","title":"Page","kind":"html","versions":[{"n":1,"source":"<p>left</p>","by":"bot","seq":1,"at":0}]}]});
+    host.call(json!({"cmd":"artifacts_save","args":{"room":"t","artifacts":artifacts}})).unwrap();
+    let snapshot = host.call(json!({"cmd":"room_create","args":{"id":"other","participants":[],"options":RoomOptions::default()}})).unwrap();
+    let refused = host.call(json!({"cmd":"room_import","args":{"id":"t","snapshot":snapshot,"cwd":null}}));
+    assert!(refused.unwrap_err().contains("a thread with that id already exists"));
+    // A failed move then deletes nothing it didn't make.
+    assert_eq!(host.call(json!({"cmd":"artifacts_load","args":{"room":"t"}})).unwrap(), artifacts);
+    let store = apex_host::storage::Store::new(data.join("saved-chats-v1"));
+    assert!(store.room("t").unwrap().is_none());
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
 fn importing_with_replace_swaps_an_unstarted_room_for_one_in_another_folder() {
     let data = std::env::temp_dir().join(format!("apex-host-replace-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
