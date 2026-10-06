@@ -993,17 +993,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
   };
 
-  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null) => Promise<void>>(async () => {});
-  dispatch.current = async (message, to, kind, hops) => {
+  const dispatch = useRef<(message: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>>(async () => {});
+  dispatch.current = async (message, to, kind, hops, manual) => {
     if (kind === "compact") {
       try { await backend.roomCompact(pane.id); }
       finally { to.forEach(id => turnQueue.idle(id)); }
     } else if (kind === "turn") await backend.roomTurn(pane.id, to, hops ?? null);
-    else await backend.roomPostTo(pane.id, message, to);
+    else await backend.roomPostTo(pane.id, message, to, !manual);
   };
   const [turnQueue] = useState(() => new ParticipantQueues(
     message => backend.roomTargets(pane.id, message),
-    (message, to, kind, hops) => dispatch.current(message, to, kind, hops),
+    (message, to, kind, hops, manual) => dispatch.current(message, to, kind, hops, manual),
     id => backend.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0); },

@@ -248,8 +248,8 @@ function DecisionSettingsPanel({ settings, onChange, backend }: { settings: AppS
       <Row label="API key" note="Saved in the host’s OS credential store, outside chat and settings files."><input type="password" aria-label="Decision API key" autoComplete="off" disabled={saving || backend.demo} value={key} onChange={(e) => setKey(e.target.value)} /></Row>
       <Row label="Save credential" note={status || (backend.demo ? "Available in the desktop app." : "On remote hosts, the key is stored on that host.")}><button disabled={!key.trim() || saving || backend.demo} onClick={async () => {
         setSaving(true); setStatus("");
-        try { await backend.settingsSave({ ...settings, decision, decisionApiKey: key }); setKey(""); setStatus("Key saved."); }
-        catch { setStatus("Could not save key. Check the host’s credential store."); }
+        try { await backend.decisionKeySave(decision.provider, key); setKey(""); setStatus("Key saved."); }
+        catch (error) { setStatus(error instanceof Error ? error.message : String(error)); }
         finally { setSaving(false); }
       }}>{saving ? "Saving…" : "Save key"}</button></Row>
     </div>

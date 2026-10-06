@@ -318,7 +318,7 @@ impl Host {
         }
     }
 
-    async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>) -> Result<TurnBatch, String> {
+    async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>, routed: bool) -> Result<TurnBatch, String> {
         let observation_revision = handle.observation_revision.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let room = handle.room.lock().await;
@@ -343,8 +343,11 @@ impl Host {
         let batch = handle.runtime.begin_post(text, targets, &self.turn_sink(id, handle, &error)).await?;
         if let Some(why) = error.into_inner().unwrap() { return Err(why); }
         checkpoint_room(handle, &self.store, id).await?;
-        let snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
-        if matches!(apex_core::parse_mentions(text, &snapshot.participants), apex_core::MentionTarget::None) {
+        let mut snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
+        if let Some(index) = snapshot.transcript.iter().rposition(|m| matches!(m.speaker, apex_core::Speaker::Human)) {
+            snapshot.transcript.truncate(index + 1);
+        }
+        if routed && matches!(apex_core::parse_mentions(text, &snapshot.participants), apex_core::MentionTarget::None) {
             let settings = self.settings_load().ok().flatten().unwrap_or_default();
             crate::decision::observe(&self.runtime, self.paths.data.clone(), id.to_string(), handle.clone(), snapshot, settings, observation_revision);
         }
@@ -383,7 +386,7 @@ impl Host {
     /// Compatibility command for the existing UI; resolves when this chain ends.
     pub async fn room_post(&self, id: String, text: String) -> Result<(), String> {
         let handle = self.handle(&id)?;
-        let batch = self.prepare_post(&id, &handle, &text, None).await?;
+        let batch = self.prepare_post(&id, &handle, &text, None, true).await?;
         self.run_batch(&id, &handle, batch).await
     }
 
@@ -392,9 +395,9 @@ impl Host {
     }
 
     /// Saves the human message once, then runs targets in the background.
-    pub async fn room_post_to(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>) -> Result<(), String> {
+    pub async fn room_post_to(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, routed: bool) -> Result<(), String> {
         let handle = self.handle(&id)?;
-        let batch = self.prepare_post(&id, &handle, &text, Some(targets)).await?;
+        let batch = self.prepare_post(&id, &handle, &text, Some(targets), routed).await?;
         self.run_batch_in_background(id, handle, batch);
         Ok(())
     }
@@ -1405,6 +1408,36 @@ mod host_tests {
         assert!(saved.starts_with(data.join("attachments").join("room-1")));
         assert_eq!(host.read_attachment(saved.to_string_lossy().into_owned()).unwrap(), b"hi");
         assert!(host.save_attachment("room-1", "big.bin", &vec![0; MAX_ATTACHMENT + 1]).is_err());
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn stopping_and_deleting_a_room_invalidate_in_flight_observations() {
+        let (host, _runtime, data) = host("decision-revision");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        let handle = host.handle("r").unwrap();
+        let revision = handle.observation_revision.load(Ordering::SeqCst);
+        host.room_stop("r".into(), None);
+        assert_ne!(revision, handle.observation_revision.load(Ordering::SeqCst));
+        host.room_delete("r".into()).unwrap();
+        assert!(handle.deleted.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn decision_secret_never_reaches_settings_events_or_disk() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        let (host, _runtime, data) = host("decision-secret");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |event| sink.lock().unwrap().push(format!("{event:?}")));
+        _runtime.block_on(host.call(crate::command::Command::from_json(serde_json::json!({
+            "cmd":"decision_key_save", "args":{"provider":"jev", "key":"sentinel-secret"}
+        })).unwrap())).unwrap();
+        host.settings_save(serde_json::json!({"decisionApiKey":"discard-this-secret","decision":{"enabled":false,"provider":"jev"}})).unwrap();
+        assert!(!host.settings_load().unwrap().unwrap().to_string().contains("sentinel-secret"));
+        assert!(!seen.lock().unwrap().join("").contains("sentinel-secret"));
+        assert!(!host.settings_load().unwrap().unwrap().to_string().contains("discard-this-secret"));
         let _ = std::fs::remove_dir_all(data);
     }
 

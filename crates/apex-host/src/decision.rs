@@ -19,18 +19,18 @@ fn credential(provider: &str) -> Result<keyring::Entry, String> {
 }
 /// Remove transient secrets before SettingsChanged or any disk write.
 pub(crate) fn save_key(settings: &mut Value) -> Result<(), String> {
-    let key = settings.as_object_mut().and_then(|s| s.remove("decisionApiKey"));
-    if let Some(key) = key {
-        let key = key.as_str().filter(|k| !k.trim().is_empty()).ok_or("API key must not be empty")?;
-        let provider = settings["decision"]["provider"].as_str().ok_or("Select a decision provider")?;
-        credential(provider)?.set_password(key.trim()).map_err(|_| "Could not save decision key in the OS credential store")?;
-    }
+    if let Some(fields) = settings.as_object_mut() { fields.remove("decisionApiKey"); }
     if let Some(decision) = settings.get_mut("decision") {
         let provider = decision["provider"].as_str().unwrap_or("jev").to_string();
         let valid = ["jev", "openrouter", "cloudflare"].contains(&provider.as_str());
         *decision = json!({"enabled": decision["enabled"] == true && valid, "provider": if valid { provider } else { "jev".into() }, "accountId": decision["accountId"].as_str().unwrap_or("")});
     }
     Ok(())
+}
+
+pub(crate) fn save_credential(provider: &str, key: &str) -> Result<(), String> {
+    if key.trim().is_empty() { return Err("API key must not be empty".into()); }
+    credential(provider)?.set_password(key.trim()).map_err(|_| "Could not save decision key in the OS credential store".into())
 }
 
 pub(crate) fn observe(runtime: &tokio::runtime::Handle, data: PathBuf, room_id: String, handle: RoomHandle, snapshot: RoomSnapshot, settings: Value, revision: u64) {
@@ -45,6 +45,7 @@ pub(crate) fn observe(runtime: &tokio::runtime::Handle, data: PathBuf, room_id: 
         let request = routing_request(&snapshot.transcript, &ids);
         let choices = request.choices.clone();
         let result = async {
+            config.endpoint()?;
             let key = tokio::task::spawn_blocking(move || credential(&provider)?.get_password().map_err(|_| "Decision key is missing from the OS credential store".to_string())).await.map_err(|_| "Credential lookup failed")??;
             HttpDecisionProvider::new(config, key)?.decide(request).await
         }.await;
@@ -54,7 +55,7 @@ pub(crate) fn observe(runtime: &tokio::runtime::Handle, data: PathBuf, room_id: 
         let mut line = json!({"version":1,"room":room_id,"message_index":snapshot.transcript.len().saturating_sub(1),"deck_targets":snapshot.last_targets,"stale":stale,"observe_only":true,"choices":choices,"at_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()});
         match result {
             Ok(result) => {
-                let choice = result.answers["who_replies"]["choice"].as_str().unwrap_or("nobody");
+                let choice = result.choice.as_str();
                 line["suggested_targets"] = if stale { Value::Null } else { json!(choices.get(choice)) };
                 line["result"] = json!(result);
             }
@@ -72,4 +73,20 @@ pub(crate) fn observe(runtime: &tokio::runtime::Handle, data: PathBuf, room_id: 
         }).await;
         if !matches!(written, Ok(Ok(()))) { eprintln!("[apex-deck] Could not write decision observation log"); }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn secrets_are_removed_before_settings_are_serialized() {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        save_credential("jev", "test-secret").unwrap();
+        assert!(save_credential("jev", " ").is_err());
+        assert!(save_credential("unknown", "test-secret").is_err());
+        let mut settings = json!({"decisionApiKey":"test-secret", "decision":{"enabled":false,"provider":"jev","accountId":"","extra":"test-secret"}});
+        save_key(&mut settings).unwrap();
+        assert!(!settings.to_string().contains("test-secret"));
+        assert!(settings.get("decisionApiKey").is_none());
+    }
 }

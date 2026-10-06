@@ -21,3 +21,25 @@ fn appended_bot_reply_is_valid_but_rewind_and_new_human_are_stale() {
     assert!(!observation_is_current(&before, &[message(Speaker::Human, "replacement")]));
     assert!(!observation_is_current(&before, &[before[0].clone(), message(Speaker::Human, "steer")]));
 }
+
+#[test]
+fn observer_only_asks_current_turn_questions() {
+    let request = routing_request(&[], &[ParticipantId::new("a")]);
+    assert_eq!(request.questions.len(), 2);
+    assert!(!request.questions.contains_key("duplicate_reply"));
+}
+
+#[test]
+fn observer_cuts_busy_replies_and_uses_chat_speakers() {
+    let message = |speaker, text: &str| Message { at: None, seq: 0, servers: vec![], speaker, text: text.into() };
+    let messages = vec![
+        message(Speaker::Bot(ParticipantId::new("jigga")), "previous"),
+        message(Speaker::Human, "current request"),
+        message(Speaker::Bot(ParticipantId::new("jigga")), "racing reply"),
+    ];
+    let request = routing_request(&messages, &[ParticipantId::new("jigga")]);
+    assert!(request.state.contains("[Human]: current request"));
+    assert!(request.state.contains("[@jigga]: previous"));
+    assert!(!request.state.contains("racing reply"));
+    assert!(!request.state.contains("ParticipantId"));
+}

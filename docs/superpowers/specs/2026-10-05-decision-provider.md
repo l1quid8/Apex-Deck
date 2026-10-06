@@ -11,7 +11,7 @@ to what Deck actually did. Routing does not change in this phase.
 - Clef 12/15, Jev 12/15, Clef-Flash 7/15. Flash is not offered.
 - All models picked a bot when a bot had just asked the human (case 10).
   Rewording the questions fixed that but broke "done"/"sure" replies, so
-  the original wording stays and two fixed rules cover the gaps.
+  the original wording stays. Suppression checks are deferred to a later phase.
 
 ## Pieces
 
@@ -33,18 +33,17 @@ to what Deck actually did. Routing does not change in this phase.
 3. **Questions** (fixed, in code):
    - `who_replies`: choice over the roster's bot ids plus `both`/`nobody`.
    - `awaiting_human`: noul.
-4. **Fixed rules** applied after the model, before logging the "would do":
-   - A bot's last message asked the human something → `nobody`.
-   - Another bot already answered this human message → that bot is not
-     picked again for the same content.
-   - @mentions, `@all`, approvals and `max_bot_hops` are never overridden;
-     the model is not called when the message has a mention.
+4. **Observation eligibility**: only human messages routed by Deck without
+   mentions are observed. Manually selected Steer and picture recipients are
+   skipped. No suppression rules run: bot messages already wake only mentioned
+   bots, and the observer runs before a reply can be judged as duplicate.
 5. **Settings**: provider + key, off by default, with a note that recent
-   room text is sent to the provider. Keys live in the OS keychain, not the
+   room text is sent to the provider. Keys are sent only through `decision_key_save` (older hosts reject it), and live in the OS keychain, not the
    room file.
 6. **Log**: one JSONL line per decision under the app data dir: message
    index, Deck's targets (`resolve_targets`), model pick + probabilities,
-   rule that fired (if any), latency, cost. A small CLI or script reports
+   awaiting-human probability, latency, numeric usage/cost. Provider responses
+   are allowlisted into typed fields; echoed text and unknown fields are dropped. A small CLI or script reports
    agreement rate.
 
 ## Concurrency
@@ -57,11 +56,11 @@ provider can never delay a reply.
 
 ## Out of scope for this phase
 
-Changing routing, escalation, context ranking, screenshot checks.
+Changing routing, duplicate-reply suppression, waiting-human suppression, escalation, context ranking, screenshot checks.
 
 ## Done when
 
-- Unit tests: request building, both fixed rules, stale-drop, provider
+- Unit tests: request building, manual-recipient skips, stale-drop, provider
   error leaves routing untouched.
 - One live run per provider against the key files in `~/.config/{jev,openrouter}`.
 - A week of logs, then decide whether the model may route.

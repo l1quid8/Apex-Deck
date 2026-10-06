@@ -3,6 +3,8 @@ use apex_core::decision::{DecisionProvider, DecisionRequest, DecisionResult};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct DecisionConfig {
@@ -28,7 +30,11 @@ impl HttpDecisionProvider {
     pub fn new(config: DecisionConfig, key: String) -> Result<Self, String> {
         config.endpoint()?;
         if key.trim().is_empty() { return Err("Decision provider key is missing".into()); }
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(8)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create decision client")?;
+        let client = if let Some(client) = CLIENT.get() { client.clone() } else {
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(8)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not create decision client")?;
+            let _ = CLIENT.set(client);
+            CLIENT.get().expect("shared decision client initialized").clone()
+        };
         Ok(Self { config, key, client })
     }
 }
@@ -48,10 +54,8 @@ impl DecisionProvider for HttpDecisionProvider {
         }
         let value = serde_json::from_slice(&bytes).map_err(|_| "Decision provider returned invalid JSON")?;
         let result = normalize_response(value, started.elapsed().as_millis() as u64)?;
-        let choice = result.answers["who_replies"]["choice"].as_str().ok_or("Missing decision choice")?;
-        if !request.choices.contains_key(choice) { return Err("Decision provider returned an unknown choice".into()); }
-        let probabilities = result.answers["who_replies"]["probabilities"].as_object().ok_or("Missing probabilities")?;
-        if probabilities.len() != request.choices.len() || request.choices.keys().any(|k| !probabilities.contains_key(k)) { return Err("Decision probabilities do not match eligible choices".into()); }
+        if !request.choices.contains_key(&result.choice) { return Err("Decision provider returned an unknown choice".into()); }
+        if result.probabilities.len() != request.choices.len() || request.choices.keys().any(|k| !result.probabilities.contains_key(k)) { return Err("Decision probabilities do not match eligible choices".into()); }
         Ok(result)
     }
 }
@@ -61,6 +65,7 @@ pub fn normalize_response(mut value: Value, latency_ms: u64) -> Result<DecisionR
         value = value["result"].take();
     }
     let model = value["model"].as_str().ok_or("Missing decision model")?.to_string();
+    if model.len() > 128 || model.is_empty() || !model.chars().all(|c| c.is_ascii_alphanumeric() || "-._/@:".contains(c)) { return Err("Invalid decision model id".into()); }
     let answers = &value["answers"];
     if answers["who_replies"]["choice"].as_str().is_none() { return Err("Missing decision choice".into()); }
     let probabilities = answers["who_replies"]["probabilities"].as_object().ok_or("Missing decision probabilities")?;
@@ -68,8 +73,14 @@ pub fn normalize_response(mut value: Value, latency_ms: u64) -> Result<DecisionR
     if probabilities.is_empty() || probabilities.values().any(|v| !probability(v)) { return Err("Invalid decision probabilities".into()); }
     let sum: f64 = probabilities.values().filter_map(Value::as_f64).sum();
     if (sum - 1.0).abs() > 0.02 { return Err("Decision probabilities must sum to one".into()); }
-    for name in ["awaiting_human", "duplicate_reply"] {
-        if !probability(&answers[name]["noul"]) { return Err(format!("Invalid {name} answer")); }
+    let awaiting_human = answers["awaiting_human"]["noul"].as_f64().filter(|p| p.is_finite() && (0.0..=1.0).contains(p)).ok_or("Invalid awaiting_human answer")?;
+    let choice = answers["who_replies"]["choice"].as_str().unwrap().to_string();
+    let valid_choice = |s: &str| s == "all" || s == "nobody" || s.strip_prefix("bot_").is_some_and(|n| !n.is_empty() && n.len() <= 10 && n.chars().all(|c| c.is_ascii_digit()));
+    if !valid_choice(&choice) || probabilities.keys().any(|k| !valid_choice(k)) { return Err("Invalid decision choice id".into()); }
+    let probabilities = probabilities.iter().map(|(k,v)| (k.clone(), v.as_f64().unwrap())).collect();
+    let mut usage = std::collections::BTreeMap::new();
+    for name in ["input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens", "cost"] {
+        if let Some(n) = value["usage"][name].as_f64().filter(|n| n.is_finite() && *n >= 0.0) { usage.insert(name.to_string(), n); }
     }
-    Ok(DecisionResult { model, answers: value["answers"].take(), latency_ms, usage: value["usage"].take() })
+    Ok(DecisionResult { model, choice, probabilities, awaiting_human, latency_ms, usage })
 }
