@@ -62,7 +62,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomSetOptions: (id, options) => call("room_set_options", { id, options }),
     roomForgetAllowed: (id, rule) => call("room_forget_allowed", { id, rule }),
     roomAddParticipant: (id, participant) => call("room_add_participant", { id, participant }),
-    roomUpdateParticipant: (id, participant) => call("room_update_participant", { id, participant }),
+    roomUpdateParticipant: (id, participant, base) => call("room_update_participant", { id, participant, ...(base ? { base } : {}) }),
     roomRemoveParticipant: (id, participant) => call("room_remove_participant", { id, participant }),
     roomClear: (id) => call("room_clear", { id }),
     roomRewind: (id, upto) => call("room_rewind", { id, upto }),

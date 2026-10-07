@@ -622,29 +622,36 @@ impl Host {
     /// Replace a participant's settings (model, effort, access, persona)
     /// without removing it from the chat.
     pub async fn room_update_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
-        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
+        self.room_update_participant_from(id, participant, None).await.map(|_| ())
+    }
+
+    /// Apply only fields edited since `base`, under the room lock. Older clients
+    /// can omit it and retain the full-replacement behavior.
+    pub async fn room_update_participant_from(self: &Arc<Self>, id: String, participant: ParticipantConfig, base: Option<ParticipantConfig>) -> Result<ParticipantConfig, String> {
+        let handle = self.handle(&id)?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         let name = participant.id.clone();
         let context = self.room_context(&id)?;
-        self.read_plans(&id, std::slice::from_ref(&participant), &context);
-        let changed = {
-            let room = self.room(&id)?;
-            let mut room = room.lock().await;
-            let replacement = apex_adapters::build(participant, &context);
-            if self.handle(&id)?.runtime.busy() {
-                if !room.replace_turn_settings(replacement) {
-                    return Err("Only model and reasoning can change while models are replying".into());
-                }
-                true
-            } else {
-                room.replace_participant(replacement)
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        let current = room.configs().into_iter().find(|p| p.id == name)
+            .ok_or_else(|| format!("no participant with the id `{name}` is in this chat"))?;
+        let next = if let Some(base) = base {
+            if base.id != name { return Err("settings base belongs to another participant".into()); }
+            merge_participant(&current, &base, &participant)?
+        } else { participant };
+        let replacement = apex_adapters::build(next.clone(), &context);
+        if handle.runtime.busy() {
+            if !room.replace_turn_settings(replacement) {
+                return Err("Only model and reasoning can change while models are replying".into());
             }
-        };
-        if changed {
-            self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
-            self.save_room(&id).await
-        } else {
-            Err(format!("no participant with the id `{name}` is in this chat"))
-        }
+        } else { room.replace_participant(replacement); }
+        self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
+        // Save and broadcast under the same room lock as the merge so concurrent
+        // devices cannot emit older settings after newer ones.
+        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantChanged { participant: next.clone() })?;
+        self.read_plans(&id, std::slice::from_ref(&next), &context);
+        Ok(next)
     }
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
@@ -1131,13 +1138,33 @@ impl Host {
     }
 }
 
+/// A three-way merge: unchanged form fields follow the host; edited fields win.
+fn merge_participant(current: &ParticipantConfig, base: &ParticipantConfig, next: &ParticipantConfig) -> Result<ParticipantConfig, String> {
+    fn merge(current: &serde_json::Value, base: &serde_json::Value, next: &serde_json::Value) -> serde_json::Value {
+        if base == next { return current.clone(); }
+        if let (Some(c), Some(b), Some(n)) = (current.as_object(), base.as_object(), next.as_object()) {
+            // Changing a backend kind/tool replaces the backend as a unit.
+            if b.get("kind") != n.get("kind") || b.get("tool") != n.get("tool") { return next.clone(); }
+            let mut out = c.clone();
+            for (key, value) in n { out.insert(key.clone(), merge(c.get(key).unwrap_or(&serde_json::Value::Null), b.get(key).unwrap_or(&serde_json::Value::Null), value)); }
+            for key in b.keys() { if !n.contains_key(key) { out.remove(key); } }
+            serde_json::Value::Object(out)
+        } else { next.clone() }
+    }
+    let json = |p| serde_json::to_value(p).map_err(|e| format!("invalid participant settings: {e}"));
+    serde_json::from_value(merge(&json(current)?, &json(base)?, &json(next)?)).map_err(|e| format!("invalid participant settings: {e}"))
+}
+
 /// One shared checkpoint for all running chains. Completed messages are saved
 /// before emission; a failed write cancels work and is reported to the caller.
 fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent) -> Result<(), String> {
-    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. } | RoomEvent::Usage { .. }) { return Ok(()); }
+    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. } | RoomEvent::Usage { .. } | RoomEvent::ParticipantChanged { .. }) { return Ok(()); }
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
     match event {
+        RoomEvent::ParticipantChanged { participant } => {
+            for p in &mut checkpoint.snapshot.participants { if p.id == participant.id { *p = participant.clone(); } }
+        }
         RoomEvent::MessageAdded { message } => checkpoint.snapshot.transcript.push(message.clone()),
         RoomEvent::Changed { id, change } => {
             let seq = checkpoint.snapshot.transcript.len();
@@ -1561,6 +1588,31 @@ mod host_tests {
         assert!(host.quit_unanswered(1));
         host.quit_heard(1);
         assert!(!host.quit_unanswered(1));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn participant_settings_merge_stale_edits_and_notify_clients() {
+        let (host, runtime, data) = host("participant-sync");
+        let base = serde_json::json!({"id":"null","display_name":"Null","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:1","model":"sonnet","api_key_env":null},"effort":"high","persona":"","access":"ask"});
+        host.room_create("r".into(), vec![serde_json::from_value(base.clone()).unwrap()], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(serde_json::to_value(&envelope.event).unwrap()));
+        let update = |next: serde_json::Value| runtime.block_on(host.call(serde_json::from_value(serde_json::json!({"cmd":"room_update_participant","args":{"id":"r","participant":next,"base":base}})).unwrap())).unwrap();
+        let mut phone = base.clone(); phone["backend"]["model"] = "opus".into();
+        update(phone);
+        let mut desktop = base.clone(); desktop["effort"] = "low".into();
+        update(desktop);
+        let saved = host.store.room("r").unwrap().unwrap().snapshot.participants[0].clone();
+        let json = serde_json::to_value(saved).unwrap();
+        assert_eq!(json["backend"]["model"], "opus", "a stale reasoning pick must preserve the phone model");
+        assert_eq!(json["effort"], "low");
+        let events = seen.lock().unwrap();
+        let settings: Vec<_> = events.iter().filter(|e| e["payload"]["event"]["type"] == "participant_changed").collect();
+        assert_eq!(settings.len(), 2, "both clients must hear each saved change");
+        assert_eq!(settings[1]["payload"]["event"]["participant"], json);
+        drop(events);
         let _ = std::fs::remove_dir_all(data);
     }
 

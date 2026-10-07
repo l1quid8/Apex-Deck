@@ -7,20 +7,21 @@ import { AGENT_EFFORTS, API_EFFORTS, effortsFor, findModel, modelGroups } from '
 import { Picker } from './Picker';
 import { ReasoningSlider } from './ReasoningSlider';
 import { latestSaveQueue } from './settingsSave';
-import { withTurnSettings } from './participantSettings';
+import { applyTurnChange } from './participantSettings';
 
 interface Props {
   config: ParticipantConfig;
+  roomId: string;
   anchor: HTMLElement;
   backend: Backend;
-  save: (config: ParticipantConfig) => Promise<void>;
+  save: (config: ParticipantConfig, base: ParticipantConfig) => Promise<void>;
   close: () => void;
   /** The bot's avatar, shown beside its name. */
   avatar?: ReactNode;
   /** Context and plan bars, shown under the name. */
   meters?: ReactNode;
 }
-export function BotSettings({ config, anchor, backend, save, close, avatar, meters }: Props) {
+export function BotSettings({ config, roomId, anchor, backend, save, close, avatar, meters }: Props) {
   const tool = config.backend.kind === 'agent' ? config.backend.tool : null;
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const [model, setModel] = useState('model' in config.backend ? config.backend.model ?? '' : '');
@@ -29,7 +30,20 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
   const [error, setError] = useState('');
   const saveRef = useRef(save);
   saveRef.current = save;
-  const orderedSave = useRef(latestSaveQueue<ParticipantConfig>(next => saveRef.current(next)));
+  const orderedSave = useRef(latestSaveQueue<{ change: { model?: string; effort?: string }; base: ParticipantConfig }>(async value => {
+    const state = await backend.roomCreate(roomId, [], { policy: 'mention', max_bot_hops: 0 }, '');
+    const current = state.participants.find(p => p.id === value.base.id);
+    if (!current) throw new Error('This bot is no longer in the thread.');
+    await saveRef.current(applyTurnChange(current, value.change), current);
+  }));
+  const touched = useRef<{ model?: string; effort?: string }>({});
+  const [settled, setSettled] = useState(0);
+  const savedModel = "model" in config.backend ? config.backend.model ?? "" : "";
+  const savedEffort = config.effort ?? "";
+  useEffect(() => {
+    if (!("model" in touched.current)) { setModel(savedModel); requested.current.model = savedModel; }
+    if (!("effort" in touched.current)) { setEffort(savedEffort); requested.current.effort = savedEffort; }
+  }, [savedModel, savedEffort, settled]);
   const saveVersion = useRef(0);
   const requested = useRef({ model, effort });
   const [position, setPosition] = useState({ top: 0, left: 0 });
@@ -64,15 +78,28 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
   const shown = all.slice(0, 4);
   const extra = all.slice(4);
   const current = all.find(m => m.id === model);
-  const pickModel = (id: string) => { setModel(id); setOpen(false); setMore(false); void apply(id, effort); };
+  const pickModel = (id: string) => { setModel(id); setOpen(false); setMore(false); void apply({ model: id }); };
   /** Saves right away; there is no Apply step for agent bots. */
-  const apply = async (nextModel: string, nextEffort: string) => {
+  const apply = async (change: { model?: string; effort?: string }) => {
+    const sent = { ...touched.current, ...change };
+    const nextModel = sent.model ?? savedModel;
+    const nextEffort = sent.effort ?? savedEffort;
     const nextEfforts = tool ? effortsFor(AGENT_EFFORTS[tool], groups, nextModel) : API_EFFORTS;
     const normalizedEffort = nextEfforts.includes(nextEffort) ? nextEffort : '';
+    // A model with no reasoning support explicitly clears the old level.
+    if ('model' in sent && normalizedEffort !== nextEffort) sent.effort = normalizedEffort;
+    touched.current = sent;
     requested.current = { model: nextModel, effort: normalizedEffort };
     const version = ++saveVersion.current;
     setSaving(true); setError('');
-    try { await orderedSave.current(withTurnSettings(config, nextModel, normalizedEffort, nextEfforts)); }
+    try {
+      await orderedSave.current({ change: sent, base: config });
+      const left = { ...touched.current };
+      if (left.model === sent.model) delete left.model;
+      if (left.effort === sent.effort) delete left.effort;
+      touched.current = left;
+      setSettled(n => n + 1);
+    }
     catch (error) { if (version === saveVersion.current) { setError(String(error)); requested.current = { model: '\0', effort: '\0' }; } }
     if (version === saveVersion.current) setSaving(false);
   };
@@ -83,7 +110,7 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
   });
   const commitEffort = (value: string) => {
     setEffort(value);
-    if (value !== requested.current.effort || model !== requested.current.model) void apply(model, value);
+    if (value !== requested.current.effort || model !== requested.current.model) void apply({ effort: value });
   };
   return createPortal(<div ref={root} className="bot-settings" style={position} onScroll={() => setOpen(false)} role="dialog" aria-label={`Settings for ${config.display_name}`}>
     <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
@@ -104,11 +131,11 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
             <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>
           </button>)}
         </div>}
-      </div> : <label>Model<Picker name="quick-bot-model" value={model} onChange={setModel} groups={[]} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>}
+      </div> : <label>Model<Picker name="quick-bot-model" value={model} onChange={value => { setModel(value); touched.current = { ...touched.current, model: value }; }} groups={[]} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>}
       <ReasoningSlider efforts={efforts} value={supportedEffort} onCommit={commitEffort} />
       {note && <p className="muted">{note}</p>}
       {error && <p role="alert" className="danger-text">{error}</p>}
-      {!tool && <div className="bot-settings-actions"><button className="primary" disabled={!model.trim()} onClick={() => void apply(model, supportedEffort)}>{saving ? 'Saving…' : 'Apply'}</button></div>}
+      {!tool && <div className="bot-settings-actions"><button className="primary" disabled={!model.trim()} onClick={() => void apply({ model, effort: supportedEffort })}>{saving ? 'Saving…' : 'Apply'}</button></div>}
     </fieldset>
   </div>, document.body);
 }

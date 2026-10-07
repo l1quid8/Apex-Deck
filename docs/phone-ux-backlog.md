@@ -120,7 +120,15 @@ Not screen work; Gronk builds these without touching `src/phone/` layout.
 - [ ] Native shell pieces: Keychain for tokens, push
 - [ ] **Token changes every time a daemon starts** (`crates/apex-daemon/src/serve.rs:75`), so restarting Deck or a server makes the phone say "the token is wrong" until it's paired again. Needs a token that survives restarts, or device pairing. Source: Jigga, round 1 testing.
 - [ ] **Meters fill in right away** — the Mac and servers keep each bot's last context reading and each provider's last plan reading, and send them when a thread opens. Today the phone only sees them from replies that arrive while the thread is open. Until then the meters show "—". Source: Jigga, round 3 (part 3).
-- [ ] **Tell other windows when a bot's settings change** — no room event exists for it, so a desktop window holds the old model and reasoning after the phone changes them, and its next save can put them back. A `participant_changed` event the desktop and phone both apply would fix it. Source: Jigga, round 3.
+- [ ] **Tell other windows when a bot's settings change** — implemented and tested by Null; pending rollout. The host now saves and broadcasts `participant_changed`; desktop and phone apply it live. Updates can include their opening config (`base`), so the host merges only edited fields atomically. Desktop quick settings reread inside the ordered save queue, preserving explicit rapid picks and other devices' changes. Old helpers still accept updates but do not broadcast or merge them; each target machine needs the new helper, and both clients need the new build. Restarting production daemons needs coordination because it can interrupt work. Source: round 3 follow-up.
+
+### Next-steps row and settings sync verification
+
+- Jigga's next-steps CSS lock reviewed at 393px and 320px: vertical wheel, programmatic scroll and touch drag left the row in place; horizontal drag still scrolled; no page errors or sideways overflow. Real iPhone feel awaits install.
+- Sync checked against a separate temporary daemon, never the human's rooms: phone model updates an open desktop `BotSettings`; desktop reasoning updates an open phone card. Rapid Sonnet → Opus picks preserve Low reasoning. No browser errors.
+- Regression coverage: `tests/participant-sync.test.mjs`, the host's `participant_settings_merge_stale_edits_and_notify_clients` test, and the two-device test in `tests/e2e/daemon-client.e2e.mjs`.
+- Checks: `npm test`, `npm run build`, `node scripts/build-phone.mjs`, `TMPDIR=/tmp cargo test --workspace`, and `node --experimental-strip-types --test tests/e2e/daemon-client.e2e.mjs`. The initial Rust run failed three existing Codex-hook tests because the macOS temporary socket paths exceeded `SUN_LEN`; the short-path rerun passed.
+
 
 ## Done
 

@@ -401,21 +401,23 @@ export function PhoneApp() {
     }
     let live = true;
     let stop = () => {};
+    const settingsHeard = new Map<string, ParticipantConfig>();
     loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openWorkspace.path).then((state) => {
       if (!live) return;
       setWaiting((all) => ({ ...all, [openPane.id]: state.approvals.map((card) => card.request) }));
       setBusy((all) => ({ ...all, [openPane.id]: state.active }));
       setCuts((all) => all[openPane.id] ? { ...all, [openPane.id]: resumeCut(all[openPane.id], state.active, state.snapshot.transcript) } : all);
+      const configs = state.snapshot.participants.map(config => settingsHeard.get(config.id) ?? config);
       setRoom({
         id: openPane.id,
         messages: state.snapshot.transcript,
         approvals: state.approvals,
-        participants: state.snapshot.participants.map(toPerson),
+        participants: configs.map(toPerson),
         asks: restoreQuestions({}, openPane.id, state, Date.now())[openPane.id] ?? NO_ASKS,
         plan: Boolean(state.plan ?? state.snapshot.plan),
         policy: state.snapshot.options.policy,
         working: workingFrom(state.active, Date.now()),
-        configs: state.snapshot.participants,
+        configs,
         fill: {},
         plans: {},
         used: state.snapshot.usage ?? {},
@@ -423,6 +425,8 @@ export function PhoneApp() {
     }).catch((error) => { if (live) setNotice(words(error)); });
     host.backend.onRoomEvent((id, event) => {
       if (!live || id !== openPane.id) return;
+      if (event.type === "participant_changed") settingsHeard.set(event.participant.id, event.participant);
+      if (event.type === "participant_changed") setRoom((current) => current && current.id === id ? { ...current, configs: current.configs.map((config) => config.id === event.participant.id ? event.participant : config), participants: current.participants.map((person) => person.id === event.participant.id ? toPerson(event.participant) : person) } : current);
       if (event.type === "message_added") setRoom((current) => current && current.id === id && !current.messages.some((message) => message.seq === event.message.seq) ? { ...current, messages: [...current.messages, event.message] } : current);
       if (event.type === "approval_requested") setRoom((current) => current && current.id === id ? { ...current, approvals: [...current.approvals.filter((card) => card.request !== event.request), { id: event.id, request: event.request, action: event.action }] } : current);
       if (event.type === "approval_resolved") setRoom((current) => current && current.id === id ? { ...current, approvals: current.approvals.filter((card) => card.request !== event.request) } : current);
@@ -600,8 +604,9 @@ export function PhoneApp() {
         const saved = now.participants.find((config) => config.id === botId);
         if (!saved) throw new Error("This bot is no longer in the thread.");
         const next = withPhoneChange(saved, change, reported);
-        await host.backend.roomUpdateParticipant(paneId, next);
-        setRoom((current) => current && current.id === paneId ? { ...current, configs: current.configs.map((config) => config.id === botId ? next : config) } : current);
+        const result = await host.backend.roomUpdateParticipant(paneId, next, saved);
+        const actual = result || (await host.backend.roomCreate(paneId, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(config => config.id === botId) || next;
+        if (!result) setRoom((current) => current && current.id === paneId ? { ...current, configs: current.configs.map((config) => config.id === botId ? actual : config) } : current);
       });
       turnSaves.current.set(key, save);
     }

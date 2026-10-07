@@ -4,6 +4,7 @@ import type { ToolServer } from "./types";
 // In a plain browser (npm run dev alone) it falls back to a small stand-in so the UI
 // can be worked on without building the app.
 
+import { mergeParticipant } from "./participantSettings";
 import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
 import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
@@ -85,8 +86,8 @@ export interface Backend {
   /** Stop always allowing something, so its card shows again. */
   roomForgetAllowed(id: string, rule: AllowedRule): Promise<void>;
   roomAddParticipant(id: string, participant: ParticipantConfig): Promise<void>;
-  /** Replace the settings of a participant that is already in the chat. */
-  roomUpdateParticipant(id: string, participant: ParticipantConfig): Promise<void>;
+  /** Save settings; with base, merge only edited fields. New helpers return the saved config and broadcast it. */
+  roomUpdateParticipant(id: string, participant: ParticipantConfig, base?: ParticipantConfig): Promise<ParticipantConfig | null | void>;
   roomRemoveParticipant(id: string, participant: string): Promise<void>;
   /** Empty the transcript, which is all the models see, and keep the participants. */
   roomClear(id: string): Promise<void>;
@@ -683,14 +684,18 @@ function demoBackend(): Backend {
       saveRoom(id);
       setTimeout(() => reportMeters(id, [participant]), 50);
     },
-    roomUpdateParticipant: async (id, participant) => {
+    roomUpdateParticipant: async (id, participant, base) => {
       const room = rooms.get(id);
       if (!room) throw new Error(`no group chat with id ${id}`);
       if (!room.participants.some((p) => p.id === participant.id)) {
         throw new Error(`no participant with the id \`${participant.id}\` is in this chat`);
       }
-      room.participants = room.participants.map((p) => (p.id === participant.id ? participant : p));
+      const current = room.participants.find(p => p.id === participant.id)!;
+      const saved = base ? mergeParticipant(current, base, participant) : participant;
+      room.participants = room.participants.map((p) => (p.id === participant.id ? saved : p));
       saveRoom(id);
+      emitRoom(id, { type: "participant_changed", participant: saved });
+      return saved;
     },
     roomRemoveParticipant: async (id, participant) => {
       const room = rooms.get(id);

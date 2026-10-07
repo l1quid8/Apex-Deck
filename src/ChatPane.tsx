@@ -531,6 +531,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [reported, setReported] = useState<Partial<Record<AgentTool, ModelChoice[]>>>({});
   const [formError, setFormError] = useState("");
   /** The id of the participant being edited, or null when adding a new one. */
+  const editingBase = useRef<ParticipantConfig | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [roomReady, setReady] = useState(profileMode);
   const hostConnection = useHostConnection(backend);
@@ -734,6 +735,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       if (heardId) heard.current.set(heardId, Date.now());
       if (event.type === "tool_servers") { setServerErrors(errors => { const next = {...errors}; delete next[event.id]; return next; }); setServerLists(lists => ({...lists, [event.id]: event.servers})); return; }
       switch (event.type) {
+        case "participant_changed":
+          setParticipants(list => list.map(p => p.id === event.participant.id ? event.participant : p));
+          break;
         case "message_added":
           if (event.message.speaker.kind === "bot") {
             const id = event.message.speaker.id;
@@ -1098,8 +1102,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         setParticipants(next);
         onProfilesChange(next);
       } else if (editing) {
-        await backend.roomUpdateParticipant(pane.id, config);
-        setParticipants((list) => list.map((p) => (p.id === editing ? config : p)));
+        const saved = await backend.roomUpdateParticipant(pane.id, config, editingBase.current ?? undefined);
+        const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
+        if (!saved) setParticipants((list) => list.map((p) => (p.id === editing ? actual : p)));
         if (profiles.some(p => p.id === editing)) onProfilesChange(profiles.map(p => p.id === editing ? { ...p, appearance: config.appearance } : p));
       } else {
         await backend.roomAddParticipant(pane.id, config);
@@ -1114,6 +1119,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
 
   const startEditing = (config: ParticipantConfig) => {
+    editingBase.current = config;
     setDraft(configToDraft({ ...config, appearance: appearance(config.id) }));
     setFormError("");
     setApiModels([]);
@@ -2515,9 +2521,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 
       {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom, "--room": `${window.innerHeight - rosterAnchor.bottom - 8}px` } as CSSProperties}>{quickAddMenu}</span>}
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async config => {
-        await backend.roomUpdateParticipant(pane.id, config);
-        setParticipants(list => list.map(p => p.id === config.id ? config : p));
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async (config, base) => {
+        const saved = await backend.roomUpdateParticipant(pane.id, config, base);
+        const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
+        if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
         if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
       }} /> }
       {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} />} />, details.slot)}

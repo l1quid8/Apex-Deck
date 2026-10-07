@@ -175,6 +175,7 @@ export interface NextStep { label: string; prompt: string }
 export type QuestionEnd = "answered" | "skipped" | "dropped";
 
 export type RoomEvent = { recovery_seq?: number } & (
+  | { type: "participant_changed"; participant: ParticipantConfig }
   | { type: "message_added"; message: Message }
   | { type: "turn_started"; id: string }
   | { type: "participant_idle"; id: string }

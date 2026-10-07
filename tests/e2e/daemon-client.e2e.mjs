@@ -123,3 +123,31 @@ test('manual steer and picture targets bypass observation even with a broken pro
   assert.ok(rows[0].error);
   assert.deepEqual(rows[0].deck_targets, ['bot']);
 });
+
+test('two devices receive model/reasoning edits without overwriting unrelated settings', { timeout: 30_000 }, async (t) => {
+  const data = fs.mkdtempSync('/tmp/ade-settings-sync-');
+  const daemon = await serve(data);
+  const connect = () => new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
+  const phone = connect(); const desktop = connect();
+  t.after(async () => { phone.close(); desktop.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
+  await Promise.all([phone.start(), desktop.start()]);
+  const events = [[], []];
+  [phone, desktop].forEach((client, i) => client.on('room-event', p => { if (p.room === 'sync' && p.event.type === 'participant_changed') events[i].push(p.event.participant); }));
+  const base = { id: 'null', display_name: 'Null', persona: '', access: 'ask', effort: 'high', backend: { kind: 'open_ai_compatible', base_url: 'http://127.0.0.1:1', model: 'old', api_key_env: null } };
+  await phone.call('room_create', { id: 'sync', participants: [base], options, cwd: null });
+  const first = await phone.call('room_update_participant', { id: 'sync', base, participant: { ...base, backend: { ...base.backend, model: 'new' } } });
+  assert.equal(first.backend.model, 'new');
+  // The desktop still has the opening config. Its reasoning edit must not undo the phone's model.
+  const second = await desktop.call('room_update_participant', { id: 'sync', base, participant: { ...base, effort: 'low' } });
+  assert.equal(second.backend.model, 'new');
+  assert.equal(second.effort, 'low');
+  await until('both clients to see both settings changes', () => events.every(list => list.length === 2));
+  assert.deepEqual(events[0], events[1]);
+  assert.deepEqual(events[0].at(-1), second);
+  // Explicit Default remains a real edit; an untouched model remains intact.
+  const third = await phone.call('room_update_participant', { id: 'sync', base: second, participant: { ...second, effort: null } });
+  assert.equal(third.effort, null);
+  assert.equal(third.backend.model, 'new');
+  const state = await desktop.call('room_state', { id: 'sync' });
+  assert.deepEqual(state.snapshot.participants[0], third);
+});

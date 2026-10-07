@@ -451,7 +451,9 @@
 /* Next steps stay quiet: one scrolling row of chips, no box or label. */
 .qform-steps.phone { background: transparent; border: 0; padding: 4px 0 2px; margin: 0; gap: 4px; }
 .qform-steps.phone .qform-label { display: none; }
-.qform-steps.phone .qform-chips { flex: 1; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+/* Sideways only: overflow-x alone makes overflow-y scroll too, so the row
+   drifted up and down under a thumb. Lock it and keep the drag horizontal. */
+.qform-steps.phone .qform-chips { flex: 1; min-width: 0; flex-wrap: nowrap; align-items: center; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; touch-action: pan-x; scrollbar-width: none; }
 .qform-steps.phone .qform-chips::-webkit-scrollbar { display: none; }
 .qform-steps.phone .qform-chips button { min-height: 36px; font-size: 14px; flex: none; color: var(--muted); }
 .qform-steps.phone .qform-x { min-width: 36px; min-height: 36px; padding: 0; color: var(--muted); }
