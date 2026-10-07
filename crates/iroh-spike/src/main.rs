@@ -39,6 +39,22 @@ enum Cmd {
         #[arg(long)]
         port: Option<u16>,
     },
+    /// Speak the daemon protocol (ALPN apex-deck/1) to an `apex-daemon serve
+    /// --remote`: send each frame, print every frame that comes back until its
+    /// reply, then wait for the connection to close and print why.
+    Call {
+        /// Address JSON, or @path to a file holding it.
+        addr: String,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        relay: String,
+        /// Seconds to wait for the daemon to close the connection afterwards.
+        #[arg(long, default_value_t = 0)]
+        wait_close: u64,
+        /// Request frames, each a JSON object with a numeric id.
+        frames: Vec<String>,
+    },
     /// Connect to a listener and ping it.
     Dial {
         /// Address JSON printed by `listen`, or @path to a file holding it.
@@ -71,6 +87,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Listen { key, relay, port } => listen(key, &relay, port).await,
+        Cmd::Call { addr, key, relay, wait_close, frames } => call(&addr, key, &relay, wait_close, frames).await,
         Cmd::Dial { addr, key, relay, count, interval_ms } => {
             dial(&addr, key, &relay, count, Duration::from_millis(interval_ms)).await
         }
@@ -245,6 +262,45 @@ async fn dial(
     let stats = conn.stats();
     eprintln!("stats: {stats:?}");
     conn.close(0u32.into(), b"done");
+    ep.close().await;
+    Ok(())
+}
+
+async fn call(addr: &str, key: PathBuf, relay: &str, wait_close: u64, frames: Vec<String>) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let json = match addr.strip_prefix('@') {
+        Some(path) => tokio::fs::read_to_string(path).await?,
+        None => addr.to_string(),
+    };
+    let target: EndpointAddr = serde_json::from_str(json.trim()).context("address JSON")?;
+    let ep = bind(load_or_create_key(&key).await?, relay, None, vec![]).await?;
+    eprintln!("caller id: {}", ep.id());
+    let started = Instant::now();
+    let conn = ep.connect(target, b"apex-deck/1").await?;
+    eprintln!("connected in {:?}: {}", started.elapsed(), route(&conn));
+    let (mut send, recv) = conn.open_bi().await?;
+    let mut lines = BufReader::new(recv).lines();
+    for frame in frames {
+        let id = serde_json::from_str::<serde_json::Value>(&frame)?["id"].clone();
+        send.write_all(format!("{frame}\n").as_bytes()).await?;
+        println!("> {frame}");
+        loop {
+            let line = tokio::time::timeout(Duration::from_secs(20), lines.next_line()).await.map_err(|_| anyhow!("no reply in 20s"))??;
+            let Some(line) = line else { bail!("closed before the reply to {id}: {:?}", conn.close_reason()) };
+            println!("< {line}");
+            if serde_json::from_str::<serde_json::Value>(&line)?["id"] == id {
+                break;
+            }
+        }
+    }
+    eprintln!("route now: {}", route(&conn));
+    if wait_close > 0 {
+        let started = Instant::now();
+        match tokio::time::timeout(Duration::from_secs(wait_close), conn.closed()).await {
+            Ok(reason) => println!("closed after {:?}: {reason}", started.elapsed()),
+            Err(_) => println!("still open after {wait_close}s"),
+        }
+    }
     ep.close().await;
     Ok(())
 }
