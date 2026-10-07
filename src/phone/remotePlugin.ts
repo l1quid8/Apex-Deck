@@ -71,12 +71,20 @@ const EARLY_HANDLES = 32;
  * Routes a stream of native events to per-handle subscribers. A subscriber
  * may arrive after a handle's first events (the native call resolves on
  * another thread), so a few are held until it does. After `closed` the
- * handle is gone and later events for it are dropped.
+ * handle is gone and later events for it are dropped. A handle whose early
+ * events don't fit is closed through `onOverflow` and its subscriber hears an
+ * OVERFLOW close, so the client reconnects and replays instead of missing lines.
  */
 export class EventRouter {
   private readonly subscribers = new Map<number, (event: RemoteEvent) => void>();
   private readonly early = new Map<number, RemoteEvent[]>();
   private readonly ended = new Set<number>();
+  private readonly overflowed = new Set<number>();
+  private readonly onOverflow: (handle: number) => void;
+
+  constructor(onOverflow: (handle: number) => void = () => {}) {
+    this.onOverflow = onOverflow;
+  }
 
   deliver(event: RemoteEvent): void {
     const handle = event.handle;
@@ -91,16 +99,18 @@ export class EventRouter {
     }
     let held = this.early.get(handle);
     if (!held) {
-      if (this.early.size >= EARLY_HANDLES) return;
+      if (this.early.size >= EARLY_HANDLES) return closed ? this.keepClose(handle, event) : this.overflow(handle);
       this.early.set(handle, (held = []));
     }
     // The final "closed" is always kept, so a late subscriber still hears how it ended.
     if (closed || held.length < EARLY_EVENTS) held.push(event);
+    else this.overflow(handle);
   }
 
   listen(handle: number, cb: (event: RemoteEvent) => void): () => void {
     const held = this.early.get(handle) ?? [];
     this.early.delete(handle);
+    if (this.overflowed.delete(handle)) held.push({ type: "closed", handle, code: CLOSE.OVERFLOW, reason: "too many events before the app was listening" });
     if (!this.ended.has(handle)) this.subscribers.set(handle, cb);
     held.forEach((event) => cb(event));
     return () => {
@@ -108,10 +118,28 @@ export class EventRouter {
     };
   }
 
+  /** Drop what's held, close the handle natively, and tell the subscriber when it comes. */
+  private overflow(handle: number) {
+    this.early.delete(handle);
+    this.end(handle);
+    this.overflowed.add(handle);
+    this.onOverflow(handle);
+  }
+
+  /** A close for a handle that found the early table full: keep only the close. */
+  private keepClose(handle: number, event: RemoteEvent) {
+    this.early.set(handle, [event]);
+  }
+
   private end(handle: number) {
     this.ended.add(handle);
     // Handles only grow, so the oldest ended ones can go.
-    if (this.ended.size > 4096) this.ended.delete(this.ended.values().next().value!);
+    if (this.ended.size > 4096) {
+      const oldest = this.ended.values().next().value!;
+      this.ended.delete(oldest);
+      this.overflowed.delete(oldest);
+      this.early.delete(oldest);
+    }
   }
 }
 
@@ -127,7 +155,8 @@ interface Native {
 }
 
 class NativeRemote implements RemotePlugin {
-  private readonly router = new EventRouter();
+  // Overflow closes natively; "close" also cancels a pairing handle.
+  private readonly router = new EventRouter((handle) => { void this.native.close({ handle }).catch(() => {}); });
   private readonly ready: Promise<unknown>;
   private readonly native: Native;
 

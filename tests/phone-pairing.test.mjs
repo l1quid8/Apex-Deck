@@ -147,3 +147,30 @@ test("a drop after the machine's ok still counts as paired", async () => {
   plugin.emit({ type: "closed", handle: 1, code: 1005, reason: "lost" });
   assert.equal(states.at(-1).kind, "done");
 });
+
+test("a handle whose early events overflow is closed and its subscriber hears why", () => {
+  const overflowed = [];
+  const router = new EventRouter((handle) => overflowed.push(handle));
+  for (let i = 0; i < 65; i++) router.deliver({ type: "line", handle: 3, line: `l${i}` });
+  assert.deepEqual(overflowed, [3]);
+  router.deliver({ type: "line", handle: 3, line: "after" });
+  const got = [];
+  router.listen(3, (event) => got.push(event));
+  assert.equal(got.length, 1);
+  assert.equal(got[0].type, "closed");
+  assert.equal(got[0].code, 1001);
+});
+
+test("a handle that finds the early table full is closed, not silently dropped", () => {
+  const overflowed = [];
+  const router = new EventRouter((handle) => overflowed.push(handle));
+  for (let h = 1; h <= 33; h++) router.deliver({ type: "opened", handle: h });
+  assert.deepEqual(overflowed, [33]);
+  const got = [];
+  router.listen(33, (event) => got.push(event));
+  assert.deepEqual(got.map((e) => [e.type, e.code]), [["closed", 1001]]);
+  // Handles that fit still get their events.
+  const first = [];
+  router.listen(1, (event) => first.push(event.type));
+  assert.deepEqual(first, ["opened"]);
+});

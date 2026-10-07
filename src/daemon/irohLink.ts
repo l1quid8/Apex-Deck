@@ -44,19 +44,24 @@ export function irohConnect(
     return new Promise<Link>((resolve, reject) => {
       let open = false;
       let lineCb: ((line: string) => void) | null = null;
-      let closeCb: (reason: string, final?: boolean) => void = () => {};
+      let closeCb: ((reason: string, final?: boolean) => void) | null = null;
+      // A close can land after "opened" but before DaemonClient subscribes; keep it for then.
+      let closedWith: { line: string; final: boolean } | null = null;
       const held: string[] = [];
-      const shut = () => { void plugin.close(handle).catch(() => {}); };
+      let ended = false;
+      const shut = () => { if (!ended) void plugin.close(handle).catch(() => {}); };
       const link: Link = {
-        send: (line) => { plugin.send(handle, line).catch(shut); },
+        send: (line) => { if (!ended) plugin.send(handle, line).catch(shut); },
         close: shut,
         onLine: (cb) => {
           lineCb = cb;
           held.splice(0).forEach(cb);
         },
-        onClose: (cb) => { closeCb = cb; },
+        onClose: (cb) => {
+          closeCb = cb;
+          if (closedWith) cb(closedWith.line, closedWith.final);
+        },
       };
-      let ended = false;
       let stop = () => {};
       stop = plugin.listen(handle, (event) => {
         switch (event.type) {
@@ -77,7 +82,10 @@ export function irohConnect(
             stop();
             onRoute(null);
             const words = closeWords(event.code, event.reason, mode());
-            if (open) closeCb(words.line, words.final);
+            if (open) {
+              closedWith = words;
+              closeCb?.(words.line, words.final);
+            }
             else reject(words.final ? new FinalError(words.line) : new Error(words.line));
             return;
           }

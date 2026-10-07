@@ -197,3 +197,41 @@ test("each dial reads the newest saved addresses", async () => {
   await tick();
   assert.deepEqual(asked, [["old:1"], ["new:2"]]);
 });
+
+test("a close between opened and onClose is replayed, final flag included", async () => {
+  const plugin = new FakePlugin();
+  const opening = irohConnect(target, plugin, () => "automatic")();
+  await tick();
+  plugin.emit({ type: "opened", handle: 1 });
+  plugin.emit({ type: "closed", handle: 1, code: 2, reason: "revoked" });
+  const link = await opening;
+  let heard = null;
+  link.onClose((reason, final) => { heard = { reason, final }; });
+  assert.deepEqual(heard, { reason: "Access removed — pair again on this machine", final: true });
+  link.send("hello");
+  await tick();
+  assert.deepEqual(plugin.sent, [], "nothing goes to a dead handle");
+});
+
+test("opened then revoked before the client subscribes stops without a retry", async () => {
+  const plugin = new FakePlugin();
+  const timers = fakeTimers();
+  plugin.connect = async () => {
+    plugin.dials += 1;
+    // Both native events beat the connect answer back to JavaScript.
+    plugin.emit({ type: "opened", handle: 1 });
+    plugin.emit({ type: "closed", handle: 1, code: 2, reason: "revoked" });
+    return 1;
+  };
+  const client = new DaemonClient(irohConnect(target, plugin, () => "automatic"), { timers });
+  const statuses = [];
+  client.onStatus((status) => statuses.push(status));
+  void client.start();
+  await tick();
+  await tick();
+  const last = statuses.at(-1);
+  assert.equal(last.kind, "failed");
+  assert.equal(last.reason, "Access removed — pair again on this machine");
+  assert.equal(timers.pending.size, 0, "no retry timer");
+  assert.deepEqual(plugin.sent, [], "no hello to the dead handle");
+});
