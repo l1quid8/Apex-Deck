@@ -2821,3 +2821,29 @@ button.mod-status:hover { color: var(--text); }
 .chip .chip-kick { width: 0; padding: 0; overflow: hidden; opacity: 0; color: var(--muted); font-size: 13px; line-height: 1; transition: opacity .12s, width .12s; }
 .chip-wrap:hover .chip-kick, .chip-wrap:focus-within .chip-kick { width: 16px; padding-right: 4px; opacity: 1; }
 .chip .chip-kick:hover:not(:disabled), .chip .chip-kick:focus-visible { color: var(--text); }
+
+/* The form on top of the message box: a bot's question, or next steps. */
+.qform { margin: 0 8px; padding: 10px 12px; border: 1px solid var(--line); border-bottom: 0; border-radius: 12px 12px 0 0; background: var(--panel-2); font-size: 13px; }
+.qform-notice, .qform-pending { padding: 6px 12px; color: var(--muted); font-size: 12px; }
+.qform-collapsed { display: block; width: calc(100% - 16px); min-height: 0; padding: 6px 12px; text-align: left; color: var(--text); cursor: pointer; }
+.qform-steps { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; }
+.qform-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.qform-chips { display: flex; flex: 1; min-width: 0; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.qform-chips button { flex: none; min-height: 0; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--text); white-space: nowrap; }
+.qform-chips button.on, .qform-options button.on { border-color: color-mix(in srgb, var(--text) 45%, var(--line)); }
+.qform kbd { margin-right: 6px; color: var(--muted); font: inherit; }
+.qform-x { flex: none; margin-left: auto; min-height: 0; padding: 2px 6px; border: 0; background: transparent; color: var(--muted); }
+.qform-x:hover { color: var(--text); }
+.qform-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.qform-who { font-weight: 600; }
+.qform-count, .qform-tag { color: var(--muted); font-size: 11px; }
+.qform-q { margin: 2px 0 8px; }
+.qform-options { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.qform-options button { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; width: 100%; min-height: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text); text-align: left; }
+.qform-options button:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.qform-options button.picked { border-color: var(--line); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.qform-desc { grid-column: 2; color: var(--muted); font-size: 12px; }
+.qform-other input { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); font: inherit; }
+.qform-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.qform-so-far { color: var(--muted); font-size: 12px; }
+.qform-answered { margin: 4px 0; color: var(--muted); font-size: 12px; }

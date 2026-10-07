@@ -8,7 +8,7 @@ import { actionChevron, messageTime } from "./messageActions";
 import { responsePin, pinSource, pinText, pinsAfterClear } from "./messagePins";
 import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
-import type { AllowedRule, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
+import type { AllowedRule, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
 import { parseBlocks } from "./markdownText";
 import { ModDock, useMods } from "./ModView";
@@ -42,6 +42,8 @@ import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
+import { QuestionForm } from "./QuestionForm";
+import { answerText, dismissSteps, formKey, formView, forgetQuestions, questionSignal, questionSnapshot, recordQuestion, restoreRoomQuestions, subscribeQuestions, type FormView } from "./questions";
 import { recordApproval, approvalSignal, approvalSnapshot, cardsByBot, deadlineNote, forgetRoom, openCards, subscribeApprovals } from "./approvals";
 import { REMOVED_NOTE_MS, allowedLine, describeRule, removedLine } from "./allowedRules";
 import { exportFileName, exportHtml, exportJson, exportMarkdown, type ThreadExport } from "./exportThread";
@@ -618,6 +620,20 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [folded, setFolded] = useState(() => loadFolded(pane.id));
   const toggleFolded = () => setFolded((on) => { saveFolded(pane.id, !on); return !on; });
   const toggleTldr = () => setTldr((on) => { saveTldr(pane.id, !on); return !on; });
+  // The form above the composer: a bot's question, or next steps after a reply.
+  const questionState = useSyncExternalStore(subscribeQuestions, questionSnapshot);
+  const form = formView(questionState[pane.id]);
+  const [highlighted, setHighlighted] = useState(0);
+  const [formFolded, setFormFolded] = useState(false);
+  const [formNotice, setFormNotice] = useState<string | null>(null);
+  /** What the person answered each waiting bot, shown in its turn until it finishes. */
+  const [answered, setAnswered] = useState<Record<string, string>>({});
+  const answeredHere = useRef<string | null>(null);
+  const shownForm = useRef<FormView>(form);
+  const formKeyId = form.kind === "question" ? form.ask.request : form.kind === "steps" ? `steps:${form.offer.steps.map((step) => step.prompt).join("|")}` : form.kind;
+  useEffect(() => { setHighlighted(0); setFormFolded(false); }, [formKeyId]);
+  useEffect(() => { shownForm.current = form; });
+  const flashForm = (line: string) => { setFormNotice(line); setTimeout(() => setFormNotice((now) => (now === line ? null : now)), 3500); };
   const field = useRef<HTMLDivElement>(null);
   // A very narrow box puts the text on its own line, with +, TL;DR and Send under it.
   const [stacked, setStacked] = useState(false);
@@ -686,7 +702,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     let alive = true;
     const nameOf = (id: string) => namesRef.current.get(id) ?? id;
     /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
-    const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()));
+    const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()) ?? questionSignal(questionSnapshot()[pane.id], namesRef.current));
     let recoveredState: import("./types").RoomState | null = null;
     const durableRecovery = createRoomTotalsRefresh({
       load: () => loadRoomTotals(backend, pane.id),
@@ -704,6 +720,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         if (!messageNumbers.accept(event.message.seq)) return;
       }
       recordApproval(pane.id, event, backend.host?.id);
+      recordQuestion(pane.id, event);
+      if (event.type === "question_requested") reportApprovals();
+      if (event.type === "question_resolved") {
+        reportApprovals();
+        if (event.end === "answered" && event.request !== answeredHere.current) flashForm("Answered on another device");
+      }
       activity.current(pane.id);
       const heardId = heardFrom(event);
       if (heardId) heard.current.set(heardId, Date.now());
@@ -739,6 +761,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           setEditor(event.id);
           break;
         case "participant_idle":
+          setAnswered(({ [event.id]: _said, ...rest }) => rest);
           setPendingSettings(({ [event.id]: _applied, ...rest }) => rest);
           setDrafts(({ [event.id]: _done, ...rest }) => rest);
           setWorking(({ [event.id]: _done, ...rest }) => rest);
@@ -871,6 +894,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         messageNumbers.restore(saved.transcript);
         forgetRoom(pane.id);
         state.approvals.forEach(ask => recordApproval(pane.id, { type: "approval_requested", ...ask }, backend.host?.id));
+        // A question the pane was showing that the host no longer has was
+        // lost with the bot's turn, as when Deck restarted.
+        const before = shownForm.current;
+        restoreRoomQuestions(pane.id, state);
+        if (before.kind === "question" && !(state.questions ?? []).some((q) => q.request === before.ask.request)) {
+          flashForm(`${nameOf(before.ask.id)}'s question was dropped when Deck restarted`);
+        }
+        reportApprovals();
         setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], phase: "thinking" as const }])));
         turnQueue.state = {}; state.active.forEach(id => turnQueue.started(id));
         setBusy(state.active.length > 0 || turnQueue.active);
@@ -932,6 +963,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       offHub();
       unregister();
       forgetRoom(pane.id);
+      forgetQuestions(pane.id);
       approvals.current?.(pane.id, null);
       backend.roomClose(pane.id).catch(() => {});
     };
@@ -1830,6 +1862,39 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const unknownServers = serverTargets.length && serverTargets.every(id => serverLists[id] !== undefined)
     ? resolveServerRequests(requestedServers, serverTargets.flatMap(id => serverLists[id])).unknown : [];
 
+  /** Answer the question on the form, or skip it with `null`. */
+  const answerQuestion = (request: string, answers: string[][] | null) => {
+    const by = form.kind === "question" ? form.ask.id : null;
+    answeredHere.current = request;
+    backend.roomAnswer(pane.id, request, answers).then(
+      () => { if (answers && by) setAnswered((all) => ({ ...all, [by]: answerText(answers) })); },
+      (error) => flashForm(String(error).replace(/^Error: /, "")),
+    );
+  };
+  /** Send a next step to the bot that suggested it. */
+  const sendStep = (step: NextStep, by: string) => {
+    dismissSteps(pane.id);
+    stuck.current = true;
+    void turnQueue.sendTo(step.prompt, [by]).catch((error) => notify(String(error), "error"));
+  };
+  /** A key in the composer that the form takes. True when it was handled. */
+  const formKeys = (key: string) => {
+    const act = formKey(key, text === "", form, highlighted);
+    if (act.act === "none") return false;
+    if (act.act === "move") setHighlighted(act.index);
+    else if (act.act === "dismiss") dismissSteps(pane.id);
+    else if (act.act === "collapse") setFormFolded(true);
+    else if (act.act === "fill" && form.kind === "steps") setText(form.offer.steps[act.index].prompt);
+    else if (act.act === "pick" && form.kind === "steps") sendStep(form.offer.steps[act.index], form.offer.by);
+    else if (act.act === "pick" && form.kind === "question") {
+      const [q] = form.ask.questions;
+      // A single plain question is answered from the keyboard; anything
+      // more is answered on the form itself.
+      if (form.ask.questions.length === 1 && q && !q.multi_select && q.options[act.index]) answerQuestion(form.ask.request, [[q.options[act.index].label]]);
+      else setHighlighted(act.index);
+    }
+    return true;
+  };
   const send = async (steer = false) => {
     if (!ready) return;
     panelDismissed.current = false;
@@ -2598,6 +2663,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                     onDecide={(approve, always) => backend.roomDecide(pane.id, ask.request, approve, always)}
                   />
                 ))}
+                {answered[id] && <div className="qform-answered">You answered: {answered[id]}</div>}
                 <div className={`working-line ${asks[id]?.length ? "asking" : quiet ? "quiet" : ""}`} role="status">
                   <span className="working-dots" aria-hidden="true">
                     <i />
@@ -2680,6 +2746,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
+        {!profileMode && <QuestionForm view={form} nameOf={(id) => names.get(id) ?? id} colorOf={color}
+          highlighted={highlighted} collapsed={formFolded} notice={formNotice}
+          onHighlight={setHighlighted} onExpand={() => setFormFolded(false)}
+          onAnswer={answerQuestion} onStep={sendStep} onDismiss={() => dismissSteps(pane.id)} />}
         {moveAsk && <div className="move-ask" role="group" aria-label="Open it somewhere else">
           <p>{moveAsk.why
             ? <>{moveAsk.why} This thread stays where it is. Open <b>{moveAsk.project}</b> as:</>
@@ -2744,6 +2814,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           onSelect={e => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
             if (composerMenu.current?.key(e)) return;
+            if (!e.metaKey && !e.ctrlKey && !e.altKey && formKeys(e.key)) { e.preventDefault(); return; }
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); toggleTldr(); return; }
             // Esc stops every bot and keeps your draft, like Claude Code and Codex.
             if (e.key === "Escape" && busy) { e.preventDefault(); void turnQueue.halt(); return; }
@@ -2753,7 +2824,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             }
           }}
           rows={1}
-          placeholder={copy.placeholder}
+          placeholder={form.kind === "steps" && !text ? form.offer.steps[0].prompt : copy.placeholder}
           disabled={!roomReady || participants.length === 0}
         />
           </div>
