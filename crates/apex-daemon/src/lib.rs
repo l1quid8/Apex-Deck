@@ -8,6 +8,8 @@ pub mod devices_cli;
 pub mod files;
 pub mod identity;
 pub mod paths;
+#[cfg(feature = "remote")]
+pub mod pairing;
 pub mod protocol;
 #[cfg(feature = "remote")]
 pub mod remote;
