@@ -16,6 +16,7 @@ function icon(children: ReactNode) {
 export const ArrowLeft = icon(<><path d="m12 19-7-7 7-7" /><path d="M19 12H5" /></>);
 export const ArrowUp = icon(<><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></>);
 export const Check = icon(<path d="M20 6 9 17l-5-5" />);
+export const ChevronDown = icon(<path d="m6 9 6 6 6-6" />);
 export const ChevronLeft = icon(<path d="m15 18-6-6 6-6" />);
 export const ChevronRight = icon(<path d="m9 18 6-6-6-6" />);
 export const Command = icon(<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />);

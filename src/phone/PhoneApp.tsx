@@ -1,6 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 
 import { ApprovalCard } from "../ApprovalCard";
+import { Avatar } from "../Avatar";
+import { elapsed } from "../composerStatus";
+import { legacyAppearance } from "../identicon";
 import { Markdown } from "../Markdown";
 import { QuestionForm } from "../QuestionForm";
 import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from "../questions";
@@ -12,20 +15,21 @@ import type { HostConnection } from "../hostConnections";
 import { workspaceFamily, workspaceHost } from "../hostSession";
 import { openPhoneHost, type PhoneHost } from "../phoneBackend";
 import { phoneShell } from "../phoneShell";
+import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom, type PhoneCuts, type PhoneWorking } from "../phoneWorking";
 import {
   addMachine, approvalWhere, downLine, draftVisible, forkLine, loadMachines, machinesKey, newThreadGate,
   pressNewThread, refusalLine, removeMachine, saveMachines, threadCount, threadSend, threadTitleFromMessage,
   type DirectMachine, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
-import { ageWords, HOST_TINTS, homeShort, hostTints, noteActive, sidebarSections } from "../sidebarModel";
+import { ageWords, homeShort, hostTints, noteActive, sidebarSections } from "../sidebarModel";
 import { webSocketConnect } from "../daemon/webSocketLink";
 import { loadRoomState } from "../roomRecovery";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
-import type { AppSession, FolderListing, Message, NextStep, Pane, RoomOptions, ToolServer, Workspace } from "../types";
+import type { AppSession, FolderListing, Message, NextStep, Pane, ParticipantConfig, RoomOptions, ToolServer, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
-  ArrowLeft, ArrowUp, Check, ChevronLeft, ChevronRight, Command, Copy, Files, Folder, Globe, Laptop, Lock, MessageSquare,
+  ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Command, Copy, Folder, Globe, Laptop, Lock, MessageSquare,
   More, Paperclip, Plug, Plus, Settings, Terminal, X,
 } from "./icons";
 
@@ -39,7 +43,15 @@ type Tab = "threads" | "agents" | "code" | "library" | "machines";
 type Draft = { text: string; files: { name: string; bytes: Uint8Array }[] };
 type Pending = { id: string; workspaceId: string };
 type Ask = { paneId: string; workspaceId: string };
-type SheetKind = "project" | "work" | "files" | "tools";
+type SheetKind = "project" | "where" | "add" | "tools";
+/** A bot in the open thread, with the pattern and colour it has on the desktop. */
+type Person = { id: string; display_name: string; look: { seed: string; color: string } };
+const NO_CUTS: PhoneCuts = {};
+type Room = {
+  id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean;
+  /** Each bot's turn in progress, with its reply so far. */
+  working: PhoneWorking;
+};
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string };
 type Browse = {
@@ -84,11 +96,15 @@ function readDrafts(): Record<string, Draft> {
   }
 }
 
-/** A bot's colour, the same on every screen for the same name. */
-function botTint(name: string): string {
-  let sum = 0;
-  for (const char of name) sum = (sum * 31 + char.charCodeAt(0)) >>> 0;
-  return HOST_TINTS[sum % HOST_TINTS.length];
+const toPerson = (config: ParticipantConfig): Person => ({ id: config.id, display_name: config.display_name, look: config.appearance ?? legacyAppearance(config.id) });
+const TOOL_WORDS: Record<string, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini", grok: "Grok" };
+/** What a saved bot runs on, in a few words. */
+function toolWords(config: ParticipantConfig): string {
+  const backend = config.backend;
+  if (backend.kind === "agent") return [TOOL_WORDS[backend.tool] ?? backend.tool, backend.model].filter(Boolean).join(" · ");
+  if (backend.kind === "open_ai_compatible") return backend.model;
+  if (backend.kind === "cli") return backend.program;
+  return "Scripted";
 }
 
 /** Hold a row for half a second to open its menu. The click that ends the hold is swallowed. */
@@ -125,7 +141,10 @@ export function PhoneApp() {
   const [query, setQuery] = useState("");
   const [tools, setTools] = useState<ToolServer[] | null>(null);
   const [browse, setBrowse] = useState<Browse | null>(null);
-  const [room, setRoom] = useState<{ id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: { id: string; display_name: string }[]; asks: ThreadAsks; plan: boolean } | null>(null);
+  const [room, setRoom] = useState<Room | null>(null);
+  /** Per thread: who was working when its machine dropped, with what they had written. Kept until each reply lands,
+   *  through a reload or leaving the thread. */
+  const [cuts, setCuts] = useState<Record<string, PhoneCuts>>({});
   const [approvalStays, setApprovalStays] = useState<Record<string, boolean>>({});
   const [agents, setAgents] = useState<string[]>([]);
   const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
@@ -133,6 +152,8 @@ export function PhoneApp() {
   const [waiting, setWaiting] = useState<Record<string, string[]>>({});
   /** Newest message seen per thread on this phone, so Recents moves without a save to the Mac per message. */
   const [seen, setSeen] = useState<Record<string, number>>({});
+  /** Bots working in each thread, by thread id, from every machine's events. */
+  const [busy, setBusy] = useState<Record<string, readonly string[]>>({});
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   /** Files still being read into a draft; Send waits for them. */
@@ -141,6 +162,9 @@ export function PhoneApp() {
   /** A sent draft's id → the thread it became, so a file that finishes reading late follows it. */
   const movedRef = useRef<Record<string, string>>({});
   const endRef = useRef<HTMLDivElement>(null);
+  /** The open thread as last drawn, for names inside event handlers. */
+  const roomRef = useRef<Room | null>(null);
+  roomRef.current = room;
   const machineKey = machines.map((machine) => `${machine.id}\u0000${machine.url}\u0000${machine.token}\u0000${machine.name}`).join("\n");
 
   useEffect(() => {
@@ -173,6 +197,7 @@ export function PhoneApp() {
     hosts.forEach((host) => {
       host.backend.onRoomEvent((id, event) => {
         if (event.type === "message_added") setSeen((all) => ({ ...all, [id]: Date.now() }));
+        setBusy((all) => { const now = all[id] ?? []; const next = busyAfter(now, event); return next === now ? all : { ...all, [id]: next }; });
         if (event.type === "approval_requested") setWaiting((all) => ({ ...all, [id]: [...(all[id] ?? []).filter((request) => request !== event.request), event.request] }));
         if (event.type === "approval_resolved") setWaiting((all) => ({ ...all, [id]: (all[id] ?? []).filter((request) => request !== event.request) }));
       }).then((stop) => { if (live) stops.push(stop); else stop(); }).catch(() => {});
@@ -192,6 +217,15 @@ export function PhoneApp() {
   const macOnline = mac?.status === "online";
   const linkOf = (id: string) => links.find((link) => link.id === id) ?? null;
   const downWords = (id: string, name: string) => { const link = linkOf(id); return link ? downLine(link) : `Connecting to ${name}`; };
+  const linkOfPane = (pane: Pane) => { const workspace = (session?.workspaces ?? []).find((item) => item.id === pane.workspaceId); return workspace ? linkOf(workspaceHost(workspace)) : null; };
+  /** Where a bot is working, for Agents. A turn on a machine that dropped is cut off, not still going. */
+  const botDoing = (id: string): { working: string | null; cutOff: string | null } => {
+    const turns = (session?.panes ?? []).filter((pane) => !pane.archived && busy[pane.id]?.includes(id));
+    const live = turns.find((pane) => linkOfPane(pane)?.status === "online");
+    if (live) return { working: live.title, cutOff: null };
+    const lost = turns[0];
+    return { working: null, cutOff: lost ? `Lost ${linkOfPane(lost)?.name ?? "its machine"} while working in ${lost.title}` : null };
+  };
 
   useEffect(() => {
     if (!macHost || !macOnline) return;
@@ -203,6 +237,31 @@ export function PhoneApp() {
     }).catch(() => {});
     return () => { live = false; };
   }, [macHost, macOnline]);
+
+  // A machine that comes back may have finished, or started, turns while it was away:
+  // ask it again for every thread the phone last saw working there.
+  const onlineKey = links.filter((link) => link.status === "online").map((link) => link.id).join("\n");
+  const wasOnline = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const now = new Set(onlineKey ? onlineKey.split("\n") : []);
+    const back = [...now].filter((id) => !wasOnline.current.has(id));
+    wasOnline.current = now;
+    let live = true;
+    for (const hostId of back) {
+      const host = phoneHost(hostId);
+      if (!host?.backend.roomState) continue;
+      const there = (session?.panes ?? []).filter((pane) => (busy[pane.id]?.length ?? 0) > 0 && linkOfPane(pane)?.id === hostId);
+      for (const pane of there) {
+        host.backend.roomState(pane.id)
+          .then((state) => { if (live) setBusy((all) => ({ ...all, [pane.id]: state.active })); })
+          // A thread the machine no longer has open has nothing running.
+          .catch(() => { if (live) setBusy((all) => ({ ...all, [pane.id]: [] })); });
+      }
+    }
+    return () => { live = false; };
+    // Runs when the set of online machines changes, with the busy list as it stood then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onlineKey]);
 
   const workspaces = session?.workspaces ?? [];
   const savedPanes = session?.panes;
@@ -264,19 +323,31 @@ export function PhoneApp() {
     if (!openPane || !openWorkspace) { if (!viewingPending) setRoom(null); return; }
     const host = phoneHost(workspaceHost(openWorkspace));
     // Offline keeps what is already on screen under the banner; it reloads when the machine is back.
-    if (!host || toLink(host.connection.get().status) !== "online") { setRoom((current) => current?.id === openPane.id ? current : null); return; }
+    // Bots that were mid-reply are cut off: their turn shows as interrupted, not still going.
+    if (!host || toLink(host.connection.get().status) !== "online") {
+      const shown = roomRef.current;
+      if (shown?.id === openPane.id && Object.keys(shown.working).length > 0) {
+        const after = shown.messages[shown.messages.length - 1]?.seq ?? 0;
+        setCuts((all) => ({ ...all, [openPane.id]: cutOff(all[openPane.id] ?? {}, shown.working, after) }));
+      }
+      setRoom((current) => current?.id !== openPane.id ? null : Object.keys(current.working).length === 0 ? current : { ...current, working: {} });
+      return;
+    }
     let live = true;
     let stop = () => {};
     loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openWorkspace.path).then((state) => {
       if (!live) return;
       setWaiting((all) => ({ ...all, [openPane.id]: state.approvals.map((card) => card.request) }));
+      setBusy((all) => ({ ...all, [openPane.id]: state.active }));
+      setCuts((all) => all[openPane.id] ? { ...all, [openPane.id]: resumeCut(all[openPane.id], state.active, state.snapshot.transcript) } : all);
       setRoom({
         id: openPane.id,
         messages: state.snapshot.transcript,
         approvals: state.approvals,
-        participants: state.snapshot.participants.map((participant) => ({ id: participant.id, display_name: participant.display_name })),
+        participants: state.snapshot.participants.map(toPerson),
         asks: restoreQuestions({}, openPane.id, state, Date.now())[openPane.id] ?? NO_ASKS,
         plan: Boolean(state.plan ?? state.snapshot.plan),
+        working: workingFrom(state.active, Date.now()),
       });
     }).catch((error) => { if (live) setNotice(words(error)); });
     host.backend.onRoomEvent((id, event) => {
@@ -285,10 +356,13 @@ export function PhoneApp() {
       if (event.type === "approval_requested") setRoom((current) => current && current.id === id ? { ...current, approvals: [...current.approvals.filter((card) => card.request !== event.request), { id: event.id, request: event.request, action: event.action }] } : current);
       if (event.type === "approval_resolved") setRoom((current) => current && current.id === id ? { ...current, approvals: current.approvals.filter((card) => card.request !== event.request) } : current);
       if (event.type === "plan_changed") setRoom((current) => current && current.id === id ? { ...current, plan: event.on } : current);
+      if (event.type === "failed") setNotice(`${roomRef.current?.participants.find((person) => person.id === event.id)?.display_name ?? event.id} couldn't reply: ${event.error}`);
+      setCuts((all) => { const now = all[id]; const next = now && applyCutEvent(now, event); return !now || next === now ? all : { ...all, [id]: next }; });
       setRoom((current) => {
         if (!current || current.id !== id) return current;
         const asks = applyQuestionEvent({ [id]: current.asks }, id, event, Date.now())[id] ?? NO_ASKS;
-        return asks === current.asks ? current : { ...current, asks };
+        const working = applyTurnEvent(current.working, event, Date.now());
+        return asks === current.asks && working === current.working ? current : { ...current, asks, working };
       });
     }).then((unlisten) => { if (live) stop = unlisten; else unlisten(); }).catch(() => {});
     return () => { live = false; stop(); };
@@ -296,7 +370,15 @@ export function PhoneApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPane?.id, openWorkspace?.id, openLink?.status]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [room?.messages.length, room?.approvals.length, openId]);
+  // Follow the newest message and a reply as it streams in, unless the person scrolled up to read.
+  const stuckRef = useRef(true);
+  const shownRef = useRef<string | null>(null);
+  const streamed = room ? Object.values(room.working).reduce((sum, turn) => sum + turn.text.length + 1, 0) : 0;
+  useEffect(() => {
+    if (shownRef.current !== openId) stuckRef.current = true;
+    shownRef.current = openId;
+    if (stuckRef.current) endRef.current?.scrollIntoView({ block: "end" });
+  }, [room?.messages.length, room?.approvals.length, openId, streamed]);
 
   async function send() {
     const id = openId;
@@ -309,6 +391,7 @@ export function PhoneApp() {
     if (!host) return;
     // One send at a time: a second tap must not post twice or start a second thread.
     sendingRef.current = true;
+    stuckRef.current = true;
     setSending(true);
     try {
       const starter = (session?.profiles ?? [])[0] ?? null;
@@ -323,7 +406,7 @@ export function PhoneApp() {
         const state = await loadRoomState(host.backend, made.id, [starter], NEW_THREAD, openWorkspace.path);
         await saveSession((current) => ({ ...current, panes: [...current.panes, made] }));
         pane = made;
-        participants = state.snapshot.participants.map((participant) => ({ id: participant.id, display_name: participant.display_name }));
+        participants = state.snapshot.participants.map(toPerson);
         transcriptLength = state.snapshot.transcript.length;
         movedRef.current[pending.id] = made.id;
         setDrafts((all) => { const next = { ...all, [made.id]: all[pending.id] ?? draft }; delete next[pending.id]; return next; });
@@ -331,7 +414,7 @@ export function PhoneApp() {
         setOpenId(made.id);
       } else if (pane && room?.id !== pane.id) {
         const state = await loadRoomState(host.backend, pane.id, [], NEW_THREAD, openWorkspace.path);
-        participants = state.snapshot.participants.map((participant) => ({ id: participant.id, display_name: participant.display_name }));
+        participants = state.snapshot.participants.map(toPerson);
         transcriptLength = state.snapshot.transcript.length;
       }
       if (!pane) return;
@@ -378,6 +461,28 @@ export function PhoneApp() {
     setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current);
     try { await host.backend.roomPostTo(openPane.id, step.prompt, [by], false); }
     catch (error) { setNotice(words(error)); }
+  }
+
+  /** Stop one bot's turn; the machine then sends its ending like any other. */
+  async function stopBot(id: string) {
+    if (!openPane || !openLink) return;
+    const host = phoneHost(openLink.id);
+    if (!host || openLink.status !== "online") { setNotice(downLine(openLink)); return; }
+    try { await host.backend.roomStop(openPane.id, id); }
+    catch (error) { setNotice(words(error)); }
+  }
+
+  /** Open a sheet over the thread. Tools are asked for each time, from the thread's machine. */
+  function openSheet(next: SheetKind) {
+    setSheet(next);
+    setQuery("");
+    if (next !== "tools" || !openLink) return;
+    setTools(null);
+    const host = phoneHost(openLink.id);
+    if (!openPane || !host || openLink.status !== "online") { setTools([]); return; }
+    Promise.all((room?.participants ?? []).map((participant) => host.backend.listToolServers(openPane.id, participant.id).catch(() => [] as ToolServer[])))
+      .then((lists) => setTools(lists.flat().filter((tool, index, all) => all.findIndex((other) => other.token === tool.token) === index)))
+      .catch(() => setTools([]));
   }
 
   async function stopPlanning() {
@@ -550,6 +655,9 @@ export function PhoneApp() {
             messages={room && openPane && room.id === openPane.id ? room.messages : []}
             approvals={room && openPane && room.id === openPane.id ? room.approvals : []}
             participants={room && openPane && room.id === openPane.id ? room.participants : []}
+            working={room && openPane && room.id === openPane.id ? room.working : {}}
+            cut={(openPane && cuts[openPane.id]) || NO_CUTS}
+            onStop={(id) => { void stopBot(id); }}
             draft={draft}
             gate={sendGate}
             sending={sending}
@@ -558,6 +666,7 @@ export function PhoneApp() {
             approvalStays={openPane ? Boolean(approvalStays[openPane.id]) : false}
             other={links.find((link) => link.kind === "server" && link.status === "online" && link.id !== openLink.id) ?? null}
             endRef={endRef}
+            onScrolled={(near) => { stuckRef.current = near; }}
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
             onMenu={() => openPane && setMenu({ kind: "thread", id: openPane.id })}
@@ -580,18 +689,7 @@ export function PhoneApp() {
               if (pane) openThread(pane.id);
               else setNotice("That machine has no thread to open.");
             }}
-            onSheet={(next) => {
-              setSheet(next);
-              setQuery("");
-              if (next === "tools") {
-                setTools(null);
-                const host = phoneHost(openLink.id);
-                if (!openPane || !host || openLink.status !== "online") { setTools([]); return; }
-                Promise.all((room?.participants ?? []).map((participant) => host.backend.listToolServers(openPane.id, participant.id).catch(() => [] as ToolServer[])))
-                  .then((lists) => setTools(lists.flat().filter((tool, index, all) => all.findIndex((other) => other.token === tool.token) === index)))
-                  .catch(() => setTools([]));
-              }
-            }}
+            onSheet={openSheet}
           />
         ) : tab === "threads" ? (
           <ThreadList
@@ -602,6 +700,8 @@ export function PhoneApp() {
             pending={pending}
             draft={pending ? draftFor(pending.id) : emptyDraft()}
             waiting={waiting}
+            busy={busy}
+            nameOf={(id) => session?.profiles.find((profile) => profile.id === id)?.display_name ?? id}
             covered={covered}
             machineIcon={machineIcon}
             onToggle={(id) => setFolded((all) => ({ ...all, [id]: !(all[id] ?? Boolean(workspaces.find((workspace) => workspace.id === id)?.collapsed)) }))}
@@ -626,7 +726,9 @@ export function PhoneApp() {
             onError={setNotice}
           />
         ) : (
-          <SideTab tab={tab} link={openLink ?? mac ?? null} agents={agents} covered={covered} onShow={() => {
+          <SideTab tab={tab} link={openLink ?? mac ?? null} agents={agents} covered={covered}
+            bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
+            onShow={() => {
             const host = openLink ? phoneHost(openLink.id) : macHost;
             if (!host || (openLink ?? mac)?.status !== "online") { setAgents([]); return; }
             host.backend.detectAgents().then((found) => setAgents(found.filter((agent) => agent.found).map((agent) => agent.label))).catch(() => setAgents([]));
@@ -654,9 +756,9 @@ export function PhoneApp() {
           </Sheet>
         )}
         {sheet && openWorkspace && openLink && (
-          <Sheet title={sheet === "project" ? "Project" : sheet === "work" ? "Work in" : sheet === "files" ? "Files" : "Tools"} onClose={() => setSheet(null)}>
+          <Sheet title={sheet === "project" ? "Project" : sheet === "where" ? "Where this runs" : sheet === "add" ? "Add to message" : "Tools"} onClose={() => setSheet(null)}>
             {sheet === "project" && <ProjectSheet rows={pickerRows(workspaces, panes, openWorkspace.id, (id) => linkOf(id)?.status !== "online")} links={links} query={query} machineIcon={machineIcon} onQuery={setQuery} onPick={pickWhere} />}
-            {sheet === "work" && (
+            {sheet === "where" && (
               <WorkSheet
                 rows={workInRows(workspaces, machines.map((machine) => machine.id), openWorkspace, (id) => linkOf(id)?.status !== "online")}
                 links={links}
@@ -668,9 +770,10 @@ export function PhoneApp() {
                 onPick={pickWhere}
                 onBrowse={(hostId) => { void openBrowse(hostId, openWorkspace, openPane?.id ?? null); setSheet(null); }}
                 onNone={() => setNotice(mac && mac.status !== "online" ? downLine(mac) : "Working outside a project isn't in this phone build yet.")}
+                onProject={() => openSheet("project")}
               />
             )}
-            {sheet === "files" && <>
+            {sheet === "add" && <>
               <p className="ph-sheet-text">A file you attach is copied to {openLink.name} with the message. Nothing is copied until you send.</p>
               {draft.files.map((file) => <div key={file.name} className="ph-srow"><span className="ph-srow-icon"><Check size={18} /></span><span className="ph-grow"><strong>{file.name}</strong><small>Attached · sends with your next message</small></span></div>)}
               <label className="ph-srow ph-tap">
@@ -697,6 +800,11 @@ export function PhoneApp() {
                   }
                 }} />
               </label>
+              <button type="button" className="ph-srow" onClick={() => openSheet("tools")}>
+                <span className="ph-srow-icon"><Plug size={18} /></span>
+                <span className="ph-grow"><strong>Tools…</strong><small>Put a tool's name in your message</small></span>
+                <ChevronRight size={16} />
+              </button>
               <button type="button" className="ph-srow" onClick={() => copyPath(openWorkspace.path)}>
                 <span className="ph-srow-icon"><Copy size={18} /></span>
                 <span className="ph-grow"><strong>Copy folder path</strong><small>{openWorkspace.path || "No folder"}</small></span>
@@ -813,7 +921,7 @@ function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: s
   );
 }
 
-function ThreadList({ sections, workspaces, links, folded, pending, draft, waiting, covered, machineIcon, onToggle, onOpen, onNew, onThreadMenu, onProjectMenu, onMachines }: {
+function ThreadList({ sections, workspaces, links, folded, pending, draft, waiting, busy, nameOf: botName, covered, machineIcon, onToggle, onOpen, onNew, onThreadMenu, onProjectMenu, onMachines }: {
   sections: ReturnType<typeof sidebarSections>;
   workspaces: Workspace[];
   links: LinkView[];
@@ -821,6 +929,8 @@ function ThreadList({ sections, workspaces, links, folded, pending, draft, waiti
   pending: Pending | null;
   draft: Draft;
   waiting: Record<string, string[]>;
+  busy: Record<string, readonly string[]>;
+  nameOf(botId: string): string;
   covered: boolean;
   machineIcon(hostId: string, size?: number): ReactNode;
   onToggle(id: string): void;
@@ -840,18 +950,19 @@ function ThreadList({ sections, workspaces, links, folded, pending, draft, waiti
     const link = workspace ? linkFor(workspace) : undefined;
     const off = link?.status === "offline";
     const asking = !off && (waiting[pane.id]?.length ?? 0) > 0;
-    const state = off ? "Offline" : asking ? "Waiting on you" : "";
+    const bots = off ? [] : busy[pane.id] ?? [];
+    const state = off ? "Offline" : asking ? "Waiting on you" : bots.length === 1 ? `${botName(bots[0])} is working…` : bots.length > 1 ? `${bots.length} bots working…` : "";
     return (
       <div key={pane.id} className="ph-row">
         <button type="button" className="ph-item" aria-haspopup="menu" {...press.bind(() => onThreadMenu(pane.id))} onClick={() => { if (!press.held.current) onOpen(pane.id); }}>
           <span className="ph-line">
-            <i className={`ph-dot${off ? " off" : asking ? " wait" : ""}`} title={off ? "Machine offline" : asking ? "Waiting on you" : "Idle"} />
+            <i className={`ph-dot${off ? " off" : asking ? " wait" : bots.length > 0 ? " busy" : ""}`} title={off ? "Machine offline" : asking ? "Waiting on you" : bots.length > 0 ? "Working" : "Idle"} />
             <strong className={pane.unread ? "ph-bold" : undefined}>{pane.title}</strong>
             {pane.unread && <span className="ph-unread" aria-label="Unread" />}
             <span className="ph-time">{pane.activeAt ? ageWords(Date.now() - pane.activeAt) : "New"}</span>
           </span>
           {(!nested || state) && (
-            <small className={asking ? "ph-amber" : undefined}>
+            <small className={asking ? "ph-amber" : bots.length > 0 ? "ph-mint" : undefined}>
               {state}{state && !nested ? " · " : ""}
               {!nested && workspace && <>{machineIcon(workspaceHost(workspace), 12)}<span className="ph-ellipsis">{workspace.name} · {nameOf(workspace)}</span></>}
             </small>
@@ -930,11 +1041,11 @@ function ThreadView(props: {
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
-  participants: { id: string; display_name: string }[]; draft: Draft; gate: { enabled: boolean; reason: string };
+  participants: Person[]; working: PhoneWorking; cut: PhoneCuts; draft: Draft; gate: { enabled: boolean; reason: string };
   fork?: Pane["fork"]; approvalStays: boolean; other: LinkView | null; endRef: RefObject<HTMLDivElement | null>;
-  onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(name: string): void;
+  onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(name: string): void; onScrolled(near: boolean): void;
   sending: boolean; attaching: boolean; onSend(): void; onDecide(request: string, approve: boolean, always: boolean): Promise<void>; onRetry(): void;
-  onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void;
+  onStop(id: string): void; onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void;
   /** The question or next steps, above the composer. */
   form: ReactNode; plan: boolean; onStopPlanning(): void;
 }) {
@@ -947,41 +1058,63 @@ function ThreadView(props: {
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
   }, [props.draft.text]);
-  const nameOf = (id: string) => props.participants.find((participant) => participant.id === id)?.display_name ?? id;
+  const working = Object.entries(props.working);
+  const cut = Object.entries(props.cut);
+  const lost = cut.filter(([id, part]) => !part.ended && !(id in props.working)).map(([id]) => id);
+  const ended = cut.filter(([, part]) => part.ended).map(([id]) => id);
+  // The seconds count while anyone is working.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (working.length === 0) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [working.length > 0]);
+  const person = (id: string) => props.participants.find((participant) => participant.id === id) ?? { id, display_name: id, look: legacyAppearance(id) };
+  const asking = (id: string) => props.approvals.some((card) => card.id === id);
   const short = props.project.length > 18 ? `${props.project.slice(0, 7)}…${props.project.slice(-7)}` : props.project;
+  const by = (id: string, live = false) => {
+    const who = person(id);
+    return <div className="ph-by"><Avatar seed={who.look.seed} color={who.look.color} size="sm" working={live && !asking(id)} /><span style={{ color: who.look.color }}>{who.display_name}</span></div>;
+  };
   return (
     <>
       <header className="ph-nav" inert={props.covered}>
         <button type="button" className="ph-icon ph-nav-back" aria-label="Back to Threads" onClick={props.onBack}><ChevronLeft size={26} /></button>
-        <div className="ph-nav-title">
+        {/* Tap the title for project and machine, like the model picker in the ChatGPT app. */}
+        <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
           <h2>{props.draftThread ? "New thread" : props.title}</h2>
-          <p className="ph-context"><span className="ph-ellipsis" title={props.project}>{short}</span><span>&nbsp;· {props.machine}</span></p>
-        </div>
+          <p className="ph-context">
+            {props.started ? <Lock size={11} /> : props.hostIcon}
+            <span className="ph-ellipsis" title={props.project}>{short}</span><span className="ph-context-machine">· {props.machine}</span>
+            <ChevronDown size={12} />
+          </p>
+        </button>
         {props.draftThread
           ? <span className="ph-nav-spacer" />
           : <button type="button" className="ph-icon" aria-label="Thread actions" onClick={props.onMenu}><More size={20} /></button>}
       </header>
-      <main className="ph-content ph-chat" inert={props.covered}>
+      <main className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.participants.length > 0 && (
           <div className="ph-people">
             {props.participants.slice(0, 4).map((participant) => (
-              <span key={participant.id} className="ph-avatar" style={{ "--bot": botTint(participant.display_name) } as CSSProperties}>{participant.display_name.slice(0, 1)}</span>
+              <Avatar key={participant.id} seed={participant.look.seed} color={participant.look.color} size="sm" working={participant.id in props.working && !asking(participant.id)} />
             ))}
-            <span className="ph-grow">{props.participants.map((participant) => participant.display_name).join(" · ")}<small> · shared group thread</small></span>
+            <span className="ph-grow ph-ellipsis">{props.participants.map((participant) => participant.display_name).join(", ")}</span>
           </div>
         )}
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {paused && (
           <div className={`ph-banner${props.link.problem ? " bad" : ""}`} role="status">
             <strong>{props.link.problem ? `${props.machine} can't connect` : `${props.machine} ${props.kind === "mac" && props.link.status === "offline" ? "is asleep" : props.link.status === "offline" ? "is offline" : "is connecting"}`}</strong>
-            <p>{downLine(props.link)}. Nothing is queued, and your text stays here.</p>
+            <p>{downLine(props.link).replace(/\.$/, "")}. Nothing is queued, and your text stays here.</p>
             <div className="ph-banner-actions">
               {!props.link.problem && <button type="button" onClick={props.onRetry}>Retry now</button>}
               {props.kind === "mac" && props.other && <button type="button" onClick={() => props.onOpenOther(props.other!.id)}>Open {props.other.name} thread</button>}
             </div>
           </div>
         )}
-        {props.messages.length === 0 && !paused && (
+        {props.messages.length === 0 && working.length === 0 && !paused && (
           <div className="ph-empty">
             <MessageSquare size={30} />
             <h3>What are we working on?</h3>
@@ -990,30 +1123,45 @@ function ThreadView(props: {
         )}
         {props.messages.map((message) => message.speaker.kind === "human" ? (
           <section key={message.seq} className="ph-msg human">
-            <div className="ph-by">You</div>
             <p>{message.text}</p>
           </section>
         ) : (
           <section key={message.seq} className="ph-msg">
-            <div className="ph-by"><span className="ph-avatar small" style={{ "--bot": botTint(nameOf(message.speaker.id)) } as CSSProperties}>{nameOf(message.speaker.id).slice(0, 1)}</span>{nameOf(message.speaker.id)}</div>
+            {by(message.speaker.id)}
             <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>
+          </section>
+        ))}
+        {/* Cut off mid-reply: what it had written stays, dimmed, until its reply lands, even after a reload. */}
+        {cut.map(([id, part]) => (
+          <section key={`c-${id}`} className="ph-msg ph-was">
+            {by(id)}
+            {part.text && <div className="ph-md"><Markdown text={part.text} onOpen={() => {}} /></div>}
+          </section>
+        ))}
+        {lost.length > 0 && <p className="ph-cut" role="status">{cutLine(lost.map((id) => person(id).display_name), props.machine)}</p>}
+        {ended.length > 0 && <p className="ph-cut" role="status">{endedLine(ended.map((id) => person(id).display_name))}</p>}
+        {/* Each bot's reply as it is written, with what it is doing and a Stop. */}
+        {working.map(([id, turn]) => (
+          <section key={`w-${id}`} className="ph-msg ph-live" aria-busy="true">
+            {by(id, true)}
+            {turn.text && <div className="ph-md"><Markdown text={turn.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>}
+            <div className={`ph-working${asking(id) ? " asking" : ""}`} role="status">
+              <span className="working-dots" aria-hidden="true"><i /><i /><i /></span>
+              <span className="ph-grow ph-ellipsis">{turn.text ? turnWords(turn, asking(id), props.plan) : `${person(id).display_name} is ${turnWords(turn, asking(id), props.plan).toLowerCase()}…`}</span>
+              <span className="ph-time">{elapsed(Math.max(0, now - turn.startedAt))}</span>
+              {!paused && <button type="button" className="ph-stop" aria-label={`Stop ${person(id).display_name}`} onClick={() => props.onStop(id)}>Stop</button>}
+            </div>
           </section>
         ))}
         {props.approvals.map((card) => (
           <div key={card.request} className="ph-approval">
-            <ApprovalCard action={card.action} request={card.request} by={card.id} name={nameOf(card.id)} hostName={approvalWhere(props.machine, props.path, props.kind)} disabled={paused} onDecide={(approve, always) => props.onDecide(card.request, approve, always)} />
+            <ApprovalCard action={card.action} request={card.request} by={card.id} name={person(card.id).display_name} hostName={approvalWhere(props.machine, props.path, props.kind)} disabled={paused} onDecide={(approve, always) => props.onDecide(card.request, approve, always)} />
           </div>
         ))}
         <div ref={props.endRef} />
       </main>
       <form className={`ph-composer${props.plan ? " plan" : ""}`} inert={props.covered} onSubmit={(event) => { event.preventDefault(); props.onSend(); }}>
         {props.form}
-        <div className="ph-workbar">
-          <button type="button" aria-label={`Project ${props.project}`} onClick={() => props.onSheet("project")}><Folder size={16} /><span>{short}</span></button>
-          <button type="button" aria-label="Files" onClick={() => props.onSheet("files")}><Files size={17} /><span className="ph-wb-word">Files</span>{props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}</button>
-          <button type="button" aria-label="Tools" onClick={() => props.onSheet("tools")}><Plug size={17} /><span className="ph-wb-word">Tools</span></button>
-          <button type="button" aria-label={`Work in ${props.machine}`} onClick={() => props.onSheet("work")}>{props.started ? <Lock size={15} /> : props.hostIcon}<span>{props.machine}</span></button>
-        </div>
         {props.plan && <button type="button" className="plan-chip ph-plan" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
         {props.draft.files.length > 0 && (
           <div className="ph-chips">
@@ -1022,10 +1170,17 @@ function ThreadView(props: {
             ))}
           </div>
         )}
-        <div className="ph-input">
-          <textarea ref={inputRef} aria-label="Message this thread" rows={1} value={props.draft.text} placeholder={props.plan ? "Plan with the bots — nothing gets changed…" : "Message the group…"}
-            onChange={(event) => props.onDraft(event.target.value)} />
-          <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>
+        {/* One row, as in Messages: + for files and tools, then the message box. */}
+        <div className="ph-compose-row">
+          <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={() => props.onSheet("add")}>
+            <Plus size={22} />
+            {props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}
+          </button>
+          <div className="ph-input">
+            <textarea ref={inputRef} aria-label="Message this thread" rows={1} value={props.draft.text} placeholder={props.plan ? "Plan with the bots — nothing gets changed…" : "Message the group…"}
+              onChange={(event) => props.onDraft(event.target.value)} />
+            <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>
+          </div>
         </div>
         {paused && <p className="ph-caption warn">{props.gate.reason}</p>}
       </form>
@@ -1056,12 +1211,18 @@ function ProjectSheet({ rows, links, query, machineIcon, onQuery, onPick }: { ro
   );
 }
 
-function WorkSheet({ rows, links, workspaces, project, mac, stays, machineIcon, onPick, onBrowse, onNone }: {
+function WorkSheet({ rows, links, workspaces, project, mac, stays, machineIcon, onPick, onBrowse, onNone, onProject }: {
   rows: ReturnType<typeof workInRows>; links: LinkView[]; workspaces: Workspace[]; project: string; mac: LinkView | null; stays: string | null;
-  machineIcon(hostId: string, size?: number): ReactNode; onPick(workspace: Workspace): void; onBrowse(hostId: string): void; onNone(): void;
+  machineIcon(hostId: string, size?: number): ReactNode; onPick(workspace: Workspace): void; onBrowse(hostId: string): void; onNone(): void; onProject(): void;
 }) {
   return (
     <>
+      <button type="button" className="ph-srow" onClick={onProject}>
+        <span className="ph-srow-icon"><Folder size={18} /></span>
+        <span className="ph-grow"><strong>{project}</strong><small>Project · tap to switch</small></span>
+        <ChevronRight size={16} />
+      </button>
+      <div className="ph-section">Machine</div>
       {stays && <p className="ph-sheet-text"><Lock size={13} /> This thread stays on {stays}. Picking another machine offers a new thread or a fork.</p>}
       <p className="ph-sheet-text">Each machine keeps its own copy of {project}. Nothing is copied between them.</p>
       {rows.map((row) => {
@@ -1144,7 +1305,7 @@ function Machines({ machines, links, covered, machineIcon, missing, confirm, onA
   );
 }
 
-function SideTab({ tab, link, agents, covered, onShow }: { tab: Tab; link: LinkView | null; agents: string[]; covered: boolean; onShow(): void }) {
+function SideTab({ tab, link, agents, bots, covered, onShow }: { tab: Tab; link: LinkView | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; onShow(): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
   const offline = !link || link.status !== "online";
   return (
@@ -1152,9 +1313,18 @@ function SideTab({ tab, link, agents, covered, onShow }: { tab: Tab; link: LinkV
       {link && <p className="ph-intro"><i className={`ph-dot${link.status === "online" ? " on" : link.status === "offline" ? " off" : ""}`} />Follows {link.name}</p>}
       {!link && <div className="ph-empty"><h3>Pair a machine first</h3><p>Open Settings → Machines.</p></div>}
       {link && offline && <div className="ph-banner"><strong>{link.name} can't be reached</strong><p>{downLine(link)}</p></div>}
+      {tab === "agents" && bots.length > 0 && <>
+        <div className="ph-section">Your bots</div>
+        <div className="ph-group">{bots.map((bot) => (
+          <div key={bot.id} className="ph-srow ph-inset">
+            <Avatar seed={bot.look.seed} color={bot.look.color} working={bot.working !== null} />
+            <span className="ph-grow"><strong>{bot.display_name}</strong><small className={bot.working ? "ph-mint" : bot.cutOff ? "ph-amber" : undefined}>{bot.working ? `Working in ${bot.working}` : bot.cutOff ?? bot.tool}</small></span>
+          </div>
+        ))}</div>
+      </>}
       {link && !offline && tab === "agents" && (agents.length === 0
         ? <div className="ph-empty"><h3>No coding agents found</h3><p>Nothing installed on {link.name} yet.</p></div>
-        : <div className="ph-group">{agents.map((agent) => <div key={agent} className="ph-srow ph-inset"><span className="ph-avatar" style={{ "--bot": botTint(agent) } as CSSProperties}>{agent.slice(0, 1)}</span><span className="ph-grow"><strong>{agent}</strong><small>Ready on {link.name}</small></span></div>)}</div>)}
+        : <><div className="ph-section">Installed on {link.name}</div><div className="ph-group">{agents.map((agent) => <div key={agent} className="ph-srow ph-inset"><span className="ph-srow-icon ph-muted-icon"><Terminal size={18} /></span><span className="ph-grow"><strong>{agent}</strong><small>Ready</small></span></div>)}</div></>)}
       {link && !offline && tab === "code" && <div className="ph-empty"><Terminal size={30} /><h3>Terminals aren't on the phone yet</h3><p>Terminals and the browser run on {link.name}. Open them from the Mac for now.</p></div>}
       {link && !offline && tab === "library" && <div className="ph-empty"><Folder size={30} /><h3>Library isn't on the phone yet</h3><p>It will follow {link.name}.</p></div>}
     </main>

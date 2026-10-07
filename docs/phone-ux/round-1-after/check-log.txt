@@ -1,0 +1,105 @@
+# main pass
+working lines at 1.2s: ["Null is thinking…\n1s\nStop","Jigga is thinking…\n0s\nStop"]
+working lines at 4.7s: ["Writing\n4s\nStop","Writing\n3s\nStop"]
+shimmering avatars: 4
+Reduce Motion while working (avatar, dots): ["none","none"]
+normal motion while working (avatar, dots): ["identicon-shimmer","working-pulse"]
+list subtitle: ["2 bots working…","2 bots working… ·\napex-deck · Test MacBook"]
+messages after reply: 3
+working left: 0
+320 sideways: false
+console errors: []
+
+# dropped connection (relay cut, daemon kept running)
+after drop: working rows: 0
+after drop: cut line: ["Lost Test MacBook while Null and Jigga were working. The reply shows here once Test MacBook is back."]
+after drop: send enabled: false
+reconnected: true
+after reconnect: working rows: ["Writing\n0s\nStop"]
+after reconnect: cut line: 0
+finished: bot messages: 2
+
+# Stop one bot
+Stop Null leaves Jigga working, then Jigga finishes
+
+# recheck: reload keeps partial reply; Agents while offline
+partial before drop (chars): 24
+offline: kept text rows: 2
+offline: cut line: ["Lost Test MacBook while Null and Jigga were working. The reply shows here once Test MacBook is back."]
+agents offline: bot lines: ["Lost Test MacBook while working in Round 1 check","Lost Test MacBook while working in Round 1 check"]
+agents offline: shimmering avatars: 0
+reconnected: true
+after reload: kept text still there: false
+after reload: live rows: 1
+agents back online: bot lines: ["/bin/sh","/bin/sh","Ready","Ready","Ready","Ready","Ready"]
+finished: kept rows left: 0
+finished: cut lines left: 0
+agents finished: bot lines: ["/bin/sh","/bin/sh","Ready","Ready","Ready","Ready","Ready"]
+page errors: ["WebSocket connection to 'ws://127.0.0.1:7532/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED","WebSocket connection to 'ws://127.0.0.1:7532/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED"]
+
+# recheck: reload keeps partial reply; Agents while offline
+partial before drop (chars): 24
+offline: kept text rows: 2
+offline: cut line: ["Lost Test MacBook while Null and Jigga were working. The reply shows here once Test MacBook is back."]
+agents offline: bot lines: ["Lost Test MacBook while working in Round 1 check","Lost Test MacBook while working in Round 1 check"]
+agents offline: shimmering avatars: 0
+reconnected: true
+after reload: kept text still there: true
+after reload: live rows: 1
+after reload: live text: ["Null\n\nruns. Nothing else \n\nWriting\n1s\nStop"]
+list back online: thread line: ["Null is working…","Null is working… ·\napex-deck · Test MacBook"]
+agents back online: bot lines: ["/bin/sh","/bin/sh","Ready","Ready","Ready","Ready","Ready"]
+finished: kept rows left: 0
+finished: cut lines left: 0
+agents finished: bot lines: ["/bin/sh","/bin/sh","Ready","Ready","Ready","Ready","Ready"]
+page errors: ["WebSocket connection to 'ws://127.0.0.1:7532/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED","WebSocket connection to 'ws://127.0.0.1:7532/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED"]
+
+# recheck: reload keeps partial reply; Agents while offline
+partial before drop (chars): 24
+offline: kept text rows: 2
+offline: cut line: ["Lost Test MacBook while Null and Jigga were working. The reply shows here once Test MacBook is back."]
+agents offline: bot lines: ["Lost Test MacBook while working in Round 1 check","Lost Test MacBook while working in Round 1 check"]
+agents offline: shimmering avatars: 0
+reconnected: true
+after reload: kept text still there: true
+after reload: live rows: 1
+after reload: live text: ["Null\n\nruns. Nothing else \n\nWriting\n1s\nStop"]
+list back online: thread line: ["Null is working…","Null is working… ·\napex-deck · Test MacBook"]
+agents back online: bot lines: ["Working in Round 1 check","/bin/sh"]
+list after agents: thread line: ["Null is working…","Null is working… ·\napex-deck · Test MacBook"]
+finished: kept rows left: 0
+finished: cut lines left: 0
+agents finished: bot lines: ["/bin/sh","/bin/sh","Ready","Ready","Ready","Ready","Ready"]
+page errors: ["WebSocket connection to 'ws://127.0.0.1:7532/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED","WebSocket connection to 'ws://127.0.0.1:7532/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED"]
+
+# recheck: bots finish while the Mac is unreachable, thread not open
+agents while working: ["Working in Round 1 check","Working in Round 1 check"]
+agents offline: ["Lost Test MacBook while working in Round 1 check","Lost Test MacBook while working in Round 1 check"]
+cleared after reconnect: true
+agents after reconnect: ["/bin/sh","/bin/sh","Ready","Ready","Ready","Ready","Ready"]
+page errors: []
+
+# recheck: reload keeps partial reply; Agents while offline
+partial before drop (chars): 24
+offline: kept text rows: 2
+offline: cut line: ["Lost Test MacBook while Null and Jigga were working. The reply shows here once Test MacBook is back."]
+agents offline: bot lines: ["Lost Test MacBook while working in Round 1 check","Lost Test MacBook while working in Round 1 check"]
+agents offline: shimmering avatars: 0
+reconnected: true
+after reload: kept text still there: true
+after reload: live rows: 1
+after reload: live text: ["Null\n\nruns. Nothing else \n\nWriting\n1s\nStop"]
+list back online: thread line: ["Null is working…","Null is working… ·\napex-deck · Test MacBook"]
+agents back online: bot lines: ["Working in Round 1 check","/bin/sh"]
+list after agents: thread line: ["Null is working…","Null is working… ·\napex-deck · Test MacBook"]
+finished: kept rows left: 0
+finished: cut lines left: 0
+agents finished: bot lines: ["/bin/sh","/bin/sh","Ready","Ready","Ready","Ready","Ready"]
+page errors: ["WebSocket connection to 'ws://127.0.0.1:7532/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED","WebSocket connection to 'ws://127.0.0.1:7532/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED"]
+
+# recheck: bots finish while the Mac is unreachable, thread not open
+agents while working: ["Working in Round 1 check","Working in Round 1 check"]
+agents offline: ["Lost Test MacBook while working in Round 1 check","Lost Test MacBook while working in Round 1 check"]
+cleared after reconnect: true
+agents after reconnect: ["/bin/sh","/bin/sh","Ready","Ready","Ready","Ready","Ready"]
+page errors: []

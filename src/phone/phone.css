@@ -130,6 +130,9 @@
 .ph-item small { display: flex; align-items: center; gap: 5px; color: var(--muted); margin: 2px 0 0 15px; font-size: 13px; line-height: 1.35; min-width: 0; overflow: hidden; white-space: nowrap; }
 .ph-item small .ph-host-icon { padding: 0; }
 .ph-amber { color: var(--amber) !important; }
+.ph-mint { color: var(--mint) !important; }
+.ph-srow-icon.ph-muted-icon { color: var(--muted); }
+.ph-intro .ph-dot { margin-right: 6px; }
 .ph-meta { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
 .ph-host-icon { display: inline-flex; color: var(--muted); padding: 0 2px; }
 
@@ -145,6 +148,7 @@
 .ph-dot.on { background: var(--mint); opacity: 1; }
 .ph-dot.off { background: transparent; border: 1px solid var(--muted); opacity: 1; }
 .ph-dot.wait { background: var(--amber); opacity: 1; animation: ph-pulse 1.6s ease-in-out infinite; }
+.ph-dot.busy { background: var(--mint); opacity: 1; animation: ph-pulse 1.2s ease-in-out infinite; }
 .ph-unread { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--brand-gradient); }
 
 .ph-project + .ph-project { border-top: 1px solid var(--line); }
@@ -208,36 +212,29 @@
 }
 .ph-nav-back.ph-nav-back { color: var(--mint); }
 .ph-nav-spacer { width: 44px; flex: none; }
-.ph-nav-title { flex: 1; min-width: 0; text-align: center; }
+.ph-nav-title.ph-nav-title { flex: 1; min-width: 0; text-align: center; background: transparent; border: 0; padding: 4px 2px; color: var(--text); display: block; }
+.ph-nav-title:active { opacity: .6; }
 .ph-nav-title h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.2px; line-height: 1.3; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ph-context { display: flex; justify-content: center; font-size: 12px; color: var(--muted); margin: 1px 0 0 !important; min-width: 0; }
-.ph-context > span:last-child { flex: none; }
+.ph-context { display: flex; align-items: center; justify-content: center; gap: 3px; font-size: 12px; color: var(--muted); margin: 1px 0 0 !important; min-width: 0; }
+.ph-context .ph-host-icon { padding: 0; }
+.ph-context-machine { flex: none; }
 .ph-path { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin: 6px 0 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .ph-chat { padding: 12px 16px 16px; }
 
-.ph-people { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
-.ph-people small { color: var(--muted); font-size: 12px; }
-.ph-avatar {
-  display: inline-flex;
-  width: 26px;
-  height: 26px;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: 650;
-  border-radius: 8px;
-  flex: none;
-  color: var(--bot);
-  background: color-mix(in srgb, var(--bot) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--bot) 25%, transparent);
-}
-.ph-avatar.small { width: 20px; height: 20px; font-size: 11px; border-radius: 6px; }
-
+.ph-people { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+.ph-people .ph-grow { margin-left: 4px; }
 .ph-msg { margin-bottom: 18px; }
-.ph-by { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+/* A reply being written: the avatar shimmers and a status line sits under the text so far. */
+.ph-working { display: flex; align-items: center; gap: 8px; min-height: 36px; font-size: 13px; color: var(--muted); }
+.ph-working.asking { color: var(--amber); }
+.ph-working.asking .working-dots i { background: var(--amber); animation: none; opacity: .9; }
+.ph-live .ph-md + .ph-working { margin-top: 4px; }
+.ph-stop.ph-stop { min-height: 32px; padding: 4px 12px; font-size: 13px; border-radius: 16px; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); }
+.ph-was .ph-md { opacity: .55; }
+.ph-cut { font-size: 13px; color: var(--muted); border-left: 2px solid var(--line); padding: 4px 0 4px 10px; margin: 0 0 16px !important; }
+.ph-by { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .ph-msg > p { font-size: 15px; line-height: 1.55; white-space: pre-wrap; }
-.ph-msg.human { background: var(--panel-2); padding: 12px 14px; border-radius: 16px 16px 4px 16px; margin-left: 28px; }
-.ph-msg.human .ph-by { color: var(--mint); }
+.ph-msg.human { background: var(--panel-2); padding: 10px 14px; border-radius: 18px 18px 4px 18px; margin-left: auto; width: fit-content; max-width: 85%; }
 .ph-md { font-size: 15px; line-height: 1.55; }
 .ph-md pre { overflow-x: auto; font-size: 12px; }
 .ph-md table { display: block; overflow-x: auto; }
@@ -250,44 +247,36 @@
 .ph-approval .approval-actions button.ghost { flex-basis: 100%; color: var(--mint); border: 0; }
 .ph-approval pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 
-/* The composer: project · Files · Tools · machine, then the message box. */
+/* The composer: + for files and tools, then the message box, as in Messages. */
 .ph-composer {
   flex: none;
   padding: 2px 10px max(8px, env(safe-area-inset-bottom));
   background: var(--bg);
   border-top: 1px solid var(--line);
 }
-.ph-workbar {
-  display: grid;
-  grid-template-columns: minmax(72px, 1fr) 44px 44px minmax(95px, 1fr);
-  gap: 2px;
-  margin-bottom: 2px;
-}
-.ph-workbar button {
-  padding: 5px;
-  background: transparent;
-  border: 0;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  justify-content: center;
-  min-width: 44px;
-  font-size: 12px;
-  color: var(--muted);
-  position: relative;
-}
-.ph-workbar button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ph-wb-word { display: none; }
-@container (min-width: 380px) {
-  .ph-workbar { grid-template-columns: minmax(60px, 1fr) 64px 64px minmax(80px, 1fr); }
-  .ph-wb-word { display: inline; }
-}
-.ph-count { position: absolute; top: 4px; right: 4px; min-width: 16px; height: 16px; border-radius: 8px; background: var(--mint); color: var(--accent-ink); font-size: 10px; line-height: 16px; text-align: center; }
+.ph-count { position: absolute; top: 2px; right: 0; min-width: 16px; height: 16px; border-radius: 8px; background: var(--mint); color: var(--accent-ink); font-size: 10px; line-height: 16px; text-align: center; }
 .ph-plan { margin-bottom: 6px; }
 .ph-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .ph-chip { display: inline-flex; align-items: center; gap: 4px; color: var(--mint); font-size: 12px; background: var(--panel-2); border-radius: 10px; padding-left: 8px; max-width: 100%; }
 .ph-chip button { min-height: 36px !important; min-width: 36px; padding: 0 !important; border: 0; background: transparent; display: flex; align-items: center; justify-content: center; }
+.ph-compose-row { display: flex; align-items: flex-end; gap: 6px; padding-top: 6px; }
+.ph-add.ph-add {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  color: var(--text);
+}
 .ph-input {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: flex-end;
   gap: 7px;
@@ -401,7 +390,7 @@
 @keyframes ph-rise { from { transform: translateY(40px); opacity: .6; } }
 @keyframes ph-fade { from { opacity: 0; } }
 @keyframes ph-pulse { 50% { opacity: .35; } }
-@media (prefers-reduced-motion: reduce) { .ph-sheet, .ph-sheet-back, .ph-dot.wait { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .ph-sheet, .ph-sheet-back, .ph-dot.wait, .ph-dot.busy { animation: none; } }
 .ph-handle { width: 36px; height: 5px; border-radius: 3px; background: var(--muted); opacity: .5; margin: 0 auto 8px; }
 .ph-sheet-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .ph-sheet-title h3 { margin: 0; font-size: 20px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
@@ -461,7 +450,13 @@
 .qform.phone { margin: 0 0 8px; border-bottom: 1px solid var(--line); border-radius: 14px; }
 .qform.phone .qform-options button { min-height: 44px; font-size: 15px; }
 .qform.phone .qform-other input { min-height: 44px; font-size: 16px; }
-.qform-steps.phone .qform-chips button { min-height: 36px; font-size: 14px; }
+/* Next steps stay quiet: one scrolling row of chips, no box or label. */
+.qform-steps.phone { background: transparent; border: 0; padding: 4px 0 2px; margin: 0; gap: 4px; }
+.qform-steps.phone .qform-label { display: none; }
+.qform-steps.phone .qform-chips { flex: 1; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.qform-steps.phone .qform-chips::-webkit-scrollbar { display: none; }
+.qform-steps.phone .qform-chips button { min-height: 36px; font-size: 14px; flex: none; color: var(--muted); }
+.qform-steps.phone .qform-x { min-width: 36px; min-height: 36px; padding: 0; color: var(--muted); }
 .qform.phone .qform-x { min-width: 44px; min-height: 44px; }
 .ph-composer .plan-chip { height: 28px; min-height: 28px; padding: 0 10px; font-size: 12px; }
 .ph-composer .plan-chip .plan-chip-x { width: auto; opacity: .8; font-size: 11px; }
