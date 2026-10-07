@@ -2,6 +2,10 @@
 // each machine itself, so one machine being asleep or offline never pauses
 // the others, and the phone never calls the Mac "This Mac".
 
+import { contextLevel, contextLine, isLow, planLevel, planLine } from "./battery.ts";
+import { findTrigger, insertAt, menuItems, type Trigger } from "./composerMenu.ts";
+import type { AgentTool, PlanWindow } from "./types.ts";
+
 export type MachineKind = "mac" | "server";
 export type LinkStatus = "online" | "offline" | "connecting";
 
@@ -170,4 +174,56 @@ export function loadMachines(raw: string | null): DirectMachine[] {
 
 export function saveMachines(list: DirectMachine[]): string {
   return JSON.stringify(list);
+}
+
+/** Who answers is the room's call, as on the desktop: the bots @named, or the last ones named when nobody is. Returns who it went to. */
+export async function postRouted(
+  backend: { roomTargets(id: string, text: string): Promise<string[]>; roomPostTo(id: string, text: string, targets: string[], routed?: boolean): Promise<void> },
+  id: string,
+  text: string,
+): Promise<string[]> {
+  const targets = await backend.roomTargets(id, text);
+  await backend.roomPostTo(id, text, targets, true);
+  return targets;
+}
+
+/** The bots to offer while an @name is typed at the caret, @all first; null when no @ is being typed. */
+export function mentionPicks(text: string, caret: number, people: { id: string; display_name: string }[]): { trigger: Trigger; picks: { id: string; label: string; detail: string }[] } | null {
+  const trigger = findTrigger(text, caret);
+  if (trigger?.kind !== "mention") return null;
+  const picks = menuItems(trigger, people).flatMap((item) => item.kind === "mention" ? [{ id: item.id, label: item.label, detail: item.detail }] : []);
+  return { trigger, picks };
+}
+
+/** Put `@id ` in place of the @name being typed, or at the end when picked from the + sheet. */
+export function pickMention(text: string, caret: number, trigger: Trigger | null, id: string): { text: string; caret: number } {
+  return insertAt(text, trigger, trigger ? caret : text.length, `@${id} `);
+}
+
+/** Tapping a bot in the thread's bar: `@id ` goes in front of what's typed, unless that bot is already named. */
+export function tagFromBar(text: string, id: string): string {
+  const named = new RegExp(`(^|\\s)@${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i");
+  if (named.test(text)) return text;
+  return `@${id} ${text.replace(/^\s+/, "")}`;
+}
+
+/** The bot bar hides while the keyboard is up, whatever was chosen, and comes back as chosen when it goes down. */
+export function crewOpen(collapsed: boolean, typing: boolean): boolean {
+  return !collapsed && !typing;
+}
+
+/** Context and plan for the sheet a held bot opens, worded as on the desktop's usage card. */
+export function botUsage(
+  bot: { provider: AgentTool | null; reports: boolean },
+  fill: { used: number; window: number } | undefined,
+  windows: PlanWindow[] | undefined,
+  now: Date,
+): { context: string; contextLow: boolean; plan: string; planLow: boolean } {
+  const plan = windows ? planLine(windows, now) : null;
+  return {
+    context: fill ? contextLine(fill) : bot.reports ? "Shows after its next reply" : "Not reported by this provider",
+    contextLow: isLow(contextLevel(fill)),
+    plan: plan ?? (!bot.provider ? "Not reported by this provider" : "Shows after its next reply"),
+    planLow: bot.provider !== null && isLow(planLevel(windows, now.getTime() / 1000)),
+  };
 }

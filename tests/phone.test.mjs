@@ -5,7 +5,7 @@ import { webSocketConnect } from '../src/daemon/webSocketLink.ts';
 import { openPhoneHost } from '../src/phoneBackend.ts';
 import {
   addMachine, approvalWhere, draftVisible, forkLine, loadMachines, newThreadGate,
-  downLine, pauseLine, pressNewThread, refusalLine, threadSend, threadTitleFromMessage,
+  botUsage, crewOpen, downLine, mentionPicks, pauseLine, pickMention, postRouted, pressNewThread, refusalLine, tagFromBar, threadSend, threadTitleFromMessage,
 } from '../src/phoneRules.ts';
 import { phoneShell } from '../src/phoneShell.ts';
 
@@ -147,4 +147,66 @@ test('a machine that refuses the token says so instead of looking offline', () =
   assert.equal(newThreadGate(refused, refused).reason, words);
   assert.equal(downLine({ ...refused, problem: undefined }), "Paused until Tyler's MacBook wakes");
   assert.equal(refusalLine('Apex-Terminal', 'this daemon speaks protocol 3, not 2.'), 'Apex-Terminal turned this phone away: this daemon speaks protocol 3, not 2.');
+});
+
+test('the phone lets the room pick who answers, so @names and the last @name both work', async () => {
+  const calls = [];
+  const backend = {
+    roomTargets: async (id, text) => { calls.push(['targets', id, text]); return text.includes('@null') ? ['null'] : ['jigga']; },
+    roomPostTo: async (id, text, targets, routed) => { calls.push(['post', id, text, targets, routed]); },
+  };
+  assert.deepEqual(await postRouted(backend, 'pane-1', '@null look at this'), ['null']);
+  assert.deepEqual(await postRouted(backend, 'pane-1', 'and again'), ['jigga']);
+  assert.deepEqual(calls, [
+    ['targets', 'pane-1', '@null look at this'], ['post', 'pane-1', '@null look at this', ['null'], true],
+    ['targets', 'pane-1', 'and again'], ['post', 'pane-1', 'and again', ['jigga'], true],
+  ]);
+});
+
+test('typing @ offers the bots in the thread, and picking one fills in its @name', () => {
+  const people = [{ id: 'null', display_name: 'Null' }, { id: 'jigga', display_name: 'Jigga' }, { id: 'gronk', display_name: 'Gronk' }];
+  assert.equal(mentionPicks('hello', 5, people), null);
+  assert.equal(mentionPicks('mail me@nu', 10, people), null);
+  assert.deepEqual(mentionPicks('@', 1, people).picks.map((pick) => pick.id), ['all', 'null', 'jigga', 'gronk']);
+  const typed = mentionPicks('ask @ji', 7, people);
+  assert.deepEqual(typed.picks.map((pick) => pick.id), ['jigga']);
+  assert.deepEqual(pickMention('ask @ji', 7, typed.trigger, 'jigga'), { text: 'ask @jigga ', caret: 11 });
+  // By name too, and in the middle of what was typed.
+  const middle = mentionPicks('@Gr please check', 3, people);
+  assert.deepEqual(middle.picks.map((pick) => pick.id), ['gronk']);
+  assert.deepEqual(pickMention('@Gr please check', 3, middle.trigger, 'gronk'), { text: '@gronk please check', caret: 7 });
+  // From the + sheet, with nothing being typed: added at the end.
+  assert.deepEqual(pickMention('look at this', 12, null, 'null'), { text: 'look at this @null ', caret: 19 });
+});
+
+test('tapping a bot in the bar tags it in front of the draft, once', () => {
+  assert.equal(tagFromBar('', 'jigga'), '@jigga ');
+  assert.equal(tagFromBar('  fix the typo', 'jigga'), '@jigga fix the typo');
+  assert.equal(tagFromBar('@jigga fix it', 'jigga'), '@jigga fix it');
+  assert.equal(tagFromBar('ask @Jigga too', 'jigga'), 'ask @Jigga too');
+  // @jiggabot is someone else, so Jigga still gets tagged.
+  assert.equal(tagFromBar('@jiggabot hi', 'jigga'), '@jigga @jiggabot hi');
+});
+
+test('the bot bar hides while the keyboard is up and comes back as it was chosen', () => {
+  assert.equal(crewOpen(false, false), true);
+  assert.equal(crewOpen(false, true), false);
+  assert.equal(crewOpen(true, false), false);
+  assert.equal(crewOpen(true, true), false);
+});
+
+test('a held bot shows its context and plan the way the desktop card words them', () => {
+  const now = new Date('2026-10-06T12:00:00Z');
+  const claude = { provider: 'claude_code', reports: true };
+  const empty = botUsage(claude, undefined, undefined, now);
+  assert.equal(empty.context, 'Shows after its next reply');
+  assert.equal(empty.plan, 'Shows after its next reply');
+  const full = botUsage(claude, { used: 190_000, window: 200_000 }, [{ name: 'five_hour', used_percent: 40, window_minutes: 300, resets_at: null }], now);
+  assert.match(full.context, /^5% left · 10k of 200k tokens$/);
+  assert.equal(full.contextLow, true);
+  assert.match(full.plan, /^60% left/);
+  assert.equal(full.planLow, false);
+  const scripted = botUsage({ provider: null, reports: false }, undefined, undefined, now);
+  assert.equal(scripted.context, 'Not reported by this provider');
+  assert.equal(scripted.plan, 'Not reported by this provider');
 });

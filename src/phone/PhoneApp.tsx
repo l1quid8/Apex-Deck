@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
@@ -17,19 +17,21 @@ import { openPhoneHost, type PhoneHost } from "../phoneBackend";
 import { phoneShell } from "../phoneShell";
 import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom, type PhoneCuts, type PhoneWorking } from "../phoneWorking";
 import {
-  addMachine, approvalWhere, downLine, draftVisible, forkLine, loadMachines, machinesKey, newThreadGate,
-  pressNewThread, refusalLine, removeMachine, saveMachines, threadCount, threadSend, threadTitleFromMessage,
+  addMachine, approvalWhere, botUsage, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
+  pickMention, postRouted, pressNewThread, refusalLine, removeMachine, saveMachines, tagFromBar, threadCount, threadSend, threadTitleFromMessage,
   type DirectMachine, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
+import { recipientName } from "../recipients";
 import { ageWords, homeShort, hostTints, noteActive, sidebarSections } from "../sidebarModel";
 import { webSocketConnect } from "../daemon/webSocketLink";
 import { loadRoomState } from "../roomRecovery";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
-import type { AppSession, FolderListing, Message, NextStep, Pane, ParticipantConfig, RoomOptions, ToolServer, Workspace } from "../types";
+import { mergePlan } from "../battery";
+import type { AgentTool, AppSession, FolderListing, Message, NextStep, Pane, ParticipantConfig, PlanWindow, RoomOptions, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
-  ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Command, Copy, Folder, Globe, Laptop, Lock, MessageSquare,
+  ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Copy, Folder, Globe, Laptop, Lock, MessageSquare,
   More, Paperclip, Plug, Plus, Settings, Terminal, X,
 } from "./icons";
 
@@ -37,6 +39,8 @@ const NO_ASKS: ThreadAsks = { questions: [], offer: null };
 
 const SESSION_KEY = "apex-deck.phone.session.v1";
 const DRAFT_KEY = "apex-deck.phone.drafts.v1";
+/** The bot bar under a thread's title: "shut" when folded into the title bar. One choice for every thread, kept on this phone. */
+const CREW_KEY = "apex-deck.phone.crew.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
 type Tab = "threads" | "agents" | "code" | "library" | "machines";
@@ -48,9 +52,14 @@ type SheetKind = "project" | "where" | "add" | "tools";
 type Person = { id: string; display_name: string; look: { seed: string; color: string } };
 const NO_CUTS: PhoneCuts = {};
 type Room = {
-  id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean;
+  id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
   /** Each bot's turn in progress, with its reply so far. */
   working: PhoneWorking;
+  /** The bots as saved in the thread, for what each runs on. */
+  configs: ParticipantConfig[];
+  /** Context each bot's latest request filled, and each provider's plan, as reported while the thread is open. */
+  fill: Record<string, { used: number; window: number }>;
+  plans: Partial<Record<AgentTool, PlanWindow[]>>;
 };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string };
@@ -138,6 +147,13 @@ export function PhoneApp() {
   const [ask, setAsk] = useState<Ask | null>(null);
   const [sheet, setSheet] = useState<SheetKind | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
+  /** The bot whose details are open, from holding it in the bot bar. */
+  const [botSheet, setBotSheet] = useState<string | null>(null);
+  const [crewShut, setCrewShut] = useState(() => { try { return localStorage.getItem(CREW_KEY) === "shut"; } catch { return false; } });
+  const foldCrew = (shut: boolean) => {
+    setCrewShut(shut);
+    try { if (shut) localStorage.setItem(CREW_KEY, "shut"); else localStorage.removeItem(CREW_KEY); } catch { /* kept until the app closes */ }
+  };
   const [query, setQuery] = useState("");
   const [tools, setTools] = useState<ToolServer[] | null>(null);
   const [browse, setBrowse] = useState<Browse | null>(null);
@@ -347,7 +363,11 @@ export function PhoneApp() {
         participants: state.snapshot.participants.map(toPerson),
         asks: restoreQuestions({}, openPane.id, state, Date.now())[openPane.id] ?? NO_ASKS,
         plan: Boolean(state.plan ?? state.snapshot.plan),
+        policy: state.snapshot.options.policy,
         working: workingFrom(state.active, Date.now()),
+        configs: state.snapshot.participants,
+        fill: {},
+        plans: {},
       });
     }).catch((error) => { if (live) setNotice(words(error)); });
     host.backend.onRoomEvent((id, event) => {
@@ -356,6 +376,8 @@ export function PhoneApp() {
       if (event.type === "approval_requested") setRoom((current) => current && current.id === id ? { ...current, approvals: [...current.approvals.filter((card) => card.request !== event.request), { id: event.id, request: event.request, action: event.action }] } : current);
       if (event.type === "approval_resolved") setRoom((current) => current && current.id === id ? { ...current, approvals: current.approvals.filter((card) => card.request !== event.request) } : current);
       if (event.type === "plan_changed") setRoom((current) => current && current.id === id ? { ...current, plan: event.on } : current);
+      if (event.type === "context_usage") setRoom((current) => current && current.id === id ? { ...current, fill: { ...current.fill, [event.id]: { used: event.used_tokens, window: event.window_tokens } } } : current);
+      if (event.type === "plan_usage") setRoom((current) => current && current.id === id ? { ...current, plans: { ...current.plans, [event.provider]: mergePlan(current.plans[event.provider], event.windows, event.partial) } } : current);
       if (event.type === "failed") setNotice(`${roomRef.current?.participants.find((person) => person.id === event.id)?.display_name ?? event.id} couldn't reply: ${event.error}`);
       setCuts((all) => { const now = all[id]; const next = now && applyCutEvent(now, event); return !now || next === now ? all : { ...all, [id]: next }; });
       setRoom((current) => {
@@ -369,6 +391,26 @@ export function PhoneApp() {
     // Reloading follows the open thread and that machine's connection, not every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPane?.id, openWorkspace?.id, openLink?.status]);
+
+  // Who the message as typed goes to: its @names, or the bots named last when it has none.
+  // Asked again as the draft changes and after each message, since a send can change it.
+  const [answerers, setAnswerers] = useState<{ paneId: string; ids: string[] } | null>(null);
+  const typed = openId ? draftFor(openId).text : "";
+  useEffect(() => {
+    if (!room || !openWorkspace) return;
+    const host = phoneHost(workspaceHost(openWorkspace));
+    if (!host || toLink(host.connection.get().status) !== "online") return;
+    let live = true;
+    // A short wait so typing doesn't ask the machine on every key; a slower answer for older text is ignored.
+    const ask = window.setTimeout(() => {
+      host.backend.roomTargets(room.id, typed).then((ids) => { if (live) setAnswerers({ paneId: room.id, ids }); }).catch(() => {});
+    }, typed ? 150 : 0);
+    return () => { live = false; window.clearTimeout(ask); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room?.id, room?.messages.length, openLink?.status, typed]);
+
+  // A bot's details belong to the thread they were opened in.
+  useEffect(() => { setBotSheet(null); }, [openId]);
 
   // Follow the newest message and a reply as it streams in, unless the person scrolled up to read.
   const stuckRef = useRef(true);
@@ -423,7 +465,8 @@ export function PhoneApp() {
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
       const body = withAttachments(draft.text.trim(), paths);
-      await host.backend.roomPostTo(sentPane.id, body, participants.map((participant) => participant.id), false);
+      // The room picks who answers, as on the desktop: whoever is @named, or whoever was named last.
+      await postRouted(host.backend, sentPane.id, body);
       // Clear only what was sent; anything typed or attached while it was sending stays.
       setDrafts((all) => {
         const now = all[sentPane.id] ?? emptyDraft();
@@ -622,7 +665,7 @@ export function PhoneApp() {
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
   const started = Boolean(openPane && ((room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
-  const covered = sheet !== null || menu !== null || ask !== null || browse !== null;
+  const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   const menuProject = menu?.kind === "project" ? workspaces.find((workspace) => workspace.id === menu.id) ?? null : null;
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
@@ -655,6 +698,13 @@ export function PhoneApp() {
             messages={room && openPane && room.id === openPane.id ? room.messages : []}
             approvals={room && openPane && room.id === openPane.id ? room.approvals : []}
             participants={room && openPane && room.id === openPane.id ? room.participants : []}
+            toIds={room && openPane && room.id === openPane.id && answerers?.paneId === room.id ? answerers.ids : null}
+            crewShut={crewShut}
+            onCrew={foldCrew}
+            onBot={setBotSheet}
+            to={room && openPane && room.id === openPane.id && answerers?.paneId === room.id
+              ? recipientName({ targets: answerers.ids, roster: room.participants.map((p) => ({ id: p.id, name: p.display_name })), policy: room.policy })
+              : null}
             working={room && openPane && room.id === openPane.id ? room.working : {}}
             cut={(openPane && cuts[openPane.id]) || NO_CUTS}
             onStop={(id) => { void stopBot(id); }}
@@ -822,6 +872,35 @@ export function PhoneApp() {
                 )))}
           </Sheet>
         )}
+        {botSheet && room && openPane && room.id === openPane.id && (() => {
+          const who = room.participants.find((p) => p.id === botSheet);
+          if (!who) return null;
+          const config = room.configs.find((c) => c.id === botSheet);
+          const provider = config?.backend.kind === "agent" ? config.backend.tool : null;
+          const usage = botUsage({ provider, reports: provider !== null && provider !== "gemini" && provider !== "grok" }, room.fill[who.id], provider ? room.plans[provider] : undefined, new Date());
+          const turn = room.working[who.id];
+          const asking = room.approvals.some((card) => card.id === who.id);
+          const next = answerers?.paneId === room.id && answerers.ids.includes(who.id);
+          return (
+            <Sheet title="In this thread" onClose={() => setBotSheet(null)}>
+              <div className="ph-bot-head">
+                <Avatar seed={who.look.seed} color={who.look.color} size="lg" working={Boolean(turn) && !asking} />
+                <span className="ph-grow">
+                  <strong style={{ color: who.look.color }}>{who.display_name}</strong>
+                  <small>{config ? toolWords(config) : "In this thread"}</small>
+                  <small className={asking ? "ph-amber" : undefined}>{asking ? "Waiting on your answer" : turn ? `${turnWords(turn, false, room.plan)} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}</small>
+                </span>
+              </div>
+              <div className="ph-card ph-usage">
+                <p><span>Context</span><span className={usage.contextLow ? "ph-amber" : undefined}>{usage.context}</span></p>
+                <p><span>Plan</span><span className={usage.planLow ? "ph-amber" : undefined}>{usage.plan}</span></p>
+              </div>
+              <button type="button" className="primary ph-wide" onClick={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who.id) }); setBotSheet(null); }}>Mention {who.display_name}</button>
+              {turn && openLink?.status === "online" && <button type="button" className="ph-wide" onClick={() => { void stopBot(who.id); setBotSheet(null); }}>Stop {who.display_name}</button>}
+              <p className="ph-sheet-text ph-quiet">Removing a bot and its settings are on the Mac for now.</p>
+            </Sheet>
+          );
+        })()}
         {menu?.kind === "new" && (
           <Sheet title="New thread in…" onClose={() => setMenu(null)}>
             <ProjectSheet rows={pickerRows(workspaces, panes, "", (id) => linkOf(id)?.status !== "online")} links={links} query={query} machineIcon={machineIcon} onQuery={setQuery} onPick={startIn} />
@@ -1042,6 +1121,12 @@ function ThreadView(props: {
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
   participants: Person[]; working: PhoneWorking; cut: PhoneCuts; draft: Draft; gate: { enabled: boolean; reason: string };
+  /** Who a message without an @name goes to: "Null", "everyone"; null while unknown. */
+  to: string | null;
+  /** The same, as bot ids, for the bar to light up. */
+  toIds: string[] | null;
+  /** The bot bar is folded into the title bar; the phone remembers this for every thread. */
+  crewShut: boolean; onCrew(shut: boolean): void; onBot(id: string): void;
   fork?: Pane["fork"]; approvalStays: boolean; other: LinkView | null; endRef: RefObject<HTMLDivElement | null>;
   onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(name: string): void; onScrolled(near: boolean): void;
   sending: boolean; attaching: boolean; onSend(): void; onDecide(request: string, approve: boolean, always: boolean): Promise<void>; onRetry(): void;
@@ -1051,6 +1136,25 @@ function ThreadView(props: {
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // The keyboard is up while the box has focus; the bot bar folds away until it goes down.
+  const [typing, setTyping] = useState(false);
+  const crew = crewOpen(props.crewShut, typing);
+  const press = useLongPress();
+  const tag = (id: string) => {
+    const text = tagFromBar(props.draft.text, id);
+    props.onDraft(text);
+    requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(text.length, text.length); });
+  };
+  const everyone = props.participants.length > 1 && props.toIds !== null && props.participants.every((p) => props.toIds!.includes(p.id));
+  // Typing @ offers the thread's bots above the box; only while the box has the keyboard.
+  const [caret, setCaret] = useState<number | null>(null);
+  const picking = caret !== null && !paused && props.participants.length > 0 ? mentionPicks(props.draft.text, caret, props.participants) : null;
+  const choose = (id: string) => {
+    const next = pickMention(props.draft.text, caret ?? props.draft.text.length, picking?.trigger ?? null, id);
+    props.onDraft(next.text);
+    setCaret(next.caret);
+    requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(next.caret, next.caret); });
+  };
   // Size the box to its text whenever the draft loads or changes, not only while typing.
   useLayoutEffect(() => {
     const input = inputRef.current;
@@ -1090,19 +1194,46 @@ function ThreadView(props: {
             <ChevronDown size={12} />
           </p>
         </button>
+        {!crew && props.participants.length > 0 && (
+          <button type="button" className="ph-cluster" aria-label={`Show the bots: ${props.participants.map((p) => p.display_name).join(", ")}`} onClick={() => { inputRef.current?.blur(); props.onCrew(false); }}>
+            {props.participants.slice(0, 3).map((participant) => (
+              <Avatar key={participant.id} seed={participant.look.seed} color={participant.look.color} size="sm" working={participant.id in props.working && !asking(participant.id)} />
+            ))}
+            {props.participants.length > 3 && <b>+{props.participants.length - 3}</b>}
+          </button>
+        )}
         {props.draftThread
           ? <span className="ph-nav-spacer" />
           : <button type="button" className="ph-icon" aria-label="Thread actions" onClick={props.onMenu}><More size={20} /></button>}
       </header>
-      <main className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
-        {props.participants.length > 0 && (
-          <div className="ph-people">
-            {props.participants.slice(0, 4).map((participant) => (
-              <Avatar key={participant.id} seed={participant.look.seed} color={participant.look.color} size="sm" working={participant.id in props.working && !asking(participant.id)} />
-            ))}
-            <span className="ph-grow ph-ellipsis">{props.participants.map((participant) => participant.display_name).join(", ")}</span>
+      {/* The thread's bots, pinned under the title: tap to @tag, hold for details. Folds into the title bar, and while the keyboard is up. */}
+      {props.participants.length > 0 && (
+        <div className={`ph-crew${crew ? "" : " shut"}`} inert={props.covered || !crew} aria-hidden={!crew}>
+          <div className="ph-crew-row" role="group" aria-label="Bots in this thread">
+            {props.participants.length > 1 && (
+              <button type="button" className={`ph-crew-pill${everyone ? " to" : ""}`} aria-label={everyone ? "Everyone. Answers your next message" : "Tag everyone"} onClick={() => tag("all")}>
+                <span className="ph-crew-chip"><span className="ph-mention-all" aria-hidden="true">@</span>Everyone</span>
+              </button>
+            )}
+            {props.participants.map((participant) => {
+              const next = !everyone && props.toIds?.includes(participant.id);
+              const live = participant.id in props.working;
+              return (
+                <button key={participant.id} type="button" className={`ph-crew-pill${next ? " to" : ""}${asking(participant.id) ? " asking" : ""}`} style={{ "--who": participant.look.color } as CSSProperties}
+                  aria-label={`${participant.display_name}${asking(participant.id) ? ", waiting on you" : live ? ", working" : next ? ", answers your next message" : ""}. Tap to tag, hold for details`}
+                  {...press.bind(() => props.onBot(participant.id))} onClick={() => { if (!press.held.current) tag(participant.id); }}>
+                  <span className="ph-crew-chip">
+                    <Avatar seed={participant.look.seed} color={participant.look.color} size="sm" working={live && !asking(participant.id)} />
+                    {participant.display_name}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-        )}
+          <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the bots into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
+        </div>
+      )}
+      <main className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {paused && (
           <div className={`ph-banner${props.link.problem ? " bad" : ""}`} role="status">
@@ -1170,6 +1301,21 @@ function ThreadView(props: {
             ))}
           </div>
         )}
+        {picking && picking.picks.length > 0 && (
+          <div className="ph-mentions" role="listbox" aria-label="Mention a bot">
+            {picking.picks.map((pick) => {
+              const who = pick.id === "all" ? null : person(pick.id);
+              return (
+                // Keep the keyboard up: the box keeps focus while you pick.
+                <button key={pick.id} type="button" role="option" aria-selected="false" className="ph-mention" onMouseDown={(event) => event.preventDefault()} onClick={() => choose(pick.id)}>
+                  {who ? <Avatar seed={who.look.seed} color={who.look.color} size="sm" /> : <span className="ph-mention-all" aria-hidden="true">@</span>}
+                  <span>{who ? who.display_name : "Everyone"}</span>
+                  <small>{pick.label}</small>
+                </button>
+              );
+            })}
+          </div>
+        )}
         {/* One row, as in Messages: + for files and tools, then the message box. */}
         <div className="ph-compose-row">
           <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={() => props.onSheet("add")}>
@@ -1177,8 +1323,12 @@ function ThreadView(props: {
             {props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}
           </button>
           <div className="ph-input">
-            <textarea ref={inputRef} aria-label="Message this thread" rows={1} value={props.draft.text} placeholder={props.plan ? "Plan with the bots — nothing gets changed…" : "Message the group…"}
-              onChange={(event) => props.onDraft(event.target.value)} />
+            <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
+              placeholder={props.plan ? "Plan with the bots — nothing gets changed…" : props.to ? `Message ${props.to}…` : "Message the group…"}
+              onChange={(event) => { props.onDraft(event.target.value); setCaret(event.target.selectionStart); }}
+              onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+              onFocus={(event) => { setCaret(event.currentTarget.selectionStart); setTyping(true); }}
+              onBlur={() => { setCaret(null); setTyping(false); }} />
             <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>
           </div>
         </div>

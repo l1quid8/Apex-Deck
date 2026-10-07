@@ -18,6 +18,7 @@ export const ArrowUp = icon(<><path d="m5 12 7-7 7 7" /><path d="M12 19V5" /></>
 export const Check = icon(<path d="M20 6 9 17l-5-5" />);
 export const ChevronDown = icon(<path d="m6 9 6 6 6-6" />);
 export const ChevronLeft = icon(<path d="m15 18-6-6 6-6" />);
+export const ChevronUp = icon(<path d="m18 15-6-6-6 6" />);
 export const ChevronRight = icon(<path d="m9 18 6-6-6-6" />);
 export const Command = icon(<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />);
 export const Copy = icon(<><rect width="14" height="14" x="8" y="8" rx="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></>);

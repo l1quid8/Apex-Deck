@@ -57,7 +57,7 @@ Round 1 after: `docs/phone-ux/round-1-after/`. Taken in Chromium at iPhone size 
 | `11-reconnected.png`, `12-finished.png` | Back online: the still-running reply picks up, then finishes |
 | `13-thread-320.png` | 320 px wide, no sideways scroll |
 
-## Round 1 — built, waiting on Null
+## Round 1 — done (5bf153f)
 
 Picked by Null from the simulator screenshots and the human's feedback. Jigga implements in this order; Null reviews. The human replaced the proposed Tools cleanup with motion avatars.
 
@@ -70,6 +70,16 @@ Built by Jigga (uncommitted). Code: `src/phoneWorking.ts` (rules, tested in `tes
    - *Built:* the four-button bar is gone. The composer is one row, as in Messages: a round + (badge when files are attached) and the message pill. + opens "Add to message": attach a file, Tools…, copy folder path. Project and machine moved to the thread title: tap it (chevron under the title, like the ChatGPT model picker) for "Where this runs", the Work in rows plus a row to switch project. Next steps are one quiet scrolling row of chips, no box or NEXT label, still dismissible. Your own messages are right-aligned bubbles without a "You" label.
 3. [x] **Add the existing motion avatars in the app and in-chat** (Agents, `11-agents.png`; chat, `03-thread.png`) — tiny letter squares give the bots little identity and the chat's speaker marker is easy to miss. Reuse the existing avatar assets for each bot in Agents and beside in-chat replies, including an animated working state next to “Null is working…”. Keep names visible, provide a still state for Reduce Motion, and stop working animation on completion, failure or disconnect. Source: human's explicit replacement for priority 3; Null's screenshot review. Review: verify bot/avatar mapping, simultaneous speakers, working/idle transitions and Reduce Motion; avatars must not crowd reply text.
    - *Built:* the desktop's `Avatar` (each bot's saved pattern and colour) replaces the letter squares: in the participant row under the header, beside every reply with the name in the bot's colour, and on working rows, shimmering. Agents now lists "Your bots" with their avatars, shimmering and "Working in <thread>" while busy, above the tools installed on the machine. Reduce Motion stops the shimmer and the dots (checked: animation `none`).
+
+## Round 2 — done
+
+Asked for by the human from the phone. Code: `src/phoneRules.ts` (rules, tested in `tests/phone.test.mjs`), `src/phone/PhoneApp.tsx`, `src/phone/phone.css`.
+
+1. [x] **@tags don't work from the phone** (open thread) — the phone sent every message to every bot and reset the thread's "last tagged" to everyone, which also broke the desktop's last-tag routing. Source: human. Cleared by Null.
+   - *Built:* sends go through the room's own routing (`postRouted`), so `@jigga` reaches only Jigga and an untagged message goes to whoever was tagged last. Typing @ offers the thread's bots above the box. The empty box says who will answer ("Message Jigga…").
+2. [x] **Bot bar under the title** (open thread) — the bots sat in the + menu, which the human didn't like. Asked for: desktop-style bot chips in a thin top bar, collapsible, expanded by default, folding away when the keyboard opens. Source: human.
+   - *Built:* a slim row pinned under the title, one pill per bot (avatar and name) plus Everyone. Tap a pill to put `@name` in front of the draft and bring up the keyboard; hold it for its details (what it runs on, status, context and plan as reported while the thread is open, Mention, Stop). The bots the next message goes to are outlined in their colour; amber outline when a bot is waiting on you; the avatar shimmers while it works. The chevron folds the bar into an overlapping cluster in the title bar (still shimmering); tapping the cluster unfolds it. The fold is one choice for every thread, kept on the phone. While the keyboard is up the bar folds regardless and returns as chosen when it goes down. The bots left the + menu, and the participant row at the top of the chat is gone.
+   - *Limits:* context and plan only fill in from replies that arrive while the thread is open. Removing a bot and its settings stay on the Mac. "Keyboard is up" is taken as "the message box has focus".
 
 ## Open
 
