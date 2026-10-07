@@ -48,7 +48,10 @@ export function RemoteAccessSettings({ backend, remote }: { backend: Backend; re
       if (next.owned) await settle(on);
       else api.info().then(showInfo, () => {});
     } catch (e) {
+      // The old setting was put back; show it, and the daemon's words.
       fail(e);
+      remote.get().then(setAccess, () => {});
+      api.info().then(showInfo, () => {});
     } finally {
       setRestarting(false);
     }

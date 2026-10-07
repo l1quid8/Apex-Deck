@@ -17,6 +17,7 @@ import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
 import { daemonBinary, localDaemon, remoteAccessSaved, saveRemoteAccess } from './sidecar.mjs';
+import { changeRemoteAccess } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -222,9 +223,14 @@ handle('remote:set', async (_entry, on) => {
     const daemon = await ensureLocal();
     return { on: remoteAccess, owned: daemon.owned };
   }
-  saveRemoteAccess(desktopSettingsFile(), next);
-  remoteAccess = next;
-  const daemon = await restartLocal();
+  // A daemon that won't start with the change gets the old setting back, saved and running.
+  const daemon = await changeRemoteAccess({
+    from: remoteAccess,
+    to: next,
+    save: (value) => saveRemoteAccess(desktopSettingsFile(), value),
+    set: (value) => { remoteAccess = value; },
+    restart: restartLocal,
+  });
   return { on: remoteAccess, owned: daemon.owned };
 });
 
