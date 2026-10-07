@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use crate::ParticipantId;
+use crate::{Answer, ParticipantId, Question};
 use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
 
@@ -157,6 +157,13 @@ impl Decision {
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn decide(&self, action: ProposedAction) -> Decision;
+
+    /// Put questions to the person and wait for their answer. Backends call
+    /// this for a tool like Claude's AskUserQuestion. With nobody to ask,
+    /// the questions are skipped.
+    async fn ask(&self, _questions: Vec<Question>) -> Answer {
+        Answer::Skipped
+    }
 }
 
 /// Rejects everything. Used where nobody can be asked, so that a backend
@@ -177,6 +184,8 @@ pub struct ApprovalDesk {
     next: AtomicU64,
     /// "Always allow" answers, oldest first.
     always: Mutex<Vec<AllowedRule>>,
+    /// Questions waiting for words, not a yes or no. Ids share `next`.
+    asking: Mutex<HashMap<String, (Option<ParticipantId>, oneshot::Sender<Answer>)>>,
 }
 
 impl ApprovalDesk {
@@ -229,6 +238,29 @@ impl ApprovalDesk {
         (id, receiver)
     }
 
+    /// Register a question. Its answer arrives on the receiver; if the
+    /// question is dropped (stop, or the desk goes away) the receiver gets
+    /// an error, which callers show as dropped and tell the bot was skipped.
+    pub fn open_question_for(&self, participant: ParticipantId) -> (String, oneshot::Receiver<Answer>) {
+        let id = format!("ask-{}", self.next.fetch_add(1, Ordering::SeqCst) + 1);
+        let (sender, receiver) = oneshot::channel();
+        self.asking.lock().unwrap().insert(id.clone(), (Some(participant), sender));
+        (id, receiver)
+    }
+
+    /// Deliver the person's answer to a question. False if no question with
+    /// that id waits.
+    pub fn answer(&self, request: &str, answer: Answer) -> bool {
+        match self.asking.lock().unwrap().remove(request) {
+            Some((_, sender)) => sender.send(answer).is_ok(),
+            None => false,
+        }
+    }
+
+    pub fn questions_waiting(&self) -> usize {
+        self.asking.lock().unwrap().len()
+    }
+
     /// Deliver the person's answer. Returns false if nothing with that id
     /// is waiting, for example because it was already answered.
     pub fn resolve(&self, request: &str, decision: Decision) -> bool {
@@ -241,7 +273,7 @@ impl ApprovalDesk {
     /// Take a proposal down without an answer, as when the tool that asked
     /// stopped waiting. Returns false if it was already answered.
     pub fn withdraw(&self, request: &str) -> bool {
-        self.waiting.lock().unwrap().remove(request).is_some()
+        self.waiting.lock().unwrap().remove(request).is_some() | self.asking.lock().unwrap().remove(request).is_some()
     }
 
     /// Reject everything that is waiting, as when the person presses stop.
@@ -252,7 +284,9 @@ impl ApprovalDesk {
         for (_, (_, sender)) in waiting {
             let _ = sender.send(Decision::Reject);
         }
-        count
+        // Dropping a question's sender drops the question.
+        let asked = self.asking.lock().unwrap().drain().count();
+        count + asked
     }
 
     pub fn reject_for(&self, participant: &ParticipantId) -> usize {
@@ -261,11 +295,14 @@ impl ApprovalDesk {
         for request in &requests {
             if let Some((_, sender)) = waiting.remove(request) { let _ = sender.send(Decision::Reject); }
         }
-        requests.len()
+        let mut asking = self.asking.lock().unwrap();
+        let before = asking.len();
+        asking.retain(|_, (owner, _)| owner.as_ref() != Some(participant));
+        requests.len() + before - asking.len()
     }
 
     pub fn waiting(&self) -> usize {
-        self.waiting.lock().unwrap().len()
+        self.waiting.lock().unwrap().len() + self.questions_waiting()
     }
 }
 
@@ -312,6 +349,31 @@ mod tests {
 
     use super::*;
     use futures::executor::block_on;
+
+    #[test]
+    fn questions_wait_on_the_desk_and_are_answered_once() {
+        use crate::{Answer, ParticipantId};
+        let desk = ApprovalDesk::default();
+        let null = ParticipantId::new("null");
+        let (first, first_answer) = desk.open_question_for(null.clone());
+        let (card, _card_answer) = desk.open_for(null.clone());
+        assert_ne!(first, card, "questions and cards share one id sequence");
+        assert_eq!(desk.questions_waiting(), 1);
+        assert!(desk.answer(&first, Answer::Answered(vec![vec!["Postgres".into()]])));
+        assert!(!desk.answer(&first, Answer::Skipped), "already answered");
+        assert!(!desk.answer(&card, Answer::Skipped), "a card is not a question");
+        assert_eq!(block_on(first_answer), Ok(Answer::Answered(vec![vec!["Postgres".into()]])));
+
+        let (_, dropped) = desk.open_question_for(null.clone());
+        desk.reject_for(&null);
+        assert!(block_on(dropped).is_err(), "stop drops a question without an answer");
+        let (_, card_again) = desk.open_for(null.clone());
+        let (_, dropped_all) = desk.open_question_for(null);
+        assert_eq!(desk.reject_all(), 2, "a card and a question");
+        assert_eq!(block_on(card_again), Ok(Decision::Reject));
+        assert!(block_on(dropped_all).is_err());
+        assert_eq!(desk.waiting(), 0);
+    }
 
     #[test]
     fn an_answer_reaches_the_one_waiting_and_only_once() {

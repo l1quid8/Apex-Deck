@@ -65,6 +65,25 @@ pub enum RoomEvent {
     ApprovalRequested { id: ParticipantId, request: String, action: ProposedAction },
     /// A proposed action was answered.
     ApprovalResolved { id: ParticipantId, request: String, approved: bool },
+    /// A participant asked the person something and is waiting. `request`
+    /// names it when it is answered with `room_answer`.
+    QuestionRequested { id: ParticipantId, request: String, questions: Vec<crate::Question> },
+    /// A question left the screen: answered, skipped, or dropped.
+    QuestionResolved {
+        id: ParticipantId,
+        request: String,
+        end: crate::QuestionEnd,
+        #[serde(default)]
+        answers: Vec<Vec<String>>,
+    },
+    /// Suggested next prompts after `id`'s reply. `pending` while they are
+    /// being worked out. An empty, settled list clears them.
+    NextSteps {
+        id: ParticipantId,
+        steps: Vec<crate::NextStep>,
+        #[serde(default)]
+        pending: bool,
+    },
     /// The thread's "Always allow" list changed. It is the whole list.
     AllowedChanged { allowed: Vec<crate::AllowedRule> },
     /// A participant changed a file.
@@ -154,6 +173,51 @@ impl Approver for RoomApprover<'_> {
             (self.on_event)(RoomEvent::AllowedChanged { allowed: self.desk.allowed() });
         }
         decision
+    }
+
+    async fn ask(&self, questions: Vec<crate::Question>) -> crate::Answer {
+        let questions = crate::question::clean_questions(questions);
+        let (request, answer) = self.desk.open_question_for(self.id.clone());
+        (self.on_event)(RoomEvent::QuestionRequested { id: self.id.clone(), request: request.clone(), questions });
+        let mut open = OpenQuestion { approver: self, request: Some(request) };
+        match answer.await {
+            Ok(answer) => {
+                open.settle(&answer);
+                answer
+            }
+            // Stopped, or the chat closed: `open` reports it dropped.
+            Err(_) => crate::Answer::Skipped,
+        }
+    }
+}
+
+/// A question on screen. If its wait is abandoned it is taken down and
+/// shown as dropped.
+struct OpenQuestion<'a, 'b> {
+    approver: &'a RoomApprover<'b>,
+    request: Option<String>,
+}
+
+impl OpenQuestion<'_, '_> {
+    fn settle(&mut self, answer: &crate::Answer) {
+        if let Some(request) = self.request.take() {
+            let (end, answers) = match answer {
+                crate::Answer::Answered(answers) => (crate::QuestionEnd::Answered, answers.clone()),
+                crate::Answer::Skipped => (crate::QuestionEnd::Skipped, Vec::new()),
+            };
+            (self.approver.on_event)(RoomEvent::QuestionResolved { id: self.approver.id.clone(), request, end, answers });
+        }
+    }
+}
+
+impl Drop for OpenQuestion<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(request) = self.request.take() {
+            self.approver.desk.withdraw(&request);
+            (self.approver.on_event)(RoomEvent::QuestionResolved {
+                id: self.approver.id.clone(), request, end: crate::QuestionEnd::Dropped, answers: Vec::new(),
+            });
+        }
     }
 }
 
@@ -594,6 +658,16 @@ impl Room {
         Some((participant, request))
     }
 
+    /// What to send `id` for suggested next prompts after its latest reply:
+    /// its own view of the chat, then the next-steps question, read-only.
+    pub fn next_steps_request(&self, id: &ParticipantId) -> Option<(Arc<dyn Participant>, TurnRequest)> {
+        let (participant, mut request) = self.request_for(id)?;
+        request.turns.push(ViewTurn { role: Role::User, content: crate::next_steps::ASK.to_string() });
+        request.access = Some(crate::Access::Read);
+        request.unseen = Vec::new();
+        Some((participant, request))
+    }
+
     /// Record the outcome of one turn. Returns the ids this reply addressed.
     pub(crate) fn settle(
         &mut self,
@@ -791,6 +865,64 @@ mod approver_tests {
     use crate::approval::ActionKind;
     use futures::FutureExt;
     use std::sync::Mutex;
+
+    #[test]
+    fn a_question_is_shown_answered_and_taken_down() {
+        use crate::{Answer, Question, QuestionEnd, QuestionOption};
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| events.lock().unwrap().push(event);
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let asked = vec![Question { header: "DB".into(), question: "Which\u{200b} one?".into(), options: vec![QuestionOption { label: "SQLite".into(), description: String::new() }], multi_select: false }];
+        let (answer, answered) = futures::executor::block_on(async {
+            futures::join!(approver.ask(asked), async { desk.answer("ask-1", Answer::Answered(vec![vec!["SQLite".into()]])) })
+        });
+        assert!(answered);
+        assert_eq!(answer, Answer::Answered(vec![vec!["SQLite".into()]]));
+        let events = events.into_inner().unwrap();
+        match &events[0] {
+            RoomEvent::QuestionRequested { request, questions, .. } => {
+                assert_eq!(request, "ask-1");
+                assert_eq!(questions[0].question, "Which one?", "cleaned before anyone sees it");
+            }
+            other => panic!("expected a question, got {other:?}"),
+        }
+        assert_eq!(events[1], RoomEvent::QuestionResolved { id: id.clone(), request: "ask-1".into(), end: QuestionEnd::Answered, answers: vec![vec!["SQLite".into()]] });
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn a_question_dropped_by_stop_says_so_and_the_bot_hears_skipped() {
+        use crate::{Answer, Question, QuestionEnd};
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("null");
+        let events = Mutex::new(Vec::new());
+        let sink = |event: RoomEvent| events.lock().unwrap().push(event);
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let asked = vec![Question { header: String::new(), question: "Go?".into(), options: vec![], multi_select: false }];
+        let (answer, _) = futures::executor::block_on(async { futures::join!(approver.ask(asked), async { desk.reject_all() }) });
+        assert_eq!(answer, Answer::Skipped);
+        let events = events.into_inner().unwrap();
+        assert!(matches!(events.last(), Some(RoomEvent::QuestionResolved { end: QuestionEnd::Dropped, .. })), "{events:?}");
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn the_next_steps_request_is_the_bots_own_view_plus_the_question_read_only() {
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["done"]));
+        let mut room = Room::new(vec![null.clone()], RoomOptions::default());
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        let (participant, request) = room.next_steps_request(&ParticipantId::new("null")).unwrap();
+        assert_eq!(participant.config().id.as_str(), "null");
+        assert_eq!(request.access, Some(crate::Access::Read));
+        assert_eq!(request.turns.last().unwrap().content, crate::next_steps::ASK);
+        let first = &null.requests()[0].turns;
+        assert_eq!(request.turns[..first.len()], first[..], "everything the bot saw comes first");
+        assert_eq!(request.turns[request.turns.len() - 2].content, "done", "then its own reply");
+        assert!(request.unseen.is_empty());
+        assert!(room.next_steps_request(&ParticipantId::new("nobody")).is_none());
+    }
 
     fn action() -> ProposedAction {
         ProposedAction { kind: ActionKind::Tool, title: "probe: place_order".into(), detail: "{}".into(), expires_at: None, risky: false }
