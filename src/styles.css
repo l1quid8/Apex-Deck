@@ -2579,6 +2579,9 @@ button.mod-status:hover { color: var(--text); }
 .composer-bots.folded .chip-label, .composer-bots.folded .chip-meta:not(.chip-queued), .composer-bots.folded .editor-badge, .composer-bots.folded .chip-kick, .composer-bots.folded .chip-add-label { display: none; }
 .composer-bots.folded .chip-name { padding: 2px 4px 2px 3px; }
 .composer-bots.folded .chip-add { padding: 0 6px; }
+/* The open bot unfolds to its name while its settings are showing. */
+.composer-bots.folded .chip-name[aria-expanded="true"] .chip-label { display: inline; }
+.composer-bots.folded .chip-name[aria-expanded="true"] { padding-right: 8px; }
 .chips-fold { flex: none; align-self: center; width: 22px; height: 22px; min-height: 0; margin-left: auto; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 15px; line-height: 1; cursor: pointer; }
 .chips-fold:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
 .composer-bots .chip-name { padding: 2px 8px 2px 3px; font-size: 12px; }
