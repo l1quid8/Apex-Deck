@@ -16,7 +16,7 @@ import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
-import { daemonBinary, localDaemon } from './sidecar.mjs';
+import { daemonBinary, localDaemon, remoteAccessSaved, saveRemoteAccess } from './sidecar.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -50,14 +50,39 @@ const bin = daemonBinary({ packaged: app.isPackaged, resourcesPath: process.reso
 /** The local daemon, once started or found. */
 let local = null;
 let starting = null;
+/** Set while the daemon Deck started is stopping to start again with Remote access changed. */
+let restarting = null;
+
+/** Settings → Remote access, kept with the app's own settings. */
+const desktopSettingsFile = () => path.join(app.getPath('userData'), 'desktop-settings.json');
+/** Read once the app is ready; the daemon Deck starts serves `--remote` while it is on. */
+let remoteAccess = false;
 
 /** The daemon on this Mac: the one Deck started if it's still running, else start or find one. */
 function ensureLocal() {
+  if (restarting) return restarting.then(() => ensureLocal());
   if (local?.owned && local.alive()) return Promise.resolve(local);
-  starting ??= localDaemon({ bin, dataDir, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) })
+  starting ??= localDaemon({ bin, dataDir, remote: remoteAccess, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) })
     .then((daemon) => (local = daemon))
     .finally(() => { starting = null; });
   return starting;
+}
+
+/**
+ * Stop the daemon Deck started and start it again, so a Remote access change
+ * takes effect. Windows reconnect by themselves. A daemon Deck found running
+ * is left alone: it keeps the flags it was started with.
+ */
+async function restartLocal() {
+  if (starting) await starting.catch(() => {});
+  const old = local;
+  if (!old?.owned || !old.alive()) return ensureLocal();
+  restarting ??= (async () => {
+    local = null;
+    await old.stop();
+  })().finally(() => { restarting = null; });
+  await restarting;
+  return ensureLocal();
 }
 
 // ------------------------------------------------------------ hosts
@@ -184,6 +209,23 @@ handle('connection:current', async ({ host }) => {
   if (remote) return { id: remote.id, name: remote.name, remote: true, owned: false };
   const daemon = await ensureLocal().catch(() => null);
   return { id: LOCAL, name: LOCAL_NAME, remote: false, owned: daemon?.owned ?? true };
+});
+
+/** Settings → Remote access: the saved switch, and whether Deck started the daemon (so can restart it). */
+handle('remote:get', async () => {
+  const daemon = await ensureLocal().catch(() => null);
+  return { on: remoteAccess, owned: daemon?.owned ?? true };
+});
+handle('remote:set', async (_entry, on) => {
+  const next = on === true;
+  if (next === remoteAccess) {
+    const daemon = await ensureLocal();
+    return { on: remoteAccess, owned: daemon.owned };
+  }
+  saveRemoteAccess(desktopSettingsFile(), next);
+  remoteAccess = next;
+  const daemon = await restartLocal();
+  return { on: remoteAccess, owned: daemon.owned };
 });
 
 handle('shell:pickPath', async ({ win }, kind, title) => {
@@ -554,6 +596,7 @@ app.whenReady().then(async () => {
     app.exit(0);
     return;
   }
+  remoteAccess = remoteAccessSaved(desktopSettingsFile());
   const { state, warnings } = loadHosts(hostsFile());
   hosts = state;
   warnings.forEach((warning) => console.warn(`hosts: ${warning}`));

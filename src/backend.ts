@@ -148,6 +148,8 @@ export interface Backend {
   onMenu?(cb: (action: string) => void): Promise<Unlisten>;
   /** The machines this window can run on; the Electron app only. */
   hosts?: HostsApi;
+  /** Settings → Remote access for this Mac's daemon; the Electron app only. */
+  remoteAccess?: RemoteAccessApi;
   browser?: BrowserApi;
 }
 
@@ -194,6 +196,14 @@ export interface BrowserApi {
   onState(cb: (pane: string, state: BrowserState) => void): () => void;
   /** The window's zoom, to turn CSS pixels into window pixels. */
   zoom(): number;
+}
+
+/** The Remote access switch, saved with the app's settings. `owned`: Deck started the daemon, so can restart it with the change. */
+export interface RemoteAccessState { on: boolean; owned: boolean }
+export interface RemoteAccessApi {
+  get(): Promise<RemoteAccessState>;
+  /** Save the switch and restart the daemon Deck started, with or without `--remote`. */
+  set(on: boolean): Promise<RemoteAccessState>;
 }
 
 export interface HostsApi {

@@ -98,6 +98,18 @@ test('calls carry increasing ids and are answered by id, in any order', async ()
   await assert.rejects(c, (e) => e instanceof Error && e.message === 'no such room');
 });
 
+test('a refusal keeps the daemon\'s reason word on the error, for callers that switch on it', async () => {
+  const { daemon, client } = await connected();
+  const link = daemon.last();
+  const a = client.call('pair_wait', { invitation: 'x' });
+  const b = client.call('room_stop', { id: 't' });
+  const [ra, rb] = link.sent.slice(1);
+  link.receive({ id: ra.id, err: 'This pairing code expired. Start again.', reason: 'expired' });
+  link.receive({ id: rb.id, err: 'no such room' });
+  await assert.rejects(a, (e) => e instanceof Error && e.message === 'This pairing code expired. Start again.' && e.reason === 'expired');
+  await assert.rejects(b, (e) => e instanceof Error && e.reason === undefined);
+});
+
 test('events reach only their own listeners, and one already seen is dropped', async () => {
   const { daemon, client } = await connected();
   const rooms = []; const ptys = [];

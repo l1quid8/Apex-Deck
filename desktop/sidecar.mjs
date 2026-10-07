@@ -2,6 +2,7 @@
 // folder it would use, and start `serve` when nothing answers there.
 
 import { spawn, execFile } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 
@@ -14,9 +15,37 @@ export function daemonBinary({ packaged, resourcesPath, repo, env }) {
 
 const withDataDir = (args, dataDir) => (dataDir ? [...args, '--data-dir', dataDir] : args);
 
-/** `serve` that stops when the app does; a data folder only when one is set. */
-export const serveArgs = (dataDir) => withDataDir(['serve', '--exit-on-stdin-close'], dataDir);
+/**
+ * `serve` that stops when the app does; `--remote` when Remote access is on,
+ * so paired phones can reach it from anywhere; a data folder only when one is set.
+ */
+export const serveArgs = (dataDir, { remote = false } = {}) =>
+  withDataDir(['serve', '--exit-on-stdin-close', ...(remote ? ['--remote'] : [])], dataDir);
 export const dataDirArgs = (dataDir) => withDataDir(['data-dir'], dataDir);
+
+/** Settings → Remote access, kept in `file` (the app's own settings); off unless saved as on. */
+export function remoteAccessSaved(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'))?.remoteAccess === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Save the Remote access switch, keeping anything else in `file`. */
+export function saveRemoteAccess(file, on) {
+  let saved = {};
+  try {
+    const read = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (read && typeof read === 'object' && !Array.isArray(read)) saved = read;
+  } catch {
+    // Missing or unreadable: start again.
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify({ ...saved, version: 1, remoteAccess: Boolean(on) }, null, 2)}\n`);
+  fs.renameSync(temp, file);
+}
 
 /** The folder the daemon would use. */
 export function dataFolder(bin, dataDir) {
@@ -44,12 +73,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * running when the app quits), or a `serve` started now that ends with the
  * app. Rejects with the daemon's own words when it won't start.
  */
-export async function localDaemon({ bin, dataDir, log = () => {} }) {
+export async function localDaemon({ bin, dataDir, remote = false, log = () => {} }) {
   const folder = await dataFolder(bin, dataDir);
   const socket = path.join(folder, 'daemon.sock');
   if (await answers(socket)) return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
 
-  const child = spawn(bin, serveArgs(dataDir), { stdio: ['pipe', 'ignore', 'pipe'] });
+  const child = spawn(bin, serveArgs(dataDir, { remote }), { stdio: ['pipe', 'ignore', 'pipe'] });
   let stderr = '';
   let exited = null;
   child.stderr.setEncoding('utf8');

@@ -190,7 +190,7 @@ export class DaemonClient {
   }
 
   private receive(link: Link, line: string) {
-    let frame: { id?: number | null; ok?: unknown; err?: string; seq?: number; event?: string; payload?: unknown };
+    let frame: { id?: number | null; ok?: unknown; err?: string; reason?: unknown; seq?: number; event?: string; payload?: unknown };
     try {
       frame = JSON.parse(line);
     } catch {
@@ -217,7 +217,8 @@ export class DaemonClient {
     const waiting = this.pending.get(frame.id);
     if (!waiting) return;
     this.pending.delete(frame.id);
-    if (typeof frame.err === "string") waiting.reject(new Error(frame.err));
+    // A refusal's `reason` word, when the daemon gives one, rides on the error for callers that switch on it.
+    if (typeof frame.err === "string") waiting.reject(typeof frame.reason === "string" ? Object.assign(new Error(frame.err), { reason: frame.reason }) : new Error(frame.err));
     else waiting.resolve(frame.ok ?? null);
   }
 
