@@ -40,8 +40,9 @@ pub const RELAY: &str = "https://relay.apex-terminal.xyz/";
 /// Keychain before release.
 pub const KEY_FILE: &str = "iroh-key";
 
-/// The UDP port chosen at first start, kept so a forwarded port stays right.
-pub const PORT_FILE: &str = "remote.json";
+/// The UDP port chosen at first start, kept so a forwarded port stays right,
+/// and the advertised addresses (see `remote_config`).
+pub const PORT_FILE: &str = crate::remote_config::FILE;
 
 /// Why a connection was closed, as its QUIC close code.
 pub mod close {
@@ -79,11 +80,7 @@ pub fn key(data: &Path) -> Result<SecretKey, String> {
 /// The port to bind: `--remote-port`, else the one saved at first start, else
 /// 0 (the system picks; it's saved once bound).
 pub fn port(data: &Path, flag: Option<u16>) -> u16 {
-    flag.or_else(|| {
-        let saved: Value = serde_json::from_str(&std::fs::read_to_string(data.join(PORT_FILE)).ok()?).ok()?;
-        saved["port"].as_u64().and_then(|p| u16::try_from(p).ok())
-    })
-    .unwrap_or(0)
+    flag.or_else(|| crate::remote_config::port(data)).unwrap_or(0)
 }
 
 /// Bind the endpoint. `relay: None` is for tests on one machine.
@@ -110,8 +107,9 @@ pub async fn bind(key: SecretKey, relay: Option<&str>, port: u16) -> Result<Endp
 pub async fn start(data: &Path, flag: Option<u16>) -> Result<(Endpoint, Value), String> {
     let endpoint = bind(key(data)?, Some(RELAY), port(data, flag)).await?;
     let bound = endpoint.bound_sockets().iter().map(|a| a.port()).find(|p| *p != 0).unwrap_or(0);
-    files::write_private(&data.join(PORT_FILE), &format!("{}\n", json!({ "port": bound })))?;
-    let info = json!({ "endpoint_id": endpoint.id().to_string(), "port": bound, "relay": RELAY });
+    // Keeps the advertised addresses saved beside it.
+    crate::remote_config::save_port(data, bound)?;
+    let info = json!({ "endpoint_id": endpoint.id().to_string(), "port": bound, "relay": RELAY, "advertise": crate::remote_config::advertised(data) });
     Ok((endpoint, info))
 }
 
@@ -481,7 +479,7 @@ mod tests {
 
     async fn daemon(data: &Path) -> (Arc<Daemon>, Endpoint) {
         let host = Host::new(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), invites: Default::default() });
+        let daemon = Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), data: data.to_path_buf(), invites: Default::default(), endpoint: Default::default() });
         let endpoint = bind(key(data).unwrap(), None, 0).await.unwrap();
         tokio::spawn(accept(Arc::clone(&daemon), endpoint.clone()));
         (daemon, endpoint)

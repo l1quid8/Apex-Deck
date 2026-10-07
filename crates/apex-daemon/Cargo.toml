@@ -25,9 +25,11 @@ tokio-tungstenite = "0.28"
 iroh = { version = "1.3", optional = true }
 apex-pairing = { path = "../apex-pairing", optional = true }
 base64 = { version = "0.22", optional = true }
+# The QR in `apex-daemon pair`: Unicode blocks only.
+qrcode = { version = "0.14", default-features = false, optional = true }
 
 [features]
-remote = ["dep:iroh", "dep:apex-pairing", "dep:base64"]
+remote = ["dep:iroh", "dep:apex-pairing", "dep:base64", "dep:qrcode"]
 
 [dev-dependencies]
 apex-core = { path = "../apex-core" }

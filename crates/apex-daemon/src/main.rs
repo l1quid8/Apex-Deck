@@ -1,5 +1,5 @@
 use apex_daemon::cli::{self, Action};
-use apex_daemon::{devices_cli, serve, stdio};
+use apex_daemon::{devices_cli, pair_cli, serve, stdio};
 
 fn main() {
     // Codex runs this executable before each MCP call; see the adapters'
@@ -17,11 +17,14 @@ fn main() {
     };
     match cli.action {
         Action::Help => println!("{}", cli::USAGE),
+        Action::PairHelp => println!("{}", pair_cli::USAGE),
         Action::Version => println!("apex-daemon {}", env!("CARGO_PKG_VERSION")),
         Action::DataDir => exit(apex_daemon::paths::host_paths(cli.data_dir).map(|paths| println!("{}", paths.data.display()))),
         Action::Stdio { attach } => exit(stdio::run(cli.data_dir, attach)),
         Action::Serve(options) => exit(serve::run(cli.data_dir, options)),
         Action::Devices(action) => exit(devices_cli::run(cli.data_dir, action)),
+        Action::Pair(options) => exit(pair_cli::run(cli.data_dir, options)),
+        Action::Remote(action) => exit(pair_cli::run_remote(cli.data_dir, action)),
     }
 }
 

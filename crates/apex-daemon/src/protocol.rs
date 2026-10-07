@@ -2,8 +2,10 @@
 //! transport (stdio, the local socket, the WebSocket, an iroh stream).
 //!
 //! - Request: `{"id": n, "cmd": "...", "args": {...}}`, where `cmd`/`args`
-//!   are an `apex_host::Command`, or one of the local-only `devices_*`.
-//! - Reply: `{"id": n, "ok": value}` or `{"id": n, "err": "message"}`.
+//!   are an `apex_host::Command`, or one of the local-only `devices_*`,
+//!   `pair_*` and `remote_*` (see `pair_commands`).
+//! - Reply: `{"id": n, "ok": value}` or `{"id": n, "err": "message"}`; a
+//!   `pair_*`/`remote_*` error also has `"reason"`, a word naming why.
 //! - Event: `{"seq": n, "event": name, "payload": {...}}`, what the desktop
 //!   window gets.
 //!
@@ -55,9 +57,14 @@ pub struct Daemon {
     pub token: Option<String>,
     /// The remote devices allowed in.
     pub devices: Arc<Devices>,
+    /// The data folder (`remote.json` lives here).
+    pub data: std::path::PathBuf,
     /// Pairing invitations handed out since this daemon started.
     #[cfg(feature = "remote")]
     pub invites: Arc<crate::pairing::invites::Invites>,
+    /// The iroh endpoint, once `serve --remote` started it.
+    #[cfg(feature = "remote")]
+    pub endpoint: std::sync::OnceLock<iroh::Endpoint>,
 }
 
 impl Daemon {
@@ -67,7 +74,10 @@ impl Daemon {
         // The daemon's arguments (`--data-dir PATH`) are not workspaces.
         host.set_startup_folders(Vec::new());
         let devices = Arc::new(Devices::open(&paths.data));
-        Ok(Arc::new(Daemon { host, host_id: crate::identity::host_id(&paths.data)?, boot_id: crate::identity::boot_id(), token, devices, #[cfg(feature = "remote")] invites: Default::default() }))
+        Ok(Arc::new(Daemon { host, host_id: crate::identity::host_id(&paths.data)?, boot_id: crate::identity::boot_id(), token, devices, data: paths.data.clone(),
+            #[cfg(feature = "remote")] invites: Default::default(),
+            #[cfg(feature = "remote")] endpoint: Default::default(),
+        }))
     }
 }
 
@@ -289,11 +299,18 @@ where
         }
         None => (Vec::new(), bus.last_seq()),
     };
-    let welcome = json!({ "id": hello.id, "ok": {
+    let mut welcome = json!({ "id": hello.id, "ok": {
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
         // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
         "version": env!("CARGO_PKG_VERSION"),
     } });
+    // A device also learns what it may do now (so the phone can hide what
+    // it can't use; the host still checks everything) and the addresses
+    // advertised for this machine, to refresh its saved hints.
+    if let Some(device) = guard.as_ref().and_then(Guard::device) {
+        welcome["ok"]["access"] = json!({ "tier": device.tier, "threads": device.threads });
+        welcome["ok"]["addrs"] = json!(crate::remote_config::advertised(&daemon.data));
+    }
     if let Err(stop) = send(&mut output, &mut guard, welcome.to_string()).await {
         return stop.into();
     }
@@ -310,6 +327,8 @@ where
     }
 
     let (replies_tx, mut replies) = mpsc::unbounded_channel::<Reply>();
+    // Answers to local pairing commands, ready to send.
+    let (frames_tx, mut frames) = mpsc::unbounded_channel::<String>();
     let mut waiting: Vec<Reply> = Vec::new();
     let mut in_flight = 0usize;
     let mut reading = true;
@@ -331,6 +350,24 @@ where
                             return stop.into();
                         }
                     }
+                    Ok((id, Request::Pairing(request))) => match trust {
+                        Trust::Local => {
+                            in_flight += 1;
+                            let (daemon, frames_tx) = (Arc::clone(&daemon), frames_tx.clone());
+                            tokio::spawn(async move {
+                                let frame = match crate::pair_commands::run(daemon, request).await {
+                                    Ok(value) => json!({ "id": id, "ok": value }),
+                                    Err(refusal) => refusal.frame(id),
+                                };
+                                let _ = frames_tx.send(frame.to_string());
+                            });
+                        }
+                        Trust::Token | Trust::Device(_) => {
+                            if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), "not allowed from a remote connection")).await {
+                                return stop.into();
+                            }
+                        }
+                    },
                     Ok((id, Request::Host(command))) => {
                         let need = match &guard {
                             None => Ok(None),
@@ -369,6 +406,12 @@ where
                     drained.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
                 }
             },
+            Some(frame) = frames.recv() => {
+                in_flight -= 1;
+                if let Err(stop) = send(&mut output, &mut guard, frame).await {
+                    return stop.into();
+                }
+            }
             Some(reply) = replies.recv() => {
                 in_flight -= 1;
                 if reply.after <= written {
@@ -473,6 +516,7 @@ fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
 enum Request {
     Host(Command),
     Devices(DevicesRequest),
+    Pairing(crate::pair_commands::PairRequest),
 }
 
 fn refusal(id: Value, why: impl Into<String>) -> String {
@@ -497,6 +541,10 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
     if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("devices_")) {
         let request = serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
         return Ok((id, Request::Devices(request)));
+    }
+    if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("pair_") || cmd.starts_with("remote_")) {
+        let request = serde_json::from_value(value).map_err(|e| crate::pair_commands::Refusal::new(e.to_string(), "bad_request").frame(id).to_string())?;
+        return Ok((id, Request::Pairing(request)));
     }
     let command = Command::from_json(value).map_err(|why| refusal(json!(id), why))?;
     Ok((id, Request::Host(command)))
@@ -574,7 +622,12 @@ mod tests {
         let data = temp_dir();
         let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
         let devices = Arc::new(Devices::open(&data.0));
-        (Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices, #[cfg(feature = "remote")] invites: Default::default() }), data)
+        let daemon = Daemon {
+            host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices, data: data.0.clone(),
+            #[cfg(feature = "remote")] invites: Default::default(),
+            #[cfg(feature = "remote")] endpoint: Default::default(),
+        };
+        (Arc::new(daemon), data)
     }
 
     fn connect(trust: Trust) -> Client {
@@ -1203,9 +1256,11 @@ mod tests {
         daemon.devices.revoke(&phone).unwrap();
         let restarted = Arc::new(Daemon {
             host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
-            host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
+            host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)), data: data.0.clone(),
             #[cfg(feature = "remote")]
             invites: Default::default(),
+            #[cfg(feature = "remote")]
+            endpoint: Default::default(),
         });
         let (mut client, session) = connect_device(&restarted, &phone, 1 << 16);
         assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));
@@ -1240,5 +1295,117 @@ mod tests {
         assert!(local.until_reply(2).await.last().unwrap()["err"].as_str().unwrap().contains("no longer waiting"));
         local.send(json!({ "id": 3, "cmd": "room_answer", "args": { "id": "r", "request": "gone" } })).await;
         assert!(local.until_reply(3).await.last().unwrap()["err"].as_str().unwrap().contains("no longer waiting"));
+    }
+
+    // ---- Pairing and remote access, from this machine only ----
+
+    fn pairing_frames() -> Vec<Value> {
+        let inv = "AAAAAAAAAAAAAAAAAAAAAA";
+        vec![
+            json!({ "id": 1, "cmd": "pair_start", "args": { "tier": "full", "threads": "all" } }),
+            json!({ "id": 1, "cmd": "pair_wait", "args": { "invitation": inv } }),
+            json!({ "id": 1, "cmd": "pair_approve", "args": { "invitation": inv, "claim_id": inv } }),
+            json!({ "id": 1, "cmd": "pair_cancel", "args": { "invitation": inv } }),
+            json!({ "id": 1, "cmd": "remote_info", "args": {} }),
+            json!({ "id": 1, "cmd": "remote_advertise", "args": { "addrs": ["evil.example:1"] } }),
+        ]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pairing_commands_are_refused_from_a_token_or_a_device() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let mut token = connect_to(&daemon, Trust::Token);
+        token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
+        token.next().await.unwrap();
+        let (mut device, _session) = connect_device(&daemon, &phone, 1 << 16);
+        device.hello().await;
+        for client in [&mut token, &mut device] {
+            for frame in pairing_frames() {
+                client.send(frame.clone()).await;
+                assert_eq!(client.next().await.unwrap(), json!({ "id": 1, "err": "not allowed from a remote connection" }), "{frame}");
+            }
+        }
+        assert!(crate::remote_config::advertised(&daemon.data).is_empty(), "nothing was advertised");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_devices_hello_carries_its_access_and_the_advertised_addresses() {
+        let (daemon, _data) = daemon();
+        std::fs::create_dir_all(&daemon.data).unwrap();
+        crate::remote_config::set_advertised(&daemon.data, &["myhome.ddns.net:41641".into()]).unwrap();
+        let phone = add(&daemon, 1, Tier::Chat, Threads::Only(vec!["a".into()]));
+        let (mut client, _session) = connect_device(&daemon, &phone, 1 << 16);
+        let ok = client.hello().await["ok"].clone();
+        assert_eq!(ok["access"], json!({ "tier": "chat", "threads": ["a"] }));
+        assert_eq!(ok["addrs"], json!(["myhome.ddns.net:41641"]));
+        assert_eq!(ok["host_id"], "host-1");
+
+        // The current access, not the one it paired with.
+        daemon.devices.set_tier(&phone, Tier::Full).unwrap();
+        daemon.devices.set_threads(&phone, Threads::ALL).unwrap();
+        let (mut again, _session) = connect_device(&daemon, &phone, 1 << 16);
+        assert_eq!(again.hello().await["ok"]["access"], json!({ "tier": "full", "threads": "all" }));
+
+        // Nobody else gets either.
+        let mut local = connect_to(&daemon, Trust::Local);
+        let ok = local.hello().await["ok"].clone();
+        assert!(ok.get("access").is_none() && ok.get("addrs").is_none(), "{ok}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remote_advertise_checks_saves_and_survives_a_restart() {
+        let (daemon, data) = daemon();
+        std::fs::create_dir_all(&data.0).unwrap();
+        let mut local = connect_to(&daemon, Trust::Local);
+        local.hello().await;
+        local.send(json!({ "id": 1, "cmd": "remote_advertise", "args": { "addrs": ["nonsense"] } })).await;
+        let refused = local.until_reply(1).await.pop().unwrap();
+        assert!(refused["err"].as_str().unwrap().contains("host:port"), "{refused}");
+        assert_eq!(refused["reason"], "bad_address");
+        local.send(json!({ "id": 2, "cmd": "remote_advertise", "args": { "addrs": ["MyHome.ddns.net:41641", "[2001:db8::1]:41641"] } })).await;
+        let addrs = json!(["myhome.ddns.net:41641", "[2001:db8::1]:41641"]);
+        assert_eq!(local.until_reply(2).await.pop().unwrap(), json!({ "id": 2, "ok": { "advertise": addrs } }));
+        local.send(json!({ "id": 3, "cmd": "remote_info" })).await;
+        assert_eq!(local.until_reply(3).await.pop().unwrap()["ok"], json!({ "enabled": false, "endpoint_id": null, "port": null, "advertise": addrs }));
+
+        let restarted = Arc::new(Daemon {
+            host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
+            host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)), data: data.0.clone(),
+            #[cfg(feature = "remote")]
+            invites: Default::default(),
+            #[cfg(feature = "remote")]
+            endpoint: Default::default(),
+        });
+        let mut local = connect_to(&restarted, Trust::Local);
+        local.hello().await;
+        local.send(json!({ "id": 1, "cmd": "remote_info" })).await;
+        assert_eq!(local.until_reply(1).await.pop().unwrap()["ok"]["advertise"], addrs);
+        local.send(json!({ "id": 2, "cmd": "remote_advertise", "args": { "addrs": [] } })).await;
+        assert_eq!(local.until_reply(2).await.pop().unwrap()["ok"], json!({ "advertise": [] }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pair_start_without_remote_access_says_so() {
+        let mut local = connect(Trust::Local);
+        local.hello().await;
+        local.send(json!({ "id": 1, "cmd": "pair_start", "args": { "tier": "chat", "threads": "all" } })).await;
+        let refused = local.until_reply(1).await.pop().unwrap();
+        assert_eq!(refused["reason"], "not_remote", "{refused}");
+        assert!(refused["err"].as_str().unwrap().contains("remote"), "{refused}");
+    }
+
+    #[cfg(feature = "remote")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pairing_answers_name_their_reason() {
+        let mut local = connect(Trust::Local);
+        local.hello().await;
+        local.send(json!({ "id": 1, "cmd": "pair_wait", "args": { "invitation": "AAAAAAAAAAAAAAAAAAAAAA" } })).await;
+        let unknown = local.until_reply(1).await.pop().unwrap();
+        assert_eq!((unknown["reason"].clone(), unknown["err"].clone()), (json!("unknown"), json!("There's no such pairing code. Start again.")));
+        local.send(json!({ "id": 2, "cmd": "pair_cancel", "args": { "invitation": "not base64!" } })).await;
+        assert_eq!(local.until_reply(2).await.pop().unwrap()["reason"], "bad_request");
+        local.send(json!({ "id": 3, "cmd": "pair_start", "args": { "tier": "admin" } })).await;
+        assert_eq!(local.until_reply(3).await.pop().unwrap()["reason"], "bad_request");
     }
 }

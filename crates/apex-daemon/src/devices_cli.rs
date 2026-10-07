@@ -4,14 +4,13 @@
 //! revoke also cuts off a connected device at once. Otherwise the registry
 //! file is changed here, under the data folder's lock.
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use apex_host::lock::{DataLock, LockError};
 use serde_json::{json, Value};
 
 use crate::devices::{Devices, Tier};
-use crate::{paths, protocol, serve};
+use crate::{local_call, paths, protocol, serve};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DevicesAction {
@@ -76,7 +75,7 @@ pub fn run(data_dir: Option<PathBuf>, action: DevicesAction) -> Result<(), Strin
     let paths = paths::host_paths(data_dir)?;
     let request = request(&action);
     let answer = match std::os::unix::net::UnixStream::connect(paths.data.join(serve::SOCKET)) {
-        Ok(socket) => through_daemon(socket, request)?,
+        Ok(socket) => local_call::through_daemon(socket, request)?,
         Err(_) => {
             let _lock = match DataLock::acquire(&paths.data, &format!("apex-daemon devices (pid {})", std::process::id())) {
                 Ok(lock) => lock,
@@ -88,27 +87,6 @@ pub fn run(data_dir: Option<PathBuf>, action: DevicesAction) -> Result<(), Strin
     };
     println!("{}", serde_json::to_string_pretty(&answer).map_err(|e| e.to_string())?);
     Ok(())
-}
-
-/// Say hello on the daemon's socket, send `request`, and return its answer.
-fn through_daemon(socket: std::os::unix::net::UnixStream, mut request: Value) -> Result<Value, String> {
-    request["id"] = json!(1);
-    let mut writer = socket.try_clone().map_err(|e| e.to_string())?;
-    let hello = json!({ "id": 0, "cmd": "hello", "args": { "protocol": protocol::PROTOCOL } });
-    writeln!(writer, "{hello}\n{request}").map_err(|e| format!("could not reach the daemon: {e}"))?;
-    for line in BufReader::new(socket).lines() {
-        let frame: Value = serde_json::from_str(&line.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        if frame["id"] == json!(0) && frame.get("err").is_some() {
-            return Err(frame["err"].as_str().unwrap_or("the daemon refused").to_string());
-        }
-        if frame["id"] == json!(1) {
-            return match frame.get("err") {
-                Some(why) => Err(why.as_str().unwrap_or_default().to_string()),
-                None => Ok(frame["ok"].clone()),
-            };
-        }
-    }
-    Err("the daemon closed the connection without answering".into())
 }
 
 #[cfg(test)]
