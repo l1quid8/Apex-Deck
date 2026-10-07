@@ -27,6 +27,15 @@ final class EventSink {
     /// Handles whose "closed" was delivered: nothing more is.
     private var ended = Set<UInt64>()
 
+    /// Forget every handle, once Rust has ended them all. Rust never reuses
+    /// a handle number, so this only frees memory.
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        closing.removeAll()
+        ended.removeAll()
+    }
+
     func markClosing(_ handle: UInt64) {
         lock.lock()
         defer { lock.unlock() }
@@ -314,6 +323,7 @@ public class ApexRemotePlugin: CAPPlugin, CAPBridgedPlugin {
         let sink = self.sink
         Native.queue.async {
             Native.stopHere(sink)
+            sink.reset()
             Native.startHere(sink)
             call.resolve()
         }

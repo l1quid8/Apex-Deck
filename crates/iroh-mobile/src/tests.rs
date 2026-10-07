@@ -272,6 +272,77 @@ async fn a_slow_app_overflows_and_closes() {
     host.close().await;
 }
 
+#[test]
+fn max_line_matches_the_daemon() {
+    assert_eq!(MAX_LINE, apex_daemon::protocol::DEVICE_MAX_FRAME);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_reply_arrives_whole() {
+    // A host that answers the phone's first line with a near-limit line.
+    let host_key = SecretKey::generate();
+    let host = Endpoint::builder(presets::Minimal).secret_key(host_key.clone()).relay_mode(RelayMode::Disabled).alpns(vec![ALPN.to_vec()]).bind().await.unwrap();
+    let port = host.bound_sockets().iter().map(|a| a.port()).find(|p| *p != 0).unwrap();
+    let big = format!("{{\"pad\":\"{}\"}}", "\\\"".repeat((MAX_LINE - 64) / 2));
+    assert!(big.len() > 7 * 1024 * 1024 && big.len() <= MAX_LINE);
+    let echo = {
+        let (host, big) = (host.clone(), big.clone());
+        tokio::spawn(async move {
+            let conn = host.accept().await.unwrap().await.unwrap();
+            let (send, recv) = conn.accept_bi().await.unwrap();
+            let mut input = FramedRead::new(recv, LinesCodec::new_with_max_length(MAX_LINE));
+            let mut out = FramedWrite::new(send, LinesCodec::new());
+            let got = input.next().await.unwrap().unwrap();
+            out.send(big).await.unwrap();
+            out.send(got.len().to_string()).await.unwrap();
+            let _ = conn.closed().await;
+        })
+    };
+    let (b, events, _) = bridge(Mode::Automatic).await;
+    let h = b.connect(&host_key.public().to_string(), &[format!("127.0.0.1:{port}")]).unwrap();
+    // The phone may send a line as large, too.
+    let upload = format!("{{\"pad\":\"{}\"}}", "x".repeat(MAX_LINE - 64));
+    b.send(h, upload.clone()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let lines = loop {
+        let lines: Vec<String> = events.of(h).iter().filter(|e| e["type"] == "line").map(|e| e["line"].as_str().unwrap().to_string()).collect();
+        if lines.len() == 2 {
+            break lines;
+        }
+        assert!(events.of(h).iter().all(|e| e["type"] != "closed"), "closed early: {:?}", events.of(h).iter().filter(|e| e["type"] != "line").collect::<Vec<_>>());
+        assert!(Instant::now() < deadline, "no large reply");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(lines[0], big);
+    assert_eq!(lines[1], upload.len().to_string());
+    b.close(h);
+    events.assert_closed_once(h);
+    b.shutdown().await;
+    echo.abort();
+    host.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn handles_are_never_reused_after_shutdown() {
+    let (hole, addr) = black_hole();
+    let (first, _, _) = bridge(Mode::Automatic).await;
+    let old = first.connect(&SecretKey::generate().public().to_string(), &[addr.clone()]).unwrap();
+    first.shutdown().await;
+    // A fresh start, as after a web view reload.
+    let (second, events, _) = bridge(Mode::Automatic).await;
+    let new = second.connect(&SecretKey::generate().public().to_string(), &[addr]).unwrap();
+    assert!(new > old, "handle {new} repeats or precedes {old}");
+    // Closing the stale handle must not touch the new connection.
+    second.close(old);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(events.of(new).iter().all(|e| e["type"] != "closed"));
+    assert!(events.of(old).is_empty());
+    second.close(new);
+    events.assert_closed_once(new);
+    second.shutdown().await;
+    drop(hole);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_waits_and_nothing_fires_after() {
     let server = Server::start().await;

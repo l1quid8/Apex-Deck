@@ -43,20 +43,27 @@ pub const PAIR_ALPN: &[u8] = b"apex-deck/pair/1";
 /// The TLS exporter label the pairing transcript binds to.
 pub const PAIR_EKM_LABEL: &[u8] = b"EXPORTER-apex-deck-pair-v1";
 
-/// A daemon session line may be this long (matches the daemon's device frame limit).
-pub const MAX_LINE: usize = 1024 * 1024;
+/// A daemon session line may be this long: the daemon's `DEVICE_MAX_FRAME`
+/// (a test checks they match), so a large snapshot isn't a disconnect.
+pub const MAX_LINE: usize = 8 * 1024 * 1024;
 const PAIR_MAX_LINE: usize = 4 * 1024;
 /// Dial plus the pairing exchange up to `claimed`.
 const DIAL: Duration = Duration::from_secs(20);
 const PAIR_EXCHANGE: Duration = Duration::from_secs(30);
 const ROUTE_POLL: Duration = Duration::from_millis(500);
 
-/// Outbound queue per handle.
+/// Outbound queue per handle: room for one line of the largest size and more.
 const OUT_LINES: usize = 256;
-const OUT_BYTES: usize = 1024 * 1024;
-/// Inbound event queue per handle.
+const OUT_BYTES: usize = 2 * MAX_LINE;
+/// Inbound event queue per handle. A line's event is its JSON text escaped
+/// inside another string, which can nearly double it, so the byte budget
+/// holds two of the largest.
 const IN_EVENTS: usize = 1024;
-const IN_BYTES: usize = 4 * 1024 * 1024;
+const IN_BYTES: usize = 4 * MAX_LINE;
+
+/// Handle numbers come from one counter for the whole process, so a handle
+/// from before a shutdown never names a connection made after it.
+static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 /// Close codes this bridge reports for its own reasons. Codes below 1000
 /// come from the host (`BYE` 0, `NOT_PAIRED` 1, `REVOKED` 2, `PAIR_*` 10–14).
@@ -124,7 +131,6 @@ struct Slot {
 struct Inner {
     sink: RwLock<Option<Sink>>,
     relay: Option<RelayUrl>,
-    next: AtomicU64,
     /// Live handles and whether new ones may be made.
     handles: Mutex<(HashMap<u64, Arc<Slot>>, bool)>,
     endpoint: Mutex<Option<(Mode, Endpoint)>>,
@@ -204,7 +210,6 @@ impl Bridge {
         Bridge(Arc::new(Inner {
             sink: RwLock::new(Some(sink)),
             relay,
-            next: AtomicU64::new(1),
             handles: Mutex::new((HashMap::new(), true)),
             endpoint: Mutex::new(None),
             tasks: TaskTracker::new(),
@@ -285,7 +290,7 @@ impl Bridge {
         if !handles.1 {
             return Err("remote access isn't started".into());
         }
-        let handle = self.0.next.fetch_add(1, Ordering::SeqCst);
+        let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
         let slot = Arc::new(Slot {
             handle,
             dead: Mutex::new(false),
@@ -363,7 +368,7 @@ impl Bridge {
         let slot = self.0.slot(handle).ok_or("no such connection")?;
         let out = slot.out.as_ref().ok_or("that's a pairing attempt, not a connection")?;
         if line.contains('\n') || line.len() > MAX_LINE {
-            return Err("a line can't hold a newline or be over 1 MiB".into());
+            return Err("a line can't hold a newline or be over 8 MiB".into());
         }
         let size = line.len();
         if slot.out_bytes.fetch_add(size, Ordering::SeqCst) + size > OUT_BYTES {
