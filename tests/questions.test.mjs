@@ -86,3 +86,29 @@ test("an open question raises a needs-you flag; next steps never do", () => {
   assert.equal(questionSignal(applyQuestionEvent({}, "t", steps("null", ["Commit"]), 1).t, names), null);
   assert.equal(questionSignal(undefined, names), null);
 });
+
+test("a multi-question ask keeps every answer: single picks move on, the last sends everything", async () => {
+  const { askStart, askPick, askType, askSend } = await import("../src/questions.ts");
+  const questions = [q("Which colour?", ["Red", "Blue"]), q("Which fruits?", ["Apple", "Pear"], true)];
+  let s = askStart(questions);
+  let r = askPick(s, questions, "Blue");
+  assert.equal(r.send, null);
+  s = r.state;
+  assert.equal(s.step, 1);
+  s = askPick(s, questions, "Apple").state;
+  s = askType(s, questions, "Kiwi").state;
+  assert.deepEqual(s.answers, [["Blue"], ["Apple", "Kiwi"]], "multi-select keeps picking; typed answers join the picks");
+  assert.deepEqual(askSend(s, questions), [["Blue"], ["Apple", "Kiwi"]]);
+  const one = [q("DB?", ["SQLite", "Postgres"])];
+  assert.deepEqual(askPick(askStart(one), one, "Postgres").send, [["Postgres"]], "a single plain question sends at once");
+  assert.deepEqual(askType(askStart(one), one, "  MySQL ").send, [["MySQL"]]);
+  assert.equal(askType(askStart(one), one, "   ").send, null, "a blank typed answer does nothing");
+  assert.equal(askSend(askStart(questions), questions), null, "nothing picked: nothing to send");
+});
+
+test("Enter on an empty box sends nothing until an option was reached with the arrows", () => {
+  const view = { kind: "steps", offer: { by: "null", steps: [{ label: "A", prompt: "a" }], pending: false } };
+  assert.deepEqual(formKey("Enter", true, view, -1), { act: "none" });
+  assert.deepEqual(formKey("ArrowDown", true, view, -1), { act: "move", index: 0 });
+  assert.deepEqual(formKey("Enter", true, view, 0), { act: "pick", index: 0 });
+});

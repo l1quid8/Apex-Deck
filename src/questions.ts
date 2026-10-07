@@ -85,9 +85,49 @@ export function formKey(key: string, composerEmpty: boolean, view: FormView, hig
   if (/^[1-9]$/.test(key)) { const index = Number(key) - 1; return index < n ? { act: "pick", index } : { act: "none" }; }
   if (key === "ArrowDown" && n) return { act: "move", index: Math.min(highlighted + 1, n - 1) };
   if (key === "ArrowUp" && highlighted > 0) return { act: "move", index: highlighted - 1 };
-  if (key === "Enter" && n) return { act: "pick", index: highlighted };
+  // Enter picks only an option the arrows reached; a bare Enter sends nothing.
+  if (key === "Enter" && highlighted >= 0 && highlighted < n) return { act: "pick", index: highlighted };
   if (key === "Tab" && view.kind === "steps") return { act: "fill", index: 0 };
   return { act: "none" };
+}
+
+/** Where a person is in answering one ask: which question, and the picks so far for each. */
+export interface AskState { step: number; answers: string[][] }
+/** After a pick: the new state, and the answers to send when the ask is complete. */
+export interface AskMove { state: AskState; send: string[][] | null }
+
+export function askStart(questions: Question[]): AskState {
+  return { step: 0, answers: questions.map(() => []) };
+}
+
+/** Keep `picked` for the current question; a single-select one then moves on, or sends after the last. */
+function settle(state: AskState, questions: Question[], picked: string[]): AskMove {
+  const answers = state.answers.map((a, i) => (i === state.step ? picked : a));
+  const q = questions[state.step];
+  if (q?.multi_select) return { state: { ...state, answers }, send: null };
+  if (state.step < questions.length - 1) return { state: { step: state.step + 1, answers }, send: null };
+  return { state: { ...state, answers }, send: answers };
+}
+
+/** Pick an option: toggled on a multi-select question, chosen on a single one. */
+export function askPick(state: AskState, questions: Question[], label: string): AskMove {
+  const chosen = state.answers[state.step] ?? [];
+  const q = questions[state.step];
+  return settle(state, questions, q?.multi_select ? (chosen.includes(label) ? chosen.filter((x) => x !== label) : [...chosen, label]) : [label]);
+}
+
+/** A typed answer: added to a multi-select question's picks, or the answer to a single one. Blank text does nothing. */
+export function askType(state: AskState, questions: Question[], typed: string): AskMove {
+  const text = typed.trim();
+  if (!text) return { state, send: null };
+  const chosen = state.answers[state.step] ?? [];
+  return settle(state, questions, questions[state.step]?.multi_select ? [...chosen.filter((x) => x !== text), text] : [text]);
+}
+
+/** Next or Send on a multi-select question. Nothing picked: nothing happens. */
+export function askSend(state: AskState, questions: Question[]): string[][] | null {
+  if (!state.answers[state.step]?.length) return null;
+  return state.step === questions.length - 1 ? state.answers : null;
 }
 
 /** An answer as a short line: picks joined by ", ", questions by " · ". */

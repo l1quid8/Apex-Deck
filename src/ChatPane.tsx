@@ -626,7 +626,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // The form above the composer: a bot's question, or next steps after a reply.
   const questionState = useSyncExternalStore(subscribeQuestions, questionSnapshot);
   const form = formView(questionState[pane.id]);
-  const [highlighted, setHighlighted] = useState(0);
+  const [highlighted, setHighlighted] = useState(-1);
   const [formFolded, setFormFolded] = useState(false);
   const [formNotice, setFormNotice] = useState<string | null>(null);
   /** What the person answered each waiting bot, shown in its turn until it finishes. */
@@ -634,7 +634,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const answeredHere = useRef<string | null>(null);
   const shownForm = useRef<FormView>(form);
   const formKeyId = form.kind === "question" ? form.ask.request : form.kind === "steps" ? `steps:${form.offer.steps.map((step) => step.prompt).join("|")}` : form.kind;
-  useEffect(() => { setHighlighted(0); setFormFolded(false); }, [formKeyId]);
+  useEffect(() => { setHighlighted(-1); setFormFolded(false); }, [formKeyId]);
   useEffect(() => { shownForm.current = form; });
   const flashForm = (line: string) => { setFormNotice(line); setTimeout(() => setFormNotice((now) => (now === line ? null : now)), 3500); };
   const field = useRef<HTMLDivElement>(null);
@@ -2829,7 +2829,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           onSelect={e => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
             if (composerMenu.current?.key(e)) return;
-            if (!e.metaKey && !e.ctrlKey && !e.altKey && formKeys(e.key)) { e.preventDefault(); return; }
+            if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && formKeys(e.key)) { e.preventDefault(); return; }
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); toggleTldr(); return; }
             // Esc stops every bot and keeps your draft, like Claude Code and Codex.
             if (e.key === "Escape" && busy) { e.preventDefault(); void turnQueue.halt(); return; }

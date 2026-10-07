@@ -3,7 +3,7 @@
 // the desktop chat and the phone.
 
 import { useState } from "react";
-import { answerText, type FormView } from "./questions";
+import { answerText, askPick, askSend, askStart, askType, type AskMove, type FormView } from "./questions";
 import type { NextStep } from "./types";
 
 export interface QuestionFormProps {
@@ -54,29 +54,26 @@ export function QuestionForm(props: QuestionFormProps) {
 
 function Asking(props: QuestionFormProps & { view: Extract<FormView, { kind: "question" }>; who: string }) {
   const { ask, position, of } = props.view;
-  const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<string[][]>(() => ask.questions.map(() => []));
+  const [ask_, setAsk] = useState(() => askStart(ask.questions));
   const [other, setOther] = useState("");
+  const { step, answers } = ask_;
   const q = ask.questions[step];
   if (!q) return null;
   const last = step === ask.questions.length - 1;
   const chosen = answers[step] ?? [];
-  // A finished question moves on, or sends everything after the last one.
-  const advance = (next: string[][]) => {
-    if (!next[step]?.length) return;
-    setOther("");
-    if (last) props.onAnswer(ask.request, next); else setStep(step + 1);
+  // Keep the move; a finished ask goes to the bot.
+  const take = (move: AskMove) => {
+    if (move.state.step !== step) setOther("");
+    setAsk(move.state);
+    if (move.send) props.onAnswer(ask.request, move.send);
   };
-  const withPicks = (picked: string[]) => answers.map((a, i) => (i === step ? picked : a));
-  const pick = (label: string) => {
-    if (!q.multi_select) return advance(withPicks([label]));
-    setAnswers(withPicks(chosen.includes(label) ? chosen.filter((x) => x !== label) : [...chosen, label]));
-  };
-  const typed = () => {
-    const text = other.trim();
-    if (!text) return;
-    if (q.multi_select) { setAnswers(withPicks([...chosen.filter((x) => x !== text), text])); setOther(""); }
-    else advance(withPicks([text]));
+  const pick = (label: string) => take(askPick(ask_, ask.questions, label));
+  const typed = () => { take(askType(ask_, ask.questions, other)); if (q.multi_select) setOther(""); };
+  const next = () => {
+    if (!chosen.length) return;
+    const send = askSend(ask_, ask.questions);
+    if (send) props.onAnswer(ask.request, send);
+    else { setOther(""); setAsk({ ...ask_, step: step + 1 }); }
   };
   return (
     <div className={`qform qform-ask${props.phone ? " phone" : ""}`} role="group" aria-label={`${props.who} asks`}>
@@ -108,8 +105,8 @@ function Asking(props: QuestionFormProps & { view: Extract<FormView, { kind: "qu
       </ol>
       {(step > 0 || q.multi_select || chosen.length > 0) && (
         <div className="qform-foot">
-          {step > 0 && <button type="button" className="ghost small" onClick={() => setStep(step - 1)}>Back</button>}
-          {q.multi_select && <button type="button" className="primary small" disabled={!chosen.length} onClick={() => advance(answers)}>{last ? "Send" : "Next"}</button>}
+          {step > 0 && <button type="button" className="ghost small" onClick={() => setAsk({ ...ask_, step: step - 1 })}>Back</button>}
+          {q.multi_select && <button type="button" className="primary small" disabled={!chosen.length} onClick={next}>{last ? "Send" : "Next"}</button>}
           {chosen.length > 0 && <span className="qform-so-far">{answerText([chosen])}</span>}
         </div>
       )}
