@@ -37,6 +37,7 @@ import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
 import { Avatar, type Refills } from "./Avatar";
 import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, tokenLine, windowLabel, type Levels } from "./battery";
+import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
 import { afterRound, type Attention, type Signal } from "./attention";
@@ -126,6 +127,8 @@ interface Props {
   newBotAccess?: Access;
   /** Settings › Confirm before steering. A thread can override it. */
   confirmSteer?: boolean;
+  /** What the bot chips show (Settings). */
+  chipParts?: ChipParts;
   /** "Always" in the steer prompt turns the setting off everywhere. */
   onConfirmSteer?: (confirm: boolean) => void;
   details?: DetailsHost;
@@ -224,7 +227,6 @@ export const PRESETS: Preset[] = [
   { key: "scripted", label: "Scripted (no model, for testing)", efforts: [] },
 ];
 
-const AGENT_LABEL: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI", grok: "Grok" };
 
 interface Draft {
   appearance?: AgentAppearance;
@@ -338,14 +340,7 @@ interface ContextFill {
   window: number;
 }
 
-function describe(config: ParticipantConfig): string {
-  const b = config.backend;
-  const effort = config.effort ? ` · ${config.effort}` : "";
-  if (b.kind === "open_ai_compatible") return `API · ${b.model}${effort}`;
-  if (b.kind === "agent") return `${AGENT_LABEL[b.tool]} · ${b.model ?? "default model"}${effort}${config.access === "ask" ? " · asks first" : ""}`;
-  if (b.kind === "cli") return `Command · ${b.program}`;
-  return "Scripted";
-}
+const ALL_PARTS: ChipParts = { tool: true, effort: true, usage: true };
 
 /** The two scripted bots of the sample thread. */
 const SAMPLE_BOTS: ParticipantConfig[] = [
@@ -396,7 +391,7 @@ function fitHead(head: HTMLElement) {
   head.toggleAttribute("data-flag-hidden", Boolean(head.querySelector(".flag")) && head.scrollWidth > head.clientWidth);
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, profileMode = false, details }: Props) {
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -620,6 +615,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** Where the room was last opened, to tell a move to another machine or folder. */
   const place = useRef<{ backend: Backend; cwd: string } | null>(null);
   const [tldr, setTldr] = useState(() => loadTldr(pane.id));
+  const [folded, setFolded] = useState(() => loadFolded(pane.id));
+  const toggleFolded = () => setFolded((on) => { saveFolded(pane.id, !on); return !on; });
   const toggleTldr = () => setTldr((on) => { saveTldr(pane.id, !on); return !on; });
   const field = useRef<HTMLDivElement>(null);
   // A very narrow box puts the text on its own line, with +, TL;DR and Send under it.
@@ -2310,7 +2307,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <Avatar seed={appearance(p.id).seed} color={color(p.id)} levels={levels} refills={refillsFor(p.id)} working={Boolean(working[p.id]) && !asks[p.id]?.length} />
         <div className="details-bot-copy">
           <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
-          <span className="muted">{describe(p).replace(" · asks first", "")} · {accessLabel(p.access)}</span>
+          <span className="muted">{chipDescription(p, ALL_PARTS).replace(" · asks first", "")} · {accessLabel(p.access)}</span>
           {(levels.context !== null || levels.plan !== null) && <span className="bot-meters">{meter("ctx", levels.context)}{meter("plan", levels.plan)}</span>}
         </div>
         <span className="pane-menu-wrap">
@@ -2362,9 +2359,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** The bots the message goes to, as the room last answered. */
   const lit = new Set(serverTargets);
   const botChips = (
-    <div ref={chipRow} className="chips composer-bots">
+    <div ref={chipRow} className={`chips composer-bots${folded ? " folded" : ""}`}>
       {participants.map((p) => {
         const levels = levelsFor(p.id);
+        const shown = levelsShown(levels, chipParts, isLow);
         return (
         <span
           className="chip-wrap"
@@ -2388,12 +2386,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 {pendingSettings[p.id] && <span className="settings-pending" role="status" aria-label="Settings pending for next reply" title="Settings apply to the next reply" />}
                 {queued.some(item => item.to.includes(p.id)) && <span className="chip-meta chip-queued" title="Messages waiting for this bot">{queued.filter(item => item.to.includes(p.id)).length}<span className="chip-queued-word"> queued</span></span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
-                <span className="chip-meta chip-description">{describe(p)}</span>
-                {(levels.context !== null || levels.plan !== null) && (
+                <span className="chip-meta chip-description">{chipDescription(p, chipParts)}</span>
+                {(shown.context !== null || shown.plan !== null) && (
                   <span className="chip-meta chip-levels">
-                    {levels.context !== null && <span title="Context left">ctx {percent(levels.context)}%{isLow(levels.context) && <span className="usage-low"> low</span>}</span>}
-                    {levels.context !== null && levels.plan !== null && <span className="chip-sep" aria-hidden="true">·</span>}
-                    {levels.plan !== null && <span title="Plan left">plan {percent(levels.plan)}%{isLow(levels.plan) && <span className="usage-low"> low</span>}</span>}
+                    {shown.context !== null && <span title="Context left">ctx {percent(shown.context)}%{isLow(shown.context) && <span className="usage-low"> low</span>}</span>}
+                    {shown.context !== null && shown.plan !== null && <span className="chip-sep" aria-hidden="true">·</span>}
+                    {shown.plan !== null && <span title="Plan left">plan {percent(shown.plan)}%{isLow(shown.plan) && <span className="usage-low"> low</span>}</span>}
                   </span>
                 )}
               </button>
@@ -2409,6 +2407,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <PersonPlus /><span className="chip-add-label">Add bot</span>
           </button>
         </span>
+      )}
+      {participants.length > 0 && !profileMode && (
+        <button type="button" className="chips-fold" aria-pressed={folded} aria-label={folded ? "Show bot details" : "Fold bots to avatars"} title={folded ? "Show bot details" : "Fold bots to avatars"}
+          onPointerDown={(event) => event.preventDefault()} onClick={toggleFolded}>{folded ? "›" : "‹"}</button>
       )}
     </div>
   );
@@ -2447,7 +2449,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </div>}
         {participants.map((p) => <article className="agent-card" key={p.id}>
           <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="lg" />
-          <div className="agent-card-copy"><h2>{p.display_name}</h2><p className="muted">{describe(p)}</p><p>{p.persona || "No brief added yet."}</p><span className="hint">@{p.id} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
+          <div className="agent-card-copy"><h2>{p.display_name}</h2><p className="muted">{chipDescription(p, ALL_PARTS)}</p><p>{p.persona || "No brief added yet."}</p><span className="hint">@{p.id} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
           <div className="agent-card-actions"><button onClick={() => startEditing(p)}>Edit</button><button className="ghost" onClick={() => removeParticipant(p.id)} aria-label={`Delete agent ${p.display_name}`}>Delete</button></div>
         </article>)}
       </div>}

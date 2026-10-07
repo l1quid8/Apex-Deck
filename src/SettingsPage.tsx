@@ -198,6 +198,16 @@ function Threads({ settings, onChange }: { settings: AppSettings; onChange: (s: 
     <Row label="Confirm before steering" note="Steering stops a bot mid-turn. Threads can override this in Thread details.">
       <input type="checkbox" aria-label="Confirm before steering" checked={settings.confirmSteer} onChange={(e) => onChange({ ...settings, confirmSteer: e.target.checked })} />
     </Row>
+    <div className="settings-subhead"><h3>Bot chips</h3><p>What each bot's chip under the message box shows. Its name, model and "asks first" always show.</p></div>
+    <Row label="Show tool name" note="Claude Code, Codex, API.">
+      <input type="checkbox" aria-label="Show tool name" checked={settings.botChips.tool} onChange={(e) => onChange({ ...settings, botChips: { ...settings.botChips, tool: e.target.checked } })} />
+    </Row>
+    <Row label="Show effort" note="How hard the bot thinks, such as high.">
+      <input type="checkbox" aria-label="Show effort" checked={settings.botChips.effort} onChange={(e) => onChange({ ...settings, botChips: { ...settings.botChips, effort: e.target.checked } })} />
+    </Row>
+    <Row label="Show usage" note="Context and plan left. A bot running low still shows its warning.">
+      <input type="checkbox" aria-label="Show usage" checked={settings.botChips.usage} onChange={(e) => onChange({ ...settings, botChips: { ...settings.botChips, usage: e.target.checked } })} />
+    </Row>
   </div>;
 }
 

@@ -4,6 +4,7 @@
 // file loses only the values that make no sense, never the rest.
 
 import type { Access, ParticipantConfig, RoomOptions, TurnPolicy } from "./types";
+import type { ChipParts } from "./botChip";
 
 export interface DecisionSettings { enabled: boolean; provider: "jev" | "openrouter" | "cloudflare"; accountId: string; }
 export const DEFAULT_DECISION: DecisionSettings = { enabled: false, provider: "jev", accountId: "" };
@@ -22,6 +23,8 @@ export interface AppSettings {
   preview: { openExternally: string[] };
   /** Ask before a steer interrupts a bot mid-turn. A thread can override it. */
   confirmSteer: boolean;
+  /** What the bot chips under the message box show. */
+  botChips: ChipParts;
 }
 
 export const SCROLLBACK_CHOICES = [1000, 5000, 10000, 50000];
@@ -36,6 +39,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminal: { fontSize: 13, scrollback: 5000 },
   preview: { openExternally: [] },
   confirmSteer: true,
+  botChips: { tool: true, effort: true, usage: true },
 };
 
 const POLICIES: TurnPolicy[] = ["mention", "everyone", "round_robin"];
@@ -52,6 +56,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
   const saved = record(raw);
   const thread = record(saved.newThread);
   const terminal = record(saved.terminal);
+  const chips = record(saved.botChips);
   const d = DEFAULT_SETTINGS;
   return {
     ...(saved.decision ? { decision: {
@@ -74,6 +79,11 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       openExternally: [...new Set((strings(record(saved.preview).openExternally) ?? []).map((host) => host.trim().toLowerCase()).filter(Boolean))],
     },
     confirmSteer: typeof saved.confirmSteer === "boolean" ? saved.confirmSteer : d.confirmSteer,
+    botChips: {
+      tool: typeof chips.tool === "boolean" ? chips.tool : d.botChips.tool,
+      effort: typeof chips.effort === "boolean" ? chips.effort : d.botChips.effort,
+      usage: typeof chips.usage === "boolean" ? chips.usage : d.botChips.usage,
+    },
   };
 }
 

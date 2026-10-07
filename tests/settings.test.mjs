@@ -8,7 +8,7 @@ test("no settings file gives the defaults", () => {
 });
 
 test("saved values are kept", () => {
-  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false };
+  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false, botChips: { tool: false, effort: true, usage: false } };
   assert.deepEqual(readSettings(saved), saved);
 });
 
@@ -43,4 +43,10 @@ test("decision settings default off and reject unsupported providers", () => {
   const read = readSettings({ decision: { enabled: true, provider: "evil", accountId: 4, apiKey: "must not persist" } });
   assert.deepEqual(read.decision, { enabled: false, provider: "jev", accountId: "" });
   assert.deepEqual(readSettings({ decision: { enabled: true, provider: "openrouter", accountId: "" } }).decision, { enabled: true, provider: "openrouter", accountId: "" });
+});
+
+test("bot chips show everything until a part is turned off", () => {
+  assert.deepEqual(DEFAULT_SETTINGS.botChips, { tool: true, effort: true, usage: true });
+  assert.deepEqual(readSettings({ botChips: { tool: false } }).botChips, { tool: false, effort: true, usage: true });
+  assert.deepEqual(readSettings({ botChips: { tool: "no", usage: 0 } }).botChips, { tool: true, effort: true, usage: true }, "only true or false count");
 });
