@@ -208,8 +208,8 @@ export function removeQuestion(name: string, counts: RemoveCounts): { title: str
 
 /** The sidebar's Remove project… always asks: what ends now, if anything, and that nothing is deleted. */
 export function removeProjectQuestion(name: string, counts: RemoveCounts): { title: string; body: string; action: string } {
-  const kept = counts.threads === 0 ? "Its folder isn't deleted."
-    : `Its folder isn't deleted, and its ${counts.threads === 1 ? "thread stays" : `${counts.threads} threads stay`} saved; Undo or Removed › Show brings it back.`;
+  const kept = counts.threads === 0 ? "Its folder on disk isn't deleted."
+    : `Its folder on disk isn't deleted. Its ${counts.threads === 1 ? "thread leaves" : `${counts.threads} threads leave`} the app with it; Undo brings them back for a few seconds.`;
   return { title: `Remove ${name} from the list?`, body: [endingNow(counts), kept].filter(Boolean).join(" "), action: "Remove project" };
 }
 

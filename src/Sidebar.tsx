@@ -44,12 +44,11 @@ export interface ProjectSidebarProps {
   onNewIn(workspace: Workspace): void;
   onAddWorkspace(hostId: string): Promise<void>;
   onManageHosts(): void;
-  onBringBack(id: string): void;
   onRestore(pane: Pane): void;
   style?: CSSProperties;
 }
 
-type OpenMenu = { kind: "pane" | "project" | "archived" | "removed"; id: string; anchor: MenuAnchor; opener: HTMLElement | null };
+type OpenMenu = { kind: "pane" | "project" | "archived"; id: string; anchor: MenuAnchor; opener: HTMLElement | null };
 
 const noStore = { subscribe: () => () => {}, get: () => null };
 const DOT_WORDS = { on: "Connected", wait: "Connecting", off: "Can't be reached", idle: "Not connected yet" } as const;
@@ -80,7 +79,6 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const { backend, section, panes, workspaces, deleting, hosts } = props;
   const lists = useMemo(() => sidebarSections(panes, workspaces, section, deleting), [panes, workspaces, section, deleting]);
   const tints = useMemo(() => hostTints(hosts.filter((h) => h.remote).map((h) => h.id)), [hosts]);
-  const hidden = workspaces.filter((w) => w.hidden);
   const [menu, setMenu] = useState<OpenMenu | null>(null);
   const [projectsOpen, setProjectsOpen] = useState(true);
   const hover = useHoverCard();
@@ -200,10 +198,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     if (!menu) return [];
     if (menu.kind === "pane") { const pane = panes.find((p) => p.id === menu.id); return pane ? props.paneMenu(pane) : []; }
     if (menu.kind === "project") { const w = workspaces.find((x) => x.id === menu.id); return w ? props.projectMenu(w) : []; }
-    if (menu.kind === "archived") {
-      return lists.archived.map((pane) => ({ key: pane.id, label: pane.title, side: workspaces.find((w) => w.id === pane.workspaceId)?.name ?? "", onSelect: () => props.onRestore(pane) }));
-    }
-    return hidden.map((w) => ({ key: w.id, label: w.name, side: workspaceHost(w) === "local" ? "" : hostName(workspaceHost(w)), onSelect: () => props.onBringBack(w.id) }));
+    return lists.archived.map((pane) => ({ key: pane.id, label: pane.title, side: workspaces.find((w) => w.id === pane.workspaceId)?.name ?? "", onSelect: () => props.onRestore(pane) }));
   };
 
   const card = () => {
@@ -247,20 +242,16 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         <div className="rail-sec" data-sec="recents">Recents</div>
         {lists.recents.map((pane) => row(pane, "recent"))}
       </>}
-      {(lists.archived.length > 0 || hidden.length > 0) && (
+      {lists.archived.length > 0 && (
         <div className="rail-foot">
-          {lists.archived.length > 0 && <span className="rail-foot-item">
+          <span className="rail-foot-item">
             <span>Archived ({lists.archived.length})</span><span aria-hidden="true">·</span>
             <button className="ghost" aria-label="Show archived threads" aria-haspopup="menu" aria-expanded={menu?.kind === "archived"} onClick={(event) => toggle("archived", "archived", event.currentTarget)}>Show</button>
-          </span>}
-          {hidden.length > 0 && <span className="rail-foot-item">
-            <span>Removed ({hidden.length})</span><span aria-hidden="true">·</span>
-            <button className="ghost" aria-label="Show removed projects" aria-haspopup="menu" aria-expanded={menu?.kind === "removed"} onClick={(event) => toggle("removed", "removed", event.currentTarget)}>Show</button>
-          </span>}
+          </span>
         </div>
       )}
       {menu && <MenuList id={`${menu.kind}:${menu.id}`} entries={menuEntries()} anchor={menu.anchor} opener={menu.opener}
-        label={menu.kind === "archived" ? "Archived threads" : menu.kind === "removed" ? "Removed projects" : undefined} onClose={() => setMenu(null)} />}
+        label={menu.kind === "archived" ? "Archived threads" : undefined} onClose={() => setMenu(null)} />}
       {card()}
     </aside>
   );

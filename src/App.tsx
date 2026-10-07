@@ -486,13 +486,6 @@ export function App() {
   const shownList = shownWorkspaces(workspaces);
   const current = shownList.find((w) => w.id === activeWorkspace) ?? null;
 
-  /** Put a removed workspace back on the list and show it. Its threads come back closed. */
-  const bringBack = (id: string) => {
-    setWorkspaces((list) => setHidden(list, id, false));
-    setActiveWorkspace(id);
-    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-workspace="${id}"]`)?.focus());
-  };
-
   const hostNameFor = (hostId: string) => { try { return backend?.machines?.connection(hostId).get().name ?? hostId; } catch { return hostId; } };
   const backendFor = (pane: Pane): Backend => {
     if (!backend) throw new Error("The backend is not ready yet.");
@@ -514,8 +507,8 @@ export function App() {
       update: setWorkspaces, select: setActiveWorkspace, id: newId("ws"), nameOf: folderName, hostId });
   };
 
-  /** Take a workspace off the list. Nothing is deleted: its threads stay saved
-   *  and closed, and its terminals end. Asks first only while something in it runs. */
+  /** Take a workspace out of the app, with a few seconds to Undo. Its folder
+   *  on disk is never deleted, and its terminals end. Asks first only while something in it runs. */
   const removeWorkspace = (workspace: Workspace, always = false) => {
     const own = panes.filter((p) => p.workspaceId === workspace.id && !deleting.has(p.id));
     const counts = removeCounts(
@@ -538,6 +531,14 @@ export function App() {
     if (asked) setQuestion({ ...asked, onConfirm: remove });
     else remove();
   };
+
+  // A removed project leaves the app for good once its Undo runs out. Its folder on disk is never touched.
+  useEffect(() => {
+    const gone = new Set(workspaces.filter((w) => w.hidden && w.id !== undoableRemove?.id).map((w) => w.id));
+    if (gone.size === 0) return;
+    setWorkspaces((list) => list.filter((w) => !gone.has(w.id)));
+    setPanes((list) => list.filter((p) => !gone.has(p.workspaceId)));
+  }, [workspaces, undoableRemove]);
 
   /** Undo a removal: the row and its threads come back. Its terminals can't. */
   const undoRemove = () => {
@@ -1332,7 +1333,6 @@ export function App() {
             onNewIn={newIn}
             onAddWorkspace={(hostId) => addWorkspace(undefined, hostId)}
             onManageHosts={() => setSettingsOpen("hosts")}
-            onBringBack={bringBack}
             onRestore={restoreArchived}
             style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}
           />
