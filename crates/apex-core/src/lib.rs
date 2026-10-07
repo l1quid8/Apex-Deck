@@ -34,3 +34,7 @@ pub use view::{render_prompt, render_view, render_view_after, system_prompt, Rol
 pub mod server_request;
 
 pub mod decision;
+pub mod next_steps;
+pub mod question;
+pub use next_steps::NextStep;
+pub use question::{Answer, Question, QuestionEnd, QuestionOption};

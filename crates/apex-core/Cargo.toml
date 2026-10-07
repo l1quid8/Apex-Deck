@@ -11,6 +11,7 @@ async-trait.workspace = true
 futures.workspace = true
 futures-timer = "3"
 serde.workspace = true
+unicode-general-category = "1"
 
 [dev-dependencies]
 futures.workspace = true
