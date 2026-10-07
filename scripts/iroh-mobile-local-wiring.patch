@@ -1,0 +1,77 @@
+diff --git a/iphone/App/App.xcodeproj/project.pbxproj b/iphone/App/App.xcodeproj/project.pbxproj
+index 1ba61c7..57322e7 100644
+--- a/iphone/App/App.xcodeproj/project.pbxproj
++++ b/iphone/App/App.xcodeproj/project.pbxproj
+@@ -7,6 +7,7 @@
+ 	objects = {
+ 
+ /* Begin PBXBuildFile section */
++		A1E000000000000000000001 /* IrohSpike in Frameworks */ = {isa = PBXBuildFile; productRef = A1E000000000000000000002 /* IrohSpike */; };
+ 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
+ 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
+ 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
+@@ -38,6 +39,7 @@
+ 			buildActionMask = 2147483647;
+ 			files = (
+ 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
++				A1E000000000000000000001 /* IrohSpike in Frameworks */,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 		};
+@@ -95,6 +97,7 @@
+ 			name = App;
+ 			packageProductDependencies = (
+ 				4D22ABE82AF431CB00220026 /* CapApp-SPM */,
++				A1E000000000000000000002 /* IrohSpike */,
+ 			);
+ 			productName = App;
+ 			productReference = 504EC3041FED79650016851F /* App.app */;
+@@ -127,6 +130,7 @@
+ 			mainGroup = 504EC2FB1FED79650016851F;
+ 			packageReferences = (
+ 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
++				A1E000000000000000000003 /* IrohSpike */,
+ 			);
+ 			productRefGroup = 504EC3051FED79650016851F /* Products */;
+ 			projectDirPath = "";
+@@ -364,6 +368,7 @@
+ /* End XCConfigurationList section */
+ 
+ /* Begin XCLocalSwiftPackageReference section */
++		A1E000000000000000000003 /* IrohSpike */ = {isa = XCLocalSwiftPackageReference; relativePath = "../IrohSpike"; };
+ 		D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */ = {
+ 			isa = XCLocalSwiftPackageReference;
+ 			relativePath = "CapApp-SPM";
+@@ -371,6 +376,7 @@
+ /* End XCLocalSwiftPackageReference section */
+ 
+ /* Begin XCSwiftPackageProductDependency section */
++		A1E000000000000000000002 /* IrohSpike */ = {isa = XCSwiftPackageProductDependency; package = A1E000000000000000000003; productName = IrohSpike; };
+ 		4D22ABE82AF431CB00220026 /* CapApp-SPM */ = {
+ 			isa = XCSwiftPackageProductDependency;
+ 			package = D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */;
+diff --git a/iphone/App/App/SceneDelegate.swift b/iphone/App/App/SceneDelegate.swift
+index f352e1e..29c4c46 100644
+--- a/iphone/App/App/SceneDelegate.swift
++++ b/iphone/App/App/SceneDelegate.swift
+@@ -1,6 +1,11 @@
+ import UIKit
+ import Capacitor
+ 
++#if !DEBUG
++#error("Local iroh spike wiring must not be archived or built in Release")
++#endif
++import IrohSpike
++
+ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+     var window: UIWindow?
+ 
+@@ -8,7 +13,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+         guard let windowScene = scene as? UIWindowScene else { return }
+ 
+         window = UIWindow(windowScene: windowScene)
+-        window?.rootViewController = CAPBridgeViewController()
++        window?.rootViewController = SpikeBridgeViewController()
+         window?.makeKeyAndVisible()
+ 
+         SceneDelegateProxy.shared.scene(scene, willConnectTo: session, options: connectionOptions)
