@@ -169,6 +169,9 @@ impl Devices {
         let mut next = current.clone();
         let result = change(&mut next)?;
         let text = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
+        if let Some(folder) = self.path.parent() {
+            std::fs::create_dir_all(folder).map_err(|e| format!("could not create {}: {e}", folder.display()))?;
+        }
         files::write_private(&self.path, &format!("{text}\n"))?;
         *state = Ok(next);
         Ok(result)
