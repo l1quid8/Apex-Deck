@@ -1092,6 +1092,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     } catch (error) { notify(`Could not remove the bot: ${String(error)}`, "error"); return; }
     if (editing === id) closeForm(draft.preset);
   };
+  /** Kick: take a bot out from its chip at once, with Undo in the thread instead of a confirm box. */
+  const kick = async (p: ParticipantConfig) => {
+    setCard(null);
+    if (quickSettings?.id === p.id) setQuickSettings(null);
+    try { await backend.roomRemoveParticipant(pane.id, p.id); }
+    catch (error) { notify(`Could not kick ${p.display_name}: ${String(error)}`, "error"); return; }
+    setParticipants((list) => list.filter((q) => q.id !== p.id));
+    notify(`${p.display_name} was kicked.`, "info", { kind: "rejoin", config: p });
+  };
 
   /** Counts finished saves, so the recipients are asked again once the room has the new Who answers. */
   const [optionsSaved, setOptionsSaved] = useState(0);
@@ -1190,6 +1199,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   })), usedKeys);
   /** Try again or Let them answer: run those bots once on the transcript as it is. */
   const noticeButton = (key: number, action: NoticeAction) => {
+    if (action.kind === "rejoin") {
+      if (!liveKeys.has(key) || participants.some((p) => p.id === action.config.id)) return null;
+      return <button type="button" className="ghost small" onClick={() => {
+        if (usedActions.current.has(key)) return;
+        usedActions.current.add(key);
+        setUsedKeys(new Set(usedActions.current));
+        backend.roomAddParticipant(pane.id, action.config)
+          .then(() => setParticipants((list) => list.some((p) => p.id === action.config.id) ? list : [...list, action.config]))
+          .catch((error) => notify(`Could not bring ${action.config.display_name} back: ${String(error)}`, "error"));
+      }}>Undo</button>;
+    }
     const ids = stillHere(action, participants.map((p) => p.id));
     if (ids.length === 0 || !liveKeys.has(key)) return null;
     const label = action.kind === "retry" ? "Try again" : letLabel(ids.map((id) => names.get(id) ?? id));
@@ -2395,7 +2415,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   </span>
                 )}
               </button>
-
+              {!profileMode && <button type="button" className="chip-kick" disabled={!ready} aria-label={`Kick ${p.display_name}`} title={`Kick ${p.display_name}`} onPointerDown={(event) => event.preventDefault()} onClick={() => kick(p)}>×</button>}
             </span>
         {card === p.id && !quickSettings && usageCard(p, cardAt)}
         </span>

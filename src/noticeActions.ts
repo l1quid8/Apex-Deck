@@ -3,12 +3,12 @@
 // the transcript as it is (roomTurn) and post nothing. Plain functions so
 // the rules can be tested without the interface.
 
-import type { Message } from "./types";
+import type { Message, ParticipantConfig } from "./types";
 import { joinNames } from "./composerStatus.ts";
 import { mentionTarget } from "./recipients.ts";
 
 /** What a notice's button does. */
-export type NoticeAction = { kind: "retry"; id: string } | { kind: "let"; ids: string[] };
+export type NoticeAction = { kind: "retry"; id: string } | { kind: "let"; ids: string[] } | { kind: "rejoin"; config: ParticipantConfig };
 
 /** `failed` events from the app's own storage use this id; there is no bot to try again. */
 const STORAGE = "storage";
@@ -20,6 +20,7 @@ export function retryFor(failedId: string, roster: string[]): NoticeAction | nul
 
 /** The bots an action would run that are still in the room. With none left, no button shows. */
 export function stillHere(action: NoticeAction, roster: string[]): string[] {
+  if (action.kind === "rejoin") return [];
   return (action.kind === "retry" ? [action.id] : action.ids).filter((id) => roster.includes(id));
 }
 

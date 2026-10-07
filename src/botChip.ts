@@ -15,8 +15,8 @@ export function chipDescription(config: ParticipantConfig, parts: ChipParts): st
   const effort = parts.effort && config.effort ? config.effort : null;
   const asks = config.access === "ask" ? "asks first" : null;
   const join = (...bits: (string | null)[]) => bits.filter(Boolean).join(" · ");
-  if (b.kind === "open_ai_compatible") return join(parts.tool ? "API" : null, b.model, effort);
-  if (b.kind === "agent") return join(parts.tool ? AGENT_LABEL[b.tool] : null, b.model ?? "default model", effort, asks);
+  if (b.kind === "open_ai_compatible") return join(b.model, effort);
+  if (b.kind === "agent") return join(b.model ?? "default model", effort, asks);
   if (b.kind === "cli") return `Command · ${b.program}`;
   return "Scripted";
 }

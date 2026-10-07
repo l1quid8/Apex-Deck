@@ -2813,3 +2813,8 @@ button.mod-status:hover { color: var(--text); }
 .composer-box.with-tray > .tray { order: 2; flex-basis: 100%; margin: 0; padding: 2px 0 3px; border: 0; border-radius: 0; background: none; }
 .composer-box.with-tray > .tray .tray-chip { color: var(--muted); padding: 2px 8px; }
 .composer-box.with-tray > .tray .tray-chip:hover, .composer-box.with-tray > .tray .tray-chip.on { color: var(--text); }
+
+/* Kick: a quiet × at the chip's right end that shows on hover or keyboard focus. */
+.chip .chip-kick { width: 0; padding: 0; overflow: hidden; opacity: 0; color: var(--muted); font-size: 13px; line-height: 1; transition: opacity .12s, width .12s; }
+.chip-wrap:hover .chip-kick, .chip-wrap:focus-within .chip-kick { width: 16px; padding-right: 4px; opacity: 1; }
+.chip .chip-kick:hover:not(:disabled), .chip .chip-kick:focus-visible { color: var(--text); }
