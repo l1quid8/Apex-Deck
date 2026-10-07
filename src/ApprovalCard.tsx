@@ -93,7 +93,10 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
         {!action.risky && <span className="approval-note">Nothing happens until you choose.</span>}
         {deadline && <span className="approval-deadline">{deadline}</span>}
       </div>
-      <p id={scopeId} className="approval-scope" hidden={!action.risky && !previewing}>{scopeLine(name, action)}</p>
+      {/* The line keeps its space while faded out, so hovering Always allow never resizes the card. */}
+      {(action.risky || choicesFor(action).includes("always")) && (
+        <p id={scopeId} className={`approval-scope${action.risky || previewing ? "" : " faded"}`}>{scopeLine(name, action)}</p>
+      )}
       {error && <p role="alert">{error}</p>}
     </div>
   );

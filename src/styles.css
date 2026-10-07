@@ -1602,7 +1602,9 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   color: var(--muted);
   font-size: 12px;
   line-height: 17px;
+  transition: opacity .12s;
 }
+.approval-scope.faded { opacity: 0; }
 .approval-deadline {
   color: var(--muted);
   font-size: 12px;
