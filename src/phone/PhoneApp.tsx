@@ -1594,6 +1594,29 @@ function ThreadView(props: {
     watch.observe(box);
     return () => watch.disconnect();
   }, []);
+  // The title's second line: the project always shows in full, and the machine shortens into the room left.
+  // When not even 5.5em is left, the machine drops out; tapping the title still names it in "Where this runs".
+  const contextRef = useRef<HTMLParagraphElement>(null);
+  const [machineFits, setMachineFits] = useState(true);
+  useLayoutEffect(() => {
+    const line = contextRef.current;
+    if (!line) return;
+    const fit = () => {
+      const parts = [...line.children] as HTMLElement[];
+      const project = parts.find((part) => part.classList.contains("ph-context-project"));
+      if (!project) return;
+      const style = getComputedStyle(line);
+      const icons = parts.filter((part) => !part.classList.contains("ph-context-project") && !part.classList.contains("ph-context-machine"))
+        .reduce((sum, part) => sum + part.getBoundingClientRect().width, 0);
+      // Three gaps once the machine is in: icon, project, machine, chevron.
+      const room = line.clientWidth - icons - project.scrollWidth - 3 * (parseFloat(style.columnGap) || 0);
+      setMachineFits(room >= 5.5 * parseFloat(style.fontSize));
+    };
+    fit();
+    const watch = new ResizeObserver(fit);
+    watch.observe(line);
+    return () => watch.disconnect();
+  }, [props.project, props.machine, props.started]);
   const lost = cut.filter(([id, part]) => !part.ended && !(id in props.working)).map(([id]) => id);
   const ended = cut.filter(([, part]) => part.ended).map(([id]) => id);
   // The seconds count while anyone is working.
@@ -1615,7 +1638,6 @@ function ThreadView(props: {
   };
   const person = (id: string) => props.participants.find((participant) => participant.id === id) ?? { id, display_name: id, look: legacyAppearance(id) };
   const asking = (id: string) => props.approvals.some((card) => card.id === id);
-  const short = props.project.length > 18 ? `${props.project.slice(0, 7)}…${props.project.slice(-7)}` : props.project;
   const by = (id: string, live = false) => {
     const who = person(id);
     return <div className="ph-by"><Avatar seed={who.look.seed} color={who.look.color} size="sm" working={live && !asking(id)} /><span style={{ color: who.look.color }}>{who.display_name}</span></div>;
@@ -1627,9 +1649,10 @@ function ThreadView(props: {
         {/* Tap the title for project and machine, like the model picker in the ChatGPT app. */}
         <button type="button" className="ph-nav-title" aria-label={`${props.draftThread ? "New thread" : props.title}. ${props.project} on ${props.machine}. Change where this runs`} onClick={() => props.onSheet("where")}>
           <h2>{props.draftThread ? "New thread" : props.title}</h2>
-          <p className="ph-context">
+          <p ref={contextRef} className="ph-context">
             {props.started ? <Lock size={11} /> : props.hostIcon}
-            <span className="ph-ellipsis" title={props.project}>{short}</span><span className="ph-context-machine">· {props.machine}</span>
+            <span className="ph-context-project">{props.project}</span>
+            {machineFits && <span className="ph-context-machine">· {props.machine}</span>}
             <ChevronDown size={12} />
           </p>
         </button>

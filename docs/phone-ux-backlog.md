@@ -114,6 +114,13 @@ Asked for by the human: the desktop's TL;DR pill was missing on the phone. Code:
 1. [x] **TL;DR pill** (open thread, message box) — the desktop's pink/amber pill sits by Send: grey when off, lit with the box's spinning glow when on (still glow, no spin, under Reduce Motion). On asks every bot for a short answer by adding the desktop's hidden TL;DR line to the message; the chat and queued bubbles show the message as typed. One switch per thread, kept on the phone; a new thread's draft carries it into the thread. Messages sent in TL;DR mode from the desktop also show without the line now. Hint: "TL;DR to Null…". Source: human.
    - *Limits:* the phone's switch and the desktop's are separate, as each desktop chat's is. At 320 pt the hint is cut off at the box's edge instead of wrapping.
 
+## Round 7 — done
+
+Asked for by the human: in the open thread's title bar, a long Mac name ("Tyler's Mac Book Pro M3") squeezed the project name to "i…". Code: the `contextRef` measurement in `ThreadView` (`src/phone/PhoneApp.tsx`) and `.ph-context-project`/`.ph-context-machine` in `src/phone/phone.css`.
+
+1. [x] **Project name in full** (open thread, title bar) — the line under the title always shows the whole project name; the old 7…7 middle cut for names over 18 characters is gone. The machine name takes the room left and ends in … when it's too long. When less than 5.5em is left (narrow phones, or the bots folded into the title bar), the machine drops out of the line; tapping the title still names it in "Where this runs". A project longer than the whole line ends in … and the machine drops out. Source: human.
+   - *Confirmed* on the human's iPhone 2026-10-07. Checked at 402, 393 and 320 pt in Chrome's engine; where Safari cuts the machine name differs a little.
+
 ## Open
 
 Candidates Jigga noticed in the round 1 screenshots. Unranked; Null may pick from these or add others.
