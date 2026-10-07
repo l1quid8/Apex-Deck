@@ -7,6 +7,7 @@ pub const USAGE: &str = "\
 usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-stdin-close] [--data-dir PATH]
        apex-daemon --stdio [--attach] [--data-dir PATH]
        apex-daemon data-dir [--data-dir PATH]
+       apex-daemon devices list|add|tier|threads|revoke … [--data-dir PATH]
 
   serve            run the host and listen on a localhost WebSocket and a local socket
   --stdio          speak the protocol on stdin/stdout (for SSH); attaches to a running
@@ -18,6 +19,8 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
   --exit-on-stdin-close
                    with serve: stop when stdin closes (the desktop app holds it open)
   data-dir         print the data folder the daemon would use, and exit
+  devices          list, add, retier or revoke phones allowed to connect from outside;
+                   `apex-daemon devices` alone explains each
   --data-dir PATH  where chats and settings live (default: the desktop app's folder)";
 
 /// What the daemon was asked to do.
@@ -27,6 +30,7 @@ pub enum Action {
     Stdio { attach: bool },
     /// Print the data folder.
     DataDir,
+    Devices(crate::devices_cli::DevicesAction),
     Help,
     Version,
 }
@@ -56,6 +60,20 @@ pub struct Cli {
 
 /// Read the arguments after the program name.
 pub fn parse(args: &[String]) -> Result<Cli, String> {
+    // `devices …` takes words of its own; only --data-dir may come around them.
+    let mut data_dir = None;
+    let mut rest = Vec::new();
+    let mut scan = args.iter();
+    while let Some(arg) = scan.next() {
+        if arg == "--data-dir" {
+            data_dir = Some(PathBuf::from(scan.next().ok_or("--data-dir needs a value")?));
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    if rest.first().map(String::as_str) == Some("devices") {
+        return Ok(Cli { action: Action::Devices(crate::devices_cli::parse(&rest[1..])?), data_dir });
+    }
     let mut serve = false;
     let mut stdio = false;
     let mut print_data_dir = false;
@@ -174,6 +192,14 @@ mod tests {
         assert!(parse(&["data-dir", "serve"]).unwrap_err().contains("data-dir"));
         assert!(parse(&["data-dir", "--attach"]).unwrap_err().contains("--attach"));
         assert!(parse(&["data-dir", "--port", "1"]).unwrap_err().contains("--port"));
+    }
+
+    #[test]
+    fn devices_takes_its_own_words_and_the_data_dir() {
+        let cli = parse(&["--data-dir", "/d", "devices", "tier", "abc", "full"]).unwrap();
+        assert_eq!(cli, Cli { action: Action::Devices(crate::devices_cli::DevicesAction::Tier { id: "abc".into(), tier: crate::devices::Tier::Full }), data_dir: Some(PathBuf::from("/d")) });
+        assert_eq!(parse(&["devices", "list", "--data-dir", "/d"]).unwrap().data_dir, Some(PathBuf::from("/d")));
+        assert!(parse(&["devices"]).unwrap_err().contains("say list"));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 pub mod authority;
 pub mod cli;
 pub mod devices;
+pub mod devices_cli;
 pub mod files;
 pub mod identity;
 pub mod paths;

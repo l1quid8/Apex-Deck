@@ -416,6 +416,12 @@ enum DevicesRequest {
     DevicesRevoke { id: String },
 }
 
+/// Run a `devices_*` request given as `{ "cmd", "args" }`, as the CLI does
+/// when no daemon is running.
+pub fn manage_json(devices: &Devices, request: Value) -> Result<Value, String> {
+    manage(devices, serde_json::from_value(request).map_err(|e| e.to_string())?)
+}
+
 fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
     let value = |v: Result<Device, String>| v.and_then(|d| serde_json::to_value(d).map_err(|e| e.to_string()));
     match request {

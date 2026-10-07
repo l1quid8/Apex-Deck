@@ -1,5 +1,5 @@
 use apex_daemon::cli::{self, Action};
-use apex_daemon::{serve, stdio};
+use apex_daemon::{devices_cli, serve, stdio};
 
 fn main() {
     // Codex runs this executable before each MCP call; see the adapters'
@@ -21,6 +21,7 @@ fn main() {
         Action::DataDir => exit(apex_daemon::paths::host_paths(cli.data_dir).map(|paths| println!("{}", paths.data.display()))),
         Action::Stdio { attach } => exit(stdio::run(cli.data_dir, attach)),
         Action::Serve(options) => exit(serve::run(cli.data_dir, options)),
+        Action::Devices(action) => exit(devices_cli::run(cli.data_dir, action)),
     }
 }
 
