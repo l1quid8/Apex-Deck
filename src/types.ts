@@ -43,6 +43,8 @@ export interface ParticipantConfig {
   access: Access;
   /** How hard the model should think, in the backend's own words. Null leaves its default. */
   effort: string | null;
+  /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */
+  auto_effort?: boolean;
   appearance?: { seed: string; color: string } | null;
 }
 

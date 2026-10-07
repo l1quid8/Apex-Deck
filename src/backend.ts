@@ -28,6 +28,7 @@ export interface Backend {
   /** settings.json, beside the session file; settings.ts reads it. */
   settingsLoad(): Promise<unknown>;
   settingsSave(settings: unknown): Promise<void>;
+  decisionKeyStatus(): Promise<boolean>;
   decisionKeySave(provider: string, key: string): Promise<void>;
   /** A thread's artifacts file, beside the thread; artifacts.ts reads it. Null when there is none. */
   artifactsLoad(room: string): Promise<unknown>;
@@ -523,6 +524,7 @@ function demoBackend(): Backend {
     sessionLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.session.v1") ?? "null"),
     sessionSave: async (session) => { localStorage.setItem("apex-deck.demo.session.v1", JSON.stringify(session)); },
     settingsLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.settings.v1") ?? "null"),
+    decisionKeyStatus: async () => false,
     decisionKeySave: async () => { throw new Error("Credential storage requires a connected host."); },
     settingsSave: async (settings) => { localStorage.setItem("apex-deck.demo.settings.v1", JSON.stringify(settings)); },
     artifactsLoad: async (room) => JSON.parse(localStorage.getItem(`apex-deck.demo.artifacts.${room}`) ?? "null"),

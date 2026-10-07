@@ -9,6 +9,8 @@ use crate::view::ViewTurn;
 pub struct TurnRequest {
     /// Effective workspace access for this turn, enforced by coding adapters.
     pub access: Option<crate::Access>,
+    /// A validated level for this reply only; absent means use saved settings.
+    pub effort_override: Option<String>,
     /// Instructions that tell the model who it is and who else is present.
     pub system: String,
     /// The whole transcript from this participant's point of view.

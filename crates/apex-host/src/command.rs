@@ -23,6 +23,7 @@ pub enum Command {
     SessionSave { session: Value },
     SettingsLoad {},
     SettingsSave { settings: Value },
+    DecisionKeyStatus {},
     DecisionKeySave { provider: String, key: String },
     ArtifactsLoad { room: String },
     ArtifactsSave { room: String, artifacts: Value },
@@ -116,6 +117,10 @@ impl Host {
             SessionSave { session } => reply(self.session_save(session)?),
             SettingsLoad {} => reply(self.settings_load()?),
             SettingsSave { settings } => reply(self.settings_save(settings)?),
+            DecisionKeyStatus {} => {
+                let settings = self.settings_load()?.unwrap_or_default();
+                reply(tokio::task::spawn_blocking(move || crate::decision::key_available(&settings)).await.map_err(|_| "Credential lookup failed")?)
+            }
             DecisionKeySave { provider, key } => reply(crate::decision::save_credential(&provider, &key)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
@@ -211,6 +216,7 @@ mod tests {
 
     #[test]
     fn a_command_without_arguments_may_leave_them_out() {
+        assert!(Command::from_json(json!({ "cmd": "decision_key_status", "args": {} })).is_ok());
         assert!(matches!(Command::from_json(json!({ "cmd": "data_folder" })), Ok(Command::DataFolder {})));
         assert!(matches!(Command::from_json(json!({ "cmd": "data_folder", "args": {} })), Ok(Command::DataFolder {})));
     }
@@ -224,7 +230,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 66);
+        assert_eq!(names.len(), 67);
         assert!(names.contains(&"room_answer".to_string()));
         assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_set_plan".to_string()));
