@@ -60,6 +60,7 @@ pub enum Command {
     RoomStop { id: String, participant: Option<ParticipantId> },
     RoomDecide { id: String, request: String, approve: bool, always: Option<bool> },
     RoomSetPlan { id: String, on: bool },
+    RoomAnswer { id: String, request: String, answers: Option<Vec<Vec<String>>> },
     RoomForgetAllowed { id: String, rule: AllowedRule },
     RoomSetOptions { id: String, options: RoomOptions },
     RoomAddParticipant { id: String, participant: ParticipantConfig },
@@ -151,6 +152,7 @@ impl Host {
             RoomStop { id, participant } => { self.room_stop(id, participant); reply(()) },
             RoomDecide { id, request, approve, always } => reply(self.room_decide(id, request, approve, always)?),
             RoomSetPlan { id, on } => reply(self.room_set_plan(id, on)?),
+            RoomAnswer { id, request, answers } => reply(self.room_answer(id, request, answers)?),
             RoomForgetAllowed { id, rule } => reply(self.room_forget_allowed(id, rule)?),
             RoomSetOptions { id, options } => reply(self.room_set_options(id, options).await?),
             RoomAddParticipant { id, participant } => reply(self.room_add_participant(id, participant).await?),
@@ -222,7 +224,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 65);
+        assert_eq!(names.len(), 66);
+        assert!(names.contains(&"room_answer".to_string()));
         assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_set_plan".to_string()));
         assert!(names.contains(&"room_state".to_string()));

@@ -37,10 +37,19 @@ pub(crate) struct RoomHandle {
     context: BuildContext,
 }
 
+impl RoomHandle {
+    pub(crate) fn has_open_questions(&self) -> bool { !self.live.lock().unwrap().questions.is_empty() }
+    pub(crate) fn busy(&self) -> bool { self.runtime.busy() }
+}
+
 #[derive(Default)]
 struct LiveRoomState {
     active: std::collections::BTreeSet<String>,
     approvals: Vec<serde_json::Value>,
+    /// Questions bots are waiting on, oldest first.
+    questions: Vec<serde_json::Value>,
+    /// The latest suggested next steps, while they stand.
+    next_steps: Option<serde_json::Value>,
 }
 
 /// Where the host keeps its files.
@@ -88,6 +97,8 @@ impl Drop for Chain<'_> {
 impl Host {
     /// Open the host's data in `paths.data`. Old snapshots are compacted on a
     /// background thread, and agents may read the attachments folder.
+    pub(crate) fn runtime(&self) -> &tokio::runtime::Handle { &self.runtime }
+
     pub fn new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Arc<Host> {
         let store = Store::new(paths.data.join("saved-chats-v1"));
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
@@ -118,7 +129,7 @@ impl Host {
         self.events.emit(event);
     }
 
-    fn room_event(&self, room: &str, event: RoomEvent) {
+    pub(crate) fn room_event(&self, room: &str, event: RoomEvent) {
         if let Ok(handle) = self.handle(room) {
             let mut seq = handle.recovery.lock().unwrap();
             // Compaction emits before the final full snapshot is saved.
@@ -151,7 +162,17 @@ impl Host {
                 plan_off = live.approvals.iter().any(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan");
             }
             match &event {
-                RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); }
+                RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); live.next_steps = None; }
+                RoomEvent::QuestionRequested { id, request, questions } => {
+                    live.questions.retain(|q| q["request"].as_str() != Some(request.as_str()));
+                    live.questions.push(serde_json::json!({"id":id,"request":request,"questions":questions}));
+                    live.next_steps = None;
+                }
+                RoomEvent::QuestionResolved { request, .. } => { live.questions.retain(|q| q["request"].as_str() != Some(request.as_str())); }
+                RoomEvent::NextSteps { id, steps, pending } => {
+                    live.next_steps = (*pending || !steps.is_empty()).then(|| serde_json::json!({"id":id,"steps":steps,"pending":pending}));
+                }
+                RoomEvent::MessageAdded { message } if message.speaker == apex_core::Speaker::Human => { live.next_steps = None; }
                 RoomEvent::ApprovalRequested { id, request, action } => {
                     live.approvals.retain(|a| a["request"].as_str() != Some(request.as_str()));
                     live.approvals.push(serde_json::json!({"id":id,"request":request,"action":action}));
@@ -160,8 +181,11 @@ impl Host {
                 RoomEvent::ParticipantIdle { id } | RoomEvent::Failed { id, .. } => {
                     live.active.remove(id.as_str());
                     live.approvals.retain(|a| a["id"].as_str() != Some(id.as_str()));
+                    live.questions.retain(|q| q["id"].as_str() != Some(id.as_str()));
                 }
-                RoomEvent::Idle | RoomEvent::Stopped => { live.active.clear(); live.approvals.clear(); }
+                // Next steps are worked out after Idle, so only Stop clears them.
+                RoomEvent::Idle => { live.active.clear(); live.approvals.clear(); live.questions.clear(); }
+                RoomEvent::Stopped => { live.active.clear(); live.approvals.clear(); live.questions.clear(); live.next_steps = None; }
                 _ => {}
             }
         }
@@ -368,7 +392,7 @@ impl Host {
         let seq = handle.recovery.lock().unwrap();
         let snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
         let live = handle.live.lock().unwrap();
-        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq}))
+        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq}))
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -458,8 +482,10 @@ impl Host {
     fn run_batch_in_background(self: &Arc<Self>, id: String, handle: RoomHandle, batch: TurnBatch) {
         let host = Arc::clone(self);
         self.runtime.spawn(async move {
-            if let Err(error) = host.run_batch(&id, &handle, batch).await {
-                host.room_event(&id, RoomEvent::Failed { id: ParticipantId::new("storage"), error });
+            match host.run_batch(&id, &handle, batch).await {
+                Err(error) => host.room_event(&id, RoomEvent::Failed { id: ParticipantId::new("storage"), error }),
+                Ok(()) if !handle.busy() => crate::next_steps::suggest(Arc::clone(&host), id, handle),
+                Ok(()) => {}
             }
         });
     }
@@ -516,6 +542,19 @@ impl Host {
             self.room_event(&id, RoomEvent::PlanChanged { on });
         }
         Ok(())
+    }
+
+    /// Answer a question a participant asked: one list per question, in
+    /// order, or `None` to skip. The first answer wins; a later one, or one
+    /// after the question was dropped, is an error the client shows.
+    pub fn room_answer(&self, id: String, request: String, answers: Option<Vec<Vec<String>>>) -> Result<(), String> {
+        let handle = self.handle(&id)?;
+        let answer = answers.map_or(apex_core::Answer::Skipped, apex_core::Answer::Answered);
+        if handle.approvals.answer(&request, answer) {
+            Ok(())
+        } else {
+            Err("that question is no longer waiting for an answer".to_string())
+        }
     }
 
     /// Answer an action a participant proposed. `request` is the id from the
@@ -1553,6 +1592,86 @@ mod host_tests {
         host.room_event("r", RoomEvent::ApprovalResolved { id: jigga, request: "ask-2".into(), approved: true });
         assert_eq!(host.room_state("r".into()).unwrap()["plan"], false);
         assert!(!host.store.room("r").unwrap().unwrap().snapshot.plan);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    fn scripted(id: &str, lines: &[&str]) -> apex_core::ParticipantConfig {
+        apex_core::ParticipantConfig {
+            id: ParticipantId::new(id), display_name: id.into(),
+            backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
+            persona: String::new(), access: apex_core::Access::Read, effort: None, appearance: None,
+        }
+    }
+
+    fn wait_for(seen: &Arc<Mutex<Vec<HostEvent>>>, found: impl Fn(&RoomEvent) -> bool) -> Option<RoomEvent> {
+        for _ in 0..200 {
+            if let Some(event) = seen.lock().unwrap().iter().find_map(|e| match e { HostEvent::Room { event, .. } if found(event) => Some(event.clone()), _ => None }) {
+                return Some(event);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        None
+    }
+
+    #[test]
+    fn a_long_reply_is_followed_by_the_bots_next_steps() {
+        let (host, runtime, data) = host("next-steps");
+        let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
+        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Commit","prompt":"commit it"}]"#])], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "@null fix it".into(), vec![ParticipantId::new("null")], false)).unwrap();
+        let steps = wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, .. })).expect("next steps arrive");
+        assert_eq!(steps, RoomEvent::NextSteps { id: ParticipantId::new("null"), steps: vec![apex_core::NextStep { label: "Commit".into(), prompt: "commit it".into() }], pending: false });
+        assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: true, .. })).is_some(), "a placeholder first");
+        let state = host.room_state("r".into()).unwrap();
+        assert_eq!(state["next_steps"]["steps"][0]["prompt"], "commit it");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_short_reply_gets_no_next_steps() {
+        let (host, runtime, data) = host("next-steps-short");
+        host.room_create("r".into(), vec![scripted("null", &["Done.", "Done again."])], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        runtime.block_on(Arc::clone(&host).room_post_to("r".into(), "@null go".into(), vec![ParticipantId::new("null")], false)).unwrap();
+        assert!(wait_for(&seen, |e| matches!(e, RoomEvent::Idle)).is_some());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { .. })).is_none());
+        assert!(host.room_state("r".into()).unwrap()["next_steps"].is_null());
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn answering_a_question_that_is_not_waiting_says_so() {
+        let (host, _runtime, data) = host("answer");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        assert_eq!(host.room_answer("r".into(), "ask-9".into(), Some(vec![vec!["x".into()]])), Err("that question is no longer waiting for an answer".into()));
+        let handle = host.handle("r").unwrap();
+        let (request, answer) = handle.approvals.open_question_for(ParticipantId::new("null"));
+        assert_eq!(host.room_answer("r".into(), request.clone(), None), Ok(()));
+        assert_eq!(futures::executor::block_on(answer), Ok(apex_core::Answer::Skipped));
+        assert!(host.room_answer("r".into(), request, None).is_err(), "first answer wins");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn open_questions_are_live_state_and_go_when_resolved() {
+        let (host, _runtime, data) = host("question-live");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        let null = ParticipantId::new("null");
+        let q = vec![apex_core::Question { header: String::new(), question: "Go?".into(), options: vec![], multi_select: false }];
+        host.room_event("r", RoomEvent::NextSteps { id: null.clone(), steps: vec![apex_core::NextStep { label: "a".into(), prompt: "a".into() }], pending: false });
+        assert_eq!(host.room_state("r".into()).unwrap()["next_steps"]["steps"][0]["label"], "a");
+        host.room_event("r", RoomEvent::QuestionRequested { id: null.clone(), request: "ask-1".into(), questions: q });
+        let state = host.room_state("r".into()).unwrap();
+        assert_eq!(state["questions"][0]["request"], "ask-1");
+        assert!(state["next_steps"].is_null(), "a question replaces next steps");
+        host.room_event("r", RoomEvent::QuestionResolved { id: null, request: "ask-1".into(), end: apex_core::QuestionEnd::Answered, answers: vec![] });
+        assert_eq!(host.room_state("r".into()).unwrap()["questions"], serde_json::json!([]));
         let _ = std::fs::remove_dir_all(data);
     }
 
