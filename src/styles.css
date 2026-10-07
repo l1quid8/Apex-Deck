@@ -2853,9 +2853,10 @@ button.mod-status:hover { color: var(--text); }
 /* Plan: a steady cyan box and a small chip first in the bot row, the TL;DR pill's size. */
 .composer.plan:not(.tldr) .composer-box { border-color: color-mix(in srgb, var(--brand-cyan) 70%, transparent); }
 .composer.plan:not(.tldr) .composer-box textarea::placeholder { color: color-mix(in srgb, var(--brand-cyan) 70%, transparent); }
-.plan-chip { flex: none; align-self: center; display: inline-flex; align-items: center; gap: 3px; height: 16px; min-height: 0; padding: 0 5px; border: 1px solid color-mix(in srgb, var(--brand-cyan) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--brand-cyan) 12%, transparent); color: var(--brand-cyan); font-size: 8px; font-weight: 800; letter-spacing: .03em; cursor: pointer; }
+/* Sits left of the TL;DR pill and copies its box, so the two always match in size. */
+.composer-box > .plan-chip { flex: none; align-self: flex-end; margin-bottom: 10px; margin-right: 4px; display: inline-flex; align-items: center; gap: .35em; box-sizing: border-box; height: 2.2em; min-height: 0; padding: 0 .9em; border: 1px solid color-mix(in srgb, var(--brand-cyan) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--brand-cyan) 12%, transparent); color: var(--brand-cyan); font-size: 7.5px; font-weight: 800; letter-spacing: .03em; cursor: pointer; transition: font-size .25s; }
+.composer.tldr .composer-box > .plan-chip { font-size: 8.75px; }
 .plan-chip:hover { background: color-mix(in srgb, var(--brand-cyan) 20%, transparent); }
-.plan-chip-x { width: 0; overflow: hidden; opacity: 0; font-size: 7px; transition: opacity .12s, width .12s; }
-.plan-chip:hover .plan-chip-x, .plan-chip:focus-visible .plan-chip-x { width: 8px; opacity: .8; }
-.composer-bots.folded .plan-chip-label, .composer-bots.folded .plan-chip-x { display: none; }
+.plan-chip-x { width: 0; overflow: hidden; opacity: 0; font-size: .9em; transition: opacity .12s, width .12s; }
+.plan-chip:hover .plan-chip-x, .plan-chip:focus-visible .plan-chip-x { width: 1em; opacity: .8; }
 .approval-plan { max-height: 240px; overflow: auto; margin: 6px 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }

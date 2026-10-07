@@ -2454,12 +2454,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const lit = new Set(serverTargets);
   const botChips = (
     <div ref={chipRow} className={`chips composer-bots${folded ? " folded" : ""}`}>
-      {planOn && !profileMode && (
-        <button type="button" className="plan-chip" title="Plan is on: every bot plans and changes nothing. Click to turn it off."
-          aria-label="Plan is on. Turn it off" onPointerDown={(event) => event.preventDefault()} onClick={() => void setPlan(false)}>
-          <span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span>
-        </button>
-      )}
       {participants.map((p) => {
         const levels = levelsFor(p.id);
         const shown = levelsShown(levels, chipParts, isLow);
@@ -2843,6 +2837,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           disabled={!roomReady || participants.length === 0}
         />
           </div>
+        {planOn && !profileMode && (
+          <button type="button" className="plan-chip" title="Plan is on: every bot plans and changes nothing. Click to turn it off."
+            aria-label="Plan is on. Turn it off" onPointerDown={(event) => event.preventDefault()} onClick={() => void setPlan(false)}>
+            <span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span>
+          </button>
+        )}
         <button type="button" className="tldr-pill" aria-pressed={tldr} aria-label="TL;DR mode" title={`TL;DR mode ${tldr ? "on" : "off"}: take a chill pill (⌘⇧T)`}
           // Keep focus in the message box, so you can type straight after.
           onPointerDown={(e) => e.preventDefault()}
