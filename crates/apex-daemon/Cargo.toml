@@ -23,9 +23,10 @@ libc = "0.2"
 tokio-tungstenite = "0.28"
 # Remote access over iroh (`serve --remote`); off until pairing ships.
 iroh = { version = "1.3", optional = true }
+apex-pairing = { path = "../apex-pairing", optional = true }
 
 [features]
-remote = ["dep:iroh"]
+remote = ["dep:iroh", "dep:apex-pairing"]
 
 [dev-dependencies]
 apex-core = { path = "../apex-core" }
