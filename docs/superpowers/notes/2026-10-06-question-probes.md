@@ -47,4 +47,16 @@ Which fruit do you like?
 - Pear
 ```
 
-Codex does not ask in a normal turn on 0.160.0. The tool is probably limited to its plan collaboration mode (not tested), which Deck does not use. Codex mid-task questions are left out for now.
+Codex does not ask in a normal turn on 0.160.0. (The first probe read Codex's output in a way that could leave a line unread; re-run with a plain line reader, the result is the same: no request, questions written as text.)
+
+## Codex in planning mode
+
+`turn/start` accepts `collaborationMode: {mode: "plan", settings: {model}}` even though the published schema does not list it. With it, Codex asks through `item/tool/requestUserInput`, and the documented answer shape works:
+
+```
+{open("/private/tmp/claude-501/-Users-tylercaldwell-Downloads-apex-deck/d95ea20a-d0db-4e55-a397-beeaf982a685/scratchpad/codex-plan3.txt").read().strip()[:1700]}
+```
+
+Planning mode cannot be left on all the time. Its built-in instructions (about 9,000 characters, "# Plan Mode (Conversational)") forbid editing files or running anything that changes the project; Codex only plans and ends with a proposed plan.
+
+Planning mode with Deck's own instructions in `settings.developer_instructions` ("normal working mode … ask with request_user_input") did **not** ask: Codex wrote the question as text and stopped, and made no file. One run, so this suggests (does not prove) that the tool comes with planning mode's own instructions, not the mode flag alone.
