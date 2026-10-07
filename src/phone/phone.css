@@ -226,3 +226,14 @@
 }
 
 .ph-empty { padding: 24px 16px; color: var(--muted); }
+
+/* The question form and Plan on the phone: thumb-sized, nothing to hover. */
+.qform.phone { margin: 0 0 8px; border-bottom: 1px solid var(--line); border-radius: 14px; }
+.qform.phone .qform-options button { min-height: 44px; font-size: 15px; }
+.qform.phone .qform-other input { min-height: 44px; font-size: 16px; }
+.qform-steps.phone .qform-chips button { min-height: 36px; font-size: 14px; }
+.qform.phone .qform-x { min-width: 44px; min-height: 44px; }
+.ph-bar .plan-chip { height: 28px; padding: 0 10px; font-size: 12px; }
+.ph-bar .plan-chip .plan-chip-x { width: auto; opacity: .8; font-size: 11px; }
+.ph-compose.plan textarea { border-color: color-mix(in srgb, var(--brand-cyan) 70%, transparent); }
+.ph-compose.plan textarea::placeholder { color: color-mix(in srgb, var(--brand-cyan) 70%, transparent); }

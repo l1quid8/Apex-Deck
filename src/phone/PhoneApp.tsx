@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 
 import { ApprovalCard } from "../ApprovalCard";
+import { QuestionForm } from "../QuestionForm";
+import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
 import { appendToolToken } from "../composerMenu";
 import { chooseOutcome, pickerMatches, pickerRows, workInRows, type PickerRow } from "../destinations";
@@ -19,8 +21,10 @@ import { webSocketConnect } from "../daemon/webSocketLink";
 import { loadRoomState } from "../roomRecovery";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
-import type { AppSession, FolderListing, Message, Pane, RoomOptions, ToolServer, Workspace } from "../types";
+import type { AppSession, FolderListing, Message, NextStep, Pane, RoomOptions, ToolServer, Workspace } from "../types";
 import { addFolders } from "../workspaces";
+
+const NO_ASKS: ThreadAsks = { questions: [], offer: null };
 
 const SESSION_KEY = "apex-deck.phone.session.v1";
 const DRAFT_KEY = "apex-deck.phone.drafts.v1";
@@ -88,7 +92,7 @@ export function PhoneApp() {
   const [query, setQuery] = useState("");
   const [tools, setTools] = useState<ToolServer[]>([]);
   const [browse, setBrowse] = useState<Browse | null>(null);
-  const [room, setRoom] = useState<{ id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: { id: string; display_name: string }[] } | null>(null);
+  const [room, setRoom] = useState<{ id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: { id: string; display_name: string }[]; asks: ThreadAsks; plan: boolean } | null>(null);
   const [approvalStays, setApprovalStays] = useState<Record<string, boolean>>({});
   const [agents, setAgents] = useState<string[]>([]);
   const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
@@ -199,6 +203,8 @@ export function PhoneApp() {
         messages: state.snapshot.transcript,
         approvals: state.approvals,
         participants: state.snapshot.participants.map((participant) => ({ id: participant.id, display_name: participant.display_name })),
+        asks: restoreQuestions({}, openPane.id, state, Date.now())[openPane.id] ?? NO_ASKS,
+        plan: Boolean(state.plan ?? state.snapshot.plan),
       });
     }).catch((error) => { if (live) setNotice(words(error)); });
     host.backend.onRoomEvent((id, event) => {
@@ -206,6 +212,12 @@ export function PhoneApp() {
       if (event.type === "message_added") setRoom((current) => current && current.id === id && !current.messages.some((message) => message.seq === event.message.seq) ? { ...current, messages: [...current.messages, event.message] } : current);
       if (event.type === "approval_requested") setRoom((current) => current && current.id === id ? { ...current, approvals: [...current.approvals.filter((card) => card.request !== event.request), { id: event.id, request: event.request, action: event.action }] } : current);
       if (event.type === "approval_resolved") setRoom((current) => current && current.id === id ? { ...current, approvals: current.approvals.filter((card) => card.request !== event.request) } : current);
+      if (event.type === "plan_changed") setRoom((current) => current && current.id === id ? { ...current, plan: event.on } : current);
+      setRoom((current) => {
+        if (!current || current.id !== id) return current;
+        const asks = applyQuestionEvent({ [id]: current.asks }, id, event, Date.now())[id] ?? NO_ASKS;
+        return asks === current.asks ? current : { ...current, asks };
+      });
     }).then((unlisten) => { if (live) stop = unlisten; else unlisten(); }).catch(() => {});
     return () => { live = false; stop(); };
     // Reloading follows the open thread and that machine's connection, not every keystroke.
@@ -261,6 +273,31 @@ export function PhoneApp() {
     } catch (error) {
       setNotice(words(error));
     }
+  }
+
+  /** Answer the question on the form, or skip it with `null`. */
+  async function answer(request: string, answers: string[][] | null) {
+    if (!openPane || !openLink) return;
+    const host = phoneHost(openLink.id);
+    if (!host || openLink.status !== "online") { setNotice(pauseLine(openLink, openLink.status) ?? `Connecting to ${openLink.name}`); return; }
+    try { await host.backend.roomAnswer(openPane.id, request, answers); }
+    catch (error) { setNotice(words(error)); }
+  }
+
+  /** Send a next step to the bot that suggested it. */
+  async function sendStep(step: NextStep, by: string) {
+    if (!openPane || !openLink) return;
+    const host = phoneHost(openLink.id);
+    if (!host || openLink.status !== "online") return;
+    setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current);
+    try { await host.backend.roomPostTo(openPane.id, step.prompt, [by], false); }
+    catch (error) { setNotice(words(error)); }
+  }
+
+  async function stopPlanning() {
+    if (!openPane || !openLink) return;
+    try { await phoneHost(openLink.id)?.backend.roomSetPlan(openPane.id, false); }
+    catch (error) { setNotice(words(error)); }
   }
 
   async function decide(request: string, approve: boolean, always: boolean) {
@@ -419,6 +456,12 @@ export function PhoneApp() {
               void writeClipboard(text, navigator.clipboard).then((ok) => setNotice(ok ? "" : "The phone couldn't copy that path."));
             }}
             onDecide={(request, approve, always) => { void decide(request, approve, always); }}
+            form={<QuestionForm phone view={formView(room?.asks)} nameOf={(pid) => room?.participants.find((p) => p.id === pid)?.display_name ?? pid}
+              highlighted={-1} collapsed={false} notice={null} onHighlight={() => {}} onExpand={() => {}}
+              onAnswer={(request, answers) => { void answer(request, answers); }} onStep={(step, by) => { void sendStep(step, by); }}
+              onDismiss={() => setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current)} />}
+            plan={room?.plan ?? false}
+            onStopPlanning={() => { void stopPlanning(); }}
             onRetry={() => phoneHost(openLink.id)?.connection.retryNow()}
             onOpenOther={(hostId) => {
               const pane = panes.find((item) => {
@@ -619,6 +662,8 @@ function ThreadView(props: {
   onBack(): void; onDraft(text: string): void; onRemoveFile(name: string): void; onAttach(files: FileList): Promise<void>;
   onSend(): void; onCopy(): void; onDecide(request: string, approve: boolean, always: boolean): void; onRetry(): void;
   onOpenOther(hostId: string): void; onSheet(sheet: "project" | "work" | "files" | "tools"): void;
+  /** The question or next steps, above the composer. */
+  form: ReactNode; plan: boolean; onStopPlanning(): void;
 }) {
   const paused = props.link.status !== "online";
   return (
@@ -653,9 +698,11 @@ function ThreadView(props: {
         ))}
         <div ref={props.endRef} />
       </div>
-      <form className="ph-compose" onSubmit={(event) => { event.preventDefault(); props.onSend(); }}>
+      <form className={`ph-compose${props.plan ? " plan" : ""}`} onSubmit={(event) => { event.preventDefault(); props.onSend(); }}>
+        {props.form}
         {props.gate.reason && <p className="ph-sub" role="status">{props.gate.reason}</p>}
         <div className="ph-bar">
+          {props.plan && <button type="button" className="plan-chip" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
           <button type="button" onClick={() => props.onSheet("project")}>{props.project}</button>
           <button type="button" onClick={() => props.onSheet("files")}>Files</button>
           <button type="button" onClick={() => props.onSheet("tools")}>Tools</button>
@@ -664,7 +711,7 @@ function ThreadView(props: {
         {props.draft.files.length > 0 && props.draft.files.map((file) => (
           <button key={file.name} type="button" onClick={() => props.onRemoveFile(file.name)}>Remove {file.name}</button>
         ))}
-        <textarea aria-label="Message" value={props.draft.text} placeholder={paused ? props.gate.reason : "Message"} onChange={(event) => props.onDraft(event.target.value)} />
+        <textarea aria-label="Message" value={props.draft.text} placeholder={paused ? props.gate.reason : props.plan ? "Plan with the bots — nothing gets changed…" : "Message"} onChange={(event) => props.onDraft(event.target.value)} />
         <div className="ph-actions">
           <label className="ph-file">
             Attach
