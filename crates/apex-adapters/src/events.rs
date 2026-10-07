@@ -516,6 +516,15 @@ impl EventReader {
                     self.current_item = None;
                     self.final_text = Some(text.to_string());
                 }
+                // In planning mode Codex ends with its plan as an item of its
+                // own (probe notes, 2026-10-06). It is the reply.
+                Some("plan") => {
+                    let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty()) else { return };
+                    self.new_message(steps);
+                    self.say(text, steps);
+                    self.current_item = None;
+                    self.final_text = Some(text.to_string());
+                }
                 Some("fileChange") => {
                     self.editing(&item["changes"], steps);
                     if let Some(id) = item["id"].as_str() {
@@ -899,6 +908,18 @@ mod tests {
             reader.outcome(),
             Outcome { text: "All pass.".into(), error: None, input_tokens: Some(700), output_tokens: Some(30) }
         );
+    }
+
+    #[test]
+    fn a_planning_codex_ends_with_its_plan_as_the_reply() {
+        let stream = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"i1","text":"Looking around first.","phase":"commentary"}}}
+{"method":"item/completed","params":{"item":{"type":"plan","id":"u-plan","text":"Create `colour.txt` containing `blue`.\n"}}}
+{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"u","status":"completed","error":null}}}
+"#;
+        let mut reader = EventReader::new(OutputFormat::CodexServer, None);
+        let steps = reader.push(stream);
+        assert_eq!(text(&steps), "Looking around first.\n\nCreate `colour.txt` containing `blue`.\n");
+        assert_eq!(reader.outcome().text, "Create `colour.txt` containing `blue`.\n");
     }
 
     #[test]
