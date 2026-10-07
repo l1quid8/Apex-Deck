@@ -8,8 +8,7 @@
   "backgroundColor": "#090d12",
   "plugins": {
     "Keyboard": {
-      "resize": "native",
-      "resizeOnFullScreen": true
+      "resize": "none"
     }
   }
 }

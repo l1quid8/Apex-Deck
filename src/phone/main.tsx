@@ -10,15 +10,24 @@ const root = document.documentElement;
 const view = window.visualViewport;
 
 if (Capacitor.isPluginAvailable("Keyboard")) {
-  // In the iPhone app the Keyboard plugin shrinks the web view itself to end
-  // at the keyboard (capacitor.config.json: resize "native"), so the
-  // composer's 100% height already sits on top of it. The plugin also says
-  // when the keyboard comes and goes, so the tabs can step aside. No
-  // Previous/Next/Done bar over the keyboard, as in Messages.
+  // In the iPhone app the web view is the screen's root view, so iOS resets
+  // any size the Keyboard plugin gives it ("native" resize never stuck, and
+  // the keyboard covered the composer). capacitor.config.json sets resize
+  // "none" and the app shortens itself by the height the plugin reports,
+  // which also tells the tabs when to step aside. No Previous/Next/Done bar
+  // over the keyboard, as in Messages.
+  const fit = (keyboard: number) => {
+    if (keyboard > 0) root.style.setProperty("--ph-height", `${window.innerHeight - keyboard}px`);
+    else root.style.removeProperty("--ph-height");
+    root.toggleAttribute("data-keyboard", keyboard > 0);
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
+  };
   void Keyboard.setAccessoryBarVisible({ isVisible: false });
-  void Keyboard.addListener("keyboardWillShow", () => root.toggleAttribute("data-keyboard", true));
-  void Keyboard.addListener("keyboardWillHide", () => root.toggleAttribute("data-keyboard", false));
-  void Keyboard.addListener("keyboardDidShow", () => {
+  void Keyboard.addListener("keyboardWillShow", (info) => fit(info.keyboardHeight));
+  void Keyboard.addListener("keyboardDidShow", (info) => fit(info.keyboardHeight));
+  void Keyboard.addListener("keyboardWillHide", () => fit(0));
+  // WKWebView may still nudge the page up to reveal the focused box.
+  window.addEventListener("scroll", () => {
     if (window.scrollY !== 0) window.scrollTo(0, 0);
   });
 } else if (view) {

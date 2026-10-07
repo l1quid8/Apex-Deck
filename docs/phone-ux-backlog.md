@@ -126,7 +126,7 @@ Candidates Jigga noticed in the round 1 screenshots. Unranked; Null may pick fro
 - [ ] **Machines shows plumbing** (Machines) — raw `ws://` addresses and the host id are shown on every card.
 - [ ] **Project sheet repeats paths** (Project, New thread in…) — each row carries machine and full path as a second line.
 - [ ] **Code and Library are placeholders** (tabs) — tabs that do nothing yet.
-- [x] **Keyboard covering the message box** (open thread) — the human saw the keyboard cover it on the real iPhone. Fix: Capacitor's Keyboard plugin with `resize: "native"` (`capacitor.config.json`, `src/phone/main.tsx`); the `visualViewport` sizing stays for Safari only, and the iOS accessory bar is hidden. Not yet re-checked on the phone after the fix. Source: human.
+- [x] **Keyboard covering the message box** (open thread) — the human saw the keyboard cover it on the real iPhone. First try, Capacitor's Keyboard plugin with `resize: "native"`, didn't stick: the web view is the root view and iOS resets its size. Fix: `resize: "none"` (`capacitor.config.json`) and the app shortens itself by the keyboard height the plugin reports (`src/phone/main.tsx`); the `visualViewport` sizing stays for Safari only, and the iOS accessory bar is hidden. Then the newest messages slid under the box when the chat shrank, so `ThreadView` now keeps the chat pinned to the end on resize if you were at the end (`onResized`). Confirmed on the real iPhone 2026-10-07. Source: human.
 - [ ] **Launch screen** — still unchecked on the real iPhone.
 - [ ] **Reopened mid-reply starts partway** (open thread) — earlier streamed words aren't resent, and the timer restarts. Source: Jigga, round 1.
 

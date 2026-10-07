@@ -951,6 +951,7 @@ export function PhoneApp() {
             other={links.find((link) => link.kind === "server" && link.status === "online" && link.id !== openLink.id) ?? null}
             endRef={endRef}
             onScrolled={(near) => { stuckRef.current = near; }}
+            onResized={(chat) => { if (stuckRef.current) chat.scrollTop = chat.scrollHeight; }}
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
             onMenu={() => openPane && setMenu({ kind: "thread", id: openPane.id })}
@@ -1533,7 +1534,7 @@ function ThreadView(props: {
   /** Each bot's context hairline and plan dot, for its pill. */
   meters: Record<string, PillMeter>;
   fork?: Pane["fork"]; approvalStays: boolean; other: LinkView | null; endRef: RefObject<HTMLDivElement | null>;
-  onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(name: string): void; onScrolled(near: boolean): void;
+  onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(name: string): void; onScrolled(near: boolean): void; onResized(chat: HTMLElement): void;
   sending: boolean; attaching: boolean; onSend(): void; onDecide(request: string, approve: boolean, always: boolean): Promise<void>; onRetry(): void;
   onStop(id: string): void; onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void;
   /** Messages waiting on the phone for a bot to finish, oldest first. */
@@ -1581,6 +1582,18 @@ function ThreadView(props: {
   // Steer now's question opens at the bottom of the chat; bring it above the message box.
   const steerRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (props.steerAsk !== null) steerRef.current?.scrollIntoView({ block: "nearest" }); }, [props.steerAsk]);
+  // The keyboard, or a taller message box, shortens the chat from below. If you were at the end,
+  // keep the end in view, as Messages does, instead of letting the newest messages slide under the box.
+  const chatRef = useRef<HTMLElement>(null);
+  const resizedRef = useRef(props.onResized);
+  resizedRef.current = props.onResized;
+  useEffect(() => {
+    const box = chatRef.current;
+    if (!box) return;
+    const watch = new ResizeObserver(() => resizedRef.current(box));
+    watch.observe(box);
+    return () => watch.disconnect();
+  }, []);
   const lost = cut.filter(([id, part]) => !part.ended && !(id in props.working)).map(([id]) => id);
   const ended = cut.filter(([, part]) => part.ended).map(([id]) => id);
   // The seconds count while anyone is working.
@@ -1668,7 +1681,7 @@ function ThreadView(props: {
           <button type="button" className="ph-icon ph-crew-fold" aria-label="Fold the bots into the title bar" onClick={() => props.onCrew(true)}><ChevronUp size={18} /></button>
         </div>
       )}
-      <main className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
+      <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
         {paused && (
           <div className={`ph-banner${props.link.problem ? " bad" : ""}`} role="status">
