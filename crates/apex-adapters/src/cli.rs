@@ -150,6 +150,7 @@ impl CliParticipant {
             effort: effort.as_deref(),
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
+            plan: false,
         };
         match codex_server::run(child, turn, prompt, on_progress, approver, hook.as_ref()).await {
             Ok(reply) => Ok(reply),

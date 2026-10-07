@@ -27,7 +27,7 @@
 use std::time::Duration;
 use std::collections::HashMap;
 
-use apex_core::{Access, ActionKind, Approver, Decision, PlanUsage, Progress, ProgressSink, ProposedAction, Reply};
+use apex_core::{Access, ActionKind, Answer, Approver, Decision, PlanUsage, Progress, ProgressSink, ProposedAction, Question, QuestionOption, Reply};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -51,6 +51,9 @@ pub(crate) struct Turn<'a> {
     pub effort: Option<&'a str>,
     pub access: Access,
     pub cwd: Option<String>,
+    /// Start Codex in its planning mode, where it asks the person questions
+    /// and changes nothing.
+    pub plan: bool,
 }
 
 /// Why a turn through the app server did not produce a reply.
@@ -282,11 +285,49 @@ pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
 }
 
 pub(crate) fn turn_start(thread: &str, prompt: &str, effort: Option<&str>) -> Value {
+    turn_start_with(thread, prompt, effort, None)
+}
+
+/// `turn/start`, in Codex's planning mode when `plan_model` names the model
+/// to plan with. Planning mode is the only mode in which Codex asks the
+/// person questions, and in it Codex changes nothing (probe notes,
+/// 2026-10-06). The field is experimental and absent from Codex's schema.
+pub(crate) fn turn_start_with(thread: &str, prompt: &str, effort: Option<&str>, plan_model: Option<&str>) -> Value {
     let mut params = json!({ "threadId": thread, "input": [{ "type": "text", "text": prompt }] });
     if let Some(effort) = effort {
         params["effort"] = json!(effort);
     }
+    if let Some(model) = plan_model {
+        params["collaborationMode"] = json!({ "mode": "plan", "settings": { "model": model } });
+    }
     json!({ "method": "turn/start", "id": 2, "params": params })
+}
+
+/// Codex's ask-the-user request (`item/tool/requestUserInput`), as
+/// questions for the person.
+pub(crate) fn codex_questions(params: &Value) -> Vec<Question> {
+    let text = |v: &Value| v.as_str().unwrap_or("").to_string();
+    params["questions"].as_array().into_iter().flatten().map(|q| Question {
+        header: text(&q["header"]),
+        question: text(&q["question"]),
+        options: q["options"].as_array().into_iter().flatten()
+            .map(|o| QuestionOption { label: text(&o["label"]), description: text(&o["description"]) })
+            .collect(),
+        multi_select: false,
+    }).collect()
+}
+
+/// The reply: each question's answers under its id. A skip answers nothing.
+pub(crate) fn codex_answer(id: &Value, params: &Value, answer: Answer) -> Value {
+    let mut answers = serde_json::Map::new();
+    if let Answer::Answered(chosen) = answer {
+        for (question, picked) in params["questions"].as_array().into_iter().flatten().zip(chosen) {
+            if let Some(key) = question["id"].as_str() {
+                answers.insert(key.to_string(), json!({ "answers": picked }));
+            }
+        }
+    }
+    json!({ "id": id, "result": { "answers": answers } })
 }
 
 /// Ask for the account's plan limits. It costs no quota.
@@ -393,7 +434,11 @@ pub(crate) async fn run(
     };
 
     // From here the model is being asked, so failures are final.
-    send(&mut stdin, &turn_start(thread, prompt, turn.effort))
+    // Planning mode needs a model name; Codex's own default is in the
+    // answer. Without one the turn still runs read-only with the planning
+    // instruction, just without Codex's own planning mode.
+    let plan_model = if turn.plan { turn.model.or(started["model"].as_str()) } else { None };
+    send(&mut stdin, &turn_start_with(thread, prompt, turn.effort, plan_model))
         .await
         .map_err(|e| TurnError::Failed(format!("could not send the message: {e}")))?;
 
@@ -434,6 +479,18 @@ pub(crate) async fn run(
                 // edit or a command go to the person. Anything else cannot
                 // be answered here, and is refused rather than left to hang.
                 (Some(id), Some(method)) => {
+                    if method == "item/tool/requestUserInput" {
+                        let params = &message["params"];
+                        let answer = if params["threadId"] != thread {
+                            Answer::Skipped
+                        } else {
+                            on_progress(Progress::Activity("Waiting for your answer"));
+                            approver.ask(codex_questions(params)).await
+                        };
+                        send(&mut stdin, &codex_answer(id, params, answer)).await
+                            .map_err(|_| TurnError::Failed("Could not deliver the answer".into()))?;
+                        continue;
+                    }
                     if method == "mcpServer/elicitation/request" {
                         let params = &message["params"];
                         // Only the fields that decide which buttons the card shows.
@@ -670,7 +727,7 @@ mod tests {
 
     #[test]
     fn full_access_keeps_mcp_approval_transport_enabled() {
-        let turn = Turn { model: None, effort: None, access: Access::Full, cwd: None };
+        let turn = Turn { model: None, effort: None, access: Access::Full, cwd: None, plan: false };
         let policy = thread_start(&turn)["params"]["approvalPolicy"].clone();
         assert_eq!(policy["granular"]["mcp_elicitations"], true);
         assert_eq!(policy["granular"]["sandbox_approval"], false);
@@ -679,24 +736,24 @@ mod tests {
 
     #[test]
     fn thread_start_carries_access_model_and_folder() {
-        let turn = Turn { model: Some("m"), effort: None, access: Access::Edits, cwd: Some("/work".into()) };
+        let turn = Turn { model: Some("m"), effort: None, access: Access::Edits, cwd: Some("/work".into()), plan: false };
         assert_eq!(
             thread_start(&turn),
             json!({ "method": "thread/start", "id": 1, "params": {
                 "approvalPolicy": approval_policy(Access::Edits), "sandbox": "workspace-write", "ephemeral": true, "model": "m", "cwd": "/work"
             } })
         );
-        let asking = Turn { model: None, effort: None, access: Access::Ask, cwd: None };
+        let asking = Turn { model: None, effort: None, access: Access::Ask, cwd: None, plan: false };
         assert_eq!(
             thread_start(&asking)["params"],
             json!({ "approvalPolicy": "untrusted", "sandbox": "workspace-write", "ephemeral": true })
         );
-        let bare = Turn { model: None, effort: None, access: Access::Read, cwd: None };
+        let bare = Turn { model: None, effort: None, access: Access::Read, cwd: None, plan: false };
         assert_eq!(
             thread_start(&bare)["params"],
             json!({ "approvalPolicy": approval_policy(Access::Read), "sandbox": "read-only", "ephemeral": true })
         );
-        let full = Turn { model: None, effort: None, access: Access::Full, cwd: None };
+        let full = Turn { model: None, effort: None, access: Access::Full, cwd: None, plan: false };
         assert_eq!(thread_start(&full)["params"]["sandbox"], "danger-full-access");
     }
 
@@ -733,6 +790,31 @@ mod tests {
             } })
         );
         assert!(turn_start("t1", "hello", None)["params"].get("effort").is_none());
+    }
+
+    #[test]
+    fn a_planning_turn_starts_codex_in_its_planning_mode() {
+        let plain = turn_start_with("t1", "hello", None, None);
+        assert_eq!(plain, turn_start("t1", "hello", None));
+        assert!(plain["params"].get("collaborationMode").is_none());
+        let planning = turn_start_with("t1", "hello", None, Some("gpt-5"));
+        assert_eq!(planning["params"]["collaborationMode"], json!({ "mode": "plan", "settings": { "model": "gpt-5" } }));
+    }
+
+    #[test]
+    fn codex_questions_are_answered_by_question_id() {
+        use apex_core::Answer;
+        let params = json!({"threadId":"t","questions":[
+            {"id":"colour","header":"Colour","question":"Which colour?","isOther":true,"options":[{"label":"red","description":"warm"},{"label":"blue","description":""}]},
+            {"id":"name","header":"Name","question":"Your name?","isOther":true,"options":null}
+        ]});
+        let asked = codex_questions(&params);
+        assert_eq!(asked[0].options.len(), 2);
+        assert_eq!(asked[0].options[0].description, "warm");
+        assert!(asked[1].options.is_empty());
+        let answered = codex_answer(&json!(7), &params, Answer::Answered(vec![vec!["blue".into()], vec!["Ada".into()]]));
+        assert_eq!(answered, json!({"id":7,"result":{"answers":{"colour":{"answers":["blue"]},"name":{"answers":["Ada"]}}}}));
+        assert_eq!(codex_answer(&json!(8), &params, Answer::Skipped), json!({"id":8,"result":{"answers":{}}}));
     }
 }
 

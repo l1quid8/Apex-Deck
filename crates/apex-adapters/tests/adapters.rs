@@ -1328,3 +1328,42 @@ async fn claude_questions_reach_the_person_and_the_answer_goes_back() {
     assert_eq!(result.unwrap().text, "skipped", "with no approver at all");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A stand-in for Codex that asks the person a question during its turn.
+#[cfg(unix)]
+const FAKE_QUESTION_CODEX: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+ case "$line" in
+ *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
+ *'"hooks/list"'*) echo '{"id":120,"error":{"code":-32601,"message":"Method not found"}}' ;;
+ *'"mcpServerStatus/list"'*) echo '{"id":10,"result":{"data":[],"nextCursor":null}}' ;;
+ *'"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
+ *'"thread/start"'*) echo '{"id":1,"result":{"thread":{"id":"thread-q"},"model":"gpt-test"}}' ;;
+ *'"turn/start"'*)
+ echo '{"method":"item/tool/requestUserInput","id":"q-1","params":{"threadId":"thread-q","turnId":"t","itemId":"i","isBlocking":true,"questions":[{"id":"colour","header":"Colour","question":"Which colour?","isOther":true,"isSecret":false,"options":[{"label":"red","description":""},{"label":"blue","description":""}]}]}}'
+ IFS= read -r answer
+ case "$answer" in *'"colour":{"answers":["blue"]}'*) said="blue" ;; *'"answers":{}'*) said="skipped" ;; *) echo "bad answer $answer" >&2; exit 2 ;; esac
+ echo "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"agentMessage\",\"id\":\"reply\",\"text\":\"$said\"}}}"
+ echo '{"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}' ;;
+ *'"account/rateLimits/read"'*) echo '{"id":3,"result":{}}' ;;
+ esac
+done
+"#;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_questions_reach_the_person() {
+    use apex_core::{AgentTool, Answer};
+    let dir = fake_tool("codex-question", "codex", FAKE_QUESTION_CODEX);
+    let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: None });
+    cfg.access = Access::Ask;
+    let bot = build(cfg, &context_in(&dir));
+    let person = Fixed::new(Decision::Reject);
+    *person.said.lock().unwrap() = Some(Answer::Answered(vec![vec!["blue".into()]]));
+    let (result, _, _) = work_asking(bot.as_ref(), &person).await;
+    assert_eq!(result.unwrap().text, "blue");
+    assert_eq!(person.questions.lock().unwrap()[0].question, "Which colour?");
+    let (result, _, _) = work_asking(bot.as_ref(), &Fixed::new(Decision::Approve)).await;
+    assert_eq!(result.unwrap().text, "skipped");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
