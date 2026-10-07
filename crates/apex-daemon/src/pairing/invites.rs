@@ -10,6 +10,7 @@
 //! registry lock inside `Devices`. `Devices` never calls in here.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,6 +24,8 @@ use crate::pairing::{close, Invite};
 pub const LIFETIME_MS: u64 = 5 * 60 * 1000;
 /// Wrong proofs an invitation takes before it's cancelled.
 pub const MAX_BAD_PROOFS: u32 = 5;
+/// Pairing connections open at once; extras are closed.
+pub const MAX_PAIRING_CONNS: usize = 4;
 
 pub type InviteId = [u8; 16];
 pub type ClaimId = [u8; 16];
@@ -121,6 +124,8 @@ enum State {
 
 struct Invitation {
     secret: [u8; 32],
+    /// This machine's name, as the phone is told it.
+    name: String,
     tier: Tier,
     threads: Threads,
     /// On the callers' clock (ms), checked against the `now` they pass.
@@ -175,6 +180,21 @@ pub struct Invites {
     invitations: Mutex<HashMap<InviteId, Invitation>>,
     /// Bumped on every state change, to wake waiters.
     changed: watch::Sender<u64>,
+    /// Pairing connections open now (see `conn_slot`).
+    conns: Arc<AtomicUsize>,
+    /// Tests: claim frames the pairing connections have read.
+    #[cfg(test)]
+    pub frames_read: AtomicUsize,
+}
+
+/// One of the `MAX_PAIRING_CONNS` places for a pairing connection, given
+/// back when dropped.
+pub struct ConnSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Default for Invites {
@@ -191,7 +211,41 @@ fn random<const N: usize>() -> [u8; N] {
 
 impl Invites {
     pub fn new() -> Invites {
-        Invites { invitations: Mutex::new(HashMap::new()), changed: watch::channel(0).0 }
+        Invites {
+            invitations: Mutex::new(HashMap::new()),
+            changed: watch::channel(0).0,
+            conns: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            frames_read: AtomicUsize::new(0),
+        }
+    }
+
+    /// A place for one more pairing connection, if fewer than
+    /// `MAX_PAIRING_CONNS` are open.
+    pub fn conn_slot(&self) -> Option<ConnSlot> {
+        let slot = ConnSlot(Arc::clone(&self.conns));
+        // Over the limit: dropping `slot` gives the place back.
+        (self.conns.fetch_add(1, Ordering::SeqCst) < MAX_PAIRING_CONNS).then_some(slot)
+    }
+
+    /// The machine name of the newest invitation still live at `now` (ms),
+    /// or `None` when there's none, so a pairing connection is turned away
+    /// before anything is read.
+    pub fn live_name(&self, now: u64) -> Option<String> {
+        let invitations = self.invitations.lock().unwrap();
+        invitations.values().filter(|i| i.live() && !i.due(Some(now))).max_by_key(|i| i.expires_at).map(|i| i.name.clone())
+    }
+
+    /// Tests: make an invitation's deadline `after` from now, on both
+    /// clocks, without expiring it, and wake waiters so they see it.
+    #[cfg(test)]
+    pub fn expire_in(&self, inv: &InviteId, after: Duration) {
+        let mut invitations = self.invitations.lock().unwrap();
+        let invitation = invitations.get_mut(inv).expect("no such invitation");
+        invitation.deadline = Instant::now() + after;
+        invitation.expires_at = crate::devices::now_ms() + after.as_millis() as u64;
+        drop(invitations);
+        self.notify();
     }
 
     fn notify(&self) {
@@ -207,7 +261,7 @@ impl Invites {
         // Forget ones long over, so the map stays small.
         invitations.retain(|_, i| i.live() || now < i.expires_at.saturating_add(LIFETIME_MS));
         let deadline = Instant::now() + Duration::from_millis(LIFETIME_MS);
-        invitations.insert(inv, Invitation { secret, tier, threads, expires_at, deadline, bad_proofs: 0, state: State::Open });
+        invitations.insert(inv, Invitation { secret, name: host.name.clone(), tier, threads, expires_at, deadline, bad_proofs: 0, state: State::Open });
         Invite { v: 1, host: host.host, name: host.name, relay: host.relay, addrs: host.addrs, inv, secret, exp: expires_at / 1000 }
     }
 
