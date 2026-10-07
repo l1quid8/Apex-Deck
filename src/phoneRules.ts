@@ -56,6 +56,19 @@ export function addMachine(list: DirectMachine[], next: DirectMachine): DirectMa
   return [...list, { id, name, kind: next.kind, url, token }];
 }
 
+/**
+ * Changes a paired machine in place, under the same rules as pairing it.
+ * Its kind stays. An empty token keeps the one already saved, so fixing an
+ * address doesn't mean pasting the token again.
+ */
+export function editMachine(list: DirectMachine[], id: string, next: DirectMachine): DirectMachine[] {
+  const index = list.findIndex((machine) => machine.id === id);
+  if (index < 0) throw new Error("That machine isn't paired with this phone.");
+  const old = list[index];
+  const changed = addMachine(list.filter((_, at) => at !== index), { ...next, kind: old.kind, token: next.token.trim() || old.token }).at(-1)!;
+  return list.map((machine, at) => at === index ? changed : machine);
+}
+
 export function removeMachine(list: DirectMachine[], id: string): DirectMachine[] {
   return list.filter((machine) => machine.id !== id);
 }
@@ -77,7 +90,7 @@ export function pauseLine(machine: { name: string; kind: MachineKind }, status: 
  * reason, and retrying won't fix it, so it says what will.
  */
 export function refusalLine(name: string, reason: string): string {
-  if (/token/i.test(reason)) return `${name} turned this phone away: the token is wrong. Unpair ${name} and pair it again with its token.`;
+  if (/token/i.test(reason)) return `${name} turned this phone away: the token is wrong. Edit ${name} under Machines and paste its token again.`;
   return `${name} turned this phone away: ${reason.replace(/\.$/, "")}.`;
 }
 

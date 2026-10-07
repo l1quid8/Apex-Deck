@@ -4,7 +4,7 @@ import { DaemonClient } from '../src/daemon/client.ts';
 import { webSocketConnect } from '../src/daemon/webSocketLink.ts';
 import { openPhoneHost } from '../src/phoneBackend.ts';
 import {
-  addMachine, approvalWhere, draftVisible, forkLine, loadMachines, newThreadGate,
+  addMachine, editMachine, approvalWhere, draftVisible, forkLine, loadMachines, newThreadGate,
   botMeters, crewOpen, modelChoices, pillDrag, pillMeter, settingsLine, toolLine, toolRows, toolSearch, toolWords, withPhoneChange, downLine, mentionPicks, pauseLine, pickMention, postRouted, pressNewThread, refusalLine, tagFromBar, threadSend, threadTitleFromMessage,
 } from '../src/phoneRules.ts';
 import { phoneShell } from '../src/phoneShell.ts';
@@ -20,6 +20,19 @@ test('a phone refuses to call the Mac "This Mac" and only pairs one Mac', () => 
   const paired = addMachine([mac], hetzner);
   assert.deepEqual(paired.map((machine) => machine.name), ["Tyler's MacBook", 'Hetzner-EU']);
   assert.deepEqual(loadMachines(JSON.stringify([{ ...hetzner, name: 'This Mac' }, hetzner])), [hetzner]);
+});
+
+test('editing a machine keeps its kind and place, and an empty token keeps the saved one', () => {
+  const list = [mac, hetzner];
+  const moved = editMachine(list, 'local', { ...mac, url: ' ws://192.0.2.10:7421 ', token: '' });
+  assert.deepEqual(moved[0], { ...mac, url: 'ws://192.0.2.10:7421' });
+  assert.equal(moved[1], hetzner);
+  assert.equal(editMachine(list, 'local', { ...mac, token: ' new-token ' })[0].token, 'new-token');
+  assert.equal(editMachine(list, 'hetzner', { ...hetzner, kind: 'mac', id: 'h-real' })[1].kind, 'server');
+  assert.equal(editMachine(list, 'hetzner', { ...hetzner, id: 'h-real' })[1].id, 'h-real');
+  assert.throws(() => editMachine(list, 'hetzner', { ...hetzner, name: "tyler's macbook" }), /already a machine called/);
+  assert.throws(() => editMachine(list, 'local', { ...mac, url: '192.0.2.10' }), /ws:\/\//);
+  assert.throws(() => editMachine(list, 'gone', mac), /isn't paired/);
 });
 
 test('an asleep Mac does not pause a server thread, and a refused send keeps the draft', () => {
@@ -139,7 +152,7 @@ test('a desktop hello without a token stays unchanged', async () => {
 test('a machine that refuses the token says so instead of looking offline', () => {
   const words = refusalLine("Tyler's MacBook", 'wrong or missing token');
   assert.match(words, /token is wrong/);
-  assert.match(words, /Unpair Tyler's MacBook and pair it again/);
+  assert.match(words, /Edit Tyler's MacBook under Machines and paste its token again/);
   assert.doesNotMatch(words, /Paused|reconnects|wakes/);
   const refused = { id: 'local', name: "Tyler's MacBook", kind: 'mac', status: 'offline', problem: words };
   assert.equal(downLine(refused), words);

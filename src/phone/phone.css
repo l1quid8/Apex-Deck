@@ -226,7 +226,24 @@
 .ph-working { display: flex; align-items: center; gap: 8px; min-height: 36px; font-size: 13px; color: var(--muted); }
 .ph-working.asking { color: var(--amber); }
 .ph-working.asking .working-dots i { background: var(--amber); animation: none; opacity: .9; }
-.ph-live .ph-md + .ph-working { margin-top: 4px; }
+/* The working line is one tap target that opens the bot's progress; Stop sits beside it. */
+.ph-working-toggle.ph-working-toggle { flex: 1; min-width: 0; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; }
+.ph-working-toggle:active { opacity: .6; }
+.ph-working-chevron { flex: none; display: flex; color: var(--muted); transition: transform .2s ease; }
+.ph-live.open .ph-working-chevron { transform: rotate(180deg); }
+.ph-progress { margin: 2px 0 0 11px; padding-left: 12px; border-left: 2px solid var(--line); }
+.ph-steps { list-style: none; margin: 4px 0 8px; padding: 0; font-size: 13px; color: var(--muted); }
+.ph-step { position: relative; padding: 3px 0 3px 14px; overflow-wrap: anywhere; }
+.ph-step::before { content: ""; position: absolute; left: 0; top: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--line); }
+.ph-step.now { color: var(--text); }
+.ph-step.now::before { background: var(--mint); animation: ph-step-pulse 1.4s ease-in-out infinite; }
+@keyframes ph-step-pulse { 50% { opacity: .35; } }
+.ph-draft { color: var(--text); }
+.ph-progress-none { font-size: 13px; color: var(--muted); margin: 4px 0 8px !important; }
+@media (prefers-reduced-motion: reduce) {
+  .ph-working-chevron { transition: none; }
+  .ph-step.now::before { animation: none; }
+}
 .ph-stop.ph-stop { min-height: 32px; padding: 4px 12px; font-size: 13px; border-radius: 16px; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); }
 .ph-was .ph-md { opacity: .55; }
 .ph-cut { font-size: 13px; color: var(--muted); border-left: 2px solid var(--line); padding: 4px 0 4px 10px; margin: 0 0 16px !important; }

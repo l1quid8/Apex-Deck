@@ -81,7 +81,7 @@ Asked for by the human from the phone. Code: `src/phoneRules.ts` (rules, tested 
    - *Built:* a slim row pinned under the title, one pill per bot (avatar and name) plus Everyone. Tap a pill to put `@name` in front of the draft and bring up the keyboard; hold it for its details (what it runs on, status, context and plan as reported while the thread is open, Mention, Stop). The bots the next message goes to are outlined in their colour; amber outline when a bot is waiting on you; the avatar shimmers while it works. The chevron folds the bar into an overlapping cluster in the title bar (still shimmering); tapping the cluster unfolds it. The fold is one choice for every thread, kept on the phone. While the keyboard is up the bar folds regardless and returns as chosen when it goes down. The bots left the + menu, and the participant row at the top of the chat is gone.
    - *Limits:* context and plan only fill in from replies that arrive while the thread is open. Removing a bot and its settings stay on the Mac. "Keyboard is up" is taken as "the message box has focus".
 
-## Round 3 — in review
+## Round 3 — done (adacdcf)
 
 Asked for by the human: meters for each bot's usage, context, model and reasoning, plus changing model and reasoning from the phone. Code: `src/phoneRules.ts` (`botMeters`, `pillMeter`, `settingsLine`, `modelChoices`, `reasoningLevels`, `withPhoneChange`, `tokenWords`; tested in `tests/phone.test.mjs`), `BotSheet` and the bar pills in `src/phone/PhoneApp.tsx`, `src/phone/phone.css`. Screenshots (fake test machine, made-up figures): `docs/phone-ux/round-3-after/`.
 
@@ -91,6 +91,14 @@ Asked for by the human: meters for each bot's usage, context, model and reasonin
    - *Limits:* the desktop doesn't hear about a change made on the phone until that thread reloads there, and a desktop save from an already-open settings popover can put back its older model or reasoning (see Gronk lane).
 4. [ ] **Pull a bot pill down for its details** (bot bar) — a short, mostly straight pull down (28 pt) opens the same sheet as holding; sideways still scrolls the bar and doesn't tag. A small grab line under each pill is the cue, and it stretches in the bot's colour while pulling. Without any gesture, the thread's ⋯ menu lists "<bot> details" for each bot. Rule: `pillDrag` in `src/phoneRules.ts`; hook `usePillPress` in `PhoneApp.tsx`. Source: human, pinned (Null's answer).
 5. [ ] **Clean tool names** (Tools sheet, working line, tool approvals) — "Google Calendar" instead of `plugin:design:google calendar`; `mcp__`, `plugin:` and `claude.ai` prefixes dropped; a quiet source ("· claude.ai", "· connector") only where two tools share a name; the exact `!command` stays underneath. A search box shows above 8 tools. Rules: `toolWords`, `toolLine`, `toolRows`, `toolSearch`. Source: human via Null.
+
+## Round 4 — done
+
+Asked for by the human: see a bot's progress and reply while it works, not only the one-line status. Code: `steps` on each turn in `src/phoneWorking.ts` (tested in `tests/phoneWorking.test.mjs`), the working line in `ThreadView` in `src/phone/PhoneApp.tsx`, `src/phone/phone.css`. Screenshots (fake test machine, injected steps): `docs/phone-ux/round-4-after/`.
+
+1. [x] **Chevron on each bot's working line** (open thread) — one line by default: "Null is thinking…", or the step it named ("Running: npm test"), the seconds, a chevron and Stop. Tapping the line or chevron opens that bot's steps so far (latest 6, older ones counted) and its reply as it is written; tapping again folds it. Each bot has its own; the choice is remembered per bot while the app is open. The finished reply replaces the draft. Shows the steps the bot reports and its reply text, not its private reasoning. Source: human via Null.
+   - *Limits:* steps from before the thread was opened aren't known to the phone (same gap as "Reopened mid-reply starts partway" below). While folded, the reply so far is hidden until it lands.
+2. [x] **Edit a paired machine** (Machines) — Edit… beside Unpair turns the card into a filled-in form (name, address, and Id for a server). An empty token box keeps the saved token. Same rules as pairing. The address placeholder no longer looks like a real address, and the wrong-token message points to Edit. Rule: `editMachine` in `src/phoneRules.ts`. Source: human.
 
 ## Open
 

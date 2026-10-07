@@ -19,7 +19,7 @@ import { openPhoneHost, type PhoneHost } from "../phoneBackend";
 import { phoneShell } from "../phoneShell";
 import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom, type PhoneCuts, type PhoneWorking } from "../phoneWorking";
 import {
-  addMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
+  addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   modelChoices, pickMention, pillMeter, postRouted, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange,
   type DirectMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
@@ -54,6 +54,8 @@ type SheetKind = "project" | "where" | "add" | "tools";
 /** A bot in the open thread, with the pattern and colour it has on the desktop. */
 type Person = { id: string; display_name: string; look: { seed: string; color: string } };
 const NO_CUTS: PhoneCuts = {};
+/** An open working line shows a bot's latest steps; older ones fold into a count. */
+const MAX_STEPS_SHOWN = 6;
 type Room = {
   id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
   /** Each bot's turn in progress, with its reply so far. */
@@ -475,7 +477,7 @@ export function PhoneApp() {
   // Follow the newest message and a reply as it streams in, unless the person scrolled up to read.
   const stuckRef = useRef(true);
   const shownRef = useRef<string | null>(null);
-  const streamed = room ? Object.values(room.working).reduce((sum, turn) => sum + turn.text.length + 1, 0) : 0;
+  const streamed = room ? Object.values(room.working).reduce((sum, turn) => sum + turn.text.length + turn.steps.length + 1, 0) : 0;
   useEffect(() => {
     if (shownRef.current !== openId) stuckRef.current = true;
     shownRef.current = openId;
@@ -873,6 +875,7 @@ export function PhoneApp() {
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
             confirm={confirmUnpair}
             onAdd={(machine) => { setMachines((list) => addMachine(list, machine)); setNotice(`Pairing ${machine.name.trim()}…`); }}
+            onEdit={(id, machine) => { setMachines(editMachine(machines, id, machine)); setNotice(`Saved ${machine.name.trim()}. Reconnecting…`); }}
             onUnpair={(id) => { setMachines((list) => removeMachine(list, id)); setConfirmUnpair(null); }}
             onConfirm={setConfirmUnpair}
             onRetry={(id) => phoneHost(id)?.connection.retryNow()}
@@ -1445,6 +1448,15 @@ function ThreadView(props: {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [working.length > 0]);
+  // Each bot's working line is one line until its chevron opens it: then its steps and the reply so far
+  // show as they come in. Remembered per bot while the app is open, so a bot you watch stays open.
+  const [watching, setWatching] = useState<Record<string, boolean>>({});
+  const watch = (id: string) => {
+    const open = !watching[id];
+    setWatching((all) => ({ ...all, [id]: open }));
+    // Follow it from here, so what streams in next stays in view.
+    if (open) requestAnimationFrame(() => props.endRef.current?.scrollIntoView({ block: "end" }));
+  };
   const person = (id: string) => props.participants.find((participant) => participant.id === id) ?? { id, display_name: id, look: legacyAppearance(id) };
   const asking = (id: string) => props.approvals.some((card) => card.id === id);
   const short = props.project.length > 18 ? `${props.project.slice(0, 7)}…${props.project.slice(-7)}` : props.project;
@@ -1551,19 +1563,47 @@ function ThreadView(props: {
         ))}
         {lost.length > 0 && <p className="ph-cut" role="status">{cutLine(lost.map((id) => person(id).display_name), props.machine)}</p>}
         {ended.length > 0 && <p className="ph-cut" role="status">{endedLine(ended.map((id) => person(id).display_name))}</p>}
-        {/* Each bot's reply as it is written, with what it is doing and a Stop. */}
-        {working.map(([id, turn]) => (
-          <section key={`w-${id}`} className="ph-msg ph-live" aria-busy="true">
-            {by(id, true)}
-            {turn.text && <div className="ph-md"><Markdown text={turn.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>}
-            <div className={`ph-working${asking(id) ? " asking" : ""}`} role="status">
-              <span className="working-dots" aria-hidden="true"><i /><i /><i /></span>
-              <span className="ph-grow ph-ellipsis">{turn.text ? toolLine(turnWords(turn, asking(id), props.plan)) : `${person(id).display_name} is ${toolLine(turnWords(turn, asking(id), props.plan)).replace(/^\S/, (c) => c.toLowerCase())}…`}</span>
-              <span className="ph-time">{elapsed(Math.max(0, now - turn.startedAt))}</span>
-              {!paused && <button type="button" className="ph-stop" aria-label={`Stop ${person(id).display_name}`} onClick={() => props.onStop(id)}>Stop</button>}
-            </div>
-          </section>
-        ))}
+        {/* Each bot's turn: one line with what it is doing and a Stop. Its chevron opens the steps and the reply so far. */}
+        {working.map(([id, turn]) => {
+          const name = person(id).display_name;
+          const open = Boolean(watching[id]);
+          const words = toolLine(turnWords(turn, asking(id), props.plan));
+          // "Null is writing…", but a named step reads as itself: "Running: npm test".
+          const doing = /^(Thinking|Writing|Working|Planning|Waiting for you)$/.test(words) ? `${name} is ${words.toLowerCase()}…` : words;
+          const shown = turn.steps.slice(-MAX_STEPS_SHOWN);
+          const earlier = turn.steps.length - shown.length;
+          return (
+            <section key={`w-${id}`} className={`ph-msg ph-live${open ? " open" : ""}`} aria-busy="true">
+              {by(id, true)}
+              <div className={`ph-working${asking(id) ? " asking" : ""}`}>
+                <button type="button" className="ph-working-toggle" aria-expanded={open} aria-controls={`ph-progress-${id}`}
+                  aria-label={`${name}: ${doing.replace(/…$/, "")}. ${open ? "Hide" : "Show"} progress${turn.steps.length > 0 ? `, ${turn.steps.length === 1 ? "1 step" : `${turn.steps.length} steps`}` : ""}`}
+                  onClick={() => watch(id)}>
+                  <span className="working-dots" aria-hidden="true"><i /><i /><i /></span>
+                  <span className="ph-grow ph-ellipsis" role="status">{doing}</span>
+                  <span className="ph-time">{elapsed(Math.max(0, now - turn.startedAt))}</span>
+                  <span className="ph-working-chevron" aria-hidden="true"><ChevronDown size={16} /></span>
+                </button>
+                {!paused && <button type="button" className="ph-stop" aria-label={`Stop ${name}`} onClick={() => props.onStop(id)}>Stop</button>}
+              </div>
+              {open && (
+                <div id={`ph-progress-${id}`} className="ph-progress">
+                  {turn.steps.length > 0 && (
+                    <ol className="ph-steps" aria-label={`${name}'s steps so far`}>
+                      {earlier > 0 && <li className="ph-step done">{earlier === 1 ? "1 earlier step" : `${earlier} earlier steps`}</li>}
+                      {shown.map((step, i) => (
+                        <li key={turn.steps.length - shown.length + i} className={`ph-step${i === shown.length - 1 && turn.phase === "tool" ? " now" : " done"}`}>{toolLine(step)}</li>
+                      ))}
+                    </ol>
+                  )}
+                  {turn.text
+                    ? <div className="ph-md ph-draft"><Markdown text={turn.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>
+                    : turn.steps.length === 0 && <p className="ph-progress-none">Nothing to show yet. Steps and the reply appear here as {name} works.</p>}
+                </div>
+              )}
+            </section>
+          );
+        })}
         {props.approvals.map((card) => (
           <div key={card.request} className="ph-approval">
             <ApprovalCard action={card.action.kind === "tool" ? { ...card.action, title: toolLine(card.action.title) } : card.action} request={card.request} by={card.id} name={person(card.id).display_name} hostName={approvalWhere(props.machine, props.path, props.kind)} disabled={paused} onDecide={(approve, always) => props.onDecide(card.request, approve, always)} />
@@ -1674,20 +1714,40 @@ function WorkSheet({ rows, links, workspaces, project, mac, stays, machineIcon, 
   );
 }
 
-function Machines({ machines, links, covered, machineIcon, missing, confirm, onAdd, onUnpair, onConfirm, onRetry, onError }: {
+function Machines({ machines, links, covered, machineIcon, missing, confirm, onAdd, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: DirectMachine[]; links: LinkView[]; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
-  onAdd(machine: DirectMachine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
+  onAdd(machine: DirectMachine): void; onEdit(id: string, machine: DirectMachine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
 }) {
   const hasMac = machines.some((machine) => machine.kind === "mac");
   const blank = (kind: MachineKind) => ({ name: "", url: "", token: "", kind, id: kind === "server" ? missing[0] ?? "" : "" });
   const [form, setForm] = useState(() => blank(hasMac ? "server" : "mac"));
   const [adding, setAdding] = useState(machines.length === 0);
+  /** The machine being edited. Its form takes the place of its card. */
+  const [editing, setEditing] = useState<string | null>(null);
+  const [edit, setEdit] = useState(() => blank("mac"));
   return (
     <main className="ph-content" inert={covered}>
       <h2>Machines</h2>
       <p className="ph-intro">This phone connects to each machine itself. Servers stay reachable when your Mac sleeps.</p>
       {machines.map((machine) => {
         const link = links.find((item) => item.id === machine.id);
+        if (editing === machine.id) return (
+          <form key={machine.id} className="ph-group ph-padded ph-form" onSubmit={(event) => {
+            event.preventDefault();
+            try {
+              onEdit(machine.id, { id: machine.kind === "mac" ? "local" : edit.id.trim(), name: edit.name, kind: machine.kind, url: edit.url, token: edit.token });
+              setEditing(null);
+            } catch (error) { onError(words(error)); }
+          }}>
+            <h3>{machineIcon(machine.id, 18)} Edit {machine.name}</h3>
+            <label className="ph-label">Name<input value={edit.name} onChange={(event) => setEdit({ ...edit, name: event.target.value })} required autoCapitalize="words" /></label>
+            {machine.kind === "server" && <label className="ph-label">Id<input value={edit.id} onChange={(event) => setEdit({ ...edit, id: event.target.value })} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
+            <label className="ph-label">Address<input value={edit.url} onChange={(event) => setEdit({ ...edit, url: event.target.value })} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
+            <label className="ph-label">Daemon token<input type="password" value={edit.token} onChange={(event) => setEdit({ ...edit, token: event.target.value.trim() })} placeholder="Leave empty to keep the saved token" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>Paste a new token only if it changed.</small></label>
+            <button type="submit" className="primary ph-wide">Save</button>
+            <button type="button" className="ph-plain ph-wide" onClick={() => setEditing(null)}>Cancel</button>
+          </form>
+        );
         const state = !link ? "Connecting…" : link.status === "online" ? "Connected" : link.problem ? "Can't connect" : link.status === "offline" ? machine.kind === "mac" ? "Asleep or unreachable" : "Offline" : "Connecting…";
         return (
           <div key={machine.id} className={`ph-group ph-padded${link?.problem ? " bad" : ""}`}>
@@ -1702,12 +1762,15 @@ function Machines({ machines, links, covered, machineIcon, missing, confirm, onA
                 <button type="button" className="danger ph-wide" onClick={() => onUnpair(machine.id)}>Unpair {machine.name}</button>
                 <button type="button" className="ph-plain ph-wide" onClick={() => onConfirm(null)}>Cancel</button>
               </>
-              : <button type="button" className="ph-plain ph-wide" onClick={() => onConfirm(machine.id)}>Unpair…</button>}
+              : <>
+                <button type="button" className="ph-wide" onClick={() => { setEdit({ name: machine.name, url: machine.url, token: "", kind: machine.kind, id: machine.kind === "server" ? machine.id : "" }); setEditing(machine.id); onConfirm(null); }}>Edit…</button>
+                <button type="button" className="ph-plain ph-wide" onClick={() => onConfirm(machine.id)}>Unpair…</button>
+              </>}
           </div>
         );
       })}
       {missing.length > 0 && <p className="ph-intro">Your Mac's threads also use {missing.join(", ")}. Pair each one with its address so those threads work here too.</p>}
-      {!adding && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setAdding(true); }}>Add a machine…</button>}
+      {!adding && !editing && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setAdding(true); }}>Add a machine…</button>}
       {adding && (
         <form className="ph-group ph-padded ph-form" onSubmit={(event) => {
           event.preventDefault();
@@ -1724,7 +1787,7 @@ function Machines({ machines, links, covered, machineIcon, missing, confirm, onA
           </div>
           <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={form.kind === "mac" ? "Tyler's MacBook" : "Apex-Terminal"} required autoCapitalize="words" /></label>
           {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
-          <label className="ph-label">Address<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="ws://192.168.1.10:7421" required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
+          <label className="ph-label">Address<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder={form.kind === "mac" ? "ws://your-Mac's-address:7421" : "ws://server-address:7420"} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
           <label className="ph-label">Daemon token<input type="password" value={form.token} onChange={(event) => setForm({ ...form, token: event.target.value.trim() })} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} required /><small>Paste only the token. Spaces and line breaks are removed.</small></label>
           <button type="submit" className="primary ph-wide">Pair {form.kind === "mac" ? "Mac" : "server"}</button>
           {machines.length > 0 && <button type="button" className="ph-plain ph-wide" onClick={() => setAdding(false)}>Cancel</button>}

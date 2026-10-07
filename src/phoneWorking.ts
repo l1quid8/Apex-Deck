@@ -10,13 +10,18 @@ export interface PhoneTurn {
   phase: "thinking" | "tool" | "writing";
   /** The latest thing it said it was doing, such as reading a file. */
   step: string;
+  /** Everything it said it was doing this turn, oldest first, for the open working line. */
+  steps: string[];
   /** The reply so far. */
   text: string;
 }
 
 export type PhoneWorking = Record<string, PhoneTurn>;
 
-const fresh = (now: number): PhoneTurn => ({ startedAt: now, phase: "thinking", step: "", text: "" });
+const fresh = (now: number): PhoneTurn => ({ startedAt: now, phase: "thinking", step: "", steps: [], text: "" });
+
+/** A long turn keeps only its latest steps, so the phone's memory stays small. */
+export const MAX_STEPS = 50;
 
 /** Bots already working when the thread was opened. */
 export function workingFrom(active: readonly string[], now: number): PhoneWorking {
@@ -40,7 +45,8 @@ export function applyTurnEvent(working: PhoneWorking, event: RoomEvent, now: num
     }
     case "activity": {
       const turn = working[event.id] ?? fresh(now);
-      return { ...working, [event.id]: { ...turn, phase: "tool", step: event.text } };
+      const steps = turn.steps[turn.steps.length - 1] === event.text ? turn.steps : [...turn.steps, event.text].slice(-MAX_STEPS);
+      return { ...working, [event.id]: { ...turn, phase: "tool", step: event.text, steps } };
     }
     case "message_added":
       return event.message.speaker.kind === "bot" ? without(working, event.message.speaker.id) : working;

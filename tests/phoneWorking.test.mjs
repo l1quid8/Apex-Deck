@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CUT_GAP, applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom } from '../src/phoneWorking.ts';
+import { CUT_GAP, MAX_STEPS, applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom } from '../src/phoneWorking.ts';
 
 const bot = (id, text = 'done') => ({ type: 'message_added', message: { seq: 1, speaker: { kind: 'bot', id }, text } });
 
 test('a bot shows as working from turn start, with its reply filling in, until the reply lands', () => {
   let w = applyTurnEvent({}, { type: 'turn_started', id: 'null' }, 100);
-  assert.deepEqual(w.null, { startedAt: 100, phase: 'thinking', step: '', text: '' });
+  assert.deepEqual(w.null, { startedAt: 100, phase: 'thinking', step: '', steps: [], text: '' });
   w = applyTurnEvent(w, { type: 'activity', id: 'null', text: 'Reading PhoneApp.tsx' }, 200);
   assert.equal(turnWords(w.null, false, false), 'Reading PhoneApp.tsx');
   w = applyTurnEvent(w, { type: 'delta', id: 'null', text: 'Hel' }, 300);
@@ -15,6 +15,22 @@ test('a bot shows as working from turn start, with its reply filling in, until t
   assert.equal(turnWords(w.null, false, false), 'Writing');
   w = applyTurnEvent(w, bot('null'), 500);
   assert.deepEqual(w, {});
+});
+
+test('each step a bot reports is kept for the open working line, without repeats, latest ones only', () => {
+  let w = applyTurnEvent({}, { type: 'turn_started', id: 'null' }, 1);
+  w = applyTurnEvent(w, { type: 'activity', id: 'null', text: 'Reading a.ts' }, 2);
+  w = applyTurnEvent(w, { type: 'activity', id: 'null', text: 'Reading a.ts' }, 3);
+  w = applyTurnEvent(w, { type: 'activity', id: 'null', text: 'Running: npm test' }, 4);
+  w = applyTurnEvent(w, { type: 'delta', id: 'null', text: 'Done' }, 5);
+  assert.deepEqual(w.null.steps, ['Reading a.ts', 'Running: npm test']);
+  assert.equal(w.null.text, 'Done');
+  for (let i = 0; i < MAX_STEPS + 5; i++) w = applyTurnEvent(w, { type: 'activity', id: 'null', text: `step ${i}` }, 6 + i);
+  assert.equal(w.null.steps.length, MAX_STEPS);
+  assert.equal(w.null.steps.at(-1), `step ${MAX_STEPS + 4}`);
+  // A new turn starts with no steps.
+  w = applyTurnEvent(w, { type: 'turn_started', id: 'null' }, 100);
+  assert.deepEqual(w.null.steps, []);
 });
 
 test('two bots stay separate, and each clears on its own ending', () => {
