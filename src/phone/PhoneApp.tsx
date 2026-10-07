@@ -10,6 +10,7 @@ import { Markdown } from "../Markdown";
 import { QuestionForm } from "../QuestionForm";
 import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
+import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "../tldr";
 import { appendToolToken } from "../composerMenu";
 import { chooseOutcome, pickerMatches, pickerRows, workInRows, type PickerRow } from "../destinations";
 import { dotState } from "../hostFacts";
@@ -17,10 +18,12 @@ import type { HostConnection } from "../hostConnections";
 import { workspaceFamily, workspaceHost } from "../hostSession";
 import { openPhoneHost, type PhoneHost } from "../phoneBackend";
 import { phoneShell } from "../phoneShell";
+import { giveBack, queueHears, queueSync, queuedSticky, queuedViews, type QueuedView } from "../phoneQueue";
+import { ParticipantQueues, type ParticipantMessage } from "../turnQueue";
 import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom, type PhoneCuts, type PhoneWorking } from "../phoneWorking";
 import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
-  modelChoices, pickMention, pillMeter, postRouted, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
+  modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange,
   type DirectMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
@@ -189,6 +192,10 @@ export function PhoneApp() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>(readDrafts);
   const [pending, setPending] = useState<Pending | null>(null);
+  // TL;DR mode is a per-thread switch, kept on the phone like the desktop keeps it per chat.
+  const [tldrs, setTldrs] = useState<Record<string, boolean>>({});
+  const tldrOf = (id: string | null) => id !== null && (tldrs[id] ?? loadTldr(id));
+  const setTldr = (id: string, on: boolean) => { saveTldr(id, on); setTldrs((all) => ({ ...all, [id]: on })); };
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState("");
   const [ask, setAsk] = useState<Ask | null>(null);
@@ -224,6 +231,14 @@ export function PhoneApp() {
   const [busy, setBusy] = useState<Record<string, readonly string[]>>({});
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
+  /** Each thread's messages waiting for a bot to finish, as on the desktop. They live on the phone while the app is open. */
+  const queues = useRef(new Map<string, ParticipantQueues>());
+  const [queued, setQueued] = useState<Record<string, { items: ParticipantMessage[]; paused: string[]; lost: boolean }>>({});
+  /** What each queued message was typed as, by thread and text, so one that can't be sent goes back in the box with its files.
+   *  `inBox` while Send is still waiting on it: the box keeps it until the machine has it or it is queued. */
+  const queuedDrafts = useRef(new Map<string, { draft: Draft; inBox: boolean; failed?: boolean }>());
+  /** The queued message whose Steer now is asking first. */
+  const [steerAsk, setSteerAsk] = useState<number | null>(null);
   /** Files still being read into a draft; Send waits for them. */
   const [reading, setReading] = useState(0);
   const readingRef = useRef(0);
@@ -266,6 +281,8 @@ export function PhoneApp() {
       host.backend.onRoomEvent((id, event) => {
         if (event.type === "message_added") setSeen((all) => ({ ...all, [id]: Date.now() }));
         setBusy((all) => { const now = all[id] ?? []; const next = busyAfter(now, event); return next === now ? all : { ...all, [id]: next }; });
+        const queue = queues.current.get(id);
+        if (queue) queueHears(queue, event);
         if (event.type === "approval_requested") setWaiting((all) => ({ ...all, [id]: [...(all[id] ?? []).filter((request) => request !== event.request), event.request] }));
         if (event.type === "approval_resolved") setWaiting((all) => ({ ...all, [id]: (all[id] ?? []).filter((request) => request !== event.request) }));
       }).then((stop) => { if (live) stops.push(stop); else stop(); }).catch(() => {});
@@ -309,6 +326,8 @@ export function PhoneApp() {
   // A machine that comes back may have finished, or started, turns while it was away:
   // ask it again for every thread the phone last saw working there.
   const onlineKey = links.filter((link) => link.status === "online").map((link) => link.id).join("\n");
+  // A machine that drops holds its threads' queued messages until the person resumes them.
+  useEffect(() => { queues.current.forEach((queue) => queue.availabilityChanged()); }, [onlineKey]);
   const wasOnline = useRef<Set<string>>(new Set());
   useEffect(() => {
     const now = new Set(onlineKey ? onlineKey.split("\n") : []);
@@ -318,12 +337,18 @@ export function PhoneApp() {
     for (const hostId of back) {
       const host = phoneHost(hostId);
       if (!host?.backend.roomState) continue;
-      const there = (session?.panes ?? []).filter((pane) => (busy[pane.id]?.length ?? 0) > 0 && linkOfPane(pane)?.id === hostId);
+      const there = (session?.panes ?? []).filter((pane) => ((busy[pane.id]?.length ?? 0) > 0 || (queued[pane.id]?.items.length ?? 0) > 0) && linkOfPane(pane)?.id === hostId);
       for (const pane of there) {
+        const settle = (active: readonly string[]) => {
+          if (!live) return;
+          setBusy((all) => ({ ...all, [pane.id]: active }));
+          const queue = queues.current.get(pane.id);
+          if (queue) queueSync(queue, active);
+        };
         host.backend.roomState(pane.id)
-          .then((state) => { if (live) setBusy((all) => ({ ...all, [pane.id]: state.active })); })
+          .then((state) => settle(state.active))
           // A thread the machine no longer has open has nothing running.
-          .catch(() => { if (live) setBusy((all) => ({ ...all, [pane.id]: [] })); });
+          .catch(() => settle([]));
       }
     }
     return () => { live = false; };
@@ -345,6 +370,60 @@ export function PhoneApp() {
 
   const draftFor = (id: string) => drafts[id] ?? emptyDraft();
   const setDraft = (id: string, next: Draft) => setDrafts((all) => ({ ...all, [id]: next }));
+
+  // The queue outlives renders, so it reads the machines and who is working as they are now.
+  const hostsRef = useRef(hosts);
+  hostsRef.current = hosts;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  /** Put a queued message back in its thread's box, with the files it was sent with. */
+  function takeBack(paneId: string, text: string) {
+    const key = `${paneId}\u0000${text}`;
+    const back = queuedDrafts.current.get(key)?.draft ?? { text: splitTldr(text).text, files: [] };
+    queuedDrafts.current.delete(key);
+    setDrafts((all) => ({ ...all, [paneId]: giveBack(all[paneId] ?? emptyDraft(), back) }));
+  }
+  /** A thread's queue, made the first time it is needed. A thread never changes machines once it has started. */
+  function queueFor(paneId: string, hostId: string): ParticipantQueues {
+    const made = queues.current.get(paneId);
+    if (made) return made;
+    const host = () => hostsRef.current.find((item) => item.machine.id === hostId) ?? null;
+    const backend = () => {
+      const found = host();
+      if (!found) throw new Error("This thread's machine isn't paired with this phone.");
+      return found.backend;
+    };
+    const queue: ParticipantQueues = new ParticipantQueues(
+      async (text) => {
+        const shown = roomRef.current;
+        const sticky = shown?.id === paneId ? queuedSticky(text, shown.participants.map((p) => p.id), shown.policy, queue.items) : null;
+        return sticky ?? backend().roomTargets(paneId, text);
+      },
+      // Routed like a typed message unless it is a next step for the bot that offered it.
+      async (text, to, _kind, _hops, manual) => {
+        const key = `${paneId}\u0000${text}`;
+        try { await backend().roomPostTo(paneId, text, to, !manual); }
+        catch (error) {
+          const sent = queuedDrafts.current.get(key);
+          // The queue holds these bots after a failure, as on the desktop. When the message is in the box again,
+          // sending it again should just send, so let go of any bot with nothing else waiting once the queue has paused it.
+          if (sent) setTimeout(() => { for (const bot of to) if (!queue.items.some((item) => item.to.includes(bot))) queue.resume(bot); }, 0);
+          // Still in the box when Send is waiting on it; a message that had been queued goes back into it.
+          if (sent?.inBox) { sent.failed = true; throw new Error(`${words(error)}. Your message is still in the box.`); }
+          if (sent) { takeBack(paneId, text); throw new Error(`${words(error)}. Your message is back in the box.`); }
+          throw error;
+        }
+        queuedDrafts.current.delete(key);
+      },
+      (id) => backend().roomStop(paneId, id),
+      (items) => setQueued((all) => ({ ...all, [paneId]: { items, paused: [...queue.paused], lost: queue.connectionPaused } })),
+      (error) => setNotice(words(error)),
+      () => { const found = host(); return found !== null && toLink(found.connection.get().status) === "online"; },
+    );
+    for (const id of busyRef.current[paneId] ?? []) queue.started(id);
+    queues.current.set(paneId, queue);
+    return queue;
+  }
 
   async function saveSession(change: (current: AppSession) => AppSession) {
     if (!macHost) throw new Error(mac ? downLine(mac) : "Pair this phone with your Mac before saving a thread.");
@@ -408,6 +487,8 @@ export function PhoneApp() {
       if (!live) return;
       setWaiting((all) => ({ ...all, [openPane.id]: state.approvals.map((card) => card.request) }));
       setBusy((all) => ({ ...all, [openPane.id]: state.active }));
+      const queue = queues.current.get(openPane.id);
+      if (queue) queueSync(queue, state.active);
       setCuts((all) => all[openPane.id] ? { ...all, [openPane.id]: resumeCut(all[openPane.id], state.active, state.snapshot.transcript) } : all);
       const configs = state.snapshot.participants.map(config => settingsHeard.get(config.id) ?? config);
       setRoom({
@@ -462,6 +543,9 @@ export function PhoneApp() {
     if (!room || !openWorkspace) return;
     const host = phoneHost(workspaceHost(openWorkspace));
     if (!host || toLink(host.connection.get().status) !== "online") return;
+    // An untagged message behind a queued tag goes where that tag goes, before the thread has heard it.
+    const sticky = queuedSticky(typed, room.participants.map((p) => p.id), room.policy, queued[room.id]?.items ?? []);
+    if (sticky) { setAnswerers({ paneId: room.id, ids: sticky }); return; }
     let live = true;
     // A short wait so typing doesn't ask the machine on every key; a slower answer for older text is ignored.
     const ask = window.setTimeout(() => {
@@ -469,10 +553,13 @@ export function PhoneApp() {
     }, typed ? 150 : 0);
     return () => { live = false; window.clearTimeout(ask); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room?.id, room?.messages.length, openLink?.status, typed]);
+  }, [room?.id, room?.messages.length, openLink?.status, typed, queued[room?.id ?? ""]?.items]);
 
   // A bot's details belong to the thread they were opened in.
-  useEffect(() => { setBotSheet(null); }, [openId]);
+  useEffect(() => { setBotSheet(null); setSteerAsk(null); }, [openId]);
+  // Steer now stops asking once its message has gone, been steered, or been taken back.
+  const queuedIds = (openId ? queued[openId]?.items ?? [] : []).map((item) => item.id).join(",");
+  useEffect(() => { setSteerAsk((asking) => asking !== null && queuedIds.split(",").includes(String(asking)) ? asking : null); }, [queuedIds]);
 
   // Follow the newest message and a reply as it streams in, unless the person scrolled up to read.
   const stuckRef = useRef(true);
@@ -514,6 +601,7 @@ export function PhoneApp() {
         transcriptLength = state.snapshot.transcript.length;
         movedRef.current[pending.id] = made.id;
         setDrafts((all) => { const next = { ...all, [made.id]: all[pending.id] ?? draft }; delete next[pending.id]; return next; });
+        if (tldrOf(pending.id)) { setTldr(made.id, true); setTldr(pending.id, false); }
         setPending(null);
         setOpenId(made.id);
       } else if (pane && room?.id !== pane.id) {
@@ -526,9 +614,19 @@ export function PhoneApp() {
       if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add them on the Mac, then send from the phone."); return; }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
-      const body = withAttachments(draft.text.trim(), paths);
+      // TL;DR asks every bot for a short answer; the line rides on the message but never shows in the chat.
+      const body = withTldr(withAttachments(draft.text.trim(), paths), tldrOf(id));
       // The room picks who answers, as on the desktop: whoever is @named, or whoever was named last.
-      await postRouted(host.backend, sentPane.id, body);
+      // A bot still working gets it once it finishes; until then it waits on the phone as "Queued".
+      // This resolves once the machine has it, or once it is queued; until then the box keeps it.
+      const key = `${sentPane.id}\u0000${body}`;
+      const entry: { draft: Draft; inBox: boolean; failed?: boolean } = { draft, inBox: true };
+      queuedDrafts.current.set(key, entry);
+      try { await queueFor(sentPane.id, host.machine.id).send(body); }
+      catch (error) { queuedDrafts.current.delete(key); throw error; }
+      finally { entry.inBox = false; }
+      // Refused: it never left the box, and the notice says so.
+      if (entry.failed) { queuedDrafts.current.delete(key); return; }
       // Clear only what was sent; anything typed or attached while it was sending stays.
       setDrafts((all) => {
         const now = all[sentPane.id] ?? emptyDraft();
@@ -564,17 +662,33 @@ export function PhoneApp() {
     const host = phoneHost(openLink.id);
     if (!host || openLink.status !== "online") return;
     setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current);
-    try { await host.backend.roomPostTo(openPane.id, step.prompt, [by], false); }
+    // Queued behind that bot's reply if it is still working, as on the desktop.
+    try { await queueFor(openPane.id, openLink.id).sendTo(step.prompt, [by]); }
     catch (error) { setNotice(words(error)); }
   }
 
-  /** Stop one bot's turn; the machine then sends its ending like any other. */
+  /** Stop one bot's turn; the machine then sends its ending like any other. What was queued for it waits for Resume. */
   async function stopBot(id: string) {
     if (!openPane || !openLink) return;
     const host = phoneHost(openLink.id);
     if (!host || openLink.status !== "online") { setNotice(downLine(openLink)); return; }
-    try { await host.backend.roomStop(openPane.id, id); }
-    catch (error) { setNotice(words(error)); }
+    await queueFor(openPane.id, openLink.id).halt(id);
+  }
+
+  /** Send a queued message now: its bots stop mid-turn, and it goes as soon as they have. */
+  function steerNow(paneId: string, item: number) {
+    setSteerAsk(null);
+    const queue = queues.current.get(paneId);
+    if (queue) queue.steerQueued(item).catch((error) => setNotice(words(error)));
+  }
+
+  /** Take a queued message out of the queue and back into the box to change it. */
+  function unqueue(paneId: string, item: number) {
+    const queue = queues.current.get(paneId);
+    const found = queue?.items.find((entry) => entry.id === item);
+    if (!queue || !found) return;
+    queue.remove(item);
+    takeBack(paneId, found.text);
   }
 
   /** Ask the thread's machine which models a bot's tool offers, once per machine and tool. */
@@ -759,6 +873,13 @@ export function PhoneApp() {
   }
 
   const draft = openId ? draftFor(openId) : emptyDraft();
+  // The open thread's queued messages, and whether Send would queue: everyone it goes to is mid-reply.
+  const openRoom = room && openPane && room.id === openPane.id ? room : null;
+  const openQueue = openPane ? queued[openPane.id] : undefined;
+  const queuedRows = openQueue && openLink ? queuedViews(openQueue.items, Object.keys(openRoom?.working ?? {}), openQueue.paused, openQueue.lost,
+    (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
+  const nextTo = openRoom && answerers?.paneId === openRoom.id ? answerers.ids : [];
+  const queueing = nextTo.length > 0 && nextTo.every((pid) => pid in (openRoom?.working ?? {}));
   const sendGate = openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." };
   const tints = hostTints(machines.filter((machine) => machine.kind === "server").map((machine) => machine.id));
   const machineIcon = (hostId: string, size = 16) => hostId === "local"
@@ -813,6 +934,14 @@ export function PhoneApp() {
             working={room && openPane && room.id === openPane.id ? room.working : {}}
             cut={(openPane && cuts[openPane.id]) || NO_CUTS}
             onStop={(id) => { void stopBot(id); }}
+            queued={queuedRows}
+            queueing={queueing}
+            steerAsk={steerAsk}
+            onSteerAsk={setSteerAsk}
+            onSteer={(item) => openPane && steerNow(openPane.id, item)}
+            onUnqueue={(item) => openPane && unqueue(openPane.id, item)}
+            onRemoveQueued={(item) => openPane && queues.current.get(openPane.id)?.remove(item)}
+            onResume={() => openPane && queues.current.get(openPane.id)?.resume()}
             draft={draft}
             gate={sendGate}
             sending={sending}
@@ -834,6 +963,8 @@ export function PhoneApp() {
               onAnswer={(request, answers) => { void answer(request, answers); }} onStep={(step, by) => { void sendStep(step, by); }}
               onDismiss={() => setRoom((current) => current ? { ...current, asks: { ...current.asks, offer: null } } : current)} />}
             plan={room?.plan ?? false}
+            tldr={tldrOf(openId)}
+            onTldr={() => openId && setTldr(openId, !tldrOf(openId))}
             onStopPlanning={() => { void stopPlanning(); }}
             onRetry={() => phoneHost(openLink.id)?.connection.retryNow()}
             onOpenOther={(hostId) => {
@@ -1405,8 +1536,17 @@ function ThreadView(props: {
   onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(name: string): void; onScrolled(near: boolean): void;
   sending: boolean; attaching: boolean; onSend(): void; onDecide(request: string, approve: boolean, always: boolean): Promise<void>; onRetry(): void;
   onStop(id: string): void; onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void;
+  /** Messages waiting on the phone for a bot to finish, oldest first. */
+  queued: QueuedView[];
+  /** Everyone the next message goes to is mid-reply, so Send queues it. */
+  queueing: boolean;
+  /** The queued message whose Steer now is asking first. */
+  steerAsk: number | null; onSteerAsk(id: number | null): void; onSteer(id: number): void;
+  onUnqueue(id: number): void; onRemoveQueued(id: number): void; onResume(): void;
   /** The question or next steps, above the composer. */
   form: ReactNode; plan: boolean; onStopPlanning(): void;
+  /** TL;DR mode: every bot is asked for a short answer. */
+  tldr: boolean; onTldr(): void;
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1438,6 +1578,9 @@ function ThreadView(props: {
   }, [props.draft.text]);
   const working = Object.entries(props.working);
   const cut = Object.entries(props.cut);
+  // Steer now's question opens at the bottom of the chat; bring it above the message box.
+  const steerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (props.steerAsk !== null) steerRef.current?.scrollIntoView({ block: "nearest" }); }, [props.steerAsk]);
   const lost = cut.filter(([id, part]) => !part.ended && !(id in props.working)).map(([id]) => id);
   const ended = cut.filter(([, part]) => part.ended).map(([id]) => id);
   // The seconds count while anyone is working.
@@ -1546,7 +1689,7 @@ function ThreadView(props: {
         )}
         {props.messages.map((message) => message.speaker.kind === "human" ? (
           <section key={message.seq} className="ph-msg human">
-            <p>{message.text}</p>
+            <p>{splitTldr(message.text).text}</p>
           </section>
         ) : (
           <section key={message.seq} className="ph-msg">
@@ -1609,9 +1752,38 @@ function ThreadView(props: {
             <ApprovalCard action={card.action.kind === "tool" ? { ...card.action, title: toolLine(card.action.title) } : card.action} request={card.request} by={card.id} name={person(card.id).display_name} hostName={approvalWhere(props.machine, props.path, props.kind)} disabled={paused} onDecide={(approve, always) => props.onDecide(card.request, approve, always)} />
           </div>
         ))}
+        {/* Sent while a bot was mid-reply: it waits here, on the phone, and goes when that bot finishes. */}
+        {props.queued.map((item) => (
+          <section key={`q-${item.id}`} className={`ph-queued${item.held ? " held" : ""}`} aria-label={`${item.line}: ${item.text}`}>
+            <div className="ph-msg human"><p>{item.text}</p></div>
+            {props.steerAsk === item.id ? (
+              <div ref={steerRef} className="ph-queued-ask" role="alertdialog" aria-label="Steer now?">
+                <p><strong>Steer now stops {item.who} mid-reply.</strong> {item.who.includes(" and ") ? "What they were doing may be left half-done. Your message goes as soon as they stop." : "What it was doing may be left half-done. Your message goes as soon as it stops."}</p>
+                <div className="ph-queued-actions">
+                  <button type="button" className="ph-queued-go" onClick={() => props.onSteer(item.id)}>Steer now</button>
+                  <button type="button" onClick={() => props.onSteerAsk(null)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div className="ph-queued-meta">
+                <span className="ph-queued-line" role="status">{item.line}</span>
+                <span className="ph-queued-actions">
+                  {item.steerable && !paused && <button type="button" onClick={() => props.onSteerAsk(item.id)}>Steer now</button>}
+                  {item.held && !paused && <button type="button" onClick={props.onResume}>Resume</button>}
+                  <button type="button" aria-label={`Edit queued message: ${item.text}`} onClick={() => props.onUnqueue(item.id)}>Edit</button>
+                  <button type="button" className="ph-queued-x" aria-label={`Remove queued message: ${item.text}`} onClick={() => props.onRemoveQueued(item.id)}><X size={15} /></button>
+                </span>
+              </div>
+            )}
+          </section>
+        ))}
         <div ref={props.endRef} />
       </main>
-      <form className={`ph-composer${props.plan ? " plan" : ""}`} inert={props.covered} onSubmit={(event) => { event.preventDefault(); props.onSend(); }}>
+      <form className={`ph-composer${props.plan ? " plan" : ""}${props.tldr ? " tldr" : ""}`} inert={props.covered} onSubmit={(event) => {
+        event.preventDefault();
+        if (props.tldr && props.gate.enabled && !props.sending && !props.attaching) wiggle(inputRef.current?.parentElement ?? null);
+        props.onSend();
+      }}>
         {props.form}
         {props.plan && <button type="button" className="plan-chip ph-plan" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
         {props.draft.files.length > 0 && (
@@ -1644,12 +1816,16 @@ function ThreadView(props: {
           </button>
           <div className="ph-input">
             <textarea ref={inputRef} aria-label={props.to ? `Message ${props.to}` : "Message this thread"} rows={1} value={props.draft.text}
-              placeholder={props.plan ? "Plan with the bots — nothing gets changed…" : props.to ? `Message ${props.to}…` : "Message the group…"}
+              placeholder={props.plan ? "Plan with the bots — nothing gets changed…" : props.queueing && props.to ? `Queue for ${props.to}…` : props.tldr ? (props.to ? `TL;DR to ${props.to}…` : "TL;DR: short answers…") : props.to ? `Message ${props.to}…` : "Message the group…"}
               onChange={(event) => { props.onDraft(event.target.value); setCaret(event.target.selectionStart); }}
               onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
               onFocus={(event) => { setCaret(event.currentTarget.selectionStart); setTyping(true); }}
               onBlur={() => { setCaret(null); setTyping(false); }} />
-            <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>
+            <button type="button" className="tldr-pill" aria-pressed={props.tldr} aria-label="TL;DR mode"
+              // Keep the keyboard up when it is: the box keeps focus.
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={props.onTldr}><span aria-hidden="true">TL;</span><span aria-hidden="true">DR</span></button>
+            <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>
           </div>
         </div>
         {paused && <p className="ph-caption warn">{props.gate.reason}</p>}

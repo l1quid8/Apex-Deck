@@ -578,3 +578,35 @@
 .ph-tool-source { margin-left: 5px; color: var(--muted); font-weight: 400; }
 .ph-tool-token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; opacity: .7; }
 @media (prefers-reduced-motion: reduce) { .ph-crew-pill .ph-crew-chip, .ph-crew-grab { transition: none; } }
+
+/* Sent while a bot was mid-reply: the bubble waits, dimmed, with what it waits for and Steer now. */
+.ph-queued { margin: 0 0 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.ph-queued .ph-msg.human { margin: 0; opacity: .62; border: 1px dashed color-mix(in srgb, var(--muted) 45%, transparent); }
+.ph-queued.held .ph-msg.human { opacity: .45; }
+.ph-queued-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 10px; max-width: 100%; font-size: 13px; color: var(--muted); }
+.ph-queued-line::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: currentColor; vertical-align: 1px; opacity: .7; }
+.ph-queued.held .ph-queued-line { color: var(--amber); }
+.ph-queued-actions { display: flex; align-items: center; gap: 2px; }
+.ph-queued-actions button { min-height: 44px; min-width: 44px; padding: 0 10px; border: 0; background: transparent; color: var(--mint); font-size: 14px; font-weight: 600; }
+.ph-queued-actions .ph-queued-x { color: var(--muted); padding: 0; }
+.ph-queued-ask { max-width: 92%; padding: 10px 12px 4px; border-radius: 14px; background: var(--panel-2); border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); font-size: 13px; color: var(--muted); }
+.ph-queued-ask p { margin: 0 0 4px; line-height: 1.45; }
+.ph-queued-ask strong { color: var(--text); }
+.ph-queued-ask .ph-queued-actions { justify-content: flex-end; }
+.ph-queued-ask .ph-queued-go { color: var(--amber); }
+
+/* TL;DR pill: the desktop's pill, by Send. Grey when off; lit, with the box's spinning glow, when on. */
+.ph-input > .tldr-pill { position: relative; flex: none; align-self: flex-end; display: inline-flex; height: 2.2em; min-height: 0; margin: 0 -2px 12px 0; padding: 0; font-size: 9px; border: 1px solid #3a3a3a; border-radius: 999px; background: none; filter: grayscale(1); transition: font-size .25s, box-shadow .3s, border-color .3s, filter .3s; }
+.ph-input > .tldr-pill::before { content: ""; position: absolute; inset: -13px -8px; }
+.ph-input > .tldr-pill[aria-pressed="true"] { font-size: 10px; border-color: transparent; filter: none; box-shadow: 0 0 7px var(--tldr-hot), 0 0 15px color-mix(in srgb, var(--tldr-amber) 50%, transparent); }
+.ph-composer.tldr .ph-input {
+  border-color: transparent;
+  background: linear-gradient(var(--panel), var(--panel)) padding-box, conic-gradient(from var(--tldr-spin), var(--tldr-hot), var(--tldr-amber), var(--tldr-violet), var(--tldr-hot)) border-box;
+  animation: tldr-spin 3s linear infinite, tldr-glow 3s linear infinite;
+}
+.ph-composer.tldr textarea::placeholder { color: color-mix(in srgb, var(--tldr-amber) 70%, transparent); }
+@media (prefers-reduced-motion: reduce) {
+  .ph-composer.tldr .ph-input { animation: none; box-shadow: 0 0 16px -4px var(--tldr-hot), 0 0 26px -8px var(--tldr-amber); }
+}
+/* A hint never wraps: it would grow the empty box to two lines on a narrow phone. */
+.ph-input textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

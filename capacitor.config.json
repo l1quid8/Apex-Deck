@@ -5,5 +5,11 @@
   "ios": {
     "path": "iphone"
   },
-  "backgroundColor": "#090d12"
+  "backgroundColor": "#090d12",
+  "plugins": {
+    "Keyboard": {
+      "resize": "native",
+      "resizeOnFullScreen": true
+    }
+  }
 }

@@ -100,6 +100,20 @@ Asked for by the human: see a bot's progress and reply while it works, not only 
    - *Limits:* steps from before the thread was opened aren't known to the phone (same gap as "Reopened mid-reply starts partway" below). While folded, the reply so far is hidden until it lands.
 2. [x] **Edit a paired machine** (Machines) — Edit… beside Unpair turns the card into a filled-in form (name, address, and Id for a server). An empty token box keeps the saved token. Same rules as pairing. The address placeholder no longer looks like a real address, and the wrong-token message points to Edit. Rule: `editMachine` in `src/phoneRules.ts`. Source: human.
 
+## Round 5 — done
+
+Asked for by the human: messages sent from the phone while a bot was working seemed ignored or to steer on their own. Cause: the phone posted straight to the machine, which puts the message in the thread at once (above the reply still being written, so it read as if the bot had switched to it) and runs the bot again later; a Stop dropped that waiting run on the machine. Code: `src/phoneQueue.ts` (tested in `tests/phoneQueue.test.mjs`) around the desktop's `ParticipantQueues`, the queue wiring and queued bubbles in `src/phone/PhoneApp.tsx`, `src/phone/phone.css`. Screenshots (fake test machine): `docs/phone-ux/round-5-after/`.
+
+1. [x] **Queue by default, Steer now on purpose** (open thread) — a message for a bot that is mid-reply waits on the phone as a dimmed bubble, "Queued for Null", and goes when that bot finishes; several go one at a time, in order. The box says "Queue for Null…" while that would happen. Each queued bubble has **Steer now** (asks first, then stops the bot and sends it as soon as it has stopped), **Edit** (back into the box) and ✕. Stop holds what was queued for that bot ("Paused for Null" + Resume), as on the desktop; so does a dropped machine ("Waiting for Tyler's MacBook"). The box keeps a message until the machine has it or it is queued; a refused send stays in the box, and a queued one that is refused comes back to it. Next steps tapped from the phone queue the same way. Source: human via Null.
+   - *Limits:* queued messages live on the phone while the app is open; closing the app drops them. Phone and desktop queues don't know about each other, so a message queued on one isn't shown on the other until it is sent.
+
+## Round 6 — done
+
+Asked for by the human: the desktop's TL;DR pill was missing on the phone. Code: `src/tldr.ts` reused as is; the pill, per-thread switch and send wiring in `src/phone/PhoneApp.tsx`; `queuedViews` in `src/phoneQueue.ts`; styles at the end of `src/phone/phone.css`. Screenshots (fake test machine): `docs/phone-ux/round-6-after/`.
+
+1. [x] **TL;DR pill** (open thread, message box) — the desktop's pink/amber pill sits by Send: grey when off, lit with the box's spinning glow when on (still glow, no spin, under Reduce Motion). On asks every bot for a short answer by adding the desktop's hidden TL;DR line to the message; the chat and queued bubbles show the message as typed. One switch per thread, kept on the phone; a new thread's draft carries it into the thread. Messages sent in TL;DR mode from the desktop also show without the line now. Hint: "TL;DR to Null…". Source: human.
+   - *Limits:* the phone's switch and the desktop's are separate, as each desktop chat's is. At 320 pt the hint is cut off at the box's edge instead of wrapping.
+
 ## Open
 
 Candidates Jigga noticed in the round 1 screenshots. Unranked; Null may pick from these or add others.
@@ -112,7 +126,7 @@ Candidates Jigga noticed in the round 1 screenshots. Unranked; Null may pick fro
 - [ ] **Machines shows plumbing** (Machines) — raw `ws://` addresses and the host id are shown on every card.
 - [ ] **Project sheet repeats paths** (Project, New thread in…) — each row carries machine and full path as a second line.
 - [ ] **Code and Library are placeholders** (tabs) — tabs that do nothing yet.
-- [ ] **Keyboard covering the message box** (open thread) — still unchecked on a real iPhone. Source: Jigga/Null, every round so far.
+- [x] **Keyboard covering the message box** (open thread) — the human saw the keyboard cover it on the real iPhone. Fix: Capacitor's Keyboard plugin with `resize: "native"` (`capacitor.config.json`, `src/phone/main.tsx`); the `visualViewport` sizing stays for Safari only, and the iOS accessory bar is hidden. Not yet re-checked on the phone after the fix. Source: human.
 - [ ] **Launch screen** — still unchecked on the real iPhone.
 - [ ] **Reopened mid-reply starts partway** (open thread) — earlier streamed words aren't resent, and the timer restarts. Source: Jigga, round 1.
 
