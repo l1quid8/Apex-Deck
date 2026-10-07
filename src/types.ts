@@ -127,6 +127,8 @@ export interface RoomState {
   snapshot: RoomSnapshot;
   active: string[];
   approvals: { id: string; request: string; action: ProposedAction }[];
+  questions?: { id: string; request: string; questions: Question[] }[];
+  next_steps?: { id: string; steps: NextStep[]; pending: boolean } | null;
   live?: boolean;
 }
 
@@ -164,6 +166,11 @@ export interface Message {
   at?: number;
 }
 
+export interface QuestionOption { label: string; description?: string }
+export interface Question { header: string; question: string; options: QuestionOption[]; multi_select: boolean }
+export interface NextStep { label: string; prompt: string }
+export type QuestionEnd = "answered" | "skipped" | "dropped";
+
 export type RoomEvent = { recovery_seq?: number } & (
   | { type: "message_added"; message: Message }
   | { type: "turn_started"; id: string }
@@ -176,6 +183,11 @@ export type RoomEvent = { recovery_seq?: number } & (
   /** A bot wants to do something. Its turn waits for `roomDecide` with this `request`. */
   | { type: "approval_requested"; id: string; request: string; action: ProposedAction }
   | { type: "approval_resolved"; id: string; request: string; approved: boolean }
+  /** A bot asked the person something. Its turn waits for `roomAnswer` with this `request`. */
+  | { type: "question_requested"; id: string; request: string; questions: Question[] }
+  | { type: "question_resolved"; id: string; request: string; end: QuestionEnd; answers: string[][] }
+  /** Suggested next prompts after `id`'s reply; `pending` while worked out; empty and settled clears them. */
+  | { type: "next_steps"; id: string; steps: NextStep[]; pending: boolean }
   /** The thread's whole "Always allow" list, after it changed. */
   | { type: "allowed_changed"; allowed: AllowedRule[] }
   /** A bot changed a file. */

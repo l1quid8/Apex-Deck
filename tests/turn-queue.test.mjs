@@ -140,3 +140,12 @@ test('participant steering marks recipients manual while normal messages keep ro
   assert.equal(sent[0][4], undefined);
   assert.equal(sent[1][4], true);
 });
+
+test('a next step goes to exactly the bot that suggested it, without working out targets', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = []; let asked = 0;
+  const q = new ParticipantQueues(async () => { asked++; return ['null']; }, async (text, to, kind, hops, manual) => { sent.push({ text, to, kind, manual }); }, async () => {}, () => {});
+  await q.sendTo('commit it', ['jigga']);
+  assert.deepEqual(sent, [{ text: 'commit it', to: ['jigga'], kind: 'message', manual: true }]);
+  assert.equal(asked, 0);
+});

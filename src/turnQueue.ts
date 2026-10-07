@@ -89,6 +89,17 @@ export class ParticipantQueues {
     this.accepting = accepted.catch(() => {});
     return accepted;
   }
+  /** Queue `text` for exactly `to`, as a next step sent to the bot that suggested it. */
+  sendTo(text: string, to: string[]): Promise<number> {
+    const accepted = this.accepting.then(async () => {
+      this.requireAvailable();
+      const id = ++this.serial;
+      this.items.push({ id, text, kind: "message", to, manual: true }); this.publish();
+      await this.drain(); return id;
+    });
+    this.accepting = accepted.catch(() => {});
+    return accepted;
+  }
   started(id: string) { this.state[id] = "working"; this.publish(); }
   idle(id: string) { this.state[id] = "idle"; this.publish(); void this.drain(); }
   error(id: string) { this.paused.add(id); this.publish(); }

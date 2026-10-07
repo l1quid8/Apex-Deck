@@ -77,6 +77,8 @@ export interface Backend {
    *  `always` saves a rule with the thread, so the same thing isn't asked again
    *  until it is removed in thread details. */
   roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
+  /** Answer a bot's question, named by the `request` from its event: one list of picks (or one typed answer) per question. `null` skips. */
+  roomAnswer(id: string, request: string, answers: string[][] | null): Promise<void>;
   roomSetOptions(id: string, options: RoomOptions): Promise<void>;
   /** Stop always allowing something, so its card shows again. */
   roomForgetAllowed(id: string, rule: AllowedRule): Promise<void>;
@@ -647,6 +649,8 @@ function demoBackend(): Backend {
       asks.delete(request);
       answer(approve, always);
     },
+    // Preview bots never ask questions.
+    roomAnswer: async () => { throw new Error("that question is no longer waiting for an answer"); },
     roomForgetAllowed: async (id, rule) => {
       const room = rooms.get(id);
       if (!room?.allowed?.some(r => sameRule(r, rule))) throw new Error("that was no longer always allowed");

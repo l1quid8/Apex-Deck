@@ -1,10 +1,11 @@
 // Host-scoped event subscriptions; the outer hooks integrate shared UI state.
 import { recordApproval } from "./approvals";
+import { recordQuestion } from "./questions";
 import { recordPlan } from "./plans";
 import { modHost } from "./mods/host";
 import { createEventHub } from "./eventHub.ts";
 const hub = createEventHub({
-  approval: (host, room, event) => recordApproval(room, event, host),
+  approval: (host, room, event) => { recordApproval(room, event, host); recordQuestion(room, event); },
   plan: (host, event) => { if (event.type === "plan_usage") recordPlan(event.provider, event.windows, event.partial, host); },
   roomEvent: (_host, room, event) => modHost.roomEvent(room, event),
   toolCall: (_host, room, event) => modHost.toolCall(room, event.id, event.action),
