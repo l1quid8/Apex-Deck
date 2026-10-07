@@ -69,6 +69,19 @@ export function answers(socket) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Wait until something answers on `socket` (or, with `wanted` false, until
+ * nothing does). Resolves false when that takes longer than `timeout`.
+ */
+export async function waitForSocket(socket, { wanted = true, timeout = 15_000 } = {}) {
+  const started = Date.now();
+  while ((await answers(socket)) !== wanted) {
+    if (Date.now() - started > timeout) return false;
+    await sleep(50);
+  }
+  return true;
+}
+
+/**
  * A daemon on this Mac's data folder: the one already running there (left
  * running when the app quits), or a `serve` started now that ends with the
  * app. Rejects with the daemon's own words when it won't start.

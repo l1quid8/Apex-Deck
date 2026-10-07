@@ -1,6 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { daemonBinary, serveArgs, dataDirArgs, remoteAccessSaved, saveRemoteAccess } from '../desktop/sidecar.mjs';
+import net from 'node:net';
+import fs from 'node:fs';
+import path from 'node:path';
+import { daemonBinary, serveArgs, dataDirArgs, remoteAccessSaved, saveRemoteAccess, waitForSocket } from '../desktop/sidecar.mjs';
+
+test('waitForSocket resolves once something listens, and again once it has stopped', async () => {
+  const dir = fs.mkdtempSync('/tmp/deck-wait-');
+  const socket = path.join(dir, 'daemon.sock');
+  try {
+    assert.equal(await waitForSocket(socket, { timeout: 150 }), false, 'nothing listening yet');
+    const server = net.createServer((c) => c.end()).listen(socket);
+    await new Promise((resolve) => server.once('listening', resolve));
+    assert.equal(await waitForSocket(socket, { timeout: 150 }), true);
+    await new Promise((resolve) => server.close(resolve));
+    assert.equal(await waitForSocket(socket, { wanted: false, timeout: 150 }), true);
+    assert.equal(await waitForSocket(socket, { timeout: 150 }), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('the daemon binary: the environment, then the bundled one, then the dev build', () => {
   const repo = '/src/apex-deck';
