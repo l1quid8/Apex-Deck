@@ -101,10 +101,15 @@ pub fn lines_up_to<R: AsyncRead, W: AsyncWrite>(reader: R, writer: W, max: usize
     (FramedRead::new(reader, LinesCodec::new_with_max_length(max)), FramedWrite::new(writer, LinesCodec::new()))
 }
 
-/// A reply, held back until the events sent before it are written.
+/// A reply, held back until the events sent before it are written. For a
+/// device, `need` is checked again and a `session_load` filtered again just
+/// before it goes out, so narrowing a device mid-command still applies.
 struct Reply {
     after: u64,
-    frame: String,
+    id: u64,
+    result: Result<Value, String>,
+    need: Option<authority::Need>,
+    session: bool,
 }
 
 /// A remote device's session: who it is, and word of revokes.
@@ -177,6 +182,24 @@ async fn send<O: Sink<String> + Unpin>(output: &mut O, guard: &mut Option<Guard>
         sent = output.send(frame) => sent.map_err(|_| Stop::Closed),
         _ = cut_off(guard) => Err(Stop::Revoked),
     }
+}
+
+/// The frame for `reply` as this session may have it right now.
+fn reply_frame(guard: &Option<Guard>, reply: Reply) -> Result<String, Stop> {
+    let value = match (guard, reply.result) {
+        (_, Err(why)) => return Ok(refusal(json!(reply.id), why)),
+        (None, Ok(value)) => value,
+        (Some(guard), Ok(value)) => {
+            let device = guard.device().ok_or(Stop::Revoked)?;
+            if let Some(need) = &reply.need {
+                if let Err(why) = authority::check(&device, need) {
+                    return Ok(refusal(json!(reply.id), why));
+                }
+            }
+            if reply.session { authority::filter_session(&device.threads, value) } else { value }
+        }
+    };
+    Ok(json!({ "id": reply.id, "ok": value }).to_string())
 }
 
 /// Whether an event goes to this session: always for local and token
@@ -300,17 +323,20 @@ where
                         }
                     }
                     Ok((id, Request::Host(command))) => {
-                        let filter = match &guard {
+                        let need = match &guard {
                             None => Ok(None),
                             Some(guard) => match guard.device() {
                                 None => return Ended::Revoked,
-                                Some(device) => authority::allowed(&device, &command).map(|()| matches!(command, Command::SessionLoad {}).then_some(device.threads)),
+                                Some(device) => {
+                                    let need = authority::command_needs(&command);
+                                    authority::check(&device, &need).map(|()| Some(need))
+                                }
                             },
                         };
-                        match filter {
-                            Ok(filter) => {
+                        match need {
+                            Ok(need) => {
                                 in_flight += 1;
-                                run(Arc::clone(&daemon.host), id, command, filter, replies_tx.clone());
+                                run(Arc::clone(&daemon.host), id, command, need, replies_tx.clone());
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -337,7 +363,11 @@ where
             Some(reply) = replies.recv() => {
                 in_flight -= 1;
                 if reply.after <= written {
-                    if let Err(stop) = send(&mut output, &mut guard, reply.frame).await {
+                    let frame = match reply_frame(&guard, reply) {
+                        Ok(frame) => frame,
+                        Err(stop) => return stop.into(),
+                    };
+                    if let Err(stop) = send(&mut output, &mut guard, frame).await {
                         return stop.into();
                     }
                 } else {
@@ -362,7 +392,11 @@ where
                     let (ready, later): (Vec<Reply>, Vec<Reply>) = waiting.drain(..).partition(|r| r.after <= written);
                     waiting = later;
                     for reply in ready {
-                        if let Err(stop) = send(&mut output, &mut guard, reply.frame).await {
+                        let frame = match reply_frame(&guard, reply) {
+                            Ok(frame) => frame,
+                            Err(stop) => return stop.into(),
+                        };
+                        if let Err(stop) = send(&mut output, &mut guard, frame).await {
                             return stop.into();
                         }
                     }
@@ -382,26 +416,20 @@ where
     Ended::Closed
 }
 
-/// Run `command` on its own task and send its reply to `replies`. A
-/// `session_load` for a device limited to some threads is cut down to them.
-fn run(host: Arc<Host>, id: u64, command: Command, filter: Option<Threads>, replies: mpsc::UnboundedSender<Reply>) {
+/// Run `command` on its own task and send its result to `replies`, with
+/// what a device needed to run it (`need`), to be checked again on delivery.
+fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>) {
+    let session = matches!(command, Command::SessionLoad {});
     let task = {
         let host = Arc::clone(&host);
         tokio::spawn(async move { host.call(command).await })
     };
     tokio::spawn(async move {
-        let frame = match task.await {
-            Ok(Ok(value)) => {
-                let value = match filter {
-                    Some(threads) => authority::filter_session(&threads, value),
-                    None => value,
-                };
-                json!({ "id": id, "ok": value })
-            }
-            Ok(Err(why)) => json!({ "id": id, "err": why }),
-            Err(_) => json!({ "id": id, "err": "the command failed unexpectedly" }),
+        let result = match task.await {
+            Ok(result) => result,
+            Err(_) => Err("the command failed unexpectedly".to_string()),
         };
-        let _ = replies.send(Reply { after: host.events().last_seq(), frame: frame.to_string() });
+        let _ = replies.send(Reply { after: host.events().last_seq(), id, result, need, session });
     });
 }
 
@@ -1069,6 +1097,43 @@ mod tests {
         daemon.host.events().emit(room("a", 2));
         daemon.host.events().emit(room("c", 3));
         assert_eq!(client.next().await.unwrap()["payload"]["room"], "c");
+    }
+
+    /// A reply carries what it needed; this checks it again as it goes out.
+    fn held(daemon: &Daemon, phone: &str, command: Value, result: Value) -> (Option<Guard>, Reply) {
+        let command: Command = serde_json::from_value(command).unwrap();
+        let guard = Guard { devices: Arc::clone(&daemon.devices), id: phone.to_string(), revokes: daemon.devices.subscribe() };
+        let session = matches!(command, Command::SessionLoad {});
+        let reply = Reply { after: 0, id: 7, result: Ok(result), need: Some(authority::command_needs(&command)), session };
+        (Some(guard), reply)
+    }
+
+    fn frame(reply: Result<String, Stop>) -> Value {
+        serde_json::from_str(&reply.ok().expect("a frame, not a cut-off")).unwrap()
+    }
+
+    /// Narrowing a device while its command runs applies to that command's reply.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reply_under_way_is_checked_again_against_the_narrowed_device() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let (guard, reply) = held(&daemon, &phone, json!({ "cmd": "folder_list", "args": {} }), json!(["secret"]));
+        daemon.devices.set_tier(&phone, Tier::Chat).unwrap();
+        let sent = frame(reply_frame(&guard, reply));
+        assert!(sent["err"].as_str().unwrap().contains("chat access"), "{sent}");
+        assert_eq!(sent["id"], 7);
+
+        let session = json!({ "panes": [{ "kind": "chat", "id": "a" }, { "kind": "chat", "id": "b" }], "workspaces": [], "layouts": {} });
+        let (guard, reply) = held(&daemon, &phone, json!({ "cmd": "session_load", "args": {} }), session);
+        daemon.devices.set_threads(&phone, Threads::Only(vec!["a".into()])).unwrap();
+        let sent = frame(reply_frame(&guard, reply));
+        let panes: Vec<&str> = sent["ok"]["panes"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+        assert_eq!(panes, ["a"], "session_load is filtered by the threads allowed now");
+        assert!(sent["ok"].get("layouts").is_none());
+
+        let (guard, reply) = held(&daemon, &phone, json!({ "cmd": "session_load", "args": {} }), json!({}));
+        daemon.devices.revoke(&phone).unwrap();
+        assert!(matches!(reply_frame(&guard, reply), Err(Stop::Revoked)));
     }
 
     /// Test 4e2: global events reach only devices allowed every thread, live and replayed.

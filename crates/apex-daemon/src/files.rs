@@ -12,7 +12,7 @@ pub fn write_private(path: &Path, contents: &str) -> Result<(), String> {
 }
 
 /// `write_private`, with what syncs the folder after the rename passed in.
-fn write_private_then(path: &Path, contents: &str, sync: impl FnOnce(&Path) -> std::io::Result<()>) -> Result<(), String> {
+pub(crate) fn write_private_then(path: &Path, contents: &str, sync: impl FnOnce(&Path) -> std::io::Result<()>) -> Result<(), String> {
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     let write = || -> std::io::Result<()> {
         let _ = std::fs::remove_file(&temporary);

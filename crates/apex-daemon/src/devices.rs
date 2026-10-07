@@ -110,6 +110,9 @@ pub struct Devices {
     /// and nothing is written, rather than forget a revoke.
     state: Mutex<Result<Registry, String>>,
     revoked: broadcast::Sender<String>,
+    /// Tests: make the folder sync after the rename fail.
+    #[cfg(test)]
+    pub fail_sync: std::sync::atomic::AtomicBool,
 }
 
 pub fn now_ms() -> u64 {
@@ -125,19 +128,32 @@ pub fn check_id(id: &str) -> Result<(), String> {
     }
 }
 
+/// The registry in `path`; a missing file is an empty one, and one that
+/// can't be read refuses every device.
+fn read(path: &Path) -> Result<Registry, String> {
+    let state = match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<Registry>(&text).map_err(|e| format!("{} could not be read ({e}); remote devices are refused until it's fixed", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Registry::default()),
+        Err(e) => Err(format!("{} could not be read ({e}); remote devices are refused until it's fixed", path.display())),
+    };
+    if let Err(why) = &state {
+        eprintln!("apex-daemon: {why}");
+    }
+    state
+}
+
 impl Devices {
     /// Read `<data>/devices.json`; a missing file is an empty registry.
     pub fn open(data: &Path) -> Devices {
         let path = data.join(FILE);
-        let state = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str::<Registry>(&text).map_err(|e| format!("{} could not be read ({e}); remote devices are refused until it's fixed", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Registry::default()),
-            Err(e) => Err(format!("{} could not be read ({e}); remote devices are refused until it's fixed", path.display())),
-        };
-        if let Err(why) = &state {
-            eprintln!("apex-daemon: {why}");
+        let state = read(&path);
+        Devices {
+            path,
+            state: Mutex::new(state),
+            revoked: broadcast::channel(REVOKE_CAPACITY).0,
+            #[cfg(test)]
+            fail_sync: Default::default(),
         }
-        Devices { path, state: Mutex::new(state), revoked: broadcast::channel(REVOKE_CAPACITY).0 }
     }
 
     /// The device with this ID, if it's listed and not revoked.
@@ -172,9 +188,29 @@ impl Devices {
         if let Some(folder) = self.path.parent() {
             std::fs::create_dir_all(folder).map_err(|e| format!("could not create {}: {e}", folder.display()))?;
         }
-        files::write_private(&self.path, &format!("{text}\n"))?;
+        if let Err(why) = self.write(&format!("{text}\n")) {
+            // The file may already hold `next` (only the folder sync failed),
+            // so what's on disk decides; a later write then can't drop a
+            // revoke that got there.
+            *state = read(&self.path);
+            return Err(why);
+        }
         *state = Ok(next);
         Ok(result)
+    }
+
+    #[cfg(not(test))]
+    fn write(&self, contents: &str) -> Result<(), String> {
+        files::write_private(&self.path, contents)
+    }
+
+    #[cfg(test)]
+    fn write(&self, contents: &str) -> Result<(), String> {
+        if self.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
+            files::write_private_then(&self.path, contents, |_| Err(std::io::Error::other("sync failed")))
+        } else {
+            files::write_private(&self.path, contents)
+        }
     }
 
     /// Add a device. A revoked ID is refused unless `restore`, which lifts
@@ -225,16 +261,19 @@ impl Devices {
     /// this ID is told to close.
     pub fn revoke(&self, id: &str) -> Result<(), String> {
         check_id(id)?;
-        self.change(|registry| {
+        let result = self.change(|registry| {
             registry.devices.retain(|d| d.endpoint_id != id);
             if !registry.is_revoked(id) {
                 registry.revoked.push(Revoked { endpoint_id: id.to_string(), revoked_at: now_ms() });
             }
             Ok(())
-        })?;
-        // No sessions listening is not an error.
-        let _ = self.revoked.send(id.to_string());
-        Ok(())
+        });
+        // Even when the write reported an error, the revoke may be in force
+        // now; then tell sessions. No sessions listening is not an error.
+        if self.get(id).is_none() {
+            let _ = self.revoked.send(id.to_string());
+        }
+        result
     }
 }
 
@@ -260,6 +299,24 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Folder(dir)
+    }
+
+    /// A folder sync that fails after the rename leaves the new file in
+    /// place; memory follows the file, so a later write keeps the revoke.
+    #[test]
+    fn a_revoke_whose_folder_sync_failed_still_holds() {
+        let data = folder();
+        let devices = Devices::open(&data.0);
+        devices.add(&id(1), "Phone", Tier::Full, Threads::ALL, false).unwrap();
+        devices.add(&id(2), "Tablet", Tier::Full, Threads::ALL, false).unwrap();
+        let mut revokes = devices.subscribe();
+        devices.fail_sync.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(devices.revoke(&id(1)).is_err());
+        devices.fail_sync.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(devices.get(&id(1)), None, "the revoke on disk is in force");
+        assert_eq!(revokes.try_recv().unwrap(), id(1), "sessions were told");
+        devices.set_tier(&id(2), Tier::Chat).unwrap();
+        assert_eq!(Devices::open(&data.0).get(&id(1)), None, "a later write didn't erase it");
     }
 
     #[test]
