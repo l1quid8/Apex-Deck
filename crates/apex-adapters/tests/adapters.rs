@@ -775,11 +775,14 @@ async fn codex_refuses_ungated_exec_when_the_app_server_cannot_start_a_thread() 
 struct Fixed {
     answer: Decision,
     asked: Mutex<Vec<ProposedAction>>,
+    /// What the person says to a question; nothing means they skip it.
+    said: Mutex<Option<apex_core::Answer>>,
+    questions: Mutex<Vec<apex_core::Question>>,
 }
 
 impl Fixed {
     fn new(answer: Decision) -> Self {
-        Self { answer, asked: Mutex::new(Vec::new()) }
+        Self { answer, asked: Mutex::new(Vec::new()), said: Mutex::new(None), questions: Mutex::new(Vec::new()) }
     }
 }
 
@@ -788,6 +791,11 @@ impl Approver for Fixed {
     async fn decide(&self, action: ProposedAction) -> Decision {
         self.asked.lock().unwrap().push(action);
         self.answer
+    }
+
+    async fn ask(&self, questions: Vec<apex_core::Question>) -> apex_core::Answer {
+        self.questions.lock().unwrap().extend(questions);
+        self.said.lock().unwrap().clone().unwrap_or(apex_core::Answer::Skipped)
     }
 }
 
@@ -1275,4 +1283,48 @@ async fn computer_use_app_permission_is_separate_from_an_outer_tool_approval() {
         assert!(asked.iter().all(|a| a.kind == ActionKind::Other && a.detail.contains("dev.apexdeck.app")));
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A stand-in for Claude Code asking two questions with AskUserQuestion.
+#[cfg(unix)]
+const FAKE_CLAUDE_QUESTION: &str = r#"#!/bin/sh
+IFS= read -r prompt
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"control_request","request_id":"q1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which colour?","header":"Colour","options":[{"label":"red"},{"label":"blue"}],"multiSelect":false},{"question":"Which fruit?","header":"Fruit","options":[{"label":"apple"},{"label":"pear"}],"multiSelect":true}]}}}'
+IFS= read -r answer
+case "$answer" in
+*'"behavior":"allow"'*'"Which colour?":"blue"'*'"Which fruit?":"apple, pear"'*) said="blue with apple, pear" ;;
+*'"behavior":"deny"'*'skipped this question'*) said="skipped" ;;
+*) echo "error: unexpected answer: $answer" >&2; exit 2 ;;
+esac
+echo "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"$said\"}},\"parent_tool_use_id\":null}"
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$said\"}"
+cat >/dev/null
+"#;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_questions_reach_the_person_and_the_answer_goes_back() {
+    use apex_core::{AgentTool, Answer};
+    let dir = fake_tool("claude-question", "claude", FAKE_CLAUDE_QUESTION);
+    for access in [Access::Ask, Access::Full] {
+        let mut cfg = config("jigga", Backend::Agent { tool: AgentTool::ClaudeCode, model: None });
+        cfg.access = access;
+        let bot = build(cfg, &context_in(&dir));
+
+        let person = Fixed::new(Decision::Reject);
+        *person.said.lock().unwrap() = Some(Answer::Answered(vec![vec!["blue".into()], vec!["apple".into(), "pear".into()]]));
+        let (result, _, _) = work_asking(bot.as_ref(), &person).await;
+        assert_eq!(result.unwrap().text, "blue with apple, pear");
+        let asked = person.questions.lock().unwrap();
+        assert_eq!(asked.iter().map(|q| q.question.as_str()).collect::<Vec<_>>(), ["Which colour?", "Which fruit?"]);
+        assert!(person.asked.lock().unwrap().is_empty(), "a question is not an approval card");
+
+        let (result, _, _) = work_asking(bot.as_ref(), &Fixed::new(Decision::Approve)).await;
+        assert_eq!(result.unwrap().text, "skipped", "nobody answered: the bot hears it was skipped");
+    }
+    let bot = build(config("jigga", Backend::Agent { tool: AgentTool::ClaudeCode, model: None }), &context_in(&dir));
+    let (result, _, _) = work(bot.as_ref()).await;
+    assert_eq!(result.unwrap().text, "skipped", "with no approver at all");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

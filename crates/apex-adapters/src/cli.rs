@@ -401,24 +401,38 @@ struct Timed<'a> {
     asking: &'a AtomicBool,
 }
 
+/// Restarts the quiet clock however the wait ends, including when it is
+/// abandoned.
+struct Asking<'a> {
+    asking: &'a AtomicBool,
+    last_heard: &'a Mutex<Instant>,
+}
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        *self.last_heard.lock().unwrap() = Instant::now();
+        self.asking.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Timed<'_> {
+    /// The quiet clock stops while the person is being asked.
+    fn waiting(&self) -> Asking<'_> {
+        self.asking.store(true, Ordering::SeqCst);
+        Asking { asking: self.asking, last_heard: self.last_heard }
+    }
+}
+
 #[async_trait]
 impl Approver for Timed<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
-        /// Restarts the quiet clock however the wait ends, including when
-        /// it is abandoned.
-        struct Asking<'a> {
-            asking: &'a AtomicBool,
-            last_heard: &'a Mutex<Instant>,
-        }
-        impl Drop for Asking<'_> {
-            fn drop(&mut self) {
-                *self.last_heard.lock().unwrap() = Instant::now();
-                self.asking.store(false, Ordering::SeqCst);
-            }
-        }
-        self.asking.store(true, Ordering::SeqCst);
-        let _asking = Asking { asking: self.asking, last_heard: self.last_heard };
+        let _asking = self.waiting();
         self.inner.decide(action).await
+    }
+
+    async fn ask(&self, questions: Vec<apex_core::Question>) -> apex_core::Answer {
+        let _asking = self.waiting();
+        self.inner.ask(questions).await
     }
 }
 
@@ -590,6 +604,28 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         assert!(asking.load(Ordering::SeqCst));
         drop(waiting);
         assert!(!asking.load(Ordering::SeqCst), "the quiet clock runs again");
+        assert!(last_heard.lock().unwrap().elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_quiet_clock_stops_while_the_person_answers_a_question() {
+        use super::{AtomicBool, Duration, Instant, Mutex, Ordering, Timed};
+        use apex_core::{Answer, Approver, Decision, ProposedAction, Question};
+        use futures::FutureExt;
+        struct Thinking;
+        #[async_trait::async_trait]
+        impl Approver for Thinking {
+            async fn decide(&self, _: ProposedAction) -> Decision { Decision::Reject }
+            async fn ask(&self, _: Vec<Question>) -> Answer { std::future::pending().await }
+        }
+        let last_heard = Mutex::new(Instant::now() - Duration::from_secs(60));
+        let asking = AtomicBool::new(false);
+        let timed = Timed { inner: &Thinking, last_heard: &last_heard, asking: &asking };
+        let mut waiting = timed.ask(vec![Question { header: String::new(), question: "Go?".into(), options: vec![], multi_select: false }]);
+        assert!(waiting.as_mut().now_or_never().is_none());
+        assert!(asking.load(Ordering::SeqCst), "the person is being asked, so the bot is not quiet");
+        drop(waiting);
+        assert!(!asking.load(Ordering::SeqCst));
         assert!(last_heard.lock().unwrap().elapsed() < Duration::from_secs(5));
     }
 

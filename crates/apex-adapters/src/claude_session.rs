@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use apex_core::{Approver, Decision, Progress, ProgressSink};
+use apex_core::{Answer, Approver, Decision, Progress, ProgressSink, Question, QuestionOption};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
@@ -35,6 +35,40 @@ pub(crate) fn permission_response(request_id: &Value, input: &Value, decision: D
     let response = match decision {
         Decision::Approve | Decision::ApproveAlways => json!({ "behavior": "allow", "updatedInput": input }),
         Decision::Reject => json!({ "behavior": "deny", "message": "The person reading the chat rejected this action." }),
+    };
+    json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
+}
+
+/// Claude's AskUserQuestion input, as questions for the person.
+pub(crate) fn ask_user_questions(input: &Value) -> Vec<Question> {
+    let text = |v: &Value| v.as_str().unwrap_or("").to_string();
+    input["questions"].as_array().into_iter().flatten().map(|q| Question {
+        header: text(&q["header"]),
+        question: text(&q["question"]),
+        options: q["options"].as_array().into_iter().flatten()
+            .map(|o| QuestionOption { label: text(&o["label"]), description: text(&o["description"]) })
+            .collect(),
+        multi_select: q["multiSelect"].as_bool().unwrap_or(false),
+    }).collect()
+}
+
+/// The answer to AskUserQuestion. Answered: allowed, with the answers added
+/// to its input under each question's own text, several picks joined with
+/// ", ". Skipped: denied with a message saying so.
+pub(crate) fn question_response(request_id: &Value, input: &Value, answer: Answer) -> Value {
+    let response = match answer {
+        Answer::Answered(chosen) => {
+            let mut answers = serde_json::Map::new();
+            for (question, picked) in input["questions"].as_array().into_iter().flatten().zip(chosen) {
+                if let Some(text) = question["question"].as_str() {
+                    answers.insert(text.to_string(), json!(picked.join(", ")));
+                }
+            }
+            let mut updated = if input.is_object() { input.clone() } else { json!({}) };
+            updated["answers"] = Value::Object(answers);
+            json!({ "behavior": "allow", "updatedInput": updated })
+        }
+        Answer::Skipped => json!({ "behavior": "deny", "message": "The person skipped this question." }),
     };
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
 }
@@ -90,7 +124,15 @@ pub(crate) async fn run(
             }
             if message["type"] == "control_request" {
                 let request = &message["request"];
-                let reply = if request["subtype"] == "can_use_tool" {
+                // Claude asks the person with AskUserQuestion in every access
+                // mode, Full included (probed 2026-10-06). The questions go
+                // out raw; the room cleans them for display, and the answers
+                // come back matched by position.
+                let reply = if request["subtype"] == "can_use_tool" && request["tool_name"] == "AskUserQuestion" {
+                    on_progress(Progress::Activity("Waiting for your answer"));
+                    let answer = approver.ask(ask_user_questions(&request["input"])).await;
+                    question_response(&message["request_id"], &request["input"], answer)
+                } else if request["subtype"] == "can_use_tool" {
                     let tool = request["tool_name"].as_str().unwrap_or("a tool");
                     let action = reader.claude_action(tool, &request["input"]);
                     let decision = match crate::mcp::claude_tool(tool) {
@@ -138,6 +180,28 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answers_go_back_under_each_questions_own_text() {
+        use apex_core::Answer;
+        let input = json!({"questions": [
+            {"question": "Which colour?", "header": "Colour", "options": [{"label": "red", "description": "warm"}, {"label": "blue"}], "multiSelect": false},
+            {"question": "Which fruit?", "header": "Fruit", "options": [{"label": "apple"}, {"label": "pear"}], "multiSelect": true}
+        ]});
+        let asked = ask_user_questions(&input);
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0].options[0].description, "warm");
+        assert!(asked[1].multi_select);
+
+        let reply = question_response(&json!("r1"), &input, Answer::Answered(vec![vec!["blue".into()], vec!["apple".into(), "pear".into()]]));
+        let response = &reply["response"]["response"];
+        assert_eq!(response["behavior"], "allow");
+        assert_eq!(response["updatedInput"]["answers"], json!({"Which colour?": "blue", "Which fruit?": "apple, pear"}));
+        assert_eq!(response["updatedInput"]["questions"], input["questions"], "the input goes back as it came");
+
+        let skipped = question_response(&json!("r2"), &input, Answer::Skipped);
+        assert_eq!(skipped["response"]["response"], json!({"behavior": "deny", "message": "The person skipped this question."}));
+    }
 
     #[test]
     fn an_approval_returns_the_tools_input_and_a_refusal_says_why() {
