@@ -2847,3 +2847,13 @@ button.mod-status:hover { color: var(--text); }
 .qform-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .qform-so-far { color: var(--muted); font-size: 12px; }
 .qform-answered { margin: 4px 0; color: var(--muted); font-size: 12px; }
+
+/* Plan: a steady cyan box and a small chip first in the bot row, the TL;DR pill's size. */
+.composer.plan:not(.tldr) .composer-box { border-color: color-mix(in srgb, var(--brand-cyan) 70%, transparent); }
+.composer.plan:not(.tldr) .composer-box textarea::placeholder { color: color-mix(in srgb, var(--brand-cyan) 70%, transparent); }
+.plan-chip { flex: none; align-self: center; display: inline-flex; align-items: center; gap: 3px; height: 16px; min-height: 0; padding: 0 5px; border: 1px solid color-mix(in srgb, var(--brand-cyan) 45%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--brand-cyan) 12%, transparent); color: var(--brand-cyan); font-size: 8px; font-weight: 800; letter-spacing: .03em; cursor: pointer; }
+.plan-chip:hover { background: color-mix(in srgb, var(--brand-cyan) 20%, transparent); }
+.plan-chip-x { width: 0; overflow: hidden; opacity: 0; font-size: 7px; transition: opacity .12s, width .12s; }
+.plan-chip:hover .plan-chip-x, .plan-chip:focus-visible .plan-chip-x { width: 8px; opacity: .8; }
+.composer-bots.folded .plan-chip-label, .composer-bots.folded .plan-chip-x { display: none; }
+.approval-plan { max-height: 240px; overflow: auto; margin: 6px 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }

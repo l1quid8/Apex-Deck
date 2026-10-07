@@ -125,3 +125,9 @@ test("quoting and an empty room keep their own placeholders", () => {
   assert.equal(composerCopy(false, false, { to: "Jigga", tldr: true, quoting: true }).placeholder, "e.g. Check this against the tests and say what breaks");
   assert.equal(composerCopy(false, true, { to: "Jigga" }).placeholder, "Add a model to start");
 });
+
+test("with Plan on, the empty box says nothing gets changed", () => {
+  assert.equal(composerCopy(false, false, { plan: true }).placeholder, "Plan with the bots — nothing gets changed…");
+  assert.equal(composerCopy(false, false, { plan: true, tldr: true }).placeholder, "Plan with the bots — nothing gets changed…", "planning matters more than short answers");
+  assert.equal(composerCopy(true, false, { plan: true }).placeholder, "Queue a message… (⌘↵ steers)");
+});

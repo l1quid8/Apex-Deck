@@ -620,6 +620,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [folded, setFolded] = useState(() => loadFolded(pane.id));
   const toggleFolded = () => setFolded((on) => { saveFolded(pane.id, !on); return !on; });
   const toggleTldr = () => setTldr((on) => { saveTldr(pane.id, !on); return !on; });
+  // The thread's Plan switch, as the host keeps it.
+  const [planOn, setPlanOn] = useState(false);
+  const setPlan = (on: boolean) => backend.roomSetPlan(pane.id, on).catch((error) => notify(`Could not ${on ? "turn Plan on" : "turn Plan off"}: ${String(error)}`, "error"));
   // The form above the composer: a bot's question, or next steps after a reply.
   const questionState = useSyncExternalStore(subscribeQuestions, questionSnapshot);
   const form = formView(questionState[pane.id]);
@@ -800,6 +803,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         case "allowed_changed":
           setAllowed(event.allowed);
           break;
+        case "plan_changed":
+          setPlanOn(event.on);
+          break;
         case "usage":
           if (recoveredState?.recovery_seq == null) { void durableRecovery.refresh(); break; }
           setUsed((u) => {
@@ -898,6 +904,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         // lost with the bot's turn, as when Deck restarted.
         const before = shownForm.current;
         restoreRoomQuestions(pane.id, state);
+        setPlanOn(Boolean(state.plan ?? saved.plan));
         if (before.kind === "question" && !(state.questions ?? []).some((q) => q.request === before.ask.request)) {
           flashForm(`${nameOf(before.ask.id)}'s question was dropped when Deck restarted`);
         }
@@ -1512,6 +1519,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
       case "diff":
         setText(""); details?.show("changes"); loadDiff(); return;
+      case "plan":
+        setText(""); void setPlan(!planOn); return;
       case "image": {
         // The picture is posted as your message, so every model can see it,
         // without asking anyone to reply.
@@ -1838,7 +1847,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     roster: participants.map((p) => ({ id: p.id, name: p.display_name })),
     policy: options.policy,
   });
-  const copy = composerCopy(busy, participants.length === 0, { quoting: Boolean(reply), to: recipient, tldr });
+  const copy = composerCopy(busy, participants.length === 0, { quoting: Boolean(reply), to: recipient, tldr, plan: planOn });
   const serverMenuOpen = findTrigger(text, caret)?.kind === "server";
   useEffect(() => {
     if (!ready) return;
@@ -2445,6 +2454,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const lit = new Set(serverTargets);
   const botChips = (
     <div ref={chipRow} className={`chips composer-bots${folded ? " folded" : ""}`}>
+      {planOn && !profileMode && (
+        <button type="button" className="plan-chip" title="Plan is on: every bot plans and changes nothing. Click to turn it off."
+          aria-label="Plan is on. Turn it off" onPointerDown={(event) => event.preventDefault()} onClick={() => void setPlan(false)}>
+          <span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span>
+        </button>
+      )}
       {participants.map((p) => {
         const levels = levelsFor(p.id);
         const shown = levelsShown(levels, chipParts, isLow);
@@ -2670,7 +2685,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                     <i />
                     <i />
                   </span>
-                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? phaseLabel(turn?.phase)}</span>
+                  <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
                   {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
                   {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${names.get(id) ?? id}`} title={`Stop ${names.get(id) ?? id}`} onClick={() => void turnQueue.halt(id)}><StopSquare /> Stop</button>}
                 </div>
@@ -2740,7 +2755,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {!profileMode && !panel && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
       </div>
 
-      {!profileMode && <div className={tldr ? "composer tldr" : "composer"} ref={composer}
+      {!profileMode && <div className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
         onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); attachFiles(e.dataTransfer.files); } }}>
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
@@ -2783,7 +2798,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
         <div className={`composer-box${stacked ? " stacked" : ""}${work && !work.started ? " with-tray" : ""}`} ref={field}>
-          <ComposerMenu ref={composerMenu} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
+          <ComposerMenu ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
             if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));
             if (item.kind === "command" && item.command) {

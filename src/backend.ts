@@ -79,6 +79,8 @@ export interface Backend {
   roomDecide(id: string, request: string, approve: boolean, always?: boolean): Promise<void>;
   /** Answer a bot's question, named by the `request` from its event: one list of picks (or one typed answer) per question. `null` skips. */
   roomAnswer(id: string, request: string, answers: string[][] | null): Promise<void>;
+  /** Turn the thread's Plan switch on or off. Every client hears `plan_changed`. */
+  roomSetPlan(id: string, on: boolean): Promise<void>;
   roomSetOptions(id: string, options: RoomOptions): Promise<void>;
   /** Stop always allowing something, so its card shows again. */
   roomForgetAllowed(id: string, rule: AllowedRule): Promise<void>;
@@ -223,7 +225,7 @@ function demoBackend(): Backend {
     exitListeners.forEach((cb) => cb(id, code));
   };
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
-  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; usage?: Record<string, TokenTotals>; seq: number; stopped: boolean; last: string[] }>();
+  const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; usage?: Record<string, TokenTotals>; plan?: boolean; seq: number; stopped: boolean; last: string[] }>();
   const cancellations = new Map<string, () => void>();
   const emitData = (id: string, data: string) => dataListeners.forEach((cb) => cb(id, data));
   const saveRoom = (id: string) => {
@@ -648,6 +650,14 @@ function demoBackend(): Backend {
       if (!answer) throw new Error("that request is no longer waiting for an answer");
       asks.delete(request);
       answer(approve, always);
+    },
+    // Preview bots only pretend to plan; the switch is kept and announced.
+    roomSetPlan: async (id, on) => {
+      const room = rooms.get(id);
+      if (!room) throw new Error(`no group chat with id ${id}`);
+      if (Boolean(room.plan) === on) return;
+      room.plan = on;
+      emitRoom(id, { type: "plan_changed", on });
     },
     // Preview bots never ask questions.
     roomAnswer: async () => { throw new Error("that question is no longer waiting for an answer"); },

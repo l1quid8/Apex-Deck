@@ -11,6 +11,18 @@ export const ANSWER_LABEL: Record<Answer, { ask: string; done: string }> = {
   deny: { ask: "Deny", done: "Denied" },
 };
 
+/** The buttons a card shows. Starting the work after a plan is asked every time. */
+export function choicesFor(action: ProposedAction): Answer[] {
+  return action.kind === "plan" ? ["once", "deny"] : APPROVAL_CHOICES;
+}
+
+/** A button's words. A plan card's mean start the work, or keep planning. */
+export function answerLabel(action: ProposedAction, answer: Answer): { ask: string; done: string } {
+  if (action.kind === "plan" && answer === "once") return { ask: "Start the work", done: "Started" };
+  if (action.kind === "plan" && answer === "deny") return { ask: "Keep planning", done: "Kept planning" };
+  return ANSWER_LABEL[answer];
+}
+
 /** What the backend is told: whether to go ahead, and whether to stop asking. */
 export function decisionFor(answer: Answer): { approve: boolean; always: boolean } {
   return { approve: answer !== "deny", always: answer === "always" };
@@ -29,7 +41,7 @@ export const RISKY_NOTE = " · can spend money or publish";
 
 /** The card's small label: what kind of thing the bot wants, and whether it is risky. */
 export function kindLabel(action: ProposedAction): string {
-  const kind = action.kind === "edit" ? "Wants to change a file" : action.kind === "command" ? "Wants to run a command" : action.kind === "tool" ? "Wants to call an MCP tool" : "Wants permission";
+  const kind = action.kind === "plan" ? "Has a plan" : action.kind === "edit" ? "Wants to change a file" : action.kind === "command" ? "Wants to run a command" : action.kind === "tool" ? "Wants to call an MCP tool" : "Wants permission";
   return action.risky ? kind + RISKY_NOTE : kind;
 }
 

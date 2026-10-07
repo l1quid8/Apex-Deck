@@ -6,6 +6,8 @@ export type Command =
   | { name: "export"; format: "markdown" | "json" }
   | { name: "diff" }
   | { name: "image"; provider: string; prompt: string }
+  /** Turn the thread's Plan switch on or off. */
+  | { name: "plan" }
   | { name: "unknown"; typed: string };
 
 /** Who `/image` can ask; each needs its own API key. */
@@ -27,6 +29,7 @@ export function parseComposer(body: string): Parsed {
     case "clear":
     case "compact":
     case "diff":
+    case "plan":
       return arg ? { command: { name: "unknown", typed: body } } : { command: { name } as Command };
     case "fork":
       return { command: { name: "fork", title: arg } };

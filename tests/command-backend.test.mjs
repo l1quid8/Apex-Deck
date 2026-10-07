@@ -66,6 +66,7 @@ const COMMANDS = [
   ['roomDecide', ['t', 'r-1', false, true], 'room_decide', { id: 't', request: 'r-1', approve: false, always: true }],
   ['roomAnswer', ['t', 'ask-1', [['blue'], ['apple', 'pear']]], 'room_answer', { id: 't', request: 'ask-1', answers: [['blue'], ['apple', 'pear']] }],
   ['roomAnswer', ['t', 'ask-2', null], 'room_answer', { id: 't', request: 'ask-2', answers: null }],
+  ['roomSetPlan', ['t', true], 'room_set_plan', { id: 't', on: true }],
   ['roomSetOptions', ['t', options], 'room_set_options', { id: 't', options }],
   ['roomForgetAllowed', ['t', rule], 'room_forget_allowed', { id: 't', rule }],
   ['roomAddParticipant', ['t', participant], 'room_add_participant', { id: 't', participant }],

@@ -1,6 +1,7 @@
 import { useId, useRef, useState } from "react";
 
-import { ANSWER_LABEL, APPROVAL_CHOICES, sendApprovalAnswer, kindLabel, scopeLine, type Answer } from "./approvalChoices";
+import { answerLabel, choicesFor, sendApprovalAnswer, kindLabel, scopeLine, type Answer } from "./approvalChoices";
+import { Markdown } from "./Markdown";
 import type { FileChange, ProposedAction } from "./types";
 
 /** A diff drawn line by line: added lines green, removed lines red. */
@@ -66,9 +67,11 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
         <span className="approval-kind">{kindLabel(action)}</span>
         <strong>{action.title}</strong>
       </div>
-      {action.kind === "edit" ? <Diff text={action.detail} /> : <pre className="approval-detail">{action.detail}</pre>}
+      {action.kind === "edit" ? <Diff text={action.detail} />
+        : action.kind === "plan" ? <div className="approval-plan"><Markdown text={action.detail} onOpen={() => {}} /></div>
+        : <pre className="approval-detail">{action.detail}</pre>}
       <div className="approval-actions">
-        {APPROVAL_CHOICES.map((answer) => {
+        {choicesFor(action).map((answer) => {
           const always = answer === "always";
           return (
             <button
@@ -83,7 +86,7 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
               onFocus={always ? preview(true) : undefined}
               onBlur={always ? preview(false) : undefined}
             >
-              {answered === answer ? ANSWER_LABEL[answer].done : ANSWER_LABEL[answer].ask}
+              {answered === answer ? answerLabel(action, answer).done : answerLabel(action, answer).ask}
             </button>
           );
         })}

@@ -30,6 +30,7 @@ export const COMMANDS: Extract<MenuItem, { kind: "command" }>[] = [
   { kind: "command", key: "export", label: "/export", detail: "Save the chat as Markdown", command: { name: "export", format: "markdown" } },
   { kind: "command", key: "image", label: "/image", detail: "Make a picture: /image [chatgpt|grok|venice] prompt", command: null },
   { kind: "command", key: "export json", label: "/export json", detail: "Save the raw transcript as JSON", command: { name: "export", format: "json" } },
+  { kind: "command", key: "plan", label: "/plan", detail: "Bots plan and ask; nothing gets changed (again to stop)", command: { name: "plan" } },
 ];
 
 export function findTrigger(text: string, caret: number): Trigger | null {
@@ -46,7 +47,7 @@ export function findTrigger(text: string, caret: number): Trigger | null {
 
 /** Items for a trigger, or everything when the menu was opened with "+".
  *  Mod commands are inserted, not run, so you can add arguments first. */
-export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: (ToolServer & {agent: string})[] = [], mods: { mod: string; name: string; description: string }[] = []): MenuItem[] {
+export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: (ToolServer & {agent: string})[] = [], mods: { mod: string; name: string; description: string }[] = [], planOn = false): MenuItem[] {
   const commands: Extract<MenuItem, { kind: "command" }>[] = [
     ...COMMANDS,
     ...mods.filter((m) => !COMMANDS.some((c) => c.key === m.name.toLowerCase()))
@@ -56,8 +57,12 @@ export function menuItems(trigger: Trigger | null, people: { id: string; display
     { kind: "mention", id: "all", label: "@all", detail: "Everyone answers" },
     ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
   ];
+  // Plan switches every bot in the thread to planning, or back.
+  const plan: MenuItem = planOn
+    ? { kind: "command", key: "plan", label: "Stop planning", detail: "Let the bots change things again", command: { name: "plan" } }
+    : { kind: "command", key: "plan", label: "Plan", detail: "Bots plan and ask; nothing gets changed", command: { name: "plan" } };
   // Tools types the ! that opens the list of servers, apps and plugins.
-  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, { kind: "tools", label: "Tools", detail: "Pick a server, app or plugin to use" }, ...mentions, ...commands];
+  if (!trigger) return [{ kind: "attach", label: "Photo or file", detail: "Attach for the models to open" }, { kind: "attach-folder", label: "Folder", detail: "Copy a folder in for the models to open" }, { kind: "tools", label: "Tools", detail: "Pick a server, app or plugin to use" }, plan, ...mentions, ...commands];
   const q = trigger.query;
   if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
   if (trigger.kind === "command") return commands.filter((c) => c.key.startsWith(q));

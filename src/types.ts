@@ -7,7 +7,7 @@ export type Access = "read" | "ask" | "edits" | "full";
 
 /** Something a bot wants to do and is waiting for a yes or no on. */
 export interface ProposedAction {
-  kind: "edit" | "command" | "tool" | "other";
+  kind: "edit" | "command" | "tool" | "other" | "plan";
   /** One line, such as "Edit src/main.rs". */
   title: string;
   /** The diff, the command, or the tool's arguments. */
@@ -92,6 +92,8 @@ export interface RoomSnapshot {
   allowed?: AllowedRule[];
   /** Tokens each bot has used in this thread. /clear keeps them; a fork starts without them. */
   usage?: Record<string, TokenTotals>;
+  /** The thread's Plan switch: every bot plans and changes nothing. */
+  plan?: boolean;
 }
 
 /** Something a bot may do without asking, because the person chose "Always allow". */
@@ -129,6 +131,7 @@ export interface RoomState {
   approvals: { id: string; request: string; action: ProposedAction }[];
   questions?: { id: string; request: string; questions: Question[] }[];
   next_steps?: { id: string; steps: NextStep[]; pending: boolean } | null;
+  plan?: boolean;
   live?: boolean;
 }
 
@@ -188,6 +191,8 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "question_resolved"; id: string; request: string; end: QuestionEnd; answers: string[][] }
   /** Suggested next prompts after `id`'s reply; `pending` while worked out; empty and settled clears them. */
   | { type: "next_steps"; id: string; steps: NextStep[]; pending: boolean }
+  /** The thread's Plan switch was turned on or off. */
+  | { type: "plan_changed"; on: boolean }
   /** The thread's whole "Always allow" list, after it changed. */
   | { type: "allowed_changed"; allowed: AllowedRule[] }
   /** A bot changed a file. */

@@ -58,6 +58,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomStop: (id, participant) => call("room_stop", { id, participant: participant ?? null }),
     roomDecide: (id, request, approve, always = false) => call("room_decide", { id, request, approve, always }),
     roomAnswer: (id, request, answers) => call("room_answer", { id, request, answers }),
+    roomSetPlan: (id, on) => call("room_set_plan", { id, on }),
     roomSetOptions: (id, options) => call("room_set_options", { id, options }),
     roomForgetAllowed: (id, rule) => call("room_forget_allowed", { id, rule }),
     roomAddParticipant: (id, participant) => call("room_add_participant", { id, participant }),

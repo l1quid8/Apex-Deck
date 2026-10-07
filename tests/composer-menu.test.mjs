@@ -25,7 +25,16 @@ test('items filter by kind and prefix', () => {
   assert.deepEqual(menuItems(findTrigger('@j', 2), people).map(i => i.label), ['@jigga']);
   assert.deepEqual(menuItems(findTrigger('@a', 2), people).map(i => i.label), ['@all']);
   const all = menuItems(null, people).map(i => i.label);
-  assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json']);
+  assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', 'Plan', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan']);
+});
+
+test('Plan sits in the + menu next to Tools and turns into Stop planning while on', () => {
+  const plan = menuItems(null, people).find(i => i.label === 'Plan');
+  assert.deepEqual(plan.command, { name: 'plan' });
+  assert.match(plan.detail, /nothing gets changed/);
+  const on = menuItems(null, people, [], [], true).map(i => i.label);
+  assert.ok(on.includes('Stop planning') && !on.includes('Plan'));
+  assert.deepEqual(menuItems(findTrigger('/pl', 3), people).map(i => i.label), ['/plan']);
 });
 
 test('picking replaces the trigger, or inserts at the caret from "+"', () => {
@@ -47,7 +56,7 @@ test('mod commands show up after the built-in ones and are inserted, not run', (
   const hl = menuItems(findTrigger('/h', 2), people, [], mods);
   assert.deepEqual(hl.map(i => [i.label, i.detail, i.command]), [['/hl', 'Hyperliquid positions', null]]);
   const all = menuItems(findTrigger('/', 1), people, [], mods).map(i => i.label);
-  assert.deepEqual(all, ['/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/hl']);
+  assert.deepEqual(all, ['/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan', '/hl']);
   assert.deepEqual(findTrigger('/my-mod2', 8), { kind: 'command', query: 'my-mod2', start: 0, end: 8 });
 });
 

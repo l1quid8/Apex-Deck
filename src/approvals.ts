@@ -106,7 +106,7 @@ export function cardsByBot(cards: readonly OpenCard[]): Record<string, OpenCard[
 
 /** The kind label a card and the attention list show. */
 export function cardLabel(kind: ProposedAction["kind"]): string {
-  return kind === "edit" ? "Wants to change a file" : kind === "command" ? "Wants to run a command" : kind === "tool" ? "Wants to call an MCP tool" : "Wants permission";
+  return kind === "plan" ? "Has a plan" : kind === "edit" ? "Wants to change a file" : kind === "command" ? "Wants to run a command" : kind === "tool" ? "Wants to call an MCP tool" : "Wants permission";
 }
 
 /** A card in a few words: a command as "Run" and its first line (at most 60 characters), anything else by its title. */

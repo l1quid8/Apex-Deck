@@ -15,12 +15,13 @@ export function waitingVerb(count: number): string {
  * What the empty message box says Enter will do. `to` names who gets the
  * message (recipientName): whoever gets a message with no @.
  */
-export function composerCopy(busy: boolean, empty: boolean, extra: { quoting?: boolean; to?: string | null; tldr?: boolean } = {}): { placeholder: string } {
+export function composerCopy(busy: boolean, empty: boolean, extra: { quoting?: boolean; to?: string | null; tldr?: boolean; plan?: boolean } = {}): { placeholder: string } {
   if (empty) return { placeholder: "Add a model to start" };
   const { to } = extra;
   // While quoting, the placeholder suggests what to ask about the quote.
   const placeholder = extra.quoting ? "e.g. Check this against the tests and say what breaks"
     : busy ? (to ? `Queue for ${to}… (⌘↵ steers)` : "Queue a message… (⌘↵ steers)")
+    : extra.plan ? "Plan with the bots — nothing gets changed…"
     : extra.tldr ? (to ? `TL;DR to ${to}: short answers` : "TL;DR mode: short answers")
     : to ? `Message ${to}…` : "Message the room…";
   return { placeholder };

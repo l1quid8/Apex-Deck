@@ -59,3 +59,9 @@ test('/image takes an optional provider and needs a prompt', () => {
   assert.deepEqual(parseComposer('/image grok'), { command: { name: 'unknown', typed: '/image grok' } });
   assert.deepEqual(parseComposer('/image'), { command: { name: 'unknown', typed: '/image' } });
 });
+
+test('/plan toggles planning and takes nothing after it', () => {
+  assert.deepEqual(parseComposer('/plan'), { command: { name: 'plan' } });
+  assert.deepEqual(parseComposer('/PLAN'), { command: { name: 'plan' } });
+  assert.deepEqual(parseComposer('/plan the fix'), { command: { name: 'unknown', typed: '/plan the fix' } });
+});

@@ -70,7 +70,7 @@ export function representedRoomEvent(state: RoomState, event: RoomEvent): boolea
   switch (event.type) {
     case "message_added": case "usage": case "changed": case "allowed_changed": case "compacted":
     case "turn_started": case "participant_idle": case "approval_requested": case "approval_resolved": case "idle": case "stopped":
-    case "question_requested": case "question_resolved": case "next_steps":
+    case "question_requested": case "question_resolved": case "next_steps": case "plan_changed":
       return true;
     case "delta": case "activity": return !state.active.includes(event.id);
     default: return false;

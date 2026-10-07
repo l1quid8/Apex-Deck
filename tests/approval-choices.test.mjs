@@ -31,3 +31,14 @@ test("scope lines say what the rule really matches for every kind of card", () =
   assert.equal(scopeLine("Null", { kind: "edit", title: "Edit files", detail: "" }), "Always allow lets Null make edits it doesn't describe in this thread without asking.");
   assert.equal(scopeLine("Null", { kind: "other", title: "node_repl asks permission", detail: "Allow Computer Use to use \"Apex Deck\"?" }), "Always allow lets Null have this exact permission in this thread without asking.");
 });
+
+test("a start-the-work card offers Start the work and Keep planning, never Always allow", async () => {
+  const { choicesFor, answerLabel } = await import("../src/approvalChoices.ts");
+  const start = { kind: "plan", title: "Start the work?", detail: "1. Do it" };
+  assert.deepEqual(choicesFor(start), ["once", "deny"]);
+  assert.deepEqual(choicesFor(tweet), ["once", "always", "deny"]);
+  assert.deepEqual(answerLabel(start, "once"), { ask: "Start the work", done: "Started" });
+  assert.deepEqual(answerLabel(start, "deny"), { ask: "Keep planning", done: "Kept planning" });
+  assert.deepEqual(answerLabel(tweet, "once"), { ask: "Allow once", done: "Allowed once" });
+  assert.equal(kindLabel(start), "Has a plan");
+});

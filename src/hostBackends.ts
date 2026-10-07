@@ -18,7 +18,7 @@ const appMethods = new Set([
   "exportThread", "exportPdf", "artifactSave", "artifactOpenExternal", "onMenu", "startupFolders",
 ]);
 const writes = new Set([
-  "roomPost", "roomPostTo", "roomTurn", "roomDecide", "roomAnswer", "roomSetOptions", "roomForgetAllowed", "roomAddParticipant",
+  "roomPost", "roomPostTo", "roomTurn", "roomDecide", "roomAnswer", "roomSetPlan", "roomSetOptions", "roomForgetAllowed", "roomAddParticipant",
   "roomUpdateParticipant", "roomRemoveParticipant", "roomClear", "roomRewind", "roomRevert", "roomPin", "roomUnpin",
   "roomFork", "roomImport", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
   "generateImage", "importReplyImage", "artifactsSave",
