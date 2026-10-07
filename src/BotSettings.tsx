@@ -3,8 +3,10 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
 import type { ModelChoice, ParticipantConfig } from './types';
-import { AGENT_EFFORTS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups } from './models';
+import { AGENT_EFFORTS, API_EFFORTS, effortsFor, findModel, modelGroups } from './models';
 import { Picker } from './Picker';
+import { ReasoningSlider } from './ReasoningSlider';
+import { latestSaveQueue } from './settingsSave';
 import { withTurnSettings } from './participantSettings';
 
 interface Props {
@@ -25,6 +27,11 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
   const [effort, setEffort] = useState(config.effort ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  const orderedSave = useRef(latestSaveQueue<ParticipantConfig>(next => saveRef.current(next)));
+  const saveVersion = useRef(0);
+  const requested = useRef({ model, effort });
   const [position, setPosition] = useState({ top: 0, left: 0 });
   const root = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -61,24 +68,26 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
   /** Saves right away; there is no Apply step for agent bots. */
   const apply = async (nextModel: string, nextEffort: string) => {
     const nextEfforts = tool ? effortsFor(AGENT_EFFORTS[tool], groups, nextModel) : API_EFFORTS;
+    const normalizedEffort = nextEfforts.includes(nextEffort) ? nextEffort : '';
+    requested.current = { model: nextModel, effort: normalizedEffort };
+    const version = ++saveVersion.current;
     setSaving(true); setError('');
-    try { await save(withTurnSettings(config, nextModel, nextEfforts.includes(nextEffort) ? nextEffort : '', nextEfforts)); }
-    catch (error) { setError(String(error)); }
-    setSaving(false);
+    try { await orderedSave.current(withTurnSettings(config, nextModel, normalizedEffort, nextEfforts)); }
+    catch (error) { if (version === saveVersion.current) { setError(String(error)); requested.current = { model: '\0', effort: '\0' }; } }
+    if (version === saveVersion.current) setSaving(false);
   };
-  const steps = ['', ...efforts];
-  const step = Math.max(0, steps.indexOf(supportedEffort));
   useEffect(() => {
     const pick = (event: KeyboardEvent) => { const n = Number(event.key); if (!tool || !open || saving || !(n >= 1 && n <= shown.length + 1) || (event.target as HTMLElement).tagName === 'INPUT') return; pickModel(n === 1 ? '' : shown[n - 2].id); };
     document.addEventListener('keydown', pick);
     return () => document.removeEventListener('keydown', pick);
   });
-  /** The stop under the thumb, read from the control so a click saves the new stop. */
-  const effortAt = (input: HTMLInputElement) => steps[Number(input.value)] ?? '';
-  const commitEffort = (value: string) => { if (value !== (config.effort ?? '')) void apply(model, value); };
+  const commitEffort = (value: string) => {
+    setEffort(value);
+    if (value !== requested.current.effort || model !== requested.current.model) void apply(model, value);
+  };
   return createPortal(<div ref={root} className="bot-settings" style={position} onScroll={() => setOpen(false)} role="dialog" aria-label={`Settings for ${config.display_name}`}>
     <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
-    <fieldset disabled={saving}>
+    <fieldset aria-busy={saving}>
       {tool ? <div className="model-select">
         <span className="model-select-label">Model</span>
         <button type="button" className="model-select-trigger" aria-haspopup="menu" aria-expanded={open} onClick={event => { const r = event.currentTarget.getBoundingClientRect(); setMenuPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right - 8), maxHeight: Math.min(320, Math.max(160, window.innerHeight - r.bottom - 12)) }); setOpen(v => !v); setMore(false); }}>
@@ -96,10 +105,7 @@ export function BotSettings({ config, anchor, backend, save, close, avatar, mete
           </button>)}
         </div>}
       </div> : <label>Model<Picker name="quick-bot-model" value={model} onChange={setModel} groups={[]} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>}
-      <label className="effort-slider">Reasoning <span className="effort-value">{efforts.length ? (supportedEffort ? (supportedEffort === 'xhigh' ? 'xHigh' : effortLabel(supportedEffort)) : 'Default') : 'Not supported'}</span>
-        <input type="range" aria-label="Reasoning" min={0} max={steps.length - 1} step={1} value={step} disabled={efforts.length === 0} onChange={e => setEffort(effortAt(e.currentTarget))} onPointerUp={e => { const value = effortAt(e.currentTarget); setEffort(value); commitEffort(value); }} onKeyUp={e => { const value = effortAt(e.currentTarget); setEffort(value); commitEffort(value); }} />
-        {efforts.length > 0 && <span className="effort-ticks" aria-hidden="true">{steps.map((s, i) => <span key={s || 'default'} className={i === step ? 'on' : ''}>{s ? (s === 'xhigh' ? 'xHigh' : effortLabel(s)) : 'Default'}</span>)}</span>}
-      </label>
+      <ReasoningSlider efforts={efforts} value={supportedEffort} onCommit={commitEffort} />
       {note && <p className="muted">{note}</p>}
       {error && <p role="alert" className="danger-text">{error}</p>}
       {!tool && <div className="bot-settings-actions"><button className="primary" disabled={!model.trim()} onClick={() => void apply(model, supportedEffort)}>{saving ? 'Saving…' : 'Apply'}</button></div>}
