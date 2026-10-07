@@ -1,0 +1,4 @@
+ApexRemote.xcframework/
+ApexRemote.xcframework.stamp
+.build/
+.swiftpm/

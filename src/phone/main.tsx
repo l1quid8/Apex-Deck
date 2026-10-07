@@ -5,7 +5,6 @@ import { Keyboard } from "@capacitor/keyboard";
 import "../styles.css";
 import "./phone.css";
 import { PhoneApp } from "./PhoneApp";
-import { IrohSpike } from "./IrohSpike";
 
 const root = document.documentElement;
 const view = window.visualViewport;
@@ -45,4 +44,4 @@ if (Capacitor.isPluginAvailable("Keyboard")) {
   fit();
 }
 
-createRoot(document.getElementById("root")!).render(Capacitor.isPluginAvailable("IrohSpike") && import.meta.env.VITE_IROH_SPIKE === "1" ? <IrohSpike /> : <PhoneApp />);
+createRoot(document.getElementById("root")!).render(<PhoneApp />);
