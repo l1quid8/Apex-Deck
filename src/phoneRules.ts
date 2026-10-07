@@ -2,9 +2,11 @@
 // each machine itself, so one machine being asleep or offline never pauses
 // the others, and the phone never calls the Mac "This Mac".
 
-import { contextLevel, contextLine, isLow, planLevel, planLine } from "./battery.ts";
+import { contextLevel, countdown, isLow, liveWindows, percent, planLevel, shortCount, windowLabel } from "./battery.ts";
 import { findTrigger, insertAt, menuItems, type Trigger } from "./composerMenu.ts";
-import type { AgentTool, PlanWindow } from "./types.ts";
+import { AGENT_EFFORTS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups, type ModelGroup } from "./models.ts";
+import { withTurnSettings } from "./participantSettings.ts";
+import type { AgentTool, ModelChoice, ParticipantConfig, PlanWindow, ToolServer } from "./types.ts";
 
 export type MachineKind = "mac" | "server";
 export type LinkStatus = "online" | "offline" | "connecting";
@@ -212,18 +214,177 @@ export function crewOpen(collapsed: boolean, typing: boolean): boolean {
   return !collapsed && !typing;
 }
 
-/** Context and plan for the sheet a held bot opens, worded as on the desktop's usage card. */
-export function botUsage(
-  bot: { provider: AgentTool | null; reports: boolean },
+/** One bar in a held bot's sheet: its context, or one window of its provider's plan. `left` is 0 to 1, null while unknown. */
+export interface MeterRow {
+  key: string;
+  label: string;
+  left: number | null;
+  /** "82%", or "—" while unknown. */
+  value: string;
+  /** "36k of 200k tokens", "Resets in 2h14m", or why there is no figure yet. */
+  detail: string;
+  low: boolean;
+}
+
+/** Whether a bot's tool reports its context window at all. */
+export function reportsContext(provider: AgentTool | null): boolean {
+  return provider !== null && provider !== "gemini" && provider !== "grok";
+}
+
+/** Context and plan as bars for the sheet a held bot opens: context first, then each plan window, shortest first, as on the desktop's meters. */
+export function botMeters(
+  provider: AgentTool | null,
   fill: { used: number; window: number } | undefined,
   windows: PlanWindow[] | undefined,
   now: Date,
-): { context: string; contextLow: boolean; plan: string; planLow: boolean } {
-  const plan = windows ? planLine(windows, now) : null;
-  return {
-    context: fill ? contextLine(fill) : bot.reports ? "Shows after its next reply" : "Not reported by this provider",
-    contextLow: isLow(contextLevel(fill)),
-    plan: plan ?? (!bot.provider ? "Not reported by this provider" : "Shows after its next reply"),
-    planLow: bot.provider !== null && isLow(planLevel(windows, now.getTime() / 1000)),
-  };
+): MeterRow[] {
+  const nowSeconds = now.getTime() / 1000;
+  const context = contextLevel(fill);
+  const rows: MeterRow[] = [{
+    key: "context",
+    label: "Context",
+    left: context,
+    value: context === null ? "—" : `${percent(context)}%`,
+    detail: fill ? `${shortCount(Math.max(0, fill.window - fill.used))} of ${shortCount(fill.window)} tokens left` : reportsContext(provider) ? "Shows after its next reply" : "Not reported by this provider",
+    low: isLow(context),
+  }];
+  const live = provider ? liveWindows(windows ?? [], nowSeconds) : [];
+  if (live.length === 0) {
+    rows.push({ key: "plan", label: "Plan", left: null, value: "—", detail: provider ? "Shows after its next reply" : "Not reported by this provider", low: false });
+    return rows;
+  }
+  for (const w of [...live].sort((a, b) => (a.window_minutes ?? Infinity) - (b.window_minutes ?? Infinity))) {
+    const left = Math.max(0, 1 - Math.min(100, w.used_percent) / 100);
+    const name = windowLabel(w);
+    rows.push({
+      key: w.name,
+      label: name.charAt(0).toUpperCase() + name.slice(1),
+      left,
+      value: `${percent(left)}%`,
+      detail: w.resets_at != null ? `Resets in ${countdown(w.resets_at, nowSeconds)}` : "",
+      low: isLow(left),
+    });
+  }
+  return rows;
+}
+
+/** What a bot's pill in the bar shows: a hairline for context left, and a dot when its plan is nearly used up. */
+export function pillMeter(
+  provider: AgentTool | null,
+  fill: { used: number; window: number } | undefined,
+  windows: PlanWindow[] | undefined,
+  now: Date,
+): { context: number | null; low: boolean; planLow: boolean } {
+  const context = contextLevel(fill);
+  return { context, low: isLow(context), planLow: provider !== null && isLow(planLevel(windows, now.getTime() / 1000)) };
+}
+
+/** "12k in · 3.1k out · 4 turns in this thread": what a bot has used here, from the totals saved with the thread. */
+export function tokenWords(use: { input: number; output: number; turns: number } | undefined): string {
+  if (!use || use.turns === 0) return "No tokens used in this thread yet";
+  return `${shortCount(use.input)} in · ${shortCount(use.output)} out · ${use.turns === 1 ? "1 turn" : `${use.turns} turns`} in this thread`;
+}
+
+const TOOL_LABELS: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini", grok: "Grok" };
+
+/** The models a bot can pick on the phone, as on the desktop: Default and four first, the rest behind More models. */
+export function modelChoices(tool: AgentTool, reported: ModelChoice[]): { shown: ModelChoice[]; extra: ModelChoice[]; groups: ModelGroup[] } {
+  const groups = modelGroups(tool, reported, TOOL_LABELS[tool]);
+  const all = groups.flatMap((group) => group.models);
+  return { shown: all.slice(0, 4), extra: all.slice(4), groups };
+}
+
+/** The reasoning levels a bot's model takes, least first. Empty when it has no such setting. */
+export function reasoningLevels(config: ParticipantConfig, groups: ModelGroup[], model: string): string[] {
+  const backend = config.backend;
+  if (backend.kind === "agent") return effortsFor(AGENT_EFFORTS[backend.tool], groups, model);
+  if (backend.kind === "open_ai_compatible") return API_EFFORTS;
+  return [];
+}
+
+const modelOf = (config: ParticipantConfig) => "model" in config.backend ? config.backend.model ?? "" : "";
+
+/** "Latest Opus · High reasoning": a bot's model and reasoning in a few words. */
+export function settingsLine(config: ParticipantConfig, reported: ModelChoice[]): string {
+  const backend = config.backend;
+  if (backend.kind === "cli") return backend.program;
+  if (backend.kind !== "agent" && backend.kind !== "open_ai_compatible") return "Scripted";
+  const groups = backend.kind === "agent" ? modelGroups(backend.tool, reported, TOOL_LABELS[backend.tool]) : [];
+  const model = modelOf(config);
+  const name = model ? findModel(groups, model)?.label ?? model : "Default model";
+  const levels = reasoningLevels(config, groups, model);
+  if (levels.length === 0) return name;
+  return `${name} · ${config.effort && levels.includes(config.effort) ? `${effortLabel(config.effort)} reasoning` : "Default reasoning"}`;
+}
+
+/** What the phone changed in a bot's sheet. Only these fields are written. */
+export type TurnChange = { model?: string; effort?: string };
+
+/**
+ * The bot as saved on its machine with only the phone's changes laid over it, so a change made
+ * on the Mac to the other field isn't undone. Reasoning the new model can't take goes back to Default.
+ */
+export function withPhoneChange(saved: ParticipantConfig, change: TurnChange, reported: ModelChoice[]): ParticipantConfig {
+  const backend = saved.backend;
+  const groups = backend.kind === "agent" ? modelGroups(backend.tool, reported, TOOL_LABELS[backend.tool]) : [];
+  const model = change.model ?? modelOf(saved);
+  const effort = change.effort ?? saved.effort ?? "";
+  return withTurnSettings(saved, model, effort, reasoningLevels(saved, groups, model));
+}
+
+/** Short words that read as capitals in a tool's name. */
+const TOOL_CAPS: Record<string, string> = { mcp: "MCP", ai: "AI", api: "API", db: "DB", sql: "SQL", pdf: "PDF", ui: "UI", aws: "AWS", lsp: "LSP", repl: "REPL", github: "GitHub", gitlab: "GitLab" };
+
+const spaced = (raw: string) => raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+const titled = (raw: string) => spaced(raw).split(" ").map((word) => TOOL_CAPS[word.toLowerCase()] ?? (word === word.toLowerCase() ? word.charAt(0).toUpperCase() + word.slice(1) : word)).join(" ");
+
+/**
+ * "Google Calendar" from "plugin:design:google calendar": a tool server's name without the
+ * plugin:, claude.ai and mcp__ namespaces Claude puts on it, plus where it came from.
+ */
+export function toolWords(raw: string): { name: string; source: string | null } {
+  let rest = raw.trim().replace(/^mcp__/, "");
+  let source: string | null = null;
+  const plugin = /^plugin[:_]([^:_]+)[:_](.+)$/.exec(rest);
+  const site = /^claude[._]ai[ _-](.+)$/i.exec(rest);
+  if (plugin) { rest = plugin[2]; source = spaced(plugin[1]).toLowerCase() === spaced(rest).toLowerCase() ? null : `${plugin[1]} plugin`; }
+  else if (site) { rest = site[1]; source = "claude.ai"; }
+  return { name: titled(rest) || raw, source };
+}
+
+/** A line naming a tool call, with its server's namespaces dropped: "Using Google Drive: search files". */
+export function toolLine(line: string): string {
+  const call = (server: string, tool: string) => `${toolWords(server).name}: ${spaced(tool)}`;
+  const named = line.replace(/mcp__([\w.-]+?)__([\w-]+)/g, (_, server: string, tool: string) => call(server, tool));
+  if (named !== line) return named;
+  const using = /^Using ((?:claude_ai|plugin)_\S+) (\S+)$/.exec(line);
+  if (using) return `Using ${call(using[1], using[2])}`;
+  const titled = /^([\w.-]+): ([\w-]+)$/.exec(line);
+  return titled ? call(titled[1], titled[2]) : line;
+}
+
+/** The Tools sheet's rows: clean names in order, with the source only where two share a name. */
+export function toolRows(tools: readonly ToolServer[]): Array<{ token: string; name: string; source: string | null }> {
+  const rows = tools.map((tool) => ({ token: tool.token, ...toolWords(tool.label === tool.token ? tool.token : tool.label) }));
+  const count = (name: string) => rows.filter((row) => row.name.toLowerCase() === name.toLowerCase()).length;
+  return rows
+    .map((row) => ({ ...row, source: count(row.name) > 1 ? row.source ?? toolWords(row.token).source ?? (/^app-/.test(row.token) ? "connector" : null) : null }))
+    .sort((a, b) => a.name.localeCompare(b.name) || (a.source ?? "").localeCompare(b.source ?? ""));
+}
+
+/** Tools whose name, source or command has every word typed in the search box. */
+export function toolSearch<T extends { token: string; name: string; source: string | null }>(rows: readonly T[], query: string): T[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return rows.filter((row) => words.every((word) => `${row.name} ${row.source ?? ""} ${row.token}`.toLowerCase().includes(word)));
+}
+
+/**
+ * What a finger moving on a bot pill means so far, from where it went down. A short, mostly
+ * straight pull down opens the bot's details; sideways or up hands the move to the bar's scroll.
+ */
+export function pillDrag(dx: number, dy: number): "wait" | "open" | "scroll" {
+  const side = Math.abs(dx);
+  if (dy < -10 || (side > 10 && side > dy * 0.8)) return "scroll";
+  if (dy >= 28 && side <= dy * 0.5) return "open";
+  return "wait";
 }

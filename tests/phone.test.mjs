@@ -5,7 +5,7 @@ import { webSocketConnect } from '../src/daemon/webSocketLink.ts';
 import { openPhoneHost } from '../src/phoneBackend.ts';
 import {
   addMachine, approvalWhere, draftVisible, forkLine, loadMachines, newThreadGate,
-  botUsage, crewOpen, downLine, mentionPicks, pauseLine, pickMention, postRouted, pressNewThread, refusalLine, tagFromBar, threadSend, threadTitleFromMessage,
+  botMeters, crewOpen, modelChoices, pillDrag, pillMeter, settingsLine, toolLine, toolRows, toolSearch, toolWords, withPhoneChange, downLine, mentionPicks, pauseLine, pickMention, postRouted, pressNewThread, refusalLine, tagFromBar, threadSend, threadTitleFromMessage,
 } from '../src/phoneRules.ts';
 import { phoneShell } from '../src/phoneShell.ts';
 
@@ -195,18 +195,85 @@ test('the bot bar hides while the keyboard is up and comes back as it was chosen
   assert.equal(crewOpen(true, true), false);
 });
 
-test('a held bot shows its context and plan the way the desktop card words them', () => {
+test('a held bot shows context and each plan window as bars, with "—" until a figure arrives', () => {
   const now = new Date('2026-10-06T12:00:00Z');
-  const claude = { provider: 'claude_code', reports: true };
-  const empty = botUsage(claude, undefined, undefined, now);
-  assert.equal(empty.context, 'Shows after its next reply');
-  assert.equal(empty.plan, 'Shows after its next reply');
-  const full = botUsage(claude, { used: 190_000, window: 200_000 }, [{ name: 'five_hour', used_percent: 40, window_minutes: 300, resets_at: null }], now);
-  assert.match(full.context, /^5% left · 10k of 200k tokens$/);
-  assert.equal(full.contextLow, true);
-  assert.match(full.plan, /^60% left/);
-  assert.equal(full.planLow, false);
-  const scripted = botUsage({ provider: null, reports: false }, undefined, undefined, now);
-  assert.equal(scripted.context, 'Not reported by this provider');
-  assert.equal(scripted.plan, 'Not reported by this provider');
+  const at = now.getTime() / 1000;
+  const empty = botMeters('claude_code', undefined, undefined, now);
+  assert.deepEqual(empty.map((row) => [row.label, row.left, row.value, row.detail]), [
+    ['Context', null, '—', 'Shows after its next reply'],
+    ['Plan', null, '—', 'Shows after its next reply'],
+  ]);
+  const windows = [
+    { name: 'seven_day', used_percent: 19, window_minutes: 10_080, resets_at: at + 3 * 86_400 + 4 * 3600 },
+    { name: 'five_hour', used_percent: 85, window_minutes: 300, resets_at: at + 2 * 3600 + 14 * 60 },
+    { name: 'old', used_percent: 99, window_minutes: 60, resets_at: at - 10 },
+  ];
+  const full = botMeters('claude_code', { used: 190_000, window: 200_000 }, windows, now);
+  assert.deepEqual(full.map((row) => [row.label, row.value, row.detail, row.low]), [
+    ['Context', '5%', '10k of 200k tokens left', true],
+    ['5-hour', '15%', 'Resets in 2h14m', true],
+    ['Weekly', '81%', 'Resets in 3d4h', false],
+  ]);
+  const scripted = botMeters(null, undefined, undefined, now);
+  assert.deepEqual(scripted.map((row) => row.detail), ['Not reported by this provider', 'Not reported by this provider']);
+  assert.equal(botMeters('grok', undefined, undefined, now)[0].detail, 'Not reported by this provider');
+  assert.deepEqual(pillMeter('claude_code', { used: 50_000, window: 200_000 }, windows, now), { context: 0.75, low: false, planLow: true });
+  assert.deepEqual(pillMeter(null, undefined, undefined, now), { context: null, low: false, planLow: false });
+});
+
+test('a bot\'s model and reasoning read in a few words, and the phone only writes what it changed', () => {
+  const claude = { id: 'null', display_name: 'Null', backend: { kind: 'agent', tool: 'claude_code', model: 'opus' }, effort: 'high' };
+  assert.equal(settingsLine(claude, []), 'Latest Opus · High reasoning');
+  assert.equal(settingsLine({ ...claude, backend: { ...claude.backend, model: null }, effort: null }, []), 'Default model · Default reasoning');
+  assert.equal(settingsLine({ ...claude, backend: { ...claude.backend, model: 'haiku' } }, []), 'Latest Haiku');
+  assert.equal(settingsLine({ ...claude, backend: { kind: 'agent', tool: 'gemini', model: null }, effort: null }, []), 'Default model');
+  const { shown, extra } = modelChoices('claude_code', []);
+  assert.deepEqual(shown.map((m) => m.id), ['opus', 'sonnet', 'haiku', 'fable']);
+  assert.ok(extra.length > 0);
+  // The Mac changed reasoning to Max after the phone opened the sheet; the phone's model change keeps it.
+  const onMac = { ...claude, effort: 'max' };
+  assert.deepEqual(withPhoneChange(onMac, { model: 'sonnet' }, []), { ...onMac, backend: { ...claude.backend, model: 'sonnet' }, effort: 'max' });
+  // A model without reasoning drops it back to Default; Default model is saved as null.
+  assert.equal(withPhoneChange(claude, { model: 'haiku' }, []).effort, null);
+  assert.equal(withPhoneChange(claude, { model: '' }, []).backend.model, null);
+  assert.equal(withPhoneChange(claude, { effort: '' }, []).effort, null);
+  assert.equal(withPhoneChange(claude, { effort: 'ultra' }, []).effort, null);
+});
+
+test('tool names drop the plugin, claude.ai and mcp__ prefixes but keep the command', () => {
+  assert.deepEqual(toolWords('plugin:design:google calendar'), { name: 'Google Calendar', source: 'design plugin' });
+  assert.deepEqual(toolWords('plugin:engineering:linear'), { name: 'Linear', source: 'engineering plugin' });
+  assert.deepEqual(toolWords('claude.ai Google Drive'), { name: 'Google Drive', source: 'claude.ai' });
+  assert.deepEqual(toolWords('claude_ai_Hyper_MCP'), { name: 'Hyper MCP', source: 'claude.ai' });
+  assert.deepEqual(toolWords('github'), { name: 'GitHub', source: null });
+  assert.deepEqual(toolWords('slack'), { name: 'Slack', source: null });
+  assert.equal(toolLine('Hyper_MCP: place_order'), 'Hyper MCP: place order');
+  assert.equal(toolLine('Using mcp__claude_ai_Google_Drive__search_files'), 'Using Google Drive: search files');
+  assert.equal(toolLine('Using claude_ai_Vercel list_projects'), 'Using Vercel: list projects');
+  assert.equal(toolLine('Reading src/notes.txt'), 'Reading src/notes.txt');
+  const rows = toolRows([
+    { token: 'plugin:operations:slack', label: 'plugin:operations:slack', aliases: [] },
+    { token: 'claude.ai Slack', label: 'claude.ai Slack', aliases: [] },
+    { token: 'plugin:design:google calendar', label: 'plugin:design:google calendar', aliases: [] },
+  ]);
+  assert.deepEqual(rows.map((row) => [row.name, row.source, row.token]), [
+    ['Google Calendar', null, 'plugin:design:google calendar'],
+    ['Slack', 'claude.ai', 'claude.ai Slack'],
+    ['Slack', 'operations plugin', 'plugin:operations:slack'],
+  ]);
+  assert.deepEqual(toolWords('claude.ai-hyper-mcp'), { name: 'Hyper MCP', source: 'claude.ai' });
+  assert.equal(toolWords('swift-lsp').name, 'Swift LSP');
+  const apps = toolRows([{ token: 'adobe', label: 'Adobe', aliases: [] }, { token: 'app-6931', label: 'Adobe', aliases: [] }]);
+  assert.deepEqual(apps.map((row) => row.source), [null, 'connector']);
+  assert.deepEqual(toolSearch(rows, 'slack plugin').map((row) => row.token), ['plugin:operations:slack']);
+  assert.deepEqual(toolSearch(rows, 'cal').map((row) => row.name), ['Google Calendar']);
+});
+
+test('a bot pill opens its details on a short downward drag, and sideways still scrolls the bar', () => {
+  assert.equal(pillDrag(0, 4), 'wait');
+  assert.equal(pillDrag(3, 30), 'open');
+  assert.equal(pillDrag(14, 6), 'scroll');
+  assert.equal(pillDrag(0, -20), 'scroll');
+  assert.equal(pillDrag(20, 32), 'wait');
+  assert.equal(pillDrag(30, 32), 'scroll');
 });

@@ -490,11 +490,24 @@
 .ph-crew-pill.to .ph-crew-chip { color: var(--text); border-color: color-mix(in srgb, var(--who, var(--mint)) 75%, transparent); background: color-mix(in srgb, var(--who, var(--mint)) 12%, var(--panel)); }
 .ph-crew-pill.asking .ph-crew-chip { border-color: color-mix(in srgb, var(--amber) 70%, transparent); }
 .ph-crew-pill:active .ph-crew-chip { opacity: .6; }
+/* Context left: a hairline under the name in the bot's colour, amber when low. Missing until the bot reports it. */
+.ph-crew-name { position: relative; }
+.ph-crew-meter { position: absolute; left: 0; right: 0; bottom: -2px; height: 2px; border-radius: 1px; background: color-mix(in srgb, var(--muted) 30%, transparent); overflow: hidden; }
+.ph-crew-meter::after { content: ""; display: block; width: var(--left); height: 100%; border-radius: inherit; background: var(--who, var(--mint)); }
+.ph-crew-meter.low::after { background: var(--amber); }
+/* Plan nearly used up: a small amber dot on the avatar. */
+.ph-crew-face { position: relative; display: inline-flex; }
+.ph-crew-plan { position: absolute; top: -2px; right: -2px; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 2px var(--panel); }
 .ph-crew-fold.ph-crew-fold { flex: none; min-width: 40px; min-height: 40px; color: var(--muted); }
-/* Folded: the bots overlap in the title bar, like a group in Messages; tap to unfold. */
-.ph-cluster.ph-cluster { flex: none; display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px 0 10px; border: 0; background: transparent; color: var(--muted); font-size: 11px; }
-.ph-cluster .identicon { margin-left: -7px; box-shadow: 0 0 0 2px var(--bg); }
-.ph-cluster b { margin-left: 3px; font-weight: 600; }
+/* Folded: the bots sit side by side in the title bar, a small gap apart so each pattern stays readable; tap to unfold. */
+.ph-cluster.ph-cluster { flex: none; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 4px 0 8px; border: 0; background: transparent; color: var(--muted); font-size: 11px; }
+.ph-cluster b { margin-left: 1px; font-weight: 600; }
+/* Each tile solid with a dark ring, so one bot's colour never bleeds into the next, even mid-pulse. */
+.ph-cluster .identicon { background: var(--panel); box-shadow: 0 0 0 1.5px var(--bg); }
+/* A gentler shimmer than the full-size avatars: several small ones pulsing hard side by side read as busy. */
+.ph-cluster .identicon.working i.on { animation: ph-cluster-shimmer 2.4s ease-in-out infinite; }
+@keyframes ph-cluster-shimmer { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .ph-cluster .identicon.working i.on { animation: none; } }
 
 /* A held bot's details. */
 .ph-bot-head { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
@@ -505,3 +518,44 @@
 .ph-usage p span:first-child { color: var(--muted); flex: none; }
 .ph-usage p span:last-child { text-align: right; }
 .ph-sheet-text.ph-quiet { font-size: 12px; margin-top: 10px; }
+
+/* A held bot's meters: context and each plan window as bars in its colour, amber when low. */
+.ph-meters { display: grid; gap: 12px; padding: 14px; }
+.ph-meter p { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.ph-meter p span { color: var(--muted); }
+.ph-meter p b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ph-meter.low p b { color: var(--amber); }
+.ph-meter-track { display: block; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.ph-meter-track i { display: block; height: 100%; border-radius: inherit; background: var(--who, var(--mint)); transition: width .3s ease; }
+.ph-meter.low .ph-meter-track i { background: var(--amber); }
+.ph-meter small { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
+.ph-meter-note { color: var(--muted); font-size: 12px; }
+/* Model and reasoning: saved as they're picked. */
+.ph-turn { margin: 0; min-inline-size: 0; }
+.ph-turn:disabled { opacity: .55; }
+.ph-srow-value { color: var(--muted); font-size: 15px; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-reasoning { padding: 12px 14px 6px; }
+.ph-reasoning .effort-slider { font-size: 15px; gap: 8px; }
+.ph-reasoning .effort-value { color: var(--text); opacity: 1; }
+.ph-reasoning .effort-control { height: 36px; }
+.ph-reasoning .effort-rail { top: 16px; }
+.ph-reasoning .effort-thumb { width: 22px; height: 22px; box-shadow: 0 1px 4px rgba(0, 0, 0, .4); }
+.ph-reasoning .effort-control input[type="range"] { height: 36px; }
+.ph-reasoning .effort-ticks { height: 34px; font-size: 11px; }
+.ph-reasoning .effort-ticks button { min-height: 34px; padding: 9px 4px 3px; }
+.ph-model-typed { gap: 10px; }
+.ph-model-typed label { display: flex; flex-direction: column; gap: 6px; }
+.ph-model-typed input { min-height: 40px; font-size: 16px; }
+.ph-turn-note { font-size: 13px; margin: 8px 4px 14px; }
+.ph-sheet-back-link { margin: 0 0 8px -6px; }
+
+/* Pull a bot pill down for its details: the chip follows the finger a little, over a small grab line. */
+.ph-crew-pill.ph-crew-pill { position: relative; touch-action: pan-x; flex-direction: column; justify-content: center; }
+.ph-crew-pill .ph-crew-chip { transform: translateY(calc(var(--pull, 0px) * .14)); transition: transform .18s cubic-bezier(.2, .8, .2, 1); }
+.ph-crew-pill.pulling .ph-crew-chip { transition: none; }
+.ph-crew-grab { position: absolute; left: 50%; bottom: 2px; width: 12px; height: 3px; margin-left: -6px; border-radius: 2px; background: color-mix(in srgb, var(--muted) 35%, transparent); transition: background .15s, width .15s, margin-left .15s; }
+.ph-crew-pill.pulling .ph-crew-grab { width: calc(12px + var(--pull, 0px) * .5); margin-left: calc(-6px - var(--pull, 0px) * .25); background: var(--who, var(--mint)); }
+.ph-crew-pill.ph-crew-pill:hover, .ph-crew-pill.ph-crew-pill:focus { background: transparent; }
+.ph-tool-source { margin-left: 5px; color: var(--muted); font-weight: 400; }
+.ph-tool-token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; opacity: .7; }
+@media (prefers-reduced-motion: reduce) { .ph-crew-pill .ph-crew-chip, .ph-crew-grab { transition: none; } }

@@ -81,11 +81,22 @@ Asked for by the human from the phone. Code: `src/phoneRules.ts` (rules, tested 
    - *Built:* a slim row pinned under the title, one pill per bot (avatar and name) plus Everyone. Tap a pill to put `@name` in front of the draft and bring up the keyboard; hold it for its details (what it runs on, status, context and plan as reported while the thread is open, Mention, Stop). The bots the next message goes to are outlined in their colour; amber outline when a bot is waiting on you; the avatar shimmers while it works. The chevron folds the bar into an overlapping cluster in the title bar (still shimmering); tapping the cluster unfolds it. The fold is one choice for every thread, kept on the phone. While the keyboard is up the bar folds regardless and returns as chosen when it goes down. The bots left the + menu, and the participant row at the top of the chat is gone.
    - *Limits:* context and plan only fill in from replies that arrive while the thread is open. Removing a bot and its settings stay on the Mac. "Keyboard is up" is taken as "the message box has focus".
 
+## Round 3 — in review
+
+Asked for by the human: meters for each bot's usage, context, model and reasoning, plus changing model and reasoning from the phone. Code: `src/phoneRules.ts` (`botMeters`, `pillMeter`, `settingsLine`, `modelChoices`, `reasoningLevels`, `withPhoneChange`, `tokenWords`; tested in `tests/phone.test.mjs`), `BotSheet` and the bar pills in `src/phone/PhoneApp.tsx`, `src/phone/phone.css`. Screenshots (fake test machine, made-up figures): `docs/phone-ux/round-3-after/`.
+
+1. [ ] **Context hairline on each pill** (bot bar) — a 2 pt line under the bot's name for context left, in its colour, amber when low; a small amber dot on the avatar when its plan is nearly used up. No line until the bot has reported a figure. The bar stays the same height. Source: human.
+2. [ ] **The held bot's sheet is the desktop card** (bot sheet) — model and reasoning under the name ("Latest Opus · High reasoning"); context and each plan window (5-hour, Weekly) as bars with "Resets in 2h14m"; tokens used in this thread; "—" until a figure arrives. Source: human.
+3. [ ] **Change model and reasoning from the phone** (bot sheet) — Model opens a list (Default, four models, More models) from the models that machine's tool offers; Reasoning is the desktop's slider. Each pick saves straight away, in order. Each write reads the bot as its machine has it and changes only what the phone picked, so a change made on the Mac in the meantime isn't undone. Off while the machine is offline. API bots get a typed model name and Save. Source: human.
+   - *Limits:* the desktop doesn't hear about a change made on the phone until that thread reloads there, and a desktop save from an already-open settings popover can put back its older model or reasoning (see Gronk lane).
+4. [ ] **Pull a bot pill down for its details** (bot bar) — a short, mostly straight pull down (28 pt) opens the same sheet as holding; sideways still scrolls the bar and doesn't tag. A small grab line under each pill is the cue, and it stretches in the bot's colour while pulling. Without any gesture, the thread's ⋯ menu lists "<bot> details" for each bot. Rule: `pillDrag` in `src/phoneRules.ts`; hook `usePillPress` in `PhoneApp.tsx`. Source: human, pinned (Null's answer).
+5. [ ] **Clean tool names** (Tools sheet, working line, tool approvals) — "Google Calendar" instead of `plugin:design:google calendar`; `mcp__`, `plugin:` and `claude.ai` prefixes dropped; a quiet source ("· claude.ai", "· connector") only where two tools share a name; the exact `!command` stays underneath. A search box shows above 8 tools. Rules: `toolWords`, `toolLine`, `toolRows`, `toolSearch`. Source: human via Null.
+
 ## Open
 
 Candidates Jigga noticed in the round 1 screenshots. Unranked; Null may pick from these or add others.
 
-- [ ] **Tools shows raw plugin ids** (Tools sheet) — every row is `plugin:design:google calendar` over `!plugin:design:google-calendar`. Needs human names, grouping, and fewer rows.
+- [x] **Tools shows raw plugin ids** (Tools sheet) — moved to Round 3, item 5.
 - [ ] **Three stacked bars above the keyboard** (open thread) — promoted to Round 1, priority 2.
 - [ ] **Chat shows through the top bar** (open thread) — message text is visible behind the title bar instead of a blurred or solid bar.
 - [ ] **Every project row has + and ⋯** (Threads list) — two extra buttons on every row add noise.
@@ -108,6 +119,8 @@ Not screen work; Gronk builds these without touching `src/phone/` layout.
 - [ ] Missed approvals: ask a machine which approvals are already waiting
 - [ ] Native shell pieces: Keychain for tokens, push
 - [ ] **Token changes every time a daemon starts** (`crates/apex-daemon/src/serve.rs:75`), so restarting Deck or a server makes the phone say "the token is wrong" until it's paired again. Needs a token that survives restarts, or device pairing. Source: Jigga, round 1 testing.
+- [ ] **Meters fill in right away** — the Mac and servers keep each bot's last context reading and each provider's last plan reading, and send them when a thread opens. Today the phone only sees them from replies that arrive while the thread is open. Until then the meters show "—". Source: Jigga, round 3 (part 3).
+- [ ] **Tell other windows when a bot's settings change** — no room event exists for it, so a desktop window holds the old model and reasoning after the phone changes them, and its next save can put them back. A `participant_changed` event the desktop and phone both apply would fix it. Source: Jigga, round 3.
 
 ## Done
 

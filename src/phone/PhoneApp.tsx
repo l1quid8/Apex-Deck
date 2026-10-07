@@ -1,7 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
+import { ReasoningSlider } from "../ReasoningSlider";
+import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
 import { Markdown } from "../Markdown";
@@ -17,9 +19,10 @@ import { openPhoneHost, type PhoneHost } from "../phoneBackend";
 import { phoneShell } from "../phoneShell";
 import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom, type PhoneCuts, type PhoneWorking } from "../phoneWorking";
 import {
-  addMachine, approvalWhere, botUsage, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
-  pickMention, postRouted, pressNewThread, refusalLine, removeMachine, saveMachines, tagFromBar, threadCount, threadSend, threadTitleFromMessage,
-  type DirectMachine, type LinkStatus, type LinkView, type MachineKind,
+  addMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
+  modelChoices, pickMention, pillMeter, postRouted, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
+  pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange,
+  type DirectMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
 import { ageWords, homeShort, hostTints, noteActive, sidebarSections } from "../sidebarModel";
@@ -27,8 +30,8 @@ import { webSocketConnect } from "../daemon/webSocketLink";
 import { loadRoomState } from "../roomRecovery";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
-import { mergePlan } from "../battery";
-import type { AgentTool, AppSession, FolderListing, Message, NextStep, Pane, ParticipantConfig, PlanWindow, RoomOptions, ToolServer, TurnPolicy, Workspace } from "../types";
+import { mergePlan, percent } from "../battery";
+import type { AgentTool, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomOptions, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
   ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Copy, Folder, Globe, Laptop, Lock, MessageSquare,
@@ -60,7 +63,11 @@ type Room = {
   /** Context each bot's latest request filled, and each provider's plan, as reported while the thread is open. */
   fill: Record<string, { used: number; window: number }>;
   plans: Partial<Record<AgentTool, PlanWindow[]>>;
+  /** Tokens each bot has used in this thread, as saved with it and added to after each turn. */
+  used: Record<string, TokenTotals>;
 };
+/** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
+type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
 type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string };
 type Browse = {
@@ -133,6 +140,44 @@ function useLongPress() {
   };
 }
 
+/**
+ * A bot pill: tap to tag, hold or pull down to open its details. The pull is short and mostly
+ * straight down; sideways goes to the bar's scroll. The chip follows the finger a little.
+ */
+function usePillPress() {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const start = useRef<{ x: number; y: number; id: number } | null>(null);
+  const done = useRef(false);
+  const [pull, setPull] = useState<{ id: string; y: number } | null>(null);
+  const clear = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
+  const end = () => { clear(); start.current = null; setPull(null); };
+  return {
+    pull,
+    bind: (who: string, open: () => void, tap: () => void) => ({
+      onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+        done.current = false; clear();
+        start.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+        if (event.pointerType === "mouse") event.currentTarget.setPointerCapture?.(event.pointerId);
+        timer.current = setTimeout(() => { done.current = true; end(); open(); }, 500);
+      },
+      onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+        const from = start.current;
+        if (!from || from.id !== event.pointerId || done.current) return;
+        const dx = event.clientX - from.x, dy = event.clientY - from.y;
+        const move = pillDrag(dx, dy);
+        if (Math.hypot(dx, dy) > 6) clear();
+        if (move === "scroll") { done.current = true; end(); return; }
+        if (move === "open") { done.current = true; end(); navigator.vibrate?.(8); open(); return; }
+        setPull(dy > 2 ? { id: who, y: Math.min(dy, 28) } : null);
+      },
+      onPointerUp: end,
+      onPointerCancel: end,
+      onContextMenu: (event: { preventDefault(): void }) => { event.preventDefault(); clear(); done.current = true; open(); },
+      onClick: () => { if (done.current) { done.current = false; return; } tap(); },
+    }),
+  };
+}
+
 export function PhoneApp() {
   const [machines, setMachines] = useState<DirectMachine[]>(() => loadMachines(typeof localStorage === "undefined" ? null : localStorage.getItem(machinesKey())));
   const [hosts, setHosts] = useState<PhoneHost[]>([]);
@@ -149,6 +194,10 @@ export function PhoneApp() {
   const [menu, setMenu] = useState<Menu | null>(null);
   /** The bot whose details are open, from holding it in the bot bar. */
   const [botSheet, setBotSheet] = useState<string | null>(null);
+  /** Models each machine's tools offer, asked for when a bot's sheet opens. Keyed by machine and tool. */
+  const [offered, setOffered] = useState<Record<string, ModelChoice[]>>({});
+  /** One save line per bot, so its model and reasoning reach the machine in the order they were picked. */
+  const turnSaves = useRef(new Map<string, (save: { change: TurnChange; reported: ModelChoice[] }) => Promise<void>>());
   const [crewShut, setCrewShut] = useState(() => { try { return localStorage.getItem(CREW_KEY) === "shut"; } catch { return false; } });
   const foldCrew = (shut: boolean) => {
     setCrewShut(shut);
@@ -156,6 +205,7 @@ export function PhoneApp() {
   };
   const [query, setQuery] = useState("");
   const [tools, setTools] = useState<ToolServer[] | null>(null);
+  const [toolQuery, setToolQuery] = useState("");
   const [browse, setBrowse] = useState<Browse | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
   /** Per thread: who was working when its machine dropped, with what they had written. Kept until each reply lands,
@@ -368,6 +418,7 @@ export function PhoneApp() {
         configs: state.snapshot.participants,
         fill: {},
         plans: {},
+        used: state.snapshot.usage ?? {},
       });
     }).catch((error) => { if (live) setNotice(words(error)); });
     host.backend.onRoomEvent((id, event) => {
@@ -377,6 +428,11 @@ export function PhoneApp() {
       if (event.type === "approval_resolved") setRoom((current) => current && current.id === id ? { ...current, approvals: current.approvals.filter((card) => card.request !== event.request) } : current);
       if (event.type === "plan_changed") setRoom((current) => current && current.id === id ? { ...current, plan: event.on } : current);
       if (event.type === "context_usage") setRoom((current) => current && current.id === id ? { ...current, fill: { ...current.fill, [event.id]: { used: event.used_tokens, window: event.window_tokens } } } : current);
+      if (event.type === "usage") setRoom((current) => {
+        if (!current || current.id !== id) return current;
+        const before = current.used[event.id] ?? { input: 0, output: 0, turns: 0 };
+        return { ...current, used: { ...current.used, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1 } } };
+      });
       if (event.type === "plan_usage") setRoom((current) => current && current.id === id ? { ...current, plans: { ...current.plans, [event.provider]: mergePlan(current.plans[event.provider], event.windows, event.partial) } } : current);
       if (event.type === "failed") setNotice(`${roomRef.current?.participants.find((person) => person.id === event.id)?.display_name ?? event.id} couldn't reply: ${event.error}`);
       setCuts((all) => { const now = all[id]; const next = now && applyCutEvent(now, event); return !now || next === now ? all : { ...all, [id]: next }; });
@@ -515,12 +571,50 @@ export function PhoneApp() {
     catch (error) { setNotice(words(error)); }
   }
 
+  /** Ask the thread's machine which models a bot's tool offers, once per machine and tool. */
+  useEffect(() => {
+    if (!botSheet || !room || !openLink || openLink.status !== "online") return;
+    const backend = room.configs.find((config) => config.id === botSheet)?.backend;
+    if (backend?.kind !== "agent") return;
+    const key = `${openLink.id}:${backend.tool}`;
+    if (offered[key]) return;
+    let live = true;
+    phoneHost(openLink.id)?.backend.agentModels(backend.tool).then((list) => { if (live) setOffered((all) => ({ ...all, [key]: list })); }).catch(() => {});
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [botSheet, room?.id, openLink?.id, openLink?.status]);
+
+  /**
+   * Change a bot's model or reasoning from the phone. Each write reads the bot as its machine has it now
+   * and lays only the phone's changes over it, so a change made on the Mac in the meantime isn't undone.
+   */
+  function saveTurn(paneId: string, hostId: string, botId: string) {
+    const key = `${hostId}:${paneId}:${botId}`;
+    let save = turnSaves.current.get(key);
+    if (!save) {
+      save = latestSaveQueue<{ change: TurnChange; reported: ModelChoice[] }>(async ({ change, reported }) => {
+        const host = phoneHost(hostId);
+        const link = linkOf(hostId);
+        if (!host || !link || link.status !== "online") throw new Error(link ? `${downLine(link)}. Nothing changed.` : "That machine isn't paired with this phone.");
+        const now = await host.backend.roomCreate(paneId, [], { policy: "mention", max_bot_hops: 0 }, "");
+        const saved = now.participants.find((config) => config.id === botId);
+        if (!saved) throw new Error("This bot is no longer in the thread.");
+        const next = withPhoneChange(saved, change, reported);
+        await host.backend.roomUpdateParticipant(paneId, next);
+        setRoom((current) => current && current.id === paneId ? { ...current, configs: current.configs.map((config) => config.id === botId ? next : config) } : current);
+      });
+      turnSaves.current.set(key, save);
+    }
+    return save;
+  }
+
   /** Open a sheet over the thread. Tools are asked for each time, from the thread's machine. */
   function openSheet(next: SheetKind) {
     setSheet(next);
     setQuery("");
     if (next !== "tools" || !openLink) return;
     setTools(null);
+    setToolQuery("");
     const host = phoneHost(openLink.id);
     if (!openPane || !host || openLink.status !== "online") { setTools([]); return; }
     Promise.all((room?.participants ?? []).map((participant) => host.backend.listToolServers(openPane.id, participant.id).catch(() => [] as ToolServer[])))
@@ -702,6 +796,10 @@ export function PhoneApp() {
             crewShut={crewShut}
             onCrew={foldCrew}
             onBot={setBotSheet}
+            meters={room && openPane && room.id === openPane.id ? Object.fromEntries(room.configs.map((config) => {
+              const provider = config.backend.kind === "agent" ? config.backend.tool : null;
+              return [config.id, pillMeter(provider, room.fill[config.id], provider ? room.plans[provider] : undefined, new Date())];
+            })) : {}}
             to={room && openPane && room.id === openPane.id && answerers?.paneId === room.id
               ? recipientName({ targets: answerers.ids, roster: room.participants.map((p) => ({ id: p.id, name: p.display_name })), policy: room.policy })
               : null}
@@ -864,41 +962,40 @@ export function PhoneApp() {
               ? <p className="ph-sheet-text">Looking for tools on {openLink.name}…</p>
               : tools.length === 0
                 ? <p className="ph-sheet-text">{openLink.status !== "online" ? downLine(openLink) : !openPane ? "Tools show once the thread has started." : `No tools on ${openLink.name} for this thread.`}</p>
-                : tools.map((tool) => (
-                  <button key={tool.token} type="button" className="ph-srow" onClick={() => { if (openId) setDraft(openId, { ...draft, text: appendToolToken(draft.text, tool.token) }); setSheet(null); }}>
+                : <>
+                  {tools.length > 8 && <input className="ph-search" type="search" placeholder="Search tools…" value={toolQuery} onChange={(event) => setToolQuery(event.target.value)} aria-label="Search tools" />}
+                  {toolSearch(toolRows(tools), toolQuery).length === 0 && <p className="ph-sheet-text">No tools match “{toolQuery.trim()}”.</p>}
+                  {toolSearch(toolRows(tools), toolQuery).map((tool) => (
+                  <button key={tool.token} type="button" className="ph-srow" aria-label={`${tool.name}${tool.source ? `, from ${tool.source}` : ""}. Adds !${tool.token}`} onClick={() => { if (openId) setDraft(openId, { ...draft, text: appendToolToken(draft.text, tool.token) }); setSheet(null); }}>
                     <span className="ph-srow-icon"><Plug size={18} /></span>
-                    <span className="ph-grow"><strong>{tool.label}</strong><small>!{tool.token}</small></span>
+                    <span className="ph-grow"><strong>{tool.name}{tool.source && <span className="ph-tool-source">· {tool.source}</span>}</strong><small className="ph-tool-token">!{tool.token}</small></span>
                   </button>
-                )))}
+                  ))}
+                </>)}
           </Sheet>
         )}
-        {botSheet && room && openPane && room.id === openPane.id && (() => {
+        {botSheet && room && openPane && openLink && room.id === openPane.id && (() => {
           const who = room.participants.find((p) => p.id === botSheet);
-          if (!who) return null;
           const config = room.configs.find((c) => c.id === botSheet);
-          const provider = config?.backend.kind === "agent" ? config.backend.tool : null;
-          const usage = botUsage({ provider, reports: provider !== null && provider !== "gemini" && provider !== "grok" }, room.fill[who.id], provider ? room.plans[provider] : undefined, new Date());
+          if (!who || !config) return null;
+          const provider = config.backend.kind === "agent" ? config.backend.tool : null;
+          const reported = config.backend.kind === "agent" ? offered[`${openLink.id}:${config.backend.tool}`] ?? [] : [];
           const turn = room.working[who.id];
           const asking = room.approvals.some((card) => card.id === who.id);
           const next = answerers?.paneId === room.id && answerers.ids.includes(who.id);
+          const sharing = provider ? room.configs.filter((other) => other.backend.kind === "agent" && other.backend.tool === provider).length : 0;
           return (
-            <Sheet title="In this thread" onClose={() => setBotSheet(null)}>
-              <div className="ph-bot-head">
-                <Avatar seed={who.look.seed} color={who.look.color} size="lg" working={Boolean(turn) && !asking} />
-                <span className="ph-grow">
-                  <strong style={{ color: who.look.color }}>{who.display_name}</strong>
-                  <small>{config ? toolWords(config) : "In this thread"}</small>
-                  <small className={asking ? "ph-amber" : undefined}>{asking ? "Waiting on your answer" : turn ? `${turnWords(turn, false, room.plan)} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}</small>
-                </span>
-              </div>
-              <div className="ph-card ph-usage">
-                <p><span>Context</span><span className={usage.contextLow ? "ph-amber" : undefined}>{usage.context}</span></p>
-                <p><span>Plan</span><span className={usage.planLow ? "ph-amber" : undefined}>{usage.plan}</span></p>
-              </div>
-              <button type="button" className="primary ph-wide" onClick={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who.id) }); setBotSheet(null); }}>Mention {who.display_name}</button>
-              {turn && openLink?.status === "online" && <button type="button" className="ph-wide" onClick={() => { void stopBot(who.id); setBotSheet(null); }}>Stop {who.display_name}</button>}
-              <p className="ph-sheet-text ph-quiet">Removing a bot and its settings are on the Mac for now.</p>
-            </Sheet>
+            <BotSheet key={`${room.id}:${who.id}`} who={who} config={config} reported={reported}
+              status={asking ? "Waiting on your answer" : turn ? `${toolLine(turnWords(turn, false, room.plan))} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}
+              statusWarn={asking} working={Boolean(turn)} asking={asking}
+              meters={botMeters(provider, room.fill[who.id], provider ? room.plans[provider] : undefined, new Date())}
+              shared={provider && sharing > 1 ? `The plan is shared by all ${sharing} ${provider === "claude_code" ? "Claude Code" : provider === "codex" ? "Codex" : provider === "grok" ? "Grok" : "Gemini"} bots in this thread.` : ""}
+              tokens={tokenWords(room.used[who.id])}
+              offline={openLink.status !== "online" ? downLine(openLink) : ""}
+              onSave={(change) => saveTurn(room.id, openLink.id, who.id)({ change, reported })}
+              onMention={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who.id) }); setBotSheet(null); }}
+              onStop={() => { void stopBot(who.id); setBotSheet(null); }}
+              onClose={() => setBotSheet(null)} />
           );
         })()}
         {menu?.kind === "new" && (
@@ -916,6 +1013,10 @@ export function PhoneApp() {
                 {workspace?.path && <p className="ph-path">{workspace.path}</p>}
                 <p className="ph-meta">{link && link.status !== "online" ? `${downLine(link)} · ` : ""}{menuPane.activeAt ? `Active ${ageWords(Date.now() - menuPane.activeAt)} ago` : "Not started"}</p>
               </div>
+              {/* The same details as holding or pulling down a bot pill, for anyone who can't do either. */}
+              {menuPane.id === openId && room && room.id === openPane?.id && room.participants.map((who) => (
+                <MenuRow key={who.id} label={`${who.display_name} details`} detail="Model, reasoning, context and plan" onClick={() => { setMenu(null); setBotSheet(who.id); }} />
+              ))}
               <MenuRow label={menuPane.pinned ? "Unpin" : "Pin"} onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, pinned: item.pinned ? undefined : true })); setMenu(null); }} />
               <MenuRow label="Rename…" onClick={() => setMenu({ kind: "rename", id: menuPane.id, text: menuPane.title })} />
               {!menuPane.unread && <MenuRow label="Mark as unread" onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, unread: true })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />}
@@ -991,6 +1092,169 @@ function Sheet({ title, onClose, children }: { title: string; onClose(): void; c
     </div>
   );
 }
+
+/** A held bot: what it runs on, how much it has left, and its model and reasoning, which save as they're picked, as on the desktop. */
+function BotSheet(props: {
+  who: Person; config: ParticipantConfig; reported: ModelChoice[];
+  status: string; statusWarn: boolean; working: boolean; asking: boolean;
+  meters: MeterRow[]; shared: string; tokens: string;
+  /** Why the bot's machine can't take changes right now; empty while it's online. */
+  offline: string;
+  onSave(change: TurnChange): Promise<void>; onMention(): void; onStop(): void; onClose(): void;
+}) {
+  const backend = props.config.backend;
+  const tool = backend.kind === "agent" ? backend.tool : null;
+  const savedModel = "model" in backend ? backend.model ?? "" : "";
+  const [model, setModel] = useState(savedModel);
+  const [effort, setEffort] = useState(props.config.effort ?? "");
+  const [typed, setTyped] = useState(savedModel);
+  const [view, setView] = useState<"bot" | "models">("bot");
+  const [result, setResult] = useState<{ saving: boolean; error: string; saved: boolean }>({ saving: false, error: "", saved: false });
+  // Picks not yet saved go in each write together, so a newer pick never drops an older one.
+  // Once saved they're dropped, so a later write doesn't undo a change made on the Mac since.
+  const touched = useRef<TurnChange>({});
+  const version = useRef(0);
+  const saved = useRef(props.config);
+  saved.current = props.config;
+  // Bumped once a save lands and its picks leave `touched`, so the effect below runs again after that.
+  const [settled, setSettled] = useState(0);
+  // Show the bot as its machine has it (after a save, or a change from the Mac), except picks still saving.
+  const savedEffort = props.config.effort ?? "";
+  const shownModel = useRef(savedModel);
+  useEffect(() => {
+    if (!("model" in touched.current)) {
+      const before = shownModel.current;
+      shownModel.current = savedModel;
+      setModel(savedModel);
+      // A model name half typed into the box stays; only one still showing the old model follows.
+      setTyped((current) => current === before ? savedModel : current);
+    }
+    if (!("effort" in touched.current)) setEffort(savedEffort);
+  }, [savedModel, savedEffort, settled]);
+  const choices = tool ? modelChoices(tool, props.reported) : null;
+  const groups = choices?.groups ?? [];
+  const all = choices ? [...choices.shown, ...choices.extra] : [];
+  const [more, setMore] = useState(() => choices?.extra.some((m) => m.id === savedModel) ?? false);
+  const levels = reasoningLevels(props.config, groups, model);
+  const editable = backend.kind === "agent" || backend.kind === "open_ai_compatible";
+  const name = props.who.display_name;
+  const modelName = (id: string) => id ? all.find((m) => m.id === id)?.label ?? id : "Default";
+  const note = model ? all.find((m) => m.id === model)?.note : undefined;
+
+  const apply = async (change: TurnChange) => {
+    const sent = { ...touched.current, ...change };
+    touched.current = sent;
+    const mine = ++version.current;
+    setResult({ saving: true, error: "", saved: false });
+    try {
+      await props.onSave(sent);
+      const left: TurnChange = { ...touched.current };
+      if (left.model === sent.model) delete left.model;
+      if (left.effort === sent.effort) delete left.effort;
+      touched.current = left;
+      setSettled((n) => n + 1);
+      if (mine === version.current) setResult({ saving: false, error: "", saved: true });
+    } catch (error) {
+      if (mine !== version.current) return;
+      // Nothing was written: show the bot as its machine has it.
+      touched.current = {};
+      const now = saved.current;
+      setModel("model" in now.backend ? now.backend.model ?? "" : "");
+      setEffort(now.effort ?? "");
+      setResult({ saving: false, error: words(error), saved: false });
+    }
+  };
+  const pick = (id: string) => {
+    setModel(id);
+    if (!reasoningLevels(props.config, groups, id).includes(effort)) setEffort("");
+    setView("bot");
+    if (id !== model) void apply({ model: id });
+  };
+  const modelRow = (m: { id: string; label?: string | null }) => (
+    <button key={m.id || "default"} type="button" role="menuitemradio" aria-checked={model === m.id} className="ph-srow" onClick={() => pick(m.id)}>
+      <span className="ph-grow"><strong>{m.id ? m.label ?? m.id : "Default"}</strong>{m.id ? m.label && <small>{m.id}</small> : <small>Whatever {tool ? toolName(tool) : "the tool"} picks for this account</small>}</span>
+      {model === m.id && <span className="ph-srow-icon"><Check size={18} /></span>}
+    </button>
+  );
+
+  if (view === "models" && choices) {
+    return (
+      <Sheet title="Model" onClose={props.onClose}>
+        <button type="button" className="ph-back ph-sheet-back-link" onClick={() => setView("bot")}><ChevronLeft size={18} />{name}</button>
+        <div className="ph-group" role="menu" aria-label={`Model for ${name}`}>
+          {modelRow({ id: "" })}
+          {model && !all.some((m) => m.id === model) && modelRow({ id: model })}
+          {choices.shown.map(modelRow)}
+          {choices.extra.length > 0 && (
+            <button type="button" className="ph-srow" aria-expanded={more} onClick={() => setMore((open) => !open)}>
+              <span className="ph-grow"><strong>{more ? "Fewer models" : "More models"}</strong></span>
+              <span className="ph-srow-icon ph-muted-icon">{more ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</span>
+            </button>
+          )}
+          {more && choices.extra.map(modelRow)}
+        </div>
+        <p className="ph-sheet-text ph-quiet">{props.reported.length ? `The models ${toolName(tool!)} offers this account, then other known ones.` : `The models Deck knows for ${toolName(tool!)}.`}</p>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Sheet title="In this thread" onClose={props.onClose}>
+      <div className="ph-bot-head">
+        <Avatar seed={props.who.look.seed} color={props.who.look.color} size="lg" working={props.working && !props.asking} />
+        <span className="ph-grow">
+          <strong style={{ color: props.who.look.color }}>{name}</strong>
+          <small>{settingsLine({ ...props.config, backend: "model" in backend ? { ...backend, model: model || null } as ParticipantConfig["backend"] : backend, effort: effort || null }, props.reported)}</small>
+          <small className={props.statusWarn ? "ph-amber" : undefined}>{props.status}</small>
+        </span>
+      </div>
+      <div className="ph-card ph-meters" role="group" aria-label={`What ${name} has left`} style={{ "--who": props.who.look.color } as CSSProperties}>
+        {props.meters.map((row) => (
+          <div key={row.key} className={`ph-meter${row.low ? " low" : ""}`}>
+            <p><span>{row.label}</span><b>{row.value}{row.low && " low"}</b></p>
+            <span className="ph-meter-track" aria-hidden="true">{row.left !== null && <i style={{ width: `${percent(row.left)}%` }} />}</span>
+            {row.detail && <small>{row.detail}</small>}
+          </div>
+        ))}
+        {props.shared && <p className="ph-meter-note">{props.shared}</p>}
+        <p className="ph-meter-note">{props.tokens}</p>
+      </div>
+      {editable ? <>
+        <div className="ph-section">Model and reasoning</div>
+        <fieldset className="ph-group ph-turn" disabled={Boolean(props.offline)} aria-busy={result.saving}>
+          {tool ? (
+            <button type="button" className="ph-srow" aria-haspopup="menu" onClick={() => setView("models")}>
+              <span className="ph-grow"><strong>Model</strong></span>
+              <span className="ph-srow-value">{modelName(model)}</span>
+              <ChevronRight size={16} />
+            </button>
+          ) : (
+            <form className="ph-srow ph-model-typed" onSubmit={(event) => { event.preventDefault(); if (typed.trim() && typed.trim() !== model) { setModel(typed.trim()); void apply({ model: typed.trim() }); } }}>
+              <label className="ph-grow"><strong>Model</strong><input value={typed} onChange={(event) => setTyped(event.target.value)} placeholder="Model name" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
+              <button type="submit" className="primary" disabled={!typed.trim() || typed.trim() === model}>Save</button>
+            </form>
+          )}
+          <div className="ph-reasoning">
+            <ReasoningSlider efforts={levels} value={levels.includes(effort) ? effort : ""} onCommit={(value) => { setEffort(value); if (value !== (levels.includes(effort) ? effort : "")) void apply({ effort: value }); }} />
+          </div>
+        </fieldset>
+        {note && <p className="ph-sheet-text ph-quiet">{note}</p>}
+        <p className={`ph-sheet-text ph-turn-note${result.error ? " ph-red" : props.offline ? " ph-amber" : ""}`} role={result.error ? "alert" : "status"}>
+          {props.offline ? `${props.offline}. Model and reasoning can change once it's back.`
+            : result.error ? `Couldn't save: ${result.error}`
+            : result.saving ? "Saving…"
+            : result.saved ? props.working ? `Saved. ${name} finishes this reply first, then uses it.` : `Saved. ${name} uses it from its next reply.`
+            : "Changes save as you pick them, for this thread only."}
+        </p>
+      </> : <p className="ph-sheet-text ph-quiet">This bot has no model or reasoning to change.</p>}
+      <button type="button" className="primary ph-wide" onClick={props.onMention}>Mention {name}</button>
+      {props.working && !props.offline && <button type="button" className="ph-wide" onClick={props.onStop}>Stop {name}</button>}
+      <p className="ph-sheet-text ph-quiet">Removing a bot is on the Mac for now.</p>
+    </Sheet>
+  );
+}
+
+const toolName = (tool: AgentTool) => TOOL_WORDS[tool] ?? tool;
 
 function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: string; danger?: boolean; onClick(): void }) {
   return (
@@ -1127,6 +1391,8 @@ function ThreadView(props: {
   toIds: string[] | null;
   /** The bot bar is folded into the title bar; the phone remembers this for every thread. */
   crewShut: boolean; onCrew(shut: boolean): void; onBot(id: string): void;
+  /** Each bot's context hairline and plan dot, for its pill. */
+  meters: Record<string, PillMeter>;
   fork?: Pane["fork"]; approvalStays: boolean; other: LinkView | null; endRef: RefObject<HTMLDivElement | null>;
   onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(name: string): void; onScrolled(near: boolean): void;
   sending: boolean; attaching: boolean; onSend(): void; onDecide(request: string, approve: boolean, always: boolean): Promise<void>; onRetry(): void;
@@ -1139,7 +1405,7 @@ function ThreadView(props: {
   // The keyboard is up while the box has focus; the bot bar folds away until it goes down.
   const [typing, setTyping] = useState(false);
   const crew = crewOpen(props.crewShut, typing);
-  const press = useLongPress();
+  const pill = usePillPress();
   const tag = (id: string) => {
     const text = tagFromBar(props.draft.text, id);
     props.onDraft(text);
@@ -1206,7 +1472,7 @@ function ThreadView(props: {
           ? <span className="ph-nav-spacer" />
           : <button type="button" className="ph-icon" aria-label="Thread actions" onClick={props.onMenu}><More size={20} /></button>}
       </header>
-      {/* The thread's bots, pinned under the title: tap to @tag, hold for details. Folds into the title bar, and while the keyboard is up. */}
+      {/* The thread's bots, pinned under the title: tap to @tag, hold or pull down for details. Folds into the title bar, and while the keyboard is up. */}
       {props.participants.length > 0 && (
         <div className={`ph-crew${crew ? "" : " shut"}`} inert={props.covered || !crew} aria-hidden={!crew}>
           <div className="ph-crew-row" role="group" aria-label="Bots in this thread">
@@ -1218,14 +1484,23 @@ function ThreadView(props: {
             {props.participants.map((participant) => {
               const next = !everyone && props.toIds?.includes(participant.id);
               const live = participant.id in props.working;
+              const meter = props.meters[participant.id];
+              const left = meter?.context ?? null;
               return (
-                <button key={participant.id} type="button" className={`ph-crew-pill${next ? " to" : ""}${asking(participant.id) ? " asking" : ""}`} style={{ "--who": participant.look.color } as CSSProperties}
-                  aria-label={`${participant.display_name}${asking(participant.id) ? ", waiting on you" : live ? ", working" : next ? ", answers your next message" : ""}. Tap to tag, hold for details`}
-                  {...press.bind(() => props.onBot(participant.id))} onClick={() => { if (!press.held.current) tag(participant.id); }}>
+                <button key={participant.id} type="button" className={`ph-crew-pill${next ? " to" : ""}${asking(participant.id) ? " asking" : ""}${pill.pull?.id === participant.id ? " pulling" : ""}`} style={{ "--who": participant.look.color, "--pull": `${pill.pull?.id === participant.id ? pill.pull.y : 0}px` } as CSSProperties}
+                  aria-label={`${participant.display_name}${asking(participant.id) ? ", waiting on you" : live ? ", working" : next ? ", answers your next message" : ""}${left !== null ? `, ${percent(left)}% context left` : ""}${meter?.planLow ? ", plan nearly used up" : ""}. Tap to tag. Hold or pull down for details and settings`}
+                  {...pill.bind(participant.id, () => props.onBot(participant.id), () => tag(participant.id))}>
                   <span className="ph-crew-chip">
-                    <Avatar seed={participant.look.seed} color={participant.look.color} size="sm" working={live && !asking(participant.id)} />
-                    {participant.display_name}
+                    <span className="ph-crew-face">
+                      <Avatar seed={participant.look.seed} color={participant.look.color} size="sm" working={live && !asking(participant.id)} />
+                      {meter?.planLow && <i className="ph-crew-plan" />}
+                    </span>
+                    <span className="ph-crew-name">
+                      {participant.display_name}
+                      {left !== null && <i className={`ph-crew-meter${meter.low ? " low" : ""}`} style={{ "--left": `${percent(left)}%` } as CSSProperties} />}
+                    </span>
                   </span>
+                  <i className="ph-crew-grab" aria-hidden="true" />
                 </button>
               );
             })}
@@ -1278,7 +1553,7 @@ function ThreadView(props: {
             {turn.text && <div className="ph-md"><Markdown text={turn.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>}
             <div className={`ph-working${asking(id) ? " asking" : ""}`} role="status">
               <span className="working-dots" aria-hidden="true"><i /><i /><i /></span>
-              <span className="ph-grow ph-ellipsis">{turn.text ? turnWords(turn, asking(id), props.plan) : `${person(id).display_name} is ${turnWords(turn, asking(id), props.plan).toLowerCase()}…`}</span>
+              <span className="ph-grow ph-ellipsis">{turn.text ? toolLine(turnWords(turn, asking(id), props.plan)) : `${person(id).display_name} is ${toolLine(turnWords(turn, asking(id), props.plan)).replace(/^\S/, (c) => c.toLowerCase())}…`}</span>
               <span className="ph-time">{elapsed(Math.max(0, now - turn.startedAt))}</span>
               {!paused && <button type="button" className="ph-stop" aria-label={`Stop ${person(id).display_name}`} onClick={() => props.onStop(id)}>Stop</button>}
             </div>
@@ -1286,7 +1561,7 @@ function ThreadView(props: {
         ))}
         {props.approvals.map((card) => (
           <div key={card.request} className="ph-approval">
-            <ApprovalCard action={card.action} request={card.request} by={card.id} name={person(card.id).display_name} hostName={approvalWhere(props.machine, props.path, props.kind)} disabled={paused} onDecide={(approve, always) => props.onDecide(card.request, approve, always)} />
+            <ApprovalCard action={card.action.kind === "tool" ? { ...card.action, title: toolLine(card.action.title) } : card.action} request={card.request} by={card.id} name={person(card.id).display_name} hostName={approvalWhere(props.machine, props.path, props.kind)} disabled={paused} onDecide={(approve, always) => props.onDecide(card.request, approve, always)} />
           </div>
         ))}
         <div ref={props.endRef} />
