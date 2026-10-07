@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use apex_core::{
+use apex_core::{Access, 
     render_prompt, AgentTool, Approver, Backend, Decision, DeltaSink, NoApprover, Participant,
     ParticipantConfig, ParticipantError, Progress, ProgressSink, ProposedAction, Reply, TurnRequest,
 };
@@ -17,7 +17,7 @@ use tokio::process::{Child, Command};
 use crate::ansi::AnsiStripper;
 use crate::events::{EventReader, OutputFormat};
 use crate::codex_server::{self, TurnError};
-use crate::presets::{agent_command, clean_effort, clean_model, output_format};
+use crate::presets::{agent_command_with, clean_effort, clean_model, output_format};
 use crate::codex_hook;
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 
@@ -41,11 +41,14 @@ pub struct CliParticipant {
     path: Option<String>,
     codex_hook: Option<PathBuf>,
     temp: Option<PathBuf>,
+    /// While the thread's Plan switch is on: the bot's own access, which a
+    /// planning Claude gets back when the person agrees to start the work.
+    plan: Option<Access>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None }
     }
 
     /// Run the tool in the folder, and with the PATH, given by `context`.
@@ -69,7 +72,7 @@ impl CliParticipant {
             Backend::Cli { program, args } => Ok((program.clone(), args.clone(), OutputFormat::Text)),
             Backend::Agent { tool, model } => {
                 let (program, args) =
-                    agent_command(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.access);
+                    agent_command_with(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.access, self.plan.is_some());
                 Ok((program, args, output_format(*tool)))
             }
             _ => Err(ParticipantError::NotConfigured("backend is not a command-line tool".into())),
@@ -150,7 +153,7 @@ impl CliParticipant {
             effort: effort.as_deref(),
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
-            plan: false,
+            plan: self.plan.is_some(),
         };
         match codex_server::run(child, turn, prompt, on_progress, approver, hook.as_ref()).await {
             Ok(reply) => Ok(reply),
@@ -274,7 +277,7 @@ impl CliParticipant {
     ) -> Result<Reply, ParticipantError> {
         let child = self.start(program, args)?;
         let cwd = self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned());
-        let finished = claude_session::run(child, prompt, cwd, on_progress, approver)
+        let finished = claude_session::run(child, prompt, cwd, on_progress, approver, self.plan)
             .await
             .map_err(|e| ParticipantError::Failed(format!("talking to `{program}` failed: {e}")))?;
         self.settle(program, finished.success, &finished.status, &finished.stderr, finished.reader)
@@ -472,6 +475,17 @@ impl Participant for CliParticipant {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
+        // The Plan switch: the turn runs read-only, remembering the bot's own
+        // access. A custom command can't be held to read-only.
+        if request.plan && self.plan.is_none() {
+            if matches!(self.config.backend, Backend::Cli { .. }) {
+                return Err(ParticipantError::Failed("This custom command can't be held to read-only, so it sits out while Plan is on.".into()));
+            }
+            let mut config = self.config.clone();
+            config.access = Access::Read;
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access) };
+            return planning.respond_with_approvals(request, on_progress, approver).await;
+        }
         // Rebuild both CLI launch paths with the scheduler's effective access.
         // Arbitrary custom commands cannot enforce a scoped read-only turn.
         if request.access.is_some_and(|access| access != self.config.access) {
@@ -480,7 +494,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, args, format) = self.command_line()?;

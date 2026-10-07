@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use apex_core::{Answer, Approver, Decision, Progress, ProgressSink, Question, QuestionOption};
+use apex_core::{Access, ActionKind, Answer, Approver, Decision, Progress, ProgressSink, ProposedAction, Question, QuestionOption};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
@@ -73,6 +73,29 @@ pub(crate) fn question_response(request_id: &Value, input: &Value, answer: Answe
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
 }
 
+/// The answer to ExitPlanMode, Claude asking to start the work after
+/// planning. Approved: allowed, and Claude's mode for the rest of the turn
+/// goes back to what the bot's own access allows. Refused: Claude keeps
+/// planning. A read-only bot can't start the work at all.
+pub(crate) fn plan_exit_response(request_id: &Value, input: &Value, decision: Decision, own: Access) -> Value {
+    let mode = match own {
+        Access::Full => Some("bypassPermissions"),
+        Access::Edits => Some("acceptEdits"),
+        Access::Ask => Some("default"),
+        Access::Read => None,
+    };
+    let response = match (decision.approved(), mode) {
+        (_, None) => json!({ "behavior": "deny", "message": "This bot can only read, so it can't start the work. The person can hand your plan to another bot." }),
+        (true, Some(mode)) => json!({
+            "behavior": "allow",
+            "updatedInput": input,
+            "updatedPermissions": [{ "type": "setMode", "mode": mode, "destination": "session" }],
+        }),
+        (false, Some(_)) => json!({ "behavior": "deny", "message": "The person wants to keep planning." }),
+    };
+    json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
+}
+
 async fn send(stdin: &mut ChildStdin, message: &Value) -> std::io::Result<()> {
     let mut line = message.to_string();
     line.push('\n');
@@ -97,6 +120,7 @@ pub(crate) async fn run(
     cwd: Option<String>,
     on_progress: ProgressSink<'_>,
     approver: &dyn Approver,
+    after_plan: Option<Access>,
 ) -> std::io::Result<Finished> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -132,6 +156,17 @@ pub(crate) async fn run(
                     on_progress(Progress::Activity("Waiting for your answer"));
                     let answer = approver.ask(ask_user_questions(&request["input"])).await;
                     question_response(&message["request_id"], &request["input"], answer)
+                } else if let (true, Some(own)) = (request["subtype"] == "can_use_tool" && request["tool_name"] == "ExitPlanMode", after_plan) {
+                    // Started by the Plan switch: Claude has a plan and asks
+                    // to start the work. A read-only bot is refused unasked.
+                    let decision = if own == Access::Read {
+                        Decision::Reject
+                    } else {
+                        let plan = request["input"]["plan"].as_str().unwrap_or("").to_string();
+                        on_progress(Progress::Activity("Waiting for you: start the work?"));
+                        approver.decide(ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: plan, expires_at: None, risky: false }).await
+                    };
+                    plan_exit_response(&message["request_id"], &request["input"], decision, own)
                 } else if request["subtype"] == "can_use_tool" {
                     let tool = request["tool_name"].as_str().unwrap_or("a tool");
                     let action = reader.claude_action(tool, &request["input"]);
@@ -180,6 +215,20 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn starting_the_work_hands_back_the_bots_own_access() {
+        let input = json!({"plan": "1. Do it"});
+        let response = |decision, own| plan_exit_response(&json!("p1"), &input, decision, own)["response"]["response"].clone();
+        let mode = |own| response(Decision::Approve, own)["updatedPermissions"][0]["mode"].clone();
+        assert_eq!(response(Decision::Approve, Access::Full)["behavior"], "allow");
+        assert_eq!(response(Decision::Approve, Access::Full)["updatedInput"], input);
+        assert_eq!(response(Decision::Approve, Access::Full)["updatedPermissions"][0], json!({"type": "setMode", "mode": "bypassPermissions", "destination": "session"}));
+        assert_eq!(mode(Access::Edits), "acceptEdits");
+        assert_eq!(mode(Access::Ask), "default");
+        assert_eq!(response(Decision::Reject, Access::Full), json!({"behavior": "deny", "message": "The person wants to keep planning."}));
+        assert_eq!(response(Decision::Approve, Access::Read)["behavior"], "deny", "a read-only bot never starts the work");
+    }
 
     #[test]
     fn answers_go_back_under_each_questions_own_text() {

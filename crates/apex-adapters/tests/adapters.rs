@@ -28,7 +28,13 @@ fn request(text: &str) -> TurnRequest {
         system: "You are a test bot.".into(),
         turns: vec![ViewTurn { role: Role::User, content: format!("[Human]: {text}") }],
         unseen: vec![],
+        plan: false,
     }
+}
+
+/// The same request with the thread's Plan switch on, as the room sends it.
+fn planning(text: &str) -> TurnRequest {
+    TurnRequest { access: Some(Access::Read), plan: true, ..request(text) }
 }
 
 /// Run `respond` and return the result plus everything streamed.
@@ -744,6 +750,7 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
                 system: "You are a test bot.".into(),
                 turns: vec![ViewTurn { role: Role::User, content: "[Human]: please fail".into() }],
                 unseen: vec![],
+                plan: false,
             },
             &|piece| streamed.lock().unwrap().push_str(piece),
         )
@@ -804,12 +811,20 @@ async fn work_asking(
     participant: &dyn Participant,
     approver: &dyn Approver,
 ) -> (Result<apex_core::Reply, ParticipantError>, String, Vec<FileChange>) {
+    work_asking_with(participant, approver, request("hi")).await
+}
+
+async fn work_asking_with(
+    participant: &dyn Participant,
+    approver: &dyn Approver,
+    turn: TurnRequest,
+) -> (Result<apex_core::Reply, ParticipantError>, String, Vec<FileChange>) {
     use apex_core::Progress;
     let text = Mutex::new(String::new());
     let changed = Mutex::new(Vec::new());
     let result = participant
         .respond_with_approvals(
-            request("hi"),
+            turn,
             &|update| match update {
                 Progress::Text(piece) => text.lock().unwrap().push_str(piece),
                 Progress::Change(change) => changed.lock().unwrap().push(change.clone()),
@@ -1340,10 +1355,11 @@ while IFS= read -r line; do
  *'"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
  *'"thread/start"'*) echo '{"id":1,"result":{"thread":{"id":"thread-q"},"model":"gpt-test"}}' ;;
  *'"turn/start"'*)
+ case "$line" in *'"collaborationMode":{"mode":"plan","settings":{"model":"gpt-test"}}'*) mode="planning" ;; *) mode="working" ;; esac
  echo '{"method":"item/tool/requestUserInput","id":"q-1","params":{"threadId":"thread-q","turnId":"t","itemId":"i","isBlocking":true,"questions":[{"id":"colour","header":"Colour","question":"Which colour?","isOther":true,"isSecret":false,"options":[{"label":"red","description":""},{"label":"blue","description":""}]}]}}'
  IFS= read -r answer
  case "$answer" in *'"colour":{"answers":["blue"]}'*) said="blue" ;; *'"answers":{}'*) said="skipped" ;; *) echo "bad answer $answer" >&2; exit 2 ;; esac
- echo "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"agentMessage\",\"id\":\"reply\",\"text\":\"$said\"}}}"
+ echo "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"agentMessage\",\"id\":\"reply\",\"text\":\"$mode $said\"}}}"
  echo '{"method":"turn/completed","params":{"turn":{"status":"completed","error":null}}}' ;;
  *'"account/rateLimits/read"'*) echo '{"id":3,"result":{}}' ;;
  esac
@@ -1361,9 +1377,68 @@ async fn codex_questions_reach_the_person() {
     let person = Fixed::new(Decision::Reject);
     *person.said.lock().unwrap() = Some(Answer::Answered(vec![vec!["blue".into()]]));
     let (result, _, _) = work_asking(bot.as_ref(), &person).await;
-    assert_eq!(result.unwrap().text, "blue");
+    assert_eq!(result.unwrap().text, "working blue");
     assert_eq!(person.questions.lock().unwrap()[0].question, "Which colour?");
     let (result, _, _) = work_asking(bot.as_ref(), &Fixed::new(Decision::Approve)).await;
-    assert_eq!(result.unwrap().text, "skipped");
+    assert_eq!(result.unwrap().text, "working skipped");
+    let (result, _, _) = work_asking_with(bot.as_ref(), &person, planning("hi")).await;
+    assert_eq!(result.unwrap().text, "planning blue", "with Plan on, Codex plans with the model it reported");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A stand-in for Claude Code in planning mode: it asks to start the work
+/// and reports what it was told.
+#[cfg(unix)]
+const FAKE_CLAUDE_PLANNING: &str = r#"#!/bin/sh
+case "$*" in
+*"--permission-mode plan"*) ;;
+*) echo "error: not planning: $*" >&2; exit 2 ;;
+esac
+IFS= read -r prompt
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"control_request","request_id":"p1","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"1. Make hello.txt"}}}'
+IFS= read -r answer
+case "$answer" in
+*'"behavior":"allow"'*'"mode":"bypassPermissions"'*) said="working" ;;
+*'"behavior":"deny"'*'keep planning'*) said="still planning" ;;
+*'"behavior":"deny"'*'can only read'*) said="read only" ;;
+*) echo "error: unexpected answer: $answer" >&2; exit 2 ;;
+esac
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$said\"}"
+cat >/dev/null
+"#;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_planning_claude_asks_before_it_starts_the_work() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("claude-planning", "claude", FAKE_CLAUDE_PLANNING);
+    let mut cfg = config("jigga", Backend::Agent { tool: AgentTool::ClaudeCode, model: None });
+    cfg.access = Access::Full;
+    let bot = build(cfg, &context_in(&dir));
+
+    let yes = Fixed::new(Decision::Approve);
+    let (result, _, _) = work_asking_with(bot.as_ref(), &yes, planning("hi")).await;
+    assert_eq!(result.unwrap().text, "working", "approved: Claude goes on with its own Full access");
+    let asked = yes.asked.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert_eq!((asked[0].kind, asked[0].title.as_str(), asked[0].detail.as_str()), (ActionKind::Plan, "Start the work?", "1. Make hello.txt"));
+
+    let no = Fixed::new(Decision::Reject);
+    let (result, _, _) = work_asking_with(bot.as_ref(), &no, planning("hi")).await;
+    assert_eq!(result.unwrap().text, "still planning");
+
+    let reader = build(config("jigga", Backend::Agent { tool: AgentTool::ClaudeCode, model: None }), &context_in(&dir));
+    let asked = Fixed::new(Decision::Approve);
+    let (result, _, _) = work_asking_with(reader.as_ref(), &asked, planning("hi")).await;
+    assert_eq!(result.unwrap().text, "read only");
+    assert!(asked.asked.lock().unwrap().is_empty(), "no card for a bot that can't start the work");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_custom_command_sits_out_while_planning() {
+    let bot = CliParticipant::new(config("aider", sh("echo hi")));
+    let result = bot.respond_with_approvals(planning("hi"), &|_| {}, &Fixed::new(Decision::Approve)).await;
+    assert_eq!(result.unwrap_err(), ParticipantError::Failed("This custom command can't be held to read-only, so it sits out while Plan is on.".into()));
 }

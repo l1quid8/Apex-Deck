@@ -284,6 +284,7 @@ pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
     json!({ "method": "thread/start", "id": 1, "params": params })
 }
 
+#[cfg(test)]
 pub(crate) fn turn_start(thread: &str, prompt: &str, effort: Option<&str>) -> Value {
     turn_start_with(thread, prompt, effort, None)
 }

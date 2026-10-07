@@ -17,6 +17,9 @@ pub struct TurnRequest {
     /// Backends that keep their own session history (command-line tools with
     /// a resume option) can send only these instead of the full transcript.
     pub unseen: Vec<Message>,
+    /// The thread's Plan switch is on: the bot plans and changes nothing.
+    /// Agents with a planning mode of their own use it.
+    pub plan: bool,
 }
 
 /// A finished reply.

@@ -59,6 +59,19 @@ pub fn agent_command(
     effort: Option<&str>,
     access: Access,
 ) -> (String, Vec<String>) {
+    agent_command_with(tool, model, effort, access, false)
+}
+
+/// `agent_command`, for a turn taken while the thread's Plan switch is on.
+/// Claude Code then runs in its own planning mode; the other tools plan
+/// under `access`, which the room has already made read-only.
+pub fn agent_command_with(
+    tool: AgentTool,
+    model: Option<&str>,
+    effort: Option<&str>,
+    access: Access,
+    plan: bool,
+) -> (String, Vec<String>) {
     let model = clean_model(model);
     let effort = clean_effort(effort);
     let effort = effort.as_deref();
@@ -84,6 +97,9 @@ pub fn agent_command(
                 push(&["--effort", effort]);
             }
             match access {
+                // Claude's planning mode changes nothing until the person
+                // agrees to start the work (claude_session.rs).
+                _ if plan => push(&["--permission-mode", "plan"]),
                 // Without a way to ask for approval, edits and commands are
                 // refused anyway; denying the tools makes that explicit.
                 Access::Read => push(&["--disallowedTools", "Edit,Write,NotebookEdit,Bash"]),
@@ -164,6 +180,20 @@ pub fn agent_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_planning_claude_starts_in_its_own_planning_mode() {
+        let (_, plain) = agent_command_with(AgentTool::ClaudeCode, None, None, Access::Read, false);
+        assert_eq!(plain, agent_command(AgentTool::ClaudeCode, None, None, Access::Read).1);
+        let (program, planning) = agent_command_with(AgentTool::ClaudeCode, None, None, Access::Read, true);
+        assert_eq!(program, "claude");
+        let line = planning.join(" ");
+        assert!(line.contains("--permission-mode plan"), "{line}");
+        assert!(!line.contains("--disallowedTools"), "plan mode does the holding back: {line}");
+        assert!(line.contains("--permission-prompt-tool stdio"), "it still asks Deck: {line}");
+        let (_, gemini) = agent_command_with(AgentTool::Gemini, None, None, Access::Read, true);
+        assert_eq!(gemini, agent_command(AgentTool::Gemini, None, None, Access::Read).1, "others plan read-only");
+    }
 
     fn line(tool: AgentTool, model: Option<&str>, access: Access) -> String {
         let (program, mut args) = agent_command(tool, model, None, access);

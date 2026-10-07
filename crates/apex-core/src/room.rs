@@ -44,6 +44,11 @@ impl Default for RoomOptions {
     }
 }
 
+/// Added to every bot's instructions while the thread's Plan switch is on.
+pub const PLAN_SYSTEM: &str = "\n\nPlan mode is on in this thread. Explore and read as much as you need, but do not change any \
+files or run anything that changes the project. Ask the person anything only they can decide. End your reply with a \
+clear, step-by-step plan.";
+
 /// Things that happen while a room works through a human message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -84,6 +89,8 @@ pub enum RoomEvent {
         #[serde(default)]
         pending: bool,
     },
+    /// The thread's Plan switch was turned on or off.
+    PlanChanged { on: bool },
     /// The thread's "Always allow" list changed. It is the whole list.
     AllowedChanged { allowed: Vec<crate::AllowedRule> },
     /// A participant changed a file.
@@ -154,7 +161,9 @@ pub(crate) struct RoomApprover<'a> {
 #[async_trait]
 impl Approver for RoomApprover<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
-        if self.desk.always_allowed(self.id, &action) {
+        // Starting the work after a plan is asked every time.
+        let once = action.kind == crate::ActionKind::Plan;
+        if !once && self.desk.always_allowed(self.id, &action) {
             eprintln!("[apex-deck] answered without a card (always allowed): {}", action.title);
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
             // A plain yes: the thread's saved rule answered, so no tool is
@@ -166,7 +175,10 @@ impl Approver for RoomApprover<'_> {
         (self.on_event)(RoomEvent::ApprovalRequested { id: self.id.clone(), request: request.clone(), action });
         let mut card = Card { approver: self, request: Some(request) };
         // No answer at all (the chat was closed) counts as a refusal.
-        let decision = answer.await.unwrap_or(Decision::Reject);
+        let decision = match answer.await.unwrap_or(Decision::Reject) {
+            Decision::ApproveAlways if once => Decision::Approve,
+            decision => decision,
+        };
         eprintln!("[apex-deck] card answered: {decision:?}: {}", remembered.title);
         card.settle(decision.approved());
         if decision == Decision::ApproveAlways && self.desk.allow_always(self.id, &remembered) {
@@ -291,6 +303,9 @@ pub struct RoomSnapshot {
     /// them; a fork starts without them.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub usage: HashMap<ParticipantId, TokenTotals>,
+    /// The thread's Plan switch: every bot plans and changes nothing.
+    #[serde(default)]
+    pub plan: bool,
 }
 
 impl RoomSnapshot {
@@ -309,6 +324,7 @@ impl RoomSnapshot {
             baseline: self.baseline.clone(),
             allowed: Vec::new(),
             usage: HashMap::new(),
+            plan: self.plan,
         }
     }
 }
@@ -328,6 +344,9 @@ pub struct Room {
     usage: HashMap<ParticipantId, TokenTotals>,
     options: RoomOptions,
     stop: Arc<AtomicBool>,
+    /// The Plan switch. Shared with the host, which flips it while a turn
+    /// may hold the room.
+    plan: Arc<AtomicBool>,
     /// Actions participants have proposed and are waiting on.
     desk: Arc<ApprovalDesk>,
 }
@@ -352,6 +371,7 @@ impl Room {
             baseline: self.baseline.clone(),
             allowed: self.desk.allowed(),
             usage: self.usage.clone(),
+            plan: self.plan.load(Ordering::SeqCst),
         }
     }
 
@@ -370,6 +390,7 @@ impl Room {
             baseline: snapshot.baseline,
             usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
+            plan: Arc::new(AtomicBool::new(snapshot.plan)),
             desk: Arc::new(desk),
         }
     }
@@ -387,6 +408,7 @@ impl Room {
             usage: HashMap::new(),
             options,
             stop: Arc::new(AtomicBool::new(false)),
+            plan: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
         }
     }
@@ -548,7 +570,7 @@ impl Room {
         let outsider = ParticipantId::new("");
         let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
-        let request = TurnRequest { access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new() };
+        let request = TurnRequest { access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false };
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
@@ -583,6 +605,11 @@ impl Room {
     /// between turns and discards replies that arrive after it is set.
     pub fn stop_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.stop)
+    }
+
+    /// The Plan switch, for the host to flip without the room's lock.
+    pub fn plan_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.plan)
     }
 
     pub(crate) fn has(&self, id: &ParticipantId) -> bool {
@@ -647,14 +674,20 @@ impl Room {
             .filter(|m| m.speaker != Speaker::Bot(id.clone()))
             .cloned()
             .collect();
-        let request = TurnRequest {
+        let mut request = TurnRequest {
             access: Some(participant.config().access),
             system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
                 crate::server_request::prompt_section(&m.text)
             }).unwrap_or_default(),
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
+            plan: false,
         };
+        if self.plan.load(Ordering::SeqCst) {
+            request.plan = true;
+            request.access = Some(crate::Access::Read);
+            request.system.push_str(PLAN_SYSTEM);
+        }
         Some((participant, request))
     }
 
@@ -865,6 +898,58 @@ mod approver_tests {
     use crate::approval::ActionKind;
     use futures::FutureExt;
     use std::sync::Mutex;
+
+    #[test]
+    fn a_start_the_work_card_is_never_always_allowed() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("jigga");
+        let sink = |_: RoomEvent| {};
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let start = ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: "1. Do it".into(), expires_at: None, risky: false };
+        let (decision, _) = futures::executor::block_on(async {
+            futures::join!(approver.decide(start.clone()), async { desk.resolve("ask-1", Decision::ApproveAlways) })
+        });
+        assert_eq!(decision, Decision::Approve, "an always answer counts once");
+        assert!(desk.allowed().is_empty(), "no rule is saved");
+        desk.allow_always(&id, &start);
+        let (_, asked) = futures::executor::block_on(async {
+            futures::join!(approver.decide(start.clone()), async { desk.resolve("ask-2", Decision::Approve) })
+        });
+        assert!(asked, "a saved rule never answers it");
+    }
+
+    #[test]
+    fn with_plan_on_every_turn_is_read_only_and_told_to_plan() {
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["one", "two"]));
+        let mut config = null.config().clone();
+        config.access = crate::Access::Full;
+        let full = Arc::new(crate::testing::ScriptedParticipant::from_config(config));
+        let mut room = Room::new(vec![full.clone()], RoomOptions::default());
+        let id = ParticipantId::new("null");
+        let (_, off) = room.request_for(&id).unwrap();
+        assert!(!off.plan);
+        assert_eq!(off.access, Some(crate::Access::Full));
+        assert!(!off.system.contains(PLAN_SYSTEM));
+        room.plan_handle().store(true, Ordering::SeqCst);
+        let (_, on) = room.request_for(&id).unwrap();
+        assert!(on.plan);
+        assert_eq!(on.access, Some(crate::Access::Read), "nobody edits while planning");
+        assert!(on.system.ends_with(PLAN_SYSTEM));
+        let _ = futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+    }
+
+    #[test]
+    fn the_plan_switch_is_saved_with_the_thread() {
+        let room = Room::new(vec![], RoomOptions::default());
+        assert!(!room.snapshot().plan);
+        room.plan_handle().store(true, Ordering::SeqCst);
+        let saved = room.snapshot();
+        assert!(saved.plan);
+        assert!(Room::restore(vec![], saved.clone()).plan_handle().load(Ordering::SeqCst));
+        let mut old = serde_json::to_value(&saved).unwrap();
+        old.as_object_mut().unwrap().remove("plan");
+        assert!(!serde_json::from_value::<RoomSnapshot>(old).unwrap().plan, "threads saved before the switch existed are not planning");
+    }
 
     #[test]
     fn a_question_is_shown_answered_and_taken_down() {

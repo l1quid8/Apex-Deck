@@ -34,6 +34,9 @@ pub enum ActionKind {
     Tool,
     /// Anything else a tool asks permission for.
     Other,
+    /// A bot that planned asks to start the work. Approving turns the
+    /// thread's Plan switch off. Never "Always allow".
+    Plan,
 }
 
 /// Something a participant wants to do and is waiting for permission for.
@@ -105,7 +108,7 @@ impl From<SavedRule> for AllowedRule {
 fn scope(action: &ProposedAction) -> &str {
     match action.kind {
         ActionKind::Tool | ActionKind::Edit => &action.title,
-        ActionKind::Command | ActionKind::Other => &action.detail,
+        ActionKind::Command | ActionKind::Other | ActionKind::Plan => &action.detail,
     }
 }
 

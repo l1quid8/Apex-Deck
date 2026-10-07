@@ -28,6 +28,8 @@ pub(crate) struct RoomHandle {
     checkpoint: Arc<Mutex<SavedRoom>>,
     pub(crate) deleted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    /// The thread's Plan switch, shared with the room.
+    plan: Arc<AtomicBool>,
     /// Actions the room's participants have proposed and are waiting on.
     /// Reached without the transcript lock while a provider is running.
     approvals: Arc<apex_core::ApprovalDesk>,
@@ -141,8 +143,13 @@ impl Host {
     }
 
     fn emit_room_event(&self, room: &str, event: RoomEvent, handle: Option<&RoomHandle>, recovery_seq: Option<u64>) {
+        // Approving a "Start the work?" card ends planning for the thread.
+        let mut plan_off = false;
         if let Some(handle) = handle {
             let mut live = handle.live.lock().unwrap();
+            if let RoomEvent::ApprovalResolved { request, approved: true, .. } = &event {
+                plan_off = live.approvals.iter().any(|a| a["request"].as_str() == Some(request.as_str()) && a["action"]["kind"] == "plan");
+            }
             match &event {
                 RoomEvent::TurnStarted { id } => { live.active.insert(id.as_str().to_string()); }
                 RoomEvent::ApprovalRequested { id, request, action } => {
@@ -159,6 +166,23 @@ impl Host {
             }
         }
         self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
+        // The caller may hold this room's event lock, so the switch is set
+        // and announced here directly rather than through `room_set_plan`.
+        if let (true, Some(handle)) = (plan_off, handle) {
+            if let Err(why) = self.store_plan(room, handle, false) {
+                eprintln!("[apex-deck] could not turn Plan off: {why}");
+            }
+            self.emit(HostEvent::Room { room: room.to_string(), event: RoomEvent::PlanChanged { on: false }, recovery_seq: None });
+        }
+    }
+
+    /// Set the Plan switch and save it. False if it already was `on`.
+    fn store_plan(&self, id: &str, handle: &RoomHandle, on: bool) -> Result<bool, String> {
+        if handle.plan.swap(on, Ordering::SeqCst) == on { return Ok(false); }
+        let mut checkpoint = handle.checkpoint.lock().unwrap();
+        checkpoint.snapshot.plan = on;
+        if !handle.deleted.load(Ordering::SeqCst) { self.store.save_room(id, &checkpoint)?; }
+        Ok(true)
     }
 
     fn handle(&self, id: &str) -> Result<RoomHandle, String> {
@@ -327,13 +351,14 @@ impl Host {
         }
         self.store.save_room(&id, &SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
         let stop = room.stop_handle();
+        let plan = room.plan_handle();
         let approvals = room.approvals_handle();
         let runtime = ConcurrentRoom::new(room);
         let checkpoint = Arc::new(Mutex::new(SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, approvals, context });
+            .insert(id, RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, plan, approvals, context });
         Ok(snapshot)
     }
 
@@ -343,7 +368,7 @@ impl Host {
         let seq = handle.recovery.lock().unwrap();
         let snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
         let live = handle.live.lock().unwrap();
-        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals,"recovery_seq":*seq}))
+        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq}))
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -480,6 +505,17 @@ impl Host {
                 handle.approvals.reject_all();
             }
         }
+    }
+
+    /// Turn the thread's Plan switch on or off. Saved at once; every client
+    /// hears `plan_changed`. A turn already running keeps the mode it began
+    /// with; the next one follows the switch.
+    pub fn room_set_plan(&self, id: String, on: bool) -> Result<(), String> {
+        let handle = self.handle(&id)?;
+        if self.store_plan(&id, &handle, on)? {
+            self.room_event(&id, RoomEvent::PlanChanged { on });
+        }
+        Ok(())
     }
 
     /// Answer an action a participant proposed. `request` is the id from the
@@ -1366,7 +1402,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
+        let handle = RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }
@@ -1483,6 +1519,40 @@ mod host_tests {
         assert!(host.quit_unanswered(1));
         host.quit_heard(1);
         assert!(!host.quit_unanswered(1));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn the_plan_switch_is_announced_saved_and_shown_in_room_state() {
+        let (host, _runtime, data) = host("plan-switch");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        assert_eq!(host.room_state("r".into()).unwrap()["plan"], false);
+        host.room_set_plan("r".into(), true).unwrap();
+        assert_eq!(host.room_state("r".into()).unwrap()["plan"], true);
+        assert!(host.store.room("r").unwrap().unwrap().snapshot.plan, "saved at once");
+        assert!(seen.lock().unwrap().iter().any(|e| matches!(e, HostEvent::Room { event: RoomEvent::PlanChanged { on: true }, .. })));
+        host.room_set_plan("r".into(), false).unwrap();
+        assert!(!host.store.room("r").unwrap().unwrap().snapshot.plan);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn approving_a_start_the_work_card_turns_plan_off() {
+        let (host, _runtime, data) = host("plan-approve");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        host.room_set_plan("r".into(), true).unwrap();
+        let jigga = ParticipantId::new("jigga");
+        let start = apex_core::ProposedAction { kind: apex_core::ActionKind::Plan, title: "Start the work?".into(), detail: "1. Do it".into(), expires_at: None, risky: false };
+        host.room_event("r", RoomEvent::ApprovalRequested { id: jigga.clone(), request: "ask-1".into(), action: start.clone() });
+        host.room_event("r", RoomEvent::ApprovalResolved { id: jigga.clone(), request: "ask-1".into(), approved: false });
+        assert_eq!(host.room_state("r".into()).unwrap()["plan"], true, "keep planning leaves it on");
+        host.room_event("r", RoomEvent::ApprovalRequested { id: jigga.clone(), request: "ask-2".into(), action: start });
+        host.room_event("r", RoomEvent::ApprovalResolved { id: jigga, request: "ask-2".into(), approved: true });
+        assert_eq!(host.room_state("r".into()).unwrap()["plan"], false);
+        assert!(!host.store.room("r").unwrap().unwrap().snapshot.plan);
         let _ = std::fs::remove_dir_all(data);
     }
 
