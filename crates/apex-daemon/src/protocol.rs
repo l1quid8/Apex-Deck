@@ -186,18 +186,24 @@ async fn send<O: Sink<String> + Unpin>(output: &mut O, guard: &mut Option<Guard>
 
 /// The frame for `reply` as this session may have it right now.
 fn reply_frame(guard: &Option<Guard>, reply: Reply) -> Result<String, Stop> {
-    let value = match (guard, reply.result) {
-        (_, Err(why)) => return Ok(refusal(json!(reply.id), why)),
-        (None, Ok(value)) => value,
-        (Some(guard), Ok(value)) => {
+    // A device's access is checked before either outcome, so an error can't
+    // carry details the device may no longer see.
+    let device = match guard {
+        None => None,
+        Some(guard) => {
             let device = guard.device().ok_or(Stop::Revoked)?;
             if let Some(need) = &reply.need {
                 if let Err(why) = authority::check(&device, need) {
                     return Ok(refusal(json!(reply.id), why));
                 }
             }
-            if reply.session { authority::filter_session(&device.threads, value) } else { value }
+            Some(device)
         }
+    };
+    let value = match (device, reply.result) {
+        (_, Err(why)) => return Ok(refusal(json!(reply.id), why)),
+        (Some(device), Ok(value)) if reply.session => authority::filter_session(&device.threads, value),
+        (_, Ok(value)) => value,
     };
     Ok(json!({ "id": reply.id, "ok": value }).to_string())
 }
@@ -1132,6 +1138,25 @@ mod tests {
         assert!(sent["ok"].get("layouts").is_none());
 
         let (guard, reply) = held(&daemon, &phone, json!({ "cmd": "session_load", "args": {} }), json!({}));
+        daemon.devices.revoke(&phone).unwrap();
+        assert!(matches!(reply_frame(&guard, reply), Err(Stop::Revoked)));
+    }
+
+    /// An error under way is rechecked too, so it can't leak paths after a downgrade.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_error_under_way_is_checked_again_against_the_narrowed_device() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let (guard, mut reply) = held(&daemon, &phone, json!({ "cmd": "folder_list", "args": {} }), json!(null));
+        reply.result = Err("can't read /Users/someone/secret".into());
+        daemon.devices.set_tier(&phone, Tier::Chat).unwrap();
+        let sent = frame(reply_frame(&guard, reply));
+        let err = sent["err"].as_str().unwrap();
+        assert!(err.contains("chat access") && !err.contains("secret"), "{sent}");
+        assert_eq!(sent["id"], 7);
+
+        let (guard, mut reply) = held(&daemon, &phone, json!({ "cmd": "folder_list", "args": {} }), json!(null));
+        reply.result = Err("can't read /Users/someone/secret".into());
         daemon.devices.revoke(&phone).unwrap();
         assert!(matches!(reply_frame(&guard, reply), Err(Stop::Revoked)));
     }
