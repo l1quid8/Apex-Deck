@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  PAIR_DEFAULT_TIER, canApprove, copyLink, countdownText, endedWords, pairableThreads, pairingApi, pairingSession,
+  PAIR_DEFAULT_TIER, NOT_OWNED_WORDS, canApprove, copyLink, countdownText, endedWords, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession,
   parseAddresses, qrSvgPath, reasonOf, revokedWarning,
 } from "../src/pairing.ts";
 
@@ -263,4 +263,38 @@ test("the threads a phone may be given are this Mac's chat threads", () => {
     { id: "r3", title: "Untitled thread", workspace: "Deck" },
   ]);
   assert.deepEqual(pairableThreads(null), []);
+});
+
+test("Pair phone turns Remote access on when it's off, and says why when it can't", async () => {
+  const calls = [];
+  /** A fake switch: `state` is what get reads; `set` gives `result`, or throws it when it's an Error. */
+  const remote = (state, result) => ({
+    get: async () => { calls.push("get"); return state; },
+    set: async (on) => { calls.push(["set", on]); if (result instanceof Error) throw result; return result; },
+  });
+  let turned = 0;
+  const turningOn = () => { turned += 1; };
+
+  assert.equal(await ensureRemoteAccess(remote({ on: true, owned: true }), turningOn), null, "already on: the code can be made");
+  assert.equal(turned, 0);
+  assert.deepEqual(calls, ["get"], "already on: the switch is left alone");
+
+  calls.length = 0;
+  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: true }, { on: true, owned: true }), turningOn), null);
+  assert.equal(turned, 1, "the line is shown once, while the switch is flipped");
+  assert.deepEqual(calls, ["get", ["set", true]], "the same switch the Settings toggle uses");
+
+  calls.length = 0;
+  const failed = await ensureRemoteAccess(remote({ on: false, owned: true }, new Error("The background service didn't start.")), turningOn);
+  assert.equal(failed, "The background service didn't start.", "the daemon's words are shown as they are");
+  assert.equal(turned, 2);
+
+  calls.length = 0;
+  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: false }, { on: true, owned: false }), turningOn), NOT_OWNED_WORDS);
+  assert.deepEqual(calls, ["get"], "not owned: nothing is tried");
+  assert.equal(turned, 2);
+
+  assert.equal(await ensureRemoteAccess(remote({ on: false, owned: true }, { on: false, owned: true }), turningOn), "Remote access didn't turn on.");
+  assert.equal(await ensureRemoteAccess({ get: async () => { throw new Error("Deck can't reach its background service."); }, set: async () => null }, turningOn), "Deck can't reach its background service.");
+  assert.equal(await ensureRemoteAccess(undefined, turningOn), null, "no switch in this app: nothing to turn on");
 });

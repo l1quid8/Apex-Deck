@@ -35,7 +35,7 @@ import { FinalError, type Connect } from "../daemon/client";
 import { irohConnect } from "../daemon/irohLink";
 import { remotePlugin, type RemoteMode, type Route } from "./remotePlugin";
 import { PairSheet, RemoteSettings } from "./PairSheet";
-import { parsePairingLink } from "./pairing";
+import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
 import { qrScanner } from "./remotePlugin";
 import { loadRoomState } from "../roomRecovery";
 import { folderCopyText, writeClipboard } from "../threadCopy";
@@ -209,7 +209,9 @@ export function PhoneApp() {
   const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string } | null>(null);
   const [tick, setTick] = useState(0);
   const [session, setSession] = useState<AppSession | null>(readSession);
-  const [tab, setTab] = useState<Tab>("threads");
+  /** An empty list at launch opens the camera once, from Add a machine. Machines clears it when it does. */
+  const [scanAtLaunch, setScanAtLaunch] = useState(() => scansAtLaunch(machines.length, Boolean(plugin && scanner)));
+  const [tab, setTab] = useState<Tab>(() => (scanAtLaunch ? "machines" : "threads"));
   const [openId, setOpenId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>(readDrafts);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -1058,6 +1060,8 @@ export function PhoneApp() {
             covered={covered}
             remote={plugin && <RemoteSettings plugin={plugin} mode={mode} onMode={changeMode} onError={setNotice} />}
             scan={scanner ? scanner.scan : null}
+            autoScan={scanAtLaunch}
+            onAutoScan={() => setScanAtLaunch(false)}
             onPair={setPairing}
             machineIcon={machineIcon}
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
@@ -1095,7 +1099,7 @@ export function PhoneApp() {
           <Sheet title={`Pair ${pairing.name}`} onClose={() => setPairing(null)}>
             <PairSheet plugin={plugin} link={pairing.link} label="iPhone" onClose={() => setPairing(null)} onPaired={(paired) => {
               const made: PairedMachine = { id: pairing.id, name: pairing.name, kind: pairing.kind, transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now() };
-              setMachines((list) => { try { return addMachine(list, made); } catch (error) { setNotice(words(error)); return list; } });
+              setMachines((list) => { try { return withPairedMachine(list, made); } catch (error) { setNotice(words(error)); return list; } });
             }} />
           </Sheet>
         )}
@@ -1994,12 +1998,15 @@ function WorkSheet({ rows, links, workspaces, project, mac, stays, machineIcon, 
 /** How a new machine is reached: its QR code, or an address and token typed in. */
 type AddHow = "qr" | "address";
 
-function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
+function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, autoScan, onAutoScan, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
   /** The phone's remote-access settings, when the native plugin is there. */
   remote: ReactNode;
   /** The camera scanner, when there is one. */
   scan: (() => Promise<string>) | null;
+  /** Open the camera now, as the first thing: no machine is saved yet. */
+  autoScan: boolean;
+  onAutoScan(): void;
   onAdd(machine: DirectMachine): void; onPair(request: { link: string; kind: MachineKind; id: string; name: string }): void;
   onEdit(id: string, machine: Machine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
 }) {
@@ -2017,12 +2024,26 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
       const preview = parsePairingLink(link);
       const name = form.name.trim() || preview.name;
       // Checked now, so a bad name or id doesn't surface only after the machine approved.
-      addMachine(machines, { id: form.kind === "mac" ? "local" : form.id.trim(), name, kind: form.kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
+      withPairedMachine(machines, { id: form.kind === "mac" ? "local" : form.id.trim(), name, kind: form.kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
       onPair({ link: link.trim(), kind: form.kind, id: form.kind === "mac" ? "local" : form.id.trim(), name });
       setAdding(false);
       setPasted("");
     } catch (error) { onError(words(error)); }
   };
+  const scanCode = () => {
+    if (!scan) return;
+    scan().then(pairWith, (error: unknown) => {
+      const why = words(error);
+      if (why === "cancelled") return;
+      onError(why === "denied" ? "Apex Deck can't use the camera. Allow it in Settings → Apex Deck, or paste the pairing link instead." : `Couldn't scan: ${why}`);
+    });
+  };
+  // Once per launch. If the person cancels, the Add a machine form just stays open.
+  useEffect(() => {
+    if (!autoScan) return;
+    onAutoScan();
+    scanCode();
+  }, []);
   return (
     <main className="ph-content" inert={covered}>
       <h2>Machines</h2>
@@ -2095,13 +2116,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
           {how === "qr" ? <>
             <p className="ph-muted">On the machine, open Settings → Remote access and press Pair phone. On a server, run <code>apex-daemon pair</code>.</p>
-            {scan && <button type="button" className="primary ph-wide" onClick={() => {
-              scan().then(pairWith, (error: unknown) => {
-                const why = words(error);
-                if (why === "cancelled") return;
-                onError(why === "denied" ? "Apex Deck can't use the camera. Allow it in Settings → Apex Deck, or paste the pairing link instead." : `Couldn't scan: ${why}`);
-              });
-            }}>Scan QR code</button>}
+            {scan && <button type="button" className="primary ph-wide" onClick={scanCode}>Scan QR code</button>}
             <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
           </> : <>

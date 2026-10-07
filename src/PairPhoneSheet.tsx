@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Backend } from "./backend";
 import { TIERS, threadsText, type PairedDevice, type Tier } from "./pairedDevices";
 import {
-  PAIR_DEFAULT_TIER, canApprove, copyLink, countdownText, pairableThreads, pairingApi, pairingSession, qrSvgPath, revokedWarning,
+  PAIR_DEFAULT_TIER, canApprove, copyLink, countdownText, ensureRemoteAccess, pairableThreads, pairingApi, pairingSession, qrSvgPath, revokedWarning,
   type PairState,
 } from "./pairing";
 
@@ -11,7 +11,8 @@ import {
 // and a 5-minute countdown. When a phone claims it, its name and code show
 // with Approve and Deny. Closing the sheet cancels the invitation.
 // Changing what the phone may do starts a new invitation, so the code
-// always carries the access shown.
+// always carries the access shown. Remote access is turned on first when
+// it's off, since a phone can't pair without it.
 
 export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backend; onClose: () => void; onPaired: (device: PairedDevice) => void }) {
   const api = useMemo(() => pairingApi(backend), [backend]);
@@ -23,6 +24,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
   const [round, setRound] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
+  const [turningOn, setTurningOn] = useState(false);
   const session = useRef<ReturnType<typeof pairingSession> | null>(null);
   const close = useRef(onClose);
   close.current = onClose;
@@ -37,16 +39,24 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
     if (scope === null) { setState({ kind: "idle" }); return; }
     // A short wait, so ticking several threads starts one invitation, not one each.
     let current: ReturnType<typeof pairingSession> | null = null;
+    let stopped = false;
     const timer = setTimeout(() => {
-      current = pairingSession(api, (next) => {
-        setState(next);
-        if (next.kind === "paired") paired.current(next.device);
+      // Remote access first: a code made while it's off is refused.
+      void ensureRemoteAccess(backend.remoteAccess, () => setTurningOn(true)).then((problem) => {
+        if (stopped) return;
+        setTurningOn(false);
+        if (problem !== null) { setState({ kind: "ended", reason: null, words: problem }); return; }
+        current = pairingSession(api, (next) => {
+          setState(next);
+          if (next.kind === "paired") paired.current(next.device);
+        });
+        session.current = current;
+        current.start(tier, scope);
       });
-      session.current = current;
-      current.start(tier, scope);
     }, round === 0 && scope === "all" ? 0 : 300);
     setState({ kind: "starting" });
     return () => {
+      stopped = true;
       clearTimeout(timer);
       current?.close();
       if (session.current === current) session.current = null;
@@ -88,6 +98,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
 
         {!claim && state.kind !== "paired" && state.kind !== "ended" && <>
           <p className="muted">Open Apex Deck on the phone and scan this code, or paste the link there.</p>
+          {turningOn && <p className="muted" role="status">Turning on Remote access so your phone can reach this Mac from anywhere…</p>}
           <div className="pair-code-area">
             <div className="pair-qr" aria-busy={!qr}>
               {qr
@@ -120,7 +131,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
           <p role="alert">{state.words}</p>
         </div>}
 
-        <fieldset className="pair-scope" disabled={scopeLocked}>
+        <fieldset className="pair-scope" disabled={scopeLocked || turningOn}>
           <label>
             <span>Access</span>
             <select aria-label="Access for the new phone" value={tier} onChange={(e) => setTier(e.target.value as Tier)}>

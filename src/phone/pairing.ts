@@ -2,6 +2,7 @@
 // the cryptography; this reads the link for a preview and tracks one attempt
 // from dialing to the machine's Approve or Deny.
 
+import { addMachine, isPaired, withHints, type Machine, type PairedMachine } from "../phoneRules.ts";
 import { CLOSE, type RemotePlugin } from "./remotePlugin.ts";
 
 /** Our relay. A link naming any other is refused (crates/apex-pairing/src/link.rs). */
@@ -129,4 +130,35 @@ export function startPairing(plugin: RemotePlugin, link: string, label: string, 
       if (handle !== null) void plugin.pairCancel(handle).catch(() => {});
     },
   };
+}
+
+/**
+ * Whether the camera opens by itself at launch: only with no machine saved,
+ * and only when the phone can pair by QR code. The caller opens it once.
+ */
+export function scansAtLaunch(machineCount: number, canScan: boolean): boolean {
+  return machineCount === 0 && canScan;
+}
+
+/**
+ * Put a machine just paired into the saved list. The same endpoint ID is the
+ * same machine: its entry keeps its place, id, name and settings, and takes
+ * the addresses the machine sent. Otherwise the entry it takes the place of
+ * is replaced where it stands, keeping its id and kind: the phone's Mac when
+ * a Mac is paired (a phone has one), or an address-and-token machine with the
+ * same id or name (case and spaces ignored). Otherwise the machine is added.
+ * Throws as addMachine does.
+ */
+export function withPairedMachine(list: Machine[], made: PairedMachine): Machine[] {
+  const same = list.findIndex((machine) => isPaired(machine) && machine.hostEndpointId === made.hostEndpointId);
+  if (same >= 0) return list.map((machine, at) => (at === same ? withHints(machine as PairedMachine, made.addrs) : machine));
+  const name = made.name.trim().toLowerCase();
+  const id = made.id.trim();
+  const stale = list.findIndex((machine) => (made.kind === "mac"
+    ? machine.kind === "mac"
+    : !isPaired(machine) && (machine.id === id || machine.name.trim().toLowerCase() === name)));
+  if (stale < 0) return addMachine(list, made);
+  const old = list[stale];
+  const replaced = addMachine(list.filter((_, at) => at !== stale), { ...made, id: old.id, kind: old.kind }).at(-1)!;
+  return list.map((machine, at) => (at === stale ? replaced : machine));
 }

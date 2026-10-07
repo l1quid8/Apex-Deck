@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { addMachine, canSeeNewThread, editMachine, loadMachines, saveMachines, withHints } from "../src/phoneRules.ts";
-import { parsePairingLink, startPairing, RELAY } from "../src/phone/pairing.ts";
+import { parsePairingLink, scansAtLaunch, startPairing, withPairedMachine, RELAY } from "../src/phone/pairing.ts";
 import { EventRouter } from "../src/phone/remotePlugin.ts";
 
 const HOST = "ab".repeat(32);
@@ -173,4 +173,62 @@ test("a handle that finds the early table full is closed, not silently dropped",
   const first = [];
   router.listen(1, (event) => first.push(event.type));
   assert.deepEqual(first, ["opened"]);
+});
+
+const OTHER_HOST = "cd".repeat(32);
+const scanned = (fields = {}) => ({ id: "h-new", name: "Studio", kind: "server", transport: "iroh", hostEndpointId: OTHER_HOST, addrs: ["198.51.100.4:41641"], pairedAt: 99, ...fields });
+const vps = { id: "h-2", name: "VPS", kind: "server", url: "wss://vps.example.com", token: "t" };
+
+test("a machine paired again by its endpoint ID keeps its place, id and name, and takes the new addresses", () => {
+  const list = [direct, paired];
+  const next = withPairedMachine(list, scanned({ id: "h-9", name: "Renamed", hostEndpointId: HOST, addrs: ["198.51.100.4:41641"] }));
+  assert.equal(next.length, 2, "no duplicate");
+  assert.equal(next[0], direct);
+  assert.deepEqual(next[1], { ...paired, addrs: ["198.51.100.4:41641"] });
+});
+
+test("an address-and-token machine with the same name is replaced in its place, keeping its id and kind", () => {
+  const next = withPairedMachine([vps, direct], scanned({ id: "h-3", name: "  vps ", hostEndpointId: OTHER_HOST }));
+  assert.deepEqual(next, [
+    { id: "h-2", name: "vps", kind: "server", transport: "iroh", hostEndpointId: OTHER_HOST, addrs: ["198.51.100.4:41641"], pairedAt: 99 },
+    direct,
+  ]);
+});
+
+test("a same-name match is only for an address-and-token machine; a paired one with that name is not replaced", () => {
+  // Two machines can't share a name, so the new one is refused rather than added as a copy.
+  assert.throws(() => withPairedMachine([paired], scanned({ name: "apex-terminal" })), /already a machine called/);
+  assert.equal(withPairedMachine([paired], scanned({ name: "Studio" })).length, 2);
+});
+
+test("a machine that matches nothing is added at the end", () => {
+  const next = withPairedMachine([direct, paired], scanned());
+  assert.equal(next.length, 3);
+  assert.equal(next[0], direct);
+  assert.equal(next[1], paired);
+  assert.deepEqual(next[2], scanned());
+});
+
+test("the same name matches ignoring case and spaces, but a different name does not", () => {
+  assert.equal(withPairedMachine([vps], scanned({ name: "  VPS " })).length, 1, "replaced, not added");
+  assert.equal(withPairedMachine([vps], scanned({ name: "VPS 2" })).length, 2, "a different name is added");
+});
+
+test("the camera opens at launch only when no machine is saved and the phone can pair by QR code", () => {
+  assert.equal(scansAtLaunch(0, true), true);
+  assert.equal(scansAtLaunch(1, true), false);
+  assert.equal(scansAtLaunch(0, false), false);
+  assert.equal(scansAtLaunch(2, false), false);
+});
+
+test("pairing a Mac takes the place of the phone's Mac, old-style or paired, whatever its name", () => {
+  const mac = scanned({ id: "local", kind: "mac", name: "Studio" });
+  assert.deepEqual(withPairedMachine([paired, direct], mac), [paired, { ...mac, id: "local", kind: "mac" }]);
+  const pairedMac = { ...mac, name: "Old Mac", hostEndpointId: "ef".repeat(32) };
+  assert.deepEqual(withPairedMachine([pairedMac, paired], mac), [mac, paired]);
+});
+
+test("an old-style server with the same id is replaced even under another name", () => {
+  const next = withPairedMachine([vps], scanned({ id: "h-2", name: "Apex-Terminal" }));
+  assert.deepEqual(next, [{ id: "h-2", name: "Apex-Terminal", kind: "server", transport: "iroh", hostEndpointId: OTHER_HOST, addrs: ["198.51.100.4:41641"], pairedAt: 99 }]);
 });

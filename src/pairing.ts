@@ -7,6 +7,7 @@
 // QR and copied when the person asks, and never logged or saved.
 
 import qrcode from "qrcode-generator";
+import type { RemoteAccessApi } from "./backend";
 import type { PairedDevice, Tier } from "./pairedDevices";
 
 /** What a new phone may do unless the person picks otherwise. */
@@ -70,6 +71,29 @@ export function endedWords(reason: string | null, err: string): string {
     case "used": return "This pairing code was already used. Start again for a new one.";
     case "not_remote": return "Remote access is off, so no phone could reach this Mac. Turn it on in Settings → Remote access, then pair.";
     default: return err;
+  }
+}
+
+/** Shown when Deck can't turn Remote access on, because it didn't start the daemon. Same words as Settings → Remote access. */
+export const NOT_OWNED_WORDS = "Deck didn't start the background service that's running, so it keeps its own setting until it restarts. Start it with apex-daemon serve --remote to turn this on now.";
+
+/**
+ * Make sure Remote access is on before a code is made, since no phone can
+ * pair without it. Resolves with null when phones can reach this Mac, or with
+ * the words to show when they can't. `turningOn` runs only when the switch
+ * has to be flipped.
+ */
+export async function ensureRemoteAccess(remote: RemoteAccessApi | undefined, turningOn: () => void): Promise<string | null> {
+  if (!remote) return null;
+  try {
+    const access = await remote.get();
+    if (access.on) return null;
+    if (!access.owned) return NOT_OWNED_WORDS;
+    turningOn();
+    const next = await remote.set(true);
+    return next.on ? null : "Remote access didn't turn on.";
+  } catch (error) {
+    return wordsOf(error);
   }
 }
 
