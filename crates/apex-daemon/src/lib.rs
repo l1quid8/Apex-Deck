@@ -9,6 +9,8 @@ pub mod files;
 pub mod identity;
 pub mod paths;
 pub mod protocol;
+#[cfg(feature = "remote")]
+pub mod remote;
 pub mod serve;
 pub mod signals;
 pub mod stdio;

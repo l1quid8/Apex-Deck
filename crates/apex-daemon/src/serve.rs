@@ -78,6 +78,7 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
 
     let listener = TcpListener::bind((options.bind, options.port)).await.map_err(|e| format!("could not listen on {}:{}: {e}", options.bind, options.port))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let remote = start_remote(&daemon, &paths.data, &options).await?;
     // Holding the lock means no live daemon is using a socket left here.
     let _ = std::fs::remove_file(&socket);
     let local = UnixListener::bind(&socket).map_err(|e| format!("could not listen on {}: {e}", socket.display()))?;
@@ -85,11 +86,14 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     // Written last: once it exists, the daemon is ready.
     let info = json!({
         "pid": std::process::id(), "port": port, "bind": options.bind.to_string(), "socket": socket.to_string_lossy(),
-        "protocol": PROTOCOL, "host_id": daemon.host_id, "boot_id": daemon.boot_id,
+        "protocol": PROTOCOL, "host_id": daemon.host_id, "boot_id": daemon.boot_id, "remote": remote,
     });
     let info_path = paths.data.join("daemon.json");
     files::write_private(&info_path, &info.to_string())?;
     eprintln!("apex-daemon: listening on ws://{}:{port} and {}", options.bind, socket.display());
+    if !remote.is_null() {
+        eprintln!("apex-daemon: remote access on as endpoint {} (UDP port {})", remote["endpoint_id"].as_str().unwrap_or_default(), remote["port"]);
+    }
 
     loop {
         tokio::select! {
@@ -110,6 +114,26 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     let _ = std::fs::remove_file(&info_path);
     daemon.host.wind_down(signals::WIND_DOWN).await;
     Ok(())
+}
+
+/// With `--remote`, start the iroh endpoint and accept paired devices on it.
+/// What `daemon.json` says about it, or null when off.
+#[cfg(feature = "remote")]
+async fn start_remote(daemon: &Arc<Daemon>, data: &Path, options: &ServeOptions) -> Result<serde_json::Value, String> {
+    if !options.remote {
+        return Ok(serde_json::Value::Null);
+    }
+    let (endpoint, info) = crate::remote::start(data, options.remote_port).await?;
+    tokio::spawn(crate::remote::accept(Arc::clone(daemon), endpoint));
+    Ok(info)
+}
+
+#[cfg(not(feature = "remote"))]
+async fn start_remote(_daemon: &Arc<Daemon>, _data: &Path, options: &ServeOptions) -> Result<serde_json::Value, String> {
+    if options.remote {
+        return Err("this apex-daemon was built without remote access (cargo feature `remote`)".into());
+    }
+    Ok(serde_json::Value::Null)
 }
 
 /// Resolves when stdin reaches its end or fails: the app holding the other

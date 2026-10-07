@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-stdin-close] [--data-dir PATH]
+usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-stdin-close] [--remote [--remote-port N]] [--data-dir PATH]
        apex-daemon --stdio [--attach] [--data-dir PATH]
        apex-daemon data-dir [--data-dir PATH]
        apex-daemon devices list|add|tier|threads|revoke … [--data-dir PATH]
@@ -18,6 +18,9 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
   --insecure-bind  allow a non-localhost --bind before device pairing exists
   --exit-on-stdin-close
                    with serve: stop when stdin closes (the desktop app holds it open)
+  --remote         with serve: let paired devices connect from anywhere over iroh
+                   (direct when possible, else relay.apex-terminal.xyz)
+  --remote-port N  UDP port for --remote (default: picked at first start, then kept)
   data-dir         print the data folder the daemon would use, and exit
   devices          list, add, retier or revoke phones allowed to connect from outside;
                    `apex-daemon devices` alone explains each
@@ -44,11 +47,14 @@ pub struct ServeOptions {
     /// Stop when stdin reaches its end, as when the app that started the
     /// daemon quits or dies.
     pub exit_on_stdin_close: bool,
+    /// Listen for paired devices over iroh.
+    pub remote: bool,
+    pub remote_port: Option<u16>,
 }
 
 impl Default for ServeOptions {
     fn default() -> Self {
-        ServeOptions { port: 0, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), insecure_bind: false, exit_on_stdin_close: false }
+        ServeOptions { port: 0, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), insecure_bind: false, exit_on_stdin_close: false, remote: false, remote_port: None }
     }
 }
 
@@ -108,6 +114,15 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 options.insecure_bind = true;
                 serve_flag.get_or_insert("--insecure-bind");
             }
+            "--remote" => {
+                options.remote = true;
+                serve_flag.get_or_insert("--remote");
+            }
+            "--remote-port" => {
+                let port = value()?;
+                options.remote_port = Some(port.parse().map_err(|_| format!("--remote-port {port} is not a port number"))?);
+                serve_flag.get_or_insert("--remote-port");
+            }
             "--exit-on-stdin-close" => {
                 options.exit_on_stdin_close = true;
                 serve_flag.get_or_insert("--exit-on-stdin-close");
@@ -132,6 +147,9 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     } else if serve {
         if attach {
             return Err("--attach goes with --stdio".into());
+        }
+        if options.remote_port.is_some() && !options.remote {
+            return Err("--remote-port goes with --remote".into());
         }
         Action::Serve(options)
     } else {
@@ -161,7 +179,7 @@ mod tests {
     #[test]
     fn serve_takes_a_port_an_address_and_the_insecure_switch() {
         let cli = parse(&["serve", "--port", "7000", "--bind", "0.0.0.0", "--insecure-bind"]).unwrap();
-        assert_eq!(cli.action, Action::Serve(ServeOptions { port: 7000, bind: "0.0.0.0".parse().unwrap(), insecure_bind: true, exit_on_stdin_close: false }));
+        assert_eq!(cli.action, Action::Serve(ServeOptions { port: 7000, bind: "0.0.0.0".parse().unwrap(), insecure_bind: true, ..ServeOptions::default() }));
     }
 
     #[test]
@@ -200,6 +218,15 @@ mod tests {
         assert_eq!(cli, Cli { action: Action::Devices(crate::devices_cli::DevicesAction::Tier { id: "abc".into(), tier: crate::devices::Tier::Full }), data_dir: Some(PathBuf::from("/d")) });
         assert_eq!(parse(&["devices", "list", "--data-dir", "/d"]).unwrap().data_dir, Some(PathBuf::from("/d")));
         assert!(parse(&["devices"]).unwrap_err().contains("say list"));
+    }
+
+    #[test]
+    fn serve_may_listen_for_remote_devices() {
+        let cli = parse(&["serve", "--remote", "--remote-port", "41641"]).unwrap();
+        assert_eq!(cli.action, Action::Serve(ServeOptions { remote: true, remote_port: Some(41641), ..ServeOptions::default() }));
+        assert!(!ServeOptions::default().remote);
+        assert!(parse(&["serve", "--remote-port", "1"]).unwrap_err().contains("--remote"));
+        assert!(parse(&["--stdio", "--remote"]).unwrap_err().contains("--remote"));
     }
 
     #[test]
