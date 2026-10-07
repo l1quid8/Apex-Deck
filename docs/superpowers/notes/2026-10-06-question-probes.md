@@ -60,3 +60,15 @@ Codex does not ask in a normal turn on 0.160.0. (The first probe read Codex's ou
 Planning mode cannot be left on all the time. Its built-in instructions (about 9,000 characters, "# Plan Mode (Conversational)") forbid editing files or running anything that changes the project; Codex only plans and ends with a proposed plan.
 
 Planning mode with Deck's own instructions in `settings.developer_instructions` ("normal working mode … ask with request_user_input") did **not** ask: Codex wrote the question as text and stopped, and made no file. One run, so this suggests (does not prove) that the tool comes with planning mode's own instructions, not the mode flag alone.
+
+## Claude in planning mode
+
+`--permission-mode plan`, asked to "plan, then do: create hello.txt containing hi". Claude writes its plan to `~/.claude/plans/`, then calls `ExitPlanMode` through `can_use_tool`:
+
+```
+REQUEST: can_use_tool ExitPlanMode {"plan": "...", "planFilePath": "~/.claude/plans/....md"}
+```
+
+Allowing it lets Claude carry on in the same turn ("User has approved your plan. You can now start coding."). After that Claude is in its default mode, so every edit asks through `can_use_tool` again (it suggests `setMode acceptEdits`).
+
+Allowing `ExitPlanMode` with `"updatedPermissions": [{"type": "setMode", "mode": "acceptEdits", "destination": "session"}]` switches the mode as well: Claude then made the file without asking. So approving a plan can hand back the bot's own access for the rest of the turn.

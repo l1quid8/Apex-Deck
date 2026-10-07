@@ -150,3 +150,34 @@ turn of the same participant:
 ## Not in scope
 - Bots writing their own choices block in replies (the fork replaces it).
 - Approval cards keep their current place and look.
+
+## Plan switch (added 2026-10-06)
+
+Probes: `docs/superpowers/notes/2026-10-06-question-probes.md`. Codex only asks
+questions in its planning mode, and planning mode forbids edits, so planning
+becomes a switch the person turns on and off.
+
+- **Where:** "Plan" in the composer's `+` menu, and `/plan`. Both toggle it.
+  Saved with the thread; stays on until turned off.
+- **Shows as:** a small cyan chip, "◇ Plan ✕", the TL;DR pill's size, first in
+  the bot row under the message box (just ◇ when the row is folded). The
+  message box border turns steady cyan (`#1ed7ee`, no animation) and the hint
+  reads "Plan with the bots — nothing gets changed…". Bots at work show
+  "Planning…". TL;DR's glow wins the border when both are on.
+- **Every bot plans:** each turn runs read-only and its system prompt says to
+  explore, change nothing, ask what only the person can decide, and end with
+  a step-by-step plan.
+  - Codex: its own planning mode (`collaborationMode: plan`); its
+    `item/tool/requestUserInput` questions use the form.
+  - Claude Code: `--permission-mode plan`. When it calls `ExitPlanMode`, Deck
+    shows an approval card, "Start the work?". Approve: Plan turns off for the
+    thread and Claude carries on in the same turn with its own access
+    (`setMode`: Full → bypassPermissions, Edits → acceptEdits, Ask → default).
+    Keep planning: denied with "The person wants to keep planning." A
+    read-only bot's request is denied without a card ("This bot can only
+    read").
+  - Other agents and API bots: read-only plus the instruction.
+  - Custom command bots cannot be held to read-only, so they sit out while
+    Plan is on, with a line saying so.
+- **Phone:** shows the chip; ✕ turns Plan off. Turning it on is desktop-only
+  for now.

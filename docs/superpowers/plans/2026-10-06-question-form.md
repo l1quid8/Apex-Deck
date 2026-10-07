@@ -2066,3 +2066,38 @@ Take screenshots of:
 - the phone next-step chips.
 
 Send them to the person with SendUserFile. In the report, list what passed, what failed, and whether Task 5 was skipped. Stop the isolated Deck.
+
+---
+
+## Amendment 2026-10-06: Codex in planning mode and the Plan switch
+
+Approved in chat after Task 1 (see the spec's "Plan switch" section and the probe notes). Task 5 is no longer skipped; it now also starts Codex in planning mode. Tasks 5b and 8b are new. Order: 5, 5b, 6, 7, 8, 8b, 9, 10.
+
+### Task 5 (revised): Codex questions and planning mode
+
+As written above, plus:
+- `Turn` gains `plan: bool`. `turn_start(thread, prompt, effort, plan_model: Option<&str>)` adds `"collaborationMode": {"mode": "plan", "settings": {"model": <model>}}` when `plan_model` is set. The model is `turn.model`, else the `model` from the `thread/start` result.
+- Test: `turn_start` carries `collaborationMode` only when planning (unit test next to `turn_start_carries_the_prompt_and_effort_only_when_set`). The fake Codex test asserts the `turn/start` line contains `"collaborationMode"` when the turn plans.
+
+### Task 5b: The Plan switch in the host, room and adapters
+
+**Interfaces produced:**
+- `Room::plan_handle() -> Arc<AtomicBool>` (like `stop_handle`); `RoomSnapshot.plan: bool` (`#[serde(default)]`), restored on load.
+- `TurnRequest.plan: bool`. `Room::request_for` sets it from the flag and, when on, forces `access = Some(Access::Read)` and appends `PLAN_SYSTEM` to `system`.
+- `ActionKind::Plan` ("Start the work?" cards; never "Always allow").
+- `RoomEvent::PlanChanged { on: bool }` (`plan_changed`).
+- `Host::room_set_plan(id, on)` + command `room_set_plan {id, on}`; `room_state` gains `"plan"`. The host flips the flag off itself when an `ActionKind::Plan` card is approved.
+- `CliParticipant` gains `plan: Option<Access>` (Some(own access) while planning). `presets::agent_command_with(tool, model, effort, access, plan: bool)`; `agent_command` = `agent_command_with(.., false)`. Claude planning uses `--permission-mode plan` in place of the access flags.
+- `claude_session::run(.., after_plan: Option<Access>)`: `ExitPlanMode` → card (`ActionKind::Plan`, title "Start the work?", detail = plan text). Approve → allow with `updatedPermissions: [{type: setMode, mode, destination: session}]` (Full → bypassPermissions, Edits → acceptEdits, Ask → default). Reject → deny "The person wants to keep planning." `after_plan` of `Some(Access::Read)` → deny without a card: "This bot can only read, so it can't start the work. The person can hand your plan to another bot."
+- A custom `Backend::Cli` bot with `request.plan` fails with "This custom command can't be held to read-only, so it sits out while Plan is on."
+
+**Tests (each watched failing first):** request_for with the flag on (Read access, `plan: true`, `PLAN_SYSTEM` appended) and off; snapshot round-trip keeps `plan`; `room_set_plan` emits `plan_changed` and shows in `room_state`; approving a Plan card turns the flag off; `agent_command_with(ClaudeCode, .., plan=true)` has `--permission-mode plan` and no `--disallowedTools`; fake Claude in plan mode calls `ExitPlanMode` → approve gives `setMode` for the bot's own access, reject gives the keep-planning deny, Read gives the no-card deny; custom CLI sits out.
+
+### Task 8b: The Plan switch on screen
+
+- `types.ts`: `ActionKind` gains `"plan"`; `RoomEvent` gains `plan_changed`; `RoomState.plan?`. `Backend.roomSetPlan(id, on)` in `backend.ts` (preview backend keeps it in memory and emits `plan_changed`), `commandBackend.ts`, `hostBackends.ts` writes.
+- `composerMenu.ts`: a `{ kind: "plan" }` item in the `+` menu ("Plan" / "Bots plan and ask; nothing gets changed", or "Stop planning" when on) and a `/plan` command; tests in `tests/composer-menu.test.mjs`.
+- `ChatPane.tsx`: plan state from `room_state` and `plan_changed`; chip "◇ Plan ✕" first in the bot row (`.plan-chip`, TL;DR pill size, cyan `#1ed7ee`), just ◇ when folded; `composer plan` class gives the cyan border; placeholder via `composerCopy` ("Plan with the bots — nothing gets changed…"; tests in `tests/composer-status.test.mjs`); "Planning…" in the working line.
+- `approvalChoices.ts`/`ApprovalCard.tsx`: a `plan` card shows the plan as Markdown with "Start the work" and "Keep planning", never "Always allow"; `answerStrip.ts` opens it in the thread. Tests in the existing approval-choices and answer-strip test files.
+- Phone: the chip with ✕ (calls `roomSetPlan(id, false)`), and `plan` cards render through the shared `ApprovalCard`.
+- Stage only this task's hunks in `ChatPane.tsx` and `styles.css` (someone else's uncommitted work is in both).
