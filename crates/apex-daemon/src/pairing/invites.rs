@@ -775,6 +775,45 @@ mod tests {
         crate::devices::freeze_clock(None);
     }
 
+    /// The folder sync after the rename failed, so the write reported an
+    /// error, but `devices.json` holds the device: approve says `Ok`, and the
+    /// invitation is consumed, not burnt.
+    #[test]
+    fn approve_whose_folder_sync_failed_but_landed_is_ok() {
+        let s = setup();
+        let inv = s.start();
+        let phone = conn();
+        let claim = s.claim(&inv, &id(1), true, &phone).unwrap();
+        s.devices.fail_sync.store(true, Ordering::SeqCst);
+        let approved = s.approve(&inv, &claim);
+        s.devices.fail_sync.store(false, Ordering::SeqCst);
+        let device = approved.unwrap();
+        assert_eq!(s.paired_on_disk(&id(1)), 1);
+        assert_eq!(s.devices.get(&id(1)), Some(device));
+        assert_eq!(s.devices.revision(&id(1)), 1);
+        assert_eq!(phone.closed_with(), None, "the phone still gets ok");
+        assert_eq!(s.claim(&inv, &id(2), true, &conn()), Err(PairError::Used));
+    }
+
+    /// A write that never reached the file: approve is an error, nothing is
+    /// on disk, and the phone is told no.
+    #[test]
+    fn approve_whose_write_never_landed_adds_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = setup();
+        let inv = s.start();
+        let phone = conn();
+        let claim = s.claim(&inv, &id(1), true, &phone).unwrap();
+        std::fs::set_permissions(&s.data.0, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let approved = s.approve(&inv, &claim);
+        std::fs::set_permissions(&s.data.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(approved, Err(PairError::Registry(_))), "{approved:?}");
+        assert_eq!(s.paired_on_disk(&id(1)), 0);
+        assert_eq!(s.devices.get(&id(1)), None);
+        assert_eq!(s.devices.revision(&id(1)), 0);
+        assert_eq!(phone.closed_with(), Some(close::PAIR_DENIED));
+    }
+
     // ---- races ----
 
     const RUNS: usize = 200;

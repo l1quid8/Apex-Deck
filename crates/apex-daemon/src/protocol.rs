@@ -55,6 +55,9 @@ pub struct Daemon {
     pub token: Option<String>,
     /// The remote devices allowed in.
     pub devices: Arc<Devices>,
+    /// Pairing invitations handed out since this daemon started.
+    #[cfg(feature = "remote")]
+    pub invites: Arc<crate::pairing::invites::Invites>,
 }
 
 impl Daemon {
@@ -64,7 +67,7 @@ impl Daemon {
         // The daemon's arguments (`--data-dir PATH`) are not workspaces.
         host.set_startup_folders(Vec::new());
         let devices = Arc::new(Devices::open(&paths.data));
-        Ok(Arc::new(Daemon { host, host_id: crate::identity::host_id(&paths.data)?, boot_id: crate::identity::boot_id(), token, devices }))
+        Ok(Arc::new(Daemon { host, host_id: crate::identity::host_id(&paths.data)?, boot_id: crate::identity::boot_id(), token, devices, #[cfg(feature = "remote")] invites: Default::default() }))
     }
 }
 
@@ -571,7 +574,7 @@ mod tests {
         let data = temp_dir();
         let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
         let devices = Arc::new(Devices::open(&data.0));
-        (Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices }), data)
+        (Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices, #[cfg(feature = "remote")] invites: Default::default() }), data)
     }
 
     fn connect(trust: Trust) -> Client {
@@ -1201,6 +1204,8 @@ mod tests {
         let restarted = Arc::new(Daemon {
             host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
             host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
+            #[cfg(feature = "remote")]
+            invites: Default::default(),
         });
         let (mut client, session) = connect_device(&restarted, &phone, 1 << 16);
         assert!(client.next().await.unwrap()["err"].as_str().unwrap().contains("isn't paired"));

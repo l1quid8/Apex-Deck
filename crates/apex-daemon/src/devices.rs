@@ -239,6 +239,13 @@ impl Devices {
     /// Change the registry: `change` edits a copy, the copy is written, and
     /// only then does it replace what sessions see.
     fn change<T, E: From<String>>(&self, change: impl FnOnce(&mut Registry) -> Result<T, E>) -> Result<T, E> {
+        self.change_then(false, change)
+    }
+
+    /// `change`; with `landed_is_ok`, a write that reported an error but
+    /// left exactly the new registry on disk (only the folder sync failed)
+    /// counts as done, decided under the same hold of the lock.
+    fn change_then<T, E: From<String>>(&self, landed_is_ok: bool, change: impl FnOnce(&mut Registry) -> Result<T, E>) -> Result<T, E> {
         let mut state = self.state.lock().unwrap();
         let current = state.as_ref().map_err(|why| E::from(why.clone()))?;
         let mut next = current.clone();
@@ -252,6 +259,9 @@ impl Devices {
             // so what's on disk decides; a later write then can't drop a
             // revoke that got there.
             *state = read(&self.path);
+            if landed_is_ok && state.as_ref() == Ok(&next) {
+                return Ok(result);
+            }
             return Err(E::from(why));
         }
         *state = Ok(next);
@@ -298,10 +308,11 @@ impl Devices {
     /// compare and the write happen under one hold of the registry lock, so
     /// a revoke or restore can't land between them. A matching revision
     /// means the tombstone (if any) is the one the user was warned about, so
-    /// it's lifted.
+    /// it's lifted. `Ok` exactly when the device is in `devices.json`: a
+    /// write whose folder sync failed but whose file landed is `Ok` too.
     pub fn approve_pairing(&self, id: &str, label: &str, tier: Tier, threads: Threads, expect_revision: u64) -> Result<Device, ApproveError> {
         check_id(id)?;
-        self.change(|registry| {
+        self.change_then(true, |registry| {
             if registry.revision(id) != expect_revision {
                 return Err(ApproveError::Changed);
             }
