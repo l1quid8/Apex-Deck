@@ -20,6 +20,41 @@ export interface DirectMachine {
   token: string;
 }
 
+/** A machine paired by QR code. The phone reaches it over iroh, by its endpoint ID. */
+export interface PairedMachine {
+  id: string;
+  name: string;
+  kind: MachineKind;
+  transport: "iroh";
+  /** The machine's endpoint ID, 64 hex characters. */
+  hostEndpointId: string;
+  /** Addresses to try directly, newest from the machine's welcome. */
+  addrs: string[];
+  pairedAt: number;
+}
+
+export type Machine = DirectMachine | PairedMachine;
+
+export const isPaired = (machine: Machine): machine is PairedMachine => "transport" in machine && machine.transport === "iroh";
+
+/** What a machine lets this phone do, from its welcome over iroh. */
+export interface RemoteAccess {
+  tier: "read_only" | "chat" | "full";
+  threads: "all" | string[];
+}
+
+/** New thread starts a bot in any folder, so only Full shows it. A WebSocket pair has no access and keeps it. */
+export function canSeeNewThread(access: RemoteAccess | null | undefined): boolean {
+  return !access || access.tier === "full";
+}
+
+/** The machine's welcome lists where it can be dialed now; those replace the saved ones. */
+export function withHints(machine: PairedMachine, addrs: unknown): PairedMachine {
+  if (!Array.isArray(addrs) || !addrs.every((addr) => typeof addr === "string")) return machine;
+  if (addrs.length === machine.addrs.length && addrs.every((addr, at) => addr === machine.addrs[at])) return machine;
+  return { ...machine, addrs: addrs.slice(0, 16) };
+}
+
 export interface LinkView {
   id: string;
   name: string;
@@ -40,20 +75,28 @@ export function machineName(name: string): string {
 }
 
 /** Add a paired machine. The phone has one Mac, which owns the thread list. */
-export function addMachine(list: DirectMachine[], next: DirectMachine): DirectMachine[] {
+export function addMachine(list: Machine[], next: Machine): Machine[] {
   const name = machineName(next.name);
-  const url = next.url.trim();
-  const token = next.token.trim();
   const id = next.id.trim();
   if (!id) throw new Error("The machine needs an id.");
   if (next.kind === "mac" && id !== MAC_ID) throw new Error("The Mac's id is local, matching the threads saved on it.");
   if (next.kind === "server" && id === MAC_ID) throw new Error("A server can't use the Mac's id.");
-  if (!/^wss?:\/\/[^/\s]+/i.test(url)) throw new Error("The address needs to start with ws:// or wss://.");
-  if (!token) throw new Error("The daemon token is missing.");
+  let made: Machine;
+  if (isPaired(next)) {
+    if (!/^[0-9a-f]{64}$/.test(next.hostEndpointId)) throw new Error("The machine's endpoint ID is malformed.");
+    if (!Array.isArray(next.addrs) || !next.addrs.every((addr) => typeof addr === "string")) throw new Error("The machine's addresses are malformed.");
+    made = { id, name, kind: next.kind, transport: "iroh", hostEndpointId: next.hostEndpointId, addrs: next.addrs.slice(0, 16), pairedAt: next.pairedAt };
+  } else {
+    const url = next.url.trim();
+    const token = next.token.trim();
+    if (!/^wss?:\/\/[^/\s]+/i.test(url)) throw new Error("The address needs to start with ws:// or wss://.");
+    if (!token) throw new Error("The daemon token is missing.");
+    made = { id, name, kind: next.kind, url, token };
+  }
   if (next.kind === "mac" && list.some((machine) => machine.kind === "mac")) throw new Error("This phone already has a Mac. Unpair it before adding another.");
   if (list.some((machine) => machine.id === id)) throw new Error("That machine is already paired with this phone.");
   if (list.some((machine) => machine.name.toLowerCase() === name.toLowerCase())) throw new Error(`There's already a machine called ${name}.`);
-  return [...list, { id, name, kind: next.kind, url, token }];
+  return [...list, made];
 }
 
 /**
@@ -61,15 +104,19 @@ export function addMachine(list: DirectMachine[], next: DirectMachine): DirectMa
  * Its kind stays. An empty token keeps the one already saved, so fixing an
  * address doesn't mean pasting the token again.
  */
-export function editMachine(list: DirectMachine[], id: string, next: DirectMachine): DirectMachine[] {
+export function editMachine(list: Machine[], id: string, next: Machine): Machine[] {
   const index = list.findIndex((machine) => machine.id === id);
   if (index < 0) throw new Error("That machine isn't paired with this phone.");
   const old = list[index];
-  const changed = addMachine(list.filter((_, at) => at !== index), { ...next, kind: old.kind, token: next.token.trim() || old.token }).at(-1)!;
+  // A QR-paired machine keeps how it's reached; only its name and id change.
+  const merged: Machine = isPaired(old)
+    ? { ...old, name: next.name, id: next.id }
+    : { ...(next as DirectMachine), kind: old.kind, token: (next as DirectMachine).token.trim() || old.token };
+  const changed = addMachine(list.filter((_, at) => at !== index), merged).at(-1)!;
   return list.map((machine, at) => at === index ? changed : machine);
 }
 
-export function removeMachine(list: DirectMachine[], id: string): DirectMachine[] {
+export function removeMachine(list: Machine[], id: string): Machine[] {
   return list.filter((machine) => machine.id !== id);
 }
 
@@ -165,18 +212,24 @@ export function machinesKey(): string {
   return MACHINES_KEY;
 }
 
-/** Saved pairs. A bad entry is dropped; the rest are kept. */
-export function loadMachines(raw: string | null): DirectMachine[] {
+/** Saved pairs, by WebSocket or QR. A bad entry is dropped; the rest are kept. */
+export function loadMachines(raw: string | null): Machine[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((item) => {
+    return parsed.flatMap((item): Machine[] => {
       if (!item || typeof item !== "object") return [];
-      const candidate = item as Partial<DirectMachine>;
+      const candidate = item as Record<string, unknown>;
       if (candidate.kind !== "mac" && candidate.kind !== "server") return [];
-      if (typeof candidate.id !== "string" || typeof candidate.name !== "string" || typeof candidate.url !== "string" || typeof candidate.token !== "string") return [];
+      if (typeof candidate.id !== "string" || typeof candidate.name !== "string") return [];
       try {
+        if (candidate.transport === "iroh") {
+          if (typeof candidate.hostEndpointId !== "string" || !Array.isArray(candidate.addrs)) return [];
+          const pairedAt = typeof candidate.pairedAt === "number" ? candidate.pairedAt : 0;
+          return [addMachine([], { id: candidate.id, name: candidate.name, kind: candidate.kind, transport: "iroh", hostEndpointId: candidate.hostEndpointId, addrs: candidate.addrs as string[], pairedAt })[0]];
+        }
+        if (typeof candidate.url !== "string" || typeof candidate.token !== "string") return [];
         return [addMachine([], { id: candidate.id, name: candidate.name, kind: candidate.kind, url: candidate.url, token: candidate.token })[0]];
       } catch {
         return [];
@@ -187,8 +240,19 @@ export function loadMachines(raw: string | null): DirectMachine[] {
   }
 }
 
-export function saveMachines(list: DirectMachine[]): string {
+export function saveMachines(list: Machine[]): string {
   return JSON.stringify(list);
+}
+
+const MODE_KEY = "apex-deck.phone.remote-mode.v1";
+
+export function remoteModeKey(): string {
+  return MODE_KEY;
+}
+
+/** Automatic unless Direct only was picked. */
+export function loadRemoteMode(raw: string | null): "automatic" | "direct" {
+  return raw === "direct" ? "direct" : "automatic";
 }
 
 /** Who answers is the room's call, as on the desktop: the bots @named, or the last ones named when nobody is. Returns who it went to. */

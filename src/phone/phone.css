@@ -613,3 +613,11 @@
 }
 /* A hint never wraps: it would grow the empty box to two lines on a narrow phone. */
 .ph-input textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The 6-digit pairing code, to compare with the machine's. */
+.ph-pair-code {
+  margin: 12px 0;
+  text-align: center;
+  font: 600 34px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+}

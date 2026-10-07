@@ -9,10 +9,16 @@ export interface Link {
   send(line: string): void;
   close(): void;
   onLine(cb: (line: string) => void): void;
-  onClose(cb: (reason: string) => void): void;
+  /** `final` when retrying can't help (the host revoked this phone, say). */
+  onClose(cb: (reason: string, final?: boolean) => void): void;
 }
 
-/** Open a new link. A rejection counts as a connection that closed at once. */
+/** A link error that retrying can't fix. The client stops and says why. */
+export class FinalError extends Error {
+  readonly final = true;
+}
+
+/** Open a new link. A rejection counts as a connection that closed at once; a `FinalError` rejection stops retrying. */
 export type Connect = () => Promise<Link>;
 
 /** What `hello` answers. */
@@ -24,6 +30,10 @@ export interface Welcome {
   resumed: boolean;
   /** The apex-daemon version. Helpers older than 0.5.1 don't send it. */
   version?: string;
+  /** Over iroh only: what this phone may do there. */
+  access?: { tier: "read_only" | "chat" | "full"; threads: "all" | string[] };
+  /** Over iroh only: the addresses the machine says it can be dialed on now. */
+  addrs?: string[];
 }
 
 export type Status =
@@ -73,6 +83,11 @@ export class DaemonClient {
   /** The apex-daemon version from the latest welcome: null for a helper too old to say, undefined before any welcome. */
   get helperVersion(): string | null | undefined {
     return this.helper;
+  }
+  private latest: Welcome | null = null;
+  /** The latest welcome, null before the first. */
+  get welcome(): Welcome | null {
+    return this.latest;
   }
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -166,7 +181,8 @@ export class DaemonClient {
     try {
       link = await this.connect();
     } catch (e) {
-      this.lost(e instanceof Error ? e.message : String(e));
+      if (e instanceof FinalError) this.stop(e.message);
+      else this.lost(e instanceof Error ? e.message : String(e));
       return;
     }
     if (this.closed) {
@@ -179,8 +195,10 @@ export class DaemonClient {
     link.onLine((line) => {
       if (this.link === link) this.receive(link, line);
     });
-    link.onClose((reason) => {
-      if (this.link === link) this.lost(this.parting ?? reason);
+    link.onClose((reason, final) => {
+      if (this.link !== link) return;
+      if (final) this.stop(reason);
+      else this.lost(this.parting ?? reason);
     });
     this.helloId = this.nextId++;
     const args: Record<string, unknown> = { protocol: PROTOCOL };
@@ -234,6 +252,7 @@ export class DaemonClient {
     }
     const wasConnected = this.bootId !== null;
     this.helper = typeof welcome.version === "string" ? welcome.version : null;
+    this.latest = welcome;
     this.ready = true;
     this.attempt = 0;
     this.bootId = welcome.boot_id;
@@ -252,6 +271,14 @@ export class DaemonClient {
     this.ready = false;
     link.close();
     this.rejectPending(LOST);
+    this.setStatus({ kind: "failed", reason });
+  }
+
+  /** The link can't come back by itself: fail what's in flight, no retry timer. */
+  private stop(reason: string) {
+    this.drop(LOST);
+    if (this.closed) return;
+    this.cancelRetry();
     this.setStatus({ kind: "failed", reason });
   }
 
