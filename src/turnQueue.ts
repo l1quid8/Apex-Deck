@@ -1,4 +1,6 @@
 /** Serializes a room's turns; queued context never overlaps an active turn. */
+import type { TurnPolicy } from "./types";
+import { hasMention } from "./recipients.ts";
 /** "turn" runs bots on the transcript as it is and posts no text (see ParticipantQueues.turn). */
 export type TurnKind = "message" | "compact" | "turn";
 /** `hops` is set on "turn" items only: the cap on bot-to-bot rounds, null for the room's own. */
@@ -175,4 +177,19 @@ export class ParticipantQueues {
       if (this.rerun) { this.rerun = false; void this.drain(); }
     }
   }
+}
+
+/**
+ * Who an untagged message goes to while earlier ones still wait in the queue.
+ * The thread only learns who was tagged last when a message is posted, so a
+ * queued "@null" hasn't reached it yet; the untagged follow-up goes where the
+ * last queued message goes, as it would once that one is posted. Null when the
+ * thread's own answer stands: a tag in the text, a policy other than
+ * last-tagged, or nothing queued.
+ */
+export function queuedSticky(text: string, ids: readonly string[], policy: TurnPolicy, items: readonly ParticipantMessage[]): string[] | null {
+  if (policy !== "mention" || hasMention(text, [...ids])) return null;
+  const last = [...items].reverse().find((item) => item.kind === "message");
+  const to = last?.to.filter((id) => ids.includes(id)) ?? [];
+  return to.length ? to : null;
 }

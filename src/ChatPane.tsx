@@ -58,7 +58,7 @@ import { DiffPanel } from "./DiffPanel";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
-import { ParticipantQueues, type ParticipantMessage, type TurnKind } from "./turnQueue";
+import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
 import { attachedImages, attachmentName, replyImages, withAttachments, type Attachment } from "./attachments";
 import { AttachedImages } from "./AttachedImages";
@@ -1195,8 +1195,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // The queue lives as long as the pane; a thread moved before it started runs somewhere else, so it asks the current backend.
   const current = useRef(backend);
   current.current = backend;
+  // The thread only hears a tag once its message is posted, so an untagged message behind a queued tag goes where that tag goes.
+  const routing = useRef({ ids: [] as string[], policy: options.policy });
+  routing.current = { ids: participants.map((p) => p.id), policy: options.policy };
+  const stickyFor = (message: string, items: readonly ParticipantMessage[]) => queuedSticky(message, routing.current.ids, routing.current.policy, items);
   const [turnQueue] = useState(() => new ParticipantQueues(
-    message => current.current.roomTargets(pane.id, message),
+    async (message): Promise<string[]> => stickyFor(message, turnQueue.items) ?? current.current.roomTargets(pane.id, message),
     (message, to, kind, hops, manual) => dispatch.current(message, to, kind, hops, manual),
     id => current.current.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
@@ -1843,10 +1847,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     let live = true;
     // Ask about the message as it will be sent, with a quote's leading handle.
     const outgoing = reply ? replyText(text, reply, participants.map((p) => p.id)) : text;
+    const sticky = stickyFor(outgoing, queued);
+    if (sticky) { setServerTargets(sticky); return; }
     // A slower answer for older text is ignored once the text has changed.
     backend.roomTargets(pane.id, outgoing).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
     return () => { live = false; };
-  }, [backend, pane.id, text, reply, ready, participants, optionsSaved]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend, pane.id, text, reply, ready, participants, optionsSaved, options.policy, queued]);
   /** Who gets the message as it stands, for the placeholder. */
   const recipient = recipientName({
     targets: serverTargets,
@@ -1913,7 +1920,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const send = async (steer = false) => {
     if (!ready) return;
     panelDismissed.current = false;
-    const targetIds = await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
+    const targetIds = stickyFor(text, turnQueue.items) ?? await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
     const invalid = targetIds.length && targetIds.every(id => serverLists[id] !== undefined)
       ? resolveServerRequests(parseServerRequests(text).map(s => s.name), targetIds.flatMap(id => serverLists[id])).unknown : [];
     if (invalid.length) { notify(`No server, app or plugin called "${invalid[0]}" for ${targetIds.map(id => names.get(id) ?? id).join(", ")}`, "error"); return; }

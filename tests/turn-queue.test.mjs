@@ -51,6 +51,20 @@ test('participant queues let idle Jigga start while Null works', async () => {
   assert.deepEqual(sent.map(x=>x.text), ['@null first', '@jigga plan', '@null later']);
 });
 
+test('an untagged message behind a queued tag follows that tag, as the desktop routes it', async () => {
+  const { ParticipantQueues, queuedSticky } = await import('../src/turnQueue.ts');
+  const ids = ['null', 'jigga'];
+  // The thread still remembers "@everyone": it hasn't heard the queued "@null" yet.
+  const thread = async text => text.includes('@null') ? ['null'] : text.includes('@jigga') ? ['jigga'] : ids;
+  const sent = [];
+  let q;
+  q = new ParticipantQueues(async text => queuedSticky(text, ids, 'mention', q.items) ?? thread(text), async (text, to) => sent.push({text,to}), async () => {}, () => {});
+  await q.send('@everyone review this');
+  await q.send('@null also the tests'); await q.send('and the docs');
+  assert.deepEqual(q.items.map(x => x.to), [['null'], ['null']]);
+  await q.send('@jigga plan'); assert.deepEqual(q.items.at(-1).to, ['jigga'], 'a typed tag still wins');
+});
+
 test('steering and stopping Null preserve Jigga and its queue', async () => {
   const { ParticipantQueues } = await import('../src/turnQueue.ts');
   const sent = [], stops = [];

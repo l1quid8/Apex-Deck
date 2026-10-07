@@ -4,8 +4,8 @@
 // what the thread's machine reports and words each queued line.
 
 import type { ParticipantMessage, ParticipantQueues } from "./turnQueue";
-import type { RoomEvent, TurnPolicy } from "./types";
-import { hasMention } from "./recipients.ts";
+import type { RoomEvent } from "./types";
+export { queuedSticky } from "./turnQueue.ts";
 import { splitTldr } from "./tldr.ts";
 
 /** Keep a thread's queue in step with its machine: a bot that finishes lets what waits for it go. */
@@ -26,20 +26,6 @@ export function queueSync(queue: ParticipantQueues, active: readonly string[]) {
   for (const [id, state] of Object.entries(queue.state)) if (state === "working" && !active.includes(id)) queue.idle(id);
 }
 
-/**
- * Who an untagged message goes to while earlier ones still wait on the phone.
- * The thread only learns who was tagged last when a message is posted, so a
- * queued "@null" hasn't reached it yet; the untagged follow-up goes where the
- * last queued message goes, as it would once that one is posted. Null when the
- * thread's own answer stands: a tag in the text, a policy other than
- * last-tagged, or nothing queued.
- */
-export function queuedSticky(text: string, ids: readonly string[], policy: TurnPolicy, items: readonly ParticipantMessage[]): string[] | null {
-  if (policy !== "mention" || hasMention(text, [...ids])) return null;
-  const last = [...items].reverse().find((item) => item.kind === "message");
-  const to = last?.to.filter((id) => ids.includes(id)) ?? [];
-  return to.length ? to : null;
-}
 
 export interface QueuedView {
   id: number;
