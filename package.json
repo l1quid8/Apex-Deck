@@ -14,7 +14,9 @@
     "desktop:smoke": "cargo build -p apex-daemon && vite build && node desktop/run-smoke.mjs",
     "desktop:package": "cargo build --release -p apex-daemon && vite build && node scripts/package-mac.mjs --dir",
     "desktop:dmg": "cargo build --release -p apex-daemon && vite build && node scripts/package-mac.mjs",
-    "desktop:smoke:multi-host": "cargo build -p apex-daemon && vite build && node --experimental-strip-types desktop/run-multi-host-smoke.mjs"
+    "desktop:smoke:multi-host": "cargo build -p apex-daemon && vite build && node --experimental-strip-types desktop/run-multi-host-smoke.mjs",
+    "iphone:sync": "node scripts/build-phone.mjs && cap sync ios",
+    "iphone:open": "npm run iphone:sync && cap open ios"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -24,6 +26,9 @@
     "sucrase": "^3.35.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/ios": "^8.5.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",

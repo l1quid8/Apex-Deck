@@ -1,0 +1,9 @@
+{
+  "appId": "dev.apexdeck.phone",
+  "appName": "Apex Deck",
+  "webDir": "dist-phone",
+  "ios": {
+    "path": "iphone"
+  },
+  "backgroundColor": "#090d12"
+}

@@ -19,6 +19,8 @@ export interface LinkView {
   name: string;
   kind: MachineKind;
   status: LinkStatus;
+  /** Why the machine turned this phone away, when it did. It won't retry on its own. */
+  problem?: string;
 }
 
 const MAC_ID = "local";
@@ -65,6 +67,20 @@ export function pauseLine(machine: { name: string; kind: MachineKind }, status: 
 }
 
 /**
+ * Words for a machine that refused the phone. A bad token is the usual
+ * reason, and retrying won't fix it, so it says what will.
+ */
+export function refusalLine(name: string, reason: string): string {
+  if (/token/i.test(reason)) return `${name} turned this phone away: the token is wrong. Unpair ${name} and pair it again with its token.`;
+  return `${name} turned this phone away: ${reason.replace(/\.$/, "")}.`;
+}
+
+/** Why a machine can't be used right now: refused, paused, or still connecting. */
+export function downLine(machine: LinkView): string {
+  return machine.problem ?? pauseLine(machine, machine.status) ?? `Connecting to ${machine.name}`;
+}
+
+/**
  * Whether Send runs on this thread's own machine. An offline machine refuses
  * the send and nothing is queued: the caller keeps the draft. Another
  * machine's status is not consulted.
@@ -72,9 +88,7 @@ export function pauseLine(machine: { name: string; kind: MachineKind }, status: 
 export function threadSend(links: LinkView[], hostId: string, draft: string, attachments = 0): { enabled: boolean; reason: string } {
   const machine = links.find((link) => link.id === hostId);
   if (!machine || machine.status !== "online") {
-    const reason = machine
-      ? (pauseLine(machine, machine.status) ?? `Connecting to ${machine.name}`)
-      : "This thread's machine isn't paired with this phone.";
+    const reason = machine ? downLine(machine) : "This thread's machine isn't paired with this phone.";
     return { enabled: false, reason };
   }
   if (!draft.trim() && attachments === 0) return { enabled: false, reason: "" };
@@ -84,9 +98,9 @@ export function threadSend(links: LinkView[], hostId: string, draft: string, att
 /** A new thread is saved on the Mac, and opened on the machine it runs on. Both have to be reachable. Nothing is queued. */
 export function newThreadGate(mac: LinkView | undefined, target: LinkView | undefined): { ok: boolean; reason: string } {
   if (!mac) return { ok: false, reason: "Pair this phone with your Mac before starting a thread." };
-  if (mac.status !== "online") return { ok: false, reason: pauseLine(mac, mac.status) ?? `Connecting to ${mac.name}` };
+  if (mac.status !== "online") return { ok: false, reason: downLine(mac) };
   if (!target) return { ok: false, reason: "This thread's machine isn't paired with this phone." };
-  if (target.status !== "online") return { ok: false, reason: pauseLine(target, target.status) ?? `Connecting to ${target.name}` };
+  if (target.status !== "online") return { ok: false, reason: downLine(target) };
   return { ok: true, reason: "" };
 }
 

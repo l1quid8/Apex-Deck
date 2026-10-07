@@ -5,7 +5,7 @@ import { webSocketConnect } from '../src/daemon/webSocketLink.ts';
 import { openPhoneHost } from '../src/phoneBackend.ts';
 import {
   addMachine, approvalWhere, draftVisible, forkLine, loadMachines, newThreadGate,
-  pauseLine, pressNewThread, threadSend, threadTitleFromMessage,
+  downLine, pauseLine, pressNewThread, refusalLine, threadSend, threadTitleFromMessage,
 } from '../src/phoneRules.ts';
 import { phoneShell } from '../src/phoneShell.ts';
 
@@ -134,4 +134,17 @@ test('a desktop hello without a token stays unchanged', async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(sent[0].args, { protocol: 1 });
   client.close();
+});
+
+test('a machine that refuses the token says so instead of looking offline', () => {
+  const words = refusalLine("Tyler's MacBook", 'wrong or missing token');
+  assert.match(words, /token is wrong/);
+  assert.match(words, /Unpair Tyler's MacBook and pair it again/);
+  assert.doesNotMatch(words, /Paused|reconnects|wakes/);
+  const refused = { id: 'local', name: "Tyler's MacBook", kind: 'mac', status: 'offline', problem: words };
+  assert.equal(downLine(refused), words);
+  assert.equal(threadSend([refused], 'local', 'hi').reason, words);
+  assert.equal(newThreadGate(refused, refused).reason, words);
+  assert.equal(downLine({ ...refused, problem: undefined }), "Paused until Tyler's MacBook wakes");
+  assert.equal(refusalLine('Apex-Terminal', 'this daemon speaks protocol 3, not 2.'), 'Apex-Terminal turned this phone away: this daemon speaks protocol 3, not 2.');
 });
