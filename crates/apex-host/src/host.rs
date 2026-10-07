@@ -481,10 +481,13 @@ impl Host {
     /// Run `batch` in the background, reporting a failure as a chat event.
     fn run_batch_in_background(self: &Arc<Self>, id: String, handle: RoomHandle, batch: TurnBatch) {
         let host = Arc::clone(self);
+        // Stop and new messages move the revision on, so next steps are
+        // only worked out for replies nothing has overtaken.
+        let revision = handle.observation_revision.load(Ordering::SeqCst);
         self.runtime.spawn(async move {
             match host.run_batch(&id, &handle, batch).await {
                 Err(error) => host.room_event(&id, RoomEvent::Failed { id: ParticipantId::new("storage"), error }),
-                Ok(()) if !handle.busy() => crate::next_steps::suggest(Arc::clone(&host), id, handle),
+                Ok(()) if !handle.busy() => crate::next_steps::suggest(Arc::clone(&host), id, handle, revision),
                 Ok(()) => {}
             }
         });
@@ -1672,6 +1675,29 @@ mod host_tests {
         assert!(state["next_steps"].is_null(), "a question replaces next steps");
         host.room_event("r", RoomEvent::QuestionResolved { id: null, request: "ask-1".into(), end: apex_core::QuestionEnd::Answered, answers: vec![] });
         assert_eq!(host.room_state("r".into()).unwrap()["questions"], serde_json::json!([]));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn next_steps_are_not_worked_out_after_stop() {
+        let (host, runtime, data) = host("next-steps-stop");
+        let long = "I fixed the code block wrapping in the chat so long lines no longer scroll sideways at all.";
+        host.room_create("r".into(), vec![scripted("null", &[long, r#"[{"label":"Commit","prompt":"commit it"}]"#])], RoomOptions::default(), None).unwrap();
+        let handle = host.handle("r").unwrap();
+        // The reply, without the host's batch (which would ask by itself).
+        runtime.block_on(async { handle.room.lock().await.post_human("@null fix it", &|_| {}).await });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        let before = handle.observation_revision.load(Ordering::SeqCst);
+        host.room_stop("r".into(), None);
+        let _guard = runtime.enter();
+        crate::next_steps::suggest(Arc::clone(&host), "r".into(), host.handle("r").unwrap(), before);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { .. })).is_none(), "stopped: no suggestions, no fork");
+        let now = handle.observation_revision.load(Ordering::SeqCst);
+        crate::next_steps::suggest(Arc::clone(&host), "r".into(), host.handle("r").unwrap(), now);
+        assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, .. })).is_some(), "the same reply, not stopped, gets them");
         let _ = std::fs::remove_dir_all(data);
     }
 

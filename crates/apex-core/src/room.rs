@@ -695,6 +695,11 @@ impl Room {
     /// its own view of the chat, then the next-steps question, read-only.
     pub fn next_steps_request(&self, id: &ParticipantId) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let (participant, mut request) = self.request_for(id)?;
+        // Suggesting is not planning, even while the thread plans.
+        if request.plan {
+            request.plan = false;
+            request.system.truncate(request.system.len() - PLAN_SYSTEM.len());
+        }
         request.turns.push(ViewTurn { role: Role::User, content: crate::next_steps::ASK.to_string() });
         request.access = Some(crate::Access::Read);
         request.unseen = Vec::new();
@@ -898,6 +903,18 @@ mod approver_tests {
     use crate::approval::ActionKind;
     use futures::FutureExt;
     use std::sync::Mutex;
+
+    #[test]
+    fn the_next_steps_question_is_never_asked_in_plan_mode() {
+        let null = Arc::new(crate::testing::ScriptedParticipant::new("null", &["done"]));
+        let mut room = Room::new(vec![null], RoomOptions::default());
+        futures::executor::block_on(room.post_human("@null hi", &|_| {}));
+        room.plan_handle().store(true, Ordering::SeqCst);
+        let (_, request) = room.next_steps_request(&ParticipantId::new("null")).unwrap();
+        assert!(!request.plan, "a planning fork would plan instead of suggesting");
+        assert!(!request.system.contains(PLAN_SYSTEM));
+        assert_eq!(request.access, Some(crate::Access::Read));
+    }
 
     #[test]
     fn a_start_the_work_card_is_never_always_allowed() {

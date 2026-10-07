@@ -14,10 +14,12 @@ use crate::host::{Host, RoomHandle};
 /// A suggestion that takes longer than this is not worth waiting for.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 
-pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle) {
-    let revision = handle.observation_revision.load(Ordering::SeqCst);
+/// `revision` is the room's revision when the replies began: a Stop, a new
+/// message or another turn since then means there is nothing to suggest.
+pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64) {
     let runtime = host.runtime().clone();
     runtime.spawn(async move {
+        if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
         let prepared = {
             let current = handle.room.lock().await;
             current.transcript().last().and_then(|last| match &last.speaker {
