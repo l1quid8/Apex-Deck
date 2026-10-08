@@ -26,26 +26,134 @@ pub struct ApiModel {
     pub price_cached_in: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub price_out: Option<f64>,
+    /// What the model makes. Text models chat; image and video models turn
+    /// each message into a picture or a clip (`media.rs`).
+    #[serde(default, skip_serializing_if = "ModelKind::is_text")]
+    pub kind: ModelKind,
+    /// The settings an image or video model takes and what it costs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaSpec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelKind {
+    #[default]
+    Text,
+    Image,
+    Video,
+}
+
+impl ModelKind {
+    fn is_text(&self) -> bool {
+        *self == ModelKind::Text
+    }
+}
+
+/// What an image or video model lets you choose, from Venice's
+/// `model_spec.constraints`, and its listed prices. Empty lists mean the
+/// setting isn't offered, and it is then never sent: Venice rejects
+/// fields a model doesn't take.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MediaSpec {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aspect_ratios: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolutions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub qualities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_quality: Option<String>,
+    /// Video lengths such as "5s".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub durations: Vec<String>,
+    /// The clip can have sound, and whether it can be switched off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio_configurable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_limit: Option<usize>,
+    /// Pictures: US dollars each, when one price fits every setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<f64>,
+    /// Pictures: US dollars each by "1K" or by "1K/low" (resolution/quality).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub prices: HashMap<String, f64>,
+    /// Pictures: the model that edits an attached picture, and its price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_price: Option<f64>,
+    /// Video: the sibling that animates an attached picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_model: Option<String>,
+    /// Video: this model only animates a picture, so one must be attached.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_image: bool,
 }
 
 /// Read the `data` list of a `/models` response, sorted by id with duplicates removed.
 pub fn parse_models(body: &Value) -> Vec<ApiModel> {
-    let mut models: Vec<ApiModel> = body["data"]
-        .as_array()
-        .map(|items| items.iter().filter_map(parse_entry).collect())
-        .unwrap_or_default();
+    let items = body["data"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut models: Vec<ApiModel> = items.iter().filter_map(parse_entry).collect();
+    link_media_siblings(&mut models, items);
     models.sort_by(|a, b| a.id.cmp(&b.id));
     models.dedup_by(|a, b| a.id == b.id);
     models
 }
 
+/// Venice lists picture editing and picture-to-video as separate models
+/// ("flux-2-max-edit", "seedance-2-5-image-to-video-basic"). Each is tied
+/// to the model people pick, which uses it when a picture is attached.
+/// Picture-to-video models with a text sibling are left out of the list.
+fn link_media_siblings(models: &mut Vec<ApiModel>, items: &[Value]) {
+    let edits: HashMap<&str, Option<f64>> = items
+        .iter()
+        .filter(|item| item["type"] == "inpaint")
+        .filter_map(|item| Some((item["id"].as_str()?, venice_price(&item["model_spec"]["pricing"]["inpaint"]))))
+        .collect();
+    let ids: std::collections::HashSet<String> = models.iter().map(|m| m.id.clone()).collect();
+    let mut animated = std::collections::HashSet::new();
+    for model in models.iter_mut() {
+        let id = model.id.clone();
+        let Some(media) = model.media.as_mut() else { continue };
+        match model.kind {
+            ModelKind::Image => {
+                if let Some((edit, price)) = edits.get_key_value(format!("{id}-edit").as_str()) {
+                    media.edit_model = Some(edit.to_string());
+                    media.edit_price = *price;
+                }
+            }
+            ModelKind::Video if id.contains("text-to-video") => {
+                let sibling = id.replace("text-to-video", "image-to-video");
+                if ids.contains(&sibling) {
+                    media.image_model = Some(sibling.clone());
+                    animated.insert(sibling);
+                }
+            }
+            _ => {}
+        }
+    }
+    models.retain(|m| !animated.contains(&m.id));
+}
+
 /// Read one entry, trying the Venice shape first and then the OpenRouter and Groq shapes.
 fn parse_entry(item: &Value) -> Option<ApiModel> {
     let id = item["id"].as_str()?.to_string();
-    if item["type"].as_str().is_some_and(|kind| kind != "text") {
-        return None;
-    }
     let spec = &item["model_spec"];
+    let kind = match item["type"].as_str() {
+        None | Some("text") => ModelKind::Text,
+        Some("image") => ModelKind::Image,
+        // Only clips made from words or a picture; upscalers and the like
+        // need a video to start from.
+        Some("video") if matches!(spec["constraints"]["model_type"].as_str(), Some("text-to-video" | "image-to-video")) => ModelKind::Video,
+        _ => return None,
+    };
     let capabilities = &spec["capabilities"];
     let label = [spec["name"].as_str(), item["name"].as_str()]
         .into_iter()
@@ -72,7 +180,65 @@ fn parse_entry(item: &Value) -> Option<ApiModel> {
         price_in: venice_price(&spec["pricing"]["input"]).or_else(|| per_token_price(&item["pricing"]["prompt"])),
         price_cached_in: venice_price(&spec["pricing"]["cache_input"]).or_else(|| per_token_price(&item["pricing"]["input_cache_read"])),
         price_out: venice_price(&spec["pricing"]["output"]).or_else(|| per_token_price(&item["pricing"]["completion"])),
+        media: match kind {
+            ModelKind::Text => None,
+            ModelKind::Image => Some(image_spec(spec)),
+            ModelKind::Video => Some(video_spec(spec)),
+        },
+        kind,
     })
+}
+
+fn strings(value: &Value) -> Vec<String> {
+    value.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+}
+
+fn text(value: &Value) -> Option<String> {
+    value.as_str().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+fn image_spec(spec: &Value) -> MediaSpec {
+    let limits = &spec["constraints"];
+    let pricing = &spec["pricing"];
+    let mut prices = HashMap::new();
+    for (resolution, price) in pricing["resolutions"].as_object().into_iter().flatten() {
+        if let Some(usd) = venice_price(price) {
+            prices.insert(resolution.clone(), usd);
+        }
+    }
+    for (resolution, levels) in pricing["quality"].as_object().into_iter().flatten() {
+        for (quality, price) in levels.as_object().into_iter().flatten() {
+            if let Some(usd) = venice_price(price) {
+                prices.insert(format!("{resolution}/{quality}"), usd);
+            }
+        }
+    }
+    MediaSpec {
+        aspect_ratios: strings(&limits["aspectRatios"]),
+        default_aspect_ratio: text(&limits["defaultAspectRatio"]),
+        resolutions: strings(&limits["resolutions"]),
+        default_resolution: text(&limits["defaultResolution"]),
+        qualities: strings(&limits["qualities"]),
+        default_quality: text(&limits["defaultQuality"]),
+        prompt_limit: limits["promptCharacterLimit"].as_u64().map(|n| n as usize),
+        price: venice_price(&pricing["generation"]),
+        prices,
+        ..MediaSpec::default()
+    }
+}
+
+fn video_spec(spec: &Value) -> MediaSpec {
+    let limits = &spec["constraints"];
+    MediaSpec {
+        aspect_ratios: strings(&limits["aspect_ratios"]),
+        resolutions: strings(&limits["resolutions"]),
+        durations: strings(&limits["durations"]),
+        audio: limits["audio"].as_bool().unwrap_or(false),
+        audio_configurable: limits["audio_configurable"].as_bool().unwrap_or(false),
+        prompt_limit: limits["prompt_character_limit"].as_u64().map(|n| n as usize),
+        needs_image: limits["model_type"] == "image-to-video",
+        ..MediaSpec::default()
+    }
 }
 
 /// Venice already quotes dollars per million tokens. Negative values mean "not priced".
@@ -107,7 +273,9 @@ pub async fn models(base_url: &str, api_key_env: Option<&str>) -> Result<Vec<Api
         return Ok(models);
     }
 
-    let url = format!("{base}/models");
+    // Venice lists only text models unless asked for every kind; the
+    // others ignore the parameter.
+    let url = if is_venice(base) { format!("{base}/models?type=all") } else { format!("{base}/models") };
     let mut call = reqwest::Client::new().get(&url).timeout(Duration::from_secs(8));
     // The list is often public, so a missing key isn't an error here.
     if let Some(key) = api_key_env.filter(|n| !n.is_empty()).and_then(crate::keys::lookup) {
@@ -123,6 +291,12 @@ pub async fn models(base_url: &str, api_key_env: Option<&str>) -> Result<Vec<Api
     let models = parse_models(&body);
     cache.lock().unwrap().insert(base.to_string(), (Instant::now(), models.clone()));
     Ok(models)
+}
+
+/// Whether `base_url` is Venice's API, the one provider with image and
+/// video models wired up so far.
+pub fn is_venice(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url).ok().and_then(|url| url.host_str().map(str::to_lowercase)).as_deref() == Some("api.venice.ai")
 }
 
 /// One model by id, or None if the lookup fails or the server doesn't list it.
@@ -225,7 +399,8 @@ mod tests {
         let body = json!({ "data": [
             { "id": "zeta" },
             { "object": "model" },
-            { "id": "image-model", "type": "image" },
+            { "id": "music-model", "type": "music" },
+            { "id": "upscaler", "type": "video", "model_spec": { "constraints": { "model_type": "video" } } },
             { "id": "alpha", "type": "text" },
             { "id": "alpha", "type": "text" }
         ] });
@@ -239,6 +414,63 @@ mod tests {
         let model = &parse_models(&body)[0];
         assert_eq!(model.label, None);
         assert_eq!(model.context_tokens, Some(8192));
+    }
+
+    fn venice_media() -> Value {
+        json!({ "data": [
+            {"id":"flux-2-max","type":"image","model_spec":{"name":"Flux 2 Max","pricing":{"generation":{"usd":0.07}},"constraints":{"promptCharacterLimit":3000,"aspectRatios":["1:1","16:9"],"defaultAspectRatio":"1:1"}}},
+            {"id":"flux-2-max-edit","type":"inpaint","model_spec":{"pricing":{"inpaint":{"usd":0.08}}}},
+            {"id":"grok-imagine-image-2-0","type":"image","model_spec":{"name":"Grok Imagine 2.0","pricing":{"resolutions":{"1K":{"usd":0.07},"2K":{"usd":0.1}},"quality":{"1K":{"low":{"usd":0.05}}}},"constraints":{"defaultResolution":"1K","resolutions":["1K","2K"],"defaultQuality":"medium","qualities":["low","medium"]}}},
+            {"id":"seedance-2-5-us-text-to-video-private","type":"video","model_spec":{"name":"Seedance 2.5 US","constraints":{"model_type":"text-to-video","aspect_ratios":["auto","16:9","9:16"],"resolutions":["480p","720p","1080p"],"durations":["4s","5s","6s"],"audio":true,"audio_configurable":true,"prompt_character_limit":15000}}},
+            {"id":"seedance-2-5-us-image-to-video-private","type":"video","model_spec":{"name":"Seedance 2.5 US","constraints":{"model_type":"image-to-video","aspect_ratios":["16:9"],"resolutions":["720p"],"durations":["5s"],"audio":true,"audio_configurable":true}}},
+            {"id":"wan-2-5-image-to-video","type":"video","model_spec":{"name":"Wan 2.5","constraints":{"model_type":"image-to-video","aspect_ratios":[],"resolutions":["720p"],"durations":["5s"],"audio":false,"audio_configurable":false}}}
+        ] })
+    }
+
+    #[test]
+    fn image_models_carry_their_choices_prices_and_edit_sibling() {
+        let models = parse_models(&venice_media());
+        let flux = models.iter().find(|m| m.id == "flux-2-max").unwrap();
+        assert_eq!(flux.kind, ModelKind::Image);
+        assert_eq!(flux.label.as_deref(), Some("Flux 2 Max"));
+        let media = flux.media.as_ref().unwrap();
+        assert_eq!(media.aspect_ratios, ["1:1", "16:9"]);
+        assert_eq!(media.default_aspect_ratio.as_deref(), Some("1:1"));
+        assert_eq!(media.price, Some(0.07));
+        assert_eq!(media.prompt_limit, Some(3000));
+        assert_eq!(media.edit_model.as_deref(), Some("flux-2-max-edit"));
+        assert_eq!(media.edit_price, Some(0.08));
+        let grok = models.iter().find(|m| m.id == "grok-imagine-image-2-0").unwrap().media.clone().unwrap();
+        assert_eq!(grok.prices.get("2K"), Some(&0.1));
+        assert_eq!(grok.prices.get("1K/low"), Some(&0.05));
+        assert_eq!(grok.qualities, ["low", "medium"]);
+        assert_eq!(grok.edit_model, None);
+        assert!(!models.iter().any(|m| m.id.ends_with("-edit")), "edit models are used through their sibling");
+    }
+
+    #[test]
+    fn video_models_carry_their_choices_and_picture_sibling() {
+        let models = parse_models(&venice_media());
+        let seedance = models.iter().find(|m| m.id == "seedance-2-5-us-text-to-video-private").unwrap();
+        assert_eq!(seedance.kind, ModelKind::Video);
+        let media = seedance.media.as_ref().unwrap();
+        assert_eq!(media.durations, ["4s", "5s", "6s"]);
+        assert_eq!(media.resolutions, ["480p", "720p", "1080p"]);
+        assert!(media.audio && media.audio_configurable);
+        assert_eq!(media.prompt_limit, Some(15000));
+        assert_eq!(media.image_model.as_deref(), Some("seedance-2-5-us-image-to-video-private"));
+        assert!(!media.needs_image);
+        assert!(!models.iter().any(|m| m.id == "seedance-2-5-us-image-to-video-private"), "a picture sibling is not listed on its own");
+        let wan = models.iter().find(|m| m.id == "wan-2-5-image-to-video").unwrap().media.clone().unwrap();
+        assert!(wan.needs_image, "a picture-only model with no text sibling stays, marked as needing a picture");
+    }
+
+    #[test]
+    fn text_models_serialize_without_kind_or_media() {
+        let value = serde_json::to_value(&parse_models(&json!({ "data": [venice_glm()] }))[0]).unwrap();
+        assert!(value.get("kind").is_none() && value.get("media").is_none());
+        let video = serde_json::to_value(parse_models(&venice_media()).iter().find(|m| m.kind == ModelKind::Video).unwrap()).unwrap();
+        assert_eq!(video["kind"], "video");
     }
 
     #[test]

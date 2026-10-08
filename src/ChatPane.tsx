@@ -61,8 +61,11 @@ import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
-import { attachedImages, attachmentName, replyImages, withAttachments, type Attachment } from "./attachments";
-import { AttachedImages } from "./AttachedImages";
+import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
+import { CONFIRM_OVER, mediaKind, priceLabel } from "./media";
+import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
+import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { AttachedImages, AttachedVideos } from "./AttachedImages";
 import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
 import { exampleRows, recipientName } from "./recipients";
@@ -1937,6 +1940,34 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const requestedServers = parseServerRequests(text).map(s => s.name);
   const unknownServers = serverTargets.length && serverTargets.every(id => serverLists[id] !== undefined)
     ? resolveServerRequests(requestedServers, serverTargets.flatMap(id => serverLists[id])).unknown : [];
+  // Picture and video bots: each provider's model list, so the composer knows what a message will cost.
+  const [providerModels, setProviderModels] = useState<Record<string, ApiModel[]>>({});
+  const providerSources = participants.flatMap(p => p.backend.kind === "open_ai_compatible" ? [p.backend] : []);
+  const providerSig = [...new Set(providerSources.map(b => sourceKey(b.base_url, b.api_key_env)))].join("\n");
+  useEffect(() => {
+    let live = true;
+    for (const b of providerSources) {
+      const key = sourceKey(b.base_url, b.api_key_env);
+      backend.apiModels(b.base_url, b.api_key_env).then(list => { if (live) setProviderModels(lists => ({ ...lists, [key]: list })); }).catch(() => {});
+    }
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend, providerSig]);
+  const picturesAttached = sendable.some(a => isImage(a.path!));
+  const mediaSends = mediaSendsFor(serverTargets, participants, providerModels, picturesAttached);
+  const mediaSig = JSON.stringify(mediaSends);
+  const [pricing, setPricing] = useState<{ sig: string; usd: number | null } | null>(null);
+  useEffect(() => {
+    if (!mediaSends.length) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      void priceSend(mediaSends, backend).then(({ usd }) => { if (live) setPricing({ sig: mediaSig, usd }); }).catch(() => {});
+    }, 300);
+    return () => { live = false; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend, mediaSig]);
+  const pricePill = pricing?.sig === mediaSig && mediaSends.length && pricing.usd != null && pricing.usd > 0 && (text.trim() || sendable.length) ? priceLabel(pricing.usd) : null;
+  const [priceAsk, setPriceAsk] = useState<Question | null>(null);
 
   /** Answer the question on the form, or skip it with `null`. */
   const answerQuestion = (request: string, answers: string[][] | null) => {
@@ -1971,7 +2002,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     }
     return true;
   };
-  const send = async (steer = false) => {
+  const send = async (steer = false, confirmed = false) => {
     if (!ready) return;
     panelDismissed.current = false;
     const targetIds = stickyFor(text, turnQueue.items) ?? await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
@@ -1991,6 +2022,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
     if (participants.length === 0) return;
+    // A picture or video bot needs its picture, and a send over the limit asks first. Cancel keeps the draft.
+    const sends = mediaSendsFor(targetIds, participants, providerModels, sendable.some(a => isImage(a.path!)));
+    if (sends.length) {
+      const { usd, missing } = await priceSend(sends, backend);
+      if (missing) { notify(`${missing.name} needs a picture: attach one to animate.`, "error"); return; }
+      if (!confirmed && usd != null && usd > CONFIRM_OVER) {
+        setPriceAsk({ title: "Send this message?", body: `This costs about ${dollars(usd)}. Make it?`, action: "Make it", onConfirm: () => void send(steer, true) });
+        return;
+      }
+    }
     // Sending takes you to the bottom, where your message and the replies land,
     // and clears "New since you looked".
     stuck.current = true;
@@ -2173,9 +2214,28 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   // Battery levels: context is each agent's own, the plan its provider's.
   const configOf = (id: string) => participants.find((p) => p.id === id);
+  /** Picture and video bots keep no conversation, so a context reading from an earlier text model no longer applies. */
+  const mediaOf = (p: ParticipantConfig | undefined) => {
+    const b = p?.backend;
+    return b?.kind === "open_ai_compatible" ? mediaKind(providerModels[sourceKey(b.base_url, b.api_key_env)]?.find((m) => m.id === b.model)) : null;
+  };
+  const makesMedia = (p: ParticipantConfig | undefined) => Boolean(mediaOf(p));
+  /** Stopping only stops Deck waiting: a picture or video the provider already started may still be billed. */
+  const chargeWarning = (ids: string[]) => {
+    const kinds = new Set(ids.map((id) => mediaOf(configOf(id))).filter(Boolean));
+    if (!kinds.size) return null;
+    const p = configOf(ids.find((id) => mediaOf(configOf(id)))!);
+    const who = p?.backend.kind === "open_ai_compatible" && /venice\.ai/i.test(p.backend.base_url) ? "Venice" : "The provider";
+    return `${who} may still charge for the ${kinds.has("video") ? "video" : "picture"}, since it had already started making it.`;
+  };
+  const stopBots = (id?: string) => {
+    const warning = chargeWarning(id ? [id] : Object.keys(working));
+    void turnQueue.halt(id);
+    if (warning) notify(`Stopped. ${warning}`, "info");
+  };
   const levelsFor = (id: string): Levels => {
     const provider = planProvider(configOf(id));
-    return { context: contextLevel(contextFill[id]), plan: provider ? planLevel(plans[provider]?.windows, Date.now() / 1000) : null };
+    return { context: makesMedia(configOf(id)) ? null : contextLevel(contextFill[id]), plan: provider ? planLevel(plans[provider]?.windows, Date.now() / 1000) : null };
   };
   const refillsFor = (id: string): Refills => {
     const provider = planProvider(configOf(id));
@@ -2201,10 +2261,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
     return (
       <div className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
-        <div className="usage-row">
+        {!makesMedia(p) && <div className="usage-row">
           <span className="usage-label">Context</span>
           <span className={isLow(contextLevel(fill)) ? "usage-low" : undefined}>{fill ? contextLine(fill) : reports ? "Not reported yet. The next reply says." : "Not reported by this provider"}</span>
-        </div>
+        </div>}
         {account ? <>
           <div className="usage-row">
             <span className="usage-label">Balance</span>
@@ -2649,7 +2709,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 
       {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom, "--room": `${window.innerHeight - rosterAnchor.bottom - 8}px` } as CSSProperties}>{quickAddMenu}</span>}
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
@@ -2740,6 +2800,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <div className="bubble human">
                 <RichText text={splitTldr(entry.message.text).text} onOpen={openTarget} />
                 <AttachedImages paths={attachedImages(entry.message.text)} read={backend.readAttachment} onOpen={(path) => openTarget(path, true)} />
+                <AttachedVideos paths={attachedVideos(entry.message.text)} read={backend.readAttachment} onOpen={(path) => openTarget(path, true)} />
               </div>
             </div>
           ) : (
@@ -2755,6 +2816,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 </span>
                 <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} />
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} />
+                <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} />
               </div>
               {messageActions(entry.message)}
             </div>
@@ -2816,7 +2878,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   </span>
                   <span>{asks[id]?.length ? "Waiting for you" : quiet ?? (planOn ? "Planning" : phaseLabel(turn?.phase))}</span>
                   {turn && !quiet && <span className="working-time">{elapsed(now - turn.startedAt)}</span>}
-                  {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${names.get(id) ?? id}`} title={`Stop ${names.get(id) ?? id}`} onClick={() => void turnQueue.halt(id)}><StopSquare /> Stop</button>}
+                  {turn && <button type="button" className="bubble-stop" aria-label={`Stop ${names.get(id) ?? id}`} title={chargeWarning([id]) ? `Stop ${names.get(id) ?? id}. ${chargeWarning([id])}` : `Stop ${names.get(id) ?? id}`} onClick={() => stopBots(id)}><StopSquare /> Stop</button>}
                 </div>
               </div>
             </div>
@@ -2961,7 +3023,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && formKeys(e.key)) { e.preventDefault(); return; }
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "t") { e.preventDefault(); toggleTldr(); return; }
             // Esc stops every bot and keeps your draft, like Claude Code and Codex.
-            if (e.key === "Escape" && busy) { e.preventDefault(); void turnQueue.halt(); return; }
+            if (e.key === "Escape" && busy) { e.preventDefault(); stopBots(); return; }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send(e.metaKey || e.ctrlKey);
@@ -2982,8 +3044,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           // Keep focus in the message box, so you can type straight after.
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
+          {!busy && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
           {busy
-            ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) void turnQueue.halt(); }}><StopSquare size={12} /></button>
+            ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) stopBots(); }}><StopSquare size={12} /></button>
             : <button type="button" className="round-send" aria-label="Send" title="Send (↵)" onClick={() => { if (Date.now() - flippedAt.current > 600) void send(); }} disabled={!ready || (!text.trim() && !sendable.length) || saving || participants.length === 0}><SendArrow /></button>}
           {work && !work.started && <WorkBar work={askPicker ? { ...work, pickerRequest: (work.pickerRequest ?? 0) + askPicker } : work} attachedCount={attached.length} files={recent} tools={workTools}
             toolsWhere={`on ${backend.host?.name ?? "This Mac"}`} canCopyFolder={!backend.host || backend.host.id === "local"}
@@ -2991,6 +3054,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
+        {priceAsk && <ConfirmDialog question={priceAsk} onCancel={() => setPriceAsk(null)} />}
         {botChips}
         </div>
       </div>}

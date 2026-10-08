@@ -21,7 +21,7 @@ fn participant_config_shapes() {
         access: Access::Edits,
         effort: Some("high".into()),
         auto_effort: false,
-        appearance: None,
+        appearance: None, media: None
     };
     assert_eq!(
         to_value(&api).unwrap(),

@@ -13,11 +13,28 @@ use crate::Utf8Chunks;
 pub struct OpenAiCompatParticipant {
     config: ParticipantConfig,
     client: reqwest::Client,
+    /// Where pictures and videos this bot makes are saved (`media.rs`).
+    media_dir: Option<std::path::PathBuf>,
+    /// How often a queued video is checked on.
+    poll: std::time::Duration,
 }
 
 impl OpenAiCompatParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, client: reqwest::Client::new() }
+        Self { config, client: reqwest::Client::new(), media_dir: None, poll: std::time::Duration::from_secs(5) }
+    }
+
+    /// Let the bot make pictures and videos when its model does, saving
+    /// them in `dir`.
+    pub fn with_media_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.media_dir = dir;
+        self
+    }
+
+    /// Check on queued videos this often. For tests.
+    pub fn with_poll(mut self, poll: std::time::Duration) -> Self {
+        self.poll = poll;
+        self
     }
 }
 
@@ -146,6 +163,20 @@ impl Participant for OpenAiCompatParticipant {
         let Backend::OpenAiCompatible { base_url, model, api_key_env } = &self.config.backend else {
             return Err(ParticipantError::NotConfigured("backend is not an HTTP API".into()));
         };
+
+        // An image or video model makes a file instead of chatting. Only
+        // Venice lists those, so other providers skip the lookup.
+        if crate::api_info::is_venice(base_url) {
+            if let Some(info) = crate::api_info::model(base_url, api_key_env.as_deref(), model).await.filter(|m| m.kind != crate::ModelKind::Text) {
+                let dir = self.media_dir.as_deref().ok_or_else(|| ParticipantError::NotConfigured("this thread has no folder to save pictures and videos in".into()))?;
+                let key = match api_key_env.as_deref().filter(|n| !n.is_empty()) {
+                    Some(name) => Some(crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?),
+                    None => None,
+                };
+                let job = crate::media::Job { client: &self.client, base_url, key, model: &info, settings: self.config.media.as_ref(), dir, poll: self.poll };
+                return job.run(&request, on_progress).await;
+            }
+        }
 
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         let effort = request.effort_override.as_deref().or(self.config.effort.as_deref());

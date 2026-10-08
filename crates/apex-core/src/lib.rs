@@ -26,7 +26,7 @@ pub use participant::{
 };
 pub use room::{ChangeRecord, Compaction, Room, RoomEvent, RoomOptions, RoomSnapshot, TurnPolicy};
 pub use types::{
-    Access, AgentTool, Backend, ContextUse, Message, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage,
+    Access, AgentTool, Backend, ContextUse, MediaSettings, Message, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage,
     PlanWindow, Speaker, TokenTotals,
 };
 pub use view::{render_prompt, render_view, render_view_after, system_prompt, Role, ViewTurn, PASS_TOKEN};

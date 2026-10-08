@@ -102,3 +102,10 @@ test("this Mac, with no connection to wait for, is asked straight away", async (
   const list = await listLibrary({ libraryList: async () => [item("m.png", "t1", "Clef", 1)] }, 1000);
   assert.deepEqual(list.map((i) => i.file), ["m.png"]);
 });
+
+test("video items are told apart from pictures", async () => {
+  const { isVideoItem } = await import("../src/library.ts");
+  assert.equal(isVideoItem({ kind: "video" }), true);
+  assert.equal(isVideoItem({ kind: "image" }), false);
+  assert.equal(isVideoItem(item("a.png", "t1", "Clef", 1)), false);
+});

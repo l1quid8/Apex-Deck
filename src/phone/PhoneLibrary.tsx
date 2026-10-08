@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Backend, LibraryItem } from "../backend";
-import { botsIn, filterLibrary, itemKey, threadExists, workspaceForRoom, workspacesIn, type LibraryFilter, type LibraryThread, type MachineItem } from "../library";
+import { botsIn, filterLibrary, isVideoItem, itemKey, threadExists, workspaceForRoom, workspacesIn, type LibraryFilter, type LibraryThread, type MachineItem } from "../library";
+import { videoType } from "../attachments";
 import { Folder } from "./icons";
 import { fitsOnPhone, gridColumns, libraryCaption, notShownReason } from "./libraryRules";
 
@@ -151,7 +152,7 @@ function useImage(item: LibraryItem, backend: Backend, enabled: boolean): { url:
     setUrl(null);
     backend.readAttachment(item.path).then((bytes) => {
       if (!live) return;
-      made = URL.createObjectURL(new Blob([bytes]));
+      made = URL.createObjectURL(new Blob([bytes], { type: isVideoItem(item) ? videoType(item.file) : "" }));
       setUrl(made);
     }).catch(() => { if (live) setFailed(true); });
     return () => { live = false; if (made) URL.revokeObjectURL(made); };
@@ -171,9 +172,10 @@ function LibraryTile({ item, backend, machine, onOpen }: { item: LibraryItem; ba
   }, [near]);
   const { url, failed, retry } = useImage(item, backend, near);
   const reason = notShownReason(item, machine);
+  const video = isVideoItem(item);
   return <div className="ph-lib-tile-wrap">
     <button ref={box} type="button" className="ph-lib-tile" onClick={onOpen} aria-label={`${libraryCaption(item, true)} · ${machine}`}>
-      <span className="ph-lib-thumb">{url && <img src={url} alt="" />}{reason && <span className="ph-lib-big">{reason}</span>}{failed && <span className="ph-lib-big">Couldn't load this picture</span>}</span>
+      <span className="ph-lib-thumb">{url && (video ? <video src={url} muted preload="metadata" /> : <img src={url} alt="" />)}{video && <span className="ph-lib-play" aria-hidden="true">▶</span>}{reason && <span className="ph-lib-big">{reason}</span>}{failed && <span className="ph-lib-big">Couldn't load this picture</span>}</span>
       <span className="ph-lib-caption">{libraryCaption(item, false)} · {machine}</span>
     </button>
     {failed && <button type="button" className="ph-lib-action ph-lib-retry" onClick={retry}>Retry</button>}
@@ -208,8 +210,8 @@ function PhoneLibraryViewer({ item, backend, machine, threads, workspaceName, on
   };
 
   return <div className="ph-lib-viewer" role="dialog" aria-label="Picture">
-    <div className="ph-lib-viewer-image">{url && <img src={url} alt="" />}
-      {reason && <p className="ph-lib-big">{reason === "Too big for the phone" ? `This picture is too big to show on the phone. Open it on ${machine}.` : `${machine} didn't say how big this picture is, so the phone won't risk loading it. Update Deck on ${machine}, or open it there.`}</p>}
+    <div className="ph-lib-viewer-image">{url && (isVideoItem(item) ? <video src={url} controls playsInline /> : <img src={url} alt="" />)}
+      {reason && <p className="ph-lib-big">{reason.startsWith("Too big") ? `This ${isVideoItem(item) ? "video" : "picture"} is too big to ${isVideoItem(item) ? "play" : "show"} on the phone. Open it on ${machine}.` : `${machine} didn't say how big this ${isVideoItem(item) ? "video" : "picture"} is, so the phone won't risk loading it. Update Deck on ${machine}, or open it there.`}</p>}
       {failed && <p className="ph-lib-big" role="alert">Couldn't load this picture from {machine}. <button type="button" className="ph-lib-action" onClick={retry}>Retry</button></p>}</div>
     <div className="ph-lib-viewer-bar">
       {deleteError !== null && <p className="ph-lib-viewer-error" role="alert">Couldn't delete this picture: {String((deleteError as { message?: unknown } | null)?.message ?? deleteError)}</p>}

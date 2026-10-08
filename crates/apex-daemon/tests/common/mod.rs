@@ -396,7 +396,7 @@ fn participant(id: &str, backend: Backend) -> Value {
         access: Default::default(),
         effort: None,
         auto_effort: false,
-        appearance: None,
+        appearance: None, media: None
     })
     .unwrap()
 }

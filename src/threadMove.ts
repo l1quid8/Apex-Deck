@@ -80,5 +80,5 @@ export async function placeThread({ from, to, id, snapshot, cwd, sameHost, hostN
 
 /** A message in this history carried a file: its "Attached …:" line names a path on the old machine. */
 export function historyHasAttachments(transcript: { text: string }[]): boolean {
-  return transcript.some((m) => /^Attached (image|file|folder): /m.test(m.text));
+  return transcript.some((m) => /^Attached (image|video|file|folder): /m.test(m.text));
 }

@@ -94,6 +94,9 @@ pub(crate) struct EventReader {
     last_request: Option<(u64, String)>,
     /// Pictures the tool made and saved during the turn.
     images: Vec<String>,
+    /// Claude Code: helper agents started in the background that have not
+    /// reported back yet.
+    helpers: usize,
 }
 
 impl EventReader {
@@ -116,6 +119,7 @@ impl EventReader {
             output_tokens: None,
             last_request: None,
             images: Vec::new(),
+            helpers: 0,
         }
     }
 
@@ -160,6 +164,25 @@ impl EventReader {
     /// server says so; the other formats end when the program exits.
     pub(crate) fn turn_over(&self) -> bool {
         self.turn_over
+    }
+
+    /// Claude Code: helper agents still working in the background. When
+    /// one finishes, Claude Code starts a follow-up turn by itself to pass
+    /// on what it found, as long as its input is still open.
+    pub(crate) fn helpers(&self) -> usize {
+        self.helpers
+    }
+
+    /// Keep reading after a `result` for the follow-up turn the helpers
+    /// will start. Its reply is added to this one.
+    pub(crate) fn await_follow_up(&mut self) {
+        self.turn_over = false;
+    }
+
+    /// Add a line of Deck's own to the end of the reply.
+    pub(crate) fn add_note(&mut self, note: &str) {
+        let text = self.final_text.take().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| self.streamed.clone());
+        self.final_text = Some(if text.trim().is_empty() { note.to_string() } else { format!("{}\n\n{note}", text.trim_end()) });
     }
 
     /// Everything shown as reply text so far.
@@ -287,7 +310,13 @@ impl EventReader {
                         .or(listed.filter(|l| !l.is_empty()))
                         .or_else(|| Some("the turn ended with an error".to_string()));
                 } else {
-                    self.final_text = text;
+                    // A follow-up turn after helpers report back adds to
+                    // the reply instead of replacing it.
+                    self.final_text = match (self.final_text.take(), text) {
+                        (Some(before), Some(after)) if !before.trim().is_empty() && !after.trim().is_empty() => Some(format!("{}\n\n{}", before.trim_end(), after)),
+                        (Some(before), Some(after)) if after.trim().is_empty() => Some(before),
+                        (_, after) => after,
+                    };
                 }
                 let usage = &event["usage"];
                 let count = |key: &str| usage[key].as_u64();
@@ -301,6 +330,13 @@ impl EventReader {
                 if let Some(context) = self.claude_context(&event["modelUsage"]) {
                     steps.push(Step::Context(context));
                 }
+            }
+            Some("system") if event["subtype"] == "background_tasks_changed" => {
+                // Background shells (a dev server, say) can run for ever and
+                // need no reply; only helper agents report back.
+                self.helpers = event["tasks"].as_array().map_or(0, |tasks| {
+                    tasks.iter().filter(|t| t["task_type"].as_str().is_some_and(|kind| kind.contains("agent"))).count()
+                });
             }
             Some("rate_limit_event") => {
                 if let Some(plan) = claude_plan(&event["rate_limit_info"]) {

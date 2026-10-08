@@ -45,3 +45,19 @@ test('reply pictures ignore remote URLs, nonimages, and code examples', async ()
   assert.equal(typeof replyImages, 'function');
   assert.deepEqual(replyImages('`[example](/a/fake.png)`\n```md\n![example](/a/fake2.png)\n```\n[web](https://example.com/a.png) [notes](/a/notes.txt)\n[encoded](/a/my%20apple.png)'), ['/a/my apple.png']);
 });
+
+test('videos are told apart and labelled in attachment lines', async () => {
+  const { isVideo, withAttachments, attachedVideos } = await import('../src/attachments.ts');
+  assert.ok(isVideo('/a/clip.MP4'));
+  assert.ok(isVideo('take.mov') && isVideo('a.webm') && isVideo('b.m4v'));
+  assert.ok(!isVideo('photo.png'));
+  assert.equal(withAttachments('', ['/x/clip.mp4', '/x/a.png']), 'Attached video: /x/clip.mp4\nAttached image: /x/a.png');
+  assert.deepEqual(attachedVideos('Attached video: /a/seedance.mp4\nAttached image: /a/x.png'), ['/a/seedance.mp4']);
+});
+
+test('reply videos include local links and attached video lines, and reply pictures stay pictures only', async () => {
+  const { replyVideos, replyImages } = await import('../src/attachments.ts');
+  const message = 'Clip [run](/Users/me/clip%20one.mov) and ![pic](/a/apple.png)\nAttached video: /a/seedance.mp4\n`[example](/a/fake.mp4)`\n[web](https://example.com/b.mp4)';
+  assert.deepEqual(replyVideos(message), ['/Users/me/clip one.mov', '/a/seedance.mp4']);
+  assert.deepEqual(replyImages(message), ['/a/apple.png']);
+});

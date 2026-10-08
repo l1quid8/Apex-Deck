@@ -56,3 +56,10 @@ test("the Library needs Full access to all threads, like the Mac's check", () =>
  test("unknown-size server pictures name their source machine", () => {
   assert.equal(notShownReason(item("Null"), "Hetzner"), "Update Deck on Hetzner to show this here");
 });
+
+test("a video too big for the phone's link says it can't play there", () => {
+  const video = { ...item("Null"), file: "clip.mp4", kind: "video" };
+  assert.equal(notShownReason({ ...video, bytes: PHONE_PICTURE_MAX + 1 }), "Too big to play on the phone");
+  assert.equal(notShownReason({ ...video, bytes: 10 }), null);
+  assert.equal(notShownReason(video, "Hetzner"), "Update Deck on Hetzner to show this here");
+});

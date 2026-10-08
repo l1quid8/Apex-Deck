@@ -16,7 +16,7 @@ static INDEX: Mutex<()> = Mutex::new(());
 pub struct Item {
     /// The file's name inside the library folder.
     pub file: String,
-    /// "image" for now; video, audio and files later.
+    /// "image" or "video"; audio and files later.
     pub kind: String,
     /// Where the picture was first seen.
     pub source: String,
@@ -44,7 +44,7 @@ pub fn import(dir: &Path, source: &Path, room: &str, by: Option<&str>) -> Result
         }
     }
     let bytes = std::fs::read(source).map_err(|e| format!("could not read the picture: {e}"))?;
-    let ext = kind(&bytes).ok_or("that file is not a picture")?;
+    let (ext, media) = kind(&bytes).ok_or("that file is not a picture or video")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("could not make the library folder: {e}"))?;
     let file = format!("{:016x}.{ext}", fnv(&bytes));
     let saved = dir.join(&file);
@@ -53,7 +53,7 @@ pub fn import(dir: &Path, source: &Path, room: &str, by: Option<&str>) -> Result
         std::fs::copy(source, &saved).map_err(|e| format!("could not save the picture: {e}"))?;
     }
     items.retain(|i| i.source != seen);
-    items.push(Item { file, kind: "image".into(), source: seen.into_owned(), room: room.into(), by: by.map(str::to_string), created: now() });
+    items.push(Item { file, kind: media.into(), source: seen.into_owned(), room: room.into(), by: by.map(str::to_string), created: now() });
     write_index(dir, &items)?;
     Ok(saved)
 }
@@ -98,12 +98,19 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-fn kind(bytes: &[u8]) -> Option<&'static str> {
+/// The file extension and the Library kind ("image" or "video") of a picture or video, by its first bytes.
+fn kind(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     match bytes {
-        [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', ..] => Some("png"),
-        [0xFF, 0xD8, 0xFF, ..] => Some("jpg"),
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("webp"),
-        [b'G', b'I', b'F', b'8', ..] => Some("gif"),
+        [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', ..] => Some(("png", "image")),
+        [0xFF, 0xD8, 0xFF, ..] => Some(("jpg", "image")),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some(("webp", "image")),
+        [b'G', b'I', b'F', b'8', ..] => Some(("gif", "image")),
+        // QuickTime files say "qt  " as their brand; MP4 files name their own.
+        [_, _, _, _, b'f', b't', b'y', b'p', b'q', b't', b' ', b' ', ..] => Some(("mov", "video")),
+        // HEIC and AVIF photos share the box; their brands say so.
+        [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'i', _, ..] | [_, _, _, _, b'f', b't', b'y', b'p', b'm', b'i', b'f', b'1', ..] | [_, _, _, _, b'f', b't', b'y', b'p', b'a', b'v', b'i', b'f', ..] => None,
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => Some(("mp4", "video")),
+        [0x1A, 0x45, 0xDF, 0xA3, ..] => Some(("webm", "video")),
         _ => None,
     }
 }
@@ -168,6 +175,30 @@ mod tests {
         remove(&dir, &file).unwrap();
         assert!(!saved.exists() && source.exists());
         assert!(list(&dir).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn videos_are_imported_with_the_video_kind() {
+        let root = scratch("videos");
+        let dir = root.join("library");
+        let clips: [(&str, &[u8], &str); 3] = [
+            ("clip.mp4", b"\x00\x00\x00\x18ftypmp42example", "mp4"),
+            ("clip.mov", b"\x00\x00\x00\x14ftypqt  example", "mov"),
+            ("clip.webm", b"\x1a\x45\xdf\xa3example", "webm"),
+        ];
+        for (name, bytes, ext) in clips {
+            let source = root.join(name);
+            std::fs::write(&source, bytes).unwrap();
+            let saved = import(&dir, &source, "pane-1", Some("Gronk")).unwrap();
+            assert_eq!(saved.extension().unwrap(), ext);
+            assert_eq!(std::fs::read(&saved).unwrap(), bytes);
+        }
+        std::fs::write(root.join("photo.heic"), b"\x00\x00\x00\x18ftypheicexample").unwrap();
+        assert!(import(&dir, &root.join("photo.heic"), "pane-1", None).is_err(), "a HEIC photo is not a video");
+        let items = list(&dir);
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().all(|i| i.kind == "video"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

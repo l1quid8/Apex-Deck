@@ -103,6 +103,31 @@ pub struct ParticipantConfig {
     pub auto_effort: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<AgentAppearance>,
+    /// Choices for a bot whose model makes pictures or videos. Unset
+    /// choices use the defaults in `apex_adapters::media`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaSettings>,
+}
+
+/// What an image or video bot makes, as the person set it. Each choice is
+/// sent only when the model lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MediaSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+    /// Video length such as "5s".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<bool>,
+    /// Send the last description with each new message, since these models
+    /// remember nothing. On when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_on_last: Option<bool>,
 }
 
 /// A model a tool offers, for the model picker.

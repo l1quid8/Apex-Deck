@@ -15,7 +15,7 @@
 //!
 //! This is the protocol Anthropic's Agent SDK speaks to the same program.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use apex_core::{Access, ActionKind, Answer, Approver, Decision, Progress, ProgressSink, ProposedAction, Question, QuestionOption};
 use serde_json::{json, Value};
@@ -96,6 +96,27 @@ pub(crate) fn plan_exit_response(request_id: &Value, input: &Value, decision: De
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
 }
 
+/// How long a reply waits for helper agents still working in the
+/// background before it is handed in without them.
+const HELPER_LIMIT: Duration = Duration::from_secs(30 * 60);
+
+/// How often the work line is refreshed while helpers work. It also keeps
+/// the turn's silence limit from stopping a reply that is only waiting.
+const HELPER_HEARTBEAT: Duration = Duration::from_secs(30);
+
+/// The work line while a reply waits for its helpers.
+pub(crate) fn helpers_line(helpers: usize, waited: Duration) -> String {
+    let who = match helpers {
+        0 => "Helpers finished, writing up".to_string(),
+        1 => "1 helper still working".to_string(),
+        n => format!("{n} helpers still working"),
+    };
+    match waited.as_secs() / 60 {
+        0 => who,
+        minutes => format!("{who} · {minutes} min"),
+    }
+}
+
 async fn send(stdin: &mut ChildStdin, message: &Value) -> std::io::Result<()> {
     let mut line = message.to_string();
     line.push('\n');
@@ -137,8 +158,38 @@ pub(crate) async fn run(
 
     let mut reader = EventReader::new(OutputFormat::ClaudeStream, cwd);
     let mut lines = BufReader::new(stdout).lines();
-    while !reader.turn_over() {
-        let Some(line) = lines.next_line().await? else { break };
+    // Set once the reply is written but helper agents it started are still
+    // working. Their results arrive as a follow-up turn, which only happens
+    // while the program's input stays open.
+    let mut waiting_since: Option<Instant> = None;
+    let mut gave_up = false;
+    loop {
+        if reader.turn_over() {
+            if reader.helpers() == 0 {
+                break;
+            }
+            let since = *waiting_since.get_or_insert_with(Instant::now);
+            reader.await_follow_up();
+            on_progress(Progress::Activity(&helpers_line(reader.helpers(), since.elapsed())));
+        }
+        let next = match waiting_since {
+            None => lines.next_line().await?,
+            Some(since) => {
+                if since.elapsed() >= HELPER_LIMIT {
+                    gave_up = true;
+                    break;
+                }
+                let wait = HELPER_HEARTBEAT.min(HELPER_LIMIT.saturating_sub(since.elapsed()));
+                match tokio::time::timeout(wait, lines.next_line()).await {
+                    Ok(next) => next?,
+                    Err(_) => {
+                        on_progress(Progress::Activity(&helpers_line(reader.helpers(), since.elapsed())));
+                        continue;
+                    }
+                }
+            }
+        };
+        let Some(line) = next else { break };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
             if message["type"] == "system" && message["subtype"] == "init" {
                 if let Some(servers) = message["mcp_servers"].as_array() {
@@ -192,6 +243,9 @@ pub(crate) async fn run(
         report(reader.push(&format!("{line}\n")), on_progress);
     }
     report(reader.finish(), on_progress);
+    if gave_up {
+        reader.add_note("(Helpers were still working after 30 minutes, so this reply was handed in without them.)");
+    }
 
     // With its input closed and the turn over, the program exits by itself.
     // Shutting down MCP servers, hooks or background shells can hold it
@@ -205,7 +259,7 @@ pub(crate) async fn run(
         }
     };
     Ok(Finished {
-        success: status.success() || (killed && reader.turn_over()),
+        success: status.success() || (killed && (reader.turn_over() || gave_up)),
         status: status.to_string(),
         stderr: errors.await.unwrap_or_default(),
         reader,
@@ -264,6 +318,40 @@ mod tests {
         let denied = permission_response(&json!("r2"), &input, Decision::Reject);
         assert_eq!(denied["response"]["response"]["behavior"], "deny");
         assert!(denied["response"]["response"]["message"].as_str().unwrap().contains("rejected"));
+    }
+
+    #[test]
+    fn the_helper_line_counts_helpers_and_minutes() {
+        assert_eq!(helpers_line(2, Duration::from_secs(10)), "2 helpers still working");
+        assert_eq!(helpers_line(1, Duration::from_secs(190)), "1 helper still working · 3 min");
+        assert_eq!(helpers_line(0, Duration::from_secs(0)), "Helpers finished, writing up");
+    }
+
+    /// A stand-in for Claude Code: the first turn starts a helper and ends,
+    /// then, while its input stays open, the helper finishes and a
+    /// follow-up turn passes on what it found.
+    #[tokio::test]
+    async fn a_reply_waits_for_its_helpers_and_adds_what_they_found() {
+        let script = r#"read -r prompt
+echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"a1","task_type":"local_agent"},{"task_id":"b1","task_type":"local_bash"}]}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Helpers launched."}]},"parent_tool_use_id":null}'
+echo '{"type":"result","is_error":false,"result":"Helpers launched."}'
+sleep 1
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"PINEAPPLE"}]},"parent_tool_use_id":"toolu_1"}'
+echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash"}]}'
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"The helper found PINEAPPLE."}]},"parent_tool_use_id":null}'
+echo '{"type":"result","is_error":false,"result":"The helper found PINEAPPLE."}'
+cat > /dev/null"#;
+        let child = tokio::process::Command::new("sh").args(["-c", script])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .kill_on_drop(true).spawn().unwrap();
+        let activity = std::sync::Mutex::new(Vec::<String>::new());
+        let sink = |p: Progress<'_>| if let Progress::Activity(a) = p { activity.lock().unwrap().push(a.to_string()) };
+        let finished = run(child, "go", None, &sink, &apex_core::NoApprover, None).await.unwrap();
+        assert!(finished.success);
+        assert_eq!(finished.reader.outcome().text, "Helpers launched.\n\nThe helper found PINEAPPLE.");
+        assert!(activity.lock().unwrap().iter().any(|a| a == "1 helper still working"), "a background shell is not a helper: {:?}", activity.lock().unwrap());
     }
 
     #[test]

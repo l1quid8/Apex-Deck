@@ -29,3 +29,12 @@ test('changing only the Auto backup keeps Auto on', () => {
   assert.equal(auto.effort, 'medium');
   assert.equal(auto.auto_effort, true);
 });
+
+test('picture and video choices merge into the saved ones', () => {
+  const picture = applyTurnChange({ ...bot, backend: { kind: 'open_ai_compatible', base_url: 'https://x', model: 'pic', api_key_env: null }, effort: null, media: { aspect_ratio: '1:1', resolution: '1K' } }, { media: { quality: 'high' } });
+  assert.deepEqual(picture.media, { aspect_ratio: '1:1', resolution: '1K', quality: 'high' });
+  assert.equal(picture.effort, null);
+  const bare = applyTurnChange({ ...bot, effort: null }, { media: { build_on_last: false } });
+  assert.deepEqual(bare.media, { build_on_last: false });
+  assert.equal(bot.media, undefined);
+});

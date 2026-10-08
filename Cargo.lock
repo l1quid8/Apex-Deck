@@ -67,6 +67,7 @@ version = "0.5.1"
 dependencies = [
  "apex-core",
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "keyring",
  "reqwest",

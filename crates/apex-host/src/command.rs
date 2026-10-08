@@ -84,6 +84,7 @@ pub enum Command {
     RoomClose { id: String },
     ApiModels { base_url: String, api_key_env: Option<String> },
     ApiBalance { base_url: String, api_key_env: Option<String> },
+    ApiQuote { base_url: String, api_key_env: Option<String>, model: String, #[serde(default)] media: Option<apex_core::MediaSettings> },
     AgentModels { tool: AgentTool },
     OpenTarget { target: String, cwd: Option<String>, reveal: Option<bool> },
     WorkspaceRead { target: String, cwd: Option<String> },
@@ -191,6 +192,7 @@ impl Host {
             RoomClose { id } => { self.room_close(id); reply(()) },
             ApiModels { base_url, api_key_env } => reply(self.api_models(base_url, api_key_env).await?),
             ApiBalance { base_url, api_key_env } => reply(self.api_balance(base_url, api_key_env).await?),
+            ApiQuote { base_url, api_key_env, model, media } => reply(self.api_quote(base_url, api_key_env, model, media).await?),
             AgentModels { tool } => reply(self.agent_models(tool)),
             OpenTarget { target, cwd, reveal } => reply(self.open_target(target, cwd, reveal)?),
             WorkspaceRead { target, cwd } => reply(self.workspace_read(target, cwd)),
@@ -227,6 +229,8 @@ mod tests {
     fn arguments_use_the_names_the_desktop_ui_sends() {
         let command = Command::from_json(json!({ "cmd": "api_models", "args": { "baseUrl": "http://x", "apiKeyEnv": "KEY" } })).unwrap();
         assert!(matches!(command, Command::ApiModels { base_url, api_key_env: Some(key) } if base_url == "http://x" && key == "KEY"));
+        let command = Command::from_json(json!({ "cmd": "api_quote", "args": { "baseUrl": "http://x", "apiKeyEnv": "KEY", "model": "m", "media": { "duration": "5s" } } })).unwrap();
+        assert!(matches!(command, Command::ApiQuote { model, media: Some(media), .. } if model == "m" && media.duration.as_deref() == Some("5s")));
         let command = Command::from_json(json!({ "cmd": "api_balance", "args": { "baseUrl": "http://x", "apiKeyEnv": "KEY" } })).unwrap();
         assert!(matches!(command, Command::ApiBalance { base_url, api_key_env: Some(key) } if base_url == "http://x" && key == "KEY"));
         let command = Command::from_json(json!({ "cmd": "export_thread", "args": { "fileName": "a.md", "contents": "x" } })).unwrap();
@@ -251,7 +255,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 73);
+        assert_eq!(names.len(), 74);
+        assert!(names.contains(&"api_quote".to_string()));
         assert!(names.contains(&"room_answer".to_string()));
         assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_set_plan".to_string()));

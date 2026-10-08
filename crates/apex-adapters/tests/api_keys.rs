@@ -36,7 +36,7 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
         access: Access::Read,
         effort: None,
         auto_effort: false,
-        appearance: None,
+        appearance: None, media: None
     }
 }
 

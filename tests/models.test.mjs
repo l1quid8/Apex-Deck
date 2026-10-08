@@ -60,3 +60,25 @@ test('new bots start on medium, else the nearest level above it, else below', ()
   assert.equal(defaultEffortFor(['minimal', 'low']), 'low');
   assert.equal(defaultEffortFor([]), '');
 });
+
+test('picture and video models get their own sections, text first', () => {
+  const groups = apiModelGroups([
+    { id: 'glm-5.2', label: 'GLM 5.2', efforts: ['none', 'high'] },
+    { id: 'pic-1', label: 'Picture 1', kind: 'image', media: { prices: { '1K': 0.03 } } },
+    { id: 'vid-1', kind: 'video', efforts: ['high'] },
+    { id: 'pic-2', kind: 'image' },
+  ]);
+  assert.deepEqual(groups.map(g => g.label), ['Text', 'Image', 'Video']);
+  assert.deepEqual(groups[0].models, [{ id: 'glm-5.2', label: 'GLM 5.2', efforts: ['none', 'high'] }]);
+  assert.deepEqual(groups[1].models.map(m => m.id), ['pic-1', 'pic-2']);
+  assert.deepEqual(groups[2].models, [{ id: 'vid-1', label: 'vid-1', efforts: [] }]);
+});
+
+test('a list with only pictures shows only the Image section', () => {
+  const groups = apiModelGroups([{ id: 'pic-1', kind: 'image' }]);
+  assert.deepEqual(groups.map(g => g.label), ['Image']);
+});
+
+test('a text-only list keeps the single unlabelled-by-kind group', () => {
+  assert.deepEqual(apiModelGroups([{ id: 'a' }, { id: 'b', kind: 'text' }]).map(g => g.label), ['Offered by this provider']);
+});

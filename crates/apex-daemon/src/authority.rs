@@ -119,7 +119,7 @@ pub fn command_needs(command: &Command) -> Need {
         OpenTarget { .. } => Need::Never,
         QuitHeard { .. } | QuitApp {} => Need::Never,
         // Fetch arbitrary addresses.
-        ApiModels { .. } | ApiBalance { .. } => Need::Never,
+        ApiModels { .. } | ApiBalance { .. } | ApiQuote { .. } => Need::Never,
         PreviewProbe { .. } => Need::Never,
         ModRead { .. } | ModInstall { .. } | ModProcessRun { .. } | ModHttpFetch { .. } | ModFsWrite { .. } | ModFsStat { .. } | ModEnvGet { .. } => Need::Never,
     }
@@ -289,6 +289,7 @@ mod tests {
             ("quit_app", None, json!({})),
             ("api_models", None, json!({ "baseUrl": "http://x" })),
             ("api_balance", None, json!({ "baseUrl": "http://x" })),
+            ("api_quote", None, json!({ "baseUrl": "http://x", "model": "m" })),
             ("preview_probe", None, json!({ "address": "http://x" })),
             ("mod_read", None, json!({ "dir": "x" })),
             ("mod_install", None, json!({ "source": "x" })),

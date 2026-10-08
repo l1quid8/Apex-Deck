@@ -15,6 +15,11 @@ export type MachineItem = LibraryItem & { machine: string };
 /** How loading one machine's Library went. */
 export type MachineLoad = { kind: "ok" } | { kind: "offline" } | { kind: "old" } | { kind: "failed"; message: string };
 
+/** Whether a Library item is a video, shown with a player instead of a picture. */
+export function isVideoItem(item: { kind: string }): boolean {
+  return item.kind === "video";
+}
+
 /** One key per picture across machines: two machines may hold the same file name. */
 export function itemKey(item: MachineItem): string {
   return `${item.machine}/${item.file}`;

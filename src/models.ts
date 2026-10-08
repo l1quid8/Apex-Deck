@@ -8,6 +8,7 @@
 // Last checked against each tool's own documentation in October 2026.
 
 import type { AgentTool, ApiModel, ModelChoice } from "./types";
+import { mediaKind, type MediaKind } from "./media.ts";
 
 export interface ModelGroup {
   label: string;
@@ -237,14 +238,23 @@ export function contextSize(tokens: number | null | undefined): string {
   return `${Math.round(tokens / 1000)}K`;
 }
 
+/**
+ * The provider's models as menu groups. A list of text models is one group, as before.
+ * Once it has picture or video models, the groups are Text, Image and Video (only those with models).
+ * Picture and video models take no reasoning level, so they list none.
+ */
 export function apiModelGroups(models: ApiModel[]): ModelGroup[] {
   if (models.length === 0) return [];
-  const list = models.map(m => {
+  const row = (m: ApiModel): ModelChoice => {
     const size = contextSize(m.context_tokens);
     const name = m.label || m.id;
-    return { id: m.id, label: size ? `${name} · ${size} context` : name, efforts: m.efforts };
-  });
-  return [{ label: 'Offered by this provider', models: list }];
+    return { id: m.id, label: size ? `${name} · ${size} context` : name, efforts: mediaKind(m) ? [] : m.efforts };
+  };
+  if (models.every(m => !mediaKind(m))) return [{ label: 'Offered by this provider', models: models.map(row) }];
+  const sections: { label: string; kind: MediaKind | null }[] = [{ label: 'Text', kind: null }, { label: 'Image', kind: 'image' }, { label: 'Video', kind: 'video' }];
+  return sections
+    .map(s => ({ label: s.label, models: models.filter(m => mediaKind(m) === s.kind).map(row) }))
+    .filter(g => g.models.length > 0);
 }
 
 /** The level new bots start on: medium if offered, else the nearest one above it, else the nearest below. */

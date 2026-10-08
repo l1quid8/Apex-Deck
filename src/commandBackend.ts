@@ -57,6 +57,10 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
       const amount = await call<unknown>("api_balance", { baseUrl, apiKeyEnv });
       return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
     },
+    apiQuote: async (baseUrl, apiKeyEnv, model, media) => {
+      const amount = await call<unknown>("api_quote", { baseUrl, apiKeyEnv, model, media });
+      return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
+    },
     agentModels: (tool) => call<ModelChoice[]>("agent_models", { tool }),
     workspaceRead: (target, cwd) => call<string | null>("workspace_read", { target, cwd }),
     pathsExist: (targets, cwd) => call<boolean[]>("paths_exist", { targets, cwd }),

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Backend, LibraryItem } from "./backend";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { botsIn, filterLibrary, itemKey, listLibrary, loadOutcome, machineNote, threadExists, workspacesIn, workspaceForRoom, type LibraryFilter, type LibraryThread, type MachineItem, type MachineLoad } from "./library";
+import { botsIn, filterLibrary, isVideoItem, itemKey, listLibrary, loadOutcome, machineNote, threadExists, workspacesIn, workspaceForRoom, type LibraryFilter, type LibraryThread, type MachineItem, type MachineLoad } from "./library";
+import { videoType } from "./attachments";
 import type { Workspace } from "./types";
 
 /** A machine whose Library is shown: this Mac ("local") or a saved server. */
@@ -133,7 +134,7 @@ function useImage(item: LibraryItem, backend: Backend | null, enabled: boolean):
     let live = true;
     backend.readAttachment(item.path).then((bytes) => {
       if (!live) return;
-      made = URL.createObjectURL(new Blob([bytes]));
+      made = URL.createObjectURL(new Blob([bytes], { type: isVideoItem(item) ? videoType(item.file) : "" }));
       setUrl(made);
     }).catch(() => {});
     return () => { live = false; if (made) URL.revokeObjectURL(made); };
@@ -152,8 +153,9 @@ function LibraryTile({ item, backend, machine, onOpen }: { item: LibraryItem; ba
     return () => watch.disconnect();
   }, [near]);
   const url = useImage(item, backend, near);
+  const video = isVideoItem(item);
   return <button ref={box} type="button" className="library-tile" onClick={onOpen} title={item.path}>
-    <span className="library-thumb">{url && <img src={url} alt={item.file} />}</span>
+    <span className="library-thumb">{url && (video ? <video src={url} muted preload="metadata" aria-label={item.file} /> : <img src={url} alt={item.file} />)}{video && <span className="library-play" aria-hidden="true">▶</span>}</span>
     <span className="library-caption">{item.by ?? "A bot"} · {new Date(item.created).toLocaleDateString()}{machine && ` · ${machine}`}</span>
   </button>;
 }
@@ -169,7 +171,7 @@ function LibraryViewer({ item, backend, bot, when, openable, workspace, machine,
     return () => window.removeEventListener("keydown", key);
   }, [onClose]);
   return <div className="library-viewer" role="dialog" aria-label="Picture">
-    <div className="library-viewer-image">{url && <img src={url} alt={item.file} />}</div>
+    <div className="library-viewer-image">{url && (isVideoItem(item) ? <video src={url} controls autoPlay aria-label={item.file} /> : <img src={url} alt={item.file} />)}</div>
     <div className="library-viewer-bar">
       <span className="library-caption">{bot ?? "A bot"} · {new Date(when).toLocaleString()}{workspace && ` · ${workspace}`}{machine && ` · ${machine}`}</span>
       <span className="library-viewer-actions">

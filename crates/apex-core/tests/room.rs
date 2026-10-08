@@ -352,7 +352,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
         access: Access::Read,
         effort: None,
         auto_effort: false,
-        appearance: None,
+        appearance: None, media: None
     };
     let quiet = bot("quiet", &["hello"]);
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(WorkingBot(config)), quiet.clone()];
@@ -537,7 +537,7 @@ fn asking_room() -> (Room, ParticipantId) {
         access: Access::Ask,
         effort: None,
         auto_effort: false,
-        appearance: None,
+        appearance: None, media: None
     };
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(AskingBot(config))];
     (Room::new(roster, RoomOptions { policy: TurnPolicy::Mention, max_bot_hops: 0 }), id)
@@ -774,7 +774,7 @@ fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
         access: Access::Read,
         effort: None,
         auto_effort: false,
-        appearance: None,
+        appearance: None, media: None
     };
     let quiet = bot("quiet", &["hello", "again"]);
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(WorkingBot(config.clone())), quiet.clone()];

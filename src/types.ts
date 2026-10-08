@@ -46,6 +46,45 @@ export interface ParticipantConfig {
   /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */
   auto_effort?: boolean;
   appearance?: { seed: string; color: string } | null;
+  /** Choices for a bot whose model makes pictures or videos (see media.ts). */
+  media?: MediaSettings | null;
+}
+
+/** What an image or video bot makes. Unset choices use the defaults in media.ts. */
+export interface MediaSettings {
+  aspect_ratio?: string | null;
+  resolution?: string | null;
+  quality?: string | null;
+  /** Video length such as "5s". */
+  duration?: string | null;
+  audio?: boolean | null;
+  /** Send the last description with each new message. On when unset. */
+  build_on_last?: boolean | null;
+}
+
+/** What a provider's image or video model takes and costs. Empty lists = not offered. */
+export interface MediaSpec {
+  aspect_ratios?: string[];
+  default_aspect_ratio?: string | null;
+  resolutions?: string[];
+  default_resolution?: string | null;
+  qualities?: string[];
+  default_quality?: string | null;
+  durations?: string[];
+  audio?: boolean;
+  audio_configurable?: boolean;
+  prompt_limit?: number | null;
+  /** Pictures: US dollars each when one price fits every setting. */
+  price?: number | null;
+  /** Pictures: US dollars each by "1K" or "1K/low" (resolution/quality). */
+  prices?: Record<string, number>;
+  /** Pictures: the model that edits an attached picture, and its price. */
+  edit_model?: string | null;
+  edit_price?: number | null;
+  /** Video: the sibling that animates an attached picture. */
+  image_model?: string | null;
+  /** Video: only animates a picture, so one must be attached. */
+  needs_image?: boolean;
 }
 
 /** A model a tool offers, for the model picker. */
@@ -73,6 +112,9 @@ export interface ApiModel {
   price_in?: number | null;
   price_cached_in?: number | null;
   price_out?: number | null;
+  /** What the model makes. Missing = text. */
+  kind?: "text" | "image" | "video";
+  media?: MediaSpec | null;
 }
 
 export type TurnPolicy = "mention" | "everyone" | "round_robin";

@@ -352,6 +352,7 @@ impl Host {
             cwd: cwd.filter(|c| !c.is_empty()).map(PathBuf::from),
             path: agents::login_path(),
             temp: thread_temp_dir(&id).ok(),
+            media_dir: self.attachment_dir(&id).ok(),
         };
         let mut seen: Vec<&ParticipantId> = Vec::new();
         for config in &participants {
@@ -790,6 +791,11 @@ impl Host {
         apex_adapters::list_models(&base_url, api_key_env.as_deref()).await
     }
 
+    /// What one video from `model` costs with these choices, from the provider's quote.
+    pub async fn api_quote(&self, base_url: String, api_key_env: Option<String>, model: String, media: Option<apex_core::MediaSettings>) -> Result<Option<f64>, String> {
+        apex_adapters::media::quote(&base_url, api_key_env.as_deref(), &model, media.as_ref()).await
+    }
+
     /// The remaining account balance in US dollars, when the provider reports one.
     pub async fn api_balance(&self, base_url: String, api_key_env: Option<String>) -> Result<Option<f64>, String> {
         apex_adapters::api_balance(&base_url, api_key_env.as_deref()).await
@@ -1014,7 +1020,9 @@ impl Host {
         if !file.starts_with(data.join("attachments")) && !file.starts_with(data.join("library")) {
             return Err(format!("{path} is not an attachment"));
         }
-        if std::fs::metadata(&file).map_err(|e| e.to_string())?.len() > MAX_ATTACHMENT as u64 {
+        // Videos are larger than the 20 MB attachment limit, so reads allow 200 MB.
+        const MAX_SHOWN: u64 = 200 * 1024 * 1024;
+        if std::fs::metadata(&file).map_err(|e| e.to_string())?.len() > MAX_SHOWN {
             return Err("too big to show".into());
         }
         std::fs::read(&file).map_err(|e| format!("Could not read {path}: {e}"))
@@ -1710,7 +1718,7 @@ mod host_tests {
         apex_core::ParticipantConfig {
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
-            persona: String::new(), access: apex_core::Access::Read, effort: None, auto_effort: false, appearance: None,
+            persona: String::new(), access: apex_core::Access::Read, effort: None, auto_effort: false, appearance: None, media: None
         }
     }
 

@@ -34,10 +34,11 @@ export function fitsOnPhone(item: LibraryItem): boolean {
   return item.bytes !== undefined && item.bytes <= PHONE_PICTURE_MAX;
 }
 
-/** Why a picture isn't shown on the phone, or null when it is. */
+/** Why a picture or video isn't shown on the phone, or null when it is. */
 export function notShownReason(item: LibraryItem, machine = "the Mac"): string | null {
   if (item.bytes === undefined) return `Update Deck on ${machine} to show this here`;
-  return fitsOnPhone(item) ? null : "Too big for the phone";
+  if (fitsOnPhone(item)) return null;
+  return item.kind === "video" ? "Too big to play on the phone" : "Too big for the phone";
 }
 
 /** The Mac only lists the Library for Full access to all threads. A WebSocket pair has no access and keeps it. */

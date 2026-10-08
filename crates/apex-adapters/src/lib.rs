@@ -21,6 +21,7 @@ mod grok_images;
 mod grok_usage;
 pub mod keys;
 mod mcp;
+pub mod media;
 mod openai;
 mod plan_cache;
 mod presets;
@@ -34,7 +35,7 @@ use apex_core::{AgentTool, Backend, Participant, ParticipantConfig, PlanUsage};
 pub use catalog::{codex_models_from_cache, installed_models};
 pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_ARG as CODEX_HOOK_ARG};
 
-pub use api_info::{balance as api_balance, model as api_model, ApiModel};
+pub use api_info::{balance as api_balance, model as api_model, ApiModel, MediaSpec, ModelKind};
 pub use cli::CliParticipant;
 pub use openai::{list_models, OpenAiCompatParticipant};
 pub use presets::{agent_command, allow_reading};
@@ -74,12 +75,15 @@ pub struct BuildContext {
     /// scratch files go away when the thread is deleted. `None` keeps the
     /// system's.
     pub temp: Option<PathBuf>,
+    /// The thread's attachments folder, where bots whose model makes
+    /// pictures or videos save them. `None` turns those bots off.
+    pub media_dir: Option<PathBuf>,
 }
 
 /// Create the participant described by `config`.
 pub fn build(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Participant> {
     match &config.backend {
-        Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config)),
+        Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config).with_media_dir(context.media_dir.clone())),
         Backend::Cli { .. } | Backend::Agent { .. } => {
             Arc::new(CliParticipant::new(config).with_context(context))
         }

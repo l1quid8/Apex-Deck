@@ -74,6 +74,8 @@ export interface Backend {
   apiModels(baseUrl: string, apiKeyEnv: string | null): Promise<ApiModel[]>;
   /** Remaining US dollars on the provider account. Null when the provider has no balance check. */
   apiBalance(baseUrl: string, apiKeyEnv: string | null): Promise<number | null>;
+  /** What one video from `model` costs with these choices, in US dollars, from the provider's own quote. Null when it gives none. */
+  apiQuote(baseUrl: string, apiKeyEnv: string | null, model: string, media: import("./types").MediaSettings | null): Promise<number | null>;
   /** Models a coding agent lists for the account it is signed in to. Empty if it keeps no list. */
   agentModels(tool: AgentTool): Promise<ModelChoice[]>;
   /** Open a file, folder or web address in its default app. Relative paths are
@@ -656,6 +658,7 @@ function demoBackend(): Backend {
       throw new Error(`could not reach ${baseUrl}/models (browser demo)`);
     },
     apiBalance: async () => null,
+    apiQuote: async () => null,
     agentModels: async () => [],
     flagAttention: async (count) => {
       document.title = count > 0 ? `(${count}) Apex Deck` : "Apex Deck";
