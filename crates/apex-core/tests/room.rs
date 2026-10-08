@@ -337,7 +337,7 @@ impl Participant for WorkingBot {
             windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
             partial: true,
         }));
-        Ok(Reply { text: "Done.".into(), input_tokens: Some(120), output_tokens: Some(7) })
+        Ok(Reply { text: "Done.".into(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None })
     }
 }
 
@@ -391,7 +391,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
                 windows: vec![PlanWindow { name: "primary".into(), used_percent: 15, window_minutes: Some(10_080), resets_at: None }],
                 partial: true,
             },
-            &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7) },
+            &RoomEvent::Usage { id: id.clone(), input_tokens: Some(120), output_tokens: Some(7), cost_micros: None },
             &RoomEvent::MessageAdded {
                 message: apex_core::Message { servers: vec![], seq: 1, speaker: Speaker::Bot(id.clone()), text: "Done.".into(), at: None }
             },
@@ -781,7 +781,7 @@ fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
     let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: 0 });
     say(&mut room, "go");
     say(&mut room, "again");
-    assert_eq!(room.usage().get(&id), Some(&TokenTotals { input: 240, output: 14, turns: 2 }));
+    assert_eq!(room.usage().get(&id), Some(&TokenTotals { input: 240, output: 14, turns: 2, cost_micros: 0 }));
     assert!(room.usage().get(&ParticipantId::new("quiet")).is_none(), "a bot that reports nothing has no totals");
 
     let snapshot = room.snapshot();

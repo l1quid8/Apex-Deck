@@ -99,7 +99,14 @@ pub enum RoomEvent {
     /// A participant changed a file.
     Changed { id: ParticipantId, change: FileChange },
     /// How many tokens a finished turn used, when the backend reports it.
-    Usage { id: ParticipantId, input_tokens: Option<u64>, output_tokens: Option<u64> },
+    Usage {
+        id: ParticipantId,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        /// Millionths of a US dollar, when the backend reports a cost.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_micros: Option<u64>,
+    },
     /// How full a participant's context window is, from its latest request.
     ContextUsage { id: ParticipantId, used_tokens: u64, window_tokens: u64 },
     /// How much of a provider account's plan is used. Shared by every agent
@@ -584,8 +591,8 @@ impl Room {
         }
         let reply = outcome.map_err(|error| error.to_string())?;
         if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
-            self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens);
-            on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens });
+            self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens, reply.cost_micros);
+            on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros });
         }
         let summary = reply.text.trim();
         if summary.is_empty() || summary.eq_ignore_ascii_case(PASS_TOKEN) {
@@ -726,11 +733,12 @@ impl Room {
             }
             Ok(reply) => {
                 if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
-                    self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens);
+                    self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens, reply.cost_micros);
                     on_event(RoomEvent::Usage {
                         id: id.clone(),
                         input_tokens: reply.input_tokens,
                         output_tokens: reply.output_tokens,
+                        cost_micros: reply.cost_micros,
                     });
                 }
                 let text = reply.text.trim();

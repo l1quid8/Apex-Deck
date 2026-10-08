@@ -786,8 +786,13 @@ impl Host {
     }
 
     /// The models an OpenAI-compatible server offers, for the model picker.
-    pub async fn api_models(&self, base_url: String, api_key_env: Option<String>) -> Result<Vec<String>, String> {
+    pub async fn api_models(&self, base_url: String, api_key_env: Option<String>) -> Result<Vec<apex_adapters::ApiModel>, String> {
         apex_adapters::list_models(&base_url, api_key_env.as_deref()).await
+    }
+
+    /// The remaining account balance in US dollars, when the provider reports one.
+    pub async fn api_balance(&self, base_url: String, api_key_env: Option<String>) -> Result<Option<f64>, String> {
+        apex_adapters::api_balance(&base_url, api_key_env.as_deref()).await
     }
 
     /// The models a coding agent lists for the account it is signed in to, for
@@ -1204,7 +1209,7 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         // The room adds these up too; a full checkpoint replaces this copy
         // with the room's, so nothing is counted twice. Saving each one now
         // keeps the totals if the app quits before the chain ends.
-        RoomEvent::Usage { id, input_tokens, output_tokens } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add(*input_tokens, *output_tokens),
+        RoomEvent::Usage { id, input_tokens, output_tokens, cost_micros } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add(*input_tokens, *output_tokens, *cost_micros),
         _ => {}
     }
     store.save_room(id, &checkpoint)
@@ -1424,11 +1429,11 @@ mod tests {
     fn token_totals_are_saved_as_each_turn_reports_them() {
         let (handle, store, path) = checkpoint_fixture("usage");
         let null = ParticipantId::new("null");
-        for (input, output) in [(Some(100), Some(5)), (Some(20), None)] {
-            persist_event(&handle, &store, "room", &RoomEvent::Usage { id: null.clone(), input_tokens: input, output_tokens: output }).unwrap();
+        for (input, output, cost) in [(Some(100), Some(5), Some(420)), (Some(20), None, None)] {
+            persist_event(&handle, &store, "room", &RoomEvent::Usage { id: null.clone(), input_tokens: input, output_tokens: output, cost_micros: cost }).unwrap();
         }
         let saved = store.room("room").unwrap().unwrap().snapshot;
-        assert_eq!(saved.usage.get(&null), Some(&apex_core::TokenTotals { input: 120, output: 5, turns: 2 }));
+        assert_eq!(saved.usage.get(&null), Some(&apex_core::TokenTotals { input: 120, output: 5, turns: 2, cost_micros: 420 }));
         std::fs::remove_dir_all(path).unwrap();
     }
 

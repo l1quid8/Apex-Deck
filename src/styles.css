@@ -2247,6 +2247,11 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .bot-settings .bot-meter { display: grid; grid-template-columns: 32px minmax(60px, 1fr) 36px auto; align-items: center; width: 100%; }
 .bot-settings .bot-meter-track { width: 100%; height: 5px; }
 .bot-settings .bot-meter-timer { text-align: right; opacity: 0.75; white-space: nowrap; }
+.bot-settings .bot-meter-money > span { grid-column: 2 / -1; }
+.model-menu .model-filter { margin: 2px 2px 4px; width: calc(100% - 4px); }
+.model-menu.stacked { width: 300px; grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
+.model-menu.stacked .model-menu-name { flex-direction: column; align-items: stretch; gap: 1px; overflow: hidden; }
+.model-select-trigger > span { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Add to chat / More details over text selected in a message. */
 .selection-actions { position: fixed; z-index: 50; transform: translate(-50%, calc(-100% - 6px)); display: flex; gap: 2px; padding: 3px; border-radius: 8px; background: var(--panel, #1b2028); border: 1px solid var(--border, #2c3340); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
 .selection-actions button { background: none; border: 0; padding: 4px 8px; border-radius: 6px; font-size: 12px; color: inherit; cursor: pointer; white-space: nowrap; }

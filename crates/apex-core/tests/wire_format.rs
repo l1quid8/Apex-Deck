@@ -117,7 +117,7 @@ fn room_event_shapes() {
         json!({ "type": "activity", "id": "opus", "text": "Reading a.rs" })
     );
     assert_eq!(
-        to_value(RoomEvent::Usage { id: id.clone(), input_tokens: Some(10), output_tokens: None }).unwrap(),
+        to_value(RoomEvent::Usage { id: id.clone(), input_tokens: Some(10), output_tokens: None, cost_micros: None }).unwrap(),
         json!({ "type": "usage", "id": "opus", "input_tokens": 10, "output_tokens": null })
     );
     let action = apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run a command".into(), detail: "ls".into(), expires_at: None, risky: false };
@@ -271,9 +271,13 @@ fn token_totals_are_saved_per_bot() {
     .unwrap();
     assert!(to_value(&snapshot).unwrap().get("usage").is_none(), "nothing written until a bot reports");
     let mut totals = apex_core::TokenTotals::default();
-    totals.add(Some(1840), None);
+    totals.add(Some(1840), None, None);
     snapshot.usage.insert(ParticipantId::new("opus"), totals);
+    // No cost field until a provider reports one, so older readers see the same shape.
     assert_eq!(to_value(&snapshot).unwrap()["usage"], json!({ "opus": { "input": 1840, "output": 0, "turns": 1 } }));
+    let mut paid = apex_core::TokenTotals::default();
+    paid.add(Some(10), Some(2), Some(423));
+    assert_eq!(to_value(paid).unwrap(), json!({ "input": 10, "output": 2, "turns": 1, "cost_micros": 423 }));
 }
 
 #[test]

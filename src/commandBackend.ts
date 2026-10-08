@@ -3,6 +3,7 @@
 // with the screen: dialogs, saved files, the dock, file drops and quitting.
 
 import type { Backend, KeyState, LibraryItem } from "./backend";
+import { apiModelList } from "./models.ts";
 import type { AgentInfo, AppSession, FolderListing, ModelChoice, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer } from "./types";
 
 /** How commands reach the host and its events come back. */
@@ -51,7 +52,11 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
 
     roomCreate: (id, participants, options, cwd) => call<RoomSnapshot>("room_create", { id, participants, options, cwd: cwd || null }),
     roomState: (id) => call("room_state", { id }),
-    apiModels: (baseUrl, apiKeyEnv) => call<string[]>("api_models", { baseUrl, apiKeyEnv }),
+    apiModels: async (baseUrl, apiKeyEnv) => apiModelList(await call<unknown>("api_models", { baseUrl, apiKeyEnv })),
+    apiBalance: async (baseUrl, apiKeyEnv) => {
+      const amount = await call<unknown>("api_balance", { baseUrl, apiKeyEnv });
+      return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
+    },
     agentModels: (tool) => call<ModelChoice[]>("agent_models", { tool }),
     workspaceRead: (target, cwd) => call<string | null>("workspace_read", { target, cwd }),
     pathsExist: (targets, cwd) => call<boolean[]>("paths_exist", { targets, cwd }),

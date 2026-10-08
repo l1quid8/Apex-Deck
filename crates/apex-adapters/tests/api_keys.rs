@@ -165,7 +165,7 @@ async fn list_models_sends_the_saved_key_and_works_without_one() {
     let body: &'static [u8] = b"{\"data\":[{\"id\":\"zeta\"},{\"id\":\"alpha\"}]}";
     let (address, server) = serve_once("200 OK", vec![body]).await;
     let models = list_models(&address, Some(name)).await.unwrap();
-    assert_eq!(models, vec!["alpha".to_string(), "zeta".to_string()]);
+    assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["alpha", "zeta"]);
     let sent = server.await.unwrap().to_ascii_lowercase();
     assert!(sent.starts_with("get /models "), "{sent}");
     assert!(sent.contains("authorization: bearer models-secret-789"), "{sent}");
@@ -177,7 +177,7 @@ async fn list_models_sends_the_saved_key_and_works_without_one() {
     keys::remove(missing).unwrap();
     let (address, server) = serve_once("200 OK", vec![body]).await;
     let models = list_models(&address, Some(missing)).await.unwrap();
-    assert_eq!(models, vec!["alpha".to_string(), "zeta".to_string()]);
+    assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["alpha", "zeta"]);
     let sent = server.await.unwrap().to_ascii_lowercase();
     assert!(sent.starts_with("get /models "), "{sent}");
     assert!(!sent.contains("authorization:"), "{sent}");

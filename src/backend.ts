@@ -7,7 +7,7 @@ import type { ToolServer } from "./types";
 import { mergeParticipant } from "./participantSettings";
 import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
-import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
 
 type Unlisten = () => void;
 
@@ -70,8 +70,10 @@ export interface Backend {
   /** `cwd` is the workspace folder; command-line participants run there. */
   roomCreate(id: string, participants: ParticipantConfig[], options: RoomOptions, cwd: string): Promise<RoomSnapshot>;
   roomState?(id: string): Promise<import("./types").RoomState>;
-  /** Model names offered by an OpenAI-compatible server. */
-  apiModels(baseUrl: string, apiKeyEnv: string | null): Promise<string[]>;
+  /** Models offered by an OpenAI-compatible server. */
+  apiModels(baseUrl: string, apiKeyEnv: string | null): Promise<ApiModel[]>;
+  /** Remaining US dollars on the provider account. Null when the provider has no balance check. */
+  apiBalance(baseUrl: string, apiKeyEnv: string | null): Promise<number | null>;
   /** Models a coding agent lists for the account it is signed in to. Empty if it keeps no list. */
   agentModels(tool: AgentTool): Promise<ModelChoice[]>;
   /** Open a file, folder or web address in its default app. Relative paths are
@@ -650,9 +652,10 @@ function demoBackend(): Backend {
       return { participants: [...room.participants], options: { ...room.options }, transcript: [...room.transcript], compaction: room.compaction ?? null, pins: room.pins ?? [], allowed: room.allowed ?? [], usage: room.usage ?? {} };
     },
     apiModels: async (baseUrl) => {
-      if (baseUrl.includes("11434")) return ["llama3", "qwen2.5-coder"];
+      if (baseUrl.includes("11434")) return [{ id: "llama3" }, { id: "qwen2.5-coder" }];
       throw new Error(`could not reach ${baseUrl}/models (browser demo)`);
     },
+    apiBalance: async () => null,
     agentModels: async () => [],
     flagAttention: async (count) => {
       document.title = count > 0 ? `(${count}) Apex Deck` : "Apex Deck";

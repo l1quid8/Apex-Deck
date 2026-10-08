@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { effortLabel } from './models';
 
-const label = (value: string) => value === 'xhigh' ? 'xHigh' : value ? effortLabel(value) : 'Default';
+const label = (value: string, defaultLabel?: string) => value === 'xhigh' ? 'xHigh' : value ? effortLabel(value) : defaultLabel ? `Default (${effortLabel(defaultLabel)})` : 'Default';
 
-export function ReasoningSlider({ efforts, value, onCommit, title = "Reasoning" }: {
+export function ReasoningSlider({ efforts, value, onCommit, title = "Reasoning", defaultLabel }: {
   title?: string;
   efforts: string[];
   value: string;
   onCommit: (value: string) => void;
+  /** The level the server uses when none is picked; shown on the Default step. */
+  defaultLabel?: string;
 }) {
   const steps = ['', ...efforts];
   const selected = Math.max(0, steps.indexOf(value));
@@ -52,10 +54,10 @@ export function ReasoningSlider({ efforts, value, onCommit, title = "Reasoning" 
     };
   });
   return <div className="effort-slider">
-    <div className="effort-heading">{title} <span className="effort-value">{efforts.length ? label(steps[stop]) : 'Not supported'}</span></div>
+    <div className="effort-heading">{title} <span className="effort-value">{efforts.length ? label(steps[stop], defaultLabel) : 'Not supported'}</span></div>
     <div className={`effort-control${gesture.current ? ' dragging' : ''}`} style={{ '--effort-position': `${efforts.length ? position / efforts.length * 100 : 0}%` } as CSSProperties}>
       <div className="effort-rail" aria-hidden="true"><div className="effort-fill" /><div className="effort-thumb" /></div>
-      <input ref={input} type="range" aria-label="Reasoning" aria-valuetext={label(steps[stop])} min={0} max={efforts.length} step="any" value={position} disabled={!efforts.length}
+      <input ref={input} type="range" aria-label="Reasoning" aria-valuetext={label(steps[stop], defaultLabel)} min={0} max={efforts.length} step="any" value={position} disabled={!efforts.length}
         onChange={event => { if (gesture.current) update(Number(event.currentTarget.value)); }}
         onPointerDown={event => {
           if (event.button !== 0) return;
@@ -77,7 +79,7 @@ export function ReasoningSlider({ efforts, value, onCommit, title = "Reasoning" 
     </div>
     {!!efforts.length && <div className={`effort-ticks${steps.length > 5 ? ' compact' : ''}`}>
       {steps.map((s, i) => <button type="button" key={s || 'default'} className={i === stop ? 'on' : ''}
-        style={{ left: `${i / efforts.length * 100}%` }} aria-label={`Reasoning: ${label(s)}`} aria-pressed={i === stop}
+        style={{ left: `${i / efforts.length * 100}%` }} aria-label={`Reasoning: ${label(s, defaultLabel)}`} aria-pressed={i === stop}
         onClick={() => commit(i)}><span>{label(s)}</span></button>)}
     </div>}
   </div>;

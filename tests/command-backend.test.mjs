@@ -54,7 +54,6 @@ const COMMANDS = [
   ['ptyKill', ['p1'], 'pty_kill', { id: 'p1' }],
   ['roomCreate', ['t', [participant], options, ''], 'room_create', { id: 't', participants: [participant], options, cwd: null }],
   ['roomCreate', ['t', [], options, '/w'], 'room_create', { id: 't', participants: [], options, cwd: '/w' }],
-  ['apiModels', ['http://x', null], 'api_models', { baseUrl: 'http://x', apiKeyEnv: null }],
   ['agentModels', ['codex'], 'agent_models', { tool: 'codex' }],
   ['workspaceRead', ['a.txt', '/w'], 'workspace_read', { target: 'a.txt', cwd: '/w' }],
   ['pathsExist', [['a'], null], 'paths_exist', { targets: ['a'], cwd: null }],
@@ -144,9 +143,25 @@ test('call reaches the transport as it is, for mods', async () => {
   assert.deepEqual(transport.calls, [{ cmd: 'mod_env_get', args: { name: 'HOME' } }]);
 });
 
+test('apiModels normalizes old string and new object replies', async () => {
+  const transport = recording();
+  transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return ['llama3', { id: 'glm', context_tokens: 1000000 }, { nope: 1 }]; };
+  const backend = commandBackend(transport, stubShell());
+  assert.deepEqual(await backend.apiModels('http://x', null), [{ id: 'llama3' }, { id: 'glm', context_tokens: 1000000 }]);
+  assert.deepEqual(transport.calls, [{ cmd: 'api_models', args: { baseUrl: 'http://x', apiKeyEnv: null } }]);
+});
+
+test('apiBalance returns a finite number or null', async () => {
+  for (const [reply, want] of [[12.5, 12.5], [null, null], ['x', null], [Infinity, null]]) {
+    const transport = recording();
+    transport.call = async () => reply;
+    assert.equal(await commandBackend(transport, stubShell()).apiBalance('http://x', 'KEY'), want);
+  }
+});
+
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });

@@ -31,6 +31,8 @@ pub struct Reply {
     /// Token counts, when the backend reports them.
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// What the turn cost in millionths of a US dollar, when known.
+    pub cost_micros: Option<u64>,
 }
 
 impl Reply {

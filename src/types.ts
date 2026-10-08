@@ -60,6 +60,21 @@ export interface ModelChoice {
   note?: string;
 }
 
+/** A model an OpenAI-compatible server offers. Older servers only send the id. */
+export interface ApiModel {
+  id: string;
+  label?: string | null;
+  /** Levels the model accepts. Missing = not known; empty = no reasoning setting. */
+  efforts?: string[] | null;
+  /** The level the server uses when none is sent. */
+  default_effort?: string | null;
+  context_tokens?: number | null;
+  /** US dollars per million tokens. */
+  price_in?: number | null;
+  price_cached_in?: number | null;
+  price_out?: number | null;
+}
+
 export type TurnPolicy = "mention" | "everyone" | "round_robin";
 
 export interface RoomOptions {
@@ -118,6 +133,8 @@ export interface TokenTotals {
   input: number;
   output: number;
   turns: number;
+  /** What those turns cost in millionths of a US dollar, when the provider says. */
+  cost_micros?: number;
 }
 
 export interface Compaction {
@@ -204,7 +221,7 @@ export type RoomEvent = { recovery_seq?: number } & (
   /** A bot changed a file. */
   | { type: "changed"; id: string; change: FileChange }
   /** Tokens a finished turn used, when the backend reports them. */
-  | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null }
+  | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cost_micros?: number | null }
   /** How full a participant's context window was on its latest request. */
   | { type: "context_usage"; id: string; used_tokens: number; window_tokens: number }
   /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value. */

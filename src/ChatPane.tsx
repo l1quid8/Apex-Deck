@@ -33,7 +33,7 @@ import { keyNameFor } from "./settings";
 import { providerEnabled, providerForConfig } from "./providers";
 import { registerRoom, startHub } from "./hub";
 import { rememberModel, rememberedModels } from "./modelMemory";
-import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups } from "./models";
+import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, apiModelGroups, defaultEffortFor, effortLabel, effortsFor, findModel, modelGroups } from "./models";
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
 import { Avatar, type Refills } from "./Avatar";
@@ -73,6 +73,7 @@ import type {
   AgentInfo,
   AgentTool,
   Message,
+  ApiModel,
   ModelChoice,
   Pane,
   ParticipantBackend,
@@ -351,6 +352,18 @@ function planProvider(config: ParticipantConfig | undefined): AgentTool | null {
   return b?.kind === "agent" ? b.tool : null;
 }
 
+/** One custom provider account: its address and the name its key is saved under. */
+function accountOf(config: ParticipantConfig | undefined): { key: string; baseUrl: string; keyEnv: string | null } | null {
+  const b = config?.backend;
+  if (b?.kind !== "open_ai_compatible") return null;
+  const baseUrl = b.base_url.trim().replace(/\/$/, "");
+  return { key: `${baseUrl} ${b.api_key_env ?? ""}`, baseUrl, keyEnv: b.api_key_env };
+}
+
+function dollars(usd: number): string {
+  return usd > 0 && usd < 0.01 ? "under $0.01" : `$${usd.toFixed(2)}`;
+}
+
 /** Tokens the latest request filled, against the window. */
 interface ContextFill {
   used: number;
@@ -443,6 +456,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [now, setNow] = useState(() => Date.now());
   /** Tokens each participant has used in this thread, saved with it. */
   const [used, setUsed] = useState<Record<string, TokenTotals>>({});
+  /** Prepaid dollars left on each custom provider account that offers a balance check. */
+  const [balances, setBalances] = useState<Record<string, number>>({});
   /** How full each agent's context window was on its latest request. Missing
    *  means unknown: not reported yet, or refilled by /compact since. */
   const [contextFill, setContextFill] = useState<Record<string, ContextFill>>({});
@@ -540,7 +555,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const availablePresets = PRESETS.filter((p) => providerEnabled(p.key, disabledProviders));
   const firstPreset = (availablePresets.find((p) => p.agent && installed(p)) ?? availablePresets[0] ?? PRESETS[0]).key;
   const [draft, setDraft] = useState<Draft>(() => emptyDraft(firstPreset, newBotAccess));
-  const [apiModels, setApiModels] = useState<string[]>([]);
+  const [apiModels, setApiModels] = useState<ApiModel[]>([]);
   const [modelNote, setModelNote] = useState("");
   /** Where the form's API key would come from on this machine. */
   const [keyState, setKeyState] = useState<KeyState | null>(null);
@@ -834,7 +849,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           if (recoveredState?.recovery_seq == null) { void durableRecovery.refresh(); break; }
           setUsed((u) => {
             const before = u[event.id] ?? { input: 0, output: 0, turns: 0 };
-            return { ...u, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1 } };
+            return { ...u, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1, cost_micros: (before.cost_micros ?? 0) + (event.cost_micros ?? 0) } };
           });
           break;
         case "context_usage": {
@@ -2049,7 +2064,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       const found = await backend.apiModels(baseUrl.trim(), keyed.keyEnv.trim() || (keyState && keyState !== "missing" ? keyNameOf(keyed) : "") || null);
       setApiModels(found);
       setModelNote(found.length ? `Found ${found.length} model${found.length === 1 ? "" : "s"}. Pick one or type a name.` : "The server answered but listed no models.");
-      if (found.length) setDraft((d) => (d.model ? d : { ...d, model: found[0] }));
+      if (found.length) setDraft((d) => (d.model ? d : { ...d, model: found[0].id, effort: found[0].efforts ? defaultEffortFor(found[0].efforts) : d.effort }));
     } catch (error) {
       setApiModels([]);
       setModelNote(`Could not list models: ${String(error)}. You can still type a model name.`);
@@ -2075,8 +2090,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   ];
   const [autoAvailable, setAutoAvailable] = useState(false);
   useEffect(() => { if (!adding || (tool !== "codex" && tool !== "claude_code")) return; let active = true; backend.decisionKeyStatus().then(ok => { if (active) setAutoAvailable(ok); }).catch(() => {}); return () => { active = false; }; }, [adding, backend, tool]);
-  const chosenModel = findModel(agentGroups, draft.model);
-  const efforts = preset.agent ? effortsFor(preset.efforts, agentGroups, draft.model) : preset.efforts;
+  const apiGroups = preset.api ? apiModelGroups(apiModels) : [];
+  const chosenModel = findModel(preset.agent ? agentGroups : apiGroups, draft.model);
+  const efforts = effortsFor(preset.efforts, preset.agent ? agentGroups : apiGroups, draft.model);
+  const chosenApiModel = preset.api ? apiModels.find((m) => m.id === draft.model.trim()) : undefined;
+
+  /** Pick a provider model. New picks start on Medium, or the closest level the model takes. */
+  const setApiModel = (model: string) =>
+    setDraft((d) => {
+      const known = apiModels.find((m) => m.id === model.trim())?.efforts;
+      if (!known) return { ...d, model };
+      return { ...d, model, effort: d.effort && known.includes(d.effort) ? d.effort : defaultEffortFor(known) };
+    });
 
   /** Pick a model, dropping an effort level the new model does not accept. */
   const setAgentModel = (model: string) =>
@@ -2123,6 +2148,29 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (name !== draft.name) set("name", name);
   }, [quickAdd, draft.preset, draft.model, participants]);
 
+  // Each provider balance is read on open and again shortly after a bot on it replies.
+  const accounts = new Map(participants.flatMap((p) => { const a = accountOf(p); return a ? [[a.key, a] as const] : []; }));
+  const accountKeys = [...accounts.keys()].sort().join("\n");
+  const apiTurns = participants.reduce((n, p) => (accountOf(p) ? n + (used[p.id]?.turns ?? 0) : n), 0);
+  useEffect(() => {
+    if (!accountKeys) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      for (const a of accounts.values()) backend.apiBalance(a.baseUrl, a.keyEnv).then((usd) => { if (active && usd != null) setBalances((b) => ({ ...b, [a.key]: usd })); }).catch(() => {});
+    }, apiTurns ? 1500 : 0);
+    return () => { active = false; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend, accountKeys, apiTurns]);
+  /** The balance row for a custom provider bot: what is left on the account and what this chat cost. */
+  const moneyRow = (p: ParticipantConfig | undefined) => {
+    const account = accountOf(p);
+    if (!account || !p) return undefined;
+    const left = balances[account.key];
+    const spent = used[p.id]?.cost_micros;
+    const parts = [left != null ? `${dollars(left)} left` : "", spent ? `this chat ${dollars(spent / 1e6)}` : ""].filter(Boolean);
+    return parts.length ? <span key="money" className="bot-meter bot-meter-money" title={left != null ? "Prepaid balance on this provider account" : "What this chat has cost on this provider"}>{left != null ? "bal" : "cost"}<span>{parts.join(" · ")}</span></span> : null;
+  };
+
   // Battery levels: context is each agent's own, the plan its provider's.
   const configOf = (id: string) => participants.find((p) => p.id === id);
   const levelsFor = (id: string): Levels => {
@@ -2146,7 +2194,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const provider = planProvider(p);
     const windows = provider ? plans[provider]?.windows : undefined;
     const plan = windows ? planLine(windows, new Date()) : null;
-    const reports = p.backend.kind === "agent" && p.backend.tool !== "gemini" && p.backend.tool !== "grok";
+    const reports = (p.backend.kind === "agent" && p.backend.tool !== "gemini" && p.backend.tool !== "grok") || p.backend.kind === "open_ai_compatible";
+    const account = accountOf(p);
+    const left = account ? balances[account.key] : undefined;
+    const spent = used[p.id]?.cost_micros;
     const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
     return (
       <div className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
@@ -2154,12 +2205,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           <span className="usage-label">Context</span>
           <span className={isLow(contextLevel(fill)) ? "usage-low" : undefined}>{fill ? contextLine(fill) : reports ? "Not reported yet. The next reply says." : "Not reported by this provider"}</span>
         </div>
-        <div className="usage-row">
+        {account ? <>
+          <div className="usage-row">
+            <span className="usage-label">Balance</span>
+            <span>{left != null ? `${dollars(left)} left on this account` : "Not offered by this provider"}</span>
+          </div>
+          {!!spent && <div className="usage-row">
+            <span className="usage-label">Cost</span>
+            <span>{dollars(spent / 1e6)} in this chat</span>
+          </div>}
+        </> : <div className="usage-row">
           <span className="usage-label">Plan</span>
           <span className={isLow(provider ? planLevel(windows, Date.now() / 1000) : null) ? "usage-low" : undefined}>
             {plan ?? (!provider ? "Not reported by this provider" : provider === "claude_code" ? "Known after a Claude Code reply" : "Not reported yet")}
           </span>
-        </div>
+        </div>}
         {provider && sharing > 1 && <p className="usage-note">Shared by all {AGENT_LABEL[provider]} agents in this room</p>}
         <p className="usage-note">{tokenLine(used[p.id])}</p>
         <button className="ghost usage-compact" onClick={() => { setCard(null); compactChat(); }} disabled={!canCompact} title="Summarize earlier turns so every model starts from the summary">
@@ -2262,14 +2322,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <label>
                 Model
                 <span className="row">
-                  <input name="model" list={`models-${pane.id}`} value={draft.model} onChange={(e) => set("model", e.target.value)} placeholder="e.g. llama3" />
+                  <input name="model" list={`models-${pane.id}`} value={draft.model} onChange={(e) => setApiModel(e.target.value)} placeholder="e.g. llama3" />
                   <button type="button" className="ghost" onClick={() => loadModels(draft.baseUrl, draft.keyEnv)}>
                     List models
                   </button>
                 </span>
                 <datalist id={`models-${pane.id}`}>
-                  {apiModels.map((m) => (
-                    <option key={m} value={m} />
+                  {apiGroups.flatMap((g) => g.models).map((m) => (
+                    <option key={m.id} value={m.id}>{m.label ?? undefined}</option>
                   ))}
                 </datalist>
                 {modelNote && <span className="hint">{modelNote}</span>}
@@ -2310,7 +2370,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   value={draft.effort}
                   onChange={(level) => set("effort", level.trim().toLowerCase())}
                   groups={[{ label: "", options: efforts.map((level) => ({ value: level, text: effortLabel(level) })) }]}
-                  emptyLabel="Default"
+                  emptyLabel={chosenApiModel?.default_effort ? `Default (${effortLabel(chosenApiModel.default_effort)})` : "Default"}
                   customLabel="Type another level…"
                   customPlaceholder="e.g. high"
                 />
@@ -2391,8 +2451,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           {preset.agent ? (
             <Picker key={`quick-model:${draft.preset}`} name="quick-model" value={draft.model} onChange={setAgentModel} groups={modelChoices} emptyLabel="Default" customLabel="Type another model name…" customPlaceholder="Exact model name" />
           ) : (
-            <><input name="quick-model" list={`quick-models-${pane.id}`} value={draft.model} onChange={(e) => set("model", e.target.value)} placeholder="e.g. llama3" />
-              <datalist id={`quick-models-${pane.id}`}>{apiModels.map((m) => <option key={m} value={m} />)}</datalist></>
+            <><input name="quick-model" list={`quick-models-${pane.id}`} value={draft.model} onChange={(e) => setApiModel(e.target.value)} placeholder="e.g. llama3" />
+              <datalist id={`quick-models-${pane.id}`}>{apiGroups.flatMap((g) => g.models).map((m) => <option key={m.id} value={m.id}>{m.label ?? undefined}</option>)}</datalist></>
           )}
         </label>
         <label>Access
@@ -2589,7 +2649,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 
       {quickAdd === "roster" && rosterAnchor && <span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom, "--room": `${window.innerHeight - rosterAnchor.bottom - 8}px` } as CSSProperties}>{quickAddMenu}</span>}
-      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : row("plan", levels.plan, "Plan left")}</span>; })()} save={async (config, base) => {
+      {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));

@@ -7,7 +7,7 @@
 //
 // Last checked against each tool's own documentation in October 2026.
 
-import type { AgentTool, ModelChoice } from "./types";
+import type { AgentTool, ApiModel, ModelChoice } from "./types";
 
 export interface ModelGroup {
   label: string;
@@ -217,4 +217,41 @@ function leastReasoningFirst(levels: readonly string[]): string[] {
 export function effortsFor(all: string[], groups: ModelGroup[], modelId: string): string[] {
   const model = findModel(groups, modelId);
   return leastReasoningFirst(model?.efforts ?? all);
+}
+
+/** Model names from `api_models`. Older servers send strings; newer ones send objects. */
+export function apiModelList(raw: unknown): ApiModel[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ApiModel[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string') { if (item) out.push({ id: item }); }
+    else if (item && typeof item === 'object' && typeof (item as ApiModel).id === 'string' && (item as ApiModel).id) out.push(item as ApiModel);
+  }
+  return out;
+}
+
+/** "1M", "1.5M", "128K". Empty when the size is unknown. */
+export function contextSize(tokens: number | null | undefined): string {
+  if (!tokens || !Number.isFinite(tokens) || tokens <= 0) return '';
+  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M`;
+  return `${Math.round(tokens / 1000)}K`;
+}
+
+export function apiModelGroups(models: ApiModel[]): ModelGroup[] {
+  if (models.length === 0) return [];
+  const list = models.map(m => {
+    const size = contextSize(m.context_tokens);
+    const name = m.label || m.id;
+    return { id: m.id, label: size ? `${name} · ${size} context` : name, efforts: m.efforts };
+  });
+  return [{ label: 'Offered by this provider', models: list }];
+}
+
+/** The level new bots start on: medium if offered, else the nearest one above it, else the nearest below. */
+export function defaultEffortFor(efforts: string[]): string {
+  const medium = EFFORT_ORDER.indexOf('medium');
+  if (efforts.includes('medium')) return 'medium';
+  for (let i = medium + 1; i < EFFORT_ORDER.length; i++) if (efforts.includes(EFFORT_ORDER[i])) return EFFORT_ORDER[i];
+  for (let i = medium - 1; i >= 0; i--) if (efforts.includes(EFFORT_ORDER[i])) return EFFORT_ORDER[i];
+  return efforts[0] ?? '';
 }

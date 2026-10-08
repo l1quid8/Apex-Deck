@@ -287,6 +287,8 @@ async fn serve_once(
     let address = format!("http://{}", listener.local_addr().unwrap());
     let handle = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
+        // Nothing else is served: the bot's model lookup is refused at once.
+        drop(listener);
         let mut received = Vec::new();
         let mut buffer = [0u8; 8192];
         loop {
@@ -441,8 +443,48 @@ async fn model_list_is_read_from_the_models_endpoint_and_sorted() {
     });
 
     let models = list_models(&format!("{address}/"), None).await.unwrap();
-    assert_eq!(models, ["llama3", "qwen:7b"]);
+    let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+    assert_eq!(ids, ["llama3", "qwen:7b"]);
     assert!(server.await.unwrap().starts_with("GET /v1/models "));
+}
+
+#[tokio::test]
+async fn api_reply_reports_context_fill_and_the_servers_cost() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 16384];
+                let read = socket.read(&mut buffer).await.unwrap();
+                let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                let (kind, body) = if request.starts_with("GET /v1/models ") {
+                    ("application/json", r#"{"data":[{"id":"test-model","context_length":1000,"model_spec":{"name":"Test","pricing":{"input":{"usd":1.0},"output":{"usd":2.0}}}}]}"#)
+                } else {
+                    ("text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":200,\"completion_tokens\":50},\"cost\":{\"usd\":0.0005}}\n\ndata: [DONE]\n\n")
+                };
+                let response = format!("HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.shutdown().await.unwrap();
+            });
+        }
+    });
+
+    let bot = OpenAiCompatParticipant::new(config("api", api(address, None)));
+    let context = std::sync::Mutex::new(None);
+    let reply = bot
+        .respond_with_progress(request("hi"), &|update| {
+            if let apex_core::Progress::Context(fill) = update {
+                *context.lock().unwrap() = Some((fill.used_tokens, fill.window_tokens));
+            }
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(reply.text, "Hi");
+    assert_eq!(reply.cost_micros, Some(500));
+    assert_eq!(*context.lock().unwrap(), Some((250, 1000)));
 }
 
 #[tokio::test]

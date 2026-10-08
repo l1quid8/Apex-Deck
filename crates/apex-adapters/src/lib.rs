@@ -8,6 +8,7 @@
 //! [`installed_models`] reads the model list a tool keeps for its account.
 
 mod ansi;
+mod api_info;
 mod catalog;
 mod claude_session;
 mod claude_usage;
@@ -33,6 +34,7 @@ use apex_core::{AgentTool, Backend, Participant, ParticipantConfig, PlanUsage};
 pub use catalog::{codex_models_from_cache, installed_models};
 pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_ARG as CODEX_HOOK_ARG};
 
+pub use api_info::{balance as api_balance, model as api_model, ApiModel};
 pub use cli::CliParticipant;
 pub use openai::{list_models, OpenAiCompatParticipant};
 pub use presets::{agent_command, allow_reading};

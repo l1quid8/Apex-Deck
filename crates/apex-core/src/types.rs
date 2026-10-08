@@ -185,13 +185,21 @@ pub struct TokenTotals {
     pub output: u64,
     /// Turns that reported a count.
     pub turns: u64,
+    /// What those turns cost in millionths of a US dollar, when the backend says.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cost_micros: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl TokenTotals {
     /// Count one turn. A side the backend didn't report adds nothing.
-    pub fn add(&mut self, input: Option<u64>, output: Option<u64>) {
+    pub fn add(&mut self, input: Option<u64>, output: Option<u64>, cost_micros: Option<u64>) {
         self.input = self.input.saturating_add(input.unwrap_or(0));
         self.output = self.output.saturating_add(output.unwrap_or(0));
+        self.cost_micros = self.cost_micros.saturating_add(cost_micros.unwrap_or(0));
         self.turns += 1;
     }
 }
