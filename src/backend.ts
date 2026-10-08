@@ -703,6 +703,7 @@ function demoBackend(): Backend {
       }
       room.participants.push(participant);
       saveRoom(id);
+      emitRoom(id, { type: "participants_changed", participants: [...room.participants] });
       setTimeout(() => reportMeters(id, [participant]), 50);
     },
     roomUpdateParticipant: async (id, participant, base) => {
@@ -722,6 +723,7 @@ function demoBackend(): Backend {
       const room = rooms.get(id);
       if (room) room.participants = room.participants.filter((p) => p.id !== participant);
       saveRoom(id);
+      if (room) emitRoom(id, { type: "participants_changed", participants: [...room.participants] });
     },
     roomDiff: async (id) => {
       const room = rooms.get(id);

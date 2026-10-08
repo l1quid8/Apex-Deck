@@ -537,6 +537,7 @@ export function PhoneApp() {
     let live = true;
     let stop = () => {};
     const settingsHeard = new Map<string, ParticipantConfig>();
+    let rosterHeard: ParticipantConfig[] | null = null;
     loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openWorkspace.path).then((state) => {
       if (!live) return;
       setWaiting((all) => ({ ...all, [openPane.id]: state.approvals.map((card) => card.request) }));
@@ -544,7 +545,7 @@ export function PhoneApp() {
       const queue = queues.current.get(openPane.id);
       if (queue) queueSync(queue, state.active);
       setCuts((all) => all[openPane.id] ? { ...all, [openPane.id]: resumeCut(all[openPane.id], state.active, state.snapshot.transcript) } : all);
-      const configs = state.snapshot.participants.map(config => settingsHeard.get(config.id) ?? config);
+      const configs = (rosterHeard ?? state.snapshot.participants).map(config => settingsHeard.get(config.id) ?? config);
       setRoom({
         id: openPane.id,
         messages: state.snapshot.transcript,
@@ -562,6 +563,8 @@ export function PhoneApp() {
     }).catch((error) => { if (live) setNotice(words(error)); });
     host.backend.onRoomEvent((id, event) => {
       if (!live || id !== openPane.id) return;
+      if (event.type === "participants_changed") { rosterHeard = event.participants; settingsHeard.clear(); }
+      if (event.type === "participants_changed") setRoom((current) => current && current.id === id ? { ...current, configs: event.participants, participants: event.participants.map(toPerson) } : current);
       if (event.type === "participant_changed") settingsHeard.set(event.participant.id, event.participant);
       if (event.type === "participant_changed") setRoom((current) => current && current.id === id ? { ...current, configs: current.configs.map((config) => config.id === event.participant.id ? event.participant : config), participants: current.participants.map((person) => person.id === event.participant.id ? toPerson(event.participant) : person) } : current);
       if (event.type === "message_added") setRoom((current) => current && current.id === id && !current.messages.some((message) => message.seq === event.message.seq) ? { ...current, messages: [...current.messages, event.message] } : current);

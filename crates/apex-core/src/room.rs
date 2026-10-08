@@ -55,6 +55,7 @@ clear, step-by-step plan.";
 pub enum RoomEvent {
     /// Settings saved by any connected client. Applies to the next turn.
     ParticipantChanged { participant: ParticipantConfig },
+    ParticipantsChanged { participants: Vec<ParticipantConfig> },
     ToolServers { id: ParticipantId, servers: Vec<crate::server_request::ToolServer> },
     /// A message was added to the transcript.
     MessageAdded { message: Message },

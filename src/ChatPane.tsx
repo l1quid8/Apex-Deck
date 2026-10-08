@@ -736,6 +736,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       if (heardId) heard.current.set(heardId, Date.now());
       if (event.type === "tool_servers") { setServerErrors(errors => { const next = {...errors}; delete next[event.id]; return next; }); setServerLists(lists => ({...lists, [event.id]: event.servers})); return; }
       switch (event.type) {
+        case "participants_changed":
+          setParticipants(event.participants);
+          break;
         case "participant_changed":
           setParticipants(list => list.map(p => p.id === event.participant.id ? event.participant : p));
           break;
@@ -1112,7 +1115,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         if (profiles.some(p => p.id === editing)) onProfilesChange(profiles.map(p => p.id === editing ? { ...p, appearance: config.appearance } : p));
       } else {
         await backend.roomAddParticipant(pane.id, config);
-        setParticipants((list) => [...list, config]);
+        setParticipants((list) => list.some(p => p.id === config.id) ? list : [...list, config]);
       }
       if (config.backend.kind === "agent" && config.backend.model) rememberModel(draft.preset, config.backend.model);
       closeForm(draft.preset);
@@ -1136,8 +1139,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     try {
       if (!profileMode) await backend.roomRemoveParticipant(pane.id, id);
       const next = participants.filter((p) => p.id !== id);
-      setParticipants(next);
-      if (profileMode) onProfilesChange(next);
+      if (profileMode) { setParticipants(next); onProfilesChange(next); }
+      else setParticipants(list => list.filter(p => p.id !== id));
     } catch (error) { notify(`Could not remove the bot: ${String(error)}`, "error"); return; }
     if (editing === id) closeForm(draft.preset);
   };
@@ -2299,7 +2302,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const addSaved = async (config: ParticipantConfig) => {
     try {
       await backend.roomAddParticipant(pane.id, config);
-      setParticipants((list) => [...list, config]);
+      setParticipants((list) => list.some(p => p.id === config.id) ? list : [...list, config]);
       return true;
     } catch (error) { notify(`Could not add the agent: ${String(error)}`, "error"); return false; }
   };

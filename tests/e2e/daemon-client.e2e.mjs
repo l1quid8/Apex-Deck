@@ -172,3 +172,24 @@ test('Auto and its original backup survive a daemon restart', { timeout: 30_000 
   assert.equal(next.auto_effort, undefined);
   assert.equal(next.effort, 'ultra');
 });
+
+test('phone roster edits reach an already open desktop room', { timeout: 30_000 }, async t => {
+  const data = fs.mkdtempSync('/tmp/ade-roster-sync-');
+  const daemon = await serve(data);
+  const connect = () => new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
+  const phone = connect(); const desktop = connect();
+  t.after(async () => { phone.close(); desktop.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
+  await Promise.all([phone.start(), desktop.start()]);
+  await desktop.call('room_create', { id: 'roster', participants: [], options, cwd: null });
+  const events = [];
+  desktop.on('room-event', p => { if (p.room === 'roster' && p.event.type === 'participants_changed') events.push({ ...p.event, recovery_seq: p.recovery_seq }); });
+  await phone.call('room_add_participant', { id: 'roster', participant: shell('null', 'echo reply') });
+  await until('desktop hears addition', () => events.length === 1);
+  assert.deepEqual(events[0].participants.map(p => p.id), ['null']);
+  await phone.call('room_remove_participant', { id: 'roster', participant: 'null' });
+  await until('desktop hears removal', () => events.length === 2);
+  assert.deepEqual(events[1].participants, []);
+  assert.ok(events[1].recovery_seq > events[0].recovery_seq);
+  const state = await desktop.call('room_state', { id: 'roster' });
+  assert.deepEqual(state.snapshot.participants, []);
+});

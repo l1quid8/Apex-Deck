@@ -602,20 +602,18 @@ impl Host {
     }
 
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
-        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
+        let handle = self.handle(&id)?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
         let name = participant.id.clone();
         let context = self.room_context(&id)?;
         self.read_plans(&id, std::slice::from_ref(&participant), &context);
-        let changed = {
-            let room = self.room(&id)?;
-            let mut room = room.lock().await;
-            self.require_idle(&id)?;
-            room.add_participant(apex_adapters::build(participant, &context))
-        };
-        if changed {
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        self.require_idle(&id)?;
+        if room.add_participant(apex_adapters::build(participant, &context)) {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
-            self.save_room(&id).await
+            self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
         } else {
             Err(format!("a participant with the id `{name}` is already in this chat"))
         }
@@ -657,15 +655,15 @@ impl Host {
     }
 
     pub async fn room_remove_participant(&self, id: String, participant: ParticipantId) -> Result<(), String> {
-        self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
+        let handle = self.handle(&id)?;
+        handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
-        {
-            let room = self.room(&id)?;
-            let mut room = room.lock().await;
-            self.require_idle(&id)?;
-            room.remove_participant(&participant);
-        }
-        self.save_room(&id).await
+        let room = self.room(&id)?;
+        let mut room = room.lock().await;
+        self.require_idle(&id)?;
+        room.remove_participant(&participant);
+        self.tool_servers.lock().unwrap().remove(&format!("{id}:{participant}"));
+        self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
     }
 
     /// Empty a chat's transcript, keeping its participants and settings.
@@ -1185,10 +1183,11 @@ fn merge_participant(current: &ParticipantConfig, base: &ParticipantConfig, next
 /// One shared checkpoint for all running chains. Completed messages are saved
 /// before emission; a failed write cancels work and is reported to the caller.
 fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent) -> Result<(), String> {
-    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. } | RoomEvent::Usage { .. } | RoomEvent::ParticipantChanged { .. }) { return Ok(()); }
+    if !matches!(event, RoomEvent::MessageAdded { .. } | RoomEvent::Changed { .. } | RoomEvent::AllowedChanged { .. } | RoomEvent::Usage { .. } | RoomEvent::ParticipantChanged { .. } | RoomEvent::ParticipantsChanged { .. }) { return Ok(()); }
     let mut checkpoint = handle.checkpoint.lock().unwrap();
     if handle.deleted.load(Ordering::SeqCst) { return Ok(()); }
     match event {
+        RoomEvent::ParticipantsChanged { participants } => checkpoint.snapshot.participants = participants.clone(),
         RoomEvent::ParticipantChanged { participant } => {
             for p in &mut checkpoint.snapshot.participants { if p.id == participant.id { *p = participant.clone(); } }
         }
@@ -1615,6 +1614,27 @@ mod host_tests {
         assert!(host.quit_unanswered(1));
         host.quit_heard(1);
         assert!(!host.quit_unanswered(1));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn roster_changes_are_saved_and_broadcast_to_open_clients() {
+        let (host, runtime, data) = host("roster-sync");
+        host.room_create("r".into(), vec![], RoomOptions::default(), None).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(serde_json::to_value(&envelope.event).unwrap()));
+        let bot: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"null","display_name":"Null","backend":{"kind":"scripted","lines":["[pass]"]}})).unwrap();
+        runtime.block_on(host.room_add_participant("r".into(), bot.clone())).unwrap();
+        assert_eq!(host.store.room("r").unwrap().unwrap().snapshot.participants.len(), 1);
+        runtime.block_on(host.room_remove_participant("r".into(), bot.id)).unwrap();
+        assert!(host.store.room("r").unwrap().unwrap().snapshot.participants.is_empty());
+        let events = seen.lock().unwrap();
+        let rosters: Vec<_> = events.iter().filter(|e| e["payload"]["event"]["type"] == "participants_changed").collect();
+        assert_eq!(rosters.len(), 2, "open clients hear additions and removals");
+        assert_eq!(rosters[0]["payload"]["event"]["participants"][0]["id"], "null");
+        assert_eq!(rosters[1]["payload"]["event"]["participants"], serde_json::json!([]));
+        drop(events);
         let _ = std::fs::remove_dir_all(data);
     }
 
