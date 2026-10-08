@@ -1,6 +1,6 @@
 import {routingRows,parseFeed,totals,sameTargets,pickName,roomFile,snippet,providerName} from './feed';
 export function register(on: any, options: any) {
-  let dir='',rows:any[]=[],enabled:boolean|null=null,provider='',size='',busy=false,started=false,lastState=-Infinity,issue='';
+  let dir='',rows:any[]=[],enabled:boolean|null=null,provider='',content='',busy=false,started=false,lastState=-Infinity,issue='';
   let titles:Record<string,string>={};
   const snippets=new Map<string,{text:string|null;first:number;last:number}>();
   const path=(relative:string)=>dir+'/'+relative;
@@ -22,10 +22,10 @@ export function register(on: any, options: any) {
         try {const s=JSON.parse(await cat($,'saved-chats-v1/session.json')); titles=Object.fromEntries((s.panes??[]).map((p:any)=>[p.id,p.title]));} catch {titles={};}
       }
       try {
-        const next=(await run($,['/usr/bin/stat','-f','%z',path('decisions.jsonl')])).trim();
-        if(next!==size) {rows=parseFeed(await cat($,'decisions.jsonl'));size=next;}
+        const next=await cat($,'decisions.jsonl');
+        if(next!==content) {rows=parseFeed(next);content=next;}
         issue='';
-      } catch(e) {issue=String((e as Error).message); if(issue==='Could not read decisions.jsonl') {rows=[];size='';issue='No observations yet';}}
+      } catch(e) {issue=String((e as Error).message); if(issue==='Could not read decisions.jsonl') {rows=[];content='';issue='No observations yet';}}
       for(const row of rows.slice(-50).reverse()) {
         if(typeof row.room!=='string'||!Number.isInteger(row.message_index)||row.message_index<0) continue;
         const key=row.room+':'+row.message_index+':'+row.at_ms, hit=snippets.get(key);
