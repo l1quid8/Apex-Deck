@@ -37,3 +37,7 @@ test("folding is remembered per thread", () => {
   delete globalThis.localStorage;
   assert.equal(loadFolded("a"), false, "no storage: unfolded");
 });
+
+test('Auto chips show the mode and its saved backup', () => {
+  assert.equal(chipDescription({ ...claude, auto_effort: true }, all), "opus-4.5 · Auto (high backup) · asks first");
+});

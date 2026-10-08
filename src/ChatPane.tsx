@@ -238,6 +238,7 @@ interface Draft {
   model: string;
   /** Empty means the backend's own default. */
   effort: string;
+  auto_effort?: boolean;
   baseUrl: string;
   keyEnv: string;
   command: string;
@@ -260,7 +261,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", auto_effort: config.auto_effort ?? false, keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -292,7 +293,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, auto_effort: draft.auto_effort === true && levels.length > 0 && (preset?.agent?.tool === "codex" || preset?.agent?.tool === "claude_code"), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -2024,6 +2025,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     { label: "Typed before", options: typedBefore.map((m) => ({ value: m, text: m })) },
     ...agentGroups.map((g) => ({ label: g.label, options: g.models.map((m) => ({ value: m.id, text: m.label ? `${m.id}  ·  ${m.label}` : m.id })) })),
   ];
+  const [autoAvailable, setAutoAvailable] = useState(false);
+  useEffect(() => { if (!adding || (tool !== "codex" && tool !== "claude_code")) return; let active = true; backend.decisionKeyStatus().then(ok => { if (active) setAutoAvailable(ok); }).catch(() => {}); return () => { active = false; }; }, [adding, backend, tool]);
   const chosenModel = findModel(agentGroups, draft.model);
   const efforts = preset.agent ? effortsFor(preset.efforts, agentGroups, draft.model) : preset.efforts;
 
@@ -2239,9 +2242,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <span className="hint">Runs once per turn in the workspace folder. The conversation is written to its standard input and its output becomes the reply.</span>
             </label>
           )}
+          {(tool === "codex" || tool === "claude_code") && <label><input type="checkbox" checked={draft.auto_effort ?? false} disabled={!efforts.length || (!draft.auto_effort && !autoAvailable)} onChange={event => set("auto_effort", event.target.checked)} /> Auto — trial logs picks; replies use the backup level.</label>}
           {preset.efforts.length > 0 && (
             <label>
-              Reasoning effort
+              {draft.auto_effort ? "Auto backup level" : "Reasoning effort"}
               {efforts.length > 0 ? (
                 <Picker
                   key={`effort:${draft.preset}:${editing ?? "new"}`}

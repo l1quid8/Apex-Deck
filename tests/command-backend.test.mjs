@@ -36,6 +36,7 @@ const COMMANDS = [
   ['sessionLoad', [], 'session_load', undefined],
   ['sessionSave', [{ version: 1 }], 'session_save', { session: { version: 1 } }],
   ['settingsLoad', [], 'settings_load', undefined],
+  ['decisionKeyStatus', [], 'decision_key_status', {}],
   ['decisionKeySave', ['jev', 'fake-key'], 'decision_key_save', { provider: 'jev', key: 'fake-key' }],
   ['settingsSave', [{ a: 1 }], 'settings_save', { settings: { a: 1 } }],
   ['artifactsLoad', ['r'], 'artifacts_load', { room: 'r' }],

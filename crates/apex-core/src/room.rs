@@ -572,7 +572,7 @@ impl Room {
         let outsider = ParticipantId::new("");
         let mut turns = render_view_after(self.summary(), &self.transcript[self.compacted_upto()..], &outsider, &self.configs());
         turns.push(ViewTurn { role: Role::User, content: COMPACT_ASK.to_string() });
-        let request = TurnRequest { access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false };
+        let request = TurnRequest { effort_override: None, access: Some(crate::Access::Read), system: COMPACT_SYSTEM.to_string(), turns, unseen: Vec::new(), plan: false };
 
         on_event(RoomEvent::TurnStarted { id: id.clone() });
         let progress = |update: Progress<'_>| on_event(progress_event(&id, update));
@@ -677,6 +677,7 @@ impl Room {
             .cloned()
             .collect();
         let mut request = TurnRequest {
+            effort_override: None,
             access: Some(participant.config().access),
             system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
                 crate::server_request::prompt_section(&m.text)

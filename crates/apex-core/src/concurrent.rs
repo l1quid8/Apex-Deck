@@ -55,6 +55,10 @@ pub struct TurnBatch {
     limit: usize,
     pending: Arc<AtomicUsize>,
     generations: HashMap<ParticipantId, u64>,
+    advisor: Option<Arc<dyn crate::decision::TurnAdvisor>>,
+}
+impl TurnBatch {
+    pub fn with_advisor(mut self, advisor: Arc<dyn crate::decision::TurnAdvisor>) -> Self { self.advisor = Some(advisor); self }
 }
 impl Drop for TurnBatch {
     fn drop(&mut self) {
@@ -205,6 +209,7 @@ impl ConcurrentRoom {
             limit,
             pending: self.pending.clone(),
             generations,
+            advisor: None,
         }
     }
     pub fn stop(&self, id: Option<&ParticipantId>) {
@@ -223,7 +228,7 @@ impl ConcurrentRoom {
             let mut next = Vec::new();
             if batch.sequential {
                 for ticket in tickets {
-                    next.extend(self.run_one(ticket, None, sink).await);
+                    next.extend(self.run_one(ticket, None, batch.advisor.as_deref(), sink).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -243,7 +248,7 @@ impl ConcurrentRoom {
                     tickets
                         .into_iter()
                         .zip(prepared)
-                        .map(|(t, p)| self.run_one(t, p, sink)),
+                        .map(|(t, p)| self.run_one(t, p, batch.advisor.as_deref(), sink)),
                 )
                 .await
                 {
@@ -285,6 +290,7 @@ impl ConcurrentRoom {
         &self,
         ticket: Ticket,
         prepared: Option<Prepared>,
+        advisor: Option<&dyn crate::decision::TurnAdvisor>,
         sink: Sink<'_>,
     ) -> Vec<ParticipantId> {
         let ready = ticket.previous.clone().now_or_never().is_some();
@@ -317,6 +323,11 @@ impl ConcurrentRoom {
                 room.approvals_handle(),
             )
         };
+        if let Some(advisor) = advisor {
+            let (messages, roster) = { let room = self.room.lock().await; (room.transcript()[..shown.min(room.transcript().len())].to_vec(), room.configs()) };
+            request.effort_override = advisor.advise(participant.config(), messages, roster).await;
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) { return Vec::new(); }
+        }
         let editor = {
             let mut held = self.editor.lock().unwrap();
             if request.access != Some(Access::Read) && held.is_none() {

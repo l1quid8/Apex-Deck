@@ -452,11 +452,10 @@ impl Host {
         if let Some(index) = snapshot.transcript.iter().rposition(|m| matches!(m.speaker, apex_core::Speaker::Human)) {
             snapshot.transcript.truncate(index + 1);
         }
-        if routed && matches!(apex_core::parse_mentions(text, &snapshot.participants), apex_core::MentionTarget::None) {
-            let settings = self.settings_load().ok().flatten().unwrap_or_default();
-            crate::decision::observe(&self.runtime, self.paths.data.clone(), id.to_string(), handle.clone(), snapshot, settings, observation_revision);
-        }
-        Ok(batch)
+        let routing = routed && matches!(apex_core::parse_mentions(text, &snapshot.participants), apex_core::MentionTarget::None);
+        let settings = self.settings_load().ok().flatten().unwrap_or_default();
+        let advisor = crate::decision::observer(&self.runtime, self.paths.data.clone(), id.to_string(), handle.clone(), snapshot, settings, observation_revision, routing);
+        Ok(batch.with_advisor(advisor))
     }
 
     async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
@@ -520,7 +519,10 @@ impl Host {
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(&id)?;
         let batch = handle.runtime.begin_turn(participants, hops).await?;
-        self.run_batch_in_background(id, handle, batch);
+        let snapshot = handle.room.lock().await.snapshot();
+        let settings = self.settings_load().ok().flatten().unwrap_or_default();
+        let advisor = crate::decision::observer(&self.runtime, self.paths.data.clone(), id.clone(), handle.clone(), snapshot, settings, handle.observation_revision.load(Ordering::SeqCst), false);
+        self.run_batch_in_background(id, handle, batch.with_advisor(advisor));
         Ok(())
     }
 
@@ -1654,7 +1656,7 @@ mod host_tests {
         apex_core::ParticipantConfig {
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
-            persona: String::new(), access: apex_core::Access::Read, effort: None, appearance: None,
+            persona: String::new(), access: apex_core::Access::Read, effort: None, auto_effort: false, appearance: None,
         }
     }
 

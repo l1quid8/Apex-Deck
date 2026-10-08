@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn effort_is_only_in_the_request_when_set() {
-        let request = TurnRequest { access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false };
+        let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false };
         assert!(request_body("m", None, &request).get("reasoning_effort").is_none());
         assert!(request_body("m", Some("  "), &request).get("reasoning_effort").is_none());
         assert_eq!(request_body("m", Some("high"), &request)["reasoning_effort"], "high");

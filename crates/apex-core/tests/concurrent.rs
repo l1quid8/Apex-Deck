@@ -478,3 +478,77 @@ fn active_settings_cannot_change_access_identity_or_provider() {
         assert_eq!(room.configs()[0], config);
     });
 }
+
+struct HeldAdvice {
+    release: Mutex<Option<oneshot::Receiver<()>>>,
+}
+impl apex_core::decision::TurnAdvisor for HeldAdvice {
+    fn advise<'a>(&'a self, config: &'a ParticipantConfig, _: Vec<apex_core::Message>, _: Vec<ParticipantConfig>) -> futures::future::BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            if !config.auto_effort { return None; }
+            let release = self.release.lock().unwrap().take();
+            if let Some(release) = release { let _ = release.await; }
+            Some("low".into())
+        })
+    }
+}
+
+#[test]
+fn fixed_bot_starts_and_can_edit_while_auto_is_waiting() {
+    block_on(async {
+        let base = ScriptedParticipant::new("auto", &["auto reply"]);
+        let mut config = base.config().clone();
+        config.auto_effort = true;
+        config.effort = Some("xhigh".into());
+        config.access = apex_core::Access::Full;
+        let auto = Arc::new(ScriptedParticipant::from_config(config));
+        let base = ScriptedParticipant::new("fixed", &["fixed reply"]);
+        let mut config = base.config().clone();
+        config.access = apex_core::Access::Full;
+        let fixed = Arc::new(ScriptedParticipant::from_config(config));
+        let room = ConcurrentRoom::new(Room::new(vec![auto.clone(), fixed.clone()], RoomOptions::default()));
+        let (release, ready) = oneshot::channel();
+        let advisor = Arc::new(HeldAdvice { release: Mutex::new(Some(ready)) });
+        let batch = room.begin_post("@all do the work", None, &|_| {}).await.unwrap().with_advisor(advisor);
+        let (started, fixed_started) = oneshot::channel();
+        let started = Mutex::new(Some(started));
+        let sink = |event| {
+            if matches!(event, RoomEvent::TurnStarted { id } if id.as_str() == "fixed") {
+                if let Some(started) = started.lock().unwrap().take() { let _ = started.send(()); }
+            }
+        };
+        let run = room.run(batch, &sink);
+        let check = async {
+            fixed_started.await.unwrap();
+            assert!(auto.requests().is_empty());
+            assert_eq!(fixed.requests()[0].access, Some(apex_core::Access::Full));
+            release.send(()).unwrap();
+        };
+        futures::join!(run, check);
+        assert_eq!(auto.requests()[0].effort_override.as_deref(), Some("low"));
+        assert_eq!(auto.config().effort.as_deref(), Some("xhigh"));
+        assert_eq!(fixed.requests()[0].effort_override, None);
+    });
+}
+
+#[test]
+fn stop_during_auto_wait_never_starts_the_old_reply() {
+    block_on(async {
+        let base = ScriptedParticipant::new("auto", &["must not run"]);
+        let mut config = base.config().clone();
+        config.auto_effort = true;
+        let auto = Arc::new(ScriptedParticipant::from_config(config));
+        let room = ConcurrentRoom::new(Room::new(vec![auto.clone()], RoomOptions::default()));
+        let (release, ready) = oneshot::channel();
+        let advisor = Arc::new(HeldAdvice { release: Mutex::new(Some(ready)) });
+        let batch = room.begin_post("@auto work", None, &|_| {}).await.unwrap().with_advisor(advisor);
+        let mut run = Box::pin(room.run(batch, &|_| {}));
+        use futures::FutureExt;
+        assert!(run.as_mut().now_or_never().is_none());
+        room.stop(None);
+        release.send(()).unwrap();
+        run.await;
+        assert!(auto.requests().is_empty());
+        assert!(!room.busy());
+    });
+}
