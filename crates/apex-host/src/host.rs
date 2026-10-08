@@ -985,9 +985,12 @@ impl Host {
     pub fn library_list(&self) -> Vec<serde_json::Value> {
         let dir = self.library_dir();
         reply_images::list(&dir).into_iter().map(|item| {
-            let path = dir.join(&item.file).to_string_lossy().into_owned();
+            let path = dir.join(&item.file);
+            let bytes = std::fs::metadata(&path).map(|meta| meta.len()).ok();
             let mut value = serde_json::to_value(item).unwrap_or_default();
-            value["path"] = path.into();
+            value["path"] = path.to_string_lossy().into_owned().into();
+            // The phone's link carries one message at a time, so it skips pictures too big for one.
+            if let Some(bytes) = bytes { value["bytes"] = bytes.into(); }
             value
         }).collect()
     }

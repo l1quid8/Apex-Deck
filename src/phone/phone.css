@@ -648,3 +648,96 @@
 .ph-bot-spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: ph-bot-spin .8s linear infinite; }
 @keyframes ph-bot-spin { to { transform: rotate(360deg); } }
 .ph-crew-grab { display: none; }
+
+/* Library: the phone's picture list and full-screen view (src/phone/PhoneLibrary.tsx). */
+.ph-lib { display: flex; flex-direction: column; min-height: 0; }
+.ph-lib-toolbar { display: flex; align-items: center; gap: 8px; margin: 4px 0 12px; }
+.ph-lib-select {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+}
+.ph-lib-none { padding: 10px 4px; font-size: 13px; }
+.ph-lib-grid { display: grid; gap: 6px; }
+.ph-lib-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+}
+.ph-lib-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.ph-lib-thumb:has(.ph-lib-big) { display: flex; align-items: center; justify-content: center; padding: 8px; }
+.ph-lib-big { color: var(--muted); font-size: 12px; text-align: center; }
+.ph-lib-tile-wrap { position: relative; min-width: 0; }
+.ph-lib-retry { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); }
+.ph-lib-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ph-lib-caption {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ph-lib-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.94);
+  color: var(--text);
+}
+.ph-lib-viewer-image {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 12px calc(12px + env(safe-area-inset-left));
+}
+.ph-lib-viewer-image img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.ph-lib-viewer-bar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px calc(14px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+.ph-lib-viewer-bar .ph-lib-caption { font-size: 13px; white-space: normal; }
+.ph-lib-viewer-ask { font-size: 14px; color: var(--text); }
+.ph-lib-viewer-error { font-size: 13px; color: var(--red); }
+.ph-lib-viewer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ph-lib-action.ph-lib-action {
+  flex: 1 1 auto;
+  min-height: 44px;
+  padding: 10px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 14px;
+}
+.ph-lib-action.primary { background: var(--brand-gradient); border-color: transparent; color: var(--accent-ink); }
+.ph-lib-action.ph-lib-danger { color: var(--red); }
+.ph-lib-action:disabled { opacity: 0.5; }

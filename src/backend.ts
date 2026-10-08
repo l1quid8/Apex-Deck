@@ -12,7 +12,8 @@ import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, FolderL
 type Unlisten = () => void;
 
 /** A picture kept in the Library: `room` is the thread it was made in, `by` the bot. */
-export type LibraryItem = { file: string; kind: "image" | string; source: string; room: string; by?: string; created: number; path: string };
+/** `bytes` is the file's size, when the host could read it. */
+export type LibraryItem = { file: string; kind: "image" | string; source: string; room: string; by?: string; created: number; path: string; bytes?: number };
 
 export interface Backend {
   host?: { id: string; name: string; connection: import("./hostConnections").HostConnectionStore };

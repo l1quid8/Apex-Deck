@@ -299,6 +299,11 @@ mod tests {
         assert_eq!(call(json!({ "cmd": "session_load" })), Ok(json!({ "version": 1 })));
         let saved = call(json!({ "cmd": "save_attachment", "args": { "room": "r", "name": "a.txt", "data": "aGk=" } })).unwrap();
         assert_eq!(call(json!({ "cmd": "read_attachment", "args": { "path": saved } })), Ok(json!("aGk=")));
+        let picture = call(json!({ "cmd": "save_attachment", "args": { "room": "r", "name": "a.png", "data": "iVBORw0KGgo=" } })).unwrap();
+        let kept = call(json!({ "cmd": "import_reply_image", "args": { "room": "r", "path": picture, "by": "Null" } }));
+        assert!(kept.is_ok(), "{kept:?}");
+        let library = call(json!({ "cmd": "library_list" })).unwrap();
+        assert_eq!(library[0]["bytes"], json!(8), "{library}");
         assert_eq!(call(json!({ "cmd": "room_post", "args": { "id": "nope", "text": "hi" } })), Err("no group chat with id nope".into()));
         let saved_chats = std::fs::canonicalize(data.join("saved-chats-v1")).unwrap().to_string_lossy().into_owned();
         let listed = call(json!({ "cmd": "folder_list", "args": { "path": data.to_string_lossy() } })).unwrap();
