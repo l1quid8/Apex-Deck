@@ -18,6 +18,7 @@ mod codex_hook;
 mod events;
 mod grok_images;
 mod grok_usage;
+pub mod keys;
 mod mcp;
 mod openai;
 mod plan_cache;

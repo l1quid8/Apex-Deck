@@ -2,7 +2,7 @@
 // runs the commands; the shell does what belongs to the machine
 // with the screen: dialogs, saved files, the dock, file drops and quitting.
 
-import type { Backend, LibraryItem } from "./backend";
+import type { Backend, KeyState, LibraryItem } from "./backend";
 import type { AgentInfo, AppSession, FolderListing, ModelChoice, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer } from "./types";
 
 /** How commands reach the host and its events come back. */
@@ -37,6 +37,9 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     artifactsSave: (room, artifacts) => call("artifacts_save", { room, artifacts }),
     dataFolder: () => call<string>("data_folder"),
     envPresent: (names) => call<boolean[]>("env_present", { names }),
+    apiKeyStatus: (names) => call<KeyState[]>("api_key_status", { names }),
+    apiKeySave: (name, key) => call("api_key_save", { name, key }),
+    apiKeyRemove: (name) => call("api_key_remove", { name }),
     previewProbe: (address) => call<PreviewProbe>("preview_probe", { address }),
 
     ptySpawn: (o) => call("pty_spawn", { id: o.id, agent: o.agent ?? null, cwd: o.cwd ?? null, cols: o.cols, rows: o.rows }),

@@ -31,6 +31,10 @@ pub enum Command {
     PreviewProbe { address: String },
     DataFolder {},
     EnvPresent { names: Vec<String> },
+    /// Where each named API key comes from on this machine. Never the key.
+    ApiKeyStatus { names: Vec<String> },
+    ApiKeySave { name: String, key: String },
+    ApiKeyRemove { name: String },
     RoomDelete { id: String },
     StartupFolders {},
     AgentsDetect {},
@@ -111,6 +115,10 @@ fn reply<T: serde::Serialize>(value: T) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|e| e.to_string())
 }
 
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tokio::task::spawn_blocking(work).await.map_err(|_| "The key store stopped answering.".to_string())?
+}
+
 impl Host {
     /// Run `command` and answer with what the matching method returns, as JSON.
     pub async fn call(self: &Arc<Self>, command: Command) -> Result<Value, String> {
@@ -131,6 +139,10 @@ impl Host {
             PreviewProbe { address } => reply(self.preview_probe(address).await?),
             DataFolder {} => reply(self.data_folder()),
             EnvPresent { names } => reply(self.env_present(names)),
+            // The Keychain can be slow to answer, so keep it off the async threads.
+            ApiKeyStatus { names } => reply(blocking(move || Ok(apex_adapters::keys::status(&names))).await?),
+            ApiKeySave { name, key } => reply(blocking(move || apex_adapters::keys::save(&name, &key)).await?),
+            ApiKeyRemove { name } => reply(blocking(move || apex_adapters::keys::remove(&name)).await?),
             RoomDelete { id } => reply(self.room_delete(id)?),
             StartupFolders {} => reply(self.startup_folders()),
             AgentsDetect {} => reply(self.agents_detect()),
@@ -235,7 +247,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 69);
+        assert_eq!(names.len(), 72);
         assert!(names.contains(&"room_answer".to_string()));
         assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_set_plan".to_string()));

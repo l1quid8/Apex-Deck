@@ -115,6 +115,7 @@ pub fn command_needs(command: &Command) -> Need {
         DecisionKeyStatus {} => Need::Never,
         DataFolder {} => Need::Never,
         EnvPresent { .. } => Need::Never,
+        ApiKeyStatus { .. } | ApiKeySave { .. } | ApiKeyRemove { .. } => Need::Never,
         OpenTarget { .. } => Need::Never,
         QuitHeard { .. } | QuitApp {} => Need::Never,
         // Fetch arbitrary addresses.
@@ -280,6 +281,9 @@ mod tests {
             ("decision_key_status", None, json!({})),
             ("data_folder", None, json!({})),
             ("env_present", None, json!({ "names": [] })),
+            ("api_key_status", None, json!({ "names": [] })),
+            ("api_key_save", None, json!({ "name": "K", "key": "k" })),
+            ("api_key_remove", None, json!({ "name": "K" })),
             ("open_target", None, json!({ "target": "x" })),
             ("quit_heard", None, json!({ "request": 1 })),
             ("quit_app", None, json!({})),

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_SETTINGS, readSettings, keyNamesIn } from "../src/settings.ts";
+import { DEFAULT_SETTINGS, readSettings, keyNamesIn, keyNameFor } from "../src/settings.ts";
 
 test("no settings file gives the defaults", () => {
   assert.deepEqual(readSettings(null), DEFAULT_SETTINGS);
@@ -49,4 +49,13 @@ test("bot chips show everything until a part is turned off", () => {
   assert.deepEqual(DEFAULT_SETTINGS.botChips, { tool: true, effort: true, usage: true });
   assert.deepEqual(readSettings({ botChips: { tool: false } }).botChips, { tool: false, effort: true, usage: true });
   assert.deepEqual(readSettings({ botChips: { tool: "no", usage: 0 } }).botChips, { tool: true, effort: true, usage: true }, "only true or false count");
+});
+
+test("a provider's key name comes from its address", () => {
+  assert.equal(keyNameFor("https://api.venice.ai/api/v1"), "VENICE_API_KEY");
+  assert.equal(keyNameFor("https://openrouter.ai/api/v1"), "OPENROUTER_API_KEY");
+  assert.equal(keyNameFor("https://api.openai.com/v1"), "OPENAI_API_KEY");
+  assert.equal(keyNameFor("https://api.x.ai/v1"), "XAI_API_KEY");
+  assert.equal(keyNameFor("https://api.together-ai.com/v1"), "TOGETHER_AI_API_KEY");
+  for (const local of ["http://localhost:11434/v1", "http://127.0.0.1:1234/v1", "http://[::1]:8080", "http://box.local/v1", "", "not a url"]) assert.equal(keyNameFor(local), "", local);
 });

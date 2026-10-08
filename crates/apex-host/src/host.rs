@@ -105,6 +105,7 @@ impl Host {
         let compacting = Arc::clone(&snapshots);
         std::thread::spawn(move || compacting.compact());
         apex_adapters::allow_reading(&paths.data.join("attachments"));
+        apex_adapters::keys::use_folder(&paths.data);
         Arc::new(Host {
             paths,
             runtime,

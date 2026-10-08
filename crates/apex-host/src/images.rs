@@ -54,8 +54,8 @@ pub fn picture_from(reply: &Value) -> Result<Picture, String> {
 
 /// Ask the provider for a picture and return its bytes.
 pub async fn generate(provider: &Provider, model: Option<&str>, prompt: &str) -> Result<Vec<u8>, String> {
-    let key = std::env::var(provider.key_env).ok().filter(|k| !k.is_empty())
-        .ok_or_else(|| format!("{} needs {} set. See Settings → Providers → API keys.", provider.label, provider.key_env))?;
+    let key = apex_adapters::keys::lookup(provider.key_env)
+        .ok_or_else(|| format!("{} needs an API key. Add {} in Settings → Providers → API keys.", provider.label, provider.key_env))?;
     let client = reqwest::Client::builder().timeout(Duration::from_secs(180)).build().map_err(|e| e.to_string())?;
     let response = client.post(provider.url).bearer_auth(&key).json(&request_body(provider, model, prompt)).send().await
         .map_err(|e| format!("Could not reach {}: {e}", provider.label))?;

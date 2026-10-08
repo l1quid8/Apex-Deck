@@ -96,3 +96,15 @@ export function keyNamesIn(profiles: Pick<ParticipantConfig, "backend">[]): { na
   }
   return [...uses].sort(([a], [b]) => a.localeCompare(b)).map(([name, n]) => ({ name, uses: n }));
 }
+
+/** The name Deck files a provider's API key under, from its base URL: `https://api.venice.ai/api/v1` gives `VENICE_API_KEY`. Empty for local servers and addresses it can't read. */
+export function keyNameFor(baseUrl: string): string {
+  let host: string;
+  try { host = new URL(baseUrl.trim()).hostname.toLowerCase(); } catch { return ""; }
+  if (!host || host === "localhost" || /^[\d.]+$/.test(host) || host.includes(":") || host.endsWith(".local")) return "";
+  const labels = host.split(".");
+  const site = labels.length >= 2 ? labels[labels.length - 2] : labels[0];
+  const known: Record<string, string> = { x: "XAI" };
+  const word = known[site] ?? site.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return word && /^[A-Z_]/.test(word) ? `${word}_API_KEY` : "";
+}

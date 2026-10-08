@@ -68,7 +68,9 @@ dependencies = [
  "apex-core",
  "async-trait",
  "futures",
+ "keyring",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]

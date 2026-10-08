@@ -28,7 +28,8 @@ import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { appendToolToken, findTrigger, insertAt } from "./composerMenu";
 import { createPortal } from "react-dom";
 import { ThreadDetails, type DetailsHost } from "./ThreadDetails";
-import type { Backend } from "./backend";
+import type { Backend, KeyState } from "./backend";
+import { keyNameFor } from "./settings";
 import { providerEnabled, providerForConfig } from "./providers";
 import { registerRoom, startHub } from "./hub";
 import { rememberModel, rememberedModels } from "./modelMemory";
@@ -241,6 +242,8 @@ interface Draft {
   auto_effort?: boolean;
   baseUrl: string;
   keyEnv: string;
+  /** A key typed into the form and not yet saved. Saved to the machine, never into the bot's settings. */
+  apiKey?: string;
   command: string;
   persona: string;
   access: Access;
@@ -251,6 +254,17 @@ function emptyDraft(preset: PresetKey, access: Access = "read"): Draft {
   const found = PRESETS.find((p) => p.key === preset);
   const allowed = access === "ask" && !found?.agent?.asksFirst ? "read" : access;
   return { name: "", preset, model: "", effort: "", baseUrl: found?.api?.baseUrl ?? "", keyEnv: "", command: "", persona: "", access: allowed };
+}
+
+/** The name the draft's key is filed under: the one it names, else one made from the address or the bot's name. */
+export function keyNameOf(draft: Pick<Draft, "keyEnv" | "baseUrl" | "name">): string {
+  return draft.keyEnv.trim() || keyNameFor(draft.baseUrl) || (slug(draft.name) ? `${slug(draft.name).toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY` : "");
+}
+
+function keyNote(state: KeyState | null, name: string): string {
+  if (state === "saved") return `Saved on this machine as ${name}. Leave blank to keep it.`;
+  if (state === "environment") return `Using ${name} from the environment.`;
+  return "Kept in this Mac's Keychain (a private file on Linux), never in your chats.";
 }
 
 /** Put an argument back into command-line form, quoting it if it has spaces. */
@@ -528,6 +542,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [draft, setDraft] = useState<Draft>(() => emptyDraft(firstPreset, newBotAccess));
   const [apiModels, setApiModels] = useState<string[]>([]);
   const [modelNote, setModelNote] = useState("");
+  /** Where the form's API key would come from on this machine. */
+  const [keyState, setKeyState] = useState<KeyState | null>(null);
   /** What each coding agent reports it can use, asked once per tool. */
   const [reported, setReported] = useState<Partial<Record<AgentTool, ModelChoice[]>>>({});
   const [formError, setFormError] = useState("");
@@ -1094,9 +1110,25 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     setEditing(null);
   };
 
+  /** Save a typed key to this machine and point the draft at it. A draft with no key named picks up one already saved for its provider. */
+  const withKey = async (draft: Draft): Promise<Draft> => {
+    if (draft.preset !== "api") return draft;
+    const name = keyNameOf(draft);
+    if (draft.apiKey?.trim()) {
+      if (!name) throw new Error("Give the bot a name first, so its key can be saved.");
+      await backend.apiKeySave(name, draft.apiKey);
+      setDraft((d) => ({ ...d, keyEnv: name, apiKey: "" }));
+      setKeyState("saved");
+      return { ...draft, keyEnv: name, apiKey: "" };
+    }
+    return !draft.keyEnv.trim() && name && keyState && keyState !== "missing" ? { ...draft, keyEnv: name } : draft;
+  };
+
   const saveParticipant = async () => {
     if (!editing && !providerEnabled(draft.preset, disabledProviders)) return setFormError("This provider is disabled. Enable it in Providers to add a bot.");
-    const built = draftToConfig(draft);
+    let ready: Draft;
+    try { ready = await withKey(draft); } catch (error) { return setFormError(error instanceof Error ? error.message : String(error)); }
+    const built = draftToConfig(ready);
     if (typeof built === "string") return setFormError(built);
     // When editing, the @handle stays the same even if the name changes.
     const config = { ...built, id: editing ?? built.id, appearance: built.appearance ?? (editing ? appearance(editing) : createAppearance([...identities.current.values()])) };
@@ -1979,6 +2011,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
+  const keyName = adding && draft.preset === "api" ? keyNameOf(draft) : "";
+  useEffect(() => {
+    setKeyState(null);
+    if (!keyName || backend.demo) return;
+    let current = true;
+    const timer = setTimeout(() => backend.apiKeyStatus([keyName]).then(([state]) => { if (current) setKeyState(state ?? null); }, () => {}), 250);
+    return () => { current = false; clearTimeout(timer); };
+  }, [backend, keyName]);
 
   const preset = PRESETS.find((p) => p.key === draft.preset)!;
 
@@ -2004,7 +2044,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (!baseUrl.trim()) return setModelNote("Enter the base URL first.");
     setModelNote("Looking for models…");
     try {
-      const found = await backend.apiModels(baseUrl.trim(), keyEnv.trim() || null);
+      // Some servers only list models for a key, so save a typed one first.
+      const keyed = await withKey({ ...draft, baseUrl, keyEnv });
+      const found = await backend.apiModels(baseUrl.trim(), keyed.keyEnv.trim() || (keyState && keyState !== "missing" ? keyNameOf(keyed) : "") || null);
       setApiModels(found);
       setModelNote(found.length ? `Found ${found.length} model${found.length === 1 ? "" : "s"}. Pick one or type a name.` : "The server answered but listed no models.");
       if (found.length) setDraft((d) => (d.model ? d : { ...d, model: found[0] }));
@@ -2233,11 +2275,20 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 {modelNote && <span className="hint">{modelNote}</span>}
               </label>
               {draft.preset === "api" && (
+                <div className="key-field">
                 <label>
-                  API key variable
-                  <input name="key-env" value={draft.keyEnv} onChange={(e) => set("keyEnv", e.target.value)} placeholder="e.g. MY_PROVIDER_API_KEY" />
-                  <span className="hint">The name of an environment variable holding the key. The key itself is never stored.</span>
+                  API key
+                  <input name="api-key" type="password" autoComplete="off" spellCheck={false} value={draft.apiKey ?? ""} onChange={(e) => set("apiKey", e.target.value)} placeholder={keyState === "saved" ? "Saved. Paste a new key to replace it" : keyState === "environment" ? "Found in the environment. Paste one to save it" : "Paste your API key"} />
+                  <span className="hint">{keyNote(keyState, keyNameOf(draft))}</span>
                 </label>
+                <details className="key-name">
+                  <summary>Key name</summary>
+                  <div className="key-name-body">
+                  <input name="key-env" aria-label="Key name" value={draft.keyEnv} onChange={(e) => set("keyEnv", e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))} placeholder={keyNameOf({ ...draft, keyEnv: "" }) || "e.g. MY_PROVIDER_API_KEY"} />
+                  <span className="hint">Bots that share a name share one key. An environment variable with this name also works.</span>
+                  </div>
+                </details>
+                </div>
               )}
             </>
           )}

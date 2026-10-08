@@ -3,8 +3,8 @@
 // controls stay in thread details and the Agents tab.
 
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Backend } from "./backend";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
 import { DEFAULT_DECISION, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
@@ -143,16 +143,69 @@ function General({ backend }: { backend: Backend }) {
   </div>;
 }
 
+/** Picture providers read their keys from these names; each one's /image name is shown beside it. */
+const IMAGE_KEYS = [{ name: "OPENAI_API_KEY", image: "chatgpt" }, { name: "XAI_API_KEY", image: "grok" }, { name: "VENICE_API_KEY", image: "venice" }];
+const KEY_STATE_LABEL: Record<KeyState, string> = { saved: "Saved", environment: "From environment", missing: "Missing" };
+
+function usageNote(agents: number, image?: string) {
+  const parts = [];
+  if (agents > 0) parts.push(`Used by ${agents} saved ${agents === 1 ? "agent" : "agents"}`);
+  if (image) parts.push(`Used by /image ${image}`);
+  return parts.length > 0 ? `${parts.join(". ")}.` : "Not used by a saved agent yet.";
+}
+
+function KeyRow({ name, note, state, backend, onChanged }: { name: string; note: string; state?: KeyState; backend: Backend; onChanged: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const fail = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+  const save = async () => {
+    const value = draft.trim();
+    if (!value || busy) return;
+    setDraft("");
+    setBusy(true); setError("");
+    try { await backend.apiKeySave(name, value); setEditing(false); onChanged(); }
+    catch (e) { fail(e); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    setBusy(true); setError("");
+    try { await backend.apiKeyRemove(name); onChanged(); }
+    catch (e) { fail(e); }
+    finally { setBusy(false); }
+  };
+  return <>
+    <Row label={name} note={error || note}>
+      {!backend.demo && state && <span className={state === "missing" ? "key-state missing" : "key-state found"}><span className="dot" aria-hidden="true" />{KEY_STATE_LABEL[state]}</span>}
+      {!editing && <button className="ghost" disabled={busy} onClick={() => { setError(""); setEditing(true); }}>{state === "saved" || state === "environment" ? "Replace" : "Add key"}</button>}
+      {state === "saved" && !editing && <button className="ghost" disabled={busy} onClick={remove}>Remove</button>}
+    </Row>
+    {editing && <Row label="New key" note="Enter saves. Deck never shows it again.">
+      <input type="password" aria-label={`${name} value`} autoComplete="off" spellCheck={false} disabled={busy} value={draft} autoFocus onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); save(); } else if (e.key === "Escape") { setDraft(""); setEditing(false); } }} />
+      <button disabled={!draft.trim() || busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
+      <button className="ghost" disabled={busy} onClick={() => { setDraft(""); setEditing(false); }}>Cancel</button>
+    </Row>}
+  </>;
+}
+
 function Providers({ settings, onChange, agents, profiles, backend }: { settings: AppSettings; onChange: (s: AppSettings) => void; agents: AgentInfo[]; profiles: ParticipantConfig[]; backend: Backend }) {
   const disabled = settings.disabledProviders;
   const setDisabled = (next: string[]) => onChange({ ...settings, disabledProviders: next });
   const rows = [...agents.map((a) => ({ key: a.key, label: a.label, detail: a.found ? a.program : "Not installed" })), ...EXTRAS];
-  const keys = useMemo(() => keyNamesIn(profiles), [profiles]);
-  const [present, setPresent] = useState<boolean[] | null>(null);
-  useEffect(() => {
-    setPresent(null);
-    if (keys.length > 0) backend.envPresent(keys.map((k) => k.name)).then(setPresent, () => setPresent(null));
-  }, [backend, keys]);
+  const uses = useMemo(() => {
+    const map = new Map<string, { agents: number; image?: string }>();
+    for (const k of keyNamesIn(profiles)) map.set(k.name, { agents: k.uses });
+    for (const { name, image } of IMAGE_KEYS) map.set(name, { agents: map.get(name)?.agents ?? 0, image });
+    return map;
+  }, [profiles]);
+  const names = useMemo(() => [...uses.keys()].sort((a, b) => a.localeCompare(b)), [uses]);
+  const [states, setStates] = useState<Record<string, KeyState>>({});
+  const refresh = useCallback(() => {
+    if (names.length === 0) { setStates({}); return; }
+    backend.apiKeyStatus(names).then((list) => setStates(Object.fromEntries(names.map((n, i) => [n, list[i]]))), () => setStates({}));
+  }, [backend, names]);
+  useEffect(() => { refresh(); }, [refresh]);
   return <>
     <DecisionSettingsPanel settings={settings} onChange={onChange} backend={backend} />
     <div className="settings-card provider-grid">
@@ -168,16 +221,10 @@ function Providers({ settings, onChange, agents, profiles, backend }: { settings
     </div>
     <div className="settings-subhead">
       <h3>API keys</h3>
-      <p>The environment variables your saved agents read their keys from. The keys themselves are never stored.</p>
+      <p>Keys your bots and /image use. Saved in this Mac's Keychain, or a private file on Linux servers. Deck never shows a saved key again.</p>
     </div>
     <div className="settings-card">
-      {keys.length === 0 && <Row label="No keys yet" note="Saved agents that use an API name their key's variable in the bot form." />}
-      {keys.map((k, i) => {
-        const found = present?.[i];
-        return <Row key={k.name} label={k.name} note={<>Used by {k.uses} saved {k.uses === 1 ? "agent" : "agents"}{found === false && !backend.demo ? ". Apps opened from the Dock don't see variables set in ~/.zshrc. Set it with launchctl setenv, or start Apex Deck from a terminal." : ""}</>}>
-          {found !== undefined && !backend.demo && <span className={found ? "key-state found" : "key-state missing"}><span className="dot" aria-hidden="true" />{found ? "Found" : "Not found"}</span>}
-        </Row>;
-      })}
+      {names.map((name) => <KeyRow key={name} name={name} note={usageNote(uses.get(name)?.agents ?? 0, uses.get(name)?.image)} state={states[name]} backend={backend} onChanged={refresh} />)}
     </div>
   </>;
 }

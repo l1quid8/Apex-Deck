@@ -11,6 +11,10 @@ import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, FolderL
 
 type Unlisten = () => void;
 
+/** Where an API key comes from: saved by Deck, set in the environment, or missing. */
+export type KeyState = "saved" | "environment" | "missing";
+const demoKeys = new Set<string>();
+
 /** A picture kept in the Library: `room` is the thread it was made in, `by` the bot. */
 /** `bytes` is the file's size, when the host could read it. */
 export type LibraryItem = { file: string; kind: "image" | string; source: string; room: string; by?: string; created: number; path: string; bytes?: number };
@@ -47,6 +51,12 @@ export interface Backend {
   dataFolder(): Promise<string>;
   /** Whether each environment variable is set, as the app sees it. Never its value. */
   envPresent(names: string[]): Promise<boolean[]>;
+  /** Where each API key would come from on this machine: saved by Deck, the environment, or nowhere. Never the key. */
+  apiKeyStatus(names: string[]): Promise<KeyState[]>;
+  /** Save an API key on this machine, in the Keychain on a Mac. */
+  apiKeySave(name: string, key: string): Promise<void>;
+  /** Forget a key Deck saved. One in the environment stays. */
+  apiKeyRemove(name: string): Promise<void>;
   /** Look at a web address before the Preview pane loads it: does anything answer, and may it be framed. */
   previewProbe(address: string): Promise<PreviewProbe>;
 
@@ -576,6 +586,9 @@ function demoBackend(): Backend {
     },
     dataFolder: async () => "Browser storage (preview mode)",
     envPresent: async (names) => names.map(() => false),
+    apiKeyStatus: async (names) => names.map((name) => demoKeys.has(name) ? "saved" : "missing"),
+    apiKeySave: async (name) => { demoKeys.add(name); },
+    apiKeyRemove: async (name) => { demoKeys.delete(name); },
 
     ptySpawn: async ({ id, agent }) => {
       const what = agent ? `${agent} (browser demo)` : "shell (browser demo)";

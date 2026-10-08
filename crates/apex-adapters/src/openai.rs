@@ -78,14 +78,18 @@ pub(crate) fn parse_sse_line(line: &str) -> Vec<SseLine> {
     out
 }
 
+/// What to tell someone whose bot has no key under `name`.
+pub(crate) fn no_key(name: &str) -> String {
+    format!("no API key is saved for {name}. Open this bot's settings and paste your key into API key, or add it in Settings → Providers → API keys.")
+}
+
 /// The model names an OpenAI-compatible server offers, from its `/models`
 /// endpoint, sorted. Used to fill the model picker.
 pub async fn list_models(base_url: &str, api_key_env: Option<&str>) -> Result<Vec<String>, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let mut call = reqwest::Client::new().get(&url).timeout(std::time::Duration::from_secs(8));
-    if let Some(name) = api_key_env.filter(|n| !n.is_empty()) {
-        let key = std::env::var(name)
-            .map_err(|_| format!("environment variable {name} is not set"))?;
+    // The list is often public, so a missing key isn't an error here.
+    if let Some(key) = api_key_env.filter(|n| !n.is_empty()).and_then(crate::keys::lookup) {
         call = call.bearer_auth(key);
     }
     let response = call.send().await.map_err(|e| format!("could not reach {url}: {e}"))?;
@@ -122,9 +126,7 @@ impl Participant for OpenAiCompatParticipant {
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         let mut call = self.client.post(&url).json(&request_body(model, self.config.effort.as_deref(), &request));
         if let Some(name) = api_key_env.as_deref().filter(|n| !n.is_empty()) {
-            let key = std::env::var(name).map_err(|_| {
-                ParticipantError::NotConfigured(format!("environment variable {name} is not set"))
-            })?;
+            let key = crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?;
             call = call.bearer_auth(key);
         }
 
@@ -136,7 +138,12 @@ impl Participant for OpenAiCompatParticipant {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             let snippet: String = body.chars().take(300).collect();
-            return Err(ParticipantError::Failed(format!("{url} returned {status}: {snippet}")));
+            let hint = match status.as_u16() {
+                401 | 403 if api_key_env.as_deref().is_none_or(str::is_empty) => " This server wants an API key. Open this bot's settings and paste one into API key.",
+                401 | 403 => " The saved API key was refused. Open this bot's settings and paste a new one into API key.",
+                _ => "",
+            };
+            return Err(ParticipantError::Failed(format!("{url} returned {status}: {snippet}{hint}")));
         }
 
         let mut reply = Reply::default();
