@@ -3,10 +3,15 @@
 import json
 import sys
 rows = []
+thinking_rows = []
 with open(sys.argv[1], encoding="utf-8") as source:
     for line in source:
         try:
-            rows.append(json.loads(line))
+            row = json.loads(line)
+            if row.get("kind") == "thinking":
+                thinking_rows.append(row)
+            else:
+                rows.append(row)
         except json.JSONDecodeError:
             continue
 usable = [r for r in rows if not r.get("stale") and "result" in r]
@@ -15,5 +20,9 @@ print(f"Observations: {len(rows)}; usable: {len(usable)}; stale: {sum(bool(r.get
 print(f"Agreement with Deck: {agree}/{len(usable)} (does not measure correctness)")
 if usable:
     print(f"Mean latency: {sum(r['result']['latency_ms'] for r in usable)/len(usable):.0f} ms")
-    costs = [r['result'].get('usage', {}).get('cost') for r in usable if isinstance(r['result'].get('usage'), dict)]
-    print(f"Reported cost: ${sum(c for c in costs if isinstance(c, (int, float))):.6f}; unknown costs excluded")
+costs = [r['result'].get('usage', {}).get('cost') for r in rows if isinstance(r.get('result', {}).get('usage'), dict)]
+costs += [r['usage'].get('cost') for r in thinking_rows if isinstance(r.get('usage'), dict)]
+if usable or thinking_rows:
+    print(f"Reported cost: ${sum(c for c in costs if isinstance(c, (int, float))):.6f}; includes thinking calls, unknown costs excluded")
+if thinking_rows:
+    print(f"Thinking replies: {len(thinking_rows)}; stale: {sum(bool(r.get('stale')) for r in thinking_rows)}; errors: {sum('error' in r for r in thinking_rows)}")

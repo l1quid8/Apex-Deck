@@ -16,7 +16,9 @@ import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
-import { daemonBinary, localDaemon } from './sidecar.mjs';
+import { answers, daemonBinary, dataFolder, localDaemon, remoteAccessSaved, saveRemoteAccess, waitForSocket } from './sidecar.mjs';
+import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
+import { changeRemoteAccess } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -50,14 +52,85 @@ const bin = daemonBinary({ packaged: app.isPackaged, resourcesPath: process.reso
 /** The local daemon, once started or found. */
 let local = null;
 let starting = null;
+/** Set while the daemon on this Mac is stopping to start again with Remote access changed. */
+let restarting = null;
+
+/** Settings → Remote access, kept with the app's own settings. */
+const desktopSettingsFile = () => path.join(app.getPath('userData'), 'desktop-settings.json');
+/** Read once the app is ready; the daemon serves `--remote` while it is on. */
+let remoteAccess = false;
+
+/** Whether the daemon can run as a LaunchAgent, which outlives the app (see launchAgent.mjs). */
+const agentMode = usesLaunchAgent({ packaged: app.isPackaged, dataDir });
+/** Whether the LaunchAgent should be the daemon right now: Remote access is on. */
+const agentWanted = () => agentMode && remoteAccess;
+/** Where the agent's daemon writes its output: the app's logs folder. */
+const agentLogFile = () => path.join(app.getPath('logs'), 'apex-daemon.log');
+/** The daemon's `daemon.sock`, whichever way it was started. */
+const socketFile = async () => path.join(await dataFolder(bin, dataDir), 'daemon.sock');
+
+/** Install the LaunchAgent (or leave it as it is) and attach to the daemon it runs. */
+async function startAgent() {
+  const logFile = agentLogFile();
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  const socket = await socketFile();
+  const plistPath = agentPlistPath();
+  const uid = process.getuid();
+  const got = await startAgentDaemon({
+    socket,
+    infoFile: path.join(path.dirname(socket), 'daemon.json'),
+    uid,
+    answers,
+    install: () => installAgent({ plistPath, plist: agentPlist({ bin, dataDir, logFile, build: daemonBuild(bin) }), uid }),
+    remove: () => removeAgent({ plistPath, uid }),
+  });
+  // A daemon Deck didn't start keeps its own flags; Settings says so.
+  if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
+  return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
+}
+
+/** Remove the LaunchAgent, so the daemon stops; wait until it has let go of the data folder. */
+async function stopAgent() {
+  const wasRunning = await removeAgent({ plistPath: agentPlistPath(), uid: process.getuid() });
+  if (wasRunning && !await waitForSocket(await socketFile(), { wanted: false })) {
+    throw new Error("The background apex-daemon didn't stop within 15 seconds.");
+  }
+}
+
+/** A daemon Deck can restart: one it started, or the LaunchAgent (launchctl restarts that one). */
+const restartable = (daemon) => daemon.owned || daemon.agent === true;
 
 /** The daemon on this Mac: the one Deck started if it's still running, else start or find one. */
 function ensureLocal() {
+  if (restarting) return restarting.then(() => ensureLocal());
   if (local?.owned && local.alive()) return Promise.resolve(local);
-  starting ??= localDaemon({ bin, dataDir, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) })
+  // launchd keeps the agent's daemon up; windows reconnect to it by themselves.
+  if (local?.agent && agentWanted()) return Promise.resolve(local);
+  starting ??= (agentWanted()
+    ? startAgent()
+    : localDaemon({ bin, dataDir, remote: remoteAccess, log: (text) => process.stderr.write(`[apex-daemon] ${text}`) }))
     .then((daemon) => (local = daemon))
     .finally(() => { starting = null; });
   return starting;
+}
+
+/**
+ * Make this Mac's daemon match the Remote access setting, which is already
+ * saved and set when this runs. The daemon Deck started is stopped; the
+ * LaunchAgent is removed when Remote access is off, and started by
+ * ensureLocal when it is on. A daemon Deck found running is left alone: it
+ * keeps the flags it was started with. Windows reconnect by themselves.
+ */
+async function restartLocal() {
+  if (starting) await starting.catch(() => {});
+  restarting ??= (async () => {
+    const old = local;
+    local = null;
+    if (old?.owned && old.alive()) await old.stop();
+    if (agentMode && !remoteAccess) await stopAgent();
+  })().finally(() => { restarting = null; });
+  await restarting;
+  return ensureLocal();
 }
 
 // ------------------------------------------------------------ hosts
@@ -184,6 +257,28 @@ handle('connection:current', async ({ host }) => {
   if (remote) return { id: remote.id, name: remote.name, remote: true, owned: false };
   const daemon = await ensureLocal().catch(() => null);
   return { id: LOCAL, name: LOCAL_NAME, remote: false, owned: daemon?.owned ?? true };
+});
+
+/** Settings → Remote access: the saved switch, and whether Deck can restart the daemon (so can apply a change). */
+handle('remote:get', async () => {
+  const daemon = await ensureLocal().catch(() => null);
+  return { on: remoteAccess, owned: daemon ? restartable(daemon) : true };
+});
+handle('remote:set', async (_entry, on) => {
+  const next = on === true;
+  if (next === remoteAccess) {
+    const daemon = await ensureLocal();
+    return { on: remoteAccess, owned: restartable(daemon) };
+  }
+  // A daemon that won't start with the change gets the old setting back, saved and running.
+  const daemon = await changeRemoteAccess({
+    from: remoteAccess,
+    to: next,
+    save: (value) => saveRemoteAccess(desktopSettingsFile(), value),
+    set: (value) => { remoteAccess = value; },
+    restart: restartLocal,
+  });
+  return { on: remoteAccess, owned: restartable(daemon) };
 });
 
 handle('shell:pickPath', async ({ win }, kind, title) => {
@@ -369,7 +464,7 @@ async function finishQuit() {
   gate.confirm();
   // Sign-ins in the docked browser last: app.exit doesn't wait for Chromium to save them.
   await flushProfile();
-  // The daemon Deck started ends with it; a daemon it found goes on.
+  // The daemon Deck started ends with it; a daemon it found, or the LaunchAgent, goes on.
   if (local?.owned) await local.stop();
   app.exit(0);
 }
@@ -554,10 +649,17 @@ app.whenReady().then(async () => {
     app.exit(0);
     return;
   }
+  remoteAccess = remoteAccessSaved(desktopSettingsFile());
   const { state, warnings } = loadHosts(hostsFile());
   hosts = state;
   warnings.forEach((warning) => console.warn(`hosts: ${warning}`));
   Menu.setApplicationMenu(menu());
+  // Remote access off but a LaunchAgent left from when it was on: stop it before the app starts its own daemon.
+  if (agentMode && !remoteAccess && fs.existsSync(agentPlistPath())) {
+    await stopAgent().catch((e) => console.warn(`launch agent: ${e.message}`));
+  }
+  // Started now rather than when a window asks, so paired phones can reach this Mac from the start.
+  if (agentWanted()) ensureLocal().catch((e) => console.warn(`apex-daemon: ${e.message}`));
   // Each window a step down from the one before, so none hides another.
   const first = createWindow(LOCAL);
   rememberWindows();

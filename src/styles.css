@@ -2139,6 +2139,8 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .bot-settings label { display: grid; gap: 5px; font-size: 12px; }
 .bot-settings select, .bot-settings input { width: 100%; min-width: 0; }
 .bot-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.bot-settings label.check-label, .add-form label.check-label { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.bot-settings label.check-label input, .add-form label.check-label input { width: auto; flex: none; margin: 0; }
 .settings-pending { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 
 /* ---------------------------------------------------------------- settings */
@@ -2181,6 +2183,33 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .settings-subhead { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 .settings-subhead h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.02em; }
 .settings-subhead p, .settings-note { margin: 0; font-size: 12px; color: var(--muted); }
+.remote-access input[role="switch"] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.remote-addresses { align-items: flex-end; }
+.remote-addresses input { margin-top: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.confirm.pair-sheet { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; gap: 10px; }
+.pair-code-area { display: flex; gap: 16px; align-items: stretch; }
+.pair-qr { flex: none; width: 220px; height: 220px; display: grid; place-items: center; border-radius: 8px; background: #fff; overflow: hidden; }
+.pair-qr svg { width: 100%; height: 100%; display: block; }
+.pair-qr .muted { color: #59636e; font-size: 12px; padding: 12px; text-align: center; }
+.pair-code-side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.pair-countdown { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.pair-code-side small { font-size: 12px; }
+.pair-link { margin-top: auto; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; max-height: 72px; overflow: hidden; user-select: all; }
+.pair-code-side button { align-self: flex-start; }
+.pair-claim { display: flex; flex-direction: column; gap: 6px; }
+.pair-claim p { margin: 0; font-size: 13px; }
+.pair-claim-code { font-size: 30px; font-weight: 650; letter-spacing: 0.18em; }
+.pair-warning { color: var(--warn); }
+.pair-scope { margin: 4px 0 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pair-scope:disabled { opacity: 0.55; }
+.pair-scope > label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
+.pair-scope select { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; color: var(--text); }
+.pair-scope small { font-size: 12px; line-height: 1.5; }
+.pair-thread-choice { display: flex; gap: 16px; font-size: 13px; }
+.pair-thread-choice label, .pair-thread-list label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.pair-thread-choice input, .pair-thread-list input { margin: 0; accent-color: var(--accent); }
+.pair-thread-list { max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.pair-thread-list span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .key-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
 .key-state .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .key-state.found { color: var(--brand-cyan); }

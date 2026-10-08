@@ -27,3 +27,14 @@ fn echoed_secrets_and_unknown_fields_never_survive_normalization() {
     invalid["model"] = json!("echoed secret with spaces");
     assert!(normalize_response(invalid, 5).is_err());
 }
+
+#[test]
+fn thinking_is_typed_and_provider_explanations_are_not_logged() {
+    let payload = json!({"model":"clef","answers":{"who_replies":{"choice":"nobody","probabilities":{"nobody":1.0}},"awaiting_human":{"noul":0.0},"thinking":{"choice":"high","probabilities":{"low":0.1,"medium":0.2,"high":0.7},"explanation":"private chat"}}});
+    let result = normalize_response(payload.clone(), 20).unwrap();
+    assert_eq!(serde_json::to_value(result).unwrap()["thinking"], json!({"choice":"high","probabilities":{"low":0.1,"medium":0.2,"high":0.7}}));
+    for thinking in [json!({"choice":"private chat","probabilities":{"private chat":1.0}}), json!({"choice":"high","probabilities":{"low":-0.1,"medium":0.2,"high":0.9}}), json!({"choice":"low","probabilities":{"low":0.1,"medium":0.2,"high":0.7}})] {
+        let mut invalid = payload.clone(); invalid["answers"]["thinking"] = thinking;
+        assert!(normalize_response(invalid, 0).is_err());
+    }
+}

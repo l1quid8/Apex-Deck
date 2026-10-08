@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld('apexDeck', {
     check: (fields) => ipcRenderer.invoke('connection:check', fields),
     update: (id, fields) => ipcRenderer.invoke('connection:update', id, fields),
   },
+  remote: {
+    get: () => ipcRenderer.invoke('remote:get'),
+    set: (on) => ipcRenderer.invoke('remote:set', on),
+  },
   shell: {
     pickPath: (kind, title) => ipcRenderer.invoke('shell:pickPath', kind, title),
     saveFile: (name, contents) => ipcRenderer.invoke('shell:saveFile', name, contents),

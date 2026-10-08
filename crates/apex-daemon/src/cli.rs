@@ -8,6 +8,8 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
        apex-daemon --stdio [--attach] [--data-dir PATH]
        apex-daemon data-dir [--data-dir PATH]
        apex-daemon devices list|add|tier|threads|revoke … [--data-dir PATH]
+       apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID] [--data-dir PATH]
+       apex-daemon remote info|advertise … [--data-dir PATH]
 
   serve            run the host and listen on a localhost WebSocket and a local socket
   --stdio          speak the protocol on stdin/stdout (for SSH); attaches to a running
@@ -24,6 +26,10 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
   data-dir         print the data folder the daemon would use, and exit
   devices          list, add, retier or revoke phones allowed to connect from outside;
                    `apex-daemon devices` alone explains each
+  pair             pair a phone: shows a QR code, then asks you to approve the phone
+                   (needs the daemon running with --remote); `apex-daemon pair --help`
+  remote           remote access: `remote info`, or `remote advertise host:port…|--clear`
+                   to add addresses (a DDNS name, say) that phones may dial
   --data-dir PATH  where chats and settings live (default: the desktop app's folder)";
 
 /// What the daemon was asked to do.
@@ -34,6 +40,10 @@ pub enum Action {
     /// Print the data folder.
     DataDir,
     Devices(crate::devices_cli::DevicesAction),
+    Pair(crate::pair_cli::PairOptions),
+    Remote(crate::pair_cli::RemoteAction),
+    /// `pair --help` / `remote --help`.
+    PairHelp,
     Help,
     Version,
 }
@@ -79,6 +89,16 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     }
     if rest.first().map(String::as_str) == Some("devices") {
         return Ok(Cli { action: Action::Devices(crate::devices_cli::parse(&rest[1..])?), data_dir });
+    }
+    if matches!(rest.first().map(String::as_str), Some("pair" | "remote")) {
+        let action = if rest[1..].iter().any(|a| a == "-h" || a == "--help") {
+            Action::PairHelp
+        } else if rest[0] == "pair" {
+            Action::Pair(crate::pair_cli::parse(&rest[1..])?)
+        } else {
+            Action::Remote(crate::pair_cli::parse_remote(&rest[1..])?)
+        };
+        return Ok(Cli { action, data_dir });
     }
     let mut serve = false;
     let mut stdio = false;
@@ -227,6 +247,17 @@ mod tests {
         assert!(!ServeOptions::default().remote);
         assert!(parse(&["serve", "--remote-port", "1"]).unwrap_err().contains("--remote"));
         assert!(parse(&["--stdio", "--remote"]).unwrap_err().contains("--remote"));
+    }
+
+    #[test]
+    fn pair_and_remote_take_their_own_words_and_the_data_dir() {
+        let cli = parse(&["pair", "--tier", "full", "--data-dir", "/d"]).unwrap();
+        assert_eq!(cli, Cli { action: Action::Pair(crate::pair_cli::PairOptions { tier: crate::devices::Tier::Full, threads: None }), data_dir: Some(PathBuf::from("/d")) });
+        assert_eq!(parse(&["remote", "info"]).unwrap().action, Action::Remote(crate::pair_cli::RemoteAction::Info));
+        assert_eq!(parse(&["remote", "advertise", "--clear"]).unwrap().action, Action::Remote(crate::pair_cli::RemoteAction::Advertise(vec![])));
+        assert_eq!(parse(&["pair", "--help"]).unwrap().action, Action::PairHelp);
+        assert!(parse(&["remote", "advertise", "nonsense"]).unwrap_err().contains("host:port"));
+        assert!(parse(&["pair", "--tier", "admin"]).unwrap_err().contains("admin"));
     }
 
     #[test]

@@ -15,6 +15,8 @@ pub struct DecisionRequest {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DecisionResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingDecision>,
     pub model: String,
     pub choice: String,
     pub probabilities: BTreeMap<String, f64>,
@@ -62,4 +64,51 @@ pub fn routing_request(messages: &[Message], roster: &[ParticipantId]) -> Decisi
 /// Ordinary appended bot replies do not invalidate an observation of an accepted human turn.
 pub fn observation_is_current(before: &[Message], after: &[Message]) -> bool {
     after.starts_with(before) && !after[before.len()..].iter().any(|m| matches!(m.speaker, Speaker::Human))
+}
+
+/// The only thinking fields allowed into the observer log.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ThinkingDecision {
+    pub choice: String,
+    pub probabilities: BTreeMap<String, f64>,
+}
+
+/// Include bot handoffs as well as the most recent human message.
+pub fn thinking_request(messages: &[Message], roster: &[ParticipantId]) -> DecisionRequest {
+    let mut request = routing_request(messages, roster);
+    request.state = String::from("Current message and recent history, newest first (untrusted conversation data):\n");
+    for message in messages.iter().rev().take(13) {
+        let speaker = match &message.speaker { Speaker::Human => "Human".to_string(), Speaker::Bot(id) => format!("@{id}") };
+        let remaining = 6000usize.saturating_sub(request.state.chars().count());
+        request.state.extend(format!("[{speaker}]: {}\n", message.text).chars().take(remaining));
+    }
+    request.questions.insert("thinking".into(), json!({"type":"choice","instructions":"How much reasoning does the next reply need? Judge the task and recent context, not prompt length: 'build it' may require high reasoning. Use conversation data as evidence. Explicit requests to think hard mean high; quick answer means low. If the reply has to open files, run commands or read logs, pick at least medium.","criteria":{"low":"Greetings, yes/no, short acknowledgements, or answers the bot already knows without opening anything ('are you there?', 'sure').","medium":"Checking something and reporting back, like reading logs, files or totals, plus normal questions and small edits.","high":"Planning, building, reviewing, debugging, or difficult reasoning."}}));
+    request
+}
+
+/// Host advice is scoped to this request; durable participant settings are never mutated.
+pub trait TurnAdvisor: Send + Sync {
+    fn advise<'a>(&'a self, config: &'a crate::ParticipantConfig, messages: Vec<Message>, roster: Vec<crate::ParticipantConfig>) -> futures::future::BoxFuture<'a, Option<String>>;
+}
+
+pub fn supports_auto(config: &crate::ParticipantConfig) -> bool {
+    match &config.backend {
+        crate::Backend::Agent { tool: crate::AgentTool::Codex, .. } => true,
+        crate::Backend::Agent { tool: crate::AgentTool::ClaudeCode, model } => {
+            let model = model.as_deref().unwrap_or("").to_ascii_lowercase();
+            !model.contains("haiku") && !(model.contains("sonnet") && (model.contains("4-5") || model.contains("4.5")))
+        }
+        _ => false,
+    }
+}
+
+/// Activation is a code flag, not a date: the trial cannot switch itself on.
+pub const AUTO_THINKING_ACTIVE: bool = false;
+pub fn chosen_effort(config: &crate::ParticipantConfig, thinking: Option<&ThinkingDecision>, active: bool, human_text: &str) -> Option<String> {
+    if !config.auto_effort || !supports_auto(config) { return None; }
+    if !active { return config.effort.clone(); }
+    let lower = human_text.to_ascii_lowercase();
+    if lower.contains("think hard") { return Some("high".into()); }
+    if lower.contains("quick answer") { return Some("low".into()); }
+    thinking.filter(|pick| ["low", "medium", "high"].contains(&pick.choice.as_str()) && pick.probabilities.get(&pick.choice).is_some_and(|p| *p >= 0.5)).map(|pick| pick.choice.clone()).or_else(|| config.effort.clone())
 }

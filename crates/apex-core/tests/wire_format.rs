@@ -20,6 +20,7 @@ fn participant_config_shapes() {
         persona: "Be brief.".into(),
         access: Access::Edits,
         effort: Some("high".into()),
+        auto_effort: false,
         appearance: None,
     };
     assert_eq!(
@@ -273,4 +274,13 @@ fn token_totals_are_saved_per_bot() {
     totals.add(Some(1840), None);
     snapshot.usage.insert(ParticipantId::new("opus"), totals);
     assert_eq!(to_value(&snapshot).unwrap()["usage"], json!({ "opus": { "input": 1840, "output": 0, "turns": 1 } }));
+}
+
+#[test]
+fn auto_settings_round_trip_without_changing_the_backup() {
+    let mut parsed: ParticipantConfig = serde_json::from_value(json!({"id":"null","display_name":"Null","backend":{"kind":"agent","tool":"codex"},"effort":"ultra","auto_effort":true})).unwrap();
+    assert!(parsed.auto_effort);
+    assert_eq!(to_value(&parsed).unwrap()["effort"], "ultra");
+    parsed.auto_effort = false;
+    assert!(to_value(&parsed).unwrap().get("auto_effort").is_none());
 }

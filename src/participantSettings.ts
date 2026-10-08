@@ -28,11 +28,11 @@ export function mergeParticipant(current: ParticipantConfig, base: ParticipantCo
 }
 
 /** Apply explicit picks to a fresh config, including picks back to the original value. */
-export function applyTurnChange(current: ParticipantConfig, change: { model?: string; effort?: string }): ParticipantConfig {
+export function applyTurnChange(current: ParticipantConfig, change: { model?: string; effort?: string; auto_effort?: boolean }): ParticipantConfig {
   let backend = current.backend;
   if ('model' in change) {
     if (backend.kind === 'agent') backend = { ...backend, model: change.model?.trim() || null };
     else if (backend.kind === 'open_ai_compatible') backend = { ...backend, model: change.model?.trim() || '' };
   }
-  return { ...current, backend, effort: 'effort' in change ? change.effort || null : current.effort };
+  return { ...current, backend, effort: 'effort' in change ? change.effort || null : current.effort, auto_effort: change.auto_effort ?? ('effort' in change ? false : current.auto_effort ?? false) };
 }

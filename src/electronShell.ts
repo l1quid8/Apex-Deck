@@ -3,7 +3,7 @@
 // Electron's main process. Commands go over that link with DaemonClient; the
 // shell's own jobs go to main through the bridge.
 
-import type { Backend, BrowserApi, HostEntry, HostUpdateResult } from "./backend";
+import type { Backend, BrowserApi, HostEntry, HostUpdateResult, RemoteAccessState } from "./backend";
 import { commandBackend, type Shell, type Transport } from "./commandBackend.ts";
 import { createHostBackends, guardHostWrites } from "./hostBackends.ts";
 import { hostConnectionStore } from "./hostConnections.ts";
@@ -30,6 +30,10 @@ export interface DeckBridge {
     references(hostIds: string[]): Promise<void>;
     check(fields: { ssh: string; command?: string }): Promise<{ daemonHostId: string; version: string | null }>;
     update(id: string, fields: { name: string; ssh: string; command?: string }): Promise<HostUpdateResult>;
+  };
+  remote: {
+    get(): Promise<RemoteAccessState>;
+    set(on: boolean): Promise<RemoteAccessState>;
   };
   shell: {
     pickPath(kind: "directory" | "file", title: string): Promise<string | null>;
@@ -214,7 +218,8 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
     localConnection.setStatus(status);
   });
   localConnection.setFinishResync(() => client.finishResync());
-  const backend: Backend = guardHostWrites({ ...commandBackend(transport, shell), onMenu, hosts, browser,
+  const remoteAccess = plainErrors({ get: () => bridge.remote.get(), set: (on: boolean) => bridge.remote.set(on) });
+  const backend: Backend = guardHostWrites({ ...commandBackend(transport, shell), onMenu, hosts, browser, remoteAccess,
     host: { id: "local", name: "This Mac", connection: localConnection } }, localConnection);
   const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: (host, state) => {
     const connect = bridgeConnect(bridge, host.id);

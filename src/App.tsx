@@ -50,6 +50,7 @@ import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidt
 import { workingFor } from "./composerStatus";
 import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeApprovals } from "./approvals";
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
+import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, Workspace } from "./types";
 
@@ -131,6 +132,8 @@ export function App() {
   const { workspaces, panes, importedHostSessions } = records;
   /** The newest lists, for work that finishes after a folder picker or a host call. */
   const latest = useRef({ workspaces, panes });
+  const saveTag = useRef(Math.random().toString(36).slice(2));
+  const saveSeq = useRef(0);
   latest.current = { workspaces, panes };
   const setWorkspaces = useCallback((next: Workspace[] | ((old: Workspace[]) => Workspace[])) => setRecords(r => ({ ...r, workspaces: typeof next === "function" ? next(r.workspaces) : next })), []);
   const setPanes = useCallback((next: Pane[] | ((old: Pane[]) => Pane[])) => setRecords(r => ({ ...r, panes: typeof next === "function" ? next(r.panes) : next })), []);
@@ -349,11 +352,27 @@ export function App() {
     if (!backend) return;
     void backend.hosts?.references?.(workspaces.map(workspaceHost)).catch(() => {});
     saveWorkspaces(workspaces);
-    const session = sessionRef.current!;
+    // Tagged so its echo from the helper is told apart from the phone's edits.
+    const session = { ...sessionRef.current!, savedBy: `${saveTag.current}:${++saveSeq.current}` };
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
   }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed, importedHostSessions]);
+
+  // The phone saves threads straight to the Mac's session. Take its edits in
+  // before the next save here writes over them.
+  useEffect(() => {
+    if (!backend?.onSessionChanged) return;
+    let off: (() => void) | undefined;
+    let alive = true;
+    backend.onSessionChanged((remote) => {
+      const edit = remoteSessionEdit({ workspaces: latest.current.workspaces, panes: savedPanes(latest.current.panes) }, remote, { tag: saveTag.current, seq: saveSeq.current });
+      if (!edit) return;
+      const known = normalizeWorkspaces(edit.workspaces);
+      setRecords((r) => ({ ...r, workspaces: known, panes: loadedPanes(edit.panes, known.map((w) => w.id)) }));
+    }).then((stop) => { if (alive) off = stop; else stop(); }, () => {});
+    return () => { alive = false; off?.(); };
+  }, [backend]);
 
   // The saved machines, for server names in the sidebar. Settings can change them.
   useEffect(() => {

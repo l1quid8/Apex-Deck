@@ -11,14 +11,16 @@ import { DEFAULT_DECISION, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesI
 import { HostsSettings } from "./HostsSettings";
 import { ModsSettings } from "./ModsSettings";
 import { PairedDevicesSettings } from "./PairedDevicesSettings";
+import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { shortcutList } from "./shortcuts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "hosts" | "devices" | "providers" | "threads" | "terminal" | "mods" | "shortcuts";
+export type SettingsSection = "general" | "hosts" | "remote" | "devices" | "providers" | "threads" | "terminal" | "mods" | "shortcuts";
 
 const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
   { id: "hosts", label: "Hosts" },
+  { id: "remote", label: "Remote access" },
   { id: "devices", label: "Paired devices" },
   { id: "providers", label: "Providers" },
   { id: "threads", label: "New threads" },
@@ -57,8 +59,8 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
     return () => window.removeEventListener("keydown", key);
   }, [onClose]);
 
-  // Hosts and paired devices only exist in the Electron app.
-  const SECTIONS = ALL_SECTIONS.filter((s) => (s.id !== "hosts" && s.id !== "devices") || backend.hosts);
+  // Hosts, remote access and paired devices only exist in the Electron app.
+  const SECTIONS = ALL_SECTIONS.filter((s) => (s.id !== "hosts" && s.id !== "devices" && s.id !== "remote") || (s.id === "remote" ? backend.remoteAccess : backend.hosts));
   const index = Math.max(0, SECTIONS.findIndex((s) => s.id === section));
   return <div className="settings">
     <aside className="settings-nav">
@@ -80,6 +82,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
         </header>
         {section === "general" && <General backend={backend} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
+        {section === "remote" && backend.remoteAccess && <RemoteAccessSettings backend={backend} remote={backend.remoteAccess} />}
         {section === "devices" && backend.hosts && <PairedDevicesSettings backend={backend} />}
         {section === "providers" && <Providers settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} />}
         {section === "threads" && <Threads settings={settings} onChange={onChange} />}
@@ -93,6 +96,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
 
 const LEADS: Partial<Record<SettingsSection, string>> = {
   hosts: "The machine this window runs its threads and terminals on: this Mac, or another one over SSH.",
+  remote: "Let phones you pair reach this Mac when they aren't on its network.",
   devices: "Phones allowed to reach this machine from outside your network, and what each may do.",
   providers: "Choose which tools appear when adding terminals and bots.",
   mods: "Claude Code mods that Deck runs itself and draws in its own window, for every bot.",

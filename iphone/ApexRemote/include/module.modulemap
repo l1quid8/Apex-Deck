@@ -1,0 +1,4 @@
+module ApexRemoteFFI {
+    header "apex_remote.h"
+    export *
+}

@@ -97,6 +97,7 @@ test('decision settings round-trip through the daemon, remain off by default, an
   const settings = { version: 1, confirmSteer: true, decision: { enabled: false, provider: 'jev', accountId: '' } };
   await client.call('settings_save', { settings });
   assert.deepEqual(await client.call('settings_load'), settings);
+  assert.equal(await client.call('decision_key_status', {}), false);
   await assert.rejects(client.call('decision_key_save', { provider: 'jev', key: '' }), /API key must not be empty/);
   assert.deepEqual(await client.call('settings_load'), settings);
   assert.ok(!fs.readFileSync(path.join(data, 'saved-chats-v1', 'settings.json'), 'utf8').includes('decisionApiKey'));
@@ -150,4 +151,24 @@ test('two devices receive model/reasoning edits without overwriting unrelated se
   assert.equal(third.backend.model, 'new');
   const state = await desktop.call('room_state', { id: 'sync' });
   assert.deepEqual(state.snapshot.participants[0], third);
+});
+
+
+test('Auto and its original backup survive a daemon restart', { timeout: 30_000 }, async t => {
+  const data = fs.mkdtempSync('/tmp/ade-auto-');
+  let daemon = await serve(data);
+  const connect = () => new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
+  let client = connect();
+  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
+  await client.start();
+  const bot = { id: 'null', display_name: 'Null', backend: { kind: 'agent', tool: 'codex', model: null }, persona: '', access: 'read', effort: 'ultra', auto_effort: true };
+  await client.call('room_create', { id: 'auto', participants: [bot], options, cwd: null });
+  client.close(); await daemon.stop();
+  daemon = await serve(data); client = connect(); await client.start();
+  const state = await client.call('room_create', { id: 'auto', participants: [], options, cwd: null });
+  assert.equal(state.participants[0].auto_effort, true);
+  assert.equal(state.participants[0].effort, 'ultra');
+  const next = await client.call('room_update_participant', { id: 'auto', base: state.participants[0], participant: { ...state.participants[0], auto_effort: false } });
+  assert.equal(next.auto_effort, undefined);
+  assert.equal(next.effort, 'ultra');
 });

@@ -124,6 +124,8 @@ async fn start_remote(daemon: &Arc<Daemon>, data: &Path, options: &ServeOptions)
         return Ok(serde_json::Value::Null);
     }
     let (endpoint, info) = crate::remote::start(data, options.remote_port).await?;
+    // `pair_start` and `remote_info` read it from here.
+    let _ = daemon.endpoint.set(endpoint.clone());
     tokio::spawn(crate::remote::accept(Arc::clone(daemon), endpoint));
     Ok(info)
 }

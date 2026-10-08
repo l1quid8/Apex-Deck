@@ -1,5 +1,5 @@
 //! System One HTTP adapter. Credentials never appear in results or errors.
-use apex_core::decision::{DecisionProvider, DecisionRequest, DecisionResult};
+use apex_core::decision::{DecisionProvider, DecisionRequest, DecisionResult, ThinkingDecision};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -54,6 +54,7 @@ impl DecisionProvider for HttpDecisionProvider {
         }
         let value = serde_json::from_slice(&bytes).map_err(|_| "Decision provider returned invalid JSON")?;
         let result = normalize_response(value, started.elapsed().as_millis() as u64)?;
+        if request.questions.contains_key("thinking") && result.thinking.is_none() { return Err("Missing thinking answer".into()); }
         if !request.choices.contains_key(&result.choice) { return Err("Decision provider returned an unknown choice".into()); }
         if result.probabilities.len() != request.choices.len() || request.choices.keys().any(|k| !result.probabilities.contains_key(k)) { return Err("Decision probabilities do not match eligible choices".into()); }
         Ok(result)
@@ -82,5 +83,14 @@ pub fn normalize_response(mut value: Value, latency_ms: u64) -> Result<DecisionR
     for name in ["input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens", "cost"] {
         if let Some(n) = value["usage"][name].as_f64().filter(|n| n.is_finite() && *n >= 0.0) { usage.insert(name.to_string(), n); }
     }
-    Ok(DecisionResult { model, choice, probabilities, awaiting_human, latency_ms, usage })
+    let thinking = if let Some(answer) = answers.get("thinking") {
+        let choice = answer["choice"].as_str().filter(|c| ["low", "medium", "high"].contains(c)).ok_or("Invalid thinking choice")?;
+        let probabilities = answer["probabilities"].as_object().ok_or("Missing thinking probabilities")?;
+        if probabilities.len() != 3 || ["low", "medium", "high"].iter().any(|level| !probabilities.get(*level).is_some_and(probability)) { return Err("Invalid thinking probabilities".into()); }
+        let sum: f64 = probabilities.values().filter_map(Value::as_f64).sum();
+        let selected = probabilities[choice].as_f64().unwrap();
+        if (sum - 1.0).abs() > 0.02 || probabilities.values().filter_map(Value::as_f64).any(|p| p > selected) { return Err("Invalid thinking distribution".into()); }
+        Some(ThinkingDecision { choice: choice.into(), probabilities: probabilities.iter().map(|(k,v)| (k.clone(), v.as_f64().unwrap())).collect() })
+    } else { None };
+    Ok(DecisionResult { thinking, model, choice, probabilities, awaiting_human, latency_ms, usage })
 }

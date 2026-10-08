@@ -13,3 +13,19 @@ test('supported reasoning persists and default model stays null for agents', () 
   assert.equal(withTurnSettings(bot, '', 'high', ['high']).backend.model, null);
   assert.equal(withTurnSettings(bot, '', 'high', ['high']).effort, 'high');
 });
+
+import { applyTurnChange } from '../src/participantSettings.ts';
+test('Auto preserves the current level as its backup and a manual level turns Auto off', () => {
+  const auto = applyTurnChange(bot, { auto_effort: true });
+  assert.equal(auto.auto_effort, true);
+  assert.equal(auto.effort, 'ultra');
+  const manual = applyTurnChange(auto, { effort: 'high' });
+  assert.equal(manual.auto_effort, false);
+  assert.equal(manual.effort, 'high');
+  assert.equal(bot.auto_effort, undefined);
+});
+test('changing only the Auto backup keeps Auto on', () => {
+  const auto = applyTurnChange({ ...bot, auto_effort: true }, { effort: 'medium', auto_effort: true });
+  assert.equal(auto.effort, 'medium');
+  assert.equal(auto.auto_effort, true);
+});

@@ -27,6 +27,16 @@ use crate::{claude_session, report, BuildContext, Utf8Chunks};
 /// that keep working are never cut off; the person can still press Stop.
 const TURN_TIMEOUT: Duration = Duration::from_secs(900);
 
+fn effective_turn_config(config: &ParticipantConfig, effort: Option<&str>) -> ParticipantConfig {
+    let mut effective = config.clone();
+    if config.auto_effort && matches!(config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) && !apex_core::decision::supports_auto(config) {
+        effective.effort = None;
+    } else if apex_core::decision::supports_auto(config) {
+        if let Some(effort) = effort.filter(|level| ["low", "medium", "high"].contains(level)) { effective.effort = Some(effort.into()); }
+    }
+    effective
+}
+
 /// A participant backed by a command-line tool.
 ///
 /// Each turn starts the program fresh, writes the whole prompt to its
@@ -476,6 +486,13 @@ impl Participant for CliParticipant {
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
+        let effective = effective_turn_config(&self.config, request.effort_override.as_deref());
+        if effective != self.config {
+            let mut request = request;
+            request.effort_override = None;
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan };
+            return scoped.respond_with_approvals(request, on_progress, approver).await;
+        }
         // The Plan switch: the turn runs read-only, remembering the bot's own
         // access. A custom command can't be held to read-only.
         if request.plan && self.plan.is_none() {
@@ -657,4 +674,30 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
         assert!(last_heard.lock().unwrap().elapsed() < Duration::from_secs(5));
     }
 
+}
+
+#[cfg(test)]
+mod auto_tests {
+    use super::*;
+    #[test]
+    fn reply_override_uses_the_tools_flags_and_does_not_change_saved_settings() {
+        for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {
+            let config: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"bot","display_name":"Bot","backend":{"kind":"agent","tool":tool,"model":null},"effort":"xhigh"})).unwrap();
+            let temporary = effective_turn_config(&config, Some("low"));
+            let (_, args) = agent_command_with(tool, None, temporary.effort.as_deref(), Access::Read, false);
+            assert!(args.iter().any(|s| s == "low" || s == "model_reasoning_effort=\"low\""));
+            assert_eq!(config.effort.as_deref(), Some("xhigh"));
+            assert_eq!(effective_turn_config(&config, None).effort.as_deref(), Some("xhigh"));
+        }
+    }
+    #[test]
+    fn a_fixed_unsupported_model_is_not_changed_by_auto() {
+        let config: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"bot","display_name":"Bot","backend":{"kind":"agent","tool":"claude_code","model":"haiku"},"effort":"high"})).unwrap();
+        assert_eq!(effective_turn_config(&config, None), config);
+    }
+    #[test]
+    fn unsupported_claude_model_receives_no_effort_even_with_an_override() {
+        let config: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"bot","display_name":"Bot","backend":{"kind":"agent","tool":"claude_code","model":"haiku"},"effort":"high","auto_effort":true})).unwrap();
+        assert_eq!(effective_turn_config(&config, Some("low")).effort, None);
+    }
 }

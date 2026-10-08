@@ -2,16 +2,19 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { Backend } from "./backend";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { PairPhoneSheet } from "./PairPhoneSheet";
 import { TIERS, devicesApi, lastSeenText, shortId, threadsText, type PairedDevice, type Tier } from "./pairedDevices";
 
 // Settings → Paired devices: each phone allowed in from outside this network,
 // its access level, and Revoke, which cuts it off at once and for good.
+// Pair phone opens the QR sheet that adds one.
 
 export function PairedDevicesSettings({ backend }: { backend: Backend }) {
   const api = useMemo(() => devicesApi(backend), [backend]);
   const [devices, setDevices] = useState<PairedDevice[] | null>(null);
   const [problem, setProblem] = useState("");
   const [asking, setAsking] = useState<Question | null>(null);
+  const [pairing, setPairing] = useState(false);
   const refresh = () => api.list().then((r) => { setDevices(r.devices); setProblem(""); }, (e) => setProblem(String(e instanceof Error ? e.message : e)));
   useEffect(() => { void refresh(); }, [api]);
   const fail = (e: unknown) => setProblem(String(e instanceof Error ? e.message : e));
@@ -22,9 +25,13 @@ export function PairedDevicesSettings({ backend }: { backend: Backend }) {
     action: "Revoke",
     onConfirm: () => { setAsking(null); void api.revoke(device.endpointId).then(refresh, fail); },
   });
-  return (
+  return (<>
+    <div className="settings-actions">
+      <button onClick={() => setPairing(true)}>Pair phone</button>
+      <span>Phones connect from outside your network while Remote access is on.</span>
+    </div>
     <div className="settings-card paired-devices">
-      {devices?.length === 0 && <div className="settings-row"><div className="settings-label"><strong>No paired devices</strong><small className="muted">Pairing a phone by QR code arrives in a later update.</small></div></div>}
+      {devices?.length === 0 && <div className="settings-row"><div className="settings-label"><strong>No paired devices</strong><small className="muted">Pair phone shows a code to scan with Apex Deck on the phone.</small></div></div>}
       {devices?.map((device) => (
         <div key={device.endpointId} className="settings-row">
           <div className="settings-label">
@@ -44,5 +51,6 @@ export function PairedDevicesSettings({ backend }: { backend: Backend }) {
       {problem && <div className="settings-row"><span className="error" role="alert">{problem}</span></div>}
       {asking && <ConfirmDialog question={asking} onCancel={() => setAsking(null)} />}
     </div>
-  );
+    {pairing && <PairPhoneSheet backend={backend} onClose={() => { setPairing(false); void refresh(); }} onPaired={() => void refresh()} />}
+  </>);
 }

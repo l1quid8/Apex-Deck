@@ -1,5 +1,15 @@
 import UIKit
 import Capacitor
+import ApexRemote
+
+/// Registers the app's own native plugins, which the Capacitor CLI doesn't
+/// discover because they aren't npm packages.
+class AppBridgeViewController: CAPBridgeViewController {
+    override func capacitorDidLoad() {
+        bridge?.registerPluginInstance(ApexRemotePlugin())
+        bridge?.registerPluginInstance(ApexScannerPlugin())
+    }
+}
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -8,7 +18,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         window = UIWindow(windowScene: windowScene)
-        window?.rootViewController = CAPBridgeViewController()
+        window?.rootViewController = AppBridgeViewController()
         window?.makeKeyAndVisible()
 
         SceneDelegateProxy.shared.scene(scene, willConnectTo: session, options: connectionOptions)

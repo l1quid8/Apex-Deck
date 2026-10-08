@@ -18,13 +18,15 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
         persona: String::new(),
         access: Access::Read,
         effort: None,
+        auto_effort: false,
         appearance: None,
     }
 }
 
 fn request(text: &str) -> TurnRequest {
     TurnRequest {
-                access: None,
+        effort_override: None,
+        access: None,
         system: "You are a test bot.".into(),
         turns: vec![ViewTurn { role: Role::User, content: format!("[Human]: {text}") }],
         unseen: vec![],
@@ -34,7 +36,7 @@ fn request(text: &str) -> TurnRequest {
 
 /// The same request with the thread's Plan switch on, as the room sends it.
 fn planning(text: &str) -> TurnRequest {
-    TurnRequest { access: Some(Access::Read), plan: true, ..request(text) }
+    TurnRequest { effort_override: None, access: Some(Access::Read), plan: true, ..request(text) }
 }
 
 /// Run `respond` and return the result plus everything streamed.
@@ -746,6 +748,7 @@ async fn codex_app_server_failed_turn_is_reported_and_not_retried_another_way() 
     let result = bot
         .respond(
             TurnRequest {
+                effort_override: None,
                 access: None,
                 system: "You are a test bot.".into(),
                 turns: vec![ViewTurn { role: Role::User, content: "[Human]: please fail".into() }],

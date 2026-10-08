@@ -26,17 +26,19 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const [reported, setReported] = useState<ModelChoice[]>([]);
   const [model, setModel] = useState('model' in config.backend ? config.backend.model ?? '' : '');
   const [effort, setEffort] = useState(config.effort ?? '');
+  const [autoAvailable, setAutoAvailable] = useState(false);
+  useEffect(() => { if (tool !== 'codex' && tool !== 'claude_code') return; let active = true; backend.decisionKeyStatus().then(ok => { if (active) setAutoAvailable(ok); }).catch(() => {}); return () => { active = false; }; }, [backend, tool]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const saveRef = useRef(save);
   saveRef.current = save;
-  const orderedSave = useRef(latestSaveQueue<{ change: { model?: string; effort?: string }; base: ParticipantConfig }>(async value => {
+  const orderedSave = useRef(latestSaveQueue<{ change: { model?: string; effort?: string; auto_effort?: boolean }; base: ParticipantConfig }>(async value => {
     const state = await backend.roomCreate(roomId, [], { policy: 'mention', max_bot_hops: 0 }, '');
     const current = state.participants.find(p => p.id === value.base.id);
     if (!current) throw new Error('This bot is no longer in the thread.');
     await saveRef.current(applyTurnChange(current, value.change), current);
   }));
-  const touched = useRef<{ model?: string; effort?: string }>({});
+  const touched = useRef<{ model?: string; effort?: string; auto_effort?: boolean }>({});
   const [settled, setSettled] = useState(0);
   const savedModel = "model" in config.backend ? config.backend.model ?? "" : "";
   const savedEffort = config.effort ?? "";
@@ -80,7 +82,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const current = all.find(m => m.id === model);
   const pickModel = (id: string) => { setModel(id); setOpen(false); setMore(false); void apply({ model: id }); };
   /** Saves right away; there is no Apply step for agent bots. */
-  const apply = async (change: { model?: string; effort?: string }) => {
+  const apply = async (change: { model?: string; effort?: string; auto_effort?: boolean }) => {
     const sent = { ...touched.current, ...change };
     const nextModel = sent.model ?? savedModel;
     const nextEffort = sent.effort ?? savedEffort;
@@ -88,6 +90,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     const normalizedEffort = nextEfforts.includes(nextEffort) ? nextEffort : '';
     // A model with no reasoning support explicitly clears the old level.
     if ('model' in sent && normalizedEffort !== nextEffort) sent.effort = normalizedEffort;
+    if (!nextEfforts.length) sent.auto_effort = false;
     touched.current = sent;
     requested.current = { model: nextModel, effort: normalizedEffort };
     const version = ++saveVersion.current;
@@ -97,6 +100,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       const left = { ...touched.current };
       if (left.model === sent.model) delete left.model;
       if (left.effort === sent.effort) delete left.effort;
+      if (left.auto_effort === sent.auto_effort) delete left.auto_effort;
       touched.current = left;
       setSettled(n => n + 1);
     }
@@ -132,7 +136,10 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
           </button>)}
         </div>}
       </div> : <label>Model<Picker name="quick-bot-model" value={model} onChange={value => { setModel(value); touched.current = { ...touched.current, model: value }; }} groups={[]} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>}
-      <ReasoningSlider efforts={efforts} value={supportedEffort} onCommit={commitEffort} />
+      {(tool === 'codex' || tool === 'claude_code') && <label className="check-label"><input type="checkbox" checked={touched.current.auto_effort ?? config.auto_effort ?? false} disabled={!efforts.length || (!config.auto_effort && !autoAvailable)} onChange={event => { void apply({ auto_effort: event.target.checked }); }} /> Auto</label>}
+      {config.auto_effort && <p className="muted">Trial: Clef logs its pick. Replies use the backup below.</p>}
+      {!autoAvailable && (tool === 'codex' || tool === 'claude_code') && <p className="muted">Auto needs the decision observer switched on with a saved key.</p>}
+      <ReasoningSlider title={config.auto_effort ? "Auto backup" : "Reasoning"} efforts={efforts} value={supportedEffort} onCommit={value => config.auto_effort ? (setEffort(value), void apply({ effort: value, auto_effort: true })) : commitEffort(value)} />
       {note && <p className="muted">{note}</p>}
       {error && <p role="alert" className="danger-text">{error}</p>}
       {!tool && <div className="bot-settings-actions"><button className="primary" disabled={!model.trim()} onClick={() => void apply({ model, effort: supportedEffort })}>{saving ? 'Saving…' : 'Apply'}</button></div>}

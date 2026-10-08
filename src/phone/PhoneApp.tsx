@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
+import { botChangeGate, botSendGate } from "../phoneBots";
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ReasoningSlider } from "../ReasoningSlider";
@@ -25,11 +26,18 @@ import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange,
-  type DirectMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
+  canSeeNewThread, connectionKey, isPaired, loadRemoteMode, remoteModeKey, withHints,
+  type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
 import { ageWords, homeShort, hostTints, noteActive, sidebarSections } from "../sidebarModel";
 import { webSocketConnect } from "../daemon/webSocketLink";
+import { FinalError, type Connect } from "../daemon/client";
+import { irohConnect } from "../daemon/irohLink";
+import { remotePlugin, type RemoteMode, type Route } from "./remotePlugin";
+import { PairSheet, RemoteSettings } from "./PairSheet";
+import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
+import { qrScanner } from "./remotePlugin";
 import { loadRoomState } from "../roomRecovery";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
@@ -74,7 +82,7 @@ type Room = {
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
-type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string };
+type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string };
 type Browse = {
   hostId: string;
   path: string | null;
@@ -184,11 +192,27 @@ function usePillPress() {
 }
 
 export function PhoneApp() {
-  const [machines, setMachines] = useState<DirectMachine[]>(() => loadMachines(typeof localStorage === "undefined" ? null : localStorage.getItem(machinesKey())));
+  const [machines, setMachines] = useState<Machine[]>(() => loadMachines(typeof localStorage === "undefined" ? null : localStorage.getItem(machinesKey())));
   const [hosts, setHosts] = useState<PhoneHost[]>([]);
+  const plugin = useMemo(() => remotePlugin(), []);
+  const [mode, setMode] = useState<RemoteMode>(() => { try { return loadRemoteMode(localStorage.getItem(remoteModeKey())); } catch { return "automatic"; } });
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  /** Settles once the plugin is bound for the current mode; every iroh dial waits on it. */
+  const bound = useRef<Promise<unknown> | null>(null);
+  if (bound.current === null) bound.current = plugin ? plugin.setMode(mode).catch(() => {}) : Promise.resolve();
+  /** Direct or Relayed for each QR-paired machine that's connected. */
+  const [routes, setRoutes] = useState<Record<string, Route | null>>({});
+  /** The newest saved list, for addresses learned after a connection opened. */
+  const machinesRef = useRef(machines);
+  machinesRef.current = machines;
+  const scanner = useMemo(() => qrScanner(), []);
+  const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string } | null>(null);
   const [tick, setTick] = useState(0);
   const [session, setSession] = useState<AppSession | null>(readSession);
-  const [tab, setTab] = useState<Tab>("threads");
+  /** An empty list at launch opens the camera once, from Add a machine. Machines clears it when it does. */
+  const [scanAtLaunch, setScanAtLaunch] = useState(() => scansAtLaunch(machines.length, Boolean(plugin && scanner)));
+  const [tab, setTab] = useState<Tab>(() => (scanAtLaunch ? "machines" : "threads"));
   const [openId, setOpenId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>(readDrafts);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -199,6 +223,8 @@ export function PhoneApp() {
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState("");
   const [ask, setAsk] = useState<Ask | null>(null);
+  const [botChange, setBotChange] = useState<{ roomId: string; botId: string; error: string; pending: boolean } | null>(null);
+  const botChangeLock = useRef(false);
   const [sheet, setSheet] = useState<SheetKind | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
   /** The bot whose details are open, from holding it in the bot bar. */
@@ -248,11 +274,21 @@ export function PhoneApp() {
   /** The open thread as last drawn, for names inside event handlers. */
   const roomRef = useRef<Room | null>(null);
   roomRef.current = room;
-  const machineKey = machines.map((machine) => `${machine.id}\u0000${machine.url}\u0000${machine.token}\u0000${machine.name}`).join("\n");
+  const machineKey = connectionKey(machines);
 
   useEffect(() => {
     try { localStorage.setItem(machinesKey(), saveMachines(machines)); } catch { /* the list lasts for this session */ }
   }, [machines]);
+
+  const changeMode = (next: RemoteMode) => {
+    if (next === modeRef.current) return;
+    setMode(next);
+    modeRef.current = next;
+    try { localStorage.setItem(remoteModeKey(), next); } catch { /* back to Automatic next launch */ }
+    // Binding again closes every iroh connection; each comes back on the next try.
+    bound.current = plugin ? plugin.setMode(next).catch(() => {}) : Promise.resolve();
+    void bound.current.then(() => hosts.forEach((host) => { if (isPaired(host.machine)) host.connection.retryNow(); }));
+  };
 
   useEffect(() => {
     const text = Object.fromEntries(Object.entries(drafts).map(([id, draft]) => [id, draft.text]));
@@ -260,10 +296,24 @@ export function PhoneApp() {
   }, [drafts]);
 
   useEffect(() => {
+    const linkTo = (machine: Machine): Connect => {
+      if (!isPaired(machine)) return webSocketConnect(machine.url);
+      if (!plugin) return () => Promise.reject(new FinalError(`${machine.name} was paired by QR code. Open it from the Apex Deck iPhone app.`));
+      const target = () => {
+        const saved = machinesRef.current.find((item) => item.id === machine.id);
+        return saved && isPaired(saved) ? saved : machine;
+      };
+      const dial = irohConnect(target, plugin, () => modeRef.current, (route) => setRoutes((all) => all[machine.id] === route ? all : { ...all, [machine.id]: route }));
+      return async () => { await bound.current; return dial(); };
+    };
     const opened = machines.map((machine) => openPhoneHost(
       machine,
-      webSocketConnect(machine.url),
+      linkTo(machine),
       phoneShell({ machineName: machine.name, openExternal: (url) => window.open(url, "_blank", "noopener") }),
+      (welcome) => {
+        if (!isPaired(machine)) return;
+        setMachines((list) => list.map((item) => item.id === machine.id && isPaired(item) ? withHints(item, welcome.addrs) : item));
+      },
     ));
     setHosts(opened);
     const offs = opened.map((host) => host.connection.subscribe(() => setTick((value) => value + 1)));
@@ -299,6 +349,9 @@ export function PhoneApp() {
   });
   const mac = links.find((link) => link.kind === "mac");
   const macHost = hosts.find((host) => host.machine.kind === "mac") ?? null;
+  /** A thread is saved on the Mac and runs on its machine; starting one needs Full on both. */
+  const newAllowed = canSeeNewThread(macHost?.access());
+  const canStartOn = (hostId: string) => newAllowed && canSeeNewThread(hosts.find((host) => host.machine.id === hostId)?.access());
   const macOnline = mac?.status === "online";
   const linkOf = (id: string) => links.find((link) => link.id === id) ?? null;
   const downWords = (id: string, name: string) => { const link = linkOf(id); return link ? downLine(link) : `Connecting to ${name}`; };
@@ -429,7 +482,7 @@ export function PhoneApp() {
     if (!macHost) throw new Error(mac ? downLine(mac) : "Pair this phone with your Mac before saving a thread.");
     const fresh = await macHost.backend.sessionLoad();
     if (!fresh) throw new Error("The Mac has no saved threads.");
-    const next = change(fresh);
+    const next = { ...change(fresh), savedBy: "phone" };
     await macHost.backend.sessionSave(next);
     setSession(next);
     try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* saved on the Mac */ }
@@ -455,6 +508,7 @@ export function PhoneApp() {
     const target = hostOf(workspace);
     const gate = newThreadGate(mac, target ?? undefined);
     if (!gate.ok) { setNotice(gate.reason); return; }
+    if (!canStartOn(workspaceHost(workspace))) { setNotice("Starting a thread needs Full access on its machine. Change this phone's level in that machine's Settings → Paired devices."); return; }
     const action = pressNewThread(pending ? { workspaceId: pending.workspaceId, text: draftFor(pending.id).text, files: draftFor(pending.id).files.length } : null, workspace.id);
     if (action === "blocked" && pending) { setNotice("Send or clear the draft you already started."); openThread(pending.id); return; }
     const id = action === "move" && pending ? pending.id : (pending?.workspaceId === workspace.id ? pending.id : `draft-${Date.now().toString(36)}`);
@@ -611,7 +665,7 @@ export function PhoneApp() {
       }
       if (!pane) return;
       const sentPane = pane;
-      if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add them on the Mac, then send from the phone."); return; }
+      if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add one from Bots in the thread’s ⋯ menu."); return; }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
       // TL;DR asks every bot for a short answer; the line rides on the message but never shows in the chat.
@@ -880,15 +934,18 @@ export function PhoneApp() {
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
   const nextTo = openRoom && answerers?.paneId === openRoom.id ? answerers.ids : [];
   const queueing = nextTo.length > 0 && nextTo.every((pid) => pid in (openRoom?.working ?? {}));
-  const sendGate = openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." };
+  const sendGate = botSendGate(openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." }, viewingPending ? (session?.profiles.length ?? 0) : room?.participants.length ?? 0);
   const tints = hostTints(machines.filter((machine) => machine.kind === "server").map((machine) => machine.id));
   const machineIcon = (hostId: string, size = 16) => hostId === "local"
     ? <span className="ph-host-icon" title={linkOf(hostId)?.name}><Laptop size={size} /></span>
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
   const started = Boolean(openPane && ((room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
-  const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null;
-  const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
+  const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null;
+  const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
+  // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
+  const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
+  useEffect(() => { if (botsStale) setMenu(null); }, [botsStale]);
   const menuProject = menu?.kind === "project" ? workspaces.find((workspace) => workspace.id === menu.id) ?? null : null;
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
 
@@ -901,7 +958,7 @@ export function PhoneApp() {
               ? <button type="button" className="ph-back" onClick={() => { setOpenId(null); setSheet(null); setTab("threads"); }}><ArrowLeft size={20} />Threads</button>
               : <h1 className="ph-large"><img className="ph-mark" src="/branding/mark.svg" alt="" width="26" height="26" />{tab[0].toUpperCase() + tab.slice(1)}</h1>}
             <span className="ph-head-actions">
-              {tab === "threads" && <button type="button" className="ph-icon" aria-label="New thread" onClick={() => { setQuery(""); setMenu({ kind: "new" }); }}><Plus size={22} /></button>}
+              {tab === "threads" && newAllowed && <button type="button" className="ph-icon" aria-label="New thread" onClick={() => { setQuery(""); setMenu({ kind: "new" }); }}><Plus size={22} /></button>}
               {tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings and Machines" onClick={() => { setTab("machines"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
@@ -993,7 +1050,7 @@ export function PhoneApp() {
             machineIcon={machineIcon}
             onToggle={(id) => setFolded((all) => ({ ...all, [id]: !(all[id] ?? Boolean(workspaces.find((workspace) => workspace.id === id)?.collapsed)) }))}
             onOpen={openThread}
-            onNew={startIn}
+            onNew={newAllowed ? startIn : undefined}
             onThreadMenu={(id) => setMenu({ kind: "thread", id })}
             onProjectMenu={(id) => setMenu({ kind: "project", id })}
             onMachines={() => setTab("machines")}
@@ -1002,7 +1059,13 @@ export function PhoneApp() {
           <Machines
             machines={machines}
             links={links}
+            routes={routes}
             covered={covered}
+            remote={plugin && <RemoteSettings plugin={plugin} mode={mode} onMode={changeMode} onError={setNotice} />}
+            scan={scanner ? scanner.scan : null}
+            autoScan={scanAtLaunch}
+            onAutoScan={() => setScanAtLaunch(false)}
+            onPair={setPairing}
             machineIcon={machineIcon}
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
             confirm={confirmUnpair}
@@ -1035,10 +1098,18 @@ export function PhoneApp() {
             <button type="button" aria-label="Dismiss" onClick={() => setNotice("")}><X size={16} /></button>
           </div>
         )}
+        {pairing && plugin && (
+          <Sheet title={`Pair ${pairing.name}`} onClose={() => setPairing(null)}>
+            <PairSheet plugin={plugin} link={pairing.link} label="iPhone" onClose={() => setPairing(null)} onPaired={(paired) => {
+              const made: PairedMachine = { id: pairing.id, name: pairing.name, kind: pairing.kind, transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now() };
+              setMachines((list) => { try { return withPairedMachine(list, made); } catch (error) { setNotice(words(error)); return list; } });
+            }} />
+          </Sheet>
+        )}
         {ask && openPane && askTarget && (
           <Sheet title="Work on another machine?" onClose={() => setAsk(null)}>
             <p className="ph-sheet-text">“{openPane.title}” has started on {openLink?.name ?? "this machine"}, and a started thread stays on its machine. Open {askTarget.name} on {linkOf(workspaceHost(askTarget))?.name ?? "that machine"} as:</p>
-            <button type="button" className="primary ph-wide" onClick={() => { setAsk(null); startIn(askTarget); }}>New thread</button>
+            {canStartOn(workspaceHost(askTarget)) && <button type="button" className="primary ph-wide" onClick={() => { setAsk(null); startIn(askTarget); }}>New thread</button>}
             <button type="button" className="ph-wide" onClick={() => { void forkTo(openPane, askTarget); }}>Fork this thread<small>Copies the history. Nothing runs until you send.</small></button>
             <button type="button" className="ph-plain ph-wide" onClick={() => setAsk(null)}>Cancel</button>
           </Sheet>
@@ -1153,15 +1224,68 @@ export function PhoneApp() {
                 {workspace?.path && <p className="ph-path">{workspace.path}</p>}
                 <p className="ph-meta">{link && link.status !== "online" ? `${downLine(link)} · ` : ""}{menuPane.activeAt ? `Active ${ageWords(Date.now() - menuPane.activeAt)} ago` : "Not started"}</p>
               </div>
-              {/* The same details as holding or pulling down a bot pill, for anyone who can't do either. */}
-              {menuPane.id === openId && room && room.id === openPane?.id && room.participants.map((who) => (
-                <MenuRow key={who.id} label={`${who.display_name} details`} detail="Model, reasoning, context and plan" onClick={() => { setMenu(null); setBotSheet(who.id); }} />
-              ))}
+              {menuPane.id === openId && room && room.id === openPane?.id && (
+                <button type="button" className="ph-srow ph-bots-menu" onClick={() => { setBotChange(null); setMenu({ kind: "bots", id: menuPane.id }); }}>
+                  <span className="ph-grow"><strong>Bots</strong><small>{room.participants.length} in this thread</small></span>
+                  <span className="ph-bots-preview">{room.participants.slice(0, 4).map((who) => <Avatar key={who.id} seed={who.look.seed} color={who.look.color} size="sm" />)}</span>
+                  <ChevronRight size={18} />
+                </button>
+              )}
               <MenuRow label={menuPane.pinned ? "Unpin" : "Pin"} onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, pinned: item.pinned ? undefined : true })); setMenu(null); }} />
               <MenuRow label="Rename…" onClick={() => setMenu({ kind: "rename", id: menuPane.id, text: menuPane.title })} />
               {!menuPane.unread && <MenuRow label="Mark as unread" onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, unread: true })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />}
-              {workspace?.path && <MenuRow label="Copy folder path" detail={folderCopyText(workspace.path)} onClick={() => { copyPath(workspace.path); setMenu(null); }} />}
+              {workspace?.path && <MenuRow label="Copy folder path" onClick={() => { copyPath(workspace.path); setMenu(null); }} />}
               <MenuRow label="Archive" danger onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, archived: true, pinned: undefined })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />
+            </Sheet>
+          );
+        })()}
+        {menu?.kind === "bots" && menuPane && room && room.id === menuPane.id && (() => {
+          const host = workspaces.find((item) => item.id === menuPane.workspaceId) ? phoneHost(workspaceHost(workspaces.find((item) => item.id === menuPane.workspaceId)!)) : null;
+          const full = !!host && canStartOn(host.machine.id);
+          const absent = (session?.profiles ?? []).filter((profile) => !room.configs.some((config) => config.id === profile.id));
+          const change = async (config: ParticipantConfig, remove: boolean) => {
+            if (!host || botChangeLock.current || botChangeGate(full, remove && (busy[room.id] ?? []).includes(config.id), false)) return;
+            botChangeLock.current = true;
+            setBotChange({ roomId: room.id, botId: config.id, pending: true, error: "" });
+            try {
+              if (remove) await host.backend.roomRemoveParticipant(room.id, config.id);
+              else await host.backend.roomAddParticipant(room.id, config);
+              setRoom((current) => current && current.id === room.id ? {
+                ...current,
+                configs: remove ? current.configs.filter((item) => item.id !== config.id) : [...current.configs.filter((item) => item.id !== config.id), config],
+                participants: remove ? current.participants.filter((item) => item.id !== config.id) : [...current.participants.filter((item) => item.id !== config.id), toPerson(config)],
+              } : current);
+              setBotChange(null);
+            } catch (error) {
+              setBotChange({ roomId: room.id, botId: config.id, pending: false, error: words(error) });
+            } finally { botChangeLock.current = false; }
+          };
+          const row = (config: ParticipantConfig, member: boolean) => {
+            const who = toPerson(config);
+            const state = botChange?.roomId === room.id && botChange.botId === config.id ? botChange : null;
+            const reason = botChangeGate(full, member && (busy[room.id] ?? []).includes(config.id), botChangeLock.current);
+            return <div className="ph-bot-entry" key={config.id}>
+              <div className="ph-bot-row">
+                <button type="button" className="ph-bot-info" disabled={!member} onClick={() => { setMenu(null); setBotSheet(config.id); }}>
+                  <Avatar seed={who.look.seed} color={who.look.color} size="sm" />
+                  <span className="ph-bot-label"><strong>{config.display_name}</strong><small>@{config.id}{member && "model" in config.backend && config.backend.model ? ` · ${config.backend.model}` : ""}</small></span>
+                </button>
+                <button type="button" className={`ph-bot-action${member ? " remove" : ""}`} aria-label={`${member ? "Remove" : "Add"} ${config.display_name}`} disabled={!!reason} title={reason} onClick={() => void change(config, member)}>
+                  {state?.pending ? <span className="ph-bot-spinner" aria-label="Saving" /> : member ? <span aria-hidden="true">−</span> : <Plus size={18} />}
+                </button>
+              </div>
+              {member && (busy[room.id] ?? []).includes(config.id) && <p className="ph-meta">Stop this bot’s reply before removing it.</p>}
+              {state?.error && <p className="ph-bot-error" role="alert">{state.error} <button type="button" disabled={!!reason} onClick={() => void change(config, member)}>Retry</button></p>}
+            </div>;
+          };
+          return (
+            <Sheet title="Bots" onClose={() => setMenu(null)}>
+              {!full && <p className="ph-sheet-text">{botChangeGate(false, false, false)}</p>}
+              <div className="ph-section">In this thread</div>
+              {room.configs.length === 0 ? <div className="ph-card"><strong>No bots yet</strong><p className="ph-meta">Add a bot below to send a message.</p></div> : <div className="ph-bot-list">{room.configs.map((config) => row(config, true))}</div>}
+              <div className="ph-section">Add a bot</div>
+              <div className="ph-bot-list">{absent.map((profile) => row(profile, false))}</div>
+              {absent.length === 0 && <p className="ph-meta">Every saved bot is already here. Make new ones on the Mac.</p>}
             </Sheet>
           );
         })()}
@@ -1184,7 +1308,7 @@ export function PhoneApp() {
                 {menuProject.path && <p className="ph-path">{menuProject.path}</p>}
                 <p className="ph-meta">{threadCount(count)}</p>
               </div>
-              <MenuRow label="New thread here" onClick={() => startIn(menuProject)} />
+              {canStartOn(workspaceHost(menuProject)) && <MenuRow label="New thread here" onClick={() => startIn(menuProject)} />}
               <MenuRow label={menuProject.pinned ? "Unpin project" : "Pin project"} onClick={() => {
                 saveSession((current) => ({ ...current, workspaces: current.workspaces.map((item) => item.id === menuProject.id ? { ...item, pinned: item.pinned ? undefined : true } : item) })).catch((error) => setNotice(words(error)));
                 setMenu(null);
@@ -1227,7 +1351,7 @@ function Sheet({ title, onClose, children }: { title: string; onClose(): void; c
           <h3>{title}</h3>
           <button type="button" className="ph-icon" aria-label="Close" onClick={onClose}><X size={20} /></button>
         </div>
-        {children}
+        <div className="ph-sheet-body">{children}</div>
       </div>
     </div>
   );
@@ -1389,7 +1513,7 @@ function BotSheet(props: {
       </> : <p className="ph-sheet-text ph-quiet">This bot has no model or reasoning to change.</p>}
       <button type="button" className="primary ph-wide" onClick={props.onMention}>Mention {name}</button>
       {props.working && !props.offline && <button type="button" className="ph-wide" onClick={props.onStop}>Stop {name}</button>}
-      <p className="ph-sheet-text ph-quiet">Removing a bot is on the Mac for now.</p>
+      <p className="ph-sheet-text ph-quiet">Add or remove bots from Bots in the thread’s ⋯ menu.</p>
     </Sheet>
   );
 }
@@ -1418,7 +1542,8 @@ function ThreadList({ sections, workspaces, links, folded, pending, draft, waiti
   machineIcon(hostId: string, size?: number): ReactNode;
   onToggle(id: string): void;
   onOpen(id: string): void;
-  onNew(workspace: Workspace): void;
+  /** Absent when this phone may not start threads. */
+  onNew?(workspace: Workspace): void;
   onThreadMenu(id: string): void;
   onProjectMenu(id: string): void;
   onMachines(): void;
@@ -1493,7 +1618,7 @@ function ThreadList({ sections, workspaces, links, folded, pending, draft, waiti
                       </span>
                     </span>
                   </button>
-                  <button type="button" className="ph-icon ph-quiet" aria-label={`New thread in ${workspace.name} on ${nameOf(workspace)}`} onClick={() => onNew(workspace)}><Plus size={18} /></button>
+                  {onNew && <button type="button" className="ph-icon ph-quiet" aria-label={`New thread in ${workspace.name} on ${nameOf(workspace)}`} onClick={() => onNew(workspace)}><Plus size={18} /></button>}
                   <button type="button" className="ph-icon ph-quiet" aria-label={`Project actions ${workspace.name} ${nameOf(workspace)}`} onClick={() => onProjectMenu(workspace.id)}><More size={18} /></button>
                 </div>
                 {!closed && (
@@ -1926,47 +2051,88 @@ function WorkSheet({ rows, links, workspaces, project, mac, stays, machineIcon, 
   );
 }
 
-function Machines({ machines, links, covered, machineIcon, missing, confirm, onAdd, onEdit, onUnpair, onConfirm, onRetry, onError }: {
-  machines: DirectMachine[]; links: LinkView[]; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
-  onAdd(machine: DirectMachine): void; onEdit(id: string, machine: DirectMachine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
+/** How a new machine is reached: its QR code, or an address and token typed in. */
+type AddHow = "qr" | "address";
+
+function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, remote, scan, autoScan, onAutoScan, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
+  machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
+  /** The phone's remote-access settings, when the native plugin is there. */
+  remote: ReactNode;
+  /** The camera scanner, when there is one. */
+  scan: (() => Promise<string>) | null;
+  /** Open the camera now, as the first thing: no machine is saved yet. */
+  autoScan: boolean;
+  onAutoScan(): void;
+  onAdd(machine: DirectMachine): void; onPair(request: { link: string; kind: MachineKind; id: string; name: string }): void;
+  onEdit(id: string, machine: Machine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
 }) {
   const hasMac = machines.some((machine) => machine.kind === "mac");
   const blank = (kind: MachineKind) => ({ name: "", url: "", token: "", kind, id: kind === "server" ? missing[0] ?? "" : "" });
   const [form, setForm] = useState(() => blank(hasMac ? "server" : "mac"));
+  const [how, setHow] = useState<AddHow>(remote ? "qr" : "address");
+  const [pasted, setPasted] = useState("");
   const [adding, setAdding] = useState(machines.length === 0);
   /** The machine being edited. Its form takes the place of its card. */
   const [editing, setEditing] = useState<string | null>(null);
   const [edit, setEdit] = useState(() => blank("mac"));
+  const pairWith = (link: string) => {
+    try {
+      const preview = parsePairingLink(link);
+      const name = form.name.trim() || preview.name;
+      // Checked now, so a bad name or id doesn't surface only after the machine approved.
+      withPairedMachine(machines, { id: form.kind === "mac" ? "local" : form.id.trim(), name, kind: form.kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
+      onPair({ link: link.trim(), kind: form.kind, id: form.kind === "mac" ? "local" : form.id.trim(), name });
+      setAdding(false);
+      setPasted("");
+    } catch (error) { onError(words(error)); }
+  };
+  const scanCode = () => {
+    if (!scan) return;
+    scan().then(pairWith, (error: unknown) => {
+      const why = words(error);
+      if (why === "cancelled") return;
+      onError(why === "denied" ? "Apex Deck can't use the camera. Allow it in Settings → Apex Deck, or paste the pairing link instead." : `Couldn't scan: ${why}`);
+    });
+  };
+  // Once per launch. If the person cancels, the Add a machine form just stays open.
+  useEffect(() => {
+    if (!autoScan) return;
+    onAutoScan();
+    scanCode();
+  }, []);
   return (
     <main className="ph-content" inert={covered}>
       <h2>Machines</h2>
       <p className="ph-intro">This phone connects to each machine itself. Servers stay reachable when your Mac sleeps.</p>
       {machines.map((machine) => {
         const link = links.find((item) => item.id === machine.id);
+        const paired = isPaired(machine);
         if (editing === machine.id) return (
           <form key={machine.id} className="ph-group ph-padded ph-form" onSubmit={(event) => {
             event.preventDefault();
             try {
-              onEdit(machine.id, { id: machine.kind === "mac" ? "local" : edit.id.trim(), name: edit.name, kind: machine.kind, url: edit.url, token: edit.token });
+              const id = machine.kind === "mac" ? "local" : edit.id.trim();
+              onEdit(machine.id, paired ? { ...machine, id, name: edit.name } : { id, name: edit.name, kind: machine.kind, url: edit.url, token: edit.token });
               setEditing(null);
             } catch (error) { onError(words(error)); }
           }}>
             <h3>{machineIcon(machine.id, 18)} Edit {machine.name}</h3>
             <label className="ph-label">Name<input value={edit.name} onChange={(event) => setEdit({ ...edit, name: event.target.value })} required autoCapitalize="words" /></label>
             {machine.kind === "server" && <label className="ph-label">Id<input value={edit.id} onChange={(event) => setEdit({ ...edit, id: event.target.value })} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
-            <label className="ph-label">Address<input value={edit.url} onChange={(event) => setEdit({ ...edit, url: event.target.value })} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
-            <label className="ph-label">Daemon token<input type="password" value={edit.token} onChange={(event) => setEdit({ ...edit, token: event.target.value.trim() })} placeholder="Leave empty to keep the saved token" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>Paste a new token only if it changed.</small></label>
+            {!paired && <label className="ph-label">Address<input value={edit.url} onChange={(event) => setEdit({ ...edit, url: event.target.value })} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>}
+            {!paired && <label className="ph-label">Daemon token<input type="password" value={edit.token} onChange={(event) => setEdit({ ...edit, token: event.target.value.trim() })} placeholder="Leave empty to keep the saved token" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>Paste a new token only if it changed.</small></label>}
             <button type="submit" className="primary ph-wide">Save</button>
             <button type="button" className="ph-plain ph-wide" onClick={() => setEditing(null)}>Cancel</button>
           </form>
         );
-        const state = !link ? "Connecting…" : link.status === "online" ? "Connected" : link.problem ? "Can't connect" : link.status === "offline" ? machine.kind === "mac" ? "Asleep or unreachable" : "Offline" : "Connecting…";
+        const route = paired && link?.status === "online" ? routes[machine.id] : null;
+        const state = !link ? "Connecting…" : link.status === "online" ? route === "direct" ? "Connected · Direct" : route === "relayed" ? "Connected · Relayed" : "Connected" : link.problem ? "Can't connect" : link.status === "offline" ? machine.kind === "mac" ? "Asleep or unreachable" : "Offline" : "Connecting…";
         return (
           <div key={machine.id} className={`ph-group ph-padded${link?.problem ? " bad" : ""}`}>
             <h3>{machineIcon(machine.id, 18)} {machine.name}</h3>
             <p className="ph-muted"><i className={`ph-dot${link?.status === "online" ? " on" : link?.status === "offline" ? " off" : ""}`} />{state} · paired with this phone</p>
             {link && link.status !== "online" && link.status !== "connecting" && <p className={link.problem ? "ph-red" : "ph-muted"}>{downLine(link)}</p>}
-            <p className="ph-path">{machine.url}{machine.kind === "server" ? ` · id ${machine.id}` : ""}</p>
+            <p className="ph-path">{paired ? `Paired by QR code · ${machine.hostEndpointId.slice(0, 12)}…` : machine.url}{machine.kind === "server" ? ` · id ${machine.id}` : ""}</p>
             {link && link.status === "offline" && !link.problem && <button type="button" className="ph-wide" onClick={() => onRetry(machine.id)}>Retry now</button>}
             {confirm === machine.id
               ? <>
@@ -1975,17 +2141,18 @@ function Machines({ machines, links, covered, machineIcon, missing, confirm, onA
                 <button type="button" className="ph-plain ph-wide" onClick={() => onConfirm(null)}>Cancel</button>
               </>
               : <>
-                <button type="button" className="ph-wide" onClick={() => { setEdit({ name: machine.name, url: machine.url, token: "", kind: machine.kind, id: machine.kind === "server" ? machine.id : "" }); setEditing(machine.id); onConfirm(null); }}>Edit…</button>
+                <button type="button" className="ph-wide" onClick={() => { setEdit({ name: machine.name, url: paired ? "" : machine.url, token: "", kind: machine.kind, id: machine.kind === "server" ? machine.id : "" }); setEditing(machine.id); onConfirm(null); }}>Edit…</button>
                 <button type="button" className="ph-plain ph-wide" onClick={() => onConfirm(machine.id)}>Unpair…</button>
               </>}
           </div>
         );
       })}
-      {missing.length > 0 && <p className="ph-intro">Your Mac's threads also use {missing.join(", ")}. Pair each one with its address so those threads work here too.</p>}
+      {missing.length > 0 && <p className="ph-intro">Your Mac's threads also use {missing.join(", ")}. Pair each one so those threads work here too.</p>}
       {!adding && !editing && <button type="button" className="primary ph-wide" onClick={() => { setForm(blank(hasMac ? "server" : "mac")); setAdding(true); }}>Add a machine…</button>}
       {adding && (
         <form className="ph-group ph-padded ph-form" onSubmit={(event) => {
           event.preventDefault();
+          if (how === "qr") { pairWith(pasted); return; }
           try {
             onAdd({ id: form.kind === "mac" ? "local" : form.id.trim(), name: form.name, kind: form.kind, url: form.url, token: form.token });
             setAdding(false);
@@ -1997,15 +2164,27 @@ function Machines({ machines, links, covered, machineIcon, missing, confirm, onA
             <button type="button" role="radio" aria-checked={form.kind === "mac"} disabled={hasMac} onClick={() => setForm({ ...form, kind: "mac", id: "" })}><Laptop size={16} />Mac</button>
             <button type="button" role="radio" aria-checked={form.kind === "server"} onClick={() => setForm({ ...form, kind: "server", id: form.id || missing[0] || "" })}><Globe size={16} />Server</button>
           </div>
-          <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={form.kind === "mac" ? "Tyler's MacBook" : "Apex-Terminal"} required autoCapitalize="words" /></label>
+          {remote && <div className="ph-segment" role="radiogroup" aria-label="How">
+            <button type="button" role="radio" aria-checked={how === "qr"} onClick={() => setHow("qr")}>QR code</button>
+            <button type="button" role="radio" aria-checked={how === "address"} onClick={() => setHow("address")}>Address and token</button>
+          </div>}
+          <label className="ph-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder={how === "qr" ? "From the code" : form.kind === "mac" ? "Tyler's MacBook" : "Apex-Terminal"} required={how === "address"} autoCapitalize="words" /></label>
           {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
-          <label className="ph-label">Address<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder={form.kind === "mac" ? "ws://your-Mac's-address:7421" : "ws://server-address:7420"} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
-          <label className="ph-label">Daemon token<input type="password" value={form.token} onChange={(event) => setForm({ ...form, token: event.target.value.trim() })} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} required /><small>Paste only the token. Spaces and line breaks are removed.</small></label>
-          <button type="submit" className="primary ph-wide">Pair {form.kind === "mac" ? "Mac" : "server"}</button>
+          {how === "qr" ? <>
+            <p className="ph-muted">On the machine, open Settings → Remote access and press Pair phone. On a server, run <code>apex-daemon pair</code>.</p>
+            {scan && <button type="button" className="primary ph-wide" onClick={scanCode}>Scan QR code</button>}
+            <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
+            <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
+          </> : <>
+            <label className="ph-label">Address<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder={form.kind === "mac" ? "ws://your-Mac's-address:7421" : "ws://server-address:7420"} required inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
+            <label className="ph-label">Daemon token<input type="password" value={form.token} onChange={(event) => setForm({ ...form, token: event.target.value.trim() })} autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} required /><small>Paste only the token. Spaces and line breaks are removed.</small></label>
+            <button type="submit" className="primary ph-wide">Pair {form.kind === "mac" ? "Mac" : "server"}</button>
+          </>}
           {machines.length > 0 && <button type="button" className="ph-plain ph-wide" onClick={() => setAdding(false)}>Cancel</button>}
         </form>
       )}
-      <p className="ph-foot">The token works like a password. It stays on this phone.</p>
+      {remote}
+      <p className="ph-foot">{how === "qr" ? "Pairing keys stay in this phone's Keychain." : "The token works like a password. It stays on this phone."}</p>
     </main>
   );
 }

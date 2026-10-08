@@ -12,7 +12,7 @@ export const AGENT_LABEL: Record<AgentTool, string> = { claude_code: "Claude Cod
 /** The line after a bot's name: tool · model · effort · asks first, without the parts turned off. */
 export function chipDescription(config: ParticipantConfig, parts: ChipParts): string {
   const b = config.backend;
-  const effort = parts.effort && config.effort ? config.effort : null;
+  const effort = parts.effort ? (config.auto_effort ? `Auto (${config.effort || "default"} backup)` : config.effort || null) : null;
   const asks = config.access === "ask" ? "asks first" : null;
   const join = (...bits: (string | null)[]) => bits.filter(Boolean).join(" · ");
   if (b.kind === "open_ai_compatible") return join(b.model, effort);

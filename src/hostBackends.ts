@@ -13,7 +13,7 @@ export interface HostBackends {
 }
 interface HostRuntime { backend: Backend; connection: HostConnectionStore; start(): Promise<unknown>; close(): void }
 const appMethods = new Set([
-  "sessionLoad", "sessionSave", "settingsLoad", "settingsSave", "decisionKeySave",
+  "sessionLoad", "sessionSave", "onSessionChanged", "settingsLoad", "settingsSave", "decisionKeySave",
   "flagAttention", "requestCriticalAttention", "onQuitRequested", "quitHeard", "quitApp",
   "exportThread", "exportPdf", "artifactSave", "artifactOpenExternal", "onMenu", "startupFolders",
 ]);

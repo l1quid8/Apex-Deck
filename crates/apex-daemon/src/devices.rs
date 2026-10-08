@@ -5,6 +5,7 @@
 //! before it takes effect, so a revoke survives a crash or restart. A revoked
 //! ID stays as a tombstone: adding it again needs `restore`, a local action.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -89,17 +90,45 @@ pub struct Registry {
     pub version: u32,
     pub devices: Vec<Device>,
     pub revoked: Vec<Revoked>,
+    /// How many times each ID's entry has changed: add, restore, revoke,
+    /// tier and thread changes (not `seen`). Never removed, so an ID's
+    /// revision only grows; a pairing approval compares it to catch a change
+    /// that leaves the tombstone looking the same.
+    #[serde(default)]
+    pub revisions: BTreeMap<String, u64>,
 }
 
 impl Default for Registry {
     fn default() -> Self {
-        Registry { version: 1, devices: Vec::new(), revoked: Vec::new() }
+        Registry { version: 1, devices: Vec::new(), revoked: Vec::new(), revisions: BTreeMap::new() }
     }
 }
 
 impl Registry {
     fn is_revoked(&self, id: &str) -> bool {
         self.revoked.iter().any(|r| r.endpoint_id == id)
+    }
+
+    fn revision(&self, id: &str) -> u64 {
+        self.revisions.get(id).copied().unwrap_or(0)
+    }
+
+    fn bump(&mut self, id: &str) {
+        *self.revisions.entry(id.to_string()).or_insert(0) += 1;
+    }
+}
+
+/// Why `Devices::approve_pairing` added nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApproveError {
+    /// The ID's entry changed since the claim's snapshot.
+    Changed,
+    Registry(String),
+}
+
+impl From<String> for ApproveError {
+    fn from(why: String) -> Self {
+        ApproveError::Registry(why)
     }
 }
 
@@ -115,7 +144,23 @@ pub struct Devices {
     pub fail_sync: std::sync::atomic::AtomicBool,
 }
 
+#[cfg(test)]
+thread_local! {
+    static FROZEN_MS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Tests: make `now_ms` on this thread return `at` (or the real clock again
+/// with `None`).
+#[cfg(test)]
+pub fn freeze_clock(at: Option<u64>) {
+    FROZEN_MS.with(|f| f.set(at));
+}
+
 pub fn now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(at) = FROZEN_MS.with(|f| f.get()) {
+        return at;
+    }
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -171,6 +216,20 @@ impl Devices {
         self.state.lock().unwrap().clone()
     }
 
+    /// How many times this ID's entry has changed; 0 if never.
+    pub fn revision(&self, id: &str) -> u64 {
+        self.snapshot(id).0
+    }
+
+    /// This ID's revision and, if it's revoked, when; read together.
+    pub fn snapshot(&self, id: &str) -> (u64, Option<u64>) {
+        let state = self.state.lock().unwrap();
+        match state.as_ref() {
+            Ok(registry) => (registry.revision(id), registry.revoked.iter().find(|r| r.endpoint_id == id).map(|r| r.revoked_at)),
+            Err(_) => (0, None),
+        }
+    }
+
     /// Hear about every revoke from now on. A fast path only: the registry is
     /// the authority.
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
@@ -179,21 +238,31 @@ impl Devices {
 
     /// Change the registry: `change` edits a copy, the copy is written, and
     /// only then does it replace what sessions see.
-    fn change<T>(&self, change: impl FnOnce(&mut Registry) -> Result<T, String>) -> Result<T, String> {
+    fn change<T, E: From<String>>(&self, change: impl FnOnce(&mut Registry) -> Result<T, E>) -> Result<T, E> {
+        self.change_then(false, change)
+    }
+
+    /// `change`; with `landed_is_ok`, a write that reported an error but
+    /// left exactly the new registry on disk (only the folder sync failed)
+    /// counts as done, decided under the same hold of the lock.
+    fn change_then<T, E: From<String>>(&self, landed_is_ok: bool, change: impl FnOnce(&mut Registry) -> Result<T, E>) -> Result<T, E> {
         let mut state = self.state.lock().unwrap();
-        let current = state.as_ref().map_err(Clone::clone)?;
+        let current = state.as_ref().map_err(|why| E::from(why.clone()))?;
         let mut next = current.clone();
         let result = change(&mut next)?;
-        let text = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string_pretty(&next).map_err(|e| E::from(e.to_string()))?;
         if let Some(folder) = self.path.parent() {
-            std::fs::create_dir_all(folder).map_err(|e| format!("could not create {}: {e}", folder.display()))?;
+            std::fs::create_dir_all(folder).map_err(|e| E::from(format!("could not create {}: {e}", folder.display())))?;
         }
         if let Err(why) = self.write(&format!("{text}\n")) {
             // The file may already hold `next` (only the folder sync failed),
             // so what's on disk decides; a later write then can't drop a
             // revoke that got there.
             *state = read(&self.path);
-            return Err(why);
+            if landed_is_ok && state.as_ref() == Ok(&next) {
+                return Ok(result);
+            }
+            return Err(E::from(why));
         }
         *state = Ok(next);
         Ok(result)
@@ -229,31 +298,61 @@ impl Devices {
             }
             let device = Device { endpoint_id: id.to_string(), label: label.to_string(), tier, threads, added_at: now_ms(), last_seen: None };
             registry.devices.push(device.clone());
+            registry.bump(id);
+            Ok(device)
+        })
+    }
+
+    /// Add a phone the user approved on the pairing screen, but only if its
+    /// entry is still at `expect_revision`, the revision its claim saw. The
+    /// compare and the write happen under one hold of the registry lock, so
+    /// a revoke or restore can't land between them. A matching revision
+    /// means the tombstone (if any) is the one the user was warned about, so
+    /// it's lifted. `Ok` exactly when the device is in `devices.json`: a
+    /// write whose folder sync failed but whose file landed is `Ok` too.
+    pub fn approve_pairing(&self, id: &str, label: &str, tier: Tier, threads: Threads, expect_revision: u64) -> Result<Device, ApproveError> {
+        check_id(id)?;
+        self.change_then(true, |registry| {
+            if registry.revision(id) != expect_revision {
+                return Err(ApproveError::Changed);
+            }
+            registry.revoked.retain(|r| r.endpoint_id != id);
+            if registry.devices.iter().any(|d| d.endpoint_id == id) {
+                return Err(ApproveError::Registry(format!("{id} is already paired")));
+            }
+            let device = Device { endpoint_id: id.to_string(), label: label.to_string(), tier, threads, added_at: now_ms(), last_seen: None };
+            registry.devices.push(device.clone());
+            registry.bump(id);
             Ok(device)
         })
     }
 
     pub fn set_tier(&self, id: &str, tier: Tier) -> Result<Device, String> {
-        self.edit(id, |device| device.tier = tier)
+        self.edit(id, true, |device| device.tier = tier)
     }
 
     pub fn set_threads(&self, id: &str, threads: Threads) -> Result<Device, String> {
-        self.edit(id, |device| device.threads = threads)
+        self.edit(id, true, |device| device.threads = threads)
     }
 
-    /// Note that a device just connected.
+    /// Note that a device just connected. Not a change to its entry, so the
+    /// revision stays.
     pub fn seen(&self, id: &str) -> Result<Device, String> {
-        self.edit(id, |device| device.last_seen = Some(now_ms()))
+        self.edit(id, false, |device| device.last_seen = Some(now_ms()))
     }
 
-    fn edit(&self, id: &str, edit: impl FnOnce(&mut Device)) -> Result<Device, String> {
+    fn edit(&self, id: &str, bump: bool, edit: impl FnOnce(&mut Device)) -> Result<Device, String> {
         self.change(|registry| {
             if registry.is_revoked(id) {
                 return Err(format!("{id} was revoked"));
             }
             let device = registry.devices.iter_mut().find(|d| d.endpoint_id == id).ok_or_else(|| format!("no paired device {id}"))?;
             edit(device);
-            Ok(device.clone())
+            let device = device.clone();
+            if bump {
+                registry.bump(id);
+            }
+            Ok(device)
         })
     }
 
@@ -266,6 +365,9 @@ impl Devices {
             if !registry.is_revoked(id) {
                 registry.revoked.push(Revoked { endpoint_id: id.to_string(), revoked_at: now_ms() });
             }
+            // Always, even for an ID already revoked: any pairing approval
+            // in flight for it must start again.
+            registry.bump(id);
             Ok(())
         });
         // Even when the write reported an error, the revoke may be in force
@@ -403,6 +505,55 @@ pub(crate) mod tests {
         assert!(devices.set_tier(&id(9), Tier::Full).unwrap_err().contains("no paired device"));
         assert_eq!(Tier::parse("full"), Ok(Tier::Full));
         assert!(Tier::parse("admin").is_err());
+    }
+
+    #[test]
+    fn revisions_persist() {
+        let data = folder();
+        let devices = Devices::open(&data.0);
+        assert_eq!(devices.revision(&id(1)), 0, "never seen");
+        devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).unwrap();
+        devices.set_tier(&id(1), Tier::Full).unwrap();
+        devices.set_threads(&id(1), Threads::Only(vec!["r".into()])).unwrap();
+        assert_eq!(devices.revision(&id(1)), 3);
+        devices.seen(&id(1)).unwrap();
+        assert_eq!(devices.revision(&id(1)), 3, "seen does not bump");
+        devices.revoke(&id(1)).unwrap();
+        devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, true).unwrap();
+        assert_eq!(devices.revision(&id(1)), 5, "revoke and restore bump");
+        assert!(devices.add(&id(1), "Phone", Tier::Chat, Threads::ALL, false).is_err());
+        assert_eq!(devices.revision(&id(1)), 5, "a refused change bumps nothing");
+        assert_eq!(Devices::open(&data.0).revision(&id(1)), 5);
+        devices.revoke(&id(1)).unwrap();
+        let (revision, revoked_at) = Devices::open(&data.0).snapshot(&id(1));
+        assert_eq!(revision, 6);
+        assert_eq!(revoked_at, Some(devices.list().unwrap().revoked[0].revoked_at));
+        assert_eq!(devices.snapshot(&id(2)), (0, None));
+
+        let old = folder();
+        let milestone_2 = serde_json::json!({ "version": 1, "devices": [{ "endpointId": id(1), "label": "x", "tier": "full", "threads": "all", "addedAt": 1, "lastSeen": null }], "revoked": [{ "endpointId": id(2), "revokedAt": 5 }] });
+        std::fs::write(old.0.join(FILE), milestone_2.to_string()).unwrap();
+        let loaded = Devices::open(&old.0);
+        assert!(loaded.get(&id(1)).is_some());
+        assert_eq!(loaded.revision(&id(1)), 0);
+        assert_eq!(loaded.snapshot(&id(2)), (0, Some(5)));
+    }
+
+    #[test]
+    fn approve_pairing_compares_the_revision_and_adds() {
+        let data = folder();
+        let devices = Devices::open(&data.0);
+        assert_eq!(devices.approve_pairing(&id(1), "Phone", Tier::Chat, Threads::ALL, 1), Err(ApproveError::Changed));
+        assert_eq!(devices.get(&id(1)), None);
+        let device = devices.approve_pairing(&id(1), "Phone", Tier::Chat, Threads::ALL, 0).unwrap();
+        assert_eq!(devices.get(&id(1)), Some(device));
+        assert_eq!(devices.revision(&id(1)), 1);
+        assert!(matches!(devices.approve_pairing(&id(1), "Phone", Tier::Chat, Threads::ALL, 1), Err(ApproveError::Registry(_))), "already paired");
+        devices.revoke(&id(1)).unwrap();
+        devices.approve_pairing(&id(1), "Phone", Tier::Full, Threads::ALL, 2).unwrap();
+        assert_eq!(devices.get(&id(1)).unwrap().tier, Tier::Full, "an approval with a matching revision lifts the tombstone");
+        assert!(devices.list().unwrap().revoked.is_empty());
+        assert!(matches!(devices.approve_pairing("ABC", "x", Tier::Chat, Threads::ALL, 0), Err(ApproveError::Registry(_))));
     }
 
     #[test]

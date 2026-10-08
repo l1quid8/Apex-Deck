@@ -28,9 +28,12 @@ export interface Backend {
   startupFolders(): Promise<string[]>;
   sessionLoad(): Promise<AppSession | null>;
   sessionSave(session: AppSession): Promise<void>;
+  /** The saved session changed, by this app or another client such as the phone. */
+  onSessionChanged?(cb: (session: AppSession) => void): Promise<Unlisten>;
   /** settings.json, beside the session file; settings.ts reads it. */
   settingsLoad(): Promise<unknown>;
   settingsSave(settings: unknown): Promise<void>;
+  decisionKeyStatus(): Promise<boolean>;
   decisionKeySave(provider: string, key: string): Promise<void>;
   /** A thread's artifacts file, beside the thread; artifacts.ts reads it. Null when there is none. */
   artifactsLoad(room: string): Promise<unknown>;
@@ -155,6 +158,8 @@ export interface Backend {
   onMenu?(cb: (action: string) => void): Promise<Unlisten>;
   /** The machines this window can run on; the Electron app only. */
   hosts?: HostsApi;
+  /** Settings → Remote access for this Mac's daemon; the Electron app only. */
+  remoteAccess?: RemoteAccessApi;
   browser?: BrowserApi;
 }
 
@@ -201,6 +206,14 @@ export interface BrowserApi {
   onState(cb: (pane: string, state: BrowserState) => void): () => void;
   /** The window's zoom, to turn CSS pixels into window pixels. */
   zoom(): number;
+}
+
+/** The Remote access switch, saved with the app's settings. `owned`: Deck started the daemon, so can restart it with the change. */
+export interface RemoteAccessState { on: boolean; owned: boolean }
+export interface RemoteAccessApi {
+  get(): Promise<RemoteAccessState>;
+  /** Save the switch and restart the daemon Deck started, with or without `--remote`. */
+  set(on: boolean): Promise<RemoteAccessState>;
 }
 
 export interface HostsApi {
@@ -530,6 +543,7 @@ function demoBackend(): Backend {
     sessionLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.session.v1") ?? "null"),
     sessionSave: async (session) => { localStorage.setItem("apex-deck.demo.session.v1", JSON.stringify(session)); },
     settingsLoad: async () => JSON.parse(localStorage.getItem("apex-deck.demo.settings.v1") ?? "null"),
+    decisionKeyStatus: async () => false,
     decisionKeySave: async () => { throw new Error("Credential storage requires a connected host."); },
     settingsSave: async (settings) => { localStorage.setItem("apex-deck.demo.settings.v1", JSON.stringify(settings)); },
     artifactsLoad: async (room) => JSON.parse(localStorage.getItem(`apex-deck.demo.artifacts.${room}`) ?? "null"),

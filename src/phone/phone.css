@@ -396,12 +396,14 @@
 .ph-sheet {
   width: 100%;
   max-height: 88%;
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   overscroll-behavior: contain;
   border-radius: 24px 24px 0 0;
   background: var(--panel);
   border-top: 1px solid var(--line);
-  padding: 8px 20px calc(24px + env(safe-area-inset-bottom));
+  padding: 8px 20px 0;
   animation: ph-rise 220ms cubic-bezier(.2, .8, .2, 1);
 }
 .ph-sheet:focus { outline: none; }
@@ -613,3 +615,36 @@
 }
 /* A hint never wraps: it would grow the empty box to two lines on a narrow phone. */
 .ph-input textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The 6-digit pairing code, to compare with the machine's. */
+.ph-pair-code {
+  margin: 12px 0;
+  text-align: center;
+  font: 600 34px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.08em;
+}
+
+/* Sheet chrome remains reachable while its content scrolls. */
+.ph-sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+.ph-sheet-title, .ph-handle { flex-shrink: 0; }
+.ph-sheet-title .ph-icon { width: 44px; height: 44px; min-width: 44px; }
+.ph-bots-menu { width: 100%; text-align: left; }
+.ph-bots-menu .ph-grow { display: flex; flex-direction: column; gap: 3px; }
+.ph-bots-menu small, .ph-bot-info small { color: var(--muted); font-size: 12px; }
+.ph-bots-preview { display: flex; gap: 3px; }
+.ph-bot-list { background: var(--panel-2); border-radius: 14px; overflow: hidden; }
+.ph-bot-entry + .ph-bot-entry { border-top: 1px solid var(--line); }
+.ph-bot-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; min-height: 60px; }
+.ph-bot-info { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; text-align: left; border: 0; background: none; padding: 4px; color: var(--text); }
+.ph-bot-info:disabled { opacity: 1; }
+.ph-bot-info > .ph-bot-label { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
+.ph-bot-info strong, .ph-bot-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-bot-action { padding: 0; flex: none; width: 44px; height: 44px; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--mint) 12%, transparent); color: var(--mint); display: flex; align-items: center; justify-content: center; font-size: 24px; }
+.ph-bot-action.remove { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.ph-bot-action:disabled { opacity: .4; }
+.ph-bot-error, .ph-bot-entry > .ph-meta { margin: 0; padding: 0 12px 10px; font-size: 12px; }
+.ph-bot-error { color: var(--red); }
+.ph-bot-error button { color: inherit; background: none; border: 0; min-height: 44px; text-decoration: underline; }
+.ph-bot-spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: ph-bot-spin .8s linear infinite; }
+@keyframes ph-bot-spin { to { transform: rotate(360deg); } }
+.ph-crew-grab { display: none; }
