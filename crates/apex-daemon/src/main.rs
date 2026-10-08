@@ -7,11 +7,13 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some(apex_adapters::CODEX_HOOK_ARG) {
         std::process::exit(apex_adapters::codex_hook_main());
     }
+    apex_daemon::log_time::start();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = match cli::parse(&args) {
         Ok(cli) => cli,
         Err(why) => {
             eprintln!("apex-daemon: {why}");
+            apex_daemon::log_time::flush();
             std::process::exit(2);
         }
     };
@@ -29,11 +31,14 @@ fn main() {
 }
 
 fn exit(result: Result<(), String>) -> ! {
-    match result {
-        Ok(()) => std::process::exit(0),
+    let code = match result {
+        Ok(()) => 0,
         Err(why) => {
             eprintln!("apex-daemon: {why}");
-            std::process::exit(1);
+            1
         }
-    }
+    };
+    // After the last message, so it is copied out before the process ends.
+    apex_daemon::log_time::flush();
+    std::process::exit(code);
 }

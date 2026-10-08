@@ -304,6 +304,14 @@ pub async fn model(base_url: &str, api_key_env: Option<&str>, id: &str) -> Optio
     models(base_url, api_key_env).await.ok()?.into_iter().find(|model| model.id == id)
 }
 
+/// What kind of model `id` is, from the last list fetched, however old.
+/// None until the list has been fetched once. For decisions that can't
+/// wait for the network, such as who a message goes to.
+pub fn cached_kind(base_url: &str, id: &str) -> Option<ModelKind> {
+    let cache = CACHE.get()?.lock().unwrap();
+    cache.get(base_url.trim_end_matches('/'))?.1.iter().find(|model| model.id == id).map(|model| model.kind)
+}
+
 /// The remaining account balance in US dollars, for the providers that
 /// report one. None when there is no key, no balance API, or no answer.
 pub async fn balance(base_url: &str, api_key_env: Option<&str>) -> Result<Option<f64>, String> {

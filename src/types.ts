@@ -7,7 +7,7 @@ export type Access = "read" | "ask" | "edits" | "full";
 
 /** Something a bot wants to do and is waiting for a yes or no on. */
 export interface ProposedAction {
-  kind: "edit" | "command" | "tool" | "other" | "plan";
+  kind: "edit" | "command" | "tool" | "other" | "plan" | "spend";
   /** One line, such as "Edit src/main.rs". */
   title: string;
   /** The diff, the command, or the tool's arguments. */

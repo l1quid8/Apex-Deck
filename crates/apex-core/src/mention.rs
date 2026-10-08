@@ -25,16 +25,12 @@ fn is_handle_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '-' | '_' | '.')
 }
 
-/// Find `@handle` mentions in `text` that match someone in `roster`.
-///
-/// Matching ignores case. An `@` that follows a letter or digit (as in an
-/// email address) is not a mention. Trailing dots are treated as sentence
-/// punctuation, so "ask @opus." still finds `opus`.
-pub fn parse_mentions(text: &str, roster: &[ParticipantConfig]) -> MentionTarget {
+/// Every `@word` in `text`, lower-cased, in order. An `@` that follows a
+/// letter or digit (as in an email address) is not a mention, and trailing
+/// dots are sentence punctuation.
+fn mentioned_words(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
-    let mut found: Vec<ParticipantId> = Vec::new();
-    let mut everyone = false;
-
+    let mut words = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '@' && (i == 0 || !chars[i - 1].is_alphanumeric()) {
@@ -47,18 +43,32 @@ pub fn parse_mentions(text: &str, roster: &[ParticipantConfig]) -> MentionTarget
             while word.ends_with('.') {
                 word.pop();
             }
-            if word == "all" || word == "everyone" {
-                everyone = true;
-            } else if !word.is_empty() {
-                if let Some(cfg) = roster.iter().find(|c| handle_for(&c.id) == word) {
-                    if !found.contains(&cfg.id) {
-                        found.push(cfg.id.clone());
-                    }
-                }
+            if !word.is_empty() {
+                words.push(word);
             }
             i = end.max(i + 1);
         } else {
             i += 1;
+        }
+    }
+    words
+}
+
+/// Find `@handle` mentions in `text` that match someone in `roster`.
+///
+/// Matching ignores case. An `@` that follows a letter or digit (as in an
+/// email address) is not a mention. Trailing dots are treated as sentence
+/// punctuation, so "ask @opus." still finds `opus`.
+pub fn parse_mentions(text: &str, roster: &[ParticipantConfig]) -> MentionTarget {
+    let mut found: Vec<ParticipantId> = Vec::new();
+    let mut everyone = false;
+    for word in mentioned_words(text) {
+        if word == "all" || word == "everyone" {
+            everyone = true;
+        } else if let Some(cfg) = roster.iter().find(|c| handle_for(&c.id) == word) {
+            if !found.contains(&cfg.id) {
+                found.push(cfg.id.clone());
+            }
         }
     }
 
@@ -69,6 +79,12 @@ pub fn parse_mentions(text: &str, roster: &[ParticipantConfig]) -> MentionTarget
     } else {
         MentionTarget::Some(found)
     }
+}
+
+/// Whether `text` names `id` by its own `@handle`. `@all` doesn't count.
+pub fn names(text: &str, id: &ParticipantId) -> bool {
+    let handle = handle_for(id);
+    mentioned_words(text).contains(&handle)
 }
 
 #[cfg(test)]
@@ -118,5 +134,14 @@ mod tests {
         assert_eq!(parse_mentions("mail me at me@opus.dev", &roster()), MentionTarget::None);
         assert_eq!(parse_mentions("@nobody here", &roster()), MentionTarget::None);
         assert_eq!(parse_mentions("no mention", &roster()), MentionTarget::None);
+    }
+
+    #[test]
+    fn names_needs_the_bots_own_handle() {
+        let grok = ParticipantId::new("Grok");
+        assert!(names("make one, @grok.", &grok));
+        assert!(!names("@all make one", &grok));
+        assert!(!names("mail me@grok.dev", &grok));
+        assert!(!names("@grokker", &grok));
     }
 }

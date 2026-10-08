@@ -74,3 +74,10 @@ Helpers: one Haiku on the Rust media path + tests, one on the UI, me on the mode
 - Music, speech and upscale models.
 - One bot that both chats and makes media (the tool approach can sit on top later).
 - Hetzner: same code, installed separately when you say so.
+
+## Follow-up: no surprise charges (2026-10-08)
+A $2.91 Seedance video was made with no "Make it?": Jigga's reply mentioned `@venice` while explaining the problem, a bot's mention woke Allison, and the composer's over-$1 ask only ran on the person's own sends. Fixes:
+- **Only when named.** `Participant::named_only()` is true for a bot on an image or video model (from the cached model list). Room routing leaves such a bot out of untagged messages, `@all`, the sticky last recipient and other bots' mentions (`room.rs`). As a backstop, `media::Job::run` passes unless the newest person's message in the turn names the bot (`media::named_by_person`), so retries, suggestions and any other path can't spend.
+- **Always asks, on the server.** Before `image/generate`, `image/edit` or `video/queue`, the bot raises an approval card of the new kind `spend` ("Make a video · $2.91", settings and prompt). Never Always-allowed (`ActionKind::asked_every_time`). No answer, Stop, or "Don't make it" spends nothing. The composer's own over-$1 ask is gone, so nothing asks twice.
+- **Failures stay in the chat.** A failed job is a reply ("The video wasn't made. …") instead of a passing red notice. Build on last skips those replies.
+- **Traceable charges.** Venice's failed status ends the wait at once with the job number; content-filter refusals get plain wording; every queued, finished, failed and declined job is logged with model, job number and price; daemon log lines get a timestamp.

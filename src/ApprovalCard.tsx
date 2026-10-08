@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from "react";
 
-import { answerLabel, choicesFor, sendApprovalAnswer, kindLabel, scopeLine, type Answer } from "./approvalChoices";
+import { answerLabel, choicesFor, sendApprovalAnswer, kindLabel, scopeLine, showsScope, type Answer } from "./approvalChoices";
 import { Markdown } from "./Markdown";
 import type { FileChange, ProposedAction } from "./types";
 
@@ -94,7 +94,7 @@ export function ApprovalCard({ action, deadline = null, name, onDecide, request,
         {deadline && <span className="approval-deadline">{deadline}</span>}
       </div>
       {/* The line keeps its space while faded out, so hovering Always allow never resizes the card. */}
-      {(action.risky || choicesFor(action).includes("always")) && (
+      {showsScope(action) && (
         <p id={scopeId} className={`approval-scope${action.risky || previewing ? "" : " faded"}`}>{scopeLine(name, action)}</p>
       )}
       {error && <p role="alert">{error}</p>}

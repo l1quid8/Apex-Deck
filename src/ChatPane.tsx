@@ -62,9 +62,8 @@ import { Markdown } from "./Markdown";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
-import { CONFIRM_OVER, mediaKind, priceLabel } from "./media";
+import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
-import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { AttachedImages, AttachedVideos } from "./AttachedImages";
 import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "./tldr";
 import { cardsOutOfView, firstUnseen, isAtBottom, newPill, owners, seenList, seenMark, unseenCount, waitingLine, type CardBox } from "./transcriptPlace";
@@ -1967,7 +1966,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend, mediaSig]);
   const pricePill = pricing?.sig === mediaSig && mediaSends.length && pricing.usd != null && pricing.usd > 0 && (text.trim() || sendable.length) ? priceLabel(pricing.usd) : null;
-  const [priceAsk, setPriceAsk] = useState<Question | null>(null);
 
   /** Answer the question on the form, or skip it with `null`. */
   const answerQuestion = (request: string, answers: string[][] | null) => {
@@ -2002,7 +2000,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     }
     return true;
   };
-  const send = async (steer = false, confirmed = false) => {
+  const send = async (steer = false) => {
     if (!ready) return;
     panelDismissed.current = false;
     const targetIds = stickyFor(text, turnQueue.items) ?? await backend.roomTargets(pane.id, text).catch(() => [] as string[]);
@@ -2022,15 +2020,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const parsed = body ? parseComposer(body) : { text: "" };
     if ("command" in parsed) return runCommand(parsed.command);
     if (participants.length === 0) return;
-    // A picture or video bot needs its picture, and a send over the limit asks first. Cancel keeps the draft.
+    // A picture or video bot needs its picture. Each picture or video is asked for on the bot's own card, before it is made.
     const sends = mediaSendsFor(targetIds, participants, providerModels, sendable.some(a => isImage(a.path!)));
     if (sends.length) {
-      const { usd, missing } = await priceSend(sends, backend);
+      const { missing } = await priceSend(sends, backend);
       if (missing) { notify(`${missing.name} needs a picture: attach one to animate.`, "error"); return; }
-      if (!confirmed && usd != null && usd > CONFIRM_OVER) {
-        setPriceAsk({ title: "Send this message?", body: `This costs about ${dollars(usd)}. Make it?`, action: "Make it", onConfirm: () => void send(steer, true) });
-        return;
-      }
     }
     // Sending takes you to the bottom, where your message and the replies land,
     // and clears "New since you looked".
@@ -3054,7 +3048,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             onCopyFolder={() => void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)))} />}
         </div>
         {unknownServers.length > 0 && <div className="server-error">{unknownServers.map(name => <u key={name}>!{name} </u>)} — unknown server, app or plugin</div>}
-        {priceAsk && <ConfirmDialog question={priceAsk} onCancel={() => setPriceAsk(null)} />}
         {botChips}
         </div>
       </div>}

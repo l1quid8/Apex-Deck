@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { dollars, mediaMenuLine, mediaSendsFor, pictureLine, priceSend, quoteFor, sourceKey, sumPrices } from '../src/mediaPrice.ts';
 import { resolveMedia } from '../src/media.ts';
 
@@ -73,4 +74,12 @@ test('a total includes pictures and video quotes, and flags a video with no pict
   assert.equal(priced.missing?.name, 'Vid');
   const withPicture = await priceSend(mediaSendsFor(['pic', 'vid'], [], {}, true), source);
   assert.equal(withPicture.usd, null);
+});
+
+test('the composer leaves the asking to the bot card, and the settings say so', () => {
+  const chat = readFileSync(new URL('../src/ChatPane.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(chat, /CONFIRM_OVER|setPriceAsk|priceAsk/);
+  const settings = readFileSync(new URL('../src/BotSettings.tsx', import.meta.url), 'utf8');
+  assert.match(settings, /Deck asks before each one\./);
+  assert.doesNotMatch(settings, /CONFIRM_OVER/);
 });

@@ -14,6 +14,7 @@ pub struct ScriptedParticipant {
     config: ParticipantConfig,
     lines: Mutex<VecDeque<String>>,
     requests: Mutex<Vec<TurnRequest>>,
+    named_only: bool,
 }
 
 impl ScriptedParticipant {
@@ -39,7 +40,13 @@ impl ScriptedParticipant {
             Backend::Scripted { lines } => lines.iter().cloned().collect(),
             _ => VecDeque::new(),
         };
-        Self { config, lines: Mutex::new(lines), requests: Mutex::new(Vec::new()) }
+        Self { config, lines: Mutex::new(lines), requests: Mutex::new(Vec::new()), named_only: false }
+    }
+
+    /// Answer only a person's message that names it, like a picture bot.
+    pub fn named_only(mut self) -> Self {
+        self.named_only = true;
+        self
     }
 
     /// Every request this participant has been sent, oldest first.
@@ -52,6 +59,10 @@ impl ScriptedParticipant {
 impl Participant for ScriptedParticipant {
     fn config(&self) -> &ParticipantConfig {
         &self.config
+    }
+
+    fn named_only(&self) -> bool {
+        self.named_only
     }
 
     async fn respond(

@@ -8,6 +8,7 @@ pub mod devices_cli;
 pub mod files;
 pub mod identity;
 pub mod local_call;
+pub mod log_time;
 pub mod pair_cli;
 pub mod pair_commands;
 pub mod paths;

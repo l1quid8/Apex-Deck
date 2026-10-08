@@ -90,6 +90,14 @@ pub type ProgressSink<'a> = &'a (dyn for<'s> Fn(Progress<'s>) + Send + Sync);
 pub trait Participant: Send + Sync {
     fn config(&self) -> &ParticipantConfig;
 
+    /// Answers only a person's message that names it by `@handle`, as a
+    /// bot whose every reply costs money does. Such a bot is left out when
+    /// a message names nobody, when the whole room is addressed, and when
+    /// another bot mentions it.
+    fn named_only(&self) -> bool {
+        false
+    }
+
     /// Produce one reply. Call `on_delta` with each piece of text as it
     /// arrives so the room can show the reply while it is being written.
     /// The returned `Reply::text` must be the complete reply.

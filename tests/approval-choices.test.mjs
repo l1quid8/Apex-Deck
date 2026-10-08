@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { APPROVAL_CHOICES, decisionFor, kindLabel, scopeLine } from "../src/approvalChoices.ts";
+import { APPROVAL_CHOICES, answerLabel, choicesFor, decisionFor, kindLabel, scopeLine, showsScope } from "../src/approvalChoices.ts";
+import { cardLabel } from "../src/approvals.ts";
 
 test("every card offers Allow once, Always allow and Deny", () => {
   assert.deepEqual(APPROVAL_CHOICES, ["once", "always", "deny"]);
@@ -41,4 +42,26 @@ test("a start-the-work card offers Start the work and Keep planning, never Alway
   assert.deepEqual(answerLabel(start, "deny"), { ask: "Keep planning", done: "Kept planning" });
   assert.deepEqual(answerLabel(tweet, "once"), { ask: "Allow once", done: "Allowed once" });
   assert.equal(kindLabel(start), "Has a plan");
+});
+
+const video = { kind: "spend", title: "Make a video · $2.91", detail: "Seedance 2.5 US · 10s · 480p · 9:16 · sound\n\na long prompt", risky: true };
+
+test("a spend card offers Make it and Don't make it, never Always allow", () => {
+  assert.deepEqual(choicesFor(video), ["once", "deny"]);
+  assert.deepEqual(answerLabel(video, "once"), { ask: "Make it", done: "Making it" });
+  assert.deepEqual(answerLabel(video, "deny"), { ask: "Don't make it", done: "Not made" });
+  assert.equal(kindLabel(video), "Wants to spend money");
+  assert.equal(cardLabel("spend"), "Wants to spend money");
+});
+
+test("a spend card with no price still reads as a spend card", () => {
+  const unknown = { kind: "spend", title: "Make a video · price unknown", detail: "x", risky: true };
+  assert.equal(kindLabel(unknown), "Wants to spend money");
+  assert.deepEqual(choicesFor(unknown), ["once", "deny"]);
+});
+
+test("a spend card never shows the Always allow scope line", () => {
+  assert.equal(showsScope(video), false);
+  assert.equal(showsScope(tweet), true);
+  assert.equal(showsScope({ kind: "command", title: "Run a command", detail: "ls" }), true);
 });

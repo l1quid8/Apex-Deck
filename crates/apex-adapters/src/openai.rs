@@ -1,6 +1,6 @@
 use apex_core::{
-    Backend, ContextUse, DeltaSink, Participant, ParticipantConfig, ParticipantError, Progress, ProgressSink, Reply,
-    Role, TurnRequest,
+    Approver, Backend, ContextUse, DeltaSink, NoApprover, Participant, ParticipantConfig, ParticipantError, Progress,
+    ProgressSink, Reply, Role, TurnRequest,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -142,6 +142,13 @@ impl Participant for OpenAiCompatParticipant {
         &self.config
     }
 
+    /// A picture or video model costs money with every message, so it
+    /// answers only when named.
+    fn named_only(&self) -> bool {
+        let Backend::OpenAiCompatible { base_url, model, .. } = &self.config.backend else { return false };
+        crate::api_info::cached_kind(base_url, model).is_some_and(|kind| kind != crate::ModelKind::Text)
+    }
+
     async fn respond(
         &self,
         request: TurnRequest,
@@ -155,10 +162,20 @@ impl Participant for OpenAiCompatParticipant {
         .await
     }
 
+    /// With nobody to ask, a picture or video is never paid for.
     async fn respond_with_progress(
         &self,
         request: TurnRequest,
         on_progress: ProgressSink<'_>,
+    ) -> Result<Reply, ParticipantError> {
+        self.respond_with_approvals(request, on_progress, &NoApprover).await
+    }
+
+    async fn respond_with_approvals(
+        &self,
+        request: TurnRequest,
+        on_progress: ProgressSink<'_>,
+        approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
         let Backend::OpenAiCompatible { base_url, model, api_key_env } = &self.config.backend else {
             return Err(ParticipantError::NotConfigured("backend is not an HTTP API".into()));
@@ -173,7 +190,7 @@ impl Participant for OpenAiCompatParticipant {
                     Some(name) => Some(crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?),
                     None => None,
                 };
-                let job = crate::media::Job { client: &self.client, base_url, key, model: &info, settings: self.config.media.as_ref(), dir, poll: self.poll };
+                let job = crate::media::Job { client: &self.client, base_url, key, model: &info, settings: self.config.media.as_ref(), dir, poll: self.poll, approver, bot: &self.config.id };
                 return job.run(&request, on_progress).await;
             }
         }

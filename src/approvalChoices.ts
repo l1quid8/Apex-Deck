@@ -11,15 +11,17 @@ export const ANSWER_LABEL: Record<Answer, { ask: string; done: string }> = {
   deny: { ask: "Deny", done: "Denied" },
 };
 
-/** The buttons a card shows. Starting the work after a plan is asked every time. */
+/** The buttons a card shows. Starting the work after a plan, and spending money, are asked every time. */
 export function choicesFor(action: ProposedAction): Answer[] {
-  return action.kind === "plan" ? ["once", "deny"] : APPROVAL_CHOICES;
+  return action.kind === "plan" || action.kind === "spend" ? ["once", "deny"] : APPROVAL_CHOICES;
 }
 
-/** A button's words. A plan card's mean start the work, or keep planning. */
+/** A button's words. A plan card's mean start the work, or keep planning. A spend card's mean make it, or don't. */
 export function answerLabel(action: ProposedAction, answer: Answer): { ask: string; done: string } {
   if (action.kind === "plan" && answer === "once") return { ask: "Start the work", done: "Started" };
   if (action.kind === "plan" && answer === "deny") return { ask: "Keep planning", done: "Kept planning" };
+  if (action.kind === "spend" && answer === "once") return { ask: "Make it", done: "Making it" };
+  if (action.kind === "spend" && answer === "deny") return { ask: "Don't make it", done: "Not made" };
   return ANSWER_LABEL[answer];
 }
 
@@ -41,8 +43,15 @@ export const RISKY_NOTE = " · can spend money or publish";
 
 /** The card's small label: what kind of thing the bot wants, and whether it is risky. */
 export function kindLabel(action: ProposedAction): string {
+  // A spend card always says so, so the risky note would only repeat it.
+  if (action.kind === "spend") return "Wants to spend money";
   const kind = action.kind === "plan" ? "Has a plan" : action.kind === "edit" ? "Wants to change a file" : action.kind === "command" ? "Wants to run a command" : action.kind === "tool" ? "Wants to call an MCP tool" : "Wants permission";
   return action.risky ? kind + RISKY_NOTE : kind;
+}
+
+/** Whether a card says what Always allow would cover. Spend cards are never always-allowed, so they don't. */
+export function showsScope(action: ProposedAction): boolean {
+  return action.kind !== "spend" && (Boolean(action.risky) || choicesFor(action).includes("always"));
 }
 
 /**

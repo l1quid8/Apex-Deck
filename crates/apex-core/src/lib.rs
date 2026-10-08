@@ -20,7 +20,7 @@ mod view;
 
 pub use concurrent::{ConcurrentRoom, TurnBatch};
 pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
-pub use mention::{handle_for, parse_mentions, MentionTarget};
+pub use mention::{handle_for, names, parse_mentions, MentionTarget};
 pub use participant::{
     DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
 };

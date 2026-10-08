@@ -8,7 +8,7 @@ import { Picker } from './Picker';
 import { ReasoningSlider } from './ReasoningSlider';
 import { latestSaveQueue } from './settingsSave';
 import { applyTurnChange } from './participantSettings';
-import { CONFIRM_OVER, mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media';
+import { mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media';
 import { dollars, mediaMenuLine, pictureLine, quoteFor } from './mediaPrice';
 
 /** What a save can carry. */
@@ -209,7 +209,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     <label className="check-label"><input type="checkbox" checked={resolved.build_on_last} onChange={e => chooseMedia({ build_on_last: e.target.checked })} /> Build on last <span className="muted">· adds to your last description</span></label>
     <p className="muted media-notes">{(mediaType === 'image'
       ? [pictureLine(spec, resolved)]
-      : [quoting ? 'Checking price…' : quoted != null ? `Costs ${priceLabel(quoted)} per clip${quoted > CONFIRM_OVER ? `, so it asks before sending` : ''}` : '',
+      : [quoting ? 'Checking price…' : quoted != null ? `Costs ${priceLabel(quoted)} per clip. Deck asks before each one.` : '',
         spec.needs_image ? 'Needs a picture: attach one with your message.' : spec.image_model ? 'Attach a picture to animate it.' : '']
     ).filter(Boolean).map(line => <span key={line}>{line}<br /></span>)}</p>
   </> : null;

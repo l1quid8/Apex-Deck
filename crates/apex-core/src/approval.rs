@@ -37,6 +37,16 @@ pub enum ActionKind {
     /// A bot that planned asks to start the work. Approving turns the
     /// thread's Plan switch off. Never "Always allow".
     Plan,
+    /// A picture or video bot asks before a paid job. The title has the
+    /// price. Never "Always allow": every one costs money.
+    Spend,
+}
+
+impl ActionKind {
+    /// Asked every time: "Always allow" is never offered or kept.
+    pub fn asked_every_time(self) -> bool {
+        matches!(self, ActionKind::Plan | ActionKind::Spend)
+    }
 }
 
 /// Something a participant wants to do and is waiting for permission for.
@@ -108,7 +118,7 @@ impl From<SavedRule> for AllowedRule {
 fn scope(action: &ProposedAction) -> &str {
     match action.kind {
         ActionKind::Tool | ActionKind::Edit => &action.title,
-        ActionKind::Command | ActionKind::Other | ActionKind::Plan => &action.detail,
+        ActionKind::Command | ActionKind::Other | ActionKind::Plan | ActionKind::Spend => &action.detail,
     }
 }
 

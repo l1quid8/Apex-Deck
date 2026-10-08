@@ -171,8 +171,9 @@ pub(crate) struct RoomApprover<'a> {
 #[async_trait]
 impl Approver for RoomApprover<'_> {
     async fn decide(&self, action: ProposedAction) -> Decision {
-        // Starting the work after a plan is asked every time.
-        let once = action.kind == crate::ActionKind::Plan;
+        // Starting the work after a plan, and paying for a picture or
+        // video, are asked every time.
+        let once = action.kind.asked_every_time();
         if !once && self.desk.always_allowed(self.id, &action) {
             eprintln!("[apex-deck] answered without a card (always allowed): {}", action.title);
             (self.on_event)(RoomEvent::Activity { id: self.id.clone(), text: format!("Always allowed: {}", action.title) });
@@ -630,6 +631,16 @@ impl Room {
         self.roster.iter().map(|p| p.config().id.clone()).collect()
     }
 
+    /// Everyone a message can reach without naming them: all but the bots
+    /// that answer only when named.
+    fn unnamed_ids(&self) -> Vec<ParticipantId> {
+        self.roster.iter().filter(|p| !p.named_only()).map(|p| p.config().id.clone()).collect()
+    }
+
+    fn named_only(&self, id: &ParticipantId) -> bool {
+        self.roster.iter().any(|p| &p.config().id == id && p.named_only())
+    }
+
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
@@ -644,23 +655,23 @@ impl Room {
 
     pub fn resolve_targets(&self, text: &str) -> Vec<ParticipantId> {
         let configs = self.configs();
-        let targets = match parse_mentions(text, &configs) {
-            MentionTarget::Everyone => self.all_ids(),
+        // A bot that answers only when named is reached only by its handle.
+        match parse_mentions(text, &configs) {
+            MentionTarget::Everyone => self.all_ids().into_iter().filter(|id| !self.named_only(id) || crate::names(text, id)).collect(),
             MentionTarget::Some(ids) => ids,
             MentionTarget::None => match self.options.policy {
-                TurnPolicy::Everyone | TurnPolicy::RoundRobin => self.all_ids(),
+                TurnPolicy::Everyone | TurnPolicy::RoundRobin => self.unnamed_ids(),
                 TurnPolicy::Mention => {
                     let sticky: Vec<ParticipantId> =
-                        self.last_targets.iter().filter(|id| self.has(id)).cloned().collect();
+                        self.last_targets.iter().filter(|id| self.has(id) && !self.named_only(id)).cloned().collect();
                     if sticky.is_empty() {
-                        self.all_ids().into_iter().take(1).collect()
+                        self.unnamed_ids().into_iter().take(1).collect()
                     } else {
                         sticky
                     }
                 }
             },
-        };
-        targets
+        }
     }
 
     pub(crate) fn remember_targets(&mut self, targets: Vec<ParticipantId>) {
@@ -752,7 +763,9 @@ impl Room {
                     MentionTarget::None => Vec::new(),
                 };
                 self.push(Speaker::Bot(id.clone()), text.to_string(), on_event);
-                addressed.into_iter().filter(|other| other != id).collect()
+                // Another bot mentioning one that answers only when named
+                // (say, while explaining it) must not wake it.
+                addressed.into_iter().filter(|other| other != id && !self.named_only(other)).collect()
             }
         }
     }
@@ -945,6 +958,40 @@ mod approver_tests {
             futures::join!(approver.decide(start.clone()), async { desk.resolve("ask-2", Decision::Approve) })
         });
         assert!(asked, "a saved rule never answers it");
+    }
+
+    #[test]
+    fn a_price_card_is_never_always_allowed() {
+        let desk = ApprovalDesk::default();
+        let id = ParticipantId::new("allison");
+        let sink = |_: RoomEvent| {};
+        let approver = RoomApprover { desk: &desk, id: &id, on_event: &sink };
+        let pay = ProposedAction { kind: ActionKind::Spend, title: "Make a video · $2.91".into(), detail: "a city".into(), expires_at: None, risky: true };
+        let (decision, _) = futures::executor::block_on(async {
+            futures::join!(approver.decide(pay.clone()), async { desk.resolve("ask-1", Decision::ApproveAlways) })
+        });
+        assert_eq!(decision, Decision::Approve);
+        assert!(desk.allowed().is_empty());
+    }
+
+    #[test]
+    fn a_bot_that_answers_only_when_named_is_reached_only_by_its_handle() {
+        let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &["a stray @allison would spend money", "ok", "ok", "ok"]));
+        let allison = Arc::new(crate::testing::ScriptedParticipant::new("allison", &["made it"]).named_only());
+        let mut room = Room::new(vec![jigga.clone(), allison.clone()], RoomOptions::default());
+        let asked = |p: &crate::testing::ScriptedParticipant| p.requests().len();
+        futures::executor::block_on(room.post_human("@jigga what happened?", &|_| {}));
+        assert_eq!((asked(&jigga), asked(&allison)), (1, 0), "another bot's mention doesn't wake it");
+        futures::executor::block_on(room.post_human("here's the usage table", &|_| {}));
+        futures::executor::block_on(room.post_human("@all thoughts?", &|_| {}));
+        assert_eq!((asked(&jigga), asked(&allison)), (3, 0), "nor does naming nobody, or the whole room");
+        futures::executor::block_on(room.post_human("@allison a fox", &|_| {}));
+        assert_eq!(asked(&allison), 1);
+        futures::executor::block_on(room.post_human("and another", &|_| {}));
+        assert_eq!((asked(&jigga), asked(&allison)), (4, 1), "the next unnamed message goes to someone else");
+        let mut everyone = Room::new(vec![jigga.clone(), allison.clone()], RoomOptions { policy: TurnPolicy::Everyone, ..RoomOptions::default() });
+        assert_eq!(everyone.resolve_targets("hi"), vec![ParticipantId::new("jigga")]);
+        assert_eq!(everyone.targets_for_human("@all and @allison"), vec![ParticipantId::new("jigga"), ParticipantId::new("allison")]);
     }
 
     #[test]

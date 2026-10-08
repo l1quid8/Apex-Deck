@@ -54,9 +54,6 @@ export function imagePrice(spec: MediaSpec, resolved: ResolvedMedia, editing = f
   return spec.price ?? null;
 }
 
-/** Ask before sending anything that costs more than this, in dollars. */
-export const CONFIRM_OVER = 1;
-
 /** "~$0.04", "~$1.44". */
 export function priceLabel(usd: number): string {
   return `~$${usd < 0.1 ? usd.toFixed(3).replace(/0$/, "") : usd.toFixed(2)}`;

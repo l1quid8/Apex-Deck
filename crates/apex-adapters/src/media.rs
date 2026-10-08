@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use apex_core::{MediaSettings, Message, ParticipantError, Progress, ProgressSink, Reply, Role, Speaker, TurnRequest};
+use apex_core::{ActionKind, Approver, MediaSettings, Message, ParticipantError, ParticipantId, Progress, ProgressSink, ProposedAction, Reply, Role, Speaker, TurnRequest, PASS_TOKEN};
 use base64::Engine;
 use serde_json::{json, Value};
 
@@ -107,16 +107,25 @@ pub(crate) fn latest_ask(request: &TurnRequest) -> (String, Vec<PathBuf>) {
     (said.trim().to_string(), images)
 }
 
+/// Whether this turn comes from a person's message that names `bot` by its
+/// `@handle`. A message that names nobody, `@all`, another bot's mention, a
+/// retry and a suggestions request don't, so none of them can spend money.
+pub(crate) fn named_by_person(request: &TurnRequest, bot: &ParticipantId) -> bool {
+    request.unseen.iter().rev().find(|m| m.speaker == Speaker::Human).is_some_and(|m| apex_core::names(&m.text, bot))
+}
+
 /// Where a media reply records the description it was made from.
 const PROMPT_LABEL: &str = "Prompt: ";
 
 /// The description this bot's last picture or video was made from.
+/// Replies saying something wasn't made are skipped.
 pub(crate) fn last_prompt(request: &TurnRequest) -> Option<String> {
-    let reply = request.turns.iter().rev().find(|t| t.role == Role::Assistant)?;
-    let start = reply.content.rfind(&format!("\n{PROMPT_LABEL}")).map(|i| i + 1).or_else(|| reply.content.starts_with(PROMPT_LABEL).then_some(0))?;
-    let rest = &reply.content[start + PROMPT_LABEL.len()..];
-    let end = rest.find("\n\nAttached ").unwrap_or(rest.len());
-    Some(rest[..end].trim().to_string()).filter(|p| !p.is_empty())
+    request.turns.iter().rev().filter(|t| t.role == Role::Assistant).find_map(|reply| {
+        let start = reply.content.rfind(&format!("\n{PROMPT_LABEL}")).map(|i| i + 1).or_else(|| reply.content.starts_with(PROMPT_LABEL).then_some(0))?;
+        let rest = &reply.content[start + PROMPT_LABEL.len()..];
+        let end = rest.find("\n\nAttached ").unwrap_or(rest.len());
+        Some(rest[..end].trim().to_string()).filter(|p| !p.is_empty())
+    })
 }
 
 /// The description sent: with Build on last, the last one plus the change
@@ -143,10 +152,23 @@ fn failed(message: impl Into<String>) -> ParticipantError {
     ParticipantError::Failed(message.into())
 }
 
+/// Venice's content filter in plain words, when the words given say the
+/// filter stopped the job. None for any other reason.
+fn content_filter(words: &str) -> Option<&'static str> {
+    let words = words.to_lowercase();
+    let filtered = ["content policy", "content filter", "moderation"].iter().any(|w| words.contains(w)) || (words.contains("free account") && words.contains("upgrade"));
+    filtered.then_some("Venice's content filter blocked this. Your account is fine. Try rewording it, for example without real names.")
+}
+
 /// A provider's refusal, with what to do about it.
 pub(crate) fn explain(status: u16, body: &str) -> String {
     let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
     let said = value["error"].as_str().or_else(|| value["error"]["message"].as_str()).or_else(|| value["message"].as_str()).map(str::to_string).unwrap_or_else(|| body.chars().take(200).collect());
+    // A real shortage of balance or a refused key says so, whatever the words.
+    if let Some(plain) = content_filter(body).filter(|_| !matches!(status, 401..=403)) {
+        let suggestion = value["suggested_prompt"].as_str().filter(|_| status == 422).map(|s| format!(" Venice suggests: \"{s}\"")).unwrap_or_default();
+        return format!("{plain}{suggestion}");
+    }
     match status {
         401 | 403 => format!("Venice refused the saved API key ({said}). Open this bot's settings and paste a new one into API key."),
         402 => "Your Venice balance is too low for this. Top up at venice.ai, then send it again.".into(),
@@ -181,6 +203,44 @@ pub(crate) fn video_activity(elapsed_ms: u64, expected_ms: Option<u64>) -> Strin
 /// "$1.44", "$0.03".
 fn dollars(usd: f64) -> String {
     format!("${usd:.2}")
+}
+
+/// One line in the daemon log for a paid job. Never the key or the prompt.
+fn log_job(event: &str, model: &str, queue_id: Option<&str>, cost: Option<f64>, detail: &str) {
+    let queue = queue_id.map(|q| format!(" queue_id={q}")).unwrap_or_default();
+    let cost = cost.map(dollars).unwrap_or_else(|| "unknown".into());
+    let detail = if detail.is_empty() { String::new() } else { format!(" {detail}") };
+    eprintln!("[apex-deck] media job {event}: model={model}{queue} cost={cost}{detail}");
+}
+
+/// Why Venice has stopped a queued video, when its status says so: a
+/// failure status or any error. An unfamiliar status keeps waiting, since
+/// giving up on a paid job that is still going would waste it.
+fn stopped(status: &Value) -> Option<String> {
+    let state = status["status"].as_str().unwrap_or_default().to_ascii_uppercase();
+    let text = |v: &Value| v.as_str().or_else(|| v["message"].as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+    let reason = text(&status["error"]).or_else(|| text(&status["message"])).or_else(|| text(&status["reason"]));
+    let failed = ["FAIL", "ERROR", "CANCEL", "REJECT", "BLOCK", "EXPIRE"].iter().any(|word| state.contains(word));
+    if !failed && status["error"].is_null() {
+        return None;
+    }
+    Some(reason.unwrap_or_else(|| if state.is_empty() { "no reason given".into() } else { state }))
+}
+
+/// What the person sees when Venice stopped a video for this reason.
+fn stopped_message(reason: &str) -> String {
+    match content_filter(reason) {
+        Some(plain) => plain.into(),
+        None => format!("Venice stopped making the video: {}.", reason.trim_end_matches('.')),
+    }
+}
+
+/// Every failure after a video is queued names the job and warns of the charge.
+fn after_queue(error: ParticipantError, queue_id: &str) -> ParticipantError {
+    match error {
+        ParticipantError::Failed(message) => failed(format!("{message} Job {queue_id}. Venice may still charge for it; quote this job number to Venice support for a refund.")),
+        other => other,
+    }
 }
 
 fn data_url(path: &Path) -> Result<(String, String), ParticipantError> {
@@ -248,6 +308,10 @@ pub(crate) struct Job<'a> {
     pub dir: &'a Path,
     /// How often a queued video is checked on. Tests make it short.
     pub poll: Duration,
+    /// Asked before anything is paid for.
+    pub approver: &'a dyn Approver,
+    /// This bot, which a person's message must name.
+    pub bot: &'a ParticipantId,
 }
 
 impl Job<'_> {
@@ -270,7 +334,35 @@ impl Job<'_> {
         Err(failed(explain(status.as_u16(), &text)))
     }
 
+    /// One turn. Answers only a person's message that names this bot, asks
+    /// before paying, and puts a failure in the chat so it isn't lost.
     pub(crate) async fn run(&self, request: &TurnRequest, on_progress: ProgressSink<'_>) -> Result<Reply, ParticipantError> {
+        if !named_by_person(request, self.bot) {
+            eprintln!("[apex-deck] media bot {} not named by a person's message, so it passed", self.bot.as_str());
+            return Ok(Reply::text(PASS_TOKEN));
+        }
+        let kind = if self.model.kind == ModelKind::Image { "picture" } else { "video" };
+        match self.make(request, on_progress).await {
+            Err(ParticipantError::Failed(why) | ParticipantError::NotConfigured(why)) => Ok(Reply::text(format!("The {kind} wasn't made. {why}"))),
+            other => other,
+        }
+    }
+
+    /// Ask the person to pay for this. `detail` names the model and settings.
+    async fn confirm(&self, what: &str, cost: Option<f64>, details: &[String], prompt: &str, on_progress: ProgressSink<'_>) -> bool {
+        let price = cost.map_or("price unknown".to_string(), dollars);
+        let name = self.model.label.as_deref().unwrap_or(&self.model.id);
+        let settings = std::iter::once(name.to_string()).chain(details.iter().cloned()).collect::<Vec<_>>().join(" · ");
+        on_progress(Progress::Activity("Waiting for your OK"));
+        let action = ProposedAction { kind: ActionKind::Spend, title: format!("{what} · {price}"), detail: format!("{settings}\n\n{prompt}"), expires_at: None, risky: true };
+        let approved = self.approver.decide(action).await.approved();
+        if !approved {
+            eprintln!("[apex-deck] media job declined: model={} cost={price}", self.model.id);
+        }
+        approved
+    }
+
+    async fn make(&self, request: &TurnRequest, on_progress: ProgressSink<'_>) -> Result<Reply, ParticipantError> {
         let spec = self.model.media.clone().unwrap_or_default();
         let resolved = resolve(self.model.kind, &spec, self.settings);
         let (said, images) = latest_ask(request);
@@ -298,6 +390,11 @@ impl Job<'_> {
         let editing = picture.is_some() && spec.edit_model.is_some();
         let mut details: Vec<String> = Vec::new();
         let mut note = None;
+        let cost = image_price(spec, resolved, editing);
+        let shown: Vec<String> = if editing { vec!["edit".into()] } else { [&resolved.aspect_ratio, &resolved.resolution, &resolved.quality].into_iter().flatten().cloned().collect() };
+        if !self.confirm(if editing { "Edit the picture" } else { "Make a picture" }, cost, &shown, prompt, on_progress).await {
+            return Ok(Reply::text(PASS_TOKEN));
+        }
         let bytes = if let (true, Some(picture), Some(edit_model)) = (editing, picture, spec.edit_model.as_deref()) {
             on_progress(Progress::Activity("Editing picture"));
             let (_, b64) = data_url(picture)?;
@@ -321,7 +418,8 @@ impl Job<'_> {
             base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| failed(format!("the picture couldn't be read: {e}")))?
         };
         let path = save(self.dir, &self.model.id, &bytes, false)?;
-        let cost = image_price(spec, resolved, editing);
+        let sent = if editing { spec.edit_model.as_deref().unwrap_or(self.model.id.as_str()) } else { self.model.id.as_str() };
+        log_job("made", sent, None, cost, &format!("file={}", path.display()));
         Ok(Reply {
             text: reply_text(self.model, &details, cost, prompt, note, &path, false),
             cost_micros: cost.map(|c| (c * 1_000_000.0).round() as u64),
@@ -359,6 +457,21 @@ impl Job<'_> {
         let base = self.video_body(&model, resolved, animating);
         on_progress(Progress::Activity("Checking the price"));
         let quote = self.send("video/quote", &base).await?.json::<Value>().await.ok().and_then(|q| q["quote"].as_f64());
+        let mut shown: Vec<String> = [&resolved.duration, &resolved.resolution].into_iter().flatten().cloned().collect();
+        if let (Some(aspect), false) = (&resolved.aspect_ratio, animating) {
+            shown.push(aspect.clone());
+        }
+        if animating {
+            shown.push("from your picture".into());
+        }
+        match resolved.audio {
+            Some(true) => shown.push("sound".into()),
+            Some(false) => shown.push("no sound".into()),
+            None => {}
+        }
+        if !self.confirm(if animating { "Animate the picture" } else { "Make a video" }, quote, &shown, prompt, on_progress).await {
+            return Ok(Reply::text(PASS_TOKEN));
+        }
 
         let mut body = base.clone();
         body["prompt"] = json!(prompt);
@@ -369,56 +482,61 @@ impl Job<'_> {
         let queued: Value = self.send("video/queue", &body).await?.json().await.map_err(|e| failed(format!("Venice's answer couldn't be read: {e}")))?;
         let queue_id = queued["queue_id"].as_str().ok_or_else(|| failed("Venice didn't start the video."))?.to_string();
         let mut download_url = queued["download_url"].as_str().map(str::to_string);
+        log_job("queued", &model, Some(&queue_id), quote, "");
 
         let started = Instant::now();
         let limit = Duration::from_secs(30 * 60);
-        let bytes = loop {
-            tokio::time::sleep(self.poll).await;
-            let mut check = json!({ "model": model, "queue_id": queue_id });
-            // Files Venice hands back itself can go once they are here;
-            // ones behind a download link are fetched from it first.
-            if download_url.is_none() {
-                check["delete_media_on_completion"] = json!(true);
-            }
-            let response = self.send("video/retrieve", &check).await?;
-            let is_video = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("video/") || t.starts_with("application/octet-stream"));
-            if is_video {
-                break response.bytes().await.map_err(|e| failed(format!("the video didn't arrive: {e}")))?.to_vec();
-            }
-            let status: Value = response.json().await.map_err(|e| failed(format!("Venice's answer couldn't be read: {e}")))?;
-            if let Some(url) = status["download_url"].as_str() {
-                download_url = Some(url.to_string());
-            }
-            if status["status"] == "COMPLETED" {
-                let url = download_url.clone().ok_or_else(|| failed("Venice finished the video but sent no way to fetch it."))?;
-                let fetched = self.client.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| failed(format!("couldn't download the video: {e}")))?;
-                let bytes = fetched.bytes().await.map_err(|e| failed(format!("the video didn't arrive: {e}")))?.to_vec();
-                // Done with it; tidying up is best effort.
-                let _ = self.post("video/complete", &json!({ "model": model, "queue_id": queue_id })).send().await;
-                break bytes;
-            }
-            // Deck's own clock: Venice's count restarts when a queued job starts.
-            let elapsed = started.elapsed().as_millis() as u64;
-            on_progress(Progress::Activity(&video_activity(elapsed, status["average_execution_time"].as_u64())));
-            if started.elapsed() > limit {
-                return Err(failed("Venice was still making the video after 30 minutes, so Deck stopped waiting. It may still be billed."));
+        // Everything from here on is after the queue call, so any failure names the job.
+        let waited: Result<PathBuf, ParticipantError> = async {
+            let bytes = loop {
+                tokio::time::sleep(self.poll).await;
+                let mut check = json!({ "model": model, "queue_id": queue_id });
+                // Files Venice hands back itself can go once they are here;
+                // ones behind a download link are fetched from it first.
+                if download_url.is_none() {
+                    check["delete_media_on_completion"] = json!(true);
+                }
+                let response = self.send("video/retrieve", &check).await?;
+                let is_video = response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("video/") || t.starts_with("application/octet-stream"));
+                if is_video {
+                    break response.bytes().await.map_err(|e| failed(format!("the video didn't arrive: {e}")))?.to_vec();
+                }
+                let status: Value = response.json().await.map_err(|e| failed(format!("Venice's answer couldn't be read: {e}")))?;
+                if let Some(url) = status["download_url"].as_str() {
+                    download_url = Some(url.to_string());
+                }
+                // Stop as soon as Venice says the video failed, not at the time limit.
+                if let Some(reason) = stopped(&status) {
+                    return Err(failed(stopped_message(&reason)));
+                }
+                if status["status"] == "COMPLETED" {
+                    let url = download_url.clone().ok_or_else(|| failed("Venice finished the video but sent no way to fetch it."))?;
+                    let fetched = self.client.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| failed(format!("couldn't download the video: {e}")))?;
+                    let bytes = fetched.bytes().await.map_err(|e| failed(format!("the video didn't arrive: {e}")))?.to_vec();
+                    // Done with it; tidying up is best effort.
+                    let _ = self.post("video/complete", &json!({ "model": model, "queue_id": queue_id })).send().await;
+                    break bytes;
+                }
+                // Deck's own clock: Venice's count restarts when a queued job starts.
+                let elapsed = started.elapsed().as_millis() as u64;
+                on_progress(Progress::Activity(&video_activity(elapsed, status["average_execution_time"].as_u64())));
+                if started.elapsed() > limit {
+                    return Err(failed("Venice was still making the video after 30 minutes, so Deck stopped waiting."));
+                }
+            };
+            save(self.dir, &model, &bytes, true)
+        }
+        .await;
+        let path = match waited {
+            Ok(path) => path,
+            Err(error) => {
+                log_job("failed", &model, Some(&queue_id), quote, &format!("reason={error}"));
+                return Err(after_queue(error, &queue_id));
             }
         };
-        let path = save(self.dir, &model, &bytes, true)?;
-        let mut details: Vec<String> = [&resolved.duration, &resolved.resolution].into_iter().flatten().cloned().collect();
-        if let (Some(aspect), false) = (&resolved.aspect_ratio, animating) {
-            details.push(aspect.clone());
-        }
-        if animating {
-            details.push("from your picture".into());
-        }
-        match resolved.audio {
-            Some(true) => details.push("sound".into()),
-            Some(false) => details.push("no sound".into()),
-            None => {}
-        }
+        log_job("completed", &model, Some(&queue_id), quote, &format!("file={}", path.display()));
         Ok(Reply {
-            text: reply_text(self.model, &details, quote, prompt, None, &path, true),
+            text: reply_text(self.model, &shown, quote, prompt, None, &path, true),
             cost_micros: quote.map(|c| (c * 1_000_000.0).round() as u64),
             ..Reply::default()
         })
@@ -433,7 +551,7 @@ pub async fn quote(base_url: &str, api_key_env: Option<&str>, model: &str, setti
     }
     let resolved = resolve(info.kind, info.media.as_ref().unwrap_or(&MediaSpec::default()), settings);
     let client = reqwest::Client::new();
-    let job = Job { client: &client, base_url, key: api_key_env.filter(|n| !n.is_empty()).and_then(crate::keys::lookup), model: &info, settings, dir: Path::new(""), poll: Duration::ZERO };
+    let job = Job { client: &client, base_url, key: api_key_env.filter(|n| !n.is_empty()).and_then(crate::keys::lookup), model: &info, settings, dir: Path::new(""), poll: Duration::ZERO, approver: &apex_core::NoApprover, bot: &ParticipantId::new("") };
     let response = job.send("video/quote", &job.video_body(model, &resolved, false)).await.map_err(|e| e.to_string())?;
     let answer: Value = response.json().await.map_err(|e| e.to_string())?;
     Ok(answer["quote"].as_f64())
@@ -533,9 +651,19 @@ mod tests {
     #[test]
     fn refusals_say_what_to_do() {
         assert!(explain(402, r#"{"error":"INSUFFICIENT_BALANCE"}"#).contains("Top up"));
+        assert!(explain(402, r#"{"error":"Free accounts can't do this. Upgrade or buy credits."}"#).contains("Top up"), "a real shortage isn't called a filter");
         assert!(explain(401, r#"{"error":"Authentication failed"}"#).contains("paste a new one"));
         assert!(explain(422, r#"{"error":"blocked","suggested_prompt":"a calm fox"}"#).contains("a calm fox"));
         assert!(explain(409, r#"{"error":"needs_consent","docs_url":"https://docs.venice.ai/x"}"#).contains("https://docs.venice.ai/x"));
+        assert!(explain(422, r#"{"error":"Free accounts can't make this. Upgrade or buy credits."}"#).starts_with("Venice's content filter blocked this. Your account is fine."));
+    }
+
+    #[test]
+    fn only_a_failure_status_or_an_error_ends_the_wait() {
+        assert_eq!(stopped(&json!({ "status": "FAILED", "error": "content policy" })).as_deref(), Some("content policy"));
+        assert_eq!(stopped(&json!({ "status": "CANCELLED" })).as_deref(), Some("CANCELLED"));
+        assert!(stopped(&json!({ "status": "PROCESSING" })).is_none());
+        assert!(stopped(&json!({ "status": "IN_PROGRESS" })).is_none(), "an unfamiliar status keeps waiting");
     }
 
     #[test]
@@ -626,13 +754,35 @@ mod tests {
             image_model: Some("seedance-2-5-image-to-video-basic".into()), ..seedance() }), ..ApiModel::default() }
     }
 
+    /// Answers every price card one way and keeps what it was shown.
+    struct Cards {
+        approve: bool,
+        shown: Mutex<Vec<ProposedAction>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Approver for Cards {
+        async fn decide(&self, action: ProposedAction) -> apex_core::Decision {
+            self.shown.lock().unwrap().push(action);
+            if self.approve { apex_core::Decision::Approve } else { apex_core::Decision::Reject }
+        }
+    }
+
     async fn run_job(address: &str, model: &ApiModel, dir: &Path, request: TurnRequest) -> (Result<Reply, ParticipantError>, Vec<String>) {
+        let (result, activity, _) = run_job_answering(true, address, model, dir, request).await;
+        (result, activity)
+    }
+
+    /// A turn by the bot "allison", whose price cards get `approve`.
+    async fn run_job_answering(approve: bool, address: &str, model: &ApiModel, dir: &Path, request: TurnRequest) -> (Result<Reply, ParticipantError>, Vec<String>, Vec<ProposedAction>) {
         let client = reqwest::Client::new();
         let activity = Mutex::new(Vec::new());
         let sink = |p: Progress<'_>| if let Progress::Activity(a) = p { activity.lock().unwrap().push(a.to_string()) };
-        let job = Job { client: &client, base_url: address, key: Some("k".into()), model, settings: None, dir, poll: Duration::from_millis(10) };
+        let cards = Cards { approve, shown: Mutex::new(Vec::new()) };
+        let bot = ParticipantId::new("allison");
+        let job = Job { client: &client, base_url: address, key: Some("k".into()), model, settings: None, dir, poll: Duration::from_millis(10), approver: &cards, bot: &bot };
         let result = job.run(&request, &sink).await;
-        (result, activity.into_inner().unwrap())
+        (result, activity.into_inner().unwrap(), cards.shown.into_inner().unwrap())
     }
 
     #[tokio::test]
@@ -647,7 +797,7 @@ mod tests {
         assert_eq!(std::fs::read(&saved).unwrap(), PNG);
         assert_eq!(reply.text, format!("Made with Flux 2 Pro · 1:1 · $0.03\n\nPrompt: a fox in snow\n\nAttached image: {}", saved.display()));
         assert_eq!(reply.cost_micros, Some(30_000));
-        assert_eq!(activity, ["Making picture"]);
+        assert_eq!(activity, ["Waiting for your OK", "Making picture"]);
         let sent = seen.lock().unwrap()[0].clone();
         let body: Value = serde_json::from_str(sent.split_once(' ').unwrap().1).unwrap();
         assert_eq!(body, json!({ "model": "flux-2-pro", "prompt": "a fox in snow", "format": "png", "aspect_ratio": "1:1" }));
@@ -660,7 +810,7 @@ mod tests {
         let picture = dir.join("fox.png");
         std::fs::write(&picture, PNG).unwrap();
         let earlier = ViewTurn { role: Role::Assistant, content: "Made with Flux 2 Pro\n\nPrompt: a fox in snow\n\nAttached image: /x.png".into() };
-        let request = turn(vec![human(&format!("at sunset\n\nAttached image: {}", picture.display()))], vec![earlier]);
+        let request = turn(vec![human(&format!("@allison at sunset\n\nAttached image: {}", picture.display()))], vec![earlier]);
         let reply = run_job(&address, &image_model(), &dir, request).await.0.unwrap();
         assert!(reply.text.starts_with("Made with Flux 2 Pro · edit · $0.04\n\nPrompt: a fox in snow\n\nChange: at sunset"), "{}", reply.text);
         let sent = seen.lock().unwrap()[0].clone();
@@ -678,7 +828,7 @@ mod tests {
             ("/video/retrieve", vec![processing.clone(), processing, (200, "video/mp4", MP4.to_vec())]),
         ]).await;
         let dir = scratch("video");
-        let (result, activity) = run_job(&address, &video_model(), &dir, turn(vec![human("a drone over a city at night")], vec![])).await;
+        let (result, activity) = run_job(&address, &video_model(), &dir, turn(vec![human("@allison a drone over a city at night")], vec![])).await;
         let reply = result.unwrap();
         let saved = dir.join("seedance-2-5-text-to-video-basic.mp4");
         assert_eq!(std::fs::read(&saved).unwrap(), MP4);
@@ -706,7 +856,7 @@ mod tests {
         let dir = scratch("private");
         let picture = dir.join("cat.png");
         std::fs::write(&picture, PNG).unwrap();
-        let request = turn(vec![human(&format!("Attached image: {}", picture.display()))], vec![]);
+        let request = turn(vec![human(&format!("@allison\nAttached image: {}", picture.display()))], vec![]);
         let reply = run_job(&address2, &video_model(), &dir, request).await.0.unwrap();
         assert!(reply.text.contains("· from your picture ·"), "{}", reply.text);
         assert!(reply.text.contains("Prompt: Bring this picture to life."), "{}", reply.text);
@@ -725,13 +875,84 @@ mod tests {
     async fn refusals_from_venice_reach_the_chat_with_what_to_do() {
         let (address, _) = fake_venice(vec![("/video/quote", vec![(402, "application/json", br#"{"error":"INSUFFICIENT_BALANCE"}"#.to_vec())])]).await;
         let dir = scratch("broke");
-        let error = run_job(&address, &video_model(), &dir, turn(vec![human("a whale")], vec![])).await.0.unwrap_err();
-        assert!(error.to_string().contains("balance is too low"), "{error}");
+        // Failures are replies, so the chat keeps them.
+        let said = run_job(&address, &video_model(), &dir, turn(vec![human("@allison a whale")], vec![])).await.0.unwrap().text;
+        assert!(said.starts_with("The video wasn't made. ") && said.contains("balance is too low"), "{said}");
         let (address, _) = fake_venice(vec![("/image/generate", vec![(422, "application/json", br#"{"error":"Content policy","suggested_prompt":"a calm fox"}"#.to_vec())])]).await;
-        let error = run_job(&address, &image_model(), &dir, turn(vec![human("x")], vec![])).await.0.unwrap_err();
-        assert!(error.to_string().contains("a calm fox"), "{error}");
+        let said = run_job(&address, &image_model(), &dir, turn(vec![human("@allison x")], vec![])).await.0.unwrap().text;
+        assert!(said.starts_with("The picture wasn't made. ") && said.contains("a calm fox"), "{said}");
         let picture_only = ApiModel { media: Some(MediaSpec { needs_image: true, ..seedance() }), ..video_model() };
-        let error = run_job(&address, &picture_only, &dir, turn(vec![human("a whale")], vec![])).await.0.unwrap_err();
-        assert!(error.to_string().contains("Attach one"), "{error}");
+        let said = run_job(&address, &picture_only, &dir, turn(vec![human("@allison a whale")], vec![])).await.0.unwrap().text;
+        assert!(said.contains("Attach one"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn only_a_persons_message_naming_the_bot_can_spend() {
+        let (address, seen) = fake_venice(vec![("/video/quote", vec![json_answer(json!({ "quote": 2.91 }))])]).await;
+        let dir = scratch("unnamed");
+        let earlier = ViewTurn { role: Role::Assistant, content: "Made with Seedance 2.5\n\nPrompt: a city at night\n\nAttached video: /x.mp4".into() };
+        let bot_said = Message { servers: vec![], seq: 1, speaker: Speaker::Bot(ParticipantId::new("jigga")), text: "a stray @allison would spend money".into(), at: None };
+        for (why, unseen) in [
+            ("names nobody", vec![human("here's the usage table")]),
+            ("names the room", vec![human("@all thoughts?")]),
+            ("another bot named it", vec![human("what happened?"), bot_said.clone()]),
+            ("no new message at all", vec![]),
+        ] {
+            let (result, _, cards) = run_job_answering(true, &address, &video_model(), &dir, turn(unseen, vec![earlier.clone()])).await;
+            assert_eq!(result.unwrap().text, PASS_TOKEN, "{why}");
+            assert!(cards.is_empty(), "{why}");
+        }
+        assert!(seen.lock().unwrap().is_empty(), "nothing reached Venice");
+    }
+
+    #[tokio::test]
+    async fn every_job_asks_with_its_price_and_a_no_spends_nothing() {
+        let (address, seen) = fake_venice(vec![("/video/quote", vec![json_answer(json!({ "quote": 2.91 }))])]).await;
+        let dir = scratch("declined");
+        let (result, activity, cards) = run_job_answering(false, &address, &video_model(), &dir, turn(vec![human("@allison a whale")], vec![])).await;
+        assert_eq!(result.unwrap().text, PASS_TOKEN);
+        assert_eq!(activity.last().map(String::as_str), Some("Waiting for your OK"));
+        assert_eq!(cards.len(), 1);
+        assert_eq!((cards[0].kind, cards[0].title.as_str(), cards[0].risky), (ActionKind::Spend, "Make a video · $2.91", true));
+        assert_eq!(cards[0].detail, "Seedance 2.5 · 5s · 720p · 16:9 · sound\n\na whale");
+        assert!(seen.lock().unwrap().iter().all(|r| r.starts_with("/video/quote")), "only the free quote was asked for");
+
+        let (address, seen) = fake_venice(vec![]).await;
+        let (_, _, cards) = run_job_answering(false, &address, &image_model(), &dir, turn(vec![human("@allison a fox")], vec![])).await;
+        assert_eq!(cards[0].title, "Make a picture · $0.03");
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn build_on_last_skips_replies_that_made_nothing() {
+        let made = ViewTurn { role: Role::Assistant, content: "Made with Flux\n\nPrompt: a fox in snow\n\nAttached image: /x.png".into() };
+        let failed = ViewTurn { role: Role::Assistant, content: "The picture wasn't made. Venice is busy right now.".into() };
+        assert_eq!(last_prompt(&turn(vec![], vec![made, failed])).as_deref(), Some("a fox in snow"));
+    }
+
+    #[tokio::test]
+    async fn a_video_venice_stops_with_a_failed_status_ends_at_once_with_the_job_number() {
+        let (address, seen) = fake_venice(vec![
+            ("/video/quote", vec![json_answer(json!({ "quote": 2.91 }))]),
+            ("/video/queue", vec![json_answer(json!({ "model": "m", "queue_id": "q9" }))]),
+            ("/video/retrieve", vec![json_answer(json!({ "status": "FAILED", "error": "Blocked by the content policy" }))]),
+        ]).await;
+        let dir = scratch("blocked");
+        let reply = run_job(&address, &video_model(), &dir, turn(vec![human("@allison a whale")], vec![])).await.0.unwrap();
+        assert_eq!(reply.text, "The video wasn't made. Venice's content filter blocked this. Your account is fine. Try rewording it, for example without real names. Job q9. Venice may still charge for it; quote this job number to Venice support for a refund.");
+        let polls = seen.lock().unwrap().iter().filter(|r| r.starts_with("/video/retrieve")).count();
+        assert_eq!(polls, 1, "the first poll that says it failed is the last");
+    }
+
+    #[tokio::test]
+    async fn a_video_venice_cancels_says_why_with_the_job_number() {
+        let (address, _) = fake_venice(vec![
+            ("/video/quote", vec![json_answer(json!({ "quote": 2.91 }))]),
+            ("/video/queue", vec![json_answer(json!({ "model": "m", "queue_id": "q10" }))]),
+            ("/video/retrieve", vec![json_answer(json!({ "status": "CANCELLED" }))]),
+        ]).await;
+        let dir = scratch("cancelled");
+        let reply = run_job(&address, &video_model(), &dir, turn(vec![human("@allison a whale")], vec![])).await.0.unwrap();
+        assert_eq!(reply.text, "The video wasn't made. Venice stopped making the video: CANCELLED. Job q10. Venice may still charge for it; quote this job number to Venice support for a refund.");
     }
 }
