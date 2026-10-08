@@ -136,7 +136,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
           </button>)}
         </div>}
       </div> : <label>Model<Picker name="quick-bot-model" value={model} onChange={value => { setModel(value); touched.current = { ...touched.current, model: value }; }} groups={[]} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>}
-      {(tool === 'codex' || tool === 'claude_code') && <label><input type="checkbox" checked={touched.current.auto_effort ?? config.auto_effort ?? false} disabled={!efforts.length || (!config.auto_effort && !autoAvailable)} onChange={event => { void apply({ auto_effort: event.target.checked }); }} /> Auto</label>}
+      {(tool === 'codex' || tool === 'claude_code') && <label className="check-label"><input type="checkbox" checked={touched.current.auto_effort ?? config.auto_effort ?? false} disabled={!efforts.length || (!config.auto_effort && !autoAvailable)} onChange={event => { void apply({ auto_effort: event.target.checked }); }} /> Auto</label>}
       {config.auto_effort && <p className="muted">Trial: Clef logs its pick. Replies use the backup below.</p>}
       {!autoAvailable && (tool === 'codex' || tool === 'claude_code') && <p className="muted">Auto needs the decision observer switched on with a saved key.</p>}
       <ReasoningSlider title={config.auto_effort ? "Auto backup" : "Reasoning"} efforts={efforts} value={supportedEffort} onCommit={value => config.auto_effort ? (setEffort(value), void apply({ effort: value, auto_effort: true })) : commitEffort(value)} />

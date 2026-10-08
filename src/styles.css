@@ -2139,6 +2139,8 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .bot-settings label { display: grid; gap: 5px; font-size: 12px; }
 .bot-settings select, .bot-settings input { width: 100%; min-width: 0; }
 .bot-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.bot-settings label.check-label, .add-form label.check-label { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.bot-settings label.check-label input, .add-form label.check-label input { width: auto; flex: none; margin: 0; }
 .settings-pending { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 
 /* ---------------------------------------------------------------- settings */

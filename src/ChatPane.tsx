@@ -2242,7 +2242,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <span className="hint">Runs once per turn in the workspace folder. The conversation is written to its standard input and its output becomes the reply.</span>
             </label>
           )}
-          {(tool === "codex" || tool === "claude_code") && <label><input type="checkbox" checked={draft.auto_effort ?? false} disabled={!efforts.length || (!draft.auto_effort && !autoAvailable)} onChange={event => set("auto_effort", event.target.checked)} /> Auto — trial logs picks; replies use the backup level.</label>}
+          {(tool === "codex" || tool === "claude_code") && <label className="check-label wide"><input type="checkbox" checked={draft.auto_effort ?? false} disabled={!efforts.length || (!draft.auto_effort && !autoAvailable)} onChange={event => set("auto_effort", event.target.checked)} /> Auto — trial logs picks; replies use the backup level.</label>}
           {preset.efforts.length > 0 && (
             <label>
               {draft.auto_effort ? "Auto backup level" : "Reasoning effort"}
