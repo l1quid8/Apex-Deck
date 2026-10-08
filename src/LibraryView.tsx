@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Backend, LibraryItem } from "./backend";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
-import { botsIn, filterLibrary, itemKey, loadOutcome, machineNote, threadExists, workspacesIn, workspaceForRoom, type LibraryFilter, type LibraryThread, type MachineItem, type MachineLoad } from "./library";
+import { botsIn, filterLibrary, itemKey, listLibrary, loadOutcome, machineNote, threadExists, workspacesIn, workspaceForRoom, type LibraryFilter, type LibraryThread, type MachineItem, type MachineLoad } from "./library";
 import type { Workspace } from "./types";
 
 /** A machine whose Library is shown: this Mac ("local") or a saved server. */
@@ -23,7 +23,7 @@ interface Props {
   onOpenThread: (room: string) => void;
 }
 
-/** How long a server gets to list its pictures before it counts as offline. */
+/** How long a server gets to connect and list its pictures before it counts as offline. */
 const LIST_WAIT_MS = 20000;
 
 /** Every picture the bots made on every machine, with filters, a larger view, and delete. */
@@ -57,11 +57,7 @@ export function LibraryView({ machines, backendOf, threads, workspaces, onOpenTh
       };
       const backend = machine.offline ? null : backendFor(machine.id);
       if (!backend) { settle({ kind: "offline" }); continue; }
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const wait = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), LIST_WAIT_MS); });
-      Promise.race([backend.libraryList(), wait])
-        .then((list) => settle({ kind: "ok" }, list), (err) => settle(loadOutcome(err)))
-        .finally(() => clearTimeout(timer));
+      listLibrary(backend, LIST_WAIT_MS).then((list) => settle({ kind: "ok" }, list), (err) => settle(loadOutcome(err)));
     }
   };
   const machineIds = machines.map((m) => `${m.id}:${m.offline}`).join(",");

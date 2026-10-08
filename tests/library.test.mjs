@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { botsIn, filterLibrary, threadExists, workspaceForRoom, workspacesIn } from "../src/library.ts";
+import { botsIn, filterLibrary, listLibrary, loadOutcome, threadExists, workspaceForRoom, workspacesIn } from "../src/library.ts";
 
 const threads = [
   { id: "t1", workspaceId: "w1" },
@@ -57,4 +57,48 @@ test("a machine that can't list says why: offline, an older helper, or the error
   assert.equal(machineNote("Hetzner", { kind: "offline" }), "Hetzner offline. Its pictures show when it's back.");
   assert.match(machineNote("Hetzner", { kind: "old" }), /older apex-daemon/);
   assert.match(machineNote("Hetzner", { kind: "failed", message: "disk full" }), /Couldn't load Hetzner's Library: disk full/);
+});
+
+function fakeServer(kind) {
+  const listeners = new Set();
+  let status = { kind };
+  let asks = 0;
+  return {
+    get asks() { return asks; },
+    set(next) { status = { kind: next }; listeners.forEach((fn) => fn()); },
+    backend: {
+      host: { connection: { get: () => ({ status }), subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); } } },
+      libraryList: () => { asks++; return status.kind === "connected" ? Promise.resolve([item("v.png", "t1", "Gronk", 1)]) : Promise.reject(new Error("Not connected to the host")); },
+    },
+  };
+}
+
+test("a server still connecting is asked once it connects, not marked offline", async () => {
+  const server = fakeServer("connecting");
+  const listed = listLibrary(server.backend, 1000);
+  await Promise.resolve();
+  assert.equal(server.asks, 0);
+  server.set("connected");
+  const list = await listed;
+  assert.equal(server.asks, 1);
+  assert.deepEqual(list.map((i) => i.file), ["v.png"]);
+});
+
+test("a server whose connection fails counts as offline", async () => {
+  const server = fakeServer("connecting");
+  const listed = listLibrary(server.backend, 1000);
+  server.set("failed");
+  await assert.rejects(listed, (err) => loadOutcome(err).kind === "offline");
+  assert.equal(server.asks, 0);
+});
+
+test("a server that never connects counts as offline after the wait", async () => {
+  const server = fakeServer("idle");
+  await assert.rejects(listLibrary(server.backend, 20), (err) => loadOutcome(err).kind === "offline");
+  assert.equal(server.asks, 0);
+});
+
+test("this Mac, with no connection to wait for, is asked straight away", async () => {
+  const list = await listLibrary({ libraryList: async () => [item("m.png", "t1", "Clef", 1)] }, 1000);
+  assert.deepEqual(list.map((i) => i.file), ["m.png"]);
 });

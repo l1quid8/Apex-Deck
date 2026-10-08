@@ -28,6 +28,36 @@ export function loadOutcome(error: unknown): MachineLoad {
   return { kind: "failed", message };
 }
 
+/** The part of a backend needed to list a machine's Library. */
+export interface LibrarySource {
+  libraryList(): Promise<LibraryItem[]>;
+  host?: { connection: { get(): { status: { kind: string } }; subscribe(listener: () => void): () => void } };
+}
+
+/** Lists a machine's pictures, first waiting for a server's connection to finish starting; gives up after `ms`. */
+export function listLibrary(backend: LibrarySource, ms: number): Promise<LibraryItem[]> {
+  const connection = backend.host?.connection;
+  return new Promise((resolve, reject) => {
+    let off = () => {};
+    let asked = false;
+    const timer = setTimeout(() => { off(); reject(new Error("timed out")); }, ms);
+    const finish = (run: () => void) => { clearTimeout(timer); off(); run(); };
+    const ask = () => {
+      asked = true;
+      off();
+      backend.libraryList().then((list) => finish(() => resolve(list)), (err) => finish(() => reject(err)));
+    };
+    const check = () => {
+      if (asked) return;
+      const kind = connection?.get().status.kind ?? "connected";
+      if (kind === "connected") ask();
+      else if (kind === "failed") finish(() => reject(new Error("not connected")));
+    };
+    if (connection) off = connection.subscribe(check);
+    check();
+  });
+}
+
 /** The line shown for a machine whose pictures couldn't be listed; null when they were. */
 export function machineNote(name: string, load: MachineLoad): string | null {
   if (load.kind === "ok") return null;
