@@ -939,7 +939,10 @@ export function PhoneApp() {
   const started = Boolean(openPane && ((room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
   const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null;
-  const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
+  const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
+  // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
+  const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
+  useEffect(() => { if (botsStale) setMenu(null); }, [botsStale]);
   const menuProject = menu?.kind === "project" ? workspaces.find((workspace) => workspace.id === menu.id) ?? null : null;
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
 
