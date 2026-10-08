@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
+import { botChangeGate, botSendGate } from "../phoneBots";
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ReasoningSlider } from "../ReasoningSlider";
@@ -222,6 +223,8 @@ export function PhoneApp() {
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState("");
   const [ask, setAsk] = useState<Ask | null>(null);
+  const [botChange, setBotChange] = useState<{ roomId: string; botId: string; error: string; pending: boolean } | null>(null);
+  const botChangeLock = useRef(false);
   const [sheet, setSheet] = useState<SheetKind | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
   /** The bot whose details are open, from holding it in the bot bar. */
@@ -662,7 +665,7 @@ export function PhoneApp() {
       }
       if (!pane) return;
       const sentPane = pane;
-      if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add them on the Mac, then send from the phone."); return; }
+      if (participants.length === 0) { setNotice("This thread has no bots yet, so nothing would answer. Add one from Bots in the thread’s ⋯ menu."); return; }
       const paths: string[] = [];
       for (const file of draft.files) paths.push(await host.backend.saveAttachment(sentPane.id, file.name, file.bytes));
       // TL;DR asks every bot for a short answer; the line rides on the message but never shows in the chat.
@@ -931,7 +934,7 @@ export function PhoneApp() {
     (pid) => openRoom?.participants.find((p) => p.id === pid)?.display_name ?? pid, openLink.name) : [];
   const nextTo = openRoom && answerers?.paneId === openRoom.id ? answerers.ids : [];
   const queueing = nextTo.length > 0 && nextTo.every((pid) => pid in (openRoom?.working ?? {}));
-  const sendGate = openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." };
+  const sendGate = botSendGate(openLink ? threadSend(links, openLink.id, draft.text, draft.files.length) : { enabled: false, reason: "This thread's machine isn't paired with this phone." }, viewingPending ? (session?.profiles.length ?? 0) : room?.participants.length ?? 0);
   const tints = hostTints(machines.filter((machine) => machine.kind === "server").map((machine) => machine.id));
   const machineIcon = (hostId: string, size = 16) => hostId === "local"
     ? <span className="ph-host-icon" title={linkOf(hostId)?.name}><Laptop size={size} /></span>
@@ -1221,44 +1224,67 @@ export function PhoneApp() {
                 {workspace?.path && <p className="ph-path">{workspace.path}</p>}
                 <p className="ph-meta">{link && link.status !== "online" ? `${downLine(link)} · ` : ""}{menuPane.activeAt ? `Active ${ageWords(Date.now() - menuPane.activeAt)} ago` : "Not started"}</p>
               </div>
-              {/* The same details as holding or pulling down a bot pill, for anyone who can't do either. */}
-              {menuPane.id === openId && room && room.id === openPane?.id && room.participants.map((who) => (
-                <MenuRow key={who.id} label={`${who.display_name} details`} detail="Model, reasoning, context and plan" onClick={() => { setMenu(null); setBotSheet(who.id); }} />
-              ))}
               {menuPane.id === openId && room && room.id === openPane?.id && (
-                <MenuRow label="Bots…" detail="Add or remove bots in this thread" onClick={() => {
-                  if (!workspace || !canStartOn(workspaceHost(workspace))) { setNotice("Adding or removing bots needs Full access on this thread's machine. Change this phone's level in that machine's Settings → Paired devices."); return; }
-                  setMenu({ kind: "bots", id: menuPane.id });
-                }} />
+                <button type="button" className="ph-srow ph-bots-menu" onClick={() => { setBotChange(null); setMenu({ kind: "bots", id: menuPane.id }); }}>
+                  <span className="ph-grow"><strong>Bots</strong><small>{room.participants.length} in this thread</small></span>
+                  <span className="ph-bots-preview">{room.participants.slice(0, 4).map((who) => <Avatar key={who.id} seed={who.look.seed} color={who.look.color} size="sm" />)}</span>
+                  <ChevronRight size={18} />
+                </button>
               )}
               <MenuRow label={menuPane.pinned ? "Unpin" : "Pin"} onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, pinned: item.pinned ? undefined : true })); setMenu(null); }} />
               <MenuRow label="Rename…" onClick={() => setMenu({ kind: "rename", id: menuPane.id, text: menuPane.title })} />
               {!menuPane.unread && <MenuRow label="Mark as unread" onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, unread: true })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />}
-              {workspace?.path && <MenuRow label="Copy folder path" detail={folderCopyText(workspace.path)} onClick={() => { copyPath(workspace.path); setMenu(null); }} />}
+              {workspace?.path && <MenuRow label="Copy folder path" onClick={() => { copyPath(workspace.path); setMenu(null); }} />}
               <MenuRow label="Archive" danger onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, archived: true, pinned: undefined })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />
             </Sheet>
           );
         })()}
         {menu?.kind === "bots" && menuPane && room && room.id === menuPane.id && (() => {
           const host = workspaces.find((item) => item.id === menuPane.workspaceId) ? phoneHost(workspaceHost(workspaces.find((item) => item.id === menuPane.workspaceId)!)) : null;
+          const full = !!host && canStartOn(host.machine.id);
           const absent = (session?.profiles ?? []).filter((profile) => !room.configs.some((config) => config.id === profile.id));
-          const add = (config: ParticipantConfig) => {
-            if (!host) return setNotice("This thread's machine isn't connected.");
-            host.backend.roomAddParticipant(room.id, config).then(
-              () => setRoom((current) => current && current.id === room.id ? { ...current, configs: [...current.configs, config], participants: [...current.participants, toPerson(config)] } : current),
-              (error) => setNotice(`Could not add ${config.display_name}: ${words(error)}`));
+          const change = async (config: ParticipantConfig, remove: boolean) => {
+            if (!host || botChangeLock.current || botChangeGate(full, remove && (busy[room.id] ?? []).includes(config.id), false)) return;
+            botChangeLock.current = true;
+            setBotChange({ roomId: room.id, botId: config.id, pending: true, error: "" });
+            try {
+              if (remove) await host.backend.roomRemoveParticipant(room.id, config.id);
+              else await host.backend.roomAddParticipant(room.id, config);
+              setRoom((current) => current && current.id === room.id ? {
+                ...current,
+                configs: remove ? current.configs.filter((item) => item.id !== config.id) : [...current.configs.filter((item) => item.id !== config.id), config],
+                participants: remove ? current.participants.filter((item) => item.id !== config.id) : [...current.participants.filter((item) => item.id !== config.id), toPerson(config)],
+              } : current);
+              setBotChange(null);
+            } catch (error) {
+              setBotChange({ roomId: room.id, botId: config.id, pending: false, error: words(error) });
+            } finally { botChangeLock.current = false; }
           };
-          const remove = (config: ParticipantConfig) => {
-            if (!host) return setNotice("This thread's machine isn't connected.");
-            host.backend.roomRemoveParticipant(room.id, config.id).then(
-              () => setRoom((current) => current && current.id === room.id ? { ...current, configs: current.configs.filter((item) => item.id !== config.id), participants: current.participants.filter((item) => item.id !== config.id) } : current),
-              (error) => setNotice(`Could not remove ${config.display_name}: ${words(error)}`));
+          const row = (config: ParticipantConfig, member: boolean) => {
+            const who = toPerson(config);
+            const state = botChange?.roomId === room.id && botChange.botId === config.id ? botChange : null;
+            const reason = botChangeGate(full, member && (busy[room.id] ?? []).includes(config.id), botChangeLock.current);
+            return <div className="ph-bot-entry" key={config.id}>
+              <div className="ph-bot-row">
+                <button type="button" className="ph-bot-info" disabled={!member} onClick={() => { setMenu(null); setBotSheet(config.id); }}>
+                  <Avatar seed={who.look.seed} color={who.look.color} size="sm" />
+                  <span className="ph-bot-label"><strong>{config.display_name}</strong><small>@{config.id}{member && "model" in config.backend && config.backend.model ? ` · ${config.backend.model}` : ""}</small></span>
+                </button>
+                <button type="button" className={`ph-bot-action${member ? " remove" : ""}`} aria-label={`${member ? "Remove" : "Add"} ${config.display_name}`} disabled={!!reason} title={reason} onClick={() => void change(config, member)}>
+                  {state?.pending ? <span className="ph-bot-spinner" aria-label="Saving" /> : member ? <span aria-hidden="true">−</span> : <Plus size={18} />}
+                </button>
+              </div>
+              {member && (busy[room.id] ?? []).includes(config.id) && <p className="ph-meta">Stop this bot’s reply before removing it.</p>}
+              {state?.error && <p className="ph-bot-error" role="alert">{state.error} <button type="button" disabled={!!reason} onClick={() => void change(config, member)}>Retry</button></p>}
+            </div>;
           };
           return (
             <Sheet title="Bots" onClose={() => setMenu(null)}>
-              {room.configs.length === 0 && <p className="ph-meta">No bots in this thread yet.</p>}
-              {room.configs.map((config) => <MenuRow key={config.id} label={`Remove ${config.display_name}`} detail={`@${config.id}`} danger onClick={() => remove(config)} />)}
-              {absent.map((profile) => <MenuRow key={profile.id} label={`Add ${profile.display_name}`} detail={`@${profile.id}`} onClick={() => add(profile)} />)}
+              {!full && <p className="ph-sheet-text">{botChangeGate(false, false, false)}</p>}
+              <div className="ph-section">In this thread</div>
+              {room.configs.length === 0 ? <div className="ph-card"><strong>No bots yet</strong><p className="ph-meta">Add a bot below to send a message.</p></div> : <div className="ph-bot-list">{room.configs.map((config) => row(config, true))}</div>}
+              <div className="ph-section">Add a bot</div>
+              <div className="ph-bot-list">{absent.map((profile) => row(profile, false))}</div>
               {absent.length === 0 && <p className="ph-meta">Every saved bot is already here. Make new ones on the Mac.</p>}
             </Sheet>
           );
@@ -1325,7 +1351,7 @@ function Sheet({ title, onClose, children }: { title: string; onClose(): void; c
           <h3>{title}</h3>
           <button type="button" className="ph-icon" aria-label="Close" onClick={onClose}><X size={20} /></button>
         </div>
-        {children}
+        <div className="ph-sheet-body">{children}</div>
       </div>
     </div>
   );
@@ -1487,7 +1513,7 @@ function BotSheet(props: {
       </> : <p className="ph-sheet-text ph-quiet">This bot has no model or reasoning to change.</p>}
       <button type="button" className="primary ph-wide" onClick={props.onMention}>Mention {name}</button>
       {props.working && !props.offline && <button type="button" className="ph-wide" onClick={props.onStop}>Stop {name}</button>}
-      <p className="ph-sheet-text ph-quiet">Removing a bot is on the Mac for now.</p>
+      <p className="ph-sheet-text ph-quiet">Add or remove bots from Bots in the thread’s ⋯ menu.</p>
     </Sheet>
   );
 }
