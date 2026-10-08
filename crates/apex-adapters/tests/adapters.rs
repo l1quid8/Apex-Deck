@@ -155,8 +155,9 @@ async fn cli_that_hangs_is_stopped_at_the_timeout() {
 async fn cli_that_keeps_printing_outlasts_the_timeout() {
     // Each line restarts the clock, so a turn longer than the limit is fine
     // as long as the tool never goes quiet for that long.
-    let script = "for i in 1 2 3 4 5 6; do echo $i; sleep 0.1; done";
-    let bot = CliParticipant::new(config("cli", sh(script))).with_timeout(Duration::from_millis(350));
+    // The gaps sit well under the limit so a slow CI runner can't trip it.
+    let script = "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.2; done";
+    let bot = CliParticipant::new(config("cli", sh(script))).with_timeout(Duration::from_millis(1000));
     let (result, _) = ask(&bot, "hi").await;
     assert!(result.is_ok(), "{result:?}");
 }

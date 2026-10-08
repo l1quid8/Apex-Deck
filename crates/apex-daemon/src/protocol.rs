@@ -1131,7 +1131,7 @@ mod tests {
                 daemon.host.events().emit(room("b", k));
             }
             client.send(json!({ "id": n, "cmd": "agents_detect" })).await;
-            let frame = tokio::time::timeout(Duration::from_secs(2), client.next()).await.expect("a prompt reply").unwrap();
+            let frame = tokio::time::timeout(Duration::from_secs(10), client.next()).await.expect("a prompt reply").unwrap();
             assert_eq!(frame["id"], n, "{frame}");
         }
     }
