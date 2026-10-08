@@ -35,8 +35,8 @@ export function fitsOnPhone(item: LibraryItem): boolean {
 }
 
 /** Why a picture isn't shown on the phone, or null when it is. */
-export function notShownReason(item: LibraryItem): string | null {
-  if (item.bytes === undefined) return "Update Deck on the Mac to show this here";
+export function notShownReason(item: LibraryItem, machine = "the Mac"): string | null {
+  if (item.bytes === undefined) return `Update Deck on ${machine} to show this here`;
   return fitsOnPhone(item) ? null : "Too big for the phone";
 }
 

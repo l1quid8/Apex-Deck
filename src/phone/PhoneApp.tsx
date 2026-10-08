@@ -37,7 +37,7 @@ import { irohConnect } from "../daemon/irohLink";
 import { remotePlugin, type RemoteMode, type Route } from "./remotePlugin";
 import { PairSheet, RemoteSettings } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
-import { canSeeLibrary } from "./libraryRules";
+import type { PhoneLibraryMachine } from "./libraryMachines";
 import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
 import { qrScanner } from "./remotePlugin";
 import { loadRoomState } from "../roomRecovery";
@@ -341,6 +341,11 @@ export function PhoneApp() {
     });
     return () => { live = false; stops.forEach((stop) => stop()); };
   }, [hosts]);
+
+  // Every paired machine's Library, whether or not its machine is online; PhoneLibrary shows each one's status.
+  const libraryMachines = useMemo<PhoneLibraryMachine[]>(() => hosts.map((host) => ({
+    id: host.machine.id, name: host.machine.name, backend: host.backend, connection: host.connection, access: host.access,
+  })), [hosts]);
 
   const links: LinkView[] = hosts.map((host) => {
     const status = host.connection.get().status;
@@ -1082,10 +1087,8 @@ export function PhoneApp() {
             onError={setNotice}
           />
         ) : (
-          <SideTab tab={tab} link={tab === "library" ? mac ?? null : openLink ?? mac ?? null} agents={agents} covered={covered}
-            library={macHost && mac && (canSeeLibrary(macHost.access())
-              ? <PhoneLibrary backend={macHost.backend} machine={mac.name} threads={panes} workspaces={workspaces} onOpenThread={openThread} />
-              : <div className="ph-empty"><Folder size={30} /><h3>The Library needs Full access to all threads</h3><p>In {mac.name}'s Settings → Paired devices, set this phone to Full access and allow all threads.</p></div>)}
+          <SideTab tab={tab} link={openLink ?? mac ?? null} agents={agents} covered={covered}
+            library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
             onShow={() => {
             const host = openLink ? phoneHost(openLink.id) : macHost;
@@ -2199,6 +2202,8 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
 
 function SideTab({ tab, link, agents, bots, covered, library, onShow }: { tab: Tab; link: LinkView | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; onShow(): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
+  // The Library lists every paired machine itself, so it doesn't follow one machine or wait on the Mac.
+  if (tab === "library") return <main className="ph-content" inert={covered}>{library}</main>;
   const offline = !link || link.status !== "online";
   return (
     <main className="ph-content" inert={covered}>
@@ -2218,7 +2223,6 @@ function SideTab({ tab, link, agents, bots, covered, library, onShow }: { tab: T
         ? <div className="ph-empty"><h3>No coding agents found</h3><p>Nothing installed on {link.name} yet.</p></div>
         : <><div className="ph-section">Installed on {link.name}</div><div className="ph-group">{agents.map((agent) => <div key={agent} className="ph-srow ph-inset"><span className="ph-srow-icon ph-muted-icon"><Terminal size={18} /></span><span className="ph-grow"><strong>{agent}</strong><small>Ready</small></span></div>)}</div></>)}
       {link && !offline && tab === "code" && <div className="ph-empty"><Terminal size={30} /><h3>Terminals aren't on the phone yet</h3><p>Terminals and the browser run on {link.name}. Open them from the Mac for now.</p></div>}
-      {link && !offline && tab === "library" && library}
     </main>
   );
 }

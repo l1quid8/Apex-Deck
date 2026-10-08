@@ -52,3 +52,7 @@ test("the Library needs Full access to all threads, like the Mac's check", () =>
   assert.equal(canSeeLibrary({ tier: "chat", threads: "all" }), false);
   assert.equal(canSeeLibrary(null), true);
 });
+
+ test("unknown-size server pictures name their source machine", () => {
+  assert.equal(notShownReason(item("Null"), "Hetzner"), "Update Deck on Hetzner to show this here");
+});
