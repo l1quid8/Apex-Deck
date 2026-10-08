@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { LABEL, agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, usesLaunchAgent } from '../desktop/launchAgent.mjs';
+import { LABEL, agentPlist, agentPlistPath, agentState, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from '../desktop/launchAgent.mjs';
 
 const UID = 501;
 const TARGET = `gui/${UID}/${LABEL}`;
@@ -195,4 +195,72 @@ test('the daemon build goes in the plist, so an updated app reloads the agent', 
   await installAgent({ plistPath, plist: second, uid: UID, run: launchctl.run });
   assert.ok(launchctl.calls.includes(`bootstrap gui/${UID} ${plistPath}`), 'reloaded with the new build');
   assert.equal(daemonBuild(path.join(dir, 'gone')), 'missing');
+});
+
+/**
+ * A Mac for startAgentDaemon: launchd's view of the agent, who answers on the
+ * socket, and daemon.json. `onInstall` runs when the agent is installed.
+ */
+function fakeMac({ loaded = false, pid = null, serving = false, info = null, onInstall = () => {} } = {}) {
+  const mac = { loaded, pid, serving, info, installs: 0, removes: 0 };
+  mac.run = async (args) => {
+    if (args[0] !== 'print') throw new Error(`unexpected launchctl ${args.join(' ')}`);
+    if (!mac.loaded) throw new Error('Could not find service');
+    return mac.pid === null ? `${TARGET} = {\n\tstate = waiting\n}` : `${TARGET} = {\n\tstate = running\n\tpid = ${mac.pid}\n}`;
+  };
+  return Object.assign(mac, {
+    install: async () => { mac.installs += 1; mac.loaded = true; onInstall(mac); },
+    remove: async () => { mac.removes += 1; mac.loaded = false; mac.pid = null; },
+    answers: async () => mac.serving,
+    readInfo: () => mac.info,
+    wait: async () => {},
+  });
+}
+
+const start = (mac, timeout = 5) => startAgentDaemon({ socket: '/s', infoFile: '/i', uid: UID, timeout, ...mac });
+const remoteOn = { endpoint_id: 'cb'.repeat(32), port: 41641 };
+
+test('agentState reads the pid launchd prints, and none while the agent waits to start again', async () => {
+  assert.deepEqual(await agentState(UID, fakeMac({ loaded: true, pid: 4242 }).run), { loaded: true, pid: 4242 });
+  assert.deepEqual(await agentState(UID, fakeMac({ loaded: true }).run), { loaded: true, pid: null });
+  assert.deepEqual(await agentState(UID, fakeMac().run), { loaded: false, pid: null });
+});
+
+test('the agent counts as started only once its own daemon serves with Remote access up', async () => {
+  const mac = fakeMac({ onInstall: (m) => { m.pid = 700; m.serving = true; m.info = { pid: 700, remote: remoteOn }; } });
+  assert.equal(await start(mac), 'agent');
+  assert.equal(mac.installs, 1);
+  assert.equal(mac.removes, 0);
+});
+
+test('a daemon Deck did not start, already on the socket, is attached to and the agent is not started', async () => {
+  const mac = fakeMac({ serving: true, info: { pid: 999, remote: null } });
+  assert.equal(await start(mac), 'foreign');
+  assert.equal(mac.installs, 0, 'nothing for launchd to retry');
+});
+
+test('a loaded agent that keeps failing beside another daemon is removed, not left retrying', async () => {
+  const mac = fakeMac({ loaded: true, serving: true, info: { pid: 999, remote: null } });
+  assert.equal(await start(mac), 'foreign');
+  assert.equal(mac.removes, 1);
+  assert.equal(mac.loaded, false);
+});
+
+test('another daemon that takes the socket while the agent starts: the agent is removed and the error says who', async () => {
+  // The agent gets a pid but exits on the data-folder lock; the other daemon answers.
+  const mac = fakeMac({ onInstall: (m) => { m.pid = 700; m.serving = true; m.info = { pid: 999, remote: remoteOn }; } });
+  await assert.rejects(start(mac), /Another apex-daemon \(pid 999\) is using Deck's data folder/);
+  assert.equal(mac.removes, 1);
+});
+
+test('a stale daemon.json from an earlier daemon does not count as the agent being ready', async () => {
+  const mac = fakeMac({ info: { pid: 12, remote: remoteOn }, onInstall: (m) => { m.pid = 700; } });
+  await assert.rejects(start(mac), /didn't start within/);
+  assert.equal(mac.removes, 1);
+});
+
+test('the agent\'s daemon serving without Remote access is not reported as on', async () => {
+  const mac = fakeMac({ onInstall: (m) => { m.pid = 700; m.serving = true; m.info = { pid: 700, remote: null }; } });
+  await assert.rejects(start(mac), /started without Remote access/);
+  assert.equal(mac.removes, 1);
 });

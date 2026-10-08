@@ -48,6 +48,18 @@ export function canSeeNewThread(access: RemoteAccess | null | undefined): boolea
   return !access || access.tier === "full";
 }
 
+/**
+ * What reconnects a machine when it changes. A paired machine's addresses
+ * aren't in it: new ones are read at the next dial. Its pairedAt is, so pairing
+ * again (after the machine revoked this phone, say) opens a fresh connection
+ * in place of one that stopped for good.
+ */
+export function connectionKey(machines: Machine[]): string {
+  return machines.map((machine) => isPaired(machine)
+    ? `${machine.id}\u0000iroh\u0000${machine.hostEndpointId}\u0000${machine.name}\u0000${machine.pairedAt}`
+    : `${machine.id}\u0000${machine.url}\u0000${machine.token}\u0000${machine.name}`).join("\n");
+}
+
 /** The machine's welcome lists where it can be dialed now; those replace the saved ones. */
 export function withHints(machine: PairedMachine, addrs: unknown): PairedMachine {
   if (!Array.isArray(addrs) || !addrs.every((addr) => typeof addr === "string")) return machine;

@@ -143,15 +143,16 @@ export function scansAtLaunch(machineCount: number, canScan: boolean): boolean {
 /**
  * Put a machine just paired into the saved list. The same endpoint ID is the
  * same machine: its entry keeps its place, id, name and settings, and takes
- * the addresses the machine sent. Otherwise the entry it takes the place of
- * is replaced where it stands, keeping its id and kind: the phone's Mac when
- * a Mac is paired (a phone has one), or an address-and-token machine with the
- * same id or name (case and spaces ignored). Otherwise the machine is added.
+ * the addresses the machine sent and the new pairedAt, which reconnects it.
+ * Otherwise the entry it takes the place of is replaced where it stands,
+ * keeping its id and kind: the phone's Mac when a Mac is paired (a phone has
+ * one), or an address-and-token machine with the same id or name (case and
+ * spaces ignored). Otherwise the machine is added.
  * Throws as addMachine does.
  */
 export function withPairedMachine(list: Machine[], made: PairedMachine): Machine[] {
   const same = list.findIndex((machine) => isPaired(machine) && machine.hostEndpointId === made.hostEndpointId);
-  if (same >= 0) return list.map((machine, at) => (at === same ? withHints(machine as PairedMachine, made.addrs) : machine));
+  if (same >= 0) return list.map((machine, at) => (at === same ? { ...withHints(machine as PairedMachine, made.addrs), pairedAt: made.pairedAt } : machine));
   const name = made.name.trim().toLowerCase();
   const id = made.id.trim();
   const stale = list.findIndex((machine) => (made.kind === "mac"

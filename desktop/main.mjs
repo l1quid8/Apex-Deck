@@ -16,8 +16,8 @@ import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
-import { daemonBinary, dataFolder, localDaemon, remoteAccessSaved, saveRemoteAccess, waitForSocket } from './sidecar.mjs';
-import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, usesLaunchAgent } from './launchAgent.mjs';
+import { answers, daemonBinary, dataFolder, localDaemon, remoteAccessSaved, saveRemoteAccess, waitForSocket } from './sidecar.mjs';
+import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
 import { changeRemoteAccess } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 
@@ -73,13 +73,19 @@ const socketFile = async () => path.join(await dataFolder(bin, dataDir), 'daemon
 async function startAgent() {
   const logFile = agentLogFile();
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  await installAgent({
-    plistPath: agentPlistPath(),
-    plist: agentPlist({ bin, dataDir, logFile, build: daemonBuild(bin) }),
-    uid: process.getuid(),
-  });
   const socket = await socketFile();
-  if (!await waitForSocket(socket)) throw new Error('apex-daemon did not start within 15 seconds.');
+  const plistPath = agentPlistPath();
+  const uid = process.getuid();
+  const got = await startAgentDaemon({
+    socket,
+    infoFile: path.join(path.dirname(socket), 'daemon.json'),
+    uid,
+    answers,
+    install: () => installAgent({ plistPath, plist: agentPlist({ bin, dataDir, logFile, build: daemonBuild(bin) }), uid }),
+    remove: () => removeAgent({ plistPath, uid }),
+  });
+  // A daemon Deck didn't start keeps its own flags; Settings says so.
+  if (got === 'foreign') return { socket, owned: false, child: null, alive: () => true, stop: async () => {} };
   return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
 }
 

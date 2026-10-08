@@ -95,6 +95,22 @@ const target = (uid) => `gui/${uid}/${LABEL}`;
 const loaded = (uid, run) => run(['print', target(uid)]).then(() => true, () => false);
 
 /**
+ * The agent as launchd has it: whether it is loaded, and the pid of its
+ * daemon, null between a crash and the next start or when not loaded.
+ */
+export async function agentState(uid, run = launchctl) {
+  let out;
+  try { out = await run(['print', target(uid)]); } catch { return { loaded: false, pid: null }; }
+  const match = /^\s*pid = (\d+)\s*$/m.exec(String(out));
+  return { loaded: true, pid: match ? Number(match[1]) : null };
+}
+
+const readJson = (file) => {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * Stop the agent if it is loaded. Resolves true when it was loaded; "not
  * loaded" is fine, any other failure is thrown.
  */
@@ -136,4 +152,42 @@ export async function removeAgent({ plistPath, uid, run = launchctl, fs: files =
   const wasLoaded = await bootout(uid, run);
   files.rmSync(plistPath, { force: true });
   return wasLoaded;
+}
+
+/**
+ * Start the agent and wait until its daemon is the one serving `socket` with
+ * Remote access up: `infoFile` (daemon.json, written once the daemon is
+ * ready) names the agent's pid and an endpoint. Resolves 'agent' then.
+ *
+ * A daemon something else started already on the socket is left alone and
+ * the agent is not started: resolves 'foreign', for the caller to attach to
+ * it as a daemon Deck found. When the wait runs out, the agent is removed,
+ * so launchd doesn't retry it every ten seconds, and this rejects saying why.
+ */
+export async function startAgentDaemon({ socket, infoFile, uid, install, remove, answers, run = launchctl, readInfo = readJson, timeout = 15_000, wait = sleep }) {
+  const before = await agentState(uid, run);
+  if (before.pid === null && await answers(socket)) {
+    if (before.loaded) await remove();
+    return 'foreign';
+  }
+  await install();
+  const started = Date.now();
+  let pid = null;
+  let info = null;
+  let serving = false;
+  for (;;) {
+    ({ pid } = await agentState(uid, run));
+    info = readInfo(infoFile);
+    serving = await answers(socket);
+    if (pid !== null && serving && info?.pid === pid && info.remote?.endpoint_id) return 'agent';
+    if (Date.now() - started > timeout) break;
+    await wait(50);
+  }
+  await remove().catch(() => {});
+  const seconds = Math.round(timeout / 1000);
+  if (serving && info?.pid && info.pid !== pid) {
+    throw new Error(`Another apex-daemon (pid ${info.pid}) is using Deck's data folder, so the background service can't start. Quit it, then turn Remote access on again`);
+  }
+  if (serving && info?.pid === pid) throw new Error('The background apex-daemon started without Remote access');
+  throw new Error(`The background apex-daemon didn't start within ${seconds} seconds`);
 }

@@ -184,7 +184,7 @@ test("a machine paired again by its endpoint ID keeps its place, id and name, an
   const next = withPairedMachine(list, scanned({ id: "h-9", name: "Renamed", hostEndpointId: HOST, addrs: ["198.51.100.4:41641"] }));
   assert.equal(next.length, 2, "no duplicate");
   assert.equal(next[0], direct);
-  assert.deepEqual(next[1], { ...paired, addrs: ["198.51.100.4:41641"] });
+  assert.deepEqual(next[1], { ...paired, addrs: ["198.51.100.4:41641"], pairedAt: 99 });
 });
 
 test("an address-and-token machine with the same name is replaced in its place, keeping its id and kind", () => {

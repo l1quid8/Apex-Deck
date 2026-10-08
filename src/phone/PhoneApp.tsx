@@ -25,7 +25,7 @@ import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange,
-  canSeeNewThread, isPaired, loadRemoteMode, remoteModeKey, withHints,
+  canSeeNewThread, connectionKey, isPaired, loadRemoteMode, remoteModeKey, withHints,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
@@ -271,10 +271,7 @@ export function PhoneApp() {
   /** The open thread as last drawn, for names inside event handlers. */
   const roomRef = useRef<Room | null>(null);
   roomRef.current = room;
-  // A paired machine's addresses aren't in the key: new ones are read at the next dial, without reconnecting.
-  const machineKey = machines.map((machine) => isPaired(machine)
-    ? `${machine.id}\u0000iroh\u0000${machine.hostEndpointId}\u0000${machine.name}`
-    : `${machine.id}\u0000${machine.url}\u0000${machine.token}\u0000${machine.name}`).join("\n");
+  const machineKey = connectionKey(machines);
 
   useEffect(() => {
     try { localStorage.setItem(machinesKey(), saveMachines(machines)); } catch { /* the list lasts for this session */ }

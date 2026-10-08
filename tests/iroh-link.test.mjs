@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { DaemonClient } from "../src/daemon/client.ts";
 import { irohConnect } from "../src/daemon/irohLink.ts";
 import { EventRouter } from "../src/phone/remotePlugin.ts";
+import { withPairedMachine } from "../src/phone/pairing.ts";
+import { connectionKey } from "../src/phoneRules.ts";
 
 const HOST = "a".repeat(64);
 const target = () => ({ hostEndpointId: HOST, addrs: ["203.0.113.7:41641"] });
@@ -234,4 +236,52 @@ test("opened then revoked before the client subscribes stops without a retry", a
   assert.equal(last.reason, "Access removed — pair again on this machine");
   assert.equal(timers.pending.size, 0, "no retry timer");
   assert.deepEqual(plugin.sent, [], "no hello to the dead handle");
+});
+
+test("revoked, then paired again by QR code, the machine connects on a fresh connection", async () => {
+  const plugin = new FakePlugin();
+  const timers = fakeTimers();
+  let revoke = true;
+  plugin.connect = async () => {
+    plugin.dials += 1;
+    const handle = plugin.next++;
+    plugin.emit({ type: "opened", handle });
+    if (revoke) plugin.emit({ type: "closed", handle, code: 2, reason: "revoked" });
+    return handle;
+  };
+  // As PhoneApp does: one client per connectionKey, made again only when the key changes.
+  const machine = { id: "h-1", name: "Apex-Terminal", kind: "server", transport: "iroh", hostEndpointId: HOST, addrs: ["203.0.113.7:41641"], pairedAt: 5 };
+  const open = (list) => {
+    const client = new DaemonClient(irohConnect(() => list[0], plugin, () => "automatic"), { timers });
+    const statuses = [];
+    client.onStatus((status) => statuses.push(status));
+    void client.start();
+    return { key: connectionKey(list), client, statuses };
+  };
+  let machines = [machine];
+  const first = open(machines);
+  await tick();
+  await tick();
+  assert.equal(first.statuses.at(-1).kind, "failed", "the revoke stops it for good");
+  assert.equal(timers.pending.size, 0);
+
+  // The machine sends new addresses: same key, no reconnect.
+  assert.equal(connectionKey([{ ...machine, addrs: ["198.51.100.4:41641"] }]), first.key);
+
+  // Pair Phone on the machine, scan, Approve.
+  revoke = false;
+  machines = withPairedMachine(machines, { ...machine, id: "h-new", name: "Scanned", addrs: ["198.51.100.4:41641"], pairedAt: 99 });
+  assert.equal(machines.length, 1);
+  assert.equal(machines[0].pairedAt, 99);
+  assert.notEqual(connectionKey(machines), first.key, "pairing again changes the key, so the app opens a new connection");
+  first.client.close();
+  const second = open(machines);
+  await tick();
+  await tick();
+  const hello = JSON.parse(plugin.sent.at(-1).line);
+  assert.equal(hello.cmd, "hello");
+  plugin.emit({ type: "line", handle: 2, line: JSON.stringify({ id: hello.id, ok: { host_id: "h1", boot_id: "b1", protocol: 1, last_seq: 0, resumed: false } }) });
+  await tick();
+  assert.equal(second.statuses.at(-1).kind, "connected");
+  assert.equal(plugin.dials, 2);
 });
