@@ -5,6 +5,35 @@ export interface LibraryFilter {
   bot: string | null;
   /** The workspace id, or null for every workspace. */
   workspace: string | null;
+  /** The machine's host id ("local" for this Mac), or null for every machine. */
+  machine?: string | null;
+}
+
+/** A Library picture and the machine whose Library keeps it. */
+export type MachineItem = LibraryItem & { machine: string };
+
+/** How loading one machine's Library went. */
+export type MachineLoad = { kind: "ok" } | { kind: "offline" } | { kind: "old" } | { kind: "failed"; message: string };
+
+/** One key per picture across machines: two machines may hold the same file name. */
+export function itemKey(item: MachineItem): string {
+  return `${item.machine}/${item.file}`;
+}
+
+/** A helper from before the Library answers library_list as an unknown command. */
+export function loadOutcome(error: unknown): MachineLoad {
+  const message = String((error as Error)?.message ?? error);
+  if (/unknown variant [`'"]?library_list|unknown command.*library_list|unsupported.*library_list/i.test(message)) return { kind: "old" };
+  if (/not connected|unavailable|can't be reached|timed out/i.test(message)) return { kind: "offline" };
+  return { kind: "failed", message };
+}
+
+/** The line shown for a machine whose pictures couldn't be listed; null when they were. */
+export function machineNote(name: string, load: MachineLoad): string | null {
+  if (load.kind === "ok") return null;
+  if (load.kind === "offline") return `${name} offline. Its pictures show when it's back.`;
+  if (load.kind === "old") return `${name} runs an older apex-daemon without a Library. Update it there to see its pictures.`;
+  return `Couldn't load ${name}'s Library: ${load.message}`;
 }
 
 /** The part of a thread the Library needs: its id and the workspace it is in. */
@@ -40,10 +69,11 @@ export function workspacesIn(items: LibraryItem[], threads: LibraryThread[]): st
 }
 
 /** Pictures that match both filters, newest first. A filter set to null matches all. */
-export function filterLibrary(items: LibraryItem[], filter: LibraryFilter, threads: LibraryThread[]): LibraryItem[] {
+export function filterLibrary<T extends LibraryItem>(items: T[], filter: LibraryFilter, threads: LibraryThread[]): T[] {
   return items
     .filter((item) => !filter.bot || item.by?.trim() === filter.bot)
     .filter((item) => !filter.workspace || workspaceForRoom(item.room, threads) === filter.workspace)
+    .filter((item) => !filter.machine || (item as Partial<MachineItem>).machine === filter.machine)
     .slice()
     .sort((a, b) => b.created - a.created);
 }

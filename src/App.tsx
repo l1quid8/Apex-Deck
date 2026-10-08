@@ -1369,7 +1369,8 @@ export function App() {
 
         <main ref={canvasRef} className={`canvas section-${section}`}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} addRequest={newAgentRequest} />}
-          {section === "library" && <LibraryView backend={backend} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = panes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
+          {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
+            backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = panes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
           {(section === "code" || section === "threads") && !current && (
             <div className="picker">
               <img className="welcome-logo" src="/branding/mark.svg" alt="" width="80" height="80" />
