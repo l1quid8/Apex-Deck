@@ -29,5 +29,5 @@ docker run --rm --platform "linux/$arch" \
   -v "apex-deck-linux-build-$arch:/target" \
   -v "$root/target/linux-$arch:/out" \
   -w /src "$image" \
-  sh -c 'cargo build --release --locked -p apex-daemon && cp /target/release/apex-daemon /out/'
+  sh -c 'cargo build --release --locked -p apex-daemon --features remote && cp /target/release/apex-daemon /out/'
 echo "target/linux-$arch/apex-daemon"
