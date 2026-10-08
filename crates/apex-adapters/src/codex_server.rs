@@ -423,7 +423,8 @@ pub(crate) async fn run(
         }
         policy
     };
-    on_progress(Progress::Activity("Starting Codex"));
+    // Thread start is bookkeeping on every turn. The chat already says
+    // Thinking until Codex reports a real step, so this is not announced.
     let mut start = thread_start(&turn);
     start["params"]["config"] = policy;
     send(&mut stdin, &start)

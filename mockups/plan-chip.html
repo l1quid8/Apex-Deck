@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan chip placement</title>
+<style>
+  :root {
+    --bg:#090d12; --panel:#0e141b; --panel-2:#151e28; --line:#24303d;
+    --text:#e4eaf0; --muted:#91a0af; --accent:#71e6b5; --plan:#1ed7ee;
+    --hot:#ff4d8d; --amber:#ffb020; --violet:#a855f7;
+  }
+  @property --spin { syntax:'<angle>'; inherits:false; initial-value:0deg; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system, system-ui, sans-serif; padding:20px 16px 40px; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  .lead { color:var(--muted); margin:0 0 18px; font-size:13px; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:22px; }
+  .controls button { border:1px solid var(--line); background:var(--panel); color:var(--text); border-radius:8px; padding:6px 12px; font:inherit; font-size:13px; cursor:pointer; }
+  .controls button[aria-pressed="true"] { border-color:var(--plan); color:var(--plan); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:28px 24px; }
+  .option h2 { font-size:13px; margin:0 0 2px; }
+  .option p { color:var(--muted); font-size:12px; margin:0 0 10px; }
+  .phone { max-width:390px; }
+
+  /* The composer, as Deck draws it */
+  .ring { position:relative; padding:1px; border-radius:13px; background:transparent; transition:background .3s; }
+  .ring::before { content:""; position:absolute; inset:0; border-radius:inherit; z-index:-1; filter:blur(14px); opacity:0; }
+  .plan .ring { background:var(--plan); }
+  .tldr .ring, .tldr .ring::before { background:conic-gradient(from var(--spin), var(--hot), var(--amber), var(--violet), var(--hot)); animation:spin 3s linear infinite; }
+  .tldr .ring::before { opacity:.6; }
+  @keyframes spin { to { --spin:360deg; } }
+  .box { display:flex; align-items:flex-end; gap:4px; padding:3px 6px; border-radius:12px; background:var(--panel-2); min-height:42px; }
+  .plus { width:36px; height:36px; flex:none; border:0; background:transparent; color:var(--muted); font-size:24px; line-height:1; cursor:pointer; border-radius:50%; }
+  .plus:hover { color:var(--text); }
+  textarea { flex:1; min-width:0; resize:none; border:0; outline:0; background:transparent; color:var(--text); font:inherit; line-height:20px; padding:8px 6px; height:36px; }
+  textarea::placeholder { color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .plan textarea::placeholder { color:color-mix(in srgb, var(--plan) 70%, transparent); }
+  .tldr textarea::placeholder { color:color-mix(in srgb, var(--amber) 70%, transparent); }
+
+  .pill { display:inline-flex; align-self:flex-end; margin-bottom:10px; height:16px; padding:0; border:1px solid #3a3a3a; border-radius:999px; overflow:hidden; background:none; cursor:pointer; flex:none; filter:grayscale(1); }
+  .pill span { display:flex; align-items:center; padding:0 5px; font-size:8px; font-weight:800; letter-spacing:.03em; }
+  .pill .l { background:#f2f2f2; color:#111; }
+  .pill .r { background:#111; color:#f2f2f2; }
+  .tldr .pill { filter:none; border-color:transparent; box-shadow:0 0 7px var(--hot), 0 0 15px color-mix(in srgb, var(--amber) 50%, transparent); }
+  .tldr .pill .l { background:var(--hot); color:#fff; }
+  .tldr .pill .r { background:var(--amber); color:#1a0710; }
+
+  .send { width:30px; height:30px; flex:none; align-self:flex-end; margin-bottom:3px; border:0; border-radius:50%; background:var(--accent); color:#04211d; font-weight:800; cursor:pointer; }
+
+  /* The plan chip */
+  .plan-chip { display:none; align-self:flex-end; flex:none; align-items:center; gap:4px; height:22px; padding:0 8px; border-radius:999px; border:1px solid color-mix(in srgb, var(--plan) 45%, transparent); background:color-mix(in srgb, var(--plan) 12%, transparent); color:var(--plan); font:inherit; font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap; }
+  .plan .plan-chip { display:inline-flex; }
+  .plan-chip.before { margin-bottom:7px; }
+  .plan-chip.near { margin-bottom:7px; margin-right:2px; }
+  .plan-chip .x { opacity:0; font-size:10px; margin-left:1px; transition:opacity .15s; }
+  .plan-chip:hover .x, .phone .plan-chip .x { opacity:.8; }
+  /* Small: the TL;DR pill's size, weight and spacing */
+  .small .plan-chip { height:16px; padding:0 5px; gap:3px; margin-bottom:10px; font-size:8px; font-weight:800; letter-spacing:.03em; }
+  .small .plan-chip .x { font-size:7px; }
+  .plan-chip:hover { background:color-mix(in srgb, var(--plan) 20%, transparent); }
+  textarea { overflow-y:auto; }
+
+  /* C: a tab sitting on the box's top edge */
+  .tab-row { display:flex; padding-left:14px; height:0; position:relative; z-index:1; }
+  .plan-chip.tab { margin:0; transform:translateY(-50%); background:var(--bg); box-shadow:inset 0 0 0 100px color-mix(in srgb, var(--plan) 12%, transparent); }
+  .composer:has(.tab-row) { padding-top:10px; }
+
+  /* D: the row of bots under the box */
+  .bots { display:flex; gap:4px; margin-top:6px; padding:0 2px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; align-items:center; }
+  .bot { flex:none; font-size:12px; padding:1px 9px; border-radius:999px; border:1px solid color-mix(in srgb, var(--who) 30%, var(--line)); color:var(--text); }
+  .plan-chip.under { margin:0 2px 0 0; }
+  .small .plan-chip.under, .small .plan-chip.tab { margin-bottom:0; }
+
+  /* E: the + button becomes a cyan diamond */
+  .plus .p-on { display:none; }
+  .plan .plus.can-plan { color:var(--plan); font-size:18px; background:color-mix(in srgb, var(--plan) 12%, transparent); }
+  .plan .plus.can-plan .p-on { display:inline; }
+  .plan .plus.can-plan .p-off { display:none; }
+</style>
+</head>
+<body>
+  <h1>Where should the Plan chip go?</h1>
+  <p class="lead">Turn Plan on and off, add TL;DR, switch the chip's size, and type in a box to see how each spot holds up. Clicking a chip turns Plan off.</p>
+  <div class="controls">
+    <button id="plan" aria-pressed="true">Plan on</button>
+    <button id="tldr" aria-pressed="false">TL;DR on</button>
+    <button id="long" aria-pressed="false">Long message</button>
+    <button id="small" aria-pressed="true">Same size as TL;DR</button>
+  </div>
+
+  <div class="grid">
+    <section class="option">
+      <h2>C · A tab on the box's top edge</h2>
+      <p>Sits on the border above the text, like a label. Never touches what you type.</p>
+      <div class="composer" data-place="tab"></div>
+    </section>
+    <section class="option">
+      <h2>D · Under the box, with the bot chips</h2>
+      <p>First in the row of bots below the box, where the thread's settings already live.</p>
+      <div class="composer" data-place="under"></div>
+    </section>
+    <section class="option">
+      <h2>E · No chip: the + turns into ◇</h2>
+      <p>The + button itself shows Plan is on. Cyan border and hint as well. Click ◇ for the menu, where Plan is ticked.</p>
+      <div class="composer" data-place="plus"></div>
+    </section>
+    <section class="option phone">
+      <h2>C on the phone (390 wide)</h2>
+      <p>The ✕ is always showing on the phone.</p>
+      <div class="composer" data-place="tab"></div>
+    </section>
+    <section class="option phone">
+      <h2>D on the phone</h2>
+      <p>&nbsp;</p>
+      <div class="composer" data-place="under"></div>
+    </section>
+    <section class="option phone">
+      <h2>E on the phone</h2>
+      <p>&nbsp;</p>
+      <div class="composer" data-place="plus"></div>
+    </section>
+    <section class="option">
+      <h2>A · Before the text (earlier)</h2>
+      <p>For comparison.</p>
+      <div class="composer" data-place="before"></div>
+    </section>
+    <section class="option">
+      <h2>B · Near the TL;DR pill (earlier)</h2>
+      <p>For comparison.</p>
+      <div class="composer" data-place="near"></div>
+    </section>
+  </div>
+
+<script>
+  const chip = (place) => `<button type="button" class="plan-chip ${place}" title="Plan is on: the bots plan and don't change anything. Click to turn off.">◇ Plan<span class="x">✕</span></button>`;
+  const bots = `<span class="bot" style="--who:#a78bfa">Claude</span><span class="bot" style="--who:#71e6b5">Codex</span><span class="bot" style="--who:#f59e0b">Grok</span>`;
+  document.querySelectorAll(".composer").forEach((el) => {
+    const place = el.dataset.place;
+    el.innerHTML = `${place === "tab" ? `<div class="tab-row">${chip(place)}</div>` : ""}<div class="ring"><div class="box">
+      <button class="plus${place === "plus" ? " can-plan" : ""}" type="button" aria-label="Add">${place === "plus" ? '<span class="p-off">+</span><span class="p-on">◇</span>' : "+"}</button>
+      ${place === "before" ? chip(place) : ""}
+      <textarea rows="1"></textarea>
+      ${place === "near" ? chip(place) : ""}
+      <button class="pill" type="button"><span class="l">TL;</span><span class="r">DR</span></button>
+      <button class="send" type="button" aria-label="Send">↑</button>
+    </div></div>
+    <div class="bots">${place === "under" ? chip(place) : ""}${bots}</div>`;
+  });
+  const grow = (t) => { t.style.height = "36px"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; };
+  const state = { plan: true, tldr: false, long: false, small: true };
+  const LONG = "Look at how the pick-the-machine flow handles a thread whose folder is missing on the other Mac, and plan the fix";
+  function render() {
+    document.querySelectorAll(".composer").forEach((el) => {
+      el.classList.toggle("plan", state.plan);
+      el.classList.toggle("tldr", state.tldr);
+      el.classList.toggle("small", state.small);
+      const t = el.querySelector("textarea");
+      t.placeholder = state.plan ? "Plan with the bots — nothing gets changed…" : "Message the room…";
+      if (state.long && !t.dataset.typed) t.value = LONG;
+      if (!state.long && !t.dataset.typed) t.value = "";
+      grow(t);
+    });
+    for (const k of ["plan", "tldr", "long", "small"]) document.getElementById(k).setAttribute("aria-pressed", String(state[k]));
+  }
+  for (const k of ["plan", "tldr", "long", "small"]) document.getElementById(k).onclick = () => { state[k] = !state[k]; render(); };
+  document.addEventListener("click", (e) => { if (e.target.closest(".plan-chip")) { state.plan = false; render(); } });
+  document.addEventListener("input", (e) => { if (e.target.tagName === "TEXTAREA") { e.target.dataset.typed = "1"; grow(e.target); } });
+  render();
+</script>
+</body>
+</html>

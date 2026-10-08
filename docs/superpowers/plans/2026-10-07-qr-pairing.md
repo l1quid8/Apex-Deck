@@ -325,12 +325,16 @@ They go in the same local-only branch as `devices_*` (`protocol.rs:325`). The de
 
 ### Task 8: Hardware acceptance (needs the human's phone)
 
+- [x] Installed Mac remains reachable after ⌘Q: human confirmed the phone connected on cellular and opened a thread (2026-10-07). Human-reported result; not independently observed.
+- [x] Apex-Terminal paired with `apex-daemon pair --tier full` + `y`; phone shows Connected (2026-10-07). Human-reported; network (Wi-Fi vs cellular) not stated.
+- [x] Chat sent from the phone, reply received (2026-10-07). Human-reported; which machine and network not stated.
+
 No code; record results in `docs/iroh-mobile-spike.md` → rename to `docs/remote-access-acceptance.md`.
 
 - [ ] Phone's new production endpoint ID added to the relay allowlist (the spike ID is a different Keychain item); old spike ID removed.
 - [ ] Pair the home Mac on Wi-Fi; pair Apex-Terminal over cellular through the relay (`apex-daemon pair` over SSH).
 - [ ] Each failure from the spec on real hardware: expired QR, second phone (or Simulator) scanning the same QR, Deny, a QR with the relay edited → refused on the phone.
-- [ ] Cellular: Mac and VPS in Automatic show Direct or Relayed correctly; open a thread, send a chat, see the reply.
+- [x] Cellular: Mac and VPS in Automatic both show Connected · Direct; chat sent to each, replies received (2026-10-07). Human-reported; not independently observed.
 - [ ] Direct only: VPS with its port open → Direct; home Mac without a forwarded port → "Direct connection blocked".
 - [ ] Packet capture on the relay during a Direct only session with a forced Wi-Fi→cellular switch: no packets from the phone's session socket reach the relay.
 - [ ] Router check: no UPnP/NAT-PMP mappings from the Mac or phone in the router's table.

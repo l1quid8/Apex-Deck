@@ -671,7 +671,7 @@ async fn codex_app_server_streams_the_reply_in_pieces_and_declines_when_nobody_c
     assert_eq!(text, "Two files here.");
     assert_eq!(reply.text, "Two files here. effort=high refused=yes");
     assert_eq!((reply.input_tokens, reply.output_tokens), (Some(50), Some(6)));
-    assert_eq!(activity, ["Checking MCP tool approval policies", "Starting Codex", "Running: ls -la", "Waiting for approval: Run a command"]);
+    assert_eq!(activity, ["Checking MCP tool approval policies", "Running: ls -la", "Waiting for approval: Run a command"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -722,7 +722,7 @@ async fn codex_lists_plugins_alongside_the_mcp_inventory_for_the_menu() {
     let (result, activity, servers) = work_with_servers(bot.as_ref()).await;
     assert_eq!(result.unwrap().text, "done");
     assert_eq!(servers.iter().map(|list| list.iter().map(|entry| entry.token.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(), [["design", "probe"]]);
-    assert_eq!(activity[..2], ["Checking MCP tool approval policies", "Starting Codex"]);
+    assert_eq!(activity, ["Checking MCP tool approval policies"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -1223,7 +1223,10 @@ async fn codex_hook_lets_reads_through_and_asks_before_each_risky_call_without_t
             assert_eq!((action.kind, action.title.as_str()), (ActionKind::Tool, "probe: place_order"));
             assert_eq!(serde_json::from_str::<serde_json::Value>(&action.detail).unwrap(), serde_json::json!({"quantity": "0.001"}));
         }
-        assert_eq!(activity[0], "Starting Codex", "no inventory wait: {activity:?}");
+        assert!(
+            !activity.is_empty() && activity.iter().all(|line| line.starts_with("Waiting for approval:")),
+            "no inventory wait and no startup line: {activity:?}"
+        );
     }
     let args = std::fs::read_to_string(dir.join("args")).unwrap();
     assert!(args.contains(r#"hooks.PreToolUse=[{matcher="^mcp__""#), "{args}");
@@ -1241,7 +1244,8 @@ async fn codex_hook_is_trusted_once_through_codex_settings() {
     let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context);
     let (result, activity) = work_hooked(bot.as_ref(), &Fixed::new(Decision::Reject)).await;
     assert_eq!(result.unwrap().text, "allowed=1 denied=2");
-    assert_eq!(activity[..2], ["Turning on Apex Deck's approval hook in Codex", "Starting Codex"]);
+    assert_eq!(activity[0], "Turning on Apex Deck's approval hook in Codex");
+    assert!(activity[1..].iter().all(|line| line.starts_with("Waiting for approval:")), "{activity:?}");
     let trust: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("trust")).unwrap()).unwrap();
     assert_eq!(trust["params"]["edits"], serde_json::json!([{
         "keyPath": "hooks.state.\"/<session-flags>/config.toml:pre_tool_use:0:0\".trusted_hash",

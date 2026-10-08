@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Phone · Bots sheet + thread menu · v1</title>
+<style>
+  :root {
+    --bg: #0b0f15; --sheet: #111720; --card: #18202c; --line: #222b37;
+    --text: #e8edf3; --muted: #8a96a6; --faint: #5d6877;
+    --mint: #2fe0a0; --red: #f2706b; --amber: #f7b74f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #05080c; color: var(--text); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;  }
+  h1 { font-size: 20px; margin: 24px 28px 4px; }
+  .intro { color: var(--muted); margin: 0 28px 20px; max-width: 1500px; }
+  .strip { display: flex; gap: 28px; padding: 0 28px 40px; align-items: flex-start; flex-wrap: wrap; }
+  .shot { width: 393px; }
+  .cap { color: var(--muted); font-size: 13px; margin: 0 0 10px; min-height: 54px; }
+  .cap b { color: var(--text); }
+
+  /* phone */
+  .phone { width: 393px; height: 852px; border-radius: 46px; background: var(--bg); position: relative; overflow: hidden; border: 1px solid #1c232d; }
+  .status { height: 50px; display: flex; justify-content: space-between; align-items: flex-end; padding: 0 34px 6px 48px; font-weight: 600; font-size: 16px; }
+  .top { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; height: 58px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+  .back { color: var(--mint); font-size: 26px; text-align: center; }
+  .ttl { text-align: center; line-height: 1.2; }
+  .ttl b { font-size: 16px; color: #c9d1db; display: block; }
+  .ttl span { font-size: 12.5px; color: var(--muted); }
+  .dots { text-align: center; color: var(--muted); letter-spacing: 1px; font-weight: 700; }
+
+  /* bot bar: solid background, clean bottom edge, no stray ticks */
+  .botbar { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--bg); border-bottom: 1px solid var(--line); position: relative; z-index: 2; box-shadow: 0 6px 10px -6px rgba(0,0,0,.6); }
+  .pill { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px 0 5px; border-radius: 16px; border: 1px solid var(--line); color: #b9c3cf; font-size: 14px; }
+  .pill.on { border-color: #4a3d78; background: #1a1630; color: var(--text); }
+  .at { width: 22px; height: 22px; border-radius: 50%; background: #0f3d2c; color: var(--mint); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+  .fold { margin-left: auto; color: var(--muted); }
+
+  .chat { padding: 14px 16px; color: #aab4c0; font-size: 16px; line-height: 1.5; }
+  .chat b { color: var(--text); }
+  .me { margin: 12px 0 0 auto; width: max-content; background: #1a212b; padding: 9px 15px; border-radius: 18px; color: #c9d1db; }
+
+  /* identicon avatar, like Deck's pixel avatars */
+  .av { width: 34px; height: 34px; border-radius: 9px; display: grid; grid-template-columns: repeat(5, 1fr); padding: 4px; gap: 1px; flex: none; background: #120f22; }
+  .av i { border-radius: 1px; }
+  .av.sm { width: 22px; height: 22px; border-radius: 6px; padding: 2px; }
+  .av.xs { width: 24px; height: 24px; border-radius: 7px; padding: 3px; border: 2px solid var(--sheet); }
+
+  /* sheet */
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); z-index: 3; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--sheet); border-radius: 26px 26px 0 0; z-index: 4; padding: 8px 18px 0; max-height: 650px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+  .sheet-body { overflow-y: auto; min-height: 0; padding-bottom: 30px; overscroll-behavior: contain; }
+  .grab, .shead { flex-shrink: 0; }
+  .empty { padding: 22px 14px; text-align: center; color: var(--muted); }
+  .send-off { margin: 12px 4px; padding: 10px 14px; border-radius: 12px; background: var(--card); color: var(--faint); text-align: center; }
+  .grab { width: 40px; height: 5px; border-radius: 3px; background: #39424f; margin: 0 auto 10px; }
+  .shead { display: flex; align-items: center; justify-content: space-between; margin: 2px 0 12px; }
+  .shead h2 { margin: 0; font-size: 22px; letter-spacing: -.4px; }
+  .x { width: 44px; height: 44px; flex: none; border: 0; cursor: pointer; border-radius: 50%; background: #1d2530; color: #b9c3cf; display: grid; place-items: center; font-size: 15px; }
+
+  .where { background: var(--card); border-radius: 14px; padding: 11px 14px; margin-bottom: 10px; }
+  .where p { margin: 0; }
+  .where .p1 { font-weight: 600; }
+  .where .p1 span { font-weight: 400; color: #c9d1db; }
+  .where .p2 { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--mint); margin: 0 2px 1px 4px; }
+
+  .group { background: var(--card); border-radius: 14px; overflow: hidden; margin-bottom: 10px; }
+  .item { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 16px; }
+  .item:first-child { border-top: 0; }
+  .item .lbl { flex: 1; min-width: 0; }
+  .item .sub { color: var(--muted); font-size: 13px; }
+  .chev { color: var(--faint); font-size: 18px; }
+  .stack { display: flex; }
+  .stack .av + .av { margin-left: -7px; }
+  .danger { color: var(--red); }
+  .hint { color: var(--faint); font-size: 12px; }
+
+  .sec { color: var(--muted); font-size: 12.5px; text-transform: uppercase; letter-spacing: .6px; margin: 14px 4px 6px; display: flex; justify-content: space-between; }
+  .bot { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 10px 8px 12px; border-top: 1px solid var(--line); }
+  .bot:first-child { border-top: 0; }
+  .bot .who { flex: 1; min-width: 0; }
+  .bot .nm { font-weight: 600; font-size: 16px; }
+  .bot .hd { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rb { width: 44px; height: 44px; display: grid; place-items: center; flex: none; }
+  .rb span { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 20px; font-weight: 600; line-height: 1; }
+  .rb.minus span { background: rgba(242,112,107,.16); color: var(--red); }
+  .rb.plus span { background: rgba(47,224,160,.15); color: var(--mint); }
+  .rb.off span { background: #1d2530; color: var(--faint); }
+  .spin { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid #2c3542; border-top-color: var(--muted); }
+  .err { color: var(--red); font-size: 13px; }
+  .busy { color: var(--amber); }
+  .foot { color: var(--muted); font-size: 12.5px; margin: 10px 4px 0; }
+  .toast { position: absolute; left: 16px; right: 16px; bottom: 34px; z-index: 6; background: #222b37; border-radius: 14px; padding: 12px 14px; display: flex; justify-content: space-between; font-size: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  .toast b { color: var(--mint); font-weight: 600; }
+
+  .notes { padding: 0 28px 40px; max-width: 1650px; color: #c3ccd6; font-size: 14.5px; }
+  .notes h2 { font-size: 16px; margin: 18px 0 6px; }
+  .notes li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<h1>Phone · Bots sheet + thread menu · v1</h1>
+<p class="intro">Copies IMG_4043 / IMG_4044 (Hyperliquid on l1quid8). Only the thread ⋯ menu, the Bots sheet and the bot row under the title change. Everything else stays as built.</p>
+
+<div class="strip">
+
+<!-- 1: thread menu -->
+<div class="shot">
+<p class="cap"><b>1 · Thread ⋯ menu.</b> The path shows once, in the card. The two "details" rows and "Bots…" become one <b>Bots</b> row with the avatars. Copy folder path no longer repeats the path.</p>
+<div class="phone">
+  <div class="status"><span>7:34</span><span>▂▄▆ ◠ 28</span></div>
+  <div class="top"><div class="back">‹</div><div class="ttl"><b>Hyperliquid</b><span>🔒 arcane_trader · l1quid8 ⌄</span></div><div class="dots">•••</div></div>
+  <div class="botbar"><div class="pill"><span class="at">@</span>Everyone</div><div class="pill on"><span class="av sm" data-a="j"></span>Jigga</div><div class="pill"><span class="av sm" data-a="n"></span>Null</div><span class="fold">⌃</span></div>
+  <div class="chat">habit most likely to give back a win like this one. As of Null's last check…</div>
+  <div class="scrim"></div>
+  <div class="sheet">
+    <div class="grab"></div>
+    <div class="shead"><h2>Hyperliquid</h2><button class="x" aria-label="Close sheet">✕</button></div>
+    <div class="sheet-body">
+    <div class="where">
+      <p class="p1">arcane_trader <span>· l1quid8</span><span class="dot"></span></p>
+      <p class="p2">/home/l1quid8/arcane_trader · Active 9h ago</p>
+    </div>
+    <div class="group">
+      <div class="item"><div class="lbl">Bots</div><div class="stack"><span class="av xs" data-a="j"></span><span class="av xs" data-a="n"></span></div><span class="sub">2</span><span class="chev">›</span></div>
+    </div>
+    <div class="group">
+      <div class="item"><div class="lbl">Pin</div></div>
+      <div class="item"><div class="lbl">Rename…</div></div>
+      <div class="item"><div class="lbl">Mark as unread</div></div>
+      <div class="item"><div class="lbl">Copy folder path</div></div>
+    </div>
+    <div class="group">
+      <div class="item"><div class="lbl danger">Archive</div></div>
+    </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- 2: bots sheet -->
+<div class="shot">
+<p class="cap"><b>2 · Bots sheet.</b> People, not commands: avatar, name, @handle and model. Round <b>−</b> / <b>+</b> on the right. Tap a row (not the button) for that bot's details.</p>
+<div class="phone">
+  <div class="status"><span>7:35</span><span>▂▄▆ ◠ 28</span></div>
+  <div class="top"><div class="back">‹</div><div class="ttl"><b>Hyperliquid</b><span>🔒 arcane_trader · l1quid8 ⌄</span></div><div class="dots">•••</div></div>
+  <div class="botbar"><div class="pill"><span class="at">@</span>Everyone</div><div class="pill on"><span class="av sm" data-a="j"></span>Jigga</div><div class="pill"><span class="av sm" data-a="n"></span>Null</div><span class="fold">⌃</span></div>
+  <div class="chat">habit most likely to give back a win like this one. As of Null's last check, your <b>10,000 RUNE long also has no stop</b>…<div class="me">hater</div></div>
+  <div class="scrim"></div>
+  <div class="sheet">
+    <div class="grab"></div>
+    <div class="shead"><h2>Bots</h2><button class="x" aria-label="Close sheet">✕</button></div>
+    <div class="sheet-body">
+    <div class="sec"><span>In this thread</span><span>2</span></div>
+    <div class="group">
+      <div class="bot"><span class="av" data-a="j"></span><div class="who"><div class="nm">Jigga</div><div class="hd">@jigga · Opus 5.5</div></div><span class="chev">›</span><div class="rb minus"><span>−</span></div></div>
+      <div class="bot"><span class="av" data-a="n"></span><div class="who"><div class="nm">Null</div><div class="hd">@null · Codex</div></div><span class="chev">›</span><div class="rb minus"><span>−</span></div></div>
+    </div>
+    <div class="sec"><span>Add a bot</span></div>
+    <div class="group">
+      <div class="bot"><span class="av" data-a="t"></span><div class="who"><div class="nm">Thadious</div><div class="hd">@thadious</div></div><div class="rb plus"><span>+</span></div></div>
+      <div class="bot"><span class="av" data-a="v"></span><div class="who"><div class="nm">Allison</div><div class="hd">@venice</div></div><div class="rb plus"><span>+</span></div></div>
+      <div class="bot"><span class="av" data-a="g"></span><div class="who"><div class="nm">Gronk</div><div class="hd">@gronk</div></div><div class="rb plus"><span>+</span></div></div>
+      <div class="bot"><span class="av" data-a="d"></span><div class="who"><div class="nm">Gaude</div><div class="hd">@gaude</div></div><div class="rb plus"><span>+</span></div></div>
+    </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- 3: in-flight + result -->
+<div class="shot">
+<p class="cap"><b>3 · While it works, and after.</b> The tapped row shows a spinner and the other buttons wait. Pending additions stay in Add a bot until success. Removal returns a bot there; + adds it back. A failure stays on that row, in red.</p>
+<div class="phone">
+  <div class="status"><span>7:35</span><span>▂▄▆ ◠ 28</span></div>
+  <div class="top"><div class="back">‹</div><div class="ttl"><b>Hyperliquid</b><span>🔒 arcane_trader · l1quid8 ⌄</span></div><div class="dots">•••</div></div>
+  <div class="botbar"><div class="pill"><span class="at">@</span>Everyone</div><div class="pill on"><span class="av sm" data-a="j"></span>Jigga</div><span class="fold">⌃</span></div>
+  <div class="chat">habit most likely to give back a win like this one…</div>
+  <div class="scrim"></div>
+  <div class="sheet">
+    <div class="grab"></div>
+    <div class="shead"><h2>Bots</h2><button class="x" aria-label="Close sheet">✕</button></div>
+    <div class="sheet-body">
+    <div class="sec"><span>In this thread</span><span>1</span></div>
+    <div class="group">
+      <div class="bot"><span class="av" data-a="j"></span><div class="who"><div class="nm">Jigga</div><div class="hd busy">Working · stop it first to remove</div></div><span class="chev">›</span><div class="rb off"><span>−</span></div></div>
+    </div>
+    <div class="sec"><span>Add a bot</span></div>
+    <div class="group">
+      <div class="bot"><span class="av" data-a="g"></span><div class="who"><div class="nm">Gronk</div><div class="hd">Adding…</div></div><div class="rb"><span class="spin"></span></div></div>
+      <div class="bot"><span class="av" data-a="n"></span><div class="who"><div class="nm">Null</div><div class="hd">@null</div></div><div class="rb plus"><span>+</span></div></div>
+      <div class="bot"><span class="av" data-a="t"></span><div class="who"><div class="nm">Thadious</div><div class="err">Couldn't add: l1quid8 went offline</div></div><div class="rb plus"><span>↻</span></div></div>
+      <div class="bot"><span class="av" data-a="v"></span><div class="who"><div class="nm">Allison</div><div class="hd">@venice</div></div><div class="rb plus"><span>+</span></div></div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+</div>
+
+<!-- 4: no full access -->
+<div class="shot">
+<p class="cap"><b>4 · Phone without Full access.</b> The list still shows who's in the thread, and details still open. The buttons are greyed and one line says how to change it.</p>
+<div class="phone">
+  <div class="status"><span>7:35</span><span>▂▄▆ ◠ 28</span></div>
+  <div class="top"><div class="back">‹</div><div class="ttl"><b>Hyperliquid</b><span>🔒 arcane_trader · l1quid8 ⌄</span></div><div class="dots">•••</div></div>
+  <div class="botbar"><div class="pill"><span class="at">@</span>Everyone</div><div class="pill on"><span class="av sm" data-a="j"></span>Jigga</div><div class="pill"><span class="av sm" data-a="n"></span>Null</div><span class="fold">⌃</span></div>
+  <div class="chat">habit most likely to give back a win like this one…</div>
+  <div class="scrim"></div>
+  <div class="sheet">
+    <div class="grab"></div>
+    <div class="shead"><h2>Bots</h2><button class="x" aria-label="Close sheet">✕</button></div>
+    <div class="sheet-body">
+    <div class="sec"><span>In this thread</span><span>2</span></div>
+    <div class="group">
+      <div class="bot"><span class="av" data-a="j"></span><div class="who"><div class="nm">Jigga</div><div class="hd">@jigga · Opus 5.5</div></div><span class="chev">›</span><div class="rb off"><span>−</span></div></div>
+      <div class="bot"><span class="av" data-a="n"></span><div class="who"><div class="nm">Null</div><div class="hd">@null · Codex</div></div><span class="chev">›</span><div class="rb off"><span>−</span></div></div>
+    </div>
+    <div class="sec"><span>Add a bot</span></div>
+    <div class="group">
+      <div class="bot"><span class="av" data-a="t"></span><div class="who"><div class="nm">Thadious</div><div class="hd">@thadious</div></div><div class="rb off"><span>+</span></div></div>
+      <div class="bot"><span class="av" data-a="v"></span><div class="who"><div class="nm">Allison</div><div class="hd">@venice</div></div><div class="rb off"><span>+</span></div></div>
+    </div>
+    <p class="foot">Adding or removing bots needs Full access on l1quid8. Change it on that machine in Settings → Paired devices.</p>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="shot">
+<p class="cap"><b>5 · Last bot removed.</b> Removing the last bot is allowed. Send stays disabled until you add one; no Undo is needed.</p>
+<div class="phone">
+  <div class="status"><span>7:35</span><span>▂▄▆ ◠ 28</span></div>
+  <div class="top"><div class="back">‹</div><div class="ttl"><b>Hyperliquid</b><span>arcane_trader · l1quid8</span></div><div class="dots">•••</div></div>
+  <div class="botbar"><span class="hint">No bots yet · Add a bot to send</span></div>
+  <div class="scrim"></div>
+  <div class="sheet"><div class="grab"></div><div class="shead"><h2>Bots</h2><button class="x" aria-label="Close sheet">✕</button></div>
+    <div class="sheet-body"><div class="sec"><span>In this thread</span><span>0</span></div>
+    <div class="group empty">No bots yet<br><span class="hint">Add a bot below to start chatting.</span></div>
+    <div class="send-off" aria-disabled="true">Send disabled · Add a bot first</div>
+    <div class="sec"><span>Add a bot</span></div><div class="group">
+<div class="bot"><span class="av" data-a="n"></span><div class="who"><div class="nm">Null</div><div class="hd">@null</div></div><div class="rb plus"><span>+</span></div></div>
+      <div class="bot"><span class="av" data-a="j"></span><div class="who"><div class="nm">Jigga</div><div class="hd">@jigga</div></div><div class="rb plus"><span>+</span></div></div>
+    </div></div>
+  </div>
+</div>
+</div>
+
+</div>
+
+<div class="notes">
+  <h2>What changes</h2>
+  <ul>
+    <li><b>Thread menu:</b> "Jigga details", "Null details" and "Bots…" collapse into one <b>Bots</b> row (avatars + count). The path appears once, in the card, in the normal font, with the machine's connection dot. Copy folder path drops its repeated path. Rows are grouped (bots / thread actions / Archive) and 48 px tall instead of ~78 px.</li>
+    <li><b>Bots sheet:</b> two sections, <b>In this thread</b> and <b>Add a bot</b>. Rows are 56 px with avatar, name, @handle and (for members) model. Round −/+ buttons are 44 px tap targets. Tapping the rest of a member row opens the existing bot details sheet (model, reasoning, context, plan).</li>
+    <li><b>Feedback:</b> spinner on the tapped row, other buttons wait; pending additions stay in Add a bot until success; success moves the bot; removal can be reversed with +, without an Undo toast; failure stays on that row in red with a retry. A bot that is mid-reply can't be removed until it is stopped (the existing Stop in its details).</li>
+    <li><b>Bot row under the title:</b> solid background, a clean bottom edge and a soft shadow so chat text no longer shows through; the stray small dashes under the pills are gone.</li>
+    <li><b>No Full access:</b> the Bots row still opens; buttons are greyed with one line on how to change access, instead of a notice that blocks opening it.</li>
+  </ul>
+  <h2>Review decisions</h2>
+  <ul>
+    <li>Allow removing the last bot. Show “No bots yet” and disable Send until a bot is added.</li>
+    <li>No Undo: the + button adds a removed bot back.</li>
+    <li>Sheet content scrolls independently; title and 44 × 44 close target stay reachable.</li>
+    <li>Pending additions remain in Add a bot until the server confirms success.</li>
+  </ul>
+</div>
+
+<script>
+  // Simple 5x5 mirrored identicons, standing in for Deck's pixel avatars.
+  const looks = { j: ["#9b6bff", 7], n: ["#7d5cff", 3], t: ["#e8a33d", 11], v: ["#ff6fae", 5], g: ["#3fd0c9", 13], d: ["#7bd389", 17] };
+  for (const el of document.querySelectorAll(".av")) {
+    const [color, seed] = looks[el.dataset.a];
+    let s = seed * 2654435761 >>> 0;
+    const cells = [];
+    for (let r = 0; r < 5; r++) {
+      const row = [];
+      for (let c = 0; c < 3; c++) { s = (s * 1103515245 + 12345) >>> 0; row.push((s >> 16) & 1); }
+      cells.push(...row, row[1], row[0]);
+    }
+    el.innerHTML = cells.map((on) => `<i style="background:${on ? color : "transparent"}"></i>`).join("");
+  }
+</script>
+</body>
+</html>

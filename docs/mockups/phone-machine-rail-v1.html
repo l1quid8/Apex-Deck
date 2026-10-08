@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phone Threads: Machine Rail (v1)</title>
+<style>
+  /* Apex Deck's own tokens (src/styles.css + src/phone/phone.css). */
+  :root {
+    --bg: #090d12; --panel: #0e141b; --panel-2: #151e28; --line: #24303d;
+    --text: #e4eaf0; --muted: #91a0af; --faint: #5d6b79;
+    --mint: #3def91; --cyan: #1ed7ee; --amber: #f7b74f; --red: #ff6b6b; --violet: #c58cff;
+    --ink: #04130e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #05080c; color: var(--text); }
+  body { font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: 10px; }
+  svg { flex: none; display: block; }
+  [hidden] { display: none !important; }
+
+  /* Review page around the phone (hidden in shot mode). */
+  .mk-page { display: flex; flex-wrap: wrap; gap: 32px; justify-content: center; align-items: flex-start; padding: 28px 20px 48px; }
+  .mk-side { width: 300px; color: var(--muted); font-size: 14px; }
+  .mk-side h1 { color: var(--text); font-size: 22px; letter-spacing: -0.4px; margin: 0 0 4px; }
+  .mk-side p { margin: 0 0 14px; }
+  .mk-side ul { margin: 0 0 18px; padding-left: 18px; }
+  .mk-side li { margin-bottom: 8px; }
+  .mk-side strong { color: var(--text); font-weight: 600; }
+  .mk-states { display: grid; gap: 6px; margin: 6px 0 20px; }
+  .mk-states button { text-align: left; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); }
+  .mk-states button[aria-pressed="true"] { border-color: var(--mint); color: var(--text); background: rgba(61, 239, 145, .07); }
+  body.shot .mk-side { display: none; }
+  body.shot .mk-page { padding: 0; justify-content: flex-start; }
+
+  /* Phone */
+  .jr-phone { width: 393px; height: 852px; background: var(--bg); border-radius: 46px; position: relative; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 0 0 10px #161c23, 0 0 0 11px #2a333d; }
+  body.shot .jr-phone { border-radius: 0; box-shadow: none; }
+  .jr-status { flex: none; height: 50px; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 30px 8px 40px; font-weight: 600; font-size: 16px; letter-spacing: -0.2px; }
+  .jr-status span { display: flex; gap: 6px; align-items: center; }
+  .jr-head { flex: none; display: flex; align-items: center; padding: 6px 10px 6px 20px; gap: 4px; }
+  .jr-title { flex: 1; display: flex; align-items: center; gap: 10px; font-size: 32px; font-weight: 700; letter-spacing: -0.9px; margin: 0; }
+  .jr-icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; color: var(--text); }
+  .jr-icon:active { background: var(--panel-2); }
+
+  .jr-scroll { flex: 1; overflow-y: auto; padding: 0 0 24px; scrollbar-width: none; }
+  .jr-scroll::-webkit-scrollbar { display: none; }
+
+  /* Section headings: sentence case, no caps. */
+  .jr-h { display: flex; align-items: baseline; justify-content: space-between; padding: 18px 20px 8px; }
+  .jr-h h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.4px; }
+  .jr-h small { color: var(--muted); font-size: 13px; }
+
+  /* Recent: urgency first, then newest. */
+  .jr-card { margin: 0 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+  .jr-item { position: relative; width: 100%; display: flex; gap: 12px; align-items: flex-start; text-align: left; padding: 11px 14px 11px 16px; min-height: 58px; }
+  .jr-item + .jr-item { border-top: 1px solid var(--line); }
+  .jr-item:active, .jr-tline:active, .jr-ptop:active { background: var(--panel-2); }
+  .jr-item.wait { background: linear-gradient(90deg, rgba(247, 183, 79, .10), rgba(247, 183, 79, 0) 70%); }
+  .jr-item.wait::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--amber); }
+  .jr-body { flex: 1; min-width: 0; }
+  .jr-l1 { display: flex; align-items: center; gap: 8px; }
+  .jr-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 500; letter-spacing: -0.2px; }
+  .jr-name.unread { font-weight: 700; }
+  .jr-age { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .jr-new { width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); }
+  .jr-l2 { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 13px; color: var(--muted); min-width: 0; }
+  .jr-l2 .jr-trunc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .jr-l2 .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--faint); flex: none; }
+  .jr-wait-t { color: var(--amber); font-weight: 600; }
+  .jr-work-t { color: var(--mint); }
+  .jr-off-t { color: var(--faint); }
+  .jr-node { width: 10px; height: 10px; margin-top: 6px; border-radius: 50%; flex: none; border: 2px solid var(--faint); }
+  .jr-node.work { border: 0; background: var(--mint); box-shadow: 0 0 0 3px rgba(61, 239, 145, .18); animation: jr-pulse 1.8s ease-in-out infinite; }
+  .jr-node.wait { border: 0; background: var(--amber); }
+  .jr-node.off { border-style: dashed; }
+  .jr-pin { color: var(--muted); margin-top: 3px; }
+
+  /* Pinned: one quiet line each. */
+  .jr-pins .jr-item { min-height: 48px; align-items: center; padding-top: 8px; padding-bottom: 8px; }
+
+  /* Machines: each one is a rail its projects hang off. */
+  .jr-machine { margin-top: 10px; }
+  .jr-mhead { width: 100%; display: flex; align-items: center; gap: 10px; padding: 14px 16px 6px 13px; text-align: left; min-height: 48px; }
+  .jr-chip { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; background: var(--panel-2); border: 1px solid var(--line); }
+  .jr-mname { font-size: 15px; font-weight: 650; letter-spacing: -0.2px; }
+  .jr-mstate { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .jr-mstate i { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); }
+  .jr-machine.asleep .jr-mstate i { background: var(--amber); }
+  .jr-machine.offline .jr-mstate i { background: transparent; border: 1.5px solid var(--faint); }
+  .jr-down { margin: 2px 16px 6px 46px; padding: 10px 12px; border-radius: 12px; background: rgba(247, 183, 79, .08); border: 1px solid rgba(247, 183, 79, .28); display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .jr-down p { margin: 0; flex: 1; color: var(--text); }
+  .jr-down button { font-weight: 600; color: var(--amber); padding: 8px 10px; min-height: 36px; border-radius: 9px; background: rgba(247, 183, 79, .12); }
+
+  .jr-projects { --rail: rgba(61, 239, 145, .55); }
+  .jr-machine.asleep .jr-projects { --rail: rgba(247, 183, 79, .6); }
+  .jr-machine.offline .jr-projects { --rail: repeating-linear-gradient(var(--faint) 0 4px, transparent 4px 8px); }
+  .jr-proj { position: relative; padding-left: 36px; }
+  .jr-proj::before { content: ""; position: absolute; left: 23px; top: 0; bottom: 0; width: 2px; background: var(--rail); }
+  .jr-proj:last-child::before { bottom: auto; height: 26px; }
+  .jr-proj::after { content: ""; position: absolute; left: 23px; top: 25px; width: 9px; height: 2px; background: var(--rail); }
+  .jr-machine.offline .jr-proj::after { background: var(--faint); }
+  .jr-machine.offline .jr-proj { opacity: .55; }
+
+  .jr-prow { display: flex; align-items: center; padding-right: 8px; }
+  .jr-ptop { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 6px; min-height: 52px; border-radius: 12px; text-align: left; }
+  .jr-chev { color: var(--muted); transition: transform .18s ease; }
+  .jr-proj.open .jr-chev { transform: rotate(90deg); }
+  .jr-pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
+  .jr-pmeta { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .jr-count { min-width: 22px; height: 22px; padding: 0 7px; border-radius: 11px; background: var(--panel-2); display: inline-grid; place-items: center; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .jr-pdot { width: 8px; height: 8px; border-radius: 50%; }
+  .jr-pdot.work { background: var(--mint); animation: jr-pulse 1.8s ease-in-out infinite; }
+  .jr-pdot.wait { background: var(--amber); }
+  .jr-more { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; color: var(--muted); }
+
+  .jr-proj.open { padding-bottom: 8px; }
+  .jr-threads { margin: 0 12px 0 14px; border-left: 1px solid var(--line); }
+  .jr-tline { width: 100%; display: flex; gap: 10px; align-items: flex-start; text-align: left; padding: 9px 8px 9px 14px; min-height: 44px; border-radius: 0 12px 12px 0; }
+  .jr-tline .jr-node { margin-top: 6px; width: 8px; height: 8px; }
+  .jr-tline .jr-name { font-size: 15px; }
+  .jr-tline .jr-l2 { margin-top: 1px; }
+  .jr-draft .jr-name { color: var(--muted); font-style: italic; }
+  .jr-none { padding: 10px 14px; color: var(--faint); font-size: 14px; }
+  .jr-add { display: flex; align-items: center; gap: 8px; padding: 10px 14px; min-height: 44px; color: var(--mint); font-size: 15px; font-weight: 500; }
+
+  .jr-foot { text-align: center; color: var(--faint); font-size: 13px; margin: 22px 0 6px; }
+
+  /* Welcome (not paired yet). */
+  .jr-welcome { padding: 70px 32px 0; text-align: center; }
+  .jr-welcome strong { display: block; font-size: 22px; letter-spacing: -0.4px; margin: 22px 0 8px; }
+  .jr-welcome p { color: var(--muted); margin: 0 0 24px; }
+  .jr-primary { width: 100%; min-height: 50px; border-radius: 14px; background: linear-gradient(135deg, var(--mint), var(--cyan)); color: var(--ink); font-weight: 700; font-size: 16px; }
+
+  /* Tabs, matching the app. */
+  .jr-tabs { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); padding: 8px 6px 30px; border-top: 1px solid var(--line); background: rgba(9, 13, 18, .94); position: relative; }
+  .jr-tabs button { display: grid; justify-items: center; gap: 3px; font-size: 11px; color: var(--muted); padding: 4px 0; min-height: 48px; }
+  .jr-tabs button.on { color: var(--mint); }
+  .jr-tabs button.on svg { color: var(--cyan); }
+  .jr-home { position: absolute; left: 50%; bottom: 8px; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: #e4eaf0; }
+
+  /* Sheets */
+  .jr-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, .5); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 5; }
+  .jr-scrim.on { opacity: 1; pointer-events: auto; }
+  .jr-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--panel); border-top: 1px solid var(--line); border-radius: 22px 22px 0 0; padding: 8px 16px 34px; transform: translateY(105%); transition: transform .24s cubic-bezier(.2, .8, .2, 1); max-height: 78%; display: flex; flex-direction: column; }
+  .jr-sheet.on { transform: none; }
+  .jr-grab { width: 38px; height: 5px; border-radius: 3px; background: var(--line); margin: 0 auto 8px; }
+  .jr-shead { display: flex; align-items: center; gap: 8px; }
+  .jr-shead h3 { flex: 1; margin: 0; font-size: 19px; letter-spacing: -0.3px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .jr-sbody { overflow-y: auto; margin-top: 8px; }
+  .jr-scard { background: var(--panel-2); border-radius: 14px; padding: 12px 14px; margin-bottom: 8px; font-size: 14px; }
+  .jr-scard p { margin: 0; }
+  .jr-path { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); margin: 4px 0 !important; overflow-wrap: anywhere; }
+  .jr-meta { color: var(--muted); font-size: 13px; }
+  .jr-mrow { width: 100%; display: flex; align-items: center; justify-content: space-between; text-align: left; min-height: 50px; padding: 0 14px; border-radius: 12px; font-size: 16px; }
+  .jr-mrow + .jr-mrow { border-top: 1px solid var(--line); border-radius: 0; }
+  .jr-mrow small { color: var(--muted); font-size: 13px; }
+  .jr-mrow.danger { color: var(--red); }
+  .jr-search { width: 100%; height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); padding: 0 14px; font: 16px -apple-system, system-ui, sans-serif; margin-bottom: 4px; }
+  .jr-search::placeholder { color: var(--faint); }
+  .jr-pick-h { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); padding: 14px 4px 6px; }
+  .jr-pick { width: 100%; text-align: left; display: block; padding: 10px 14px; border-radius: 12px; min-height: 52px; }
+  .jr-pick:active { background: var(--panel-2); }
+  .jr-pick strong { display: block; font-size: 16px; font-weight: 600; }
+  .jr-pick[disabled] { opacity: .45; cursor: default; }
+
+  .jr-toast { position: absolute; left: 16px; right: 16px; bottom: 100px; z-index: 7; background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; font-size: 14px; opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; pointer-events: none; }
+  .jr-toast.on { opacity: 1; transform: none; }
+
+  @keyframes jr-pulse { 50% { opacity: .45; } }
+  @media (prefers-reduced-motion: reduce) {
+    .jr-node.work, .jr-pdot.work { animation: none; }
+    .jr-sheet, .jr-scrim, .jr-chev, .jr-toast { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="mk-page">
+  <div class="jr-phone" id="phone">
+    <div class="jr-status"><span>9:41</span><span>
+      <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="16" height="12" viewBox="0 0 16 12" fill="currentColor"><path d="M8 2.2c2.4 0 4.6.9 6.2 2.5l1.2-1.3A10.4 10.4 0 0 0 8 .4C5.2.4 2.6 1.5.6 3.4l1.2 1.3A8.7 8.7 0 0 1 8 2.2Zm0 3.5c1.4 0 2.8.5 3.8 1.5L13 5.9A7.2 7.2 0 0 0 8 3.9c-1.9 0-3.7.7-5 2l1.2 1.3c1-1 2.4-1.5 3.8-1.5Zm0 3.4c.5 0 1 .2 1.4.6L8 11.6 6.6 9.7c.4-.4.9-.6 1.4-.6Z"/></svg>
+      <svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.5" fill="none" stroke="currentColor" opacity=".45"/><rect x="2" y="2" width="20" height="9" rx="2" fill="currentColor"/><rect x="24.5" y="4.5" width="2" height="4" rx="1" fill="currentColor" opacity=".45"/></svg>
+    </span></div>
+
+    <header class="jr-head">
+      <h1 class="jr-title">
+        <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3def91"/><stop offset="1" stop-color="#1ed7ee"/></linearGradient></defs><rect x="5.5" y="5.5" width="17" height="17" rx="3" transform="rotate(45 14 14)" fill="none" stroke="url(#g)" stroke-width="2"/><path d="M10.5 11.5l3 2.5-3 2.5M15 17h3" fill="none" stroke="url(#g)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Threads
+      </h1>
+      <button class="jr-icon" id="newBtn" aria-label="New thread"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button class="jr-icon" aria-label="Settings and Machines" data-toast="Opens Settings and Machines."><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
+    </header>
+
+    <main class="jr-scroll" id="list"></main>
+
+    <nav class="jr-tabs" aria-label="Sections">
+      <button data-toast="Opens Agents."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg>Agents</button>
+      <button data-toast="Opens Code."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg>Code</button>
+      <button class="on" aria-current="page"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg>Threads</button>
+      <button data-toast="Opens Library."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Library</button>
+      <i class="jr-home"></i>
+    </nav>
+
+    <div class="jr-scrim" id="scrim"></div>
+    <section class="jr-sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="jr-grab"></div>
+      <div class="jr-shead"><h3 id="sheetTitle"></h3><button class="jr-icon" id="sheetClose" aria-label="Close"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="jr-sbody" id="sheetBody"></div>
+    </section>
+    <div class="jr-toast" id="toast" role="status"></div>
+  </div>
+
+  <aside class="mk-side">
+    <h1>Machine Rail</h1>
+    <p>Jigga's take. Same data and menus the list has today, arranged by where the work runs. Tap a project to fold it, hold a row for its menu, try + for New thread.</p>
+    <ul>
+      <li><strong>Recent goes first</strong> and sorts by what needs you: waiting, then working, then newest. Four rows, same as today.</li>
+      <li><strong>Machines replace the Projects header.</strong> The machine name is said once, not on every project, and its projects hang off a rail coloured by its link: mint online, amber asleep, dashed grey offline.</li>
+      <li><strong>An offline machine</strong> says so once, in its own group, with Retry. Mac threads stay normal, just like the app's pause rules.</li>
+      <li><strong>Closed projects</strong> show a count, the latest age, and a dot if a bot is working or waiting inside. Open projects get ⋯ and a New thread line at the end.</li>
+      <li>Hold any thread or project for its menu (real items only).</li>
+    </ul>
+    <div class="mk-states" role="group" aria-label="State">
+      <button data-state="busy" aria-pressed="true">Busy: bots working, one waiting</button>
+      <button data-state="quiet" aria-pressed="false">Quiet: nothing running</button>
+      <button data-state="offline" aria-pressed="false">Server offline</button>
+      <button data-state="asleep" aria-pressed="false">Mac asleep</button>
+      <button data-state="unpaired" aria-pressed="false">Not paired yet</button>
+    </div>
+  </aside>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+if (params.has("shot")) document.body.classList.add("shot");
+
+const ICON = {
+  mac: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 20h20"/></svg>',
+  server: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c58cff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+  chev: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  more: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
+  plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  pin: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5M9 3h6l-1 6 3 4H7l3-4-1-6Z"/></svg>',
+};
+
+const machines = [
+  { id: "mac", name: "MacBook Pro", kind: "mac" },
+  { id: "srv", name: "Apex-Terminal", kind: "server" },
+];
+const projects = [
+  { id: "deck", name: "apex-deck", host: "mac", path: "~/Downloads/apex-deck", open: true },
+  { id: "clef", name: "clef-feed", host: "mac", path: "~/Downloads/apex-deck/apex-deck-clef-feed", open: false },
+  { id: "ios", name: "ios", host: "mac", path: "~/Code/ios", open: false },
+  { id: "dl", name: "Downloads", host: "mac", path: "~/Downloads", open: false },
+  { id: "term", name: "apex_terminal", host: "srv", path: "/srv/apex_terminal", open: true },
+  { id: "relay", name: "relay", host: "srv", path: "/srv/relay", open: false },
+];
+// mins = minutes since last activity; who = bots working; wait = waiting on you.
+const THREADS = [
+  { id: "t1", p: "deck", title: "Phone threads revamp", mins: 2, who: ["Jigga"], pinned: true },
+  { id: "t2", p: "deck", title: "Bots sheet polish", mins: 12, wait: true, unread: true },
+  { id: "t3", p: "deck", title: "Fix phone thread sync", mins: 64 },
+  { id: "t4", p: "deck", title: "Chat-load notice", mins: 190 },
+  { id: "t5", p: "deck", title: "Pairing flow", mins: 1500 },
+  { id: "t6", p: "clef", title: "Observer feed review", mins: 34, who: ["Null", "Gronk"], unread: true },
+  { id: "t7", p: "ios", title: "TestFlight build", mins: 1600, pinned: true },
+  { id: "t8", p: "ios", title: "Keyboard fix", mins: 3000 },
+  { id: "t9", p: "term", title: "Relay rate limit", mins: 8, who: ["Gronk"] },
+  { id: "t10", p: "term", title: "Daemon update", mins: 300 },
+  { id: "t11", p: "relay", title: "Hetzner deploy", mins: 600 },
+];
+const DRAFT = { p: "deck", text: "Release notes for 0.5.2" };
+
+let state = params.get("state") || "busy";
+let threads = [];
+const status = {};
+
+function setState(next) {
+  state = next;
+  threads = THREADS.map((t) => ({ ...t, who: next === "quiet" ? [] : [...(t.who || [])], wait: next === "quiet" ? false : !!t.wait }));
+  status.mac = next === "asleep" ? "asleep" : "online";
+  status.srv = next === "offline" ? "offline" : "online";
+  document.querySelectorAll("[data-state]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.state === next)));
+  render();
+}
+
+const age = (m) => m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
+const proj = (id) => projects.find((p) => p.id === id);
+const mach = (id) => machines.find((m) => m.id === id);
+const down = (t) => status[proj(t.p).host] !== "online";
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+const lower = (s) => s[0].toLowerCase() + s.slice(1);
+function pauseLine(m) {
+  return m.kind === "mac" ? `Paused until ${m.name} wakes` : `Paused while ${m.name} reconnects`;
+}
+function stateOf(t) {
+  if (down(t)) return { cls: "off", text: "Offline", tcls: "jr-off-t" };
+  if (t.wait) return { cls: "wait", text: "Waiting on you", tcls: "jr-wait-t" };
+  if (t.who.length === 1) return { cls: "work", text: `${t.who[0]} is working…`, tcls: "jr-work-t" };
+  if (t.who.length > 1) return { cls: "work", text: `${t.who.length} bots working…`, tcls: "jr-work-t" };
+  return { cls: "", text: "", tcls: "" };
+}
+const rank = (t) => down(t) ? 3 : t.wait ? 0 : t.who.length ? 1 : 2;
+
+function where(t) {
+  const p = proj(t.p), m = mach(p.host);
+  return `${ICON[m.kind]}<span class="jr-trunc">${esc(p.name)}</span>`;
+}
+
+function recentItem(t) {
+  const s = stateOf(t);
+  return `<button class="jr-item${s.cls === "wait" ? " wait" : ""}" data-thread="${t.id}">
+    <i class="jr-node ${s.cls}"></i>
+    <span class="jr-body">
+      <span class="jr-l1"><span class="jr-name${t.unread ? " unread" : ""}">${esc(t.title)}</span>${t.unread ? '<i class="jr-new" aria-label="Unread"></i>' : ""}<span class="jr-age">${age(t.mins)}</span></span>
+      <span class="jr-l2">${s.text ? `<span class="${s.tcls}">${s.text}</span><i class="sep"></i>` : ""}${where(t)}</span>
+    </span>
+  </button>`;
+}
+
+function pinItem(t) {
+  return `<button class="jr-item" data-thread="${t.id}">
+    <span class="jr-pin">${ICON.pin}</span>
+    <span class="jr-body"><span class="jr-l1"><span class="jr-name${t.unread ? " unread" : ""}">${esc(t.title)}</span><span class="jr-l2" style="margin:0">${where(t)}</span><span class="jr-age">${age(t.mins)}</span></span></span>
+  </button>`;
+}
+
+function threadLine(t) {
+  const s = stateOf(t);
+  return `<button class="jr-tline" data-thread="${t.id}">
+    <i class="jr-node ${s.cls}"></i>
+    <span class="jr-body">
+      <span class="jr-l1"><span class="jr-name${t.unread ? " unread" : ""}">${esc(t.title)}</span>${t.unread ? '<i class="jr-new" aria-label="Unread"></i>' : ""}<span class="jr-age">${age(t.mins)}</span></span>
+      ${s.text && s.cls !== "off" ? `<span class="jr-l2"><span class="${s.tcls}">${s.text}</span></span>` : ""}
+    </span>
+  </button>`;
+}
+
+function projectBlock(p) {
+  const list = threads.filter((t) => t.p === p.id).sort((a, b) => a.mins - b.mins);
+  const off = status[p.host] !== "online";
+  const working = !off && list.some((t) => t.who.length);
+  const waiting = !off && list.some((t) => t.wait);
+  const showDraft = DRAFT.p === p.id;
+  const latest = list[0];
+  const meta = p.open
+    ? `<button class="jr-more" data-project-menu="${p.id}" aria-label="Project actions ${esc(p.name)}">${ICON.more}</button>`
+    : `<span class="jr-pmeta">${waiting ? '<i class="jr-pdot wait" title="Waiting on you"></i>' : working ? '<i class="jr-pdot work" title="Working"></i>' : ""}${latest ? `<span>${age(latest.mins)}</span>` : ""}<span class="jr-count" aria-label="${list.length} threads">${list.length}</span></span>`;
+  return `<div class="jr-proj${p.open ? " open" : ""}">
+    <div class="jr-prow">
+      <button class="jr-ptop" data-project="${p.id}" aria-expanded="${p.open}">
+        <span class="jr-chev">${ICON.chev}</span><span class="jr-pname">${esc(p.name)}</span>${p.open ? "" : meta}
+      </button>${p.open ? meta : ""}
+    </div>
+    ${p.open ? `<div class="jr-threads">
+      ${showDraft ? `<button class="jr-tline jr-draft" data-toast="Opens the draft."><i class="jr-node"></i><span class="jr-body"><span class="jr-l1"><span class="jr-name">${esc(DRAFT.text)}</span><span class="jr-age">Draft</span></span></span></button>` : ""}
+      ${list.map(threadLine).join("")}
+      ${!list.length && !showDraft ? '<p class="jr-none">No threads yet</p>' : ""}
+      ${off ? "" : `<button class="jr-add" data-new="${p.id}">${ICON.plus}New thread</button>`}
+    </div>` : ""}
+  </div>`;
+}
+
+function machineBlock(m) {
+  const st = status[m.id];
+  const word = st === "online" ? "Online" : st === "asleep" ? "Asleep" : "Offline";
+  const ps = projects.filter((p) => p.host === m.id);
+  return `<section class="jr-machine ${st}">
+    <button class="jr-mhead" data-toast="Opens ${esc(m.name)} in Machines.">
+      <span class="jr-chip">${ICON[m.kind]}</span><span class="jr-mname">${esc(m.name)}</span>
+      <span class="jr-mstate"><i></i>${word}</span>
+    </button>
+    ${st === "online" ? "" : `<div class="jr-down"><p>${pauseLine(m)}. Its threads wait here; nothing is queued.</p><button data-toast="Retrying ${esc(m.name)}…">Retry</button></div>`}
+    <div class="jr-projects">${ps.map(projectBlock).join("")}</div>
+  </section>`;
+}
+
+function render() {
+  const list = document.getElementById("list");
+  document.getElementById("newBtn").hidden = state === "unpaired";
+  if (state === "unpaired") {
+    list.innerHTML = `<div class="jr-welcome">
+      <svg width="96" height="96" viewBox="0 0 28 28" aria-hidden="true"><rect x="5.5" y="5.5" width="17" height="17" rx="3" transform="rotate(45 14 14)" fill="none" stroke="url(#g)" stroke-width="1.4"/><path d="M10.5 11.5l3 2.5-3 2.5M15 17h3" fill="none" stroke="url(#g)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <strong>Pair this phone with your Mac</strong>
+      <p>Then pair each server on its own, so a sleeping Mac doesn't cut them off.</p>
+      <button class="jr-primary" data-toast="Opens Machines.">Open Machines</button>
+    </div>`;
+    return;
+  }
+  const recent = [...threads].sort((a, b) => rank(a) - rank(b) || a.mins - b.mins).slice(0, 4);
+  const waitingCount = threads.filter((t) => t.wait && !down(t)).length;
+  const workingCount = threads.filter((t) => t.who.length && !down(t)).length;
+  const summary = [waitingCount ? `${waitingCount} waiting` : "", workingCount ? `${workingCount} working` : ""].filter(Boolean).join(", ");
+  const pins = threads.filter((t) => t.pinned);
+  list.innerHTML = `
+    <div class="jr-h"><h2>Recent</h2><small>${summary || "All quiet"}</small></div>
+    <div class="jr-card">${recent.map(recentItem).join("")}</div>
+    ${pins.length ? `<div class="jr-h"><h2>Pinned</h2></div><div class="jr-card jr-pins">${pins.map(pinItem).join("")}</div>` : ""}
+    ${machines.map(machineBlock).join("")}
+    <p class="jr-foot">Hold a thread or project for its menu.</p>`;
+  const scroll = Number(params.get("scroll") || 0);
+  if (scroll) list.scrollTop = scroll;
+}
+
+// Sheets
+const sheet = document.getElementById("sheet"), scrim = document.getElementById("scrim");
+function openSheet(title, html) {
+  document.getElementById("sheetTitle").textContent = title;
+  document.getElementById("sheetBody").innerHTML = html;
+  sheet.classList.add("on"); scrim.classList.add("on");
+}
+function closeSheet() { sheet.classList.remove("on"); scrim.classList.remove("on"); }
+scrim.onclick = closeSheet;
+document.getElementById("sheetClose").onclick = closeSheet;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+
+function threadMenu(t) {
+  const p = proj(t.p), m = mach(p.host), st = status[m.id];
+  openSheet(t.title, `<div class="jr-scard"><p><strong>${esc(p.name)}</strong> on ${esc(m.name)}</p><p class="jr-path">${esc(p.path)}</p><p class="jr-meta">${st !== "online" ? pauseLine(m) + ". " : ""}Active ${age(t.mins)} ago</p></div>
+    <button class="jr-mrow" data-act="${t.pinned ? "Unpinned" : "Pinned"}">${t.pinned ? "Unpin" : "Pin"}</button>
+    <button class="jr-mrow" data-act="Rename">Rename…</button>
+    ${t.unread ? "" : '<button class="jr-mrow" data-act="Marked as unread">Mark as unread</button>'}
+    <button class="jr-mrow" data-act="Copied folder path">Copy folder path</button>
+    <button class="jr-mrow danger" data-act="Archived">Archive</button>`);
+}
+function projectMenu(p) {
+  const m = mach(p.host), st = status[m.id];
+  const count = threads.filter((t) => t.p === p.id).length;
+  openSheet(p.name, `<div class="jr-scard"><p><strong>${esc(m.name)}</strong>, ${st === "online" ? "connected" : lower(pauseLine(m))}</p><p class="jr-path">${esc(p.path)}</p><p class="jr-meta">${count} ${count === 1 ? "thread" : "threads"}</p></div>
+    ${st === "online" ? `<button class="jr-mrow" data-new="${p.id}">New thread here</button>` : ""}
+    <button class="jr-mrow" data-act="Pinned project">Pin project</button>
+    <button class="jr-mrow" data-act="Copied folder path">Copy folder path<small>${esc(p.path)}</small></button>`);
+}
+function newSheet() {
+  openSheet("New thread", `<input class="jr-search" placeholder="Find a project" aria-label="Find a project" id="find">
+    <div id="picks">${machines.map((m) => {
+      const off = status[m.id] !== "online";
+      return `<div class="jr-pick-h"><span class="jr-chip">${ICON[m.kind]}</span>${esc(m.name)}${off ? `, ${lower(pauseLine(m))}` : ""}</div>
+        ${projects.filter((p) => p.host === m.id).map((p) => `<button class="jr-pick" data-new="${p.id}" data-name="${esc(p.name)}" ${off ? "disabled" : ""}><strong>${esc(p.name)}</strong><span class="jr-path">${esc(p.path)}</span></button>`).join("")}`;
+    }).join("")}</div>`);
+  document.getElementById("find").oninput = (e) => {
+    const q = e.target.value.toLowerCase();
+    document.querySelectorAll(".jr-pick").forEach((b) => { b.hidden = !b.dataset.name.toLowerCase().includes(q); });
+  };
+}
+document.getElementById("newBtn").onclick = newSheet;
+
+let toastTimer;
+function toast(text) {
+  const el = document.getElementById("toast");
+  el.textContent = text; el.classList.add("on");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("on"), 1600);
+}
+
+// Tap opens or folds; hold (450ms) opens the menu, as on iOS.
+let holdTimer = null, held = false;
+const phone = document.getElementById("phone");
+phone.addEventListener("pointerdown", (e) => {
+  const hit = e.target.closest("[data-thread],[data-project]");
+  held = false;
+  if (!hit) return;
+  holdTimer = setTimeout(() => {
+    held = true;
+    if (hit.dataset.thread) threadMenu(threads.find((t) => t.id === hit.dataset.thread));
+    else projectMenu(proj(hit.dataset.project));
+  }, 450);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach((ev) => phone.addEventListener(ev, () => clearTimeout(holdTimer)));
+phone.addEventListener("contextmenu", (e) => { if (e.target.closest("[data-thread],[data-project]")) e.preventDefault(); });
+phone.addEventListener("click", (e) => {
+  if (held) { held = false; return; }
+  const el = e.target.closest("button, [data-toast]");
+  if (!el) return;
+  if (el.dataset.thread) { toast(`Opens “${threads.find((t) => t.id === el.dataset.thread).title}”.`); return; }
+  if (el.dataset.project) { const p = proj(el.dataset.project); p.open = !p.open; render(); return; }
+  if (el.dataset.projectMenu) { projectMenu(proj(el.dataset.projectMenu)); return; }
+  if (el.dataset.new) { closeSheet(); toast(`New thread in ${proj(el.dataset.new).name} on ${mach(proj(el.dataset.new).host).name}.`); return; }
+  if (el.dataset.act) { closeSheet(); toast(`${el.dataset.act}.`); return; }
+  if (el.dataset.toast) toast(el.dataset.toast);
+});
+document.querySelectorAll("[data-state]").forEach((b) => b.onclick = () => setState(b.dataset.state));
+
+setState(state);
+// Screenshots can open a menu straight away: ?sheet=thread|project|new
+({ thread: () => threadMenu(threads[1]), project: () => projectMenu(projects[0]), new: newSheet })[params.get("sheet")]?.();
+</script>
+</body>
+</html>

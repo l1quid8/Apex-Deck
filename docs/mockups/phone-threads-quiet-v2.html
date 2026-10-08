@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phone Threads: Quiet List (v2)</title>
+<style>
+  /* Apex Deck's own colours (src/styles.css + src/phone/phone.css). Colour is spent on state only. */
+  :root {
+    --bg: #090d12; --raise: #111921; --press: #16202a; --hair: #1c2631;
+    --text: #e4eaf0; --muted: #8e9cab; --faint: #58656f;
+    --mint: #3def91; --cyan: #1ed7ee; --amber: #f7b74f; --red: #ff6b6b; --violet: #c58cff;
+    --ink: #04130e;
+    --edge: 24px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #05080c; color: var(--text); }
+  body { font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; border-radius: 10px; }
+  svg { flex: none; display: block; }
+  [hidden] { display: none !important; }
+
+  /* Review page around the phone (hidden in shot mode). */
+  .mk-page { display: flex; flex-wrap: wrap; gap: 32px; justify-content: center; align-items: flex-start; padding: 28px 20px 48px; }
+  .mk-side { width: 300px; color: var(--muted); font-size: 14px; }
+  .mk-side h1 { color: var(--text); font-size: 22px; letter-spacing: -0.4px; margin: 0 0 4px; }
+  .mk-side p { margin: 0 0 14px; }
+  .mk-side ul { margin: 0 0 18px; padding-left: 18px; }
+  .mk-side li { margin-bottom: 8px; }
+  .mk-side strong { color: var(--text); font-weight: 600; }
+  .mk-states { display: grid; gap: 6px; margin: 6px 0 20px; }
+  .mk-states button { text-align: left; padding: 9px 12px; border: 1px solid var(--hair); border-radius: 10px; color: var(--muted); }
+  .mk-states button[aria-pressed="true"] { border-color: var(--mint); color: var(--text); }
+  body.shot .mk-side { display: none; }
+  body.shot .mk-page { padding: 0; justify-content: flex-start; }
+
+  /* Phone */
+  .qv-phone { width: 393px; height: 852px; background: var(--bg); border-radius: 46px; position: relative; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 0 0 10px #161c23, 0 0 0 11px #2a333d; }
+  body.shot .qv-phone { border-radius: 0; box-shadow: none; }
+  .qv-status { flex: none; height: 50px; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 30px 8px 40px; font-weight: 600; font-size: 16px; letter-spacing: -0.2px; }
+  .qv-status span { display: flex; gap: 6px; align-items: center; }
+  .qv-head { flex: none; display: flex; align-items: center; padding: 4px 8px 4px var(--edge); }
+  .qv-title { flex: 1; display: flex; align-items: center; gap: 9px; font-size: 32px; font-weight: 700; letter-spacing: -0.9px; margin: 0; }
+  .qv-icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; color: var(--text); }
+  .qv-icon:active { background: var(--press); }
+
+  .qv-scroll { flex: 1; overflow-y: auto; padding: 0 0 20px; scrollbar-width: none; }
+  .qv-scroll::-webkit-scrollbar { display: none; }
+
+  /* Section labels: quiet, sentence case, on the same left edge as every title. */
+  .qv-label { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 20px 8px 4px var(--edge); font-size: 14px; font-weight: 600; color: var(--muted); }
+  .qv-label .qv-grow { flex: 1; }
+  .qv-warn { color: var(--amber); font-weight: 500; }
+  .qv-retry { color: var(--mint); font-weight: 600; padding: 12px 14px; margin: -12px 0; border-radius: 10px; }
+  .qv-retry:active { background: var(--press); }
+
+  /* Thread rows: no box, no border. The one dot hangs in the margin so titles share one edge. */
+  .qv-t { position: relative; display: block; width: 100%; text-align: left; padding: 8px 18px 8px var(--edge); }
+  .qv-t:active, .qv-p:active { background: var(--press); }
+  .qv-dot { position: absolute; left: 10px; top: 16px; width: 8px; height: 8px; border-radius: 50%; }
+  .qv-dot.wait { background: var(--amber); }
+  .qv-dot.work { background: var(--mint); animation: qv-pulse 1.8s ease-in-out infinite; }
+  .qv-dot.unread { background: var(--cyan); }
+  .qv-l1 { display: flex; align-items: baseline; gap: 12px; }
+  .qv-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; letter-spacing: -0.35px; }
+  .qv-name.unread { font-weight: 600; }
+  .qv-age { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .qv-l2 { display: flex; align-items: center; gap: 5px; margin-top: 1px; font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .qv-l2 span { overflow: hidden; text-overflow: ellipsis; }
+  .qv-l2 b { font-weight: 500; }
+  .qv-wait-t { color: var(--amber); }
+  .qv-work-t { color: var(--mint); }
+  .qv-paused { color: var(--faint); }
+  .qv-srv { color: var(--violet); }
+
+  /* Projects: a name, a count, a chevron. Hierarchy comes from indent, not lines. */
+  .qv-p { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 46px; padding: 0 14px 0 var(--edge); text-align: left; }
+  .qv-pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 500; letter-spacing: -0.35px; }
+  .qv-pin { color: var(--faint); margin-left: 6px; display: inline-block; vertical-align: -1px; }
+  .qv-count { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .qv-chev { color: var(--faint); transition: transform .18s ease; }
+  .qv-proj.open .qv-chev { transform: rotate(90deg); }
+  .qv-prow { position: relative; }
+  /* + sits where the count was, so the chevron never moves. */
+  .qv-add { position: absolute; right: 34px; top: 1px; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; color: var(--mint); }
+  .qv-add:active { background: var(--press); }
+  .qv-proj.open .qv-pname { margin-right: 44px; }
+  .qv-in { padding-bottom: 6px; }
+  .qv-in .qv-t { padding-left: calc(var(--edge) + 18px); padding-top: 7px; padding-bottom: 7px; }
+  .qv-in .qv-dot { left: 28px; top: 15px; }
+  .qv-in .qv-name { font-size: 16px; }
+  .qv-draft .qv-name { color: var(--muted); font-style: italic; }
+  .qv-none { margin: 2px 0 8px calc(var(--edge) + 18px); color: var(--faint); font-size: 14px; }
+  .qv-machine.down .qv-proj { opacity: .5; }
+
+  /* Empty and not-paired states. */
+  .qv-empty { padding: 90px 36px 0; text-align: center; }
+  .qv-empty strong { display: block; font-size: 21px; letter-spacing: -0.4px; margin: 20px 0 6px; }
+  .qv-empty p { color: var(--muted); margin: 0 0 24px; }
+  .qv-primary { width: 100%; min-height: 50px; border-radius: 14px; background: linear-gradient(135deg, var(--mint), var(--cyan)); color: var(--ink); font-weight: 700; font-size: 16px; }
+
+  /* Tabs, matching the app. */
+  .qv-tabs { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); padding: 8px 6px 30px; background: #0c1218; position: relative; }
+  .qv-tabs button { display: grid; justify-items: center; gap: 3px; font-size: 11px; color: var(--muted); padding: 4px 0; min-height: 48px; }
+  .qv-tabs button.on { color: var(--mint); }
+  .qv-tabs button.on svg { color: var(--cyan); }
+  .qv-home { position: absolute; left: 50%; bottom: 8px; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: #e4eaf0; }
+
+  /* Sheets */
+  .qv-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, .55); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 5; }
+  .qv-scrim.on { opacity: 1; pointer-events: auto; }
+  .qv-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--raise); border-radius: 22px 22px 0 0; padding: 8px 16px 34px; transform: translateY(105%); transition: transform .24s cubic-bezier(.2, .8, .2, 1); max-height: 80%; display: flex; flex-direction: column; }
+  .qv-sheet.on { transform: none; }
+  .qv-grab { width: 38px; height: 5px; border-radius: 3px; background: #2a3541; margin: 0 auto 8px; }
+  .qv-shead { display: flex; align-items: center; gap: 8px; }
+  .qv-shead h3 { flex: 1; margin: 0 0 0 4px; font-size: 19px; letter-spacing: -0.3px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qv-sbody { overflow-y: auto; margin-top: 2px; }
+  .qv-about { padding: 0 4px 14px; font-size: 14px; color: var(--muted); }
+  .qv-about p { margin: 0; }
+  .qv-about strong { color: var(--text); font-weight: 600; }
+  .qv-path { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--faint); margin: 3px 0 !important; overflow-wrap: anywhere; }
+  .qv-group { background: #18212b; border-radius: 14px; overflow: hidden; }
+  .qv-act { width: 100%; display: flex; align-items: center; justify-content: space-between; text-align: left; min-height: 50px; padding: 0 16px; font-size: 16px; position: relative; }
+  .qv-act + .qv-act::before { content: ""; position: absolute; left: 16px; right: 0; top: 0; height: 1px; background: #24303c; }
+  .qv-act:active { background: var(--press); }
+  .qv-act small { color: var(--muted); font-size: 13px; }
+  .qv-act.danger { color: var(--red); }
+  .qv-gap { height: 10px; }
+  .qv-find { width: 100%; height: 42px; border-radius: 12px; border: 0; background: #18212b; color: var(--text); padding: 0 14px; font: 16px -apple-system, system-ui, sans-serif; margin: 6px 0 2px; }
+  .qv-find::placeholder { color: var(--faint); }
+  .qv-pick-h { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--muted); padding: 16px 4px 4px; }
+  .qv-pick-h .qv-grow { flex: 1; }
+  .qv-pick { width: 100%; text-align: left; display: block; padding: 9px 4px; border-radius: 10px; min-height: 50px; }
+  .qv-pick:active { background: var(--press); }
+  .qv-pick strong { display: block; font-size: 16px; font-weight: 500; }
+  .qv-pick[disabled] { opacity: .4; cursor: default; }
+
+  .qv-toast { position: absolute; left: 16px; right: 16px; bottom: 100px; z-index: 7; background: #1b2530; border-radius: 14px; padding: 12px 14px; font-size: 14px; opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; pointer-events: none; }
+  .qv-toast.on { opacity: 1; transform: none; }
+
+  @keyframes qv-pulse { 50% { opacity: .5; } }
+  @media (prefers-reduced-motion: reduce) {
+    .qv-dot.work { animation: none; }
+    .qv-sheet, .qv-scrim, .qv-chev, .qv-toast { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="mk-page">
+  <div class="qv-phone" id="phone">
+    <div class="qv-status"><span>9:41</span><span>
+      <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="16" height="12" viewBox="0 0 16 12" fill="currentColor"><path d="M8 2.2c2.4 0 4.6.9 6.2 2.5l1.2-1.3A10.4 10.4 0 0 0 8 .4C5.2.4 2.6 1.5.6 3.4l1.2 1.3A8.7 8.7 0 0 1 8 2.2Zm0 3.5c1.4 0 2.8.5 3.8 1.5L13 5.9A7.2 7.2 0 0 0 8 3.9c-1.9 0-3.7.7-5 2l1.2 1.3c1-1 2.4-1.5 3.8-1.5Zm0 3.4c.5 0 1 .2 1.4.6L8 11.6 6.6 9.7c.4-.4.9-.6 1.4-.6Z"/></svg>
+      <svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.5" fill="none" stroke="currentColor" opacity=".45"/><rect x="2" y="2" width="20" height="9" rx="2" fill="currentColor"/><rect x="24.5" y="4.5" width="2" height="4" rx="1" fill="currentColor" opacity=".45"/></svg>
+    </span></div>
+
+    <header class="qv-head">
+      <h1 class="qv-title">
+        <svg width="26" height="26" viewBox="0 0 28 28" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3def91"/><stop offset="1" stop-color="#1ed7ee"/></linearGradient></defs><rect x="5.5" y="5.5" width="17" height="17" rx="3" transform="rotate(45 14 14)" fill="none" stroke="url(#g)" stroke-width="2"/><path d="M10.5 11.5l3 2.5-3 2.5M15 17h3" fill="none" stroke="url(#g)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Threads
+      </h1>
+      <button class="qv-icon" id="newBtn" aria-label="New thread"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button class="qv-icon" aria-label="Settings and Machines" data-toast="Opens Settings and Machines."><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
+    </header>
+
+    <main class="qv-scroll" id="list"></main>
+
+    <nav class="qv-tabs" aria-label="Sections">
+      <button data-toast="Opens Agents."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg>Agents</button>
+      <button data-toast="Opens Code."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg>Code</button>
+      <button class="on" aria-current="page"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg>Threads</button>
+      <button data-toast="Opens Library."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Library</button>
+      <i class="qv-home"></i>
+    </nav>
+
+    <div class="qv-scrim" id="scrim"></div>
+    <section class="qv-sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="qv-grab"></div>
+      <div class="qv-shead"><h3 id="sheetTitle"></h3><button class="qv-icon" id="sheetClose" aria-label="Close"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="qv-sbody" id="sheetBody"></div>
+    </section>
+    <div class="qv-toast" id="toast" role="status"></div>
+  </div>
+
+  <aside class="mk-side">
+    <h1>Quiet List</h1>
+    <p>Jigga's v2. Same data and menus as today, with the boxes taken out. Tap a project to fold it, hold any row for its menu, try + for New thread.</p>
+    <ul>
+      <li><strong>No cards, no borders.</strong> Rows are plain text on the page. Pressing one lights it up, so they still feel tappable without looking like big buttons.</li>
+      <li><strong>One dot, one meaning.</strong> A dot in the left margin: amber waiting on you, mint working, cyan unread. No dot means nothing to do.</li>
+      <li><strong>Every title starts on the same line.</strong> Labels, threads and projects share one left edge; the dots hang outside it.</li>
+      <li><strong>The second line is a sentence</strong>, such as "Gronk is working in relay". A purple globe marks a server project.</li>
+      <li><strong>Projects are a name, a count and a chevron.</strong> + appears only on an open project. Pinned projects sort first and show a small pin.</li>
+      <li><strong>A machine that drops</strong> says so on its own label, with Retry. Nothing else on the page changes colour.</li>
+      <li>Gone from v1: the coloured rails, count bubbles, the boxed offline card, the "hold for menu" hint and the per-project New thread line.</li>
+    </ul>
+    <div class="mk-states" role="group" aria-label="State">
+      <button data-state="busy" aria-pressed="true">Busy: bots working, one waiting</button>
+      <button data-state="quiet" aria-pressed="false">Quiet: nothing running</button>
+      <button data-state="offline" aria-pressed="false">Server offline</button>
+      <button data-state="asleep" aria-pressed="false">Mac asleep</button>
+      <button data-state="empty" aria-pressed="false">Paired, no threads yet</button>
+      <button data-state="unpaired" aria-pressed="false">Not paired yet</button>
+    </div>
+  </aside>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+if (params.has("shot")) document.body.classList.add("shot");
+
+const ICON = {
+  mac: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 20h20"/></svg>',
+  server: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c58cff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+  globe: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#c58cff" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+  chev: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  plus: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  pin: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5M9 3h6l-1 6 3 4H7l3-4-1-6Z"/></svg>',
+};
+
+const machines = [
+  { id: "mac", name: "MacBook Pro", kind: "mac" },
+  { id: "srv", name: "Apex-Terminal", kind: "server" },
+];
+const projects = [
+  { id: "deck", name: "apex-deck", host: "mac", path: "~/Downloads/apex-deck", open: false, pinned: true },
+  { id: "clef", name: "clef-feed", host: "mac", path: "~/Downloads/apex-deck/apex-deck-clef-feed", open: false },
+  { id: "ios", name: "ios", host: "mac", path: "~/Code/ios", open: false },
+  { id: "dl", name: "Downloads", host: "mac", path: "~/Downloads", open: false },
+  { id: "term", name: "apex_terminal", host: "srv", path: "/srv/apex_terminal", open: false },
+  { id: "relay", name: "relay", host: "srv", path: "/srv/relay", open: false },
+];
+// mins = minutes since last activity; who = bots working; wait = waiting on you.
+const THREADS = [
+  { id: "t1", p: "deck", title: "Phone threads revamp", mins: 2, who: ["Jigga"], pinned: true },
+  { id: "t2", p: "deck", title: "Bots sheet polish", mins: 12, wait: true, unread: true },
+  { id: "t3", p: "deck", title: "Fix phone thread sync", mins: 64 },
+  { id: "t4", p: "deck", title: "Chat-load notice", mins: 190 },
+  { id: "t5", p: "deck", title: "Pairing flow", mins: 1500 },
+  { id: "t6", p: "clef", title: "Observer feed review", mins: 34, who: ["Null", "Gronk"], unread: true },
+  { id: "t7", p: "ios", title: "TestFlight build", mins: 1600, pinned: true },
+  { id: "t8", p: "ios", title: "Keyboard fix", mins: 3000 },
+  { id: "t9", p: "relay", title: "Relay rate limit", mins: 8, who: ["Gronk"] },
+  { id: "t10", p: "term", title: "Daemon update", mins: 300, unread: true },
+  { id: "t11", p: "relay", title: "Hetzner deploy", mins: 600 },
+];
+const DRAFT = { p: "deck", text: "Release notes for 0.5.2" };
+
+let state = params.get("state") || "busy";
+let threads = [];
+const status = {};
+(params.get("open") || "").split(",").forEach((id) => { const p = projects.find((x) => x.id === id); if (p) p.open = true; });
+
+function setState(next) {
+  state = next;
+  const calm = next === "quiet";
+  threads = next === "empty" ? [] : THREADS.map((t) => ({ ...t, who: calm ? [] : [...(t.who || [])], wait: calm ? false : !!t.wait }));
+  status.mac = next === "asleep" ? "asleep" : "online";
+  status.srv = next === "offline" ? "offline" : "online";
+  document.querySelectorAll("[data-state]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.state === next)));
+  render();
+}
+
+const age = (m) => m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
+const proj = (id) => projects.find((p) => p.id === id);
+const mach = (id) => machines.find((m) => m.id === id);
+const down = (t) => status[proj(t.p).host] !== "online";
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const lower = (s) => s[0].toLowerCase() + s.slice(1);
+const pauseLine = (m) => m.kind === "mac" ? `Paused until ${m.name} wakes` : `Paused while ${m.name} reconnects`;
+
+// One dot per row, strongest state wins.
+function dotOf(t) {
+  if (down(t)) return "";
+  if (t.wait) return "wait";
+  if (t.who.length) return "work";
+  return t.unread ? "unread" : "";
+}
+function doing(t) {
+  if (down(t)) return { text: "Paused", cls: "qv-paused" };
+  if (t.wait) return { text: "Waiting on you", cls: "qv-wait-t" };
+  if (t.who.length === 1) return { text: `${t.who[0]} is working`, cls: "qv-work-t" };
+  if (t.who.length === 2) return { text: `${t.who[0]} and ${t.who[1]} are working`, cls: "qv-work-t" };
+  if (t.who.length > 2) return { text: `${t.who.length} bots are working`, cls: "qv-work-t" };
+  return null;
+}
+const rank = (t) => down(t) ? 3 : t.wait ? 0 : t.who.length ? 1 : 2;
+
+// Outside a project, the second line says what is happening and where.
+function whereLine(t) {
+  const p = proj(t.p), s = doing(t);
+  const place = `${mach(p.host).kind === "server" ? ICON.globe : ""}<span>${esc(p.name)}</span>`;
+  return s ? `<span class="${s.cls}">${s.text}</span><span>in</span>${place}` : place;
+}
+
+function threadRow(t, inside) {
+  const d = dotOf(t), s = doing(t);
+  const l2 = inside ? (s && !down(t) ? `<span class="${s.cls}">${s.text}</span>` : "") : whereLine(t);
+  return `<button class="qv-t" data-thread="${t.id}">
+    ${d ? `<i class="qv-dot ${d}" aria-label="${d === "wait" ? "Waiting on you" : d === "work" ? "Working" : "Unread"}"></i>` : ""}
+    <span class="qv-l1"><span class="qv-name${t.unread ? " unread" : ""}">${esc(t.title)}</span><span class="qv-age">${age(t.mins)}</span></span>
+    ${l2 ? `<span class="qv-l2">${l2}</span>` : ""}
+  </button>`;
+}
+
+function projectBlock(p) {
+  const list = threads.filter((t) => t.p === p.id).sort((a, b) => a.mins - b.mins);
+  const off = status[p.host] !== "online";
+  const d = off ? "" : list.some((t) => t.wait) ? "wait" : list.some((t) => t.who.length) ? "work" : list.some((t) => t.unread) ? "unread" : "";
+  const showDraft = DRAFT.p === p.id;
+  return `<div class="qv-proj${p.open ? " open" : ""}">
+    <div class="qv-prow">
+      <button class="qv-p" data-project="${p.id}" aria-expanded="${p.open}">
+        ${d && !p.open ? `<i class="qv-dot ${d}" style="top:19px"></i>` : ""}
+        <span class="qv-pname">${esc(p.name)}${p.pinned ? `<span class="qv-pin" aria-label="Pinned">${ICON.pin}</span>` : ""}</span>
+        ${p.open ? "" : `<span class="qv-count" aria-label="${list.length} threads">${list.length}</span>`}
+        <span class="qv-chev">${ICON.chev}</span>
+      </button>
+      ${p.open && !off ? `<button class="qv-add" data-new="${p.id}" aria-label="New thread in ${esc(p.name)}">${ICON.plus}</button>` : ""}
+    </div>
+    ${p.open ? `<div class="qv-in">
+      ${showDraft ? `<button class="qv-t qv-draft" data-toast="Opens the draft."><span class="qv-l1"><span class="qv-name">${esc(DRAFT.text)}</span><span class="qv-age">Draft</span></span></button>` : ""}
+      ${list.map((t) => threadRow(t, true)).join("")}
+      ${!list.length && !showDraft ? '<p class="qv-none">No threads yet</p>' : ""}
+    </div>` : ""}
+  </div>`;
+}
+
+function machineBlock(m) {
+  const st = status[m.id];
+  const ps = projects.filter((p) => p.host === m.id).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+  return `<section class="qv-machine${st === "online" ? "" : " down"}">
+    <div class="qv-label">${ICON[m.kind]}<span class="qv-grow">${esc(m.name)}</span>
+      ${st === "online" ? "" : `<span class="qv-warn">${st === "asleep" ? "Asleep" : "Offline"}</span><button class="qv-retry" data-toast="Retrying ${esc(m.name)}…">Retry</button>`}
+    </div>
+    ${ps.map(projectBlock).join("")}
+  </section>`;
+}
+
+function render() {
+  const list = document.getElementById("list");
+  document.getElementById("newBtn").hidden = state === "unpaired";
+  if (state === "unpaired") {
+    list.innerHTML = `<div class="qv-empty">
+      <svg width="88" height="88" viewBox="0 0 28 28" aria-hidden="true" style="margin:0 auto"><rect x="5.5" y="5.5" width="17" height="17" rx="3" transform="rotate(45 14 14)" fill="none" stroke="url(#g)" stroke-width="1.4"/><path d="M10.5 11.5l3 2.5-3 2.5M15 17h3" fill="none" stroke="url(#g)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <strong>Pair this phone with your Mac</strong>
+      <p>Then pair each server on its own, so a sleeping Mac doesn't cut them off.</p>
+      <button class="qv-primary" data-toast="Opens Machines.">Open Machines</button>
+    </div>`;
+    return;
+  }
+  if (!threads.length) {
+    list.innerHTML = `<div class="qv-empty">
+      <strong>No threads yet</strong>
+      <p>Pick a project to start one.</p>
+      <button class="qv-primary" id="emptyNew">New thread</button>
+    </div>`;
+    document.getElementById("emptyNew").onclick = newSheet;
+    return;
+  }
+  const pins = threads.filter((t) => t.pinned).sort((a, b) => a.mins - b.mins);
+  const recent = threads.filter((t) => !t.pinned).sort((a, b) => rank(a) - rank(b) || a.mins - b.mins).slice(0, 4);
+  list.innerHTML = `
+    ${pins.length ? `<div class="qv-label">Pinned</div>${pins.map((t) => threadRow(t, false)).join("")}` : ""}
+    <div class="qv-label">Recent</div>${recent.map((t) => threadRow(t, false)).join("")}
+    ${machines.map(machineBlock).join("")}`;
+  const scroll = params.get("scroll");
+  if (scroll) list.scrollTop = scroll === "end" ? list.scrollHeight : Number(scroll);
+}
+
+// Sheets
+const sheet = document.getElementById("sheet"), scrim = document.getElementById("scrim");
+function openSheet(title, html) {
+  document.getElementById("sheetTitle").textContent = title;
+  document.getElementById("sheetBody").innerHTML = html;
+  sheet.classList.add("on"); scrim.classList.add("on");
+}
+function closeSheet() { sheet.classList.remove("on"); scrim.classList.remove("on"); }
+scrim.onclick = closeSheet;
+document.getElementById("sheetClose").onclick = closeSheet;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+
+function threadMenu(t) {
+  const p = proj(t.p), m = mach(p.host), st = status[m.id];
+  openSheet(t.title, `<div class="qv-about"><p><strong>${esc(p.name)}</strong> on ${esc(m.name)}</p><p class="qv-path">${esc(p.path)}</p><p>${st !== "online" ? pauseLine(m) + ". " : ""}Active ${age(t.mins)} ago</p></div>
+    <div class="qv-group">
+      <button class="qv-act" data-act="${t.pinned ? "Unpinned" : "Pinned"}">${t.pinned ? "Unpin" : "Pin"}</button>
+      <button class="qv-act" data-act="Rename">Rename…</button>
+      ${t.unread ? "" : '<button class="qv-act" data-act="Marked as unread">Mark as unread</button>'}
+      <button class="qv-act" data-act="Copied folder path">Copy folder path</button>
+    </div>
+    <div class="qv-gap"></div>
+    <div class="qv-group"><button class="qv-act danger" data-act="Archived">Archive</button></div>`);
+}
+function projectMenu(p) {
+  const m = mach(p.host), st = status[m.id];
+  const count = threads.filter((t) => t.p === p.id).length;
+  openSheet(p.name, `<div class="qv-about"><p><strong>${esc(m.name)}</strong>, ${st === "online" ? "connected" : lower(pauseLine(m))}</p><p class="qv-path">${esc(p.path)}</p><p>${count} ${count === 1 ? "thread" : "threads"}</p></div>
+    <div class="qv-group">
+      ${st === "online" ? `<button class="qv-act" data-new="${p.id}">New thread here</button>` : ""}
+      <button class="qv-act" data-act="${p.pinned ? "Unpinned project" : "Pinned project"}">${p.pinned ? "Unpin project" : "Pin project"}</button>
+      <button class="qv-act" data-act="Copied folder path">Copy folder path<small>${esc(p.path)}</small></button>
+    </div>`);
+}
+function newSheet() {
+  openSheet("New thread", `<input class="qv-find" placeholder="Find a project" aria-label="Find a project" id="find">
+    <div id="picks">${machines.map((m) => {
+      const off = status[m.id] !== "online";
+      return `<div class="qv-pick-h">${ICON[m.kind]}<span class="qv-grow">${esc(m.name)}</span>${off ? `<span class="qv-warn">${status[m.id] === "asleep" ? "Asleep" : "Offline"}</span>` : ""}</div>
+        ${projects.filter((p) => p.host === m.id).map((p) => `<button class="qv-pick" data-new="${p.id}" data-name="${esc(p.name)}" ${off ? "disabled" : ""}><strong>${esc(p.name)}</strong><span class="qv-path">${esc(p.path)}</span></button>`).join("")}`;
+    }).join("")}</div>`);
+  document.getElementById("find").oninput = (e) => {
+    const q = e.target.value.toLowerCase();
+    document.querySelectorAll(".qv-pick").forEach((b) => { b.hidden = !b.dataset.name.toLowerCase().includes(q); });
+  };
+}
+document.getElementById("newBtn").onclick = newSheet;
+
+let toastTimer;
+function toast(text) {
+  const el = document.getElementById("toast");
+  el.textContent = text; el.classList.add("on");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("on"), 1600);
+}
+
+// Tap opens or folds; hold (450ms) opens the menu, as on iOS.
+let holdTimer = null, held = false;
+const phone = document.getElementById("phone");
+phone.addEventListener("pointerdown", (e) => {
+  const hit = e.target.closest("[data-thread],[data-project]");
+  held = false;
+  if (!hit) return;
+  holdTimer = setTimeout(() => {
+    held = true;
+    if (hit.dataset.thread) threadMenu(threads.find((t) => t.id === hit.dataset.thread));
+    else projectMenu(proj(hit.dataset.project));
+  }, 450);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach((ev) => phone.addEventListener(ev, () => clearTimeout(holdTimer)));
+phone.addEventListener("contextmenu", (e) => { if (e.target.closest("[data-thread],[data-project]")) e.preventDefault(); });
+phone.addEventListener("click", (e) => {
+  if (held) { held = false; return; }
+  const el = e.target.closest("button, [data-toast]");
+  if (!el || el.id === "newBtn" || el.id === "emptyNew" || el.id === "sheetClose") return;
+  if (el.dataset.thread) { toast(`Opens “${threads.find((t) => t.id === el.dataset.thread).title}”.`); return; }
+  if (el.dataset.project) { const p = proj(el.dataset.project); p.open = !p.open; render(); return; }
+  if (el.dataset.new) { closeSheet(); toast(`New thread in ${proj(el.dataset.new).name} on ${mach(proj(el.dataset.new).host).name}.`); return; }
+  if (el.dataset.act) { closeSheet(); toast(`${el.dataset.act}.`); return; }
+  if (el.dataset.toast) toast(el.dataset.toast);
+});
+document.querySelectorAll("[data-state]").forEach((b) => b.onclick = () => setState(b.dataset.state));
+
+setState(state);
+// Screenshots can open a menu straight away: ?sheet=thread|project|new
+({ thread: () => threadMenu(threads[1]), project: () => projectMenu(projects[0]), new: newSheet })[params.get("sheet")]?.();
+</script>
+</body>
+</html>

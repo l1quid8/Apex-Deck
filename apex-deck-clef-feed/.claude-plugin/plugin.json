@@ -1,0 +1,1 @@
+{"name":"clef-feed","description":"Read-only live decision observations","version":"0.1.0","userConfig":{"dataDir":{"type":"directory","title":"Deck data folder","default":"~/Library/Application Support/dev.apexdeck.app"}}}
