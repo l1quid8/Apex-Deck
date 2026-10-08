@@ -30,13 +30,19 @@ import {
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
-import { ageWords, homeShort, hostTints, noteActive, sidebarSections } from "../sidebarModel";
+import { ageWords, homeShort, hostTints, noteActive, sidebarSections, unarchiveThreads } from "../sidebarModel";
 import { webSocketConnect } from "../daemon/webSocketLink";
 import { FinalError, type Connect } from "../daemon/client";
 import { irohConnect } from "../daemon/irohLink";
 import { remotePlugin, type RemoteMode, type Route } from "./remotePlugin";
 import { PairSheet, RemoteSettings } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
+import { ThreadList, useLongPress } from "./ThreadList";
+import { forkedPane, forkUpto, messagePreview } from "./messageFork";
+import { archivedDetail, foldChoice, readFolds } from "./threadListRules";
+import { removeProjectFrom, removeProjectWords, restoreProjectTo, type RemovedProject } from "./projectRemoval";
+import { serialEdits, stopProjectPanes } from "./sessionEdits";
+import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
 import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
 import { qrScanner } from "./remotePlugin";
@@ -55,6 +61,7 @@ const NO_ASKS: ThreadAsks = { questions: [], offer: null };
 
 const SESSION_KEY = "apex-deck.phone.session.v1";
 const DRAFT_KEY = "apex-deck.phone.drafts.v1";
+const FOLDS_KEY = "apex-deck.phone.folds.v1";
 /** The bot bar under a thread's title: "shut" when folded into the title bar. One choice for every thread, kept on this phone. */
 const CREW_KEY = "apex-deck.phone.crew.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
@@ -84,7 +91,8 @@ type Room = {
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
-type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string };
+type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string }
+  | { kind: "archived" } | { kind: "remove"; id: string } | { kind: "message"; seq: number };
 type Browse = {
   hostId: string;
   path: string | null;
@@ -136,23 +144,6 @@ function toolWords(config: ParticipantConfig): string {
   if (backend.kind === "open_ai_compatible") return backend.model;
   if (backend.kind === "cli") return backend.program;
   return "Scripted";
-}
-
-/** Hold a row for half a second to open its menu. The click that ends the hold is swallowed. */
-function useLongPress() {
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const held = useRef(false);
-  const clear = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
-  return {
-    held,
-    bind: (fn: () => void) => ({
-      onPointerDown: () => { held.current = false; clear(); timer.current = setTimeout(() => { held.current = true; fn(); }, 500); },
-      onPointerUp: clear,
-      onPointerLeave: clear,
-      onPointerCancel: clear,
-      onContextMenu: (event: { preventDefault(): void }) => { event.preventDefault(); clear(); held.current = true; fn(); },
-    }),
-  };
 }
 
 /**
@@ -217,12 +208,16 @@ export function PhoneApp() {
   const [tab, setTab] = useState<Tab>(() => (scanAtLaunch ? "machines" : "threads"));
   const [openId, setOpenId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>(readDrafts);
+  /** The project removed a moment ago, with what Undo needs. Cleared when its time runs out. */
+  const [projectUndo, setProjectUndo] = useState<{ undo: RemovedProject; name: string } | null>(null);
+  const projectUndoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   // TL;DR mode is a per-thread switch, kept on the phone like the desktop keeps it per chat.
   const [tldrs, setTldrs] = useState<Record<string, boolean>>({});
   const tldrOf = (id: string | null) => id !== null && (tldrs[id] ?? loadTldr(id));
   const setTldr = (id: string, on: boolean) => { saveTldr(id, on); setTldrs((all) => ({ ...all, [id]: on })); };
-  const [folded, setFolded] = useState<Record<string, boolean>>({});
+  const [folded, setFolded] = useState<Record<string, boolean>>(() => { try { return readFolds(localStorage.getItem(FOLDS_KEY)); } catch { return {}; } });
+  useEffect(() => { try { localStorage.setItem(FOLDS_KEY, JSON.stringify(folded)); } catch { /* retain choices for this session */ } }, [folded]);
   const [notice, setNotice] = useState("");
   const [ask, setAsk] = useState<Ask | null>(null);
   const [botChange, setBotChange] = useState<{ roomId: string; botId: string; error: string; pending: boolean } | null>(null);
@@ -478,22 +473,25 @@ export function PhoneApp() {
       (id) => backend().roomStop(paneId, id),
       (items) => setQueued((all) => ({ ...all, [paneId]: { items, paused: [...queue.paused], lost: queue.connectionPaused } })),
       (error) => setNotice(words(error)),
-      () => { const found = host(); return found !== null && toLink(found.connection.get().status) === "online"; },
+      () => { const found = host(); return queues.current.get(paneId) === queue && found !== null && toLink(found.connection.get().status) === "online"; },
     );
     for (const id of busyRef.current[paneId] ?? []) queue.started(id);
     queues.current.set(paneId, queue);
     return queue;
   }
 
-  async function saveSession(change: (current: AppSession) => AppSession) {
-    if (!macHost) throw new Error(mac ? downLine(mac) : "Pair this phone with your Mac before saving a thread.");
-    const fresh = await macHost.backend.sessionLoad();
-    if (!fresh) throw new Error("The Mac has no saved threads.");
-    const next = { ...change(fresh), savedBy: "phone" };
-    await macHost.backend.sessionSave(next);
-    setSession(next);
-    try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* saved on the Mac */ }
-    return next;
+  const sessionEdits = useRef(serialEdits());
+  function saveSession(change: (current: AppSession) => AppSession | Promise<AppSession>) {
+    return sessionEdits.current(async () => {
+      if (!macHost) throw new Error(mac ? downLine(mac) : "Pair this phone with your Mac before saving a thread.");
+      const fresh = await macHost.backend.sessionLoad();
+      if (!fresh) throw new Error("The Mac has no saved threads.");
+      const next = { ...await change(fresh), savedBy: "phone" };
+      await macHost.backend.sessionSave(next);
+      setSession(next);
+      try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* saved on the Mac */ }
+      return next;
+    });
   }
 
   /** Change one saved thread on the Mac. */
@@ -889,6 +887,93 @@ export function PhoneApp() {
     }
   }
 
+  /** Bring an archived thread back on the Mac, then open it here, as the Mac's Archived list does. */
+  async function restoreArchived(id: string) {
+    try {
+      await saveSession((current) => ({ ...current, panes: unarchiveThreads(current.panes, [id]) }));
+      openThread(id);
+    } catch (error) {
+      setNotice(words(error));
+    }
+  }
+
+  /** Take a project and its threads out of the list on the Mac. Its folder on disk is never touched, and Undo brings the threads back for a few seconds. */
+  async function removeProject(id: string) {
+    setMenu(null);
+    const made: { undo: RemovedProject | null } = { undo: null };
+    try {
+      await saveSession(async (current) => {
+        const workspace = current.workspaces.find((item) => item.id === id);
+        if (!workspace) return current;
+        const hostId = workspaceHost(workspace);
+        const host = phoneHost(hostId);
+        if (!host || toLink(host.connection.get().status) !== "online") throw new Error("Connect the project's machine before removing it.");
+        if (!canStartOn(hostId)) throw new Error("Removing a project needs Full access on its machine.");
+        await stopProjectPanes(current.panes.filter((pane) => pane.workspaceId === id), host.backend, (paneId) => {
+          const queue = queues.current.get(paneId);
+          if (queue) {
+            queues.current.delete(paneId);
+            queue.availabilityChanged();
+            for (const item of [...queue.items]) queue.remove(item.id);
+          }
+          for (const key of queuedDrafts.current.keys()) if (key.startsWith(`${paneId}\u0000`)) queuedDrafts.current.delete(key);
+        });
+        const removed = removeProjectFrom(current, id);
+        made.undo = removed.undo;
+        return removed.next;
+      });
+    } catch (error) {
+      setNotice(words(error));
+      return;
+    }
+    if (!made.undo) return;
+    const { undo } = made;
+    if (openWorkspace?.id === id) setOpenId(null);
+    if (pending?.workspaceId === id) {
+      setPending(null);
+      setDrafts((all) => { const next = { ...all }; delete next[pending.id]; return next; });
+    }
+    setProjectUndo({ undo, name: undo.workspace.name });
+    if (projectUndoTimer.current) clearTimeout(projectUndoTimer.current);
+    projectUndoTimer.current = setTimeout(() => setProjectUndo(null), UNDO_MS);
+  }
+
+  /** Put a removed project and its threads back, for Undo. */
+  async function undoRemoveProject() {
+    const removed = projectUndo;
+    if (!removed) return;
+    if (projectUndoTimer.current) clearTimeout(projectUndoTimer.current);
+    try {
+      await saveSession((current) => restoreProjectTo(current, removed.undo));
+      setProjectUndo((current) => current === removed ? null : current);
+    } catch (error) {
+      setNotice(words(error));
+    }
+  }
+
+  /** Fork from one message on the same machine and project: the new thread keeps the history up to and including it. */
+  async function forkFrom(source: Pane, seq: number) {
+    const fromWorkspace = workspaces.find((workspace) => workspace.id === source.workspaceId);
+    const host = fromWorkspace ? phoneHost(workspaceHost(fromWorkspace)) : null;
+    if (!fromWorkspace || !host) { setNotice("That machine isn't paired with this phone."); return; }
+    if (!mac || mac.status !== "online") { setNotice(mac ? downLine(mac) : "Pair this phone with your Mac before saving a thread."); return; }
+    if (toLink(host.connection.get().status) !== "online") { setNotice(downWords(host.machine.id, host.machine.name)); return; }
+    try {
+      const id = `pane-${Date.now().toString(36)}`;
+      const upto = forkUpto(seq);
+      await host.backend.roomFork(source.id, id, upto);
+      try {
+        await saveSession((current) => ({ ...current, panes: [...current.panes, forkedPane(source, id, seq, host.machine.name)] }));
+      } catch (error) {
+        await host.backend.roomDelete(id).catch(() => {});
+        throw error;
+      }
+      openThread(id);
+    } catch (error) {
+      setNotice(words(error));
+    }
+  }
+
   async function useFolder(path: string) {
     if (!browse) return;
     const browsing = browse;
@@ -956,6 +1041,10 @@ export function PhoneApp() {
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
   useEffect(() => { if (botsStale) setMenu(null); }, [botsStale]);
+  const menuMessage = menu?.kind === "message" && room && openPane && room.id === openPane.id ? room.messages.find((message) => message.seq === menu.seq) ?? null : null;
+  // A message menu whose message can't be found (thread closed or its room not loaded) must not leave the screen covered.
+  const messageStale = menu?.kind === "message" && !menuMessage;
+  useEffect(() => { if (messageStale) setMenu(null); }, [messageStale]);
   const menuProject = menu?.kind === "project" ? workspaces.find((workspace) => workspace.id === menu.id) ?? null : null;
   const askTarget = ask ? workspaces.find((workspace) => workspace.id === ask.workspaceId) ?? null : null;
 
@@ -1022,6 +1111,7 @@ export function PhoneApp() {
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
             onMenu={() => openPane && setMenu({ kind: "thread", id: openPane.id })}
+            onMessageMenu={viewingPending ? undefined : (seq) => setMenu({ kind: "message", seq })}
             onDraft={(text) => openId && setDraft(openId, { ...draft, text })}
             onRemoveFile={(name) => openId && setDraft(openId, { ...draft, files: draft.files.filter((file) => file.name !== name) })}
             onSend={() => { void send(); }}
@@ -1051,19 +1141,24 @@ export function PhoneApp() {
             workspaces={workspaces}
             links={links}
             folded={folded}
-            pending={pending}
-            draft={pending ? draftFor(pending.id) : emptyDraft()}
+            draft={pending && draftVisible(draftFor(pending.id).text, draftFor(pending.id).files.length) ? { ...pending, text: draftFor(pending.id).text } : null}
             waiting={waiting}
             busy={busy}
             nameOf={(id) => session?.profiles.find((profile) => profile.id === id)?.display_name ?? id}
+            loaded={session !== null}
             covered={covered}
+            now={Date.now()}
             machineIcon={machineIcon}
-            onToggle={(id) => setFolded((all) => ({ ...all, [id]: !(all[id] ?? Boolean(workspaces.find((workspace) => workspace.id === id)?.collapsed)) }))}
+            onToggle={(key) => setFolded((all) => ({ ...all, [key]: !foldChoice(all, key, key.startsWith("project:") && Boolean(workspaces.find((workspace) => `project:${workspace.id}` === key)?.collapsed)) }))}
             onOpen={openThread}
             onNew={newAllowed ? startIn : undefined}
+            onPick={newAllowed ? () => { setQuery(""); setMenu({ kind: "new" }); } : undefined}
             onThreadMenu={(id) => setMenu({ kind: "thread", id })}
             onProjectMenu={(id) => setMenu({ kind: "project", id })}
             onMachines={() => setTab("machines")}
+            onRetry={(id) => phoneHost(id)?.connection.retryNow()}
+            archived={sections.archived.length}
+            onArchived={() => setMenu({ kind: "archived" })}
           />
         ) : tab === "machines" ? (
           <Machines
@@ -1103,6 +1198,12 @@ export function PhoneApp() {
             </button>
           ))}
         </nav>}
+        {projectUndo && (
+          <div className={`ph-undo${notice ? " ph-undo-up" : ""}`} role="status">
+            <span>{projectUndo.name} removed.</span>
+            <button type="button" onClick={() => undoRemoveProject()}>Undo</button>
+          </div>
+        )}
         {notice && (
           <div className="ph-toast" role="status">
             <span>{notice}</span>
@@ -1325,6 +1426,51 @@ export function PhoneApp() {
                 setMenu(null);
               }} />
               {menuProject.path && <MenuRow label="Copy folder path" detail={folderCopyText(menuProject.path)} onClick={() => { copyPath(menuProject.path); setMenu(null); }} />}
+              {newAllowed && <MenuRow label="Remove project…" danger onClick={() => setMenu({ kind: "remove", id: menuProject.id })} />}
+            </Sheet>
+          );
+        })()}
+        {menu?.kind === "archived" && (
+          <Sheet title="Archived" onClose={() => setMenu(null)}>
+            <p className="ph-sheet-text">{sections.archived.length === 0 ? "No archived threads." : "Tap one to bring it back to its project and open it."}</p>
+            {sections.archived.map((pane) => {
+              const workspace = workspaces.find((item) => item.id === pane.workspaceId) ?? null;
+              const link = workspace ? hostOf(workspace) : null;
+              return (
+                <button key={pane.id} type="button" className="ph-arch-row" disabled={!newAllowed} onClick={() => { void restoreArchived(pane.id); }}>
+                  <strong>{pane.title}</strong>
+                  <small>{archivedDetail({ project: workspace?.name, machine: link?.name, age: pane.activeAt ? ageWords(Date.now() - pane.activeAt) : undefined })}</small>
+                </button>
+              );
+            })}
+            {!newAllowed && <p className="ph-sheet-text">{"Restoring needs Full access on your Mac. Change this phone's level in the Mac's Settings → Paired devices."}</p>}
+          </Sheet>
+        )}
+        {menu?.kind === "remove" && (() => {
+          const project = workspaces.find((workspace) => workspace.id === menu.id);
+          if (!project) return null;
+          const threads = panes.filter((pane) => pane.workspaceId === project.id && pane.kind === "chat");
+          const asked = removeProjectWords(project.name, threads.filter((pane) => !pane.archived).length, threads.filter((pane) => pane.archived).length);
+          return (
+            <Sheet title={asked.title} onClose={() => setMenu(null)}>
+              <p className="ph-sheet-text">{asked.body}</p>
+              <button type="button" className="danger ph-wide" onClick={() => removeProject(project.id)}>{asked.action}</button>
+              <button type="button" className="ph-plain ph-wide" onClick={() => setMenu(null)}>Cancel</button>
+            </Sheet>
+          );
+        })()}
+        {menu?.kind === "message" && menuMessage && openPane && openWorkspace && (() => {
+          // A TL;DR instruction rides on a sent message but never shows in the chat, so the preview and the copy leave it out.
+          const shown = splitTldr(menuMessage.text).text;
+          const preview = messagePreview(shown);
+          const forkable = canStartOn(workspaceHost(openWorkspace));
+          return (
+            <Sheet title="Message" onClose={() => setMenu(null)}>
+              {preview && <p className="ph-sheet-text ph-quiet">{preview}</p>}
+              {forkable
+                ? <MenuRow label="Fork from here" detail="A new thread with the messages up to here. Nothing runs until you send." onClick={() => { setMenu(null); void forkFrom(openPane, menuMessage.seq); }} />
+                : <p className="ph-sheet-text">Forking needs Full access on {linkOf(workspaceHost(openWorkspace))?.name ?? "this machine"}. Change this phone's level in that machine's Settings → Paired devices.</p>}
+              <MenuRow label="Copy text" onClick={() => { void writeClipboard(shown, navigator.clipboard).then((ok) => setNotice(ok ? "Copied" : "The phone couldn't copy that message.")); setMenu(null); }} />
             </Sheet>
           );
         })()}
@@ -1539,123 +1685,6 @@ function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: s
   );
 }
 
-function ThreadList({ sections, workspaces, links, folded, pending, draft, waiting, busy, nameOf: botName, covered, machineIcon, onToggle, onOpen, onNew, onThreadMenu, onProjectMenu, onMachines }: {
-  sections: ReturnType<typeof sidebarSections>;
-  workspaces: Workspace[];
-  links: LinkView[];
-  folded: Record<string, boolean>;
-  pending: Pending | null;
-  draft: Draft;
-  waiting: Record<string, string[]>;
-  busy: Record<string, readonly string[]>;
-  nameOf(botId: string): string;
-  covered: boolean;
-  machineIcon(hostId: string, size?: number): ReactNode;
-  onToggle(id: string): void;
-  onOpen(id: string): void;
-  /** Absent when this phone may not start threads. */
-  onNew?(workspace: Workspace): void;
-  onThreadMenu(id: string): void;
-  onProjectMenu(id: string): void;
-  onMachines(): void;
-}) {
-  const press = useLongPress();
-  const linkFor = (workspace: Workspace) => links.find((link) => link.id === workspaceHost(workspace));
-  const nameOf = (workspace: Workspace) => linkFor(workspace)?.name ?? workspaceHost(workspace);
-  const down = links.filter((link) => link.status !== "online" && (link.problem || link.status === "offline"));
-  // One line inside its project; Pinned and Recents add where it runs. The menu is a long-press, as on iOS.
-  const row = (pane: Pane, nested = false) => {
-    const workspace = workspaces.find((item) => item.id === pane.workspaceId);
-    const link = workspace ? linkFor(workspace) : undefined;
-    const off = link?.status === "offline";
-    const asking = !off && (waiting[pane.id]?.length ?? 0) > 0;
-    const bots = off ? [] : busy[pane.id] ?? [];
-    const state = off ? "Offline" : asking ? "Waiting on you" : bots.length === 1 ? `${botName(bots[0])} is working…` : bots.length > 1 ? `${bots.length} bots working…` : "";
-    return (
-      <div key={pane.id} className="ph-row">
-        <button type="button" className="ph-item" aria-haspopup="menu" {...press.bind(() => onThreadMenu(pane.id))} onClick={() => { if (!press.held.current) onOpen(pane.id); }}>
-          <span className="ph-line">
-            <i className={`ph-dot${off ? " off" : asking ? " wait" : bots.length > 0 ? " busy" : ""}`} title={off ? "Machine offline" : asking ? "Waiting on you" : bots.length > 0 ? "Working" : "Idle"} />
-            <strong className={pane.unread ? "ph-bold" : undefined}>{pane.title}</strong>
-            {pane.unread && <span className="ph-unread" aria-label="Unread" />}
-            <span className="ph-time">{pane.activeAt ? ageWords(Date.now() - pane.activeAt) : "New"}</span>
-          </span>
-          {(!nested || state) && (
-            <small className={asking ? "ph-amber" : bots.length > 0 ? "ph-mint" : undefined}>
-              {state}{state && !nested ? " · " : ""}
-              {!nested && workspace && <>{machineIcon(workspaceHost(workspace), 12)}<span className="ph-ellipsis">{workspace.name} · {nameOf(workspace)}</span></>}
-            </small>
-          )}
-        </button>
-      </div>
-    );
-  };
-  return (
-    <main className="ph-content" inert={covered}>
-      {links.length === 0 && (
-        <div className="ph-welcome">
-          <img className="ph-logo" src="/branding/logo-dark.svg" alt="Apex Deck" width="150" height="161" />
-          <strong>Pair this phone with your Mac</strong>
-          <p>Then pair each server on its own, so a sleeping Mac doesn't cut them off.</p>
-          <button type="button" className="primary ph-wide" onClick={onMachines}>Open Machines</button>
-        </div>
-      )}
-      {down.map((link) => (
-        <button key={link.id} type="button" className={`ph-banner ph-banner-button${link.problem ? " bad" : ""}`} onClick={onMachines}>
-          <strong>{link.problem ? `${link.name} can't connect` : `${link.name} is ${link.kind === "mac" ? "asleep" : "offline"}`}</strong>
-          <p>{downLine(link)}</p>
-        </button>
-      ))}
-      {sections.pinned.length > 0 && <><div className="ph-section">PINNED</div><div className="ph-group">{sections.pinned.map((pane) => row(pane))}</div></>}
-      {sections.projects.length > 0 && <div className="ph-section">PROJECTS</div>}
-      {sections.projects.length > 0 && (
-        <div className="ph-group">
-          {sections.projects.map(({ workspace, panes: projectPanes }) => {
-            const hostId = workspaceHost(workspace);
-            const link = linkFor(workspace);
-            const closed = folded[workspace.id] ?? Boolean(workspace.collapsed);
-            const showDraft = pending?.workspaceId === workspace.id && draftVisible(draft.text, draft.files.length);
-            const threads = projectPanes.filter((pane) => pane.kind === "chat");
-            return (
-              <div key={workspace.id} className="ph-project">
-                <div className="ph-row">
-                  <button type="button" className="ph-item" aria-expanded={!closed} {...press.bind(() => onProjectMenu(workspace.id))} onClick={() => { if (!press.held.current) onToggle(workspace.id); }}>
-                    <span className="ph-project-name">
-                      <span className="ph-chevron" style={{ transform: closed ? undefined : "rotate(90deg)" }}><ChevronRight size={14} /></span>
-                      <span className="ph-ellipsis ph-project-title">{workspace.name}</span>
-                      <span className="ph-project-host">
-                        {hostId === "local" ? <i className={`ph-dot${link?.status === "online" ? " on" : link?.status === "offline" ? " off" : ""}`} /> : machineIcon(hostId, 12)}
-                        <span className="ph-ellipsis">{nameOf(workspace)}{link?.problem ? " · can't connect" : link?.status === "offline" ? " · offline" : ""}</span>
-                      </span>
-                    </span>
-                  </button>
-                  {onNew && <button type="button" className="ph-icon ph-quiet" aria-label={`New thread in ${workspace.name} on ${nameOf(workspace)}`} onClick={() => onNew(workspace)}><Plus size={18} /></button>}
-                  <button type="button" className="ph-icon ph-quiet" aria-label={`Project actions ${workspace.name} ${nameOf(workspace)}`} onClick={() => onProjectMenu(workspace.id)}><More size={18} /></button>
-                </div>
-                {!closed && (
-                  <div className="ph-nested">
-                    {showDraft && pending && (
-                      <div className="ph-row">
-                        <button type="button" className="ph-item" onClick={() => onOpen(pending.id)}>
-                          <span className="ph-line"><i className="ph-dot" /><strong>{draft.text.trim().split("\n")[0].slice(0, 40) || "New thread"}</strong><span className="ph-time">Draft</span></span>
-                        </button>
-                      </div>
-                    )}
-                    {threads.map((pane) => row(pane, true))}
-                    {threads.length === 0 && !showDraft && <p className="ph-none">No threads</p>}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {sections.recents.length > 0 && <><div className="ph-section">RECENTS</div><div className="ph-group">{sections.recents.slice(0, 4).map((pane) => row(pane))}</div></>}
-      {links.length > 0 && <p className="ph-foot">Hold a thread or project for its menu.</p>}
-    </main>
-  );
-}
-
 function ThreadView(props: {
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
@@ -1684,6 +1713,8 @@ function ThreadView(props: {
   form: ReactNode; plan: boolean; onStopPlanning(): void;
   /** TL;DR mode: every bot is asked for a short answer. */
   tldr: boolean; onTldr(): void;
+  /** Holding a message opens its menu. Absent when nothing can be forked yet, as in an unsent new thread. */
+  onMessageMenu?(seq: number): void;
 }) {
   const paused = props.link.status !== "online";
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1691,6 +1722,17 @@ function ThreadView(props: {
   const [typing, setTyping] = useState(false);
   const crew = crewOpen(props.crewShut, typing);
   const pill = usePillPress();
+  // Holding a message opens its menu. A tap that ends a hold must not also follow a link inside the message.
+  const press = useLongPress();
+  const holdMessage = (seq: number) => {
+    if (!props.onMessageMenu) return {};
+    const bind = press.bind(() => props.onMessageMenu?.(seq));
+    return { ...bind, onContextMenuCapture: (event: { preventDefault(): void; stopPropagation(): void }) => {
+      event.stopPropagation();
+      bind.onContextMenu(event);
+    } };
+  };
+  const holdClass = props.onMessageMenu ? " ph-msg-hold" : "";
   const tag = (id: string) => {
     const text = tagFromBar(props.draft.text, id);
     props.onDraft(text);
@@ -1860,13 +1902,13 @@ function ThreadView(props: {
           </div>
         )}
         {props.messages.map((message) => message.speaker.kind === "human" ? (
-          <section key={message.seq} className="ph-msg human">
+          <section key={message.seq} className={`ph-msg human${holdClass}`} {...holdMessage(message.seq)}>
             <p>{splitTldr(message.text).text}</p>
           </section>
         ) : (
-          <section key={message.seq} className="ph-msg">
+          <section key={message.seq} className={`ph-msg${holdClass}`} {...holdMessage(message.seq)}>
             {by(message.speaker.id)}
-            <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>
+            <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (!press.held.current && /^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>
           </section>
         ))}
         {/* Cut off mid-reply: what it had written stays, dimmed, until its reply lands, even after a reload. */}

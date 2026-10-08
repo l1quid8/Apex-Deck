@@ -195,6 +195,75 @@
 .ph-logo { display: block; width: 150px; height: auto; }
 .ph-logo-wide { display: block; width: 160px; height: auto; margin: 2px 0 14px; }
 
+/* Threads: the Quiet List (docs/mockups/phone-threads-quiet-v2.html). No boxes or borders, colour only for
+   state. Labels, threads and projects share the header's left edge; a row's one dot hangs in the margin. */
+.ph-content.ph-tl { padding: 0 0 20px; --tl-edge: 20px; --tl-faint: #58656f; }
+.ph-tl-label { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 20px 8px 4px var(--tl-edge); font-size: 14px; font-weight: 600; color: var(--muted); }
+.ph-tl-label .ph-host-icon { padding: 0; }
+.ph-tl-warn { color: var(--amber); font-weight: 500; }
+.ph-tl-bad { color: var(--red); font-weight: 500; }
+.ph-tl-retry.ph-tl-retry { flex: none; min-height: 44px; margin: -12px 0; padding: 0 14px; border: 0; border-radius: 10px; background: transparent; color: var(--mint); font-weight: 600; }
+.ph-tl-retry:active { background: var(--panel-2); }
+
+.ph-tl-thread.ph-tl-thread, .ph-tl-p.ph-tl-p {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 18px 8px var(--tl-edge);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.ph-tl-thread:active, .ph-tl-p:active { background: var(--panel-2) !important; }
+.ph-tl-dot { position: absolute; left: 6px; top: 16px; width: 8px; height: 8px; border-radius: 50%; }
+.ph-tl-dot.wait { background: var(--amber); }
+.ph-tl-dot.work { background: var(--mint); animation: ph-pulse 1.8s ease-in-out infinite; }
+.ph-tl-dot.unread { background: var(--brand-cyan); }
+.ph-tl-l1 { display: flex; align-items: baseline; gap: 12px; }
+.ph-tl-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; line-height: 1.4; letter-spacing: -0.35px; }
+.ph-tl-name.unread { font-weight: 600; }
+.ph-tl-age { flex: none; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.ph-tl-l2 { display: flex; align-items: center; gap: 5px; margin-top: 1px; font-size: 14px; line-height: 1.4; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.ph-tl-l2 > span { flex: none; }
+.ph-tl-l2 > .ph-tl-where { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ph-tl-l2 .ph-host-icon { padding: 0; }
+.ph-tl-wait { color: var(--amber); }
+.ph-tl-work { color: var(--mint); }
+.ph-tl-paused { color: var(--tl-faint); }
+
+/* Projects: a name, a count and a chevron. Hierarchy comes from indent, not lines. */
+.ph-tl-prow { position: relative; }
+.ph-tl-p.ph-tl-p { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 0 14px 0 var(--tl-edge); }
+.ph-tl-p .ph-tl-dot { top: 19px; }
+.ph-tl-pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 500; letter-spacing: -0.35px; }
+.ph-tl-pin { display: inline-flex; color: var(--tl-faint); margin-left: 6px; vertical-align: -1px; }
+.ph-tl-count { flex: none; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.ph-tl-chev { display: inline-flex; color: var(--tl-faint); transition: transform 180ms ease; }
+.ph-tl-project.open .ph-tl-chev { transform: rotate(90deg); }
+.ph-tl-project.open .ph-tl-pname { margin-right: 44px; }
+.ph-tl-add.ph-tl-add { position: absolute; right: 34px; top: 1px; width: 44px; height: 44px; min-height: 44px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 12px; background: transparent; color: var(--mint); }
+.ph-tl-add:active { background: var(--panel-2) !important; }
+.ph-tl-in { padding-bottom: 6px; }
+.ph-tl-in .ph-tl-thread.ph-tl-thread { padding: 7px 18px 7px calc(var(--tl-edge) + 18px); }
+.ph-tl-in .ph-tl-dot { left: 24px; top: 15px; }
+.ph-tl-in .ph-tl-name { font-size: 16px; }
+.ph-tl-draft .ph-tl-name { color: var(--muted); font-style: italic; }
+.ph-tl .ph-tl-none { margin: 2px 0 8px calc(var(--tl-edge) + 18px); color: var(--tl-faint); font-size: 14px; }
+.ph-tl-machine.down .ph-tl-project { opacity: 0.5; }
+
+.ph-tl-empty { padding: 90px 36px 0; text-align: center; }
+.ph-tl-empty img { display: block; margin: 0 auto 20px; }
+.ph-tl-empty strong { display: block; font-size: 21px; letter-spacing: -0.4px; margin: 0 0 6px; }
+.ph-tl .ph-tl-empty p { color: var(--muted); margin: 0 0 14px; }
+.ph-tl-empty + .ph-tl-machine { margin-top: 28px; }
+@media (prefers-reduced-motion: reduce) { .ph-tl-dot.work { animation: none; } .ph-tl-chev { transition: none; } }
+
 .ph-empty { padding: 44px 10px; text-align: center; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .ph-empty h3 { color: var(--text); margin: 10px 0 4px; }
 .ph-empty p { font-size: 13px; }
@@ -742,3 +811,49 @@
 .ph-lib-action.primary { background: var(--brand-gradient); border-color: transparent; color: var(--accent-ink); }
 .ph-lib-action.ph-lib-danger { color: var(--red); }
 .ph-lib-action:disabled { opacity: 0.5; }
+
+/* Archived: one quiet line at the bottom of Threads, and plain rows in its sheet (no boxes). */
+.ph-tl-archived.ph-tl-archived { display: flex; align-items: center; width: 100%; min-height: 44px; margin-top: 12px; padding: 0 14px 0 var(--tl-edge); border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 14px; text-align: left; }
+.ph-tl-archived:active { background: var(--panel-2); }
+.ph-arch-row.ph-arch-row { display: block; width: 100%; min-height: 44px; padding: 10px 2px; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; }
+.ph-arch-row:not(:disabled):active { background: var(--panel-2); }
+.ph-arch-row:disabled { opacity: 0.5; }
+.ph-arch-row strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 500; }
+.ph-arch-row small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+
+/* Undo bar after a project is removed. It stacks above the toast when both show. */
+.ph-undo {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  z-index: 10;
+  background: var(--panel-2);
+  box-shadow: 0 7px 24px #0008;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 6px 6px 6px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ph-undo.ph-undo-up { bottom: calc(136px + env(safe-area-inset-bottom)); }
+.ph-undo > span { flex: 1; min-width: 0; }
+.ph-undo button { background: transparent; border: 0; color: var(--mint); font-weight: 600; min-height: 44px; padding: 0 12px !important; }
+/* A held message opens its menu, so iOS's own text callout stays out of the way. */
+.ph-msg-hold,
+.ph-msg-hold * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Section headings share project controls, with recovery actions alongside. */
+.ph-tl-heading { display: flex; align-items: center; margin-top: 14px; }
+.ph-tl-heading .ph-tl-section { flex: 1; min-width: 0; width: auto; color: var(--muted); font-size: 14px; }
+.ph-tl-section .ph-tl-pname { font-size: 14px; font-weight: 600; letter-spacing: 0; }
+.ph-tl-section .ph-host-icon { padding: 0; flex: none; }
+.ph-tl-section[aria-expanded="true"] .ph-tl-chev { transform: rotate(90deg); }
+.ph-tl-heading .ph-tl-retry { margin: 0; }
