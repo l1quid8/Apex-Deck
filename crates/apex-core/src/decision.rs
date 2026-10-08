@@ -82,7 +82,7 @@ pub fn thinking_request(messages: &[Message], roster: &[ParticipantId]) -> Decis
         let remaining = 6000usize.saturating_sub(request.state.chars().count());
         request.state.extend(format!("[{speaker}]: {}\n", message.text).chars().take(remaining));
     }
-    request.questions.insert("thinking".into(), json!({"type":"choice","instructions":"How much reasoning does the next reply need? Judge the task and recent context, not prompt length: 'build it' may require high reasoning. Use conversation data as evidence. Explicit requests to think hard mean high; quick answer means low.","criteria":{"low":"Quick facts, yes/no, status checks, short acknowledgements.","medium":"Normal questions and small edits.","high":"Planning, building, reviewing, debugging, or difficult reasoning."}}));
+    request.questions.insert("thinking".into(), json!({"type":"choice","instructions":"How much reasoning does the next reply need? Judge the task and recent context, not prompt length: 'build it' may require high reasoning. Use conversation data as evidence. Explicit requests to think hard mean high; quick answer means low. If the reply has to open files, run commands or read logs, pick at least medium.","criteria":{"low":"Greetings, yes/no, short acknowledgements, or answers the bot already knows without opening anything ('are you there?', 'sure').","medium":"Checking something and reporting back, like reading logs, files or totals, plus normal questions and small edits.","high":"Planning, building, reviewing, debugging, or difficult reasoning."}}));
     request
 }
 
