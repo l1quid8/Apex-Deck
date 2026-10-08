@@ -137,7 +137,7 @@ interface Props {
 }
 
 /** A line in the transcript from the app. `action` adds Try again or Let them answer. */
-type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction };
+type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction; source?: "room-load" };
 /** Where `/compact` cut in: the models see `summary` instead of the messages above it. */
 type Summary = { by: string | null; summary: string; upto: number };
 /** An agent's context has just dropped to the low mark; shown once under its reply. */
@@ -699,8 +699,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   const messageNumbers = useRef(messageDedup()).current;
 
-  const notify = (message: string, tone: Notice["tone"] = "info", action?: NoticeAction) =>
-    setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone, ...(action ? { action } : {}) } }]);
+  const notify = (message: string, tone: Notice["tone"] = "info", action?: NoticeAction, source?: Notice["source"]) =>
+    setEntries((list) => [...list, { kind: "notice", notice: { key: noticeKey.current++, text: message, tone, ...(source ? { source } : {}), ...(action ? { action } : {}) } }]);
 
   useEffect(() => {
     if (profileMode) return;
@@ -932,7 +932,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
-        setEntries(old => [...restored, ...old.filter(e => e.kind === "notice")]);
+        setEntries(old => [...restored, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load")]);
         // Open at "New since you looked" when replies came in after you last looked.
         const seen = seenList(saved.transcript);
         const from = firstUnseen(seen, lastSeenRef.current);
@@ -948,7 +948,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       fail: error => {
         if (!alive) return;
         setReady(false); setLoadError(String(error));
-        notify(`Could not load the chat: ${String(error)}`, "error");
+        notify(`Could not load the chat: ${String(error)}`, "error", undefined, "room-load");
       },
       event: onEvent,
       represented: representedRoomEvent,
