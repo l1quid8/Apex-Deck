@@ -21,7 +21,7 @@ const writes = new Set([
   "roomPost", "roomPostTo", "roomTurn", "roomDecide", "roomAnswer", "roomSetPlan", "roomSetOptions", "roomForgetAllowed", "roomAddParticipant",
   "roomUpdateParticipant", "roomRemoveParticipant", "roomClear", "roomRewind", "roomRevert", "roomPin", "roomUnpin",
   "roomFork", "roomImport", "roomCompact", "roomDelete", "ptySpawn", "ptyWrite", "ptyResize", "saveAttachment", "copyAttachment",
-  "generateImage", "importReplyImage", "artifactsSave",
+  "generateImage", "importReplyImage", "libraryRemove", "artifactsSave",
 ]);
 const rawWrites = new Set([...writes].map(key => key.replace(/[A-Z]/g, letter => "_" + letter.toLowerCase())));
 /** Reject unavailable execution; recovery reads and harmless PTY probes remain available. */

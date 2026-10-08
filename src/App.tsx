@@ -18,6 +18,7 @@ import { modHost } from "./mods/host";
 import { startHub } from "./hub";
 import { SectionNavigation } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
+import { LibraryView } from "./LibraryView";
 import { DeckIcon } from "./DeckIcon";
 import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
@@ -97,7 +98,7 @@ export function App() {
   const [section, setSection] = useState<AppSection>("threads");
   /** Code or Threads, whichever was used last; a workspace clicked in Agents opens there. */
   const [lastDeck, setLastDeck] = useState<"code" | "threads">("threads");
-  useEffect(() => { if (section !== "agents") setLastDeck(section); }, [section]);
+  useEffect(() => { if (section === "code" || section === "threads") setLastDeck(section); }, [section]);
   /** Bumped by the title bar's + New agent button. */
   const [newAgentRequest, setNewAgentRequest] = useState(0);
   /** What each thread reports: its head's words, and who is replying or stopped on a card. */
@@ -1349,7 +1350,8 @@ export function App() {
 
         <main ref={canvasRef} className={`canvas section-${section}`}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} addRequest={newAgentRequest} />}
-          {section !== "agents" && !current && (
+          {section === "library" && <LibraryView backend={backend} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = panes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
+          {(section === "code" || section === "threads") && !current && (
             <div className="picker">
               <img className="welcome-logo" src="/branding/mark.svg" alt="" width="80" height="80" />
               <span className="eyebrow">Your workspace for what's next</span>
@@ -1363,7 +1365,7 @@ export function App() {
               <div className="welcome-capabilities"><span>01 / Agents</span><span>02 / Code</span><span>03 / Threads</span></div>
             </div>
           )}
-          {section !== "agents" && current && (picking || visiblePanes.length === 0) && (creationBackend
+          {(section === "code" || section === "threads") && current && (picking || visiblePanes.length === 0) && (creationBackend
             ? <HostAgents backend={creationBackend} agents={agents}>{picker}</HostAgents>
             : <div className="picker"><p>This workspace's machine is unavailable.</p></div>)}
 

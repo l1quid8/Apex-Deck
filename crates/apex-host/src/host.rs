@@ -962,22 +962,47 @@ impl Host {
         let bytes = images::generate(&chosen, model, &prompt).await?;
         let file = format!("{}-image.{}", chosen.label.to_lowercase(), images::extension(&bytes));
         let path = export::write_new(&self.attachment_dir(&room)?, &file, &bytes).map_err(|e| format!("Could not save the picture: {e}"))?;
+        // The thread keeps its attachment for the bots to read; the Library a clone.
+        reply_images::import(&self.library_dir(), &path, &room, Some(chosen.label))?;
         Ok(path.to_string_lossy().into_owned())
     }
 
-    /// Keep a picture a model made (Codex saves them under ~/.codex) with the
-    /// thread, so it still shows after the original is gone. Returns the copy.
-    pub fn import_reply_image(&self, room: String, path: String) -> Result<String, String> {
-        let saved = reply_images::import(&self.attachment_dir(&room)?, Path::new(&path))?;
+    /// The Library: pictures models made, kept for the whole app rather than
+    /// one thread, so deleting a thread leaves them. See `reply_images`.
+    fn library_dir(&self) -> PathBuf {
+        self.paths.data.join("library")
+    }
+
+    /// Keep a picture a model made (Codex saves them under ~/.codex) in the
+    /// Library, so it still shows after the original is gone. Returns the copy.
+    pub fn import_reply_image(&self, room: String, path: String, by: Option<String>) -> Result<String, String> {
+        export::safe_file_name(&room)?;
+        let saved = reply_images::import(&self.library_dir(), Path::new(&path), &room, by.as_deref())?;
         Ok(saved.to_string_lossy().into_owned())
     }
 
+    /// Everything in the Library, newest first, with each file's full path.
+    pub fn library_list(&self) -> Vec<serde_json::Value> {
+        let dir = self.library_dir();
+        reply_images::list(&dir).into_iter().map(|item| {
+            let path = dir.join(&item.file).to_string_lossy().into_owned();
+            let mut value = serde_json::to_value(item).unwrap_or_default();
+            value["path"] = path.into();
+            value
+        }).collect()
+    }
+
+    /// Delete a picture from the Library; the tool's original is left alone.
+    pub fn library_remove(&self, file: String) -> Result<(), String> {
+        reply_images::remove(&self.library_dir(), &file)
+    }
+
     /// The bytes of a saved attachment, so the chat can show pictures. Only
-    /// files in the attachments folder are read.
+    /// files in the attachments folder and the Library are read.
     pub fn read_attachment(&self, path: String) -> Result<Vec<u8>, String> {
-        let root = self.paths.data.join("attachments").canonicalize().map_err(|e| e.to_string())?;
+        let data = self.paths.data.canonicalize().map_err(|e| e.to_string())?;
         let file = Path::new(&path).canonicalize().map_err(|e| format!("Could not read {path}: {e}"))?;
-        if !file.starts_with(&root) {
+        if !file.starts_with(data.join("attachments")) && !file.starts_with(data.join("library")) {
             return Err(format!("{path} is not an attachment"));
         }
         if std::fs::metadata(&file).map_err(|e| e.to_string())?.len() > MAX_ATTACHMENT as u64 {

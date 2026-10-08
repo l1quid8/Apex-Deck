@@ -41,7 +41,7 @@ fn codex_home() -> Option<PathBuf> {
 
 /// Where Grok keeps its settings: `$GROK_HOME`, or `.grok` in the home
 /// folder.
-fn grok_home() -> Option<PathBuf> {
+pub(crate) fn grok_home() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("GROK_HOME").filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }

@@ -2,7 +2,7 @@
 // runs the commands; the shell does what belongs to the machine
 // with the screen: dialogs, saved files, the dock, file drops and quitting.
 
-import type { Backend } from "./backend";
+import type { Backend, LibraryItem } from "./backend";
 import type { AgentInfo, AppSession, FolderListing, ModelChoice, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer } from "./types";
 
 /** How commands reach the host and its events come back. */
@@ -71,7 +71,9 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     roomDiff: (id) => call<ThreadDiff>("room_diff", { id }),
     saveAttachment: (room, name, bytes) => transport.saveAttachment(room, name, bytes),
     generateImage: (room, provider, prompt) => call<string>("generate_image", { room, provider, prompt }),
-    importReplyImage: (room, path) => call<string>("import_reply_image", { room, path }),
+    importReplyImage: (room, path, by) => call<string>("import_reply_image", { room, path, by }),
+    libraryList: () => call<LibraryItem[]>("library_list", {}),
+    libraryRemove: (file) => call<void>("library_remove", { file }),
     readAttachment: (path) => transport.readAttachment(path),
     roomPin: (id, fact) => call<string[]>("room_pin", { id, fact }),
     roomUnpin: (id, index) => call<string[]>("room_unpin", { id, index }),

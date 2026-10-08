@@ -146,9 +146,7 @@ impl EventReader {
 
     pub(crate) fn outcome(self) -> Outcome {
         let mut text = self.final_text.filter(|t| !t.trim().is_empty()).unwrap_or(self.streamed);
-        for path in &self.images {
-            text.push_str(&format!("\n\nAttached image: {path}"));
-        }
+        attach_images(&mut text, &self.images);
         let has_reply = !text.trim().is_empty();
         Outcome {
             error: self.failure.or(if has_reply { None } else { self.last_error }),
@@ -722,6 +720,14 @@ fn clip(text: &str, max: usize) -> String {
     } else {
         let head: String = text.chars().take(max).collect();
         format!("{head}…")
+    }
+}
+
+/// Add a picture to a reply. The chat shows each `Attached image:` line as
+/// a picture.
+pub(crate) fn attach_images(text: &mut String, paths: &[String]) {
+    for path in paths {
+        text.push_str(&format!("\n\nAttached image: {path}"));
     }
 }
 

@@ -15,7 +15,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
 use crate::ansi::AnsiStripper;
-use crate::events::{EventReader, OutputFormat};
+use crate::events::{self, EventReader, OutputFormat};
+use crate::grok_images;
 use crate::codex_server::{self, TurnError};
 use crate::presets::{agent_command_with, clean_effort, clean_model, output_format};
 use crate::codex_hook;
@@ -515,6 +516,18 @@ impl Participant for CliParticipant {
             }
             if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
                 return self.run_claude_asking(program, &args, &prompt, on_progress, &approver).await;
+            }
+            // Grok's pictures are saved to disk, so the ones this turn made
+            // are found by comparing the folder before and after.
+            if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::Grok, .. }) {
+                let root = self.cwd.as_deref().and_then(grok_images::session_root);
+                let before = root.as_deref().map(grok_images::pictures_in).unwrap_or_default();
+                let mut reply = self.run(program, &args, format, prompt, on_progress).await?;
+                if let Some(root) = &root {
+                    let pictures = grok_images::new_pictures(&before, &grok_images::pictures_in(root));
+                    events::attach_images(&mut reply.text, &pictures);
+                }
+                return Ok(reply);
             }
             self.run(program, &args, format, prompt, on_progress).await
         };

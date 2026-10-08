@@ -50,7 +50,10 @@ pub enum Command {
     GenerateImage { room: String, provider: String, prompt: String },
     /// Answers with the file's bytes as base64.
     ReadAttachment { path: String },
-    ImportReplyImage { room: String, path: String },
+    /// `by` is the bot that made it, for the Library.
+    ImportReplyImage { room: String, path: String, by: Option<String> },
+    LibraryList {},
+    LibraryRemove { file: String },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     RoomState { id: String },
     RoomPost { id: String, text: String },
@@ -142,7 +145,9 @@ impl Host {
             CopyAttachment { room, path } => reply(self.copy_attachment(room, path)?),
             GenerateImage { room, provider, prompt } => reply(self.generate_image(room, provider, prompt).await?),
             ReadAttachment { path } => reply(base64::engine::general_purpose::STANDARD.encode(self.read_attachment(path)?)),
-            ImportReplyImage { room, path } => reply(self.import_reply_image(room, path)?),
+            ImportReplyImage { room, path, by } => reply(self.import_reply_image(room, path, by)?),
+            LibraryList {} => reply(self.library_list()),
+            LibraryRemove { file } => reply(self.library_remove(file)?),
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text } => reply(self.room_post(id, text).await?),
@@ -224,7 +229,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 66);
+        assert_eq!(names.len(), 68);
         assert!(names.contains(&"room_answer".to_string()));
         assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_set_plan".to_string()));

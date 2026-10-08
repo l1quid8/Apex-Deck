@@ -11,6 +11,9 @@ import type { AgentInfo, AgentTool, AllowedRule, AppSession, FileChange, FolderL
 
 type Unlisten = () => void;
 
+/** A picture kept in the Library: `room` is the thread it was made in, `by` the bot. */
+export type LibraryItem = { file: string; kind: "image" | string; source: string; room: string; by?: string; created: number; path: string };
+
 export interface Backend {
   host?: { id: string; name: string; connection: import("./hostConnections").HostConnectionStore };
   machines?: import("./hostBackends").HostBackends;
@@ -109,8 +112,12 @@ export interface Backend {
   /** Make a picture with "chatgpt", "grok" or "venice" (optionally ":model")
    *  and save it with the thread's attachments. Returns its path. */
   generateImage(room: string, provider: string, prompt: string): Promise<string>;
-  /** Copy a picture a model made into this thread's attachments; the same source always gives the same copy. */
-  importReplyImage(room: string, path: string): Promise<string>;
+  /** Keep a picture a model made in the Library; the same source always gives the same copy. `by` is the bot's name. */
+  importReplyImage(room: string, path: string, by?: string): Promise<string>;
+  /** Every picture in the Library, newest first. */
+  libraryList(): Promise<LibraryItem[]>;
+  /** Delete a picture from the Library; the tool's own copy is left alone. */
+  libraryRemove(file: string): Promise<void>;
   /** A saved attachment's bytes, for showing pictures in the chat. */
   readAttachment(path: string): Promise<ArrayBuffer>;
   /** Files dropped on the window, with where they landed in CSS pixels. */
@@ -734,6 +741,8 @@ function demoBackend(): Backend {
     copyAttachment: async (_room, path) => path,
     generateImage: async () => { throw new Error("Pictures are made in the desktop app"); },
     importReplyImage: async (_room, path) => path,
+    libraryList: async () => [],
+    libraryRemove: async () => {},
     readAttachment: async () => { throw new Error("Pictures are shown in the desktop app"); },
     onFileDrop: async () => () => {},
     roomPin: async (id, fact) => {

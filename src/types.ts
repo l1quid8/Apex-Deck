@@ -123,7 +123,7 @@ export interface Compaction {
   upto: number;
 }
 
-export type AppSection = "agents" | "code" | "threads";
+export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
   recovery_seq?: number;
   snapshot: RoomSnapshot;

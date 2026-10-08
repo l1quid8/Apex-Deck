@@ -1010,12 +1010,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return known;
   }, [pathChecks, cwd, backend]);
 
-  // A model's picture may live outside the attachments folder (Codex keeps
-  // its own); a copy is taken the first time it is shown.
-  const readReplyImage = useCallback(
-    (path: string) => backend.importReplyImage(pane.id, path).then(backend.readAttachment),
-    [pane.id, backend],
-  );
+  // A model's picture lives outside Deck (Codex and Grok keep their own); the
+  // Library takes a copy the first time it is shown. One reader per bot, so
+  // pictures aren't read again on every render.
+  const replyReaders = useMemo(() => new Map<string, (path: string) => Promise<ArrayBuffer>>(), [pane.id, backend]);
+  const readReplyImage = useCallback((by: string) => {
+    let read = replyReaders.get(by);
+    if (!read) replyReaders.set(by, read = (path) => backend.importReplyImage(pane.id, path, by).then(backend.readAttachment));
+    return read;
+  }, [replyReaders, pane.id, backend]);
 
   /** Bring the transcript to where it should be after anything changed in it. */
   const settle = useRef(() => {});
@@ -2633,7 +2636,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
                 <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} />
-                <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage} onOpen={(path) => openTarget(path, true)} />
+                <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} />
               </div>
               {messageActions(entry.message)}
             </div>

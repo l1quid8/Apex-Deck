@@ -16,6 +16,7 @@ mod gemini_usage;
 mod codex_server;
 mod codex_hook;
 mod events;
+mod grok_images;
 mod grok_usage;
 mod mcp;
 mod openai;
