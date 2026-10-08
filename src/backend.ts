@@ -25,6 +25,8 @@ export interface Backend {
   startupFolders(): Promise<string[]>;
   sessionLoad(): Promise<AppSession | null>;
   sessionSave(session: AppSession): Promise<void>;
+  /** The saved session changed, by this app or another client such as the phone. */
+  onSessionChanged?(cb: (session: AppSession) => void): Promise<Unlisten>;
   /** settings.json, beside the session file; settings.ts reads it. */
   settingsLoad(): Promise<unknown>;
   settingsSave(settings: unknown): Promise<void>;

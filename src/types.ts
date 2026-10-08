@@ -158,6 +158,8 @@ export interface AppSession {
   layouts?: Record<string, unknown>;
   threadDetailsOpen?: boolean;
   threadDetailsCollapsed?: Partial<Record<import("./detailsLayout").DetailsSection, boolean>>;
+  /** Which client saved this copy: the Mac app's "<tag>:<count>", or "phone". */
+  savedBy?: string;
 }
 
 export type Speaker = { kind: "human" } | { kind: "bot"; id: string };

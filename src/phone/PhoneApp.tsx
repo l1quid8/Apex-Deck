@@ -81,7 +81,7 @@ type Room = {
 /** What a bar pill shows for one bot: context left as a hairline, and whether its plan is nearly used up. */
 type PillMeter = { context: number | null; low: boolean; planLow: boolean };
 /** Long-press or ⋯ on a row, + at the top of Threads, or renaming a thread. */
-type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string };
+type Menu = { kind: "thread"; id: string } | { kind: "project"; id: string } | { kind: "new" } | { kind: "rename"; id: string; text: string } | { kind: "bots"; id: string };
 type Browse = {
   hostId: string;
   path: string | null;
@@ -479,7 +479,7 @@ export function PhoneApp() {
     if (!macHost) throw new Error(mac ? downLine(mac) : "Pair this phone with your Mac before saving a thread.");
     const fresh = await macHost.backend.sessionLoad();
     if (!fresh) throw new Error("The Mac has no saved threads.");
-    const next = change(fresh);
+    const next = { ...change(fresh), savedBy: "phone" };
     await macHost.backend.sessionSave(next);
     setSession(next);
     try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* saved on the Mac */ }
@@ -1222,11 +1222,41 @@ export function PhoneApp() {
               {menuPane.id === openId && room && room.id === openPane?.id && room.participants.map((who) => (
                 <MenuRow key={who.id} label={`${who.display_name} details`} detail="Model, reasoning, context and plan" onClick={() => { setMenu(null); setBotSheet(who.id); }} />
               ))}
+              {menuPane.id === openId && room && room.id === openPane?.id && (
+                <MenuRow label="Bots…" detail="Add or remove bots in this thread" onClick={() => {
+                  if (!workspace || !canStartOn(workspaceHost(workspace))) { setNotice("Adding or removing bots needs Full access on this thread's machine. Change this phone's level in that machine's Settings → Paired devices."); return; }
+                  setMenu({ kind: "bots", id: menuPane.id });
+                }} />
+              )}
               <MenuRow label={menuPane.pinned ? "Unpin" : "Pin"} onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, pinned: item.pinned ? undefined : true })); setMenu(null); }} />
               <MenuRow label="Rename…" onClick={() => setMenu({ kind: "rename", id: menuPane.id, text: menuPane.title })} />
               {!menuPane.unread && <MenuRow label="Mark as unread" onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, unread: true })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />}
               {workspace?.path && <MenuRow label="Copy folder path" detail={folderCopyText(workspace.path)} onClick={() => { copyPath(workspace.path); setMenu(null); }} />}
               <MenuRow label="Archive" danger onClick={() => { patchPane(menuPane.id, (item) => ({ ...item, archived: true, pinned: undefined })); setMenu(null); if (openId === menuPane.id) setOpenId(null); }} />
+            </Sheet>
+          );
+        })()}
+        {menu?.kind === "bots" && menuPane && room && room.id === menuPane.id && (() => {
+          const host = workspaces.find((item) => item.id === menuPane.workspaceId) ? phoneHost(workspaceHost(workspaces.find((item) => item.id === menuPane.workspaceId)!)) : null;
+          const absent = (session?.profiles ?? []).filter((profile) => !room.configs.some((config) => config.id === profile.id));
+          const add = (config: ParticipantConfig) => {
+            if (!host) return setNotice("This thread's machine isn't connected.");
+            host.backend.roomAddParticipant(room.id, config).then(
+              () => setRoom((current) => current && current.id === room.id ? { ...current, configs: [...current.configs, config], participants: [...current.participants, toPerson(config)] } : current),
+              (error) => setNotice(`Could not add ${config.display_name}: ${words(error)}`));
+          };
+          const remove = (config: ParticipantConfig) => {
+            if (!host) return setNotice("This thread's machine isn't connected.");
+            host.backend.roomRemoveParticipant(room.id, config.id).then(
+              () => setRoom((current) => current && current.id === room.id ? { ...current, configs: current.configs.filter((item) => item.id !== config.id), participants: current.participants.filter((item) => item.id !== config.id) } : current),
+              (error) => setNotice(`Could not remove ${config.display_name}: ${words(error)}`));
+          };
+          return (
+            <Sheet title="Bots" onClose={() => setMenu(null)}>
+              {room.configs.length === 0 && <p className="ph-meta">No bots in this thread yet.</p>}
+              {room.configs.map((config) => <MenuRow key={config.id} label={`Remove ${config.display_name}`} detail={`@${config.id}`} danger onClick={() => remove(config)} />)}
+              {absent.map((profile) => <MenuRow key={profile.id} label={`Add ${profile.display_name}`} detail={`@${profile.id}`} onClick={() => add(profile)} />)}
+              {absent.length === 0 && <p className="ph-meta">Every saved bot is already here. Make new ones on the Mac.</p>}
             </Sheet>
           );
         })()}

@@ -141,7 +141,7 @@ test('call reaches the transport as it is, for mods', async () => {
 
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
-  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent',
+  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged',
     'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });
