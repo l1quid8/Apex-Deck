@@ -57,6 +57,8 @@ pub(crate) struct Outcome {
     pub error: Option<String>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Cost reported by the tool, in millionths of a US dollar.
+    pub cost_micros: Option<u64>,
 }
 
 /// Longest activity line shown in the chat.
@@ -91,6 +93,7 @@ pub(crate) struct EventReader {
     last_error: Option<String>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    cost_micros: Option<u64>,
     /// Claude Code: the input of the turn's latest request and the model
     /// that took it. The context window is only named at the end.
     last_request: Option<(u64, String)>,
@@ -128,6 +131,7 @@ impl EventReader {
             last_error: None,
             input_tokens: None,
             output_tokens: None,
+            cost_micros: None,
             last_request: None,
             images: Vec::new(),
             helpers: 0,
@@ -183,6 +187,7 @@ impl EventReader {
             text,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
+            cost_micros: self.cost_micros,
         }
     }
 
@@ -407,6 +412,12 @@ impl EventReader {
                     self.input_tokens = Some(input + cached);
                 }
                 self.output_tokens = count("output_tokens").or(self.output_tokens);
+                // Each result reports the cumulative estimated cost for this CLI
+                // conversation. A helper follow-up may emit another result;
+                // retain its newer total rather than adding totals together.
+                if let Some(cost) = usd_to_micros(&event["total_cost_usd"]) {
+                    self.cost_micros = Some(cost);
+                }
                 if let Some(context) = self.claude_context(&event["modelUsage"]) {
                     steps.push(Step::Context(context));
                 }
@@ -885,6 +896,21 @@ impl EventReader {
     }
 }
 
+/// Convert a reported USD estimate to integer microdollars without accepting
+/// negative, non-finite, or out-of-range values. Missing/invalid data stays
+/// unknown; this deliberately does not estimate from token counts.
+fn usd_to_micros(value: &Value) -> Option<u64> {
+    let usd = value.as_f64()?;
+    if !usd.is_finite() || usd < 0.0 {
+        return None;
+    }
+    let micros = (usd * 1_000_000.0).round();
+    // u64::MAX as f64 rounds up to 2^64, so a strict upper bound is needed
+    // before Rust's float-to-int cast (which otherwise saturates).
+    (micros.is_finite() && micros < 18_446_744_073_709_551_616.0)
+        .then_some(micros as u64)
+}
+
 /// Claude Code's plan usage from a `rate_limit_event`. Utilization is a
 /// fraction of the window. `None` when no window gives a figure.
 pub(crate) fn claude_plan(info: &Value) -> Option<PlanUsage> {
@@ -1086,9 +1112,56 @@ mod tests {
                 text: "It says hello.".into(),
                 error: None,
                 input_tokens: Some(1104),
-                output_tokens: Some(12)
+                output_tokens: Some(12),
+                cost_micros: None
             }
         );
+    }
+
+    #[test]
+    fn claude_reports_estimated_cost_as_microdollars() {
+        let (_, priced) = read(
+            OutputFormat::ClaudeStream,
+            &[r#"{"type":"result","is_error":false,"result":"Done.","total_cost_usd":0.0123456}"#],
+        );
+        assert_eq!(priced.cost_micros, Some(12_346));
+
+        let (_, free) = read(
+            OutputFormat::ClaudeStream,
+            &[r#"{"type":"result","is_error":false,"result":"Done.","total_cost_usd":0}"#],
+        );
+        assert_eq!(free.cost_micros, Some(0));
+    }
+
+    #[test]
+    fn missing_or_invalid_claude_cost_stays_unknown() {
+        for value in ["null", "-0.01", "1e100"] {
+            let line = format!(
+                r#"{{"type":"result","is_error":false,"result":"Done.","total_cost_usd":{value}}}"#
+            );
+            let (_, outcome) = read(OutputFormat::ClaudeStream, &[&line]);
+            assert_eq!(outcome.cost_micros, None, "value: {value}");
+        }
+        let (_, absent) = read(
+            OutputFormat::ClaudeStream,
+            &[r#"{"type":"result","is_error":false,"result":"Done."}"#],
+        );
+        assert_eq!(absent.cost_micros, None);
+    }
+
+    #[test]
+    fn claude_helper_follow_up_keeps_new_cumulative_cost_without_adding_results() {
+        let mut reader = EventReader::new(OutputFormat::ClaudeStream, None);
+        reader.push(
+            r#"{"type":"result","is_error":false,"result":"First.","total_cost_usd":0.01}
+"#,
+        );
+        reader.await_follow_up();
+        reader.push(
+            r#"{"type":"result","is_error":false,"result":"Second.","total_cost_usd":0.015}
+"#,
+        );
+        assert_eq!(reader.outcome().cost_micros, Some(15_000));
     }
 
     #[test]
@@ -1173,7 +1246,8 @@ mod tests {
                 text: "All tests pass.".into(),
                 error: None,
                 input_tokens: Some(900),
-                output_tokens: Some(40)
+                output_tokens: Some(40),
+                cost_micros: None
             }
         );
     }
@@ -1235,7 +1309,8 @@ mod tests {
                 text: "All pass.".into(),
                 error: None,
                 input_tokens: Some(700),
-                output_tokens: Some(30)
+                output_tokens: Some(30),
+                cost_micros: None
             }
         );
     }

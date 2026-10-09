@@ -62,10 +62,24 @@ test('conversation requests bind one explicit destination and exact thread label
   assert.deepEqual(assistantMessageArgs(owner, pending, [{ id: 'chat-a', label: 'Build room' }]), {
     ...owner, requestId: 'req-1', text: 'Fix it', destination: pending.destination, newWorkerProfiles: [], checks: [['npm', 'test']],
     threadLabels: [{ id: 'chat-a', label: 'Original label' }], mode: 'in_place',
+    workerProfiles: [], spendLimitMicros: null,
   });
   assert.deepEqual(assistantMessageArgs(owner, { ...pending, threadLabels: undefined }, [{ id: 'chat-a', label: 'Build room' }]).threadLabels, [{ id: 'chat-a', label: 'Build room' }], 'older pending records use provided current labels');
   assert.equal(assistantMessageArgs(owner, { ...pending, destination: null, mode: 'isolated' }, []).destination, null);
   assert.throws(() => assistantMessageArgs({ ...owner, cwd: '/elsewhere' }, pending, []), /different assignment/);
+});
+
+test('read-only recovery retains the selected worker catalogue and original spend cap', () => {
+  const owner = { workspaceId: 'w', cwd: '/work', hostId: 'host', conversationId: 'monitor' };
+  const worker = { id: 'luna', display_name: 'Luna', backend: { kind: 'agent', tool: 'codex' } };
+  const pending = { requestId: 'read-request', text: 'Ask Luna to review the chats', owner, destination: null, newWorkerProfiles: [], workerProfiles: [worker], mode: 'read_only', checks: [], spendLimitMicros: 500_000 };
+  const stored = new Map();
+  const storage = { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) };
+  savePendingRequest(storage, pending, owner);
+  const recovered = loadPendingRequest(storage, owner);
+  assert.equal(recovered.mode, 'read_only');
+  assert.deepEqual(assistantMessageArgs(owner, recovered, []).workerProfiles, [worker]);
+  assert.equal(assistantMessageArgs(owner, recovered, []).spendLimitMicros, 500_000);
 });
 
 test('uncertain request storage is scoped to the exact owner and can be explicitly cleared', () => {

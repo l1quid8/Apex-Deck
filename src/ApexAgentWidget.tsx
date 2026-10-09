@@ -24,7 +24,7 @@ function readStored<T>(key: string, fallback: T): T {
 function saveStored(key: string, value: unknown) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage can be disabled */ } }
 function monitorFor(monitors: ProjectMonitor[], id: string | null) { return monitors.find((monitor) => monitor.workspaceId === id); }
 
-export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpen, onClose, onSelect, onAddSource, children, offlineWorkspaceIds = [], onReply, onRetry, appearanceRequest = 0, hideRequest = 0, taskCounts = {} }: {
+export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpen, onClose, onSelect, onAddSource, children, offlineWorkspaceIds = [], onReply, onRetry, appearanceRequest = 0, hideRequest = 0, taskCounts = {}, panelMode = 'floating' }: {
   workspaces: Workspace[];
   workspaceId: string | null;
   open: boolean;
@@ -40,6 +40,8 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
   onRetry?: (workspaceId: string) => Promise<void>;
   appearanceRequest?: number;
   hideRequest?: number;
+  /** Keep the avatar and its overlays while the app renders the panel in its body layout. */
+  panelMode?: 'floating' | 'dock';
 }) {
   const [retry, setRetry] = useState<{ workspaceId: string; state: 'sending' | 'failed'; message?: string } | null>(null);
   const [position, setPosition] = useState<WidgetPosition>(() => {
@@ -280,7 +282,7 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
       </div>}
     </div>
 
-    {open && selected && <section className="apex-widget-panel" style={panelStyle} role="dialog" aria-label={`ApexAgent · ${selected.name}`} data-apex-agent-overlay="panel" ref={panelRef}>
+    {panelMode === 'floating' && open && selected && <section className="apex-widget-panel" style={panelStyle} role="dialog" aria-label={`ApexAgent · ${selected.name}`} data-apex-agent-overlay="panel" ref={panelRef}>
       <header className="apex-widget-header"><div className="apex-widget-title"><strong>ApexAgent</strong><span>{selected.name}</span></div><div className="apex-widget-header-actions"><span className={`apex-widget-status status-${status}`}>{widgetStatusLabel(status)}</span><button onClick={closePanel} aria-label="Close ApexAgent">×</button></div></header>
       <div className="apex-widget-projects" aria-label="Choose project">
         {workspaces.filter((workspace) => !workspace.hidden).map((workspace) => {

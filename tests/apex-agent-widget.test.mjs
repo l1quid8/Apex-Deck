@@ -139,6 +139,14 @@ test('focused avatar tooltip is removed while the conversation panel is open', (
   assert.equal(findNode(tree, (node) => node.props?.['data-apex-agent-overlay'] === 'tooltip'), null);
 });
 
+test('dock mode keeps the floating avatar and source drop target but suppresses the second panel', () => {
+  const harness = shellHarness();
+  const props = { workspaces: [workspace], workspaceId: workspace.id, open: true, panelMode: 'dock', monitors: [monitor()], onOpen() {}, onClose() {}, onSelect() {}, onAddSource: async () => {}, children: 'conversation' };
+  const tree = harness.render(props);
+  assert.ok(findNode(tree, (node) => node.props?.['data-apex-agent-overlay'] === 'avatar'));
+  assert.equal(findNode(tree, (node) => node.props?.['data-apex-agent-overlay'] === 'panel'), null);
+});
+
 test('drop result remains with its captured project while the user switches projects mid-save', async () => {
   const projectB = { id: 'project-b', name: 'Project B', path: '/work/b', hostId: 'host-b' };
   const monitorB = { ...monitor(), workspaceId: projectB.id, hostId: projectB.hostId, cwd: projectB.path };

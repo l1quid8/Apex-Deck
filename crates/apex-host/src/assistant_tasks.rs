@@ -55,6 +55,7 @@ pub enum TaskStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskMode {
+    ReadOnly,
     InPlace,
     Isolated,
 }
@@ -432,7 +433,13 @@ impl AssistantTasks {
             .cloned()
             .ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
         check_owner_revision(&current, expected_revision, owner)?;
-        if !matches!(
+        let budget_resume = current.status == TaskStatus::NeedsYou
+            && current.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true)
+            && current.attempts.last().is_some_and(|attempt| attempt.finished_at_ms.is_some());
+        if current.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64())
+            .is_some_and(|limit| current.usage.as_ref().and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit))
+        { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Raise or remove the spend limit before starting another attempt.")); }
+        if !budget_resume && !matches!(
             current.status,
             TaskStatus::Queued
                 | TaskStatus::Failed
@@ -449,6 +456,7 @@ impl AssistantTasks {
         let task = document.tasks.get_mut(task_id).unwrap();
         task.status = TaskStatus::Running;
         task.result = None;
+        if let Some(data) = task.result_data.as_mut() { data["budgetPaused"] = serde_json::json!(false); }
         task.updated_at_ms = now_ms();
         task.revision += 1;
         if let Some(previous) = task.attempts.last_mut() {
@@ -600,6 +608,11 @@ impl AssistantTasks {
         total.input_tokens = add(total.input_tokens, delta.input_tokens);
         total.output_tokens = add(total.output_tokens, delta.output_tokens);
         total.cost_micros = add(total.cost_micros, delta.cost_micros);
+        if task.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64())
+            .is_some_and(|limit| total.cost_micros.is_some_and(|cost| cost >= limit))
+        {
+            task.result_data.get_or_insert_with(|| serde_json::json!({}))["budgetPaused"] = serde_json::json!(true);
+        }
         task.updated_at_ms = now_ms();
         let result = task.clone();
         save_mutation(&self.inner, &mut document, before)?;
@@ -700,11 +713,11 @@ impl AssistantTasks {
         &self,
         task_id: &str,
         run_id: &str,
-        outcome: TaskOutcome,
+        mut outcome: TaskOutcome,
     ) -> Result<AssistantTask, TaskError> {
         if !matches!(
             outcome.status,
-            TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled
+            TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou
         ) {
             return Err(TaskError::new(
                 TaskErrorKind::InvalidTransition,
@@ -724,7 +737,7 @@ impl AssistantTasks {
                 "This task has no active attempt.",
             )
         })?;
-        if attempt.run_id != run_id
+        if attempt.run_id != run_id || attempt.finished_at_ms.is_some()
             || !matches!(current.status, TaskStatus::Running | TaskStatus::NeedsYou)
         {
             return Err(TaskError::new(
@@ -732,12 +745,42 @@ impl AssistantTasks {
                 "This run no longer owns the task.",
             ));
         }
-        if !allowed(current.status, outcome.status) {
+        // A live human wait already exposes NeedsYou. Settling a spend pause
+        // in that same state must still close its owned run attempt.
+        if !allowed(current.status, outcome.status)
+            && !(current.status == TaskStatus::NeedsYou && outcome.status == TaskStatus::NeedsYou)
+        {
             return Err(TaskError::new(
                 TaskErrorKind::InvalidTransition,
                 "This attempt cannot finish in that state.",
             ));
         }
+        // A worker prepares its result outside this lock. Human notes and
+        // limit changes may have arrived in the meantime; settle against the
+        // current ledger rather than replacing those fields with its snapshot.
+        let mut data = outcome.result_data.take().unwrap_or_else(|| serde_json::json!({}));
+        if !data.is_object() { data = serde_json::json!({}); }
+        if let Some(latest) = current.result_data.as_ref() {
+            for key in ["spendLimitMicros", "queuedNotes"] {
+                if let Some(value) = latest.get(key) { data[key] = value.clone(); }
+            }
+            let mut history = latest["taskHistory"].as_array().cloned().unwrap_or_default();
+            for entry in data["taskHistory"].as_array().into_iter().flatten() {
+                if !history.contains(entry) { history.push(entry.clone()); }
+            }
+            history.sort_by_key(|entry| entry["atMs"].as_u64().unwrap_or(0));
+            if history.len() > 200 { history.drain(..history.len() - 200); }
+            if !history.is_empty() { data["taskHistory"] = serde_json::json!(history); }
+        }
+        let over_limit = data["spendLimitMicros"].as_u64().is_some_and(|limit| {
+            current.usage.as_ref().and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit)
+        });
+        if outcome.status != TaskStatus::Cancelled && over_limit {
+            outcome.status = TaskStatus::NeedsYou;
+            data["budgetPaused"] = serde_json::json!(true);
+            outcome.result = Some("Paused at the reported spend limit. Raise or remove the limit, then resume this task.".into());
+        }
+        outcome.result_data = (!data.as_object().is_some_and(|object| object.is_empty())).then_some(data);
         let task = document.tasks.get_mut(task_id).unwrap();
         task.status = outcome.status;
         task.result = outcome.result;
@@ -752,7 +795,7 @@ impl AssistantTasks {
             attempt.status = outcome.status;
             if matches!(
                 outcome.status,
-                TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled
+                TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::NeedsYou
             ) {
                 attempt.finished_at_ms = Some(now_ms());
             }
@@ -1127,6 +1170,65 @@ mod tests {
         assert_eq!(done.usage, updated.usage);
         assert_eq!(done.attempts[0].usage, updated.usage);
         assert!(store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: Some(99), cost_micros: None }).is_err());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn spend_pause_persists_and_rejects_late_events_and_resume_below_limit() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("cap", "Review it"), "brief".into(), Some(destination())).unwrap();
+        let task = store.set_result_data(&task.id, task.revision, &owner(), Some(serde_json::json!({"mode":"read_only","spendLimitMicros":10}))).unwrap();
+        let (task, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        let unknown = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: Some(20), output_tokens: None, cost_micros: None }).unwrap();
+        assert_ne!(unknown.result_data.as_ref().unwrap()["budgetPaused"], true, "unknown provider cost cannot invent a spend pause");
+        let met = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: None, cost_micros: Some(10) }).unwrap();
+        assert_eq!(met.result_data.as_ref().unwrap()["budgetPaused"], true);
+        store.set_run_waiting(&task.id, &run, true).unwrap();
+        let paused = store.finish_attempt(&task.id, &run, TaskOutcome { status: TaskStatus::NeedsYou, result: Some("Spend limit reached".into()), result_data: met.result_data, usage: None }).unwrap();
+        assert!(paused.attempts[0].finished_at_ms.is_some());
+        assert!(store.begin_attempt(&paused.id, paused.revision, &owner()).is_err());
+        assert!(store.finish_attempt(&task.id, &run, TaskOutcome { status: TaskStatus::ReadyForReview, result: None, result_data: None, usage: None }).is_err());
+        let reopened = AssistantTasks::open(ledger(&path)).unwrap();
+        let restored = reopened.get(&task.id).unwrap().unwrap();
+        assert_eq!(restored.status, TaskStatus::NeedsYou, "a settled spend pause survives restart without starting work");
+        let mut data = restored.result_data.clone().unwrap(); data["spendLimitMicros"] = serde_json::json!(20);
+        let raised = reopened.set_result_data(&restored.id, restored.revision, &owner(), Some(data)).unwrap();
+        let (resumed, next_run) = reopened.begin_attempt(&raised.id, raised.revision, &owner()).unwrap();
+        assert_eq!(resumed.attempts.len(), 2); assert_ne!(next_run, run);
+        assert_eq!(resumed.result_data.unwrap()["budgetPaused"], false);
+        assert!(reopened.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: None, cost_micros: Some(99) }).is_err());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn settlement_preserves_notes_and_limits_written_after_the_worker_snapshot() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("race", "Review it"), "brief".into(), Some(destination())).unwrap();
+        let task = store.set_result_data(&task.id, task.revision, &owner(), Some(serde_json::json!({
+            "spendLimitMicros": 100, "queuedNotes": [], "budgetPaused": false,
+            "taskHistory": [{"atMs": 1, "kind": "request", "text": "Review it"}]
+        }))).unwrap();
+        let (running, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        let mut stale_result = running.result_data.clone().unwrap();
+        stale_result["taskHistory"].as_array_mut().unwrap().push(serde_json::json!({"atMs": 3, "kind": "result", "text": "Findings"}));
+        let used = store.add_run_usage(&task.id, &run, TaskUsage { cost_micros: Some(10), input_tokens: None, output_tokens: None }).unwrap();
+        let mut latest = used.result_data.clone().unwrap();
+        latest["spendLimitMicros"] = serde_json::json!(5);
+        latest["queuedNotes"] = serde_json::json!(["Keep archived chats untouched"]);
+        latest["taskHistory"].as_array_mut().unwrap().push(serde_json::json!({"atMs": 2, "kind": "note", "text": "Keep archived chats untouched"}));
+        store.set_result_data(&task.id, used.revision, &owner(), Some(latest)).unwrap();
+        let settled = store.finish_attempt(&task.id, &run, TaskOutcome {
+            status: TaskStatus::ReadyForReview, result: Some("Findings".into()), result_data: Some(stale_result), usage: None,
+        }).unwrap();
+        let data = settled.result_data.unwrap();
+        assert_eq!(data["spendLimitMicros"], 5);
+        assert_eq!(data["queuedNotes"], serde_json::json!(["Keep archived chats untouched"]));
+        assert_eq!(data["taskHistory"].as_array().unwrap().len(), 3);
+        assert_eq!(data["taskHistory"][1]["kind"], "note");
+        assert_eq!(settled.status, TaskStatus::NeedsYou);
+        assert_eq!(data["budgetPaused"], true);
         std::fs::remove_dir_all(path).unwrap();
     }
 

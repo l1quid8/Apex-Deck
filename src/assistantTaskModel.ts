@@ -21,6 +21,8 @@ export interface AssistantTaskDestination {
   workers: string[];
   newThread: boolean;
 }
+export type AssistantTaskMode = 'read_only' | 'in_place' | 'isolated';
+export interface TaskHistoryEntry { atMs: number; kind: string; text: string }
 export interface AssistantTask {
   id: string;
   workspaceId: string;
@@ -37,24 +39,26 @@ export interface AssistantTask {
   attempts: { number: number; runId: string; status: AssistantTaskStatus; startedAtMs: number; finishedAtMs: number | null; reviewRevision: number | null; usage: TaskUsage | null }[];
   status: AssistantTaskStatus;
   result: string | null;
-  resultData?: { reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; worktreeDiskBytes?: number } | null;
+  resultData?: { reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; worktreeDiskBytes?: number; spendLimitMicros?: number | null; budgetPaused?: boolean; taskHistory?: TaskHistoryEntry[] } | null;
   revision: number;
-  mode: 'in_place' | 'isolated';
+  mode: AssistantTaskMode;
   usage: TaskUsage | null;
   createdAtMs: number;
   updatedAtMs: number;
 }
 export interface TaskUsage { inputTokens?: number | null; outputTokens?: number | null; costMicros?: number | null }
-export interface AssistantTaskSnapshot { workspaceId: string; revision: number; tasks: AssistantTask[]; executions: { taskId: string; workspaceId: string; threadId: string; mode: 'in_place' | 'isolated'; tombstonedAtMs: number | null; pane?: AssistantExecutionPane }[] }
+export interface AssistantTaskSnapshot { workspaceId: string; revision: number; tasks: AssistantTask[]; routingThreads?: { id: string; workers: ParticipantConfig[] }[]; namedOnlyWorkerIds?: string[]; executions: { taskId: string; workspaceId: string; threadId: string; mode: AssistantTaskMode; tombstonedAtMs: number | null; pane?: AssistantExecutionPane }[] }
 export interface PendingAssistantRequest {
   requestId: string;
   text: string;
   owner: AssistantTaskOwner;
   destination: AssistantTaskDestination | null;
   newWorkerProfiles: ParticipantConfig[];
-  mode: 'in_place' | 'isolated';
+  mode: AssistantTaskMode;
   checks: string[][];
   threadLabels?: { id: string; label: string }[];
+  workerProfiles?: ParticipantConfig[];
+  spendLimitMicros?: number | null;
 }
 
 export function pendingRequestStorageKey(owner: AssistantTaskOwner): string {
@@ -71,7 +75,7 @@ export function loadPendingRequest(storage: Pick<Storage, 'getItem' | 'removeIte
   if (!raw) return null;
   try {
     const pending = JSON.parse(raw) as PendingAssistantRequest;
-    if (typeof pending.requestId === 'string' && typeof pending.text === 'string' && pendingRequestMatchesOwner(pending, owner)) return { ...pending, checks: Array.isArray(pending.checks) ? pending.checks : [], mode: pending.mode === 'isolated' ? 'isolated' : 'in_place' };
+    if (typeof pending.requestId === 'string' && typeof pending.text === 'string' && pendingRequestMatchesOwner(pending, owner)) return { ...pending, checks: Array.isArray(pending.checks) ? pending.checks : [], mode: pending.mode === 'isolated' || pending.mode === 'read_only' ? pending.mode : 'in_place' };
   } catch { /* discard malformed local recovery state */ }
   storage.removeItem(key);
   return null;
@@ -93,10 +97,12 @@ export function assistantMessageArgs(owner: AssistantTaskOwner, pending: Pending
     requestId: pending.requestId, text: pending.text, destination: pending.destination,
     newWorkerProfiles: pending.newWorkerProfiles, threadLabels: pending.threadLabels ?? threadLabels, mode: pending.mode,
     checks: checks ?? pending.checks,
+    workerProfiles: pending.workerProfiles ?? [],
+    spendLimitMicros: pending.spendLimitMicros ?? null,
   };
 }
 
-export function assistantTaskActionArgs(task: AssistantTask, action: string, payload: { text?: string; destination?: AssistantTaskDestination; newWorkerProfiles?: ParticipantConfig[]; checks?: string[][]; mode?: 'in_place' | 'isolated' } = {}) {
+export function assistantTaskActionArgs(task: AssistantTask, action: string, payload: { text?: string; destination?: AssistantTaskDestination; newWorkerProfiles?: ParticipantConfig[]; checks?: string[][]; mode?: AssistantTaskMode; spendLimitMicros?: number | null } = {}) {
   return { taskId: task.id, revision: task.revision, owner: task.owner, mode: task.mode, action, ...payload };
 }
 

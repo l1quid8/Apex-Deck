@@ -4,13 +4,14 @@ import type { Pane, ParticipantConfig, Workspace } from './types';
 import { workspaceHost } from './hostSession.ts';
 import { compatibleMonitorProfiles, defaultMonitorProfileId, monitorStatusLabel, parseProjectFiles, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
 import { ApexAgentTasks } from './ApexAgentTasks.tsx';
+import type { ReactNode } from 'react';
 
 function time(value: number | null | undefined): string {
   if (!value) return 'Not yet';
   return new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpenThread, onMonitorChange, widgetMode = false, onHide, onCustomize }: {
+export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpenThread, onMonitorChange, widgetMode = false, onHide, onCustomize, focused, onToggleFocus, projectSelector }: {
   workspace: Workspace;
   backend: Backend;
   profiles: ParticipantConfig[];
@@ -21,6 +22,9 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
   widgetMode?: boolean;
   onHide?: () => void;
   onCustomize?: () => void;
+  focused?: boolean;
+  onToggleFocus?: () => void;
+  projectSelector?: ReactNode;
 }) {
   const [monitor, setMonitor] = useState<ProjectMonitor | null>(null);
   const [loading, setLoading] = useState(true);
@@ -31,7 +35,7 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [selectedThreads, setSelectedThreads] = useState<string[]>([]);
-  const [tab, setTab] = useState<'chat' | 'activity' | 'settings'>('chat');
+  const [tab, setTab] = useState<'chat' | 'tasks' | 'activity' | 'settings'>('chat');
   const profilesAvailable = useMemo(() => compatibleMonitorProfiles(profiles), [profiles]);
   const requestVersion = useRef(0);
   const requestEpoch = useRef(0);
@@ -287,18 +291,7 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
     {finding.status === 'open' && <div className="apex-agent-buttons"><button disabled={busy} onClick={() => void mutate('monitor_resolve', { findingId: finding.id, status: 'resolved' })}>Resolve</button><button disabled={busy} onClick={() => void mutate('monitor_resolve', { findingId: finding.id, status: 'dismissed' })}>Dismiss</button><button disabled={busy} onClick={() => void mutate('monitor_resolve', { findingId: finding.id, status: 'snoozed', snoozedUntil: Date.now() + 24 * 60 * 60 * 1000 })}>Snooze</button></div>}
   </article>)}</div>;
 
-  const chatView = loading ? <div className="apex-agent-empty" role="status">Opening this project’s conversation…</div> : monitor ? <>
-    <div className="apex-agent-transcript" aria-live="polite">
-      {monitor.messages.map((message) => <article className={`apex-agent-message ${message.role}`} key={message.id}>
-        <div className="apex-agent-message-role">{message.role === 'human' ? 'You' : 'ApexAgent'} <time>{time(message.at)}</time></div>
-        <p>{message.text}</p>
-        {message.evidence.length > 0 && <div className="apex-agent-evidence">{message.evidence.map((item, index) => <button key={`${item.sourceId}:${index}`} onClick={() => openEvidence(item)} title={item.excerpt}>{item.label}<small>{item.excerpt}</small></button>)}</div>}
-      </article>)}
-      {monitor.messages.length === 0 && <div className="apex-agent-empty">ApexAgent is ready to talk about {workspace.name}.</div>}
-      {findingCards}
-    </div>
-    <ApexAgentTasks key={JSON.stringify([workspace.id, monitor.cwd, monitor.hostId, monitor.conversationId, connectionVersion])} backend={backend} owner={{ workspaceId: workspace.id, cwd: monitor.cwd, hostId: monitor.hostId, conversationId: monitor.conversationId }} panes={panes} profiles={profiles} onMonitorUpdate={acceptAssistantMonitor} onOpenThread={onOpenThread} />
-  </> : <div className="apex-agent-setup">
+  const chatView = loading ? <div className="apex-agent-empty" role="status">Opening this project’s conversation…</div> : <div className="apex-agent-setup">
     <div className="apex-agent-intro"><strong>Hi, I’m ApexAgent.</strong><p>I’ll keep an eye on {workspace.name} and help you stay on top of the work. What should I take responsibility for?</p></div>
     {profilesAvailable.length === 0 && <div className="apex-agent-empty">Add an OpenAI-compatible HTTP or Claude Code profile in Agents before assigning ApexAgent.</div>}
     {profilesAvailable.length > 0 && <label className="apex-agent-profile">ApexAgent profile<select aria-label="ApexAgent profile" value={profileId} onChange={(event) => { setProfileId(event.target.value); window.localStorage?.setItem('apex-agent-profile', event.target.value); }}>{profilesAvailable.map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name}</option>)}</select></label>}
@@ -307,7 +300,7 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
     {profilesAvailable.length > 0 && <form className="apex-agent-setup-form" onSubmit={assign}><textarea value={responsibility} onChange={(event) => setResponsibility(event.target.value)} placeholder={`Tell ApexAgent what to own in ${workspace.name}…`} aria-label="Responsibility for ApexAgent" rows={3} required /><button className="primary" disabled={busy || !responsibility.trim() || !profileId}>Assign responsibility</button></form>}
   </div>;
 
-  const activityView = monitor && <div className="apex-agent-activity-view">
+  const activityContent = monitor && <div className="apex-agent-activity-view">
     <div className="apex-agent-controls"><div><strong>Activity</strong><p>Last checked {time(monitor.lastCheckedAt)} · Next check {time(monitor.nextCheckAt)}{monitor.wakeReason ? ` · ${monitor.wakeReason}` : ''}</p><p>{monitor.responsibility}</p><p>Next: {monitor.nextStep || 'Waiting for the next check'}</p>{!!monitor.decisions.length && <p>Decisions: {monitor.decisions.join(' · ')}</p>}{!!monitor.preferences.length && <p>Preferences: {monitor.preferences.join(' · ')}</p>}</div><div className="apex-agent-buttons"><button disabled={busy} onClick={() => void mutate('monitor_pause', { paused: !monitor.paused })}>{monitor.paused ? 'Resume' : 'Pause'}</button><button disabled={busy || monitor.paused} onClick={() => void mutate('monitor_check_now', {})}>Check now</button></div></div>
     {monitor.findings.map((finding) => <div className="apex-agent-activity-row" key={finding.id}><span>{finding.summary}</span><span>{finding.status}</span></div>)}
     {monitor.activity.map((item, index) => <div className="apex-agent-activity-row" key={`${item.at}:${index}`}><time>{time(item.at)}</time><span>{item.summary}</span></div>)}
@@ -317,11 +310,22 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
     {onHide && <button type="button" onClick={onHide}>Hide widget (keep watching)</button>}
     {onCustomize && <button type="button" onClick={onCustomize}>Appearance and quiet hours</button>}
   </div>;
+  const assistantInterior = monitor ? <ApexAgentTasks key={JSON.stringify([workspace.id, monitor.cwd, monitor.hostId, monitor.conversationId, connectionVersion])} backend={backend} owner={{ workspaceId: workspace.id, cwd: monitor.cwd, hostId: monitor.hostId, conversationId: monitor.conversationId }} panes={panes} profiles={profiles} onMonitorUpdate={acceptAssistantMonitor} onOpenThread={onOpenThread} onOpenEvidence={openEvidence} view={tab} messages={monitor.messages} focused={focused} onViewChange={(next) => setTab(next)}>{tab === 'chat' ? findingCards : tab === 'activity' ? activityContent : tab === 'settings' ? settingsView : null}</ApexAgentTasks> : tab === 'settings' ? settingsView : chatView;
   const panel = <section className={`apex-agent${widgetMode ? ' widget' : ''}`} role={widgetMode ? 'region' : 'dialog'} aria-modal={widgetMode ? undefined : true} aria-label={`ApexAgent for ${workspace.name}`}>
-    {!widgetMode && <header className="apex-agent-head"><div><span className="eyebrow">ApexAgent · {workspace.name}</span><h1>{monitor?.responsibility || 'Project conversation'}</h1></div><div className="apex-agent-head-actions">{monitor && <span className={`apex-agent-status ${monitor.paused ? 'paused' : ''}`}>{monitorStatusLabel(monitor)}</span>}<button className="icon" onClick={onClose} aria-label="Close ApexAgent">×</button></div></header>}
+    {(!widgetMode || onToggleFocus || projectSelector) && <header className="apex-agent-head">
+      <div className="apex-agent-head-row">
+        <div className="apex-agent-brand"><span className="eyebrow">ApexAgent · {workspace.name}</span><h1>ApexAgent</h1></div>
+        {projectSelector && <div className="apex-agent-project-selector">{projectSelector}</div>}
+        <div className="apex-agent-head-actions">{onToggleFocus && <button type="button" onClick={onToggleFocus}>{focused ? 'Return to dock' : 'Expand'}</button>}<button type="button" onClick={() => setTab(tab === 'settings' ? 'chat' : 'settings')}>Settings</button><button className="icon" onClick={onClose} aria-label="Close ApexAgent">×</button></div>
+      </div>
+      <div className="apex-agent-head-row apex-agent-head-context">
+        <p title={monitor?.responsibility ?? 'Project conversation'}>{monitor?.responsibility || 'Project conversation'}</p>
+        <div className="apex-agent-head-meta">{monitor && <span className={`apex-agent-status ${monitor.paused ? 'paused' : ''}`}>{monitorStatusLabel(monitor)}</span>}{monitor && (profilesAvailable.length > 0 || !!monitor.profileId) && <label className="apex-agent-thinking">Thinking with<select aria-label="Thinking with profile" value={monitor.profileId ?? profileId} onChange={(event) => { setProfileId(event.target.value); const profile = profilesAvailable.find((item) => item.id === event.target.value); if (profile) void mutate('monitor_profile_update', { revision: monitor.revision, profile }); }}><option value="">Choose profile</option>{monitor.profileId && !profilesAvailable.some((profile) => profile.id === monitor.profileId) && <option value={monitor.profileId}>Missing profile · {monitor.profileId}</option>}{profilesAvailable.map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name}</option>)}</select></label>}</div>
+      </div>
+    </header>}
     {error && <div className="apex-agent-error" role="alert">{error}</div>}
-    <nav className="apex-agent-tabs" aria-label="ApexAgent views">{(['chat', 'activity', 'settings'] as const).map((view) => <button key={view} className={tab === view ? 'active' : ''} onClick={() => setTab(view)}>{view[0].toUpperCase() + view.slice(1)}</button>)}</nav>
-    <div className="apex-agent-tabpanel">{tab === 'chat' ? chatView : tab === 'activity' ? (activityView ?? <div className="apex-agent-empty">Activity appears after you assign ApexAgent.</div>) : settingsView}</div>
+    <nav className="apex-agent-tabs" aria-label="ApexAgent views">{(['chat', 'tasks', 'activity'] as const).map((view) => <button key={view} className={tab === view ? 'active' : ''} onClick={() => setTab(view)}>{view[0].toUpperCase() + view.slice(1)}</button>)}</nav>
+    <div className="apex-agent-tabpanel">{assistantInterior}</div>
     {busy && <div className="apex-agent-busy" role="status">Saving…</div>}
   </section>;
   return widgetMode ? panel : <div className="apex-agent-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>{panel}</div>;

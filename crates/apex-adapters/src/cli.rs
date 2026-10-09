@@ -303,7 +303,7 @@ impl CliParticipant {
             text: outcome.text.trim().to_string(),
             input_tokens: outcome.input_tokens,
             output_tokens: outcome.output_tokens,
-            cost_micros: None,
+            cost_micros: outcome.cost_micros,
         })
     }
 
@@ -618,7 +618,23 @@ impl Participant for CliParticipant {
 
 #[cfg(test)]
 mod tests {
-    use super::{failure_summary, sign_in_hint, summarize_error};
+    use super::{failure_summary, sign_in_hint, summarize_error, CliParticipant};
+    use crate::events::{EventReader, OutputFormat};
+
+    #[test]
+    fn reported_cost_reaches_the_cli_reply() {
+        let config = serde_json::from_value(serde_json::json!({
+            "id": "claude", "display_name": "Claude",
+            "backend": {"kind":"agent", "tool":"claude_code", "model":null}
+        })).unwrap();
+        let mut reader = EventReader::new(OutputFormat::ClaudeStream, None);
+        reader.push(r#"{"type":"result","is_error":false,"result":"Done.","total_cost_usd":0.025}"#);
+        reader.finish();
+        let reply = CliParticipant::new(config)
+            .settle("claude", true, "ok", "", reader)
+            .unwrap();
+        assert_eq!(reply.cost_micros, Some(25_000));
+    }
 
     #[test]
     fn the_last_error_line_wins_and_its_json_message_is_unwrapped() {

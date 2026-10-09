@@ -344,7 +344,15 @@ impl Host {
                 *handle.task_error.lock().unwrap() = Some(message.text.clone());
             }
             RoomEvent::Usage { input_tokens, output_tokens, cost_micros, .. } => {
-                changed = self.assistant_tasks.add_run_usage(&entry.task_id, &run_id, crate::assistant_tasks::TaskUsage { input_tokens: *input_tokens, output_tokens: *output_tokens, cost_micros: *cost_micros }).is_ok();
+                if let Ok(updated) = self.assistant_tasks.add_run_usage(&entry.task_id, &run_id, crate::assistant_tasks::TaskUsage { input_tokens: *input_tokens, output_tokens: *output_tokens, cost_micros: *cost_micros }) {
+                    changed = true;
+                    if updated.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true) {
+                        if let Some(run) = self.assistant_runs.lock().unwrap().get(&entry.task_id) {
+                            run.budget_pause.store(true, Ordering::SeqCst);
+                            handle.runtime.stop(None);
+                        }
+                    }
+                }
             }
             RoomEvent::ApprovalRequested { .. } | RoomEvent::QuestionRequested { .. } | RoomEvent::ApprovalResolved { .. } | RoomEvent::QuestionResolved { .. } => {
                 let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
@@ -775,6 +783,7 @@ impl Host {
     }
 
     pub async fn room_add_participant(self: &Arc<Self>, id: String, participant: ParticipantConfig) -> Result<(), String> {
+        self.ensure_task_read_access(&id, &participant)?;
         let handle = self.handle(&id)?;
         handle.observation_revision.fetch_add(1, Ordering::SeqCst);
         self.require_idle(&id)?;
@@ -813,6 +822,7 @@ impl Host {
             if base.id != name { return Err("settings base belongs to another participant".into()); }
             merge_participant(&current, &base, &participant)?
         } else { participant };
+        self.ensure_task_read_access(&id, &next)?;
         let replacement = apex_adapters::build(next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
@@ -1118,7 +1128,7 @@ impl Host {
         if let Some(entry) = self.assistant_tasks.execution(&id).map_err(|e|e.to_string())? {
             let task = self.assistant_tasks.get(&entry.task_id).map_err(|e|e.to_string())?.ok_or("Owning task not found")?;
             if !matches!(task.status, crate::assistant_tasks::TaskStatus::Done | crate::assistant_tasks::TaskStatus::Cancelled) {
-                self.assistant_task_action(crate::assistant_service::AssistantActionInput { task_id: task.id.clone(), revision: task.revision, owner: task.owner.clone(), action: "cancel".into(), text: None, destination: None, new_worker_profiles: vec![], checks: None, mode: None }).await?;
+                self.assistant_task_action(crate::assistant_service::AssistantActionInput { task_id: task.id.clone(), revision: task.revision, owner: task.owner.clone(), action: "cancel".into(), text: None, destination: None, new_worker_profiles: vec![], checks: None, mode: None , spend_limit_micros: None, }).await?;
             }
             self.assistant_changed(&entry.workspace_id);
         }

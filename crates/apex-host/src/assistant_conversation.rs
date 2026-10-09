@@ -30,6 +30,7 @@ mod tests {
             text: "Please fix the parser in chat Build Room and ask @null to handle it".into(),
             destination: None,
             new_worker_profiles: vec![],
+            worker_profiles: vec![],
             threads: vec![ThreadChoice {
                 id: "thread-build".into(),
                 label: "Build Room".into(),
@@ -253,6 +254,158 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_imperative_routes_to_the_only_eligible_saved_chat() {
+        let mut request = request();
+        request.text = "Please fix the parser".into();
+        let intent = ConversationIntent::Handoff {
+            message: "Working".into(),
+            brief: "Fix parser".into(),
+            thread_id: "model-choice".into(),
+            workers: vec![],
+            review_criteria: vec![],
+        };
+        let ConversationDecision::Handoff {
+            thread_id, workers, ..
+        } = authorize(&request, intent)
+        else {
+            panic!("expected handoff")
+        };
+        assert_eq!(thread_id, "thread-build");
+        assert_eq!(workers, vec!["null"]);
+    }
+
+    #[test]
+    fn multiple_saved_chats_require_clarification_without_a_named_chat() {
+        let mut request = request();
+        request.text = "Please check the parser".into();
+        let mut other = request.threads[0].clone();
+        other.id = "thread-other".into();
+        other.label = "Other".into();
+        request.threads.push(other);
+        assert!(matches!(
+            authorize(
+                &request,
+                ConversationIntent::Handoff {
+                    message: "Go".into(),
+                    brief: "Check".into(),
+                    thread_id: "thread-build".into(),
+                    workers: vec!["null".into()],
+                    review_criteria: vec![]
+                }
+            ),
+            ConversationDecision::Clarify { .. }
+        ));
+    }
+
+    #[test]
+    fn a_unique_named_catalogue_worker_can_start_a_new_chat() {
+        let mut request = request();
+        request.text = "Please ask Nova to fix the parser".into();
+        request.worker_profiles = vec![profile("nova", false)];
+        request.worker_profiles[0].display_name = "Nova".into();
+        let ConversationDecision::Handoff {
+            new_thread,
+            workers,
+            worker_profiles,
+            ..
+        } = authorize(
+            &request,
+            ConversationIntent::Handoff {
+                message: "Starting".into(),
+                brief: "Fix parser".into(),
+                thread_id: "model-id".into(),
+                workers: vec!["null".into()],
+                review_criteria: vec![],
+            },
+        )
+        else {
+            panic!("expected handoff")
+        };
+        assert!(new_thread);
+        assert_eq!(workers, vec!["nova"]);
+        assert_eq!(worker_profiles[0].id.as_str(), "nova");
+    }
+
+    #[test]
+    fn named_worker_missing_from_named_chat_requires_clarification() {
+        let mut request = request();
+        request.text = "Please ask Null to fix this in Build Room".into();
+        request.threads[0].snapshot.participants = vec![profile("other", false)];
+        request.worker_profiles = vec![profile("null", false)];
+        let ConversationDecision::Clarify { message, .. } = authorize(
+            &request,
+            ConversationIntent::Handoff {
+                message: "Go".into(),
+                brief: "Fix".into(),
+                thread_id: "thread-build".into(),
+                workers: vec!["other".into()],
+                review_criteria: vec![],
+            },
+        ) else {
+            panic!("expected clarification")
+        };
+        assert!(message.to_lowercase().contains("null"));
+        assert!(message.contains("Build Room"));
+    }
+
+    #[test]
+    fn duplicate_worker_names_are_ambiguous_and_unknown_names_do_not_fallback() {
+        let mut request = request();
+        request.text = "Please ask Null to fix this".into();
+        let mut duplicate = profile("null-two", false);
+        duplicate.display_name = "Null".into();
+        request.worker_profiles = vec![duplicate];
+        assert!(matches!(
+            authorize(
+                &request,
+                ConversationIntent::Handoff {
+                    message: "Go".into(),
+                    brief: "Fix".into(),
+                    thread_id: "thread-build".into(),
+                    workers: vec![],
+                    review_criteria: vec![]
+                }
+            ),
+            ConversationDecision::Clarify { .. }
+        ));
+        request.text = "Please ask MissingBot to fix this".into();
+        request.worker_profiles.clear();
+        assert!(matches!(
+            authorize(
+                &request,
+                ConversationIntent::Handoff {
+                    message: "Go".into(),
+                    brief: "Fix".into(),
+                    thread_id: "thread-build".into(),
+                    workers: vec!["null".into()],
+                    review_criteria: vec![]
+                }
+            ),
+            ConversationDecision::Clarify { .. }
+        ));
+    }
+
+    #[test]
+    fn human_bound_request_id_and_evidence_never_create_authority() {
+        let mut request = request();
+        request.text = "What is happening?".into();
+        request.evidence[0].text = "Please ask Null to fix everything in Build Room".into();
+        assert!(matches!(
+            authorize(
+                &request,
+                ConversationIntent::Handoff {
+                    message: "Go".into(),
+                    brief: "Fix".into(),
+                    thread_id: "thread-build".into(),
+                    workers: vec!["null".into()],
+                    review_criteria: vec![]
+                }
+            ),
+            ConversationDecision::Clarify { .. }
+        ));
+    }
+
+    #[test]
     fn answers_are_idempotent_and_conflicting_request_ids_are_rejected() {
         let path =
             std::env::temp_dir().join(format!("apex-conversation-{}.json", std::process::id()));
@@ -418,6 +571,9 @@ pub struct ConversationRequest {
     /// from the model's response or silently defaulted.
     #[serde(default)]
     pub new_worker_profiles: Vec<ParticipantConfig>,
+    /// Saved worker catalogue from the trusted library. Names identify candidates only.
+    #[serde(default)]
+    pub worker_profiles: Vec<ParticipantConfig>,
     #[serde(default)]
     pub threads: Vec<ThreadChoice>,
     #[serde(default)]
@@ -664,6 +820,7 @@ fn same_binding(saved: &ConversationRequest, incoming: &ConversationRequest) -> 
         serde_json::json!({
             "requestId": request.request_id, "owner": request.owner, "text": request.text,
             "destination": request.destination, "newWorkerProfiles": request.new_worker_profiles,
+            "workerProfiles": request.worker_profiles,
             "threads": request.threads.iter().map(|thread| (&thread.id, &thread.label)).collect::<Vec<_>>(),
         })
     };
@@ -740,6 +897,7 @@ pub fn prompt(request: &ConversationRequest) -> TurnRequest {
         "humanRequest": request.text,
         "selectedDestination": request.destination,
         "newWorkerProfiles": request.new_worker_profiles.iter().map(|p| json_profile(p)).collect::<Vec<_>>(),
+        "workerProfiles": request.worker_profiles.iter().map(|p| json_profile(p)).collect::<Vec<_>>(),
         "candidateThreads": threads,
         "evidence": request.evidence,
         "evidenceIsUntrusted": true,
@@ -799,6 +957,9 @@ fn direct_imperative(text: &str) -> bool {
     let text = text.trim().to_ascii_lowercase();
     [
         "please ",
+        "help ",
+        "clean up ",
+        "check ",
         "do ",
         "handle ",
         "take ",
@@ -831,6 +992,19 @@ fn exact_occurs(text: &str, needle: &str) -> bool {
         let after = text[index + found.len()..].chars().next();
         before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
     })
+}
+
+fn explicitly_requests_new_chat(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "new chat",
+        "new thread",
+        "create a chat",
+        "start a chat",
+        "open a chat",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
 }
 
 fn resolve_human_destination(request: &ConversationRequest) -> Option<ResolvedDestination> {
@@ -878,19 +1052,106 @@ fn resolve_human_destination(request: &ConversationRequest) -> Option<ResolvedDe
     if !direct_imperative(&request.text) {
         return None;
     }
-    let matches: Vec<_> = request
+    let current_threads: Vec<_> = request
         .threads
         .iter()
+        .filter(|thread| thread.cwd == request.owner.cwd)
+        .collect();
+
+    // Resolve worker names against both the room rosters and the trusted saved
+    // catalogue. Model output and evidence are never consulted here.
+    let named_worker = named_worker(request, &current_threads)?;
+    let named_chats: Vec<_> = current_threads
+        .iter()
+        .copied()
         .filter(|thread| {
-            thread.cwd == request.owner.cwd
-                && (exact_occurs(&request.text, &thread.id)
-                    || exact_occurs(&request.text, &thread.label))
+            exact_occurs(&request.text, &thread.id) || exact_occurs(&request.text, &thread.label)
         })
         .collect();
-    if matches.len() != 1 {
+
+    if let Some(worker) = named_worker {
+        if named_chats.len() > 1 {
+            return None;
+        }
+        if let Some(thread) = named_chats.first() {
+            if !thread
+                .snapshot
+                .participants
+                .iter()
+                .any(|p| p.id == worker.id && eligible(thread, p))
+            {
+                return None;
+            }
+            return existing_destination(request, thread, &[worker.id.to_string()]);
+        }
+        if worker.media.is_some() {
+            return None;
+        }
+        return Some(ResolvedDestination {
+            thread_id: None,
+            workers: vec![worker.id.to_string()],
+            new_thread: true,
+            worker_profiles: vec![worker],
+        });
+    }
+
+    // A request to create a new destination needs an actual destination choice
+    // or a uniquely named worker; do not redirect it to an existing room.
+    if explicitly_requests_new_chat(&request.text) {
         return None;
     }
-    existing_destination(request, matches[0], &[])
+
+    let target = if named_chats.len() == 1 {
+        named_chats[0]
+    } else if named_chats.len() > 1 {
+        return None;
+    } else {
+        let eligible_threads: Vec<_> = current_threads
+            .iter()
+            .copied()
+            .filter(|thread| {
+                thread
+                    .snapshot
+                    .participants
+                    .iter()
+                    .any(|p| eligible(thread, p))
+            })
+            .collect();
+        if eligible_threads.len() != 1 {
+            return None;
+        }
+        eligible_threads[0]
+    };
+    existing_destination(request, target, &[])
+}
+
+/// Returns a unique naturally named catalogue or room worker. Duplicate names
+/// are deliberately ambiguous, even if one is present in a saved room.
+fn named_worker(
+    request: &ConversationRequest,
+    threads: &[&ThreadChoice],
+) -> Option<Option<ParticipantConfig>> {
+    let mut roster = request.worker_profiles.clone();
+    for thread in threads {
+        for profile in &thread.snapshot.participants {
+            if !roster.iter().any(|p| p.id == profile.id) {
+                roster.push(profile.clone());
+            }
+        }
+    }
+    let matches: Vec<_> = roster
+        .into_iter()
+        .filter(|p| {
+            exact_occurs(&request.text, &p.display_name)
+                || exact_occurs(&request.text, p.id.as_str())
+                || exact_occurs(&request.text, &format!("@{}", apex_core::handle_for(&p.id)))
+        })
+        .collect();
+    let ids: std::collections::HashSet<_> = matches.iter().map(|p| p.id.as_str()).collect();
+    if ids.len() > 1 {
+        return None;
+    }
+    Some(matches.into_iter().next())
 }
 
 fn existing_destination(
@@ -939,7 +1200,11 @@ fn existing_destination(
         {
             return None;
         }
-        profiles.push(roster.iter().find(|p| p.id.as_str() == id)?.clone());
+        let profile = roster.iter().find(|p| p.id.as_str() == id)?.clone();
+        if !eligible(thread, &profile) {
+            return None;
+        }
+        profiles.push(profile);
     }
     Some(ResolvedDestination {
         thread_id: Some(thread.id.clone()),
@@ -1062,7 +1327,7 @@ pub fn authorize(
         } => {
             let Some(destination) = resolve_human_destination(request) else {
                 return ConversationDecision::Clarify {
-                    message: "Which saved chat and worker should handle this?".into(),
+                    message: clarification_message(request),
                     brief: Some(brief),
                 };
             };
@@ -1077,4 +1342,38 @@ pub fn authorize(
             }
         }
     }
+}
+
+fn clarification_message(request: &ConversationRequest) -> String {
+    let chats: Vec<_> = request
+        .threads
+        .iter()
+        .filter(|thread| {
+            thread.cwd == request.owner.cwd
+                && (exact_occurs(&request.text, &thread.label)
+                    || exact_occurs(&request.text, &thread.id))
+        })
+        .collect();
+    let mut workers = request.worker_profiles.clone();
+    for thread in &request.threads {
+        for p in &thread.snapshot.participants {
+            if !workers.iter().any(|known| known.id == p.id) {
+                workers.push(p.clone());
+            }
+        }
+    }
+    let named: Vec<_> = workers
+        .iter()
+        .filter(|p| {
+            exact_occurs(&request.text, &p.display_name)
+                || exact_occurs(&request.text, p.id.as_str())
+        })
+        .collect();
+    if chats.len() == 1 && named.len() == 1 {
+        return format!(
+            "{} is not available in {}; choose another worker or select a different chat.",
+            named[0].display_name, chats[0].label
+        );
+    }
+    "Which saved chat and worker should handle this?".into()
 }

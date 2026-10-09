@@ -23,14 +23,19 @@ const server = http.createServer(async (req, res) => {
   const text = JSON.stringify(request.messages);
   const conversation = text.includes('You are ApexAgent. Answer the human directly');
   const clarify = text.includes('create an implementation task');
+  const linkedChatTask = text.includes('Read-only linked-chat smoke task');
   const deferred = text.includes('Defer SSO');
   const reply = conversation
-    ? deferred
+    ? linkedChatTask
+      ? {kind:'handoff',message:'I have assigned the read-only inspection to the selected worker in a new chat.',brief:'Inspect the deterministic smoke fixture and report what it contains without changing files.',threadId:'model-selected-thread-is-ignored',workers:['model-selected-worker-is-ignored'],reviewCriteria:[]}
+      : deferred
       ? {kind:'answer',message:'SSO is deferred. Revised plan: keep November 1, release without SSO, and track SSO after launch.'}
       : clarify
         ? {kind:'clarify',message:'Which existing chat should receive this implementation task?',brief:'Prepare a test-only SSO change.'}
         : {kind:'answer',message:'The November 1 release still requires SSO. I have kept that responsibility active and will continue checking the selected sources.'}
-    : {
+    : linkedChatTask
+      ? {message:'Read-only smoke inspection completed with no workspace changes.'}
+      : {
       message: deferred ? 'SSO is deferred. Revised plan: keep November 1, release without SSO, and track SSO after launch.' : 'SSO tests are failing, and the launch plan requires SSO before release. Decide whether to defer SSO or move the date.',
       messageEvidence: deferred ? [] : [{id:'file:launch-plan.md'}, {id:'file:test-report.md'}],
       findings: deferred ? [] : [{summary:'SSO blocks the November 1 launch', reason:'The required SSO tests are failing.', confidence:'observed', nextStep:'Decide whether to defer SSO.', evidence:[{id:'file:launch-plan.md',quote:'SSO must pass before release.'},{id:'file:test-report.md',quote:'SSO tests are failing.'}]}],

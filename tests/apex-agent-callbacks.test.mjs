@@ -135,7 +135,8 @@ test('a lower snapshotVersion poll cannot replace the latest accepted monitor', 
   stalePoll.resolve(monitor('older', { snapshotVersion: 11 })); await tick();
   tree = h.render(props);
   assert.equal(changes.length, 1);
-  assert.equal(find(tree, node => node.type === 'h1')?.children?.[0], 'newer');
+  assert.equal(find(tree, node => node.type === 'h1')?.children?.[0], 'ApexAgent');
+  assert.match(visibleText(tree), /newer/);
   h.unmount();
 });
 
@@ -326,9 +327,9 @@ test('settings source edits preserve the current conversation owner', async () =
   const loaded = monitor('saved', { hostId: 'host-a', files: ['old.md'], threads: ['chat-1'] });
   const updated = { ...loaded, files: ['new.md'], threads: ['chat-2'] };
   const backend = { host: { id: 'host-a' }, call: async (command, args) => { calls.push([command, args]); return command === 'monitor_get' ? loaded : updated; } };
-  const h = componentHarness(); const props = { ...base(backend, (...args) => changes.push(args)), profiles: [profile], panes: [pane('chat-1'), pane('chat-2')], widgetMode: true, onCustomize: () => { customized++; }, onHide: () => { hidden++; } };
+  const h = componentHarness(); const props = { ...base(backend, (...args) => changes.push(args)), profiles: [profile], panes: [pane('chat-1'), pane('chat-2')], widgetMode: true, focused: false, onToggleFocus() {}, projectSelector: { type: 'select', props: { 'aria-label': 'ApexAgent project' }, children: [] }, onCustomize: () => { customized++; }, onHide: () => { hidden++; } };
   let tree = h.render(props); await tick(); tree = h.render(props);
-  assert.equal(find(tree, node => node.props.className === 'apex-agent-head'), null, 'the widget shell owns the visible header');
+  assert.ok(find(tree, node => node.props.className === 'apex-agent-head'), 'dock mode provides the interior header with Settings');
   find(tree, n => n.type === 'button' && n.children?.[0] === 'Settings')?.props.onClick();
   tree = h.render(props);
   find(tree, n => n.type === 'button' && n.children?.[0] === 'old.md')?.props.onClick();
@@ -424,5 +425,17 @@ test('a deleted assigned profile is identified rather than shown as an empty sav
   let tree = h.render(props); await tick(); tree = h.render(props);
   find(tree, node => node.type === 'button' && node.children?.[0] === 'Settings')?.props.onClick(); tree = h.render(props);
   assert.ok(find(tree, node => node.type === 'option' && String(node.children?.[0]).includes('no longer in Agents')));
+  h.unmount();
+});
+
+test('compact header retains responsibility context and a missing saved profile option', async () => {
+  const loaded = monitor('Audit the api', { profileId: 'deleted-profile' });
+  const backend = { host: { id: 'host-a' }, call: async () => loaded };
+  const h = componentHarness(); const props = { ...base(backend), profiles: [] };
+  let tree = h.render(props); await tick(); tree = h.render(props);
+  assert.equal(find(tree, node => node.type === 'h1')?.children?.[0], 'ApexAgent');
+  assert.ok(find(tree, node => node.type === 'p' && node.props.title === 'Audit the api'));
+  const select = find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Thinking with profile');
+  assert.match(visibleText(select), /Missing profile\s+·\s+deleted-profile/);
   h.unmount();
 });

@@ -33,6 +33,74 @@ async function serve(data, env = {}) {
 const options = { policy: 'mention', max_bot_hops: 0 };
 const worker = (id, script) => ({ id, display_name: id, access: 'edits', backend: { kind: 'cli', program: 'sh', args: ['-c', script] } });
 
+test('natural named-worker read-only tasks keep questions human-owned and persist spend pauses across restart', { timeout: 60_000 }, async t => {
+  const base = fs.realpathSync(fs.mkdtempSync('/tmp/ade-v3-budget-'));
+  const cwd = path.join(base, 'project'), data = path.join(base, 'data'), tools = path.join(base, 'tools');
+  for (const directory of [cwd, data, tools]) fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(cwd, 'README.md'), 'Human project without Git.\n');
+  fs.writeFileSync(path.join(tools, 'claude'), `#!/bin/sh
+case "$*" in *'--disallowedTools Edit,Write,NotebookEdit,Bash'*) ;; *) echo 'missing enforced read-only flags' >&2; exit 9;; esac
+IFS= read -r prompt
+echo '{"type":"system","subtype":"init"}'
+case "$prompt" in *'Resume the original task'*) ;; *)
+echo '{"type":"control_request","request_id":"scope-question","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"header":"Scope","question":"Which chats should I review?","options":[{"label":"Open only","description":"Leave archived chats alone"},{"label":"All chats"}],"multiSelect":false},{"header":"Location","question":"Which project?","options":[{"label":"This project"},{"label":"All projects"}],"multiSelect":false}]}}}'
+IFS= read -r answer
+case "$answer" in *'Open only'*'This project'*) ;; *) echo 'missing complete human answers' >&2; exit 10;; esac
+;; esac
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Reviewed the open chats. Two need follow-up; archived chats are unchanged.","total_cost_usd":0.12,"usage":{"input_tokens":10,"output_tokens":5}}'
+cat >/dev/null
+`, { mode: 0o755 });
+  const reasoner = http.createServer(async (request, response) => {
+    for await (const _chunk of request) { /* bounded fixture request */ }
+    if (request.method !== 'POST') { response.end('{"data":[]}'); return; }
+    const intent = { kind: 'handoff', message: 'Handing your review to Luna.', brief: 'Review the open chats and return findings.', threadId: 'invented', workers: ['invented'], reviewCriteria: [] };
+    response.setHeader('Content-Type', 'text/event-stream');
+    response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(intent) } }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise(resolve => reasoner.listen(0, '127.0.0.1', resolve));
+  const env = { PATH: `${tools}:${process.env.PATH}`, SHELL: '/bin/false' };
+  let daemon = await serve(data, env);
+  const connect = () => new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
+  let desktop = connect(), phone = connect();
+  t.after(async () => { desktop.close(); phone.close(); await daemon.stop(); await new Promise(resolve => reasoner.close(resolve)); fs.rmSync(base, { recursive: true, force: true }); });
+  await Promise.all([desktop.start(), phone.start()]);
+  const profile = { id: 'assistant', display_name: 'Assistant', access: 'read', backend: { kind: 'open_ai_compatible', base_url: `http://127.0.0.1:${reasoner.address().port}/v1`, model: 'fixture', api_key_env: null } };
+  const monitor = await desktop.call('monitor_assign', { workspaceId: 'project', cwd, hostId: 'local', text: 'Help with my requested project work', files: [], threads: [], profile });
+  const owner = { workspaceId: 'project', cwd, hostId: 'local', conversationId: monitor.conversationId };
+  await desktop.call('monitor_pause', { ...owner, paused: true });
+  const luna = { id: 'luna', display_name: 'Luna', access: 'full', backend: { kind: 'agent', tool: 'claude_code', model: null } };
+  const input = { ...owner, requestId: 'v3-read-only', text: 'Ask Luna to review my unfinished chats', destination: null, newWorkerProfiles: [], workerProfiles: [luna], threadLabels: [], mode: 'read_only', checks: [], spendLimitMicros: 100_000 };
+  const response = await desktop.call('assistant_message', input);
+  const taskId = response.task.id;
+  assert.deepEqual(response.task.workers, ['luna'], 'actual human name resolves the catalogue; model IDs do not');
+  const list = async () => (await phone.call('assistant_tasks_list', { owner })).tasks.find(task => task.id === taskId);
+  const question = await until('two human-owned worker questions', async () => { const task = await list(); return task.status === 'needs_you' && task.resultData.pendingQuestions?.[0]?.questions?.length === 2 ? task : null; });
+  assert.equal(question.resultData.leaseHeld, false);
+  const wait = question.resultData.pendingQuestions[0];
+  await phone.call('room_answer', { id: question.executionThreadId, request: wait.request, answers: [['Open only'], ['This project']] });
+  const paused = await until('settled spend pause', async () => { const task = await list(); return task.status === 'needs_you' && task.resultData.budgetPaused && task.attempts[0].finishedAtMs ? task : null; }).catch(async error => { error.message += `: ${JSON.stringify(await list())}`; throw error; });
+  assert.equal(paused.usage.costMicros, 120_000);
+  await assert.rejects(desktop.call('assistant_task_action', { taskId, owner, revision: paused.revision, action: 'resume_budget' }), /limit/i);
+  const noted = await desktop.call('assistant_task_action', { taskId, owner, revision: paused.revision, action: 'note', text: 'Keep the archived chats untouched.' });
+  assert.ok(noted.resultData.taskHistory.some(entry => entry.kind === 'note'));
+  desktop.close(); phone.close(); await daemon.stop();
+  daemon = await serve(data, env); desktop = connect(); phone = connect(); await Promise.all([desktop.start(), phone.start()]);
+  const restored = await list();
+  assert.equal(restored.status, 'needs_you'); assert.equal(restored.resultData.budgetPaused, true); assert.equal(restored.attempts.length, 1);
+  const raised = await desktop.call('assistant_task_action', { taskId, owner, revision: restored.revision, action: 'set_budget', spendLimitMicros: 500_000 });
+  await desktop.call('assistant_task_action', { taskId, owner, revision: raised.revision, action: 'resume_budget' });
+  const ready = await until('resumed worker result', async () => { const task = await list(); return task.status === 'ready_for_review' ? task : null; });
+  assert.equal(ready.attempts.length, 2); assert.equal(ready.usage.costMicros, 240_000);
+  assert.match(ready.result, /Two need follow-up/); assert.equal(ready.originalRequest, input.text);
+  const state = await desktop.call('room_state', { id: ready.executionThreadId });
+  assert.equal(state.snapshot.participants[0].access, 'read');
+  assert.ok(state.snapshot.transcript.some(message => message.text.includes('Additional human note') && message.text.includes('archived chats untouched')));
+  await assert.rejects(desktop.call('room_update_participant', { id: ready.executionThreadId, participant: luna }), /read.only/i);
+  const done = await desktop.call('assistant_task_action', { taskId, owner, revision: ready.revision, action: 'review' });
+  assert.equal(done.status, 'done'); assert.equal(fs.readFileSync(path.join(cwd, 'README.md'), 'utf8'), 'Human project without Git.\n');
+  assert.deepEqual(fs.readdirSync(cwd), ['README.md']);
+});
+
 test('assistant delegates once, survives pane detach, holds review for phone acceptance, and restores receipts', { timeout: 60_000 }, async t => {
   const base = fs.realpathSync(fs.mkdtempSync('/tmp/ade-assistant-'));
   const cwd = path.join(base, 'project'), data = path.join(base, 'data');

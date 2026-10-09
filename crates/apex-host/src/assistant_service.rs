@@ -51,6 +51,10 @@ pub struct AssistantMessageInput {
     #[serde(default)]
     pub new_worker_profiles: Vec<ParticipantConfig>,
     #[serde(default)]
+    pub worker_profiles: Vec<ParticipantConfig>,
+    #[serde(default)]
+    pub spend_limit_micros: Option<u64>,
+    #[serde(default)]
     pub thread_labels: Vec<ThreadLabel>,
     #[serde(default = "default_mode")]
     pub mode: TaskMode,
@@ -78,6 +82,8 @@ pub struct AssistantActionInput {
     pub new_worker_profiles: Vec<ParticipantConfig>,
     #[serde(default)]
     pub checks: Option<Vec<Vec<String>>>,
+    #[serde(default)]
+    pub spend_limit_micros: Option<u64>,
 }
 
 pub(crate) struct AssistantRun {
@@ -85,6 +91,7 @@ pub(crate) struct AssistantRun {
     pub stop_tx: watch::Sender<bool>,
     pub done: Arc<Notify>,
     pub finished: AtomicBool,
+    pub budget_pause: AtomicBool,
     pub error: Mutex<Option<String>>,
 }
 impl AssistantRun {
@@ -95,12 +102,22 @@ impl AssistantRun {
             stop_tx,
             done: Arc::new(Notify::new()),
             finished: AtomicBool::new(false),
+            budget_pause: AtomicBool::new(false),
             error: Mutex::new(None),
         }
     }
 }
 
 impl Host {
+    pub(crate) fn ensure_task_read_access(&self, id: &str, participant: &ParticipantConfig) -> Result<(), String> {
+        if participant.access == apex_core::Access::Read { return Ok(()); }
+        if let Some(entry) = self.assistant_tasks.execution(id).map_err(|e| e.to_string())? {
+            if self.assistant_tasks.get(&entry.task_id).map_err(|e| e.to_string())?
+                .is_some_and(|task| task.mode == TaskMode::ReadOnly)
+            { return Err("Read-only assistant tasks cannot grant workers editing access.".into()); }
+        }
+        Ok(())
+    }
     pub async fn assistant_message(
         self: &Arc<Self>,
         input: AssistantMessageInput,
@@ -118,6 +135,13 @@ impl Host {
         F: FnOnce(ParticipantConfig, TurnRequest) -> Fut,
         Fut: Future<Output = Result<String, String>>,
     {
+        if input.spend_limit_micros == Some(0) {
+            return Err("A spend limit must be greater than zero.".into());
+        }
+        if input.mode == TaskMode::ReadOnly && !input.checks.is_empty() {
+            return Err("Read-only tasks cannot run verification commands. Choose an editing mode to run checks.".into());
+        }
+        verify_task_workers(&input.new_worker_profiles)?;
         let owner = TaskOwner {
             workspace_id: input.workspace_id.clone(),
             cwd: input.cwd.clone(),
@@ -189,6 +213,7 @@ impl Host {
             text: input.text.clone(),
             destination: input.destination.clone(),
             new_worker_profiles: input.new_worker_profiles.clone(),
+            worker_profiles: input.worker_profiles.iter().filter(|profile| task_worker_eligible(profile)).cloned().collect(),
             threads,
             evidence,
         };
@@ -224,6 +249,8 @@ impl Host {
                                                     .collect()
                                             })
                                             .unwrap_or_default();
+                                        let replay_profiles: Vec<ParticipantConfig> = task.result_data.as_ref()
+                                            .and_then(|data| serde_json::from_value(data["workerProfiles"].clone()).ok()).unwrap_or_default();
                                         let replay_input = AssistantMessageInput {
                                             workspace_id: owner.workspace_id.clone(),
                                             cwd: owner.cwd.clone(),
@@ -232,10 +259,7 @@ impl Host {
                                             request_id: task.id.clone(),
                                             text: task.original_request.clone(),
                                             destination: Some(destination.clone()),
-                                            new_worker_profiles: rec
-                                                .request
-                                                .new_worker_profiles
-                                                .clone(),
+                                            new_worker_profiles: replay_profiles.clone(),
                                             thread_labels: vec![],
                                             mode: task
                                                 .result_data
@@ -246,6 +270,8 @@ impl Host {
                                                 })
                                                 .unwrap_or(task.mode),
                                             checks,
+                                            worker_profiles: rec.request.worker_profiles.clone(),
+                                            spend_limit_micros: task.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64()),
                                         };
                                         let child = self.schedule_dispatch(
                                             &task,
@@ -253,7 +279,7 @@ impl Host {
                                             replay_input,
                                             destination.thread_id.clone().unwrap_or_default(),
                                             task.workers.clone(),
-                                            rec.request.new_worker_profiles.clone(),
+                                            replay_profiles,
                                         );
                                         response["pane"]["id"] = json!(child);
                                     }
@@ -384,7 +410,7 @@ impl Host {
                         None,
                     )
                     .map_err(|e| e.to_string())?;
-                task = self.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(json!({"mode":input.mode,"checks":input.checks,"executionPath":owner.cwd,"leaseHeld":false}))).map_err(|e|e.to_string())?;
+                task = self.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(initial_task_data(&input, &[]))).map_err(|e|e.to_string())?;
                 self.assistant_changed(&owner.workspace_id);
                 json!({"message":message,"task":task,"taskMonitor":task_monitor(Some(&task)),"pane":Value::Null})
             }
@@ -393,7 +419,7 @@ impl Host {
                     .assistant_tasks
                     .create_proposal(owner.clone(), input.text.clone(), brief)
                     .map_err(|e| e.to_string())?;
-                task = self.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(json!({"mode":input.mode,"checks":input.checks,"executionPath":owner.cwd,"leaseHeld":false}))).map_err(|e|e.to_string())?;
+                task = self.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(initial_task_data(&input, &[]))).map_err(|e|e.to_string())?;
                 self.assistant_changed(&owner.workspace_id);
                 json!({"message":message,"task":task,"taskMonitor":task_monitor(Some(&task)),"pane":Value::Null})
             }
@@ -436,7 +462,7 @@ impl Host {
                         workers.clone(),
                     )
                     .map_err(|e| e.to_string())?;
-                task = self.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(json!({"checks":input.checks,"executionPath":owner.cwd,"leaseHeld":false,"mode":input.mode,"workerProfiles":worker_profiles}))).map_err(|e|e.to_string())?;
+                task = self.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(initial_task_data(&input, &worker_profiles))).map_err(|e|e.to_string())?;
                 self.assistant_changed(&owner.workspace_id);
                 let child_id = self.schedule_dispatch(
                     &task,
@@ -446,7 +472,7 @@ impl Host {
                     workers.clone(),
                     worker_profiles.clone(),
                 );
-                let pane_participants = if new_thread {
+                let mut pane_participants = if new_thread {
                     worker_profiles.clone()
                 } else {
                     request
@@ -464,6 +490,7 @@ impl Host {
                         })
                         .unwrap_or_default()
                 };
+                enforce_read_only(input.mode, &mut pane_participants);
                 let pane_options = if new_thread {
                     apex_core::RoomOptions {
                         policy: apex_core::TurnPolicy::RoundRobin,
@@ -636,12 +663,18 @@ impl Host {
                 .await;
         }
         let gate = self.checkout_gate(Path::new(&owner.cwd));
-        let _lease = gate
+        let _lease = if input.mode == TaskMode::ReadOnly { None } else { Some(gate
             .acquire_retained(task.id.clone(), run.stop.clone())
             .await
-            .map_err(|e| format!("Could not reserve checkout: {e:?}"))?;
-        let baseline = assistant_git::capture(Path::new(&owner.cwd), &task.id, "baseline")?;
-        let baseline_data = json!({"baselineSnapshot":baseline,"checks":input.checks,"leaseHeld":true,"executionPath":owner.cwd,"exclusions":baseline.exclusions});
+            .map_err(|e| format!("Could not reserve checkout: {e:?}"))?) };
+        let mut baseline_data = task.result_data.clone().unwrap_or_else(|| initial_task_data(&input, &profiles));
+        baseline_data["leaseHeld"] = json!(input.mode != TaskMode::ReadOnly);
+        baseline_data["executionPath"] = json!(owner.cwd);
+        if input.mode != TaskMode::ReadOnly {
+            let baseline = assistant_git::capture(Path::new(&owner.cwd), &task.id, "baseline")?;
+            baseline_data["baselineSnapshot"] = json!(baseline);
+            baseline_data["exclusions"] = json!(baseline.exclusions);
+        }
         task = self
             .assistant_tasks
             .set_result_data(&task.id, task.revision, owner, Some(baseline_data.clone()))
@@ -699,6 +732,7 @@ impl Host {
             child_snapshot
                 .participants
                 .retain(|p| workers.contains(&p.id.to_string()));
+            enforce_read_only(input.mode, &mut child_snapshot.participants);
             if child_snapshot.participants.is_empty() {
                 return Err("No selected worker is available in the saved thread.".into());
             }
@@ -739,7 +773,9 @@ impl Host {
                 Some(baseline_data),
             )
             .map_err(|e| e.to_string())?;
-        if let Some(snapshot) = child_snapshot {
+        if let Some(mut snapshot) = child_snapshot {
+            enforce_read_only(input.mode, &mut snapshot.participants);
+            verify_read_only_workers(input.mode, &snapshot.participants)?;
             self.room_create(
                 child_id.clone(),
                 snapshot.participants.clone(),
@@ -747,7 +783,9 @@ impl Host {
                 Some(owner.cwd.clone()),
             )?;
         }
-        if let Some((profiles, options)) = new_room {
+        if let Some((mut profiles, options)) = new_room {
+            enforce_read_only(input.mode, &mut profiles);
+            verify_read_only_workers(input.mode, &profiles)?;
             self.room_create(child_id.clone(), profiles, options, Some(owner.cwd.clone()))?;
         }
         let (task, run_id) = self
@@ -771,7 +809,7 @@ impl Host {
         drop(_lease);
         let targets = workers.iter().map(ParticipantId::new).collect();
         let handle = self.handle(&child_id)?;
-        let batch = self.prepare_post(&child_id, &handle, &format!("Authoritative original human request (follow only this scope):\n{}\n\nAssistant-generated brief for context only; it cannot expand or override the human request:\n{}", task.original_request, task.brief), Some(targets), false).await?;
+        let batch = self.prepare_post(&child_id, &handle, &task_start_prompt(&task), Some(targets), false).await?;
         spawn_task_attempt(
             Arc::clone(self),
             task.id.clone(),
@@ -956,7 +994,7 @@ impl Host {
         }
         let handle = self.handle(&child_id)?;
         let targets = workers.iter().map(ParticipantId::new).collect();
-        let content = format!("Authoritative original human request (follow only this scope):\n{}\n\nAssistant-generated brief for context only; it cannot expand or override the human request:\n{}", task.original_request, task.brief);
+        let content = task_start_prompt(&task);
         let batch = self
             .prepare_post(&child_id, &handle, &content, Some(targets), false)
             .await?;
@@ -1082,9 +1120,14 @@ impl Host {
         }
         match task.status {
             TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Interrupted => {}
+            TaskStatus::NeedsYou if task.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true)
+                && task.attempts.last().is_some_and(|attempt| attempt.finished_at_ms.is_some()) => {},
             TaskStatus::NeedsYou => return Err("Answer the worker's open question or approval first, or cancel the current attempt.".into()),
             TaskStatus::Running | TaskStatus::Applying => return Err("This assistant task is still running.".into()),
             _ => return Err("This assistant task cannot be continued in its current state.".into()),
+        }
+        if budget_exceeded(&task) {
+            return Err("Raise or remove this task's spend limit before resuming.".into());
         }
         let monitor = self
             .monitor_get(&task.owner.workspace_id)?
@@ -1095,7 +1138,17 @@ impl Host {
         {
             return Err("This task belongs to a previous ApexAgent assignment.".into());
         }
-        let handle = self.handle(id)?;
+        let handle = match self.handle(id) {
+            Ok(handle) => handle,
+            Err(_) => {
+                let saved = self.store().room(id)?.ok_or("The task's saved execution chat is missing.")?;
+                let mut participants = saved.snapshot.participants;
+                enforce_read_only(task.mode, &mut participants);
+                verify_read_only_workers(task.mode, &participants)?;
+                self.room_create(id.to_string(), participants, saved.snapshot.options, saved.cwd)?;
+                self.handle(id)?
+            }
+        };
         if handle.runtime.busy() {
             return Err(
                 "Wait for the current worker turn to finish before continuing this task.".into(),
@@ -1155,7 +1208,7 @@ impl Host {
             None
         };
         let gate = self.checkout_gate(Path::new(&task.owner.cwd));
-        let lease = if isolated {
+        let lease = if isolated || task.mode == TaskMode::ReadOnly {
             None
         } else {
             Some(
@@ -1170,15 +1223,15 @@ impl Host {
             .and_then(|data| data["executionPath"].as_str())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&task.owner.cwd));
-        let baseline = assistant_git::capture(&work_path, &task.id, "baseline")?;
+        let baseline = if task.mode == TaskMode::ReadOnly { None } else { Some(assistant_git::capture(&work_path, &task.id, "baseline")?) };
         let (mut next, run_id) = self
             .assistant_tasks
             .begin_attempt(&task.id, task.revision, &task.owner)
             .map_err(|e| e.to_string())?;
         let mut data = next.result_data.clone().unwrap_or_else(|| json!({}));
-        data["attemptBaselineSnapshot"] =
-            serde_json::to_value(&baseline).map_err(|e| e.to_string())?;
-        data["leaseHeld"] = json!(!isolated);
+        if let Some(baseline) = baseline { data["attemptBaselineSnapshot"] = json!(baseline); }
+        data["leaseHeld"] = json!(task.mode == TaskMode::InPlace);
+        if let Some(text) = text.as_ref().filter(|text| !text.trim().is_empty()) { append_history(&mut data, "revision", text); }
         data.as_object_mut().map(|m| {
             m.remove("resultSnapshot");
             m.remove("diff");
@@ -1203,9 +1256,12 @@ impl Host {
         )
         .await?;
         drop(lease);
-        let content = text
+        let mut content = text
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| format!("Continue the original request: {}", task.original_request));
+        if let Some(notes) = next.result_data.as_ref().and_then(|data| data["queuedNotes"].as_array()) {
+            for note in notes.iter().filter_map(Value::as_str) { content.push_str(&format!("\n\nAdditional human note for this task:\n{note}")); }
+        }
         let batch = match self
             .prepare_post(id, &handle, &content, Some(selected), false)
             .await
@@ -1229,6 +1285,10 @@ impl Host {
             }
         };
         self.assistant_changed(&task.owner.workspace_id);
+        if let Some(mut data) = next.result_data.clone() {
+            data["queuedNotes"] = json!([]);
+            let _ = self.assistant_tasks.set_result_data(&next.id, next.revision, &next.owner, Some(data));
+        }
         spawn_task_attempt(
             Arc::clone(self),
             task.id,
@@ -1277,9 +1337,37 @@ impl Host {
             };
             Some(json!({"taskId":entry.task_id,"workspaceId":entry.workspace_id,"threadId":entry.thread_id,"mode":entry.mode,"tombstonedAtMs":entry.tombstoned_at_ms,"pane":pane}))
         }).collect();
-        Ok(
-            json!({"workspaceId":owner.workspace_id,"revision":self.assistant_tasks.snapshot_revision(),"tasks":tasks,"executions":executions}),
-        )
+        // The profile library can differ from a chat's saved participants.
+        // Return its actual eligible worker IDs for explicit routing choices.
+        let session = self.store().session()?;
+        let mut named_only_workers = std::collections::BTreeSet::new();
+        for profile in session.as_ref().and_then(|session| session["profiles"].as_array()).into_iter().flatten() {
+            if let Ok(profile) = serde_json::from_value::<ParticipantConfig>(profile.clone()) {
+                if !task_worker_eligible(&profile) { named_only_workers.insert(profile.id.to_string()); }
+            }
+        }
+        let mut thread_ids = std::collections::BTreeSet::new();
+        for pane in session.as_ref().and_then(|session| session["panes"].as_array()).into_iter().flatten() {
+            if pane["kind"] == "chat" && pane["workspaceId"] == owner.workspace_id && pane["archived"] != true {
+                if let Some(id) = pane["id"].as_str() { thread_ids.insert(id.to_owned()); }
+            }
+        }
+        for task in &tasks {
+            if let Some(id) = task.destination.as_ref().and_then(|destination| destination.thread_id.as_ref()) { thread_ids.insert(id.clone()); }
+        }
+        let mut routing_threads = Vec::new();
+        for id in thread_ids {
+            if let Some(saved) = self.store().room(&id)? {
+                if saved.cwd.as_deref() != Some(owner.cwd.as_str()) { continue; }
+                let workers: Vec<_> = saved.snapshot.participants.into_iter().filter(|profile| {
+                    let eligible = task_worker_eligible(profile);
+                    if !eligible { named_only_workers.insert(profile.id.to_string()); }
+                    eligible
+                }).collect();
+                routing_threads.push(json!({"id":id,"workers":workers}));
+            }
+        }
+        Ok(json!({"workspaceId":owner.workspace_id,"revision":self.assistant_tasks.snapshot_revision(),"tasks":tasks,"executions":executions,"routingThreads":routing_threads,"namedOnlyWorkerIds":named_only_workers}))
     }
 
     pub async fn assistant_task_action(
@@ -1295,6 +1383,38 @@ impl Host {
             return Err("Task ownership or revision is stale.".into());
         }
         match input.action.as_str() {
+            "note" | "set_budget" => {
+                let _lock = self.assistant_apply.lock().await;
+                let latest = self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("Task not found.")?;
+                if latest.owner != input.owner || latest.revision != input.revision { return Err("Task ownership or revision is stale.".into()); }
+                if matches!(latest.status, TaskStatus::Done | TaskStatus::Cancelled | TaskStatus::Applying) { return Err("This task can no longer receive notes or a spend limit.".into()); }
+                let mut data = latest.result_data.clone().unwrap_or_else(|| json!({}));
+                if input.action == "note" {
+                    let text = input.text.as_deref().filter(|text| !text.trim().is_empty()).ok_or("Write a note before sending.")?;
+                    append_history(&mut data, "note", text);
+                    data["queuedNotes"].as_array_mut().map(|notes| notes.push(json!(text)));
+                    if !data["queuedNotes"].is_array() { data["queuedNotes"] = json!([text]); }
+                } else {
+                    if input.spend_limit_micros == Some(0) { return Err("A spend limit must be greater than zero.".into()); }
+                    data["spendLimitMicros"] = json!(input.spend_limit_micros);
+                    append_history(&mut data, "spend_limit", &input.spend_limit_micros.map(|limit| format!("Spend limit set to ${:.2}.", limit as f64 / 1_000_000.0)).unwrap_or_else(|| "Spend limit removed.".into()));
+                }
+                let updated = self.assistant_tasks.set_result_data(&latest.id, latest.revision, &input.owner, Some(data)).map_err(|e| e.to_string())?;
+                if budget_exceeded(&updated) {
+                    if let Some(run) = self.assistant_runs.lock().unwrap().get(&updated.id) {
+                        run.budget_pause.store(true, Ordering::SeqCst);
+                        if let Some(id) = updated.execution_thread_id.as_ref() { if let Ok(handle) = self.handle(id) { handle.runtime.stop(None); } }
+                    }
+                }
+                self.assistant_changed(&input.owner.workspace_id);
+                Ok(updated)
+            }
+            "resume_budget" => {
+                if task.status != TaskStatus::NeedsYou || !task.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true) { return Err("This task is not paused at a spend limit.".into()); }
+                let id = task.execution_thread_id.as_deref().ok_or("Task has no execution chat to resume.")?;
+                self.continue_thread_expected(id, Some("Resume the original task after my spend-limit change.".into()), vec![], Some(input.revision)).await?;
+                self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("Task not found after resume.".into())
+            }
             "archive" => {
                 let _archive_lock = self.assistant_apply.lock().await;
                 let task = self
@@ -1461,7 +1581,8 @@ impl Host {
                 self.assistant_changed(&input.owner.workspace_id);
                 Ok(cancelled)
             }
-            "accept" => {
+            "accept" | "review" => {
+                if input.action == "review" && task.mode != TaskMode::ReadOnly { return Err("Only read-only results can be marked reviewed.".into()); }
                 let _lock = self.assistant_apply.lock().await;
                 if let Some(child) = &task.execution_thread_id {
                     self.recover_worker_cleanup(child)?;
@@ -1479,6 +1600,7 @@ impl Host {
                     .map_err(|e| e.to_string())?;
                 self.assistant_changed(&input.owner.workspace_id);
                 let verification: Result<AssistantTask, String> = async {
+                    if applying.mode == TaskMode::ReadOnly { return Ok(applying.clone()); }
                     let data = applying
                         .result_data
                         .clone()
@@ -1728,7 +1850,7 @@ impl Host {
                         thread_labels: vec![],
                         mode,
                         checks,
-                    };
+                     worker_profiles: vec![], spend_limit_micros: None, };
                     self.schedule_dispatch(
                         &queued,
                         &input.owner,
@@ -1870,6 +1992,7 @@ impl Host {
                 if destination.workers.is_empty() {
                     return Err("Select at least one worker before approving this task.".into());
                 }
+                if destination.new_thread { verify_task_workers(&input.new_worker_profiles)?; }
                 if destination.new_thread
                     && input
                         .new_worker_profiles
@@ -1909,6 +2032,16 @@ impl Host {
                             "Every selected worker must belong to the destination chat.".into()
                         );
                     }
+                    let selected: Vec<_> = saved.snapshot.participants.into_iter().filter(|profile| destination.workers.contains(&profile.id.to_string())).collect();
+                    verify_task_workers(&selected)?;
+                }
+                let requested_mode = task.result_data.as_ref()
+                    .and_then(|data| serde_json::from_value(data["mode"].clone()).ok()).unwrap_or(task.mode);
+                let mode = input.mode.unwrap_or(requested_mode);
+                let check_commands: Vec<Vec<String>> = input.checks.clone().unwrap_or_else(|| task.result_data.as_ref()
+                    .and_then(|data| serde_json::from_value(data["checks"].clone()).ok()).unwrap_or_default());
+                if mode == TaskMode::ReadOnly && !check_commands.is_empty() {
+                    return Err("Read-only tasks cannot run verification commands.".into());
                 }
                 let queued = self
                     .assistant_tasks
@@ -1921,19 +2054,19 @@ impl Host {
                     )
                     .map_err(|e| e.to_string())?;
                 let mut data = queued.result_data.clone().unwrap_or_else(|| json!({}));
-                let requested_mode = queued
-                    .result_data
-                    .as_ref()
-                    .and_then(|data| serde_json::from_value(data["mode"].clone()).ok())
-                    .unwrap_or(queued.mode);
-                let mode = input.mode.unwrap_or(requested_mode);
-                data["checks"] = serde_json::to_value(input.checks.clone().unwrap_or_default())
+                data["checks"] = serde_json::to_value(&check_commands)
                     .map_err(|e| e.to_string())?;
                 data["executionPath"] = json!(input.owner.cwd);
                 data["leaseHeld"] = json!(false);
                 data["mode"] = json!(mode);
                 data["workerProfiles"] =
                     serde_json::to_value(&input.new_worker_profiles).map_err(|e| e.to_string())?;
+                if input.action == "clarify" {
+                    if let Some(text) = input.text.as_deref().filter(|text| !text.trim().is_empty()) {
+                        data["routingClarification"] = json!(text);
+                        append_history(&mut data, "clarification", text);
+                    }
+                }
                 let queued = self
                     .assistant_tasks
                     .set_result_data(&queued.id, queued.revision, &input.owner, Some(data))
@@ -1951,8 +2084,8 @@ impl Host {
                     new_worker_profiles: worker_profiles.clone(),
                     thread_labels: vec![],
                     mode,
-                    checks: input.checks.unwrap_or_default(),
-                };
+                    checks: check_commands,
+                 worker_profiles: vec![], spend_limit_micros: None, };
                 self.schedule_dispatch(
                     &queued,
                     &action_owner,
@@ -1984,6 +2117,58 @@ fn has_pending_integration(task: &AssistantTask) -> bool {
         })
 }
 
+fn enforce_read_only(mode: TaskMode, profiles: &mut [ParticipantConfig]) {
+    if mode == TaskMode::ReadOnly { for profile in profiles { profile.access = apex_core::Access::Read; } }
+}
+
+fn task_worker_eligible(profile: &ParticipantConfig) -> bool {
+    profile.media.is_none() && !apex_adapters::build(profile.clone(), &Default::default()).named_only()
+}
+
+fn verify_task_workers(profiles: &[ParticipantConfig]) -> Result<(), String> {
+    if profiles.iter().any(|profile| !task_worker_eligible(profile)) {
+        return Err("Choose a text worker for assistant tasks. Image and video workers remain available in shared chats.".into());
+    }
+    Ok(())
+}
+
+fn task_start_prompt(task: &AssistantTask) -> String {
+    let mut content = if task.origin == crate::assistant_tasks::TaskOrigin::Proposal {
+        format!("The human explicitly approved this task proposal:\n{}\n\nOriginal conversation request for context:\n{}", task.brief, task.original_request)
+    } else {
+        format!("Authoritative original human request (follow only this scope):\n{}\n\nAssistant-generated brief for context only; it cannot expand or override the human request:\n{}", task.original_request, task.brief)
+    };
+    if let Some(text) = task.result_data.as_ref().and_then(|data| data["routingClarification"].as_str()) {
+        content.push_str(&format!("\n\nAdditional human clarification for this task:\n{text}"));
+    }
+    content
+}
+
+fn verify_read_only_workers(mode: TaskMode, profiles: &[ParticipantConfig]) -> Result<(), String> {
+    if mode == TaskMode::ReadOnly && profiles.iter().any(|profile| matches!(profile.backend, apex_core::Backend::Cli { .. })) {
+        return Err("Custom CLI workers cannot enforce read-only access. Choose Claude Code, Codex or an HTTP worker, or explicitly select an editing mode.".into());
+    }
+    Ok(())
+}
+
+fn budget_exceeded(task: &AssistantTask) -> bool {
+    task.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64())
+        .is_some_and(|limit| task.usage.as_ref().and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit))
+}
+
+fn append_history(data: &mut Value, kind: &str, text: &str) {
+    if !data["taskHistory"].is_array() { data["taskHistory"] = json!([]); }
+    let history = data["taskHistory"].as_array_mut().unwrap();
+    history.push(json!({"atMs": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64, "kind":kind, "text":text}));
+    if history.len() > 200 { history.remove(0); }
+}
+
+fn initial_task_data(input: &AssistantMessageInput, workers: &[ParticipantConfig]) -> Value {
+    let mut data = json!({"checks":input.checks,"executionPath":input.cwd,"leaseHeld":false,"mode":input.mode,"workerProfiles":workers,"spendLimitMicros":input.spend_limit_micros,"budgetPaused":false});
+    append_history(&mut data, "request", &input.text);
+    data
+}
+
 fn spawn_task_attempt(
     host: Arc<Host>,
     task_id: String,
@@ -2009,10 +2194,11 @@ fn spawn_task_attempt(
         let is_isolated = task_before
             .as_ref()
             .is_some_and(|task| task.mode == TaskMode::Isolated);
-        let snapshot = if is_isolated {
-            assistant_git::capture_result(result_path, &task_id)
+        let read_only = task_before.as_ref().is_some_and(|task| task.mode == TaskMode::ReadOnly);
+        let snapshot = if read_only { Ok(None) } else if is_isolated {
+            assistant_git::capture_result(result_path, &task_id).map(Some)
         } else {
-            assistant_git::capture(result_path, &task_id, "result")
+            assistant_git::capture(result_path, &task_id, "result").map(Some)
         };
         let error = handle
             .task_error
@@ -2023,6 +2209,8 @@ fn spawn_task_attempt(
             .or_else(|| snapshot.as_ref().err().cloned());
         let status = if run.stop.load(Ordering::SeqCst) {
             TaskStatus::Cancelled
+        } else if run.budget_pause.load(Ordering::SeqCst) {
+            TaskStatus::NeedsYou
         } else if error.is_some() {
             TaskStatus::Failed
         } else if handle.has_open_questions() {
@@ -2050,7 +2238,7 @@ fn spawn_task_attempt(
             .flatten()
             .and_then(|task| task.result_data)
             .unwrap_or_else(|| json!({}));
-        if let Ok(snapshot) = snapshot {
+        if let Ok(Some(snapshot)) = snapshot {
             if let Some(baseline) = result_data["baselineSnapshot"]["commit"]
                 .as_str()
                 .map(str::to_owned)
@@ -2079,14 +2267,21 @@ fn spawn_task_attempt(
             result_data["exclusions"] = json!(exclusions);
             result_data["resultSnapshot"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
         }
-        result_data["leaseHeld"] = json!(!is_isolated);
+        result_data["leaseHeld"] = json!(!is_isolated && !read_only);
+        result_data["budgetPaused"] = json!(status == TaskStatus::NeedsYou && run.budget_pause.load(Ordering::SeqCst));
+        let worker_result = handle.checkpoint.lock().unwrap().snapshot.transcript.iter().rev()
+            .find(|message| matches!(message.speaker, apex_core::Speaker::Bot(_)))
+            .map(|message| message.text.clone());
+        let result = if result_data["budgetPaused"] == true { Some("Paused at the reported spend limit. Raise or remove the limit, then resume this task.".into()) }
+            else { run.error.lock().unwrap().clone().or(error.clone()).or(worker_result) };
+        append_history(&mut result_data, if status == TaskStatus::NeedsYou { "pause" } else { "result" }, result.as_deref().unwrap_or("Worker attempt completed."));
         let outcome = TaskOutcome {
             status: if run.error.lock().unwrap().is_some() && error.is_none() {
                 TaskStatus::Failed
             } else {
                 status
             },
-            result: run.error.lock().unwrap().clone().or(error),
+            result,
             result_data: Some(result_data),
             usage: None,
         };
@@ -2465,6 +2660,81 @@ mod tests {
             panic!("The read worker did not complete while integration was reserved.");
         });
     }
+
+    #[test]
+    fn routing_choices_use_saved_chat_workers_and_exclude_other_folders() {
+        let f = fixture();
+        let saved = f.host.store().room("parent").unwrap().unwrap();
+        f.host.store().save_room("elsewhere", &crate::storage::SavedRoom {
+            cwd: Some("/another/project".into()), snapshot: saved.snapshot,
+        }).unwrap();
+        f.host.store().save_session(&json!({
+            "panes": [
+                {"id":"parent","kind":"chat","workspaceId":"workspace"},
+                {"id":"elsewhere","kind":"chat","workspaceId":"workspace"}
+            ],
+            "profiles": []
+        })).unwrap();
+        let snapshot = f.host.assistant_tasks_list(f.owner.clone()).unwrap();
+        let threads = snapshot["routingThreads"].as_array().unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0]["id"], "parent");
+        assert_eq!(threads[0]["workers"][0]["id"], "null", "A saved participant remains selectable after its library profile is deleted.");
+    }
+
+    #[test]
+    fn cached_image_workers_are_excluded_from_all_task_routing_choices() {
+        use std::io::{Read, Write};
+        let f = fixture();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 8192]; stream.read(&mut request).unwrap();
+            let body = r#"{"data":[{"id":"picture","type":"image"}]}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        f.runtime.block_on(apex_adapters::list_models(&base_url, None)).unwrap();
+        server.join().unwrap();
+        let image = profile("image", Backend::OpenAiCompatible { base_url, model: "picture".into(), api_key_env: None }, Access::Read);
+        assert!(image.media.is_none(), "The provider catalogue, not profile media settings, identifies this worker.");
+        assert!(!task_worker_eligible(&image));
+        assert!(verify_task_workers(&[image.clone()]).is_err());
+        let mut saved = f.host.store().room("parent").unwrap().unwrap();
+        saved.snapshot.participants.push(image.clone());
+        f.host.store().save_room("parent", &saved).unwrap();
+        f.host.store().save_session(&json!({"panes":[{"id":"parent","kind":"chat","workspaceId":"workspace"}],"profiles":[image]})).unwrap();
+        let snapshot = f.host.assistant_tasks_list(f.owner.clone()).unwrap();
+        assert_eq!(snapshot["namedOnlyWorkerIds"], json!(["image"]));
+        assert_eq!(snapshot["routingThreads"][0]["workers"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn clarification_validation_keeps_task_pending_and_delivers_human_scope() {
+        let f = fixture();
+        let response = f.runtime.block_on(f.host.assistant_message_with(input(&f, "clarify-scope"), |_, _| {
+            std::future::ready(Ok(json!({"kind":"clarify","message":"Choose a destination.","brief":"Review the project."}).to_string()))
+        })).unwrap();
+        let task: AssistantTask = serde_json::from_value(response["task"].clone()).unwrap();
+        let mut action = AssistantActionInput {
+            task_id: task.id.clone(), revision: task.revision, owner: f.owner.clone(), action:"clarify".into(),
+            text: Some("Review the open chats only; leave archived chats untouched.".into()),
+            destination: Some(TaskDestination {thread_id:Some("parent".into()),workers:vec!["null".into()],new_thread:false}),
+            new_worker_profiles:vec![], mode:Some(TaskMode::ReadOnly), checks:Some(vec![vec!["npm".into(),"test".into()]]), spend_limit_micros:None,
+        };
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action.clone())).unwrap_err().contains("Read-only"));
+        let unchanged = f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        assert_eq!(unchanged.status, TaskStatus::NeedsClarification);
+        assert_eq!(unchanged.revision, task.revision, "Invalid controls must not consume the routing decision.");
+        action.checks = None;
+        f.runtime.block_on(f.host.assistant_task_action(action)).unwrap();
+        let ready = wait_for(&f, &task.id);
+        assert_eq!(ready.status, TaskStatus::ReadyForReview);
+        assert_eq!(ready.original_request, task.original_request);
+        let state = f.host.room_state(ready.execution_thread_id.unwrap()).unwrap();
+        assert!(state["snapshot"]["transcript"].as_array().unwrap().iter().any(|message| message["text"].as_str().is_some_and(|text| text.contains("Additional human clarification") && text.contains("leave archived chats untouched"))));
+        assert!(ready.result_data.unwrap()["taskHistory"].as_array().unwrap().iter().any(|entry| entry["kind"] == "clarification"));
+    }
     fn input(f: &Fixture, request_id: &str) -> AssistantMessageInput {
         AssistantMessageInput {
             workspace_id: f.owner.workspace_id.clone(),
@@ -2481,6 +2751,8 @@ mod tests {
             }],
             mode: TaskMode::InPlace,
             checks: vec![],
+            worker_profiles: vec![],
+            spend_limit_micros: None,
         }
     }
     fn handoff(
@@ -2588,6 +2860,47 @@ mod tests {
     }
 
     #[test]
+    fn read_only_result_needs_no_git_or_writer_lease_and_cannot_gain_edit_access() {
+        let f = fixture();
+        std::fs::rename(f.root.join(".git"), f.data.join("fixture-git")).unwrap();
+        let mut request = input(&f, "read-only-request"); request.mode = TaskMode::ReadOnly;
+        let response = f.runtime.block_on(f.host.assistant_message_with(request, handoff)).unwrap();
+        let initial: AssistantTask = serde_json::from_value(response["task"].clone()).unwrap();
+        let task = wait_for(&f, &initial.id);
+        assert_eq!(task.status, TaskStatus::ReadyForReview, "{:?}", task.result);
+        assert_eq!(task.mode, TaskMode::ReadOnly);
+        assert_eq!(task.result.as_deref(), Some("The requested change is complete."));
+        assert_eq!(task.result_data.as_ref().unwrap()["leaseHeld"], false);
+        let child = task.execution_thread_id.as_ref().unwrap();
+        let state = f.host.room_state(child.clone()).unwrap();
+        assert_eq!(state["snapshot"]["participants"][0]["access"], "read");
+        let mut worker = serde_json::from_value::<ParticipantConfig>(state["snapshot"]["participants"][0].clone()).unwrap();
+        worker.access = Access::Edits;
+        assert!(f.runtime.block_on(f.host.room_update_participant(child.clone(), worker)).is_err());
+        let done = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput { task_id:task.id, revision:task.revision, owner:f.owner.clone(), action:"review".into(), mode:None, text:None, destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None })).unwrap();
+        assert_eq!(done.status, TaskStatus::Done);
+        assert!(!f.root.join(".git").exists());
+    }
+
+    #[test]
+    fn notes_and_revisions_preserve_human_request_and_worker_history() {
+        let f = fixture();
+        let mut request = input(&f, "note-request"); request.mode = TaskMode::ReadOnly;
+        let response = f.runtime.block_on(f.host.assistant_message_with(request, handoff)).unwrap();
+        let initial: AssistantTask = serde_json::from_value(response["task"].clone()).unwrap();
+        let task = wait_for(&f, &initial.id);
+        let noted = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput { task_id:task.id.clone(), revision:task.revision, owner:f.owner.clone(), action:"note".into(), mode:None, text:Some("Keep my archived chats untouched.".into()), destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None })).unwrap();
+        f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput { task_id:task.id.clone(), revision:noted.revision, owner:f.owner.clone(), action:"request_changes".into(), mode:None, text:Some("Summarize only the active chats.".into()), destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None })).unwrap();
+        let ready = wait_for(&f, &task.id);
+        assert_eq!(ready.status, TaskStatus::ReadyForReview);
+        assert_eq!(ready.original_request, task.original_request);
+        assert_eq!(ready.attempts.len(), 2);
+        let messages = f.host.room_state(ready.execution_thread_id.unwrap()).unwrap()["snapshot"]["transcript"].clone();
+        assert!(messages.as_array().unwrap().iter().any(|message| message["text"].as_str().is_some_and(|text| text.contains("Additional human note") && text.contains("archived chats untouched"))));
+        assert!(ready.result_data.as_ref().unwrap()["taskHistory"].as_array().unwrap().iter().any(|entry| entry["kind"] == "revision"));
+    }
+
+    #[test]
     fn simultaneous_queued_receipt_replay_runs_only_one_attempt() {
         let f = fixture();
         let gate = f.host.checkout_gate(Path::new(&f.owner.cwd));
@@ -2687,7 +3000,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         let finished = restarted_runtime.block_on(async {
             for _ in 0..300 {
@@ -2743,7 +3056,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         assert_eq!(accepted.status, TaskStatus::Done);
         assert_eq!(
@@ -2771,7 +3084,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         assert!(archived.result_data.as_ref().unwrap()["archivedAtMs"]
             .as_u64()
@@ -2799,7 +3112,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         assert_eq!(accepted.status, TaskStatus::Done);
         assert_eq!(
@@ -2826,7 +3139,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }));
+             spend_limit_micros: None, }));
         assert!(result.is_err());
         let latest = f
             .host
@@ -2887,7 +3200,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         let retried = wait_for(&f, &retried_receipt.id);
         assert_eq!(retried.status, TaskStatus::NeedsYou);
@@ -2963,7 +3276,7 @@ mod tests {
                 }),
                 new_worker_profiles: vec![],
                 checks: None,
-            }));
+             spend_limit_micros: None, }));
         assert!(invalid.is_err());
         let unchanged = f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
         assert_eq!(unchanged.status, TaskStatus::Proposed);
@@ -3002,7 +3315,7 @@ mod tests {
                 }),
                 new_worker_profiles: vec![worker],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         let ready = wait_for(&f, &queued.id);
         assert_eq!(ready.status, TaskStatus::ReadyForReview);
@@ -3088,7 +3401,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .is_err());
         for action in ["cancel", "archive"] {
             assert!(restarted_runtime
@@ -3102,7 +3415,7 @@ mod tests {
                     destination: None,
                     new_worker_profiles: vec![],
                     checks: None,
-                }))
+                 spend_limit_micros: None, }))
                 .is_err());
         }
         let still_interrupted = restarted.assistant_tasks.get(&task.id).unwrap().unwrap();
@@ -3120,7 +3433,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         assert_eq!(reconciled.status, TaskStatus::ReadyForReview);
         assert!(reconciled.result_data.as_ref().unwrap()["integrationPlan"].is_null());
@@ -3155,7 +3468,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         assert_eq!(accepted.status, TaskStatus::Done);
         let cancelled_task = f
@@ -3175,7 +3488,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None,
-            }))
+             spend_limit_micros: None, }))
             .unwrap();
         assert_eq!(cancelled.status, TaskStatus::Cancelled);
         assert!(f
@@ -3190,7 +3503,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None
-            }))
+            , spend_limit_micros: None, }))
             .is_err());
     }
 
@@ -3235,7 +3548,7 @@ mod tests {
                 destination: None,
                 new_worker_profiles: vec![],
                 checks: None
-            }))
+            , spend_limit_micros: None, }))
             .is_err());
         let reviewed = wait_for(&f, &ready.id);
         assert_eq!(reviewed.status, TaskStatus::ReadyForReview);

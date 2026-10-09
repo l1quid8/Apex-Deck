@@ -29,6 +29,7 @@
 .apex-widget-bubble-close{width:30px;height:30px;min-width:28px;min-height:28px;border-radius:7px}.apex-widget-drop-result>button{width:30px;height:30px;min-width:28px;min-height:28px;border-radius:7px}
 .apex-widget-status.status-complete{color:#98a5b4}
 .apex-widget-avatar.tone-needs-you{--apex-glow:#ffbf4f}
+.apex-widget-avatar.is-open.tone-needs-you{--apex-glow:var(--apex-widget-mint)}.apex-widget-avatar.is-open.status-needs-you .apex-widget-halo{background:radial-gradient(circle,var(--apex-widget-mint),transparent 72%);opacity:.38;animation:apex-widget-breathe 3.5s ease-in-out infinite}
 .apex-widget-root.is-hidden .apex-widget-hit{width:24px;left:-9px}
 .apex-widget-reply-error{display:block;margin-top:6px;color:#ffad9e}
 .apex-widget-panel{height:min(640px,calc(100vh - 32px))}
