@@ -1,7 +1,7 @@
 # ApexAgent: project assistant with tracked, isolated delegation
 
-Plan from Tyler, revised with Claude on 2026-10-09. Sections marked
-**(added)** are review changes folded into the original plan.
+Approved implementation plan, reconciled with Tyler on 2026-10-09.
+The decisions below supersede conflicting additions in the earlier Claude draft.
 
 ## Summary
 
@@ -31,14 +31,11 @@ Your chosen behavior:
 - ApexAgent can create a thread. If no bot is named, it asks you to choose one.
 - Worktrees (v0.7) include current tracked edits and non-ignored new files,
   minus likely secrets (see milestone 4).
-- Results become **Ready for review**. You accept them; ApexAgent applies the
-  task's changes, verifies them, and then marks **Done**.
+- Results become **Ready for review**. v0.6 shows "In place — edits are already in your checkout"; Accept verifies and marks Done without applying again. v0.7 stages, verifies and applies isolated changes on Accept. Cancel retains in-place edits and releases ownership.
 
 ## Before starting (added)
 
-- **One editor at a time** in `~/Downloads/apex-deck`. Close dev builds and
-  other agents before milestone 1 begins. Each milestone gets its own
-  commits. Do not push or merge to `origin` without asking.
+- Implementation uses a managed isolated checkout created from a recoverable snapshot of the dirty primary checkout. Helpers own disjoint files, with shared interfaces integrated by the controller. No remote push is authorized.
 - **Git housekeeping:**
   - `feat/glass-themes-v4` is fully merged into `main`, two commits behind it,
     with nothing uncommitted. Remove its worktree
@@ -46,8 +43,7 @@ Your chosen behavior:
   - The Oct 8 stash ("Preserve main App work during authorized glass-v4
     merge") is superseded by the ApexAgent wiring in the current `App.tsx`.
     Drop it once Tyler agrees.
-  - `.git/stale-index-lock-claude-20261009` is a harmless leftover lock
-    file. Delete it.
+  - Preserve unrelated housekeeping artifacts until explicit cleanup.
   - Confirm `/private/tmp/apex-agent-review-fixes` has no uncommitted edits
     before relying on `97c5e50` as that branch's final state.
 - `docs/superpowers/plans/2026-10-09-cleanup-pass.md` task 1 ("land the work
@@ -88,19 +84,15 @@ Your chosen behavior:
   before delegation controls become available.
   - **(added)** `desktop/sidecar.mjs` currently reuses any daemon answering
     on the data folder's socket. Dev and smoke scripts must set their own
-    `APEX_DECK_DATA_DIR`. A client that finds a daemon with a different
-    version or missing capabilities says which build is running and how to
-    stop it, instead of attaching silently.
+    `APEX_DECK_DATA_DIR`. Version differences are informational. Missing required capabilities produce an actionable feature error; compatible builds may connect.
 - **(added)** Small fixes: the unused `Backend` import in
   `monitor_commands.rs`, and the `apex-host` test
   `a_replace_that_cannot_be_saved_...`, which relies on a read-only folder
-  and so fails when tests run as root. Skip it under root, with a comment
-  saying why.
+  and so fails when tests run as root. Use a deterministic persistence-failure fixture that remains effective under root and verifies the original live and saved thread survive.
 - **(added)** CI: run the Rust tests and daemon build with
   `--features remote`, as review recommendation 6 asks.
 
-**Deliverable:** one coherent, tested ApexAgent implementation with reliable
-observation and transport behavior, committed on `main` in reviewable pieces.
+**Deliverable:** one coherent, tested ApexAgent implementation in reviewable local commits. Preserve the original checkout and both existing code copies during integration.
 
 ### 2. Make profiles and handoff decisions explicit (v0.6)
 
@@ -158,12 +150,10 @@ concrete, traceable assignment without a redundant confirmation.
   invalidates an earlier Ready-for-review result.
 - **(added) v0.6 runs in place:** without worktrees, a task edits the
   project's own checkout, so one task runs at a time per project and the
-  existing editing reservation applies. Ready for review shows the files the
+  checkout-wide Deck editing lease remains held through human review. Other Deck writers queue until Accept and checks succeed or explicit Cancel; Request changes retains ownership. Reads continue. External editors are outside this lease, so Accept revalidates the review snapshot. Ready for review shows the files the
   task changed; Accept marks Done after the agreed checks pass. Request
   changes continues the same task.
-- **(added) Spend limit:** each task shows its running token and cost total,
-  and has an optional cap (default off, set in Settings). Reaching the cap
-  pauses the task as **Needs you**; it never cancels silently.
+- Show actual token/cost usage per attempt; unavailable usage is Unknown. Spend caps are deferred until adapters support a verified pause contract.
 - **(added) Worker questions go to you.** A worker's approval request or
   question surfaces as **Needs you** on the task card. ApexAgent never
   answers approvals on your behalf.
@@ -180,23 +170,12 @@ restarts without duplicate assignments or incorrect completion reports.
     stored in Git objects. Skip likely secrets (`.env*`, `*.pem`, `*.key`,
     `id_*`, files over a size limit) by default, list what was skipped on
     the task card, and let the project add patterns. Keep baseline and
-    result refs under a private namespace (`refs/apex/...`) so they never
-    show in branch lists or get pushed.
-- Create a task-owned branch and worktree on the project's machine. Give
+    result refs under a private namespace (`refs/apex/...`) so the app does not push them. The namespace is not a security boundary. Distinguish secret templates/examples, never silently omit tracked files, and list exclusions.
+- Create a task-owned worktree anchored by private snapshot refs on the project's machine. Give
   workers distinct provider sessions and show their execution directory
   clearly.
-  - **(added) Trust the worktree before starting.** Every worktree is a
-    folder Claude Code and Codex have never seen. Pre-register it with each
-    tool's trust settings (Codex's approval hook is trusted per folder;
-    Claude asks to trust new folders), or the first turn stalls on a prompt
-    nobody sees. If trust can't be set, the task shows **Needs you** with
-    the reason.
-  - **(added) Build setup per worktree.** A fresh worktree has no
-    `node_modules` and a cold Rust build (about 2.5 minutes for this repo).
-    Per project, choose: link `node_modules` from the primary checkout
-    (default for unchanged lockfiles), run an install command, or none.
-    Give each worktree its own cargo target folder rather than sharing one,
-    since a shared folder's lock makes parallel builds wait on each other.
+  - Use only verified per-adapter trust mechanisms while preserving approval policies. Unsupported startup becomes Needs you; do not silently broaden global trust.
+  - Install dependencies independently using locked commands by default. No writable shared node_modules symlink. Use separate Rust targets; download caches may be shared.
 - Run independent tasks concurrently. Default limits are **two per project
   and four per host**.
 - Capture an immutable result snapshot and show the task-only diff against
@@ -205,9 +184,7 @@ restarts without duplicate assignments or incorrect completion reports.
   three-way integration against the project's latest files and run the
   agreed checks before applying.
   - **(added) How to apply without touching your staging:** build the
-    merged result in a scratch worktree from the latest files, three-way
-    merging each changed file with `git merge-file` (base = task baseline,
-    ours = current file, theirs = task result). Run the checks there. Then
+    merged result in a scratch worktree from the latest files, performing a whole-tree three-way merge (base = task baseline, ours = current snapshot, theirs = immutable task result), including adds, deletes, renames, binaries, modes and symlinks. Run the checks there. Then
     write only the working files of the primary checkout. Never run
     `git apply --3way`, `git stash`, `checkout` or `reset` on the primary
     checkout, since each of those rewrites its index or files.
@@ -239,13 +216,13 @@ Add host commands for:
   descriptors (v0.6).
 - `assistant_task_action`: clarify, approve, dismiss, cancel, retry, request
   changes, or accept a particular task revision (v0.6; accept gains the
-  integration path in v0.7).
-- **(added)** `assistant_task_archive`: remove a task's worktree and keep its
-  record (v0.7).
+  integration path in v0.7). Its `archive` action removes a task's worktree
+  and keeps its record (v0.7); `reconcile` recovers an interrupted integration.
 
 Add task-change events, optional task/run metadata on messages and recovery
 snapshots, and a delegation capability in the daemon handshake (v0.6) plus
-an isolation capability (v0.7). Existing saved conversations load with
+an isolation capability (v0.7): `assistant_delegation` and `assistant_isolation`.
+Existing saved conversations load with
 backward-compatible defaults.
 
 Use shared task-state and recovery logic across desktop and phone. Cards show
@@ -271,7 +248,7 @@ assistant data or expand their permissions through delegation.
   authoritative task history.
 - **Ownership:** cancellation stops descendants and task-owned approvals
   while unrelated human turns continue; closing panels preserves execution.
-- **Spend (added):** a capped task pauses as Needs you at its limit.
+- **Usage:** cost-only reports are retained; unavailable metrics render Unknown.
 - **Isolation (v0.7):** parallel tasks use distinct worktrees, sessions and
   target folders; dirty starting files are captured without changing the
   original index; likely secrets are skipped and listed; new worktrees start
@@ -309,7 +286,7 @@ assistant data or expand their permissions through delegation.
 
 ## Maintenance backlog, not in this plan (added)
 
-- Code review findings #10, #11, #13 to #16.
+- Code review findings #13, #15 and #16. Findings #10 (usage), #11 (phone session recovery), and #14 (private host data) are prerequisites in this implementation.
 - Cleanup pass tasks 2 to 4: the flaky parallel Rust test, docs catch-up,
   and one bot editor in place of the three in `ChatPane.tsx`.
 - A Permissions section in Settings listing every "Always allow" rule across
