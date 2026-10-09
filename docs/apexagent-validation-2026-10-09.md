@@ -1,16 +1,17 @@
 # ApexAgent implementation validation, October 9, 2026
 
-The implementation is on local branch `feat/apexagent-delegation-20261009` in
-the managed `apexagent-delegation` checkout. The
-original Downloads checkout was preserved: all 912 files in snapshot
-`7c96f613ad394ffcc5dd5c833010d83408c05323` still match its contents. Both earlier
-code copies have backup refs under `refs/apex-backups/delegation-20261009-*`.
-Nothing has been pushed, installed, or merged into the original checkout.
+The implementation was built on branch `feat/apexagent-delegation-20261009` in
+the managed `apexagent-delegation` checkout, then integrated into `main` in the
+original Downloads checkout. Before integration, all 912 files matched snapshot
+`7c96f613ad394ffcc5dd5c833010d83408c05323`. Both earlier code copies have backup
+refs under `refs/apex-backups/delegation-20261009-*`. The signed native app is now
+installed at `/Applications/Apex Deck.app`; installation evidence is below.
 
 Local implementation commits:
 
 - `9f3d797`: durable host delegation, process ownership and Git integration.
 - `92152af`: shared desktop/phone controls, recovery and behavioral fixtures.
+- `26a6f2c`: workflow documentation and implementation validation.
 
 Ten GPT Luna helpers contributed in batches of three, respecting the runtime's
 four-agent limit including the controller. The controller integrated shared
@@ -75,7 +76,7 @@ concurrent registry creation, and read chats continuing during acceptance.
 
 ## Validation limits
 
-This is a local implementation, not a shipped release. A physical iPhone and
+This is a locally installed development build, not a formal release. A physical iPhone and
 paid-provider execution have not been exercised. The current Codex adapter has
 no verified isolated startup mechanism and therefore shows Needs you; it
 continues to support in-place execution. macOS checks passed; Linux CI is
@@ -85,3 +86,39 @@ recovery is explicitly unsupported.
 The two-client fixtures establish daemon/protocol behavior, not physical phone
 interaction. The plan's physical-device and real-provider release acceptance
 checks remain outstanding before release.
+
+## Native installation
+
+The native app was packaged from `main` at `26a6f2c`. Fresh checks in that
+checkout passed: 1,015 JavaScript tests, 771 Rust tests with remote support
+(one live-provider test intentionally ignored), TypeScript and the production
+build. The optimized daemon build and Developer ID packaging succeeded.
+
+The packaged app passed the full native desktop smoke, including browser
+recovery, persisted storage, restored worker startup, and daemon shutdown. After
+installation, the actual `/Applications/Apex Deck.app` passed all 12 widget
+checks using isolated test data. Its signature passed deep, strict verification,
+and its bundled `app.asar` and daemon hashes match the tested package:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `Contents/Resources/app.asar` | `1a2f5a876dbc3563ceb6173ddcd2efb3d5c2feeae8a3e252e210fd4070d3ca7a` |
+| `Contents/Resources/bin/apex-daemon` | `fcb6bebc56b44b52090c9a3218fe7566b0a39967966fafbfc564af274f4e3972` |
+
+The production LaunchAgent was stopped gracefully and refreshed with the new
+bundled daemon. A fresh handshake advertised `monitor_profile_update`,
+`assistant_delegation`, and `assistant_isolation`, with remote access running.
+Host identity, pairing keys, paired devices and remote configuration retained
+their hashes. The saved session still contains three workspaces, nine panes and
+seven profiles. The normal native app reopened successfully; its saved
+conversation, task request controls, and editable profile dropdown were
+inspected without dispatching new provider work or changing the profile.
+
+The former app, LaunchAgent plist, daemon data and desktop data are backed up in
+`~/Library/Application Support/Apex Deck/build-backups/20261009-115214-apexagent`.
+The per-boot daemon token rotated normally. Session content was preserved;
+its `savedBy` client marker changed after reconnecting.
+
+Installation logs are `/tmp/apexagent-main-{js,rust,build}.log`,
+`/tmp/apexagent-native-{release,package,packaged-smoke,installed-widget}.log`.
+The application version remains `0.5.1`; the hashes above identify this build.
