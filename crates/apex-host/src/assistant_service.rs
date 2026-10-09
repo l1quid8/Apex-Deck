@@ -1154,6 +1154,15 @@ impl Host {
                 "Wait for the current worker turn to finish before continuing this task.".into(),
             );
         }
+        let current = self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("The assistant task for this chat is missing.")?;
+        let has_live_wait = handle.has_pending_human_waits();
+        let has_persisted_wait = current.result_data.as_ref().is_some_and(|data| {
+            data["pendingApprovals"].as_array().is_some_and(|waits| !waits.is_empty())
+                || data["pendingQuestions"].as_array().is_some_and(|waits| !waits.is_empty())
+        });
+        if has_live_wait || has_persisted_wait {
+            return Err("Answer the worker's open question or approval first, or cancel the current attempt.".into());
+        }
         let allowed: std::collections::HashSet<_> =
             task.workers.iter().map(|id| id.as_str()).collect();
         if targets
@@ -2484,7 +2493,7 @@ async fn drain_check_output(
 mod tests {
     use super::*;
     use crate::{assistant_tasks::TaskStatus, host::HostPaths};
-    use apex_core::{Access, Backend, ParticipantConfig, ParticipantId, RoomOptions};
+    use apex_core::{Access, Backend, ParticipantConfig, ParticipantId, RoomEvent, RoomOptions};
     use serde_json::json;
     use std::{
         path::PathBuf,
@@ -2799,6 +2808,32 @@ mod tests {
         wait_for(f, &receipt.id)
     }
 
+    fn budget_paused_wait_task(f: &Fixture, request_id: &str, wait: RoomEvent, stop_first: bool) -> AssistantTask {
+        let mut request = input(f, request_id);
+        request.mode = TaskMode::ReadOnly;
+        let response = f.runtime.block_on(f.host.assistant_message_with(request, handoff)).unwrap();
+        let initial: AssistantTask = serde_json::from_value(response["task"].clone()).unwrap();
+        let task = wait_for(f, &initial.id);
+        let child = task.execution_thread_id.clone().unwrap();
+        let (_, run_id) = f.host.assistant_tasks.begin_attempt(&task.id, task.revision, &task.owner).unwrap();
+        *f.host.handle(&child).unwrap().task_run_id.lock().unwrap() = Some(run_id.clone());
+        f.host.room_event(&child, wait);
+        if stop_first {
+            f.host.room_event(&child, RoomEvent::Stopped);
+        }
+        let active = f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        let mut data = active.result_data.clone().unwrap_or_else(|| json!({}));
+        data["budgetPaused"] = json!(true);
+        data["spendLimitMicros"] = Value::Null;
+        f.host.assistant_tasks.set_result_data(&task.id, active.revision, &task.owner, Some(data.clone())).unwrap();
+        f.host.assistant_tasks.finish_attempt(&task.id, &run_id, TaskOutcome {
+            status: TaskStatus::NeedsYou,
+            result: Some("Paused at the reported spend limit.".into()),
+            result_data: Some(data),
+            usage: None,
+        }).unwrap()
+    }
+
     fn set_isolated_result(
         f: &Fixture,
         task: &AssistantTask,
@@ -2898,6 +2933,71 @@ mod tests {
         let messages = f.host.room_state(ready.execution_thread_id.unwrap()).unwrap()["snapshot"]["transcript"].clone();
         assert!(messages.as_array().unwrap().iter().any(|message| message["text"].as_str().is_some_and(|text| text.contains("Additional human note") && text.contains("archived chats untouched"))));
         assert!(ready.result_data.as_ref().unwrap()["taskHistory"].as_array().unwrap().iter().any(|entry| entry["kind"] == "revision"));
+    }
+
+    #[test]
+    fn budget_resume_cannot_bypass_a_live_question_or_approval() {
+        let waits = [
+            RoomEvent::QuestionRequested {
+                id: ParticipantId::new("null"),
+                request: "question-1".into(),
+                questions: vec![apex_core::Question { header: "Choice".into(), question: "Which?".into(), options: vec![], multi_select: false }],
+            },
+            RoomEvent::ApprovalRequested {
+                id: ParticipantId::new("null"),
+                request: "approval-1".into(),
+                action: apex_core::ProposedAction { kind: apex_core::ActionKind::Command, title: "Run command".into(), detail: "make change".into(), expires_at: None, risky: false },
+            },
+        ];
+        for (index, wait) in waits.into_iter().enumerate() {
+            let f = fixture();
+            let task = budget_paused_wait_task(&f, &format!("budget-live-wait-{index}"), wait, false);
+            let child = task.execution_thread_id.clone().unwrap();
+            let state = f.host.room_state(child.clone()).unwrap();
+            assert!(!state["questions"].as_array().unwrap().is_empty() || !state["approvals"].as_array().unwrap().is_empty());
+            let result = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {
+                task_id: task.id.clone(), revision: task.revision, owner: f.owner.clone(), action: "resume_budget".into(),
+                mode: None, text: None, destination: None, new_worker_profiles: vec![], checks: None, spend_limit_micros: None,
+            }));
+            assert!(result.unwrap_err().contains("Answer the worker's open question or approval first"));
+            assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap().attempts.len(), task.attempts.len());
+        }
+    }
+
+    #[test]
+    fn stopped_budget_paused_wait_clears_durable_waits_and_can_resume() {
+        let f = fixture();
+        let task = budget_paused_wait_task(&f, "budget-stopped-wait", RoomEvent::QuestionRequested {
+            id: ParticipantId::new("null"), request: "question-stop".into(),
+            questions: vec![apex_core::Question { header: "Choice".into(), question: "Which?".into(), options: vec![], multi_select: false }],
+        }, true);
+        assert_eq!(task.status, TaskStatus::NeedsYou);
+        let data = task.result_data.as_ref().unwrap();
+        assert!(data["pendingQuestions"].as_array().is_none_or(Vec::is_empty));
+        assert!(data["pendingApprovals"].as_array().is_none_or(Vec::is_empty));
+        let child = task.execution_thread_id.clone().unwrap();
+        let state = f.host.room_state(child).unwrap();
+        assert!(state["questions"].as_array().unwrap().is_empty());
+        assert!(state["approvals"].as_array().unwrap().is_empty());
+        let mut stale_wait = task.result_data.clone().unwrap();
+        stale_wait["pendingQuestions"] = json!([{"id":"null","request":"stale-question","questions":[]}]);
+        let task = f.host.assistant_tasks.set_result_data(&task.id, task.revision, &f.owner, Some(stale_wait)).unwrap();
+        let blocked = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {
+            task_id: task.id.clone(), revision: task.revision, owner: f.owner.clone(), action: "resume_budget".into(),
+            mode: None, text: None, destination: None, new_worker_profiles: vec![], checks: None, spend_limit_micros: None,
+        }));
+        assert!(blocked.unwrap_err().contains("Answer the worker's open question or approval first"));
+        let latest = f.host.assistant_tasks.get(&task.id).unwrap().unwrap();
+        let mut cleared_wait = latest.result_data.clone().unwrap();
+        cleared_wait["pendingQuestions"] = json!([]);
+        let task = f.host.assistant_tasks.set_result_data(&task.id, latest.revision, &f.owner, Some(cleared_wait)).unwrap();
+        let resumed = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput {
+            task_id: task.id.clone(), revision: task.revision, owner: f.owner.clone(), action: "resume_budget".into(),
+            mode: None, text: None, destination: None, new_worker_profiles: vec![], checks: None, spend_limit_micros: None,
+        })).unwrap();
+        let settled = wait_for(&f, &task.id);
+        assert!(settled.attempts.len() > task.attempts.len());
+        assert!(matches!(settled.status, TaskStatus::ReadyForReview | TaskStatus::Failed), "resume receipt {:?}, settled {:?}", resumed.status, settled.status);
     }
 
     #[test]

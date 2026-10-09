@@ -86,6 +86,33 @@ test('isolated requests require the isolation capability before sending work', a
   assert.equal(calls.length, 2);
 });
 
+test('V3 task controls cannot dispatch to a host that silently ignores new fields', async () => {
+  const calls = [];
+  const available = new Set(['assistant_delegation', 'assistant_isolation']);
+  const client = {
+    call: async (cmd, args) => { calls.push([cmd, args]); return null; },
+    on: () => () => {},
+    requireCapability: (capability) => { if (!available.has(capability)) throw new Error(`Update host for ${capability}`); },
+  };
+  const transport = daemonTransport(client);
+  const requests = [
+    ['assistant_message', { mode: 'read_only' }],
+    ['assistant_message', { mode: 'in_place', spendLimitMicros: 100_000 }],
+    ['assistant_message', { mode: 'in_place', workerProfiles: [{ id: 'luna' }] }],
+    ...['note', 'set_budget', 'resume_budget'].map(action => ['assistant_task_action', { action }]),
+  ];
+  for (const [command, args] of requests) {
+    assert.throws(() => transport.call(command, args), /Update host for assistant_workspace_v3/);
+  }
+  assert.equal(calls.length, 0, 'unsupported controls never reach the older daemon');
+  await transport.call('assistant_tasks_list', {});
+  await transport.call('assistant_task_action', { action: 'accept', mode: 'in_place' });
+  assert.equal(calls.length, 2, 'existing task views and acceptance remain available');
+  available.add('assistant_workspace_v3');
+  for (const [command, args] of requests) await transport.call(command, args);
+  assert.equal(calls.length, 2 + requests.length);
+});
+
 import { electronShell } from '../src/electronShell.ts';
 
 test('the shell saves and opens on this machine, and the host opens targets and copies drops', async () => {

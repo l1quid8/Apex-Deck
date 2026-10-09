@@ -764,6 +764,9 @@ impl AssistantTasks {
             for key in ["spendLimitMicros", "queuedNotes"] {
                 if let Some(value) = latest.get(key) { data[key] = value.clone(); }
             }
+            for key in ["pendingApprovals", "pendingQuestions"] {
+                data[key] = latest.get(key).cloned().unwrap_or_else(|| serde_json::json!([]));
+            }
             let mut history = latest["taskHistory"].as_array().cloned().unwrap_or_default();
             for entry in data["taskHistory"].as_array().into_iter().flatten() {
                 if !history.contains(entry) { history.push(entry.clone()); }
@@ -1229,6 +1232,29 @@ mod tests {
         assert_eq!(data["taskHistory"][1]["kind"], "note");
         assert_eq!(settled.status, TaskStatus::NeedsYou);
         assert_eq!(data["budgetPaused"], true);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn settlement_keeps_terminal_wait_clears_over_a_stale_worker_snapshot() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("wait-settlement", "Review it"), "brief".into(), Some(destination())).unwrap();
+        let task = store.set_result_data(&task.id, task.revision, &owner(), Some(serde_json::json!({
+            "pendingApprovals": [], "pendingQuestions": [], "budgetPaused": false
+        }))).unwrap();
+        let (running, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        let mut stale_result = running.result_data.clone().unwrap();
+        stale_result["pendingQuestions"] = serde_json::json!([{"request":"question-1","id":"null","questions":[{"question":"Which?"}]}]);
+        store.set_run_waits(&task.id, &run, vec![], vec![serde_json::json!({"request":"question-1","id":"null","questions":[{"question":"Which?"}]})]).unwrap();
+        store.set_run_waits(&task.id, &run, vec![], vec![]).unwrap();
+        let settled = store.finish_attempt(&task.id, &run, TaskOutcome {
+            status: TaskStatus::ReadyForReview, result: Some("Findings".into()), result_data: Some(stale_result), usage: None,
+        }).unwrap();
+        let data = settled.result_data.unwrap();
+        assert_eq!(data["pendingApprovals"], serde_json::json!([]));
+        assert_eq!(data["pendingQuestions"], serde_json::json!([]));
+        assert_eq!(settled.status, TaskStatus::ReadyForReview);
         std::fs::remove_dir_all(path).unwrap();
     }
 

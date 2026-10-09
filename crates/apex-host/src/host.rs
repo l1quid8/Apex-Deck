@@ -50,6 +50,10 @@ pub(crate) struct RoomHandle {
 
 impl RoomHandle {
     pub(crate) fn has_open_questions(&self) -> bool { !self.live.lock().unwrap().questions.is_empty() }
+    pub(crate) fn has_pending_human_waits(&self) -> bool {
+        let live = self.live.lock().unwrap();
+        !live.approvals.is_empty() || !live.questions.is_empty()
+    }
     pub(crate) fn busy(&self) -> bool { self.runtime.busy() }
 }
 
@@ -338,8 +342,20 @@ impl Host {
         if task.attempts.last().is_none_or(|a| a.run_id != run_id) { return; }
         let mut changed = false;
         match event {
-            RoomEvent::Failed { error, .. } => { *handle.task_error.lock().unwrap() = Some(error.clone()); }
-            RoomEvent::Stopped => { *handle.task_error.lock().unwrap() = Some("Worker stopped; edits are retained for review.".into()); }
+            RoomEvent::Failed { error, .. } => {
+                *handle.task_error.lock().unwrap() = Some(error.clone());
+                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
+                changed = self.assistant_tasks.set_run_waits(&entry.task_id, &run_id, approvals, questions).is_ok();
+            }
+            RoomEvent::Stopped => {
+                *handle.task_error.lock().unwrap() = Some("Worker stopped; edits are retained for review.".into());
+                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
+                changed = self.assistant_tasks.set_run_waits(&entry.task_id, &run_id, approvals, questions).is_ok();
+            }
+            RoomEvent::Idle | RoomEvent::ParticipantIdle { .. } => {
+                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
+                changed = self.assistant_tasks.set_run_waits(&entry.task_id, &run_id, approvals, questions).is_ok();
+            }
             RoomEvent::MessageAdded { message } if message.text.contains("[Worker cleanup incomplete:") => {
                 *handle.task_error.lock().unwrap() = Some(message.text.clone());
             }

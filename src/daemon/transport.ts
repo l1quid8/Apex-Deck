@@ -23,6 +23,10 @@ export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Part
     call: (cmd, args) => {
       if (cmd.startsWith("assistant_")) client.requireCapability?.("assistant_delegation", "ApexAgent delegation");
       if (cmd.startsWith("assistant_") && args?.mode === "isolated") client.requireCapability?.("assistant_isolation", "ApexAgent isolated worktrees");
+      const needsWorkspaceV3 = args?.mode === "read_only" || args?.spendLimitMicros != null
+        || (Array.isArray(args?.workerProfiles) && args.workerProfiles.length > 0)
+        || args?.action === "note" || args?.action === "set_budget" || args?.action === "resume_budget";
+      if (cmd.startsWith("assistant_") && needsWorkspaceV3) client.requireCapability?.("assistant_workspace_v3", "ApexAgent read-only tasks, routing and spend controls");
       if (cmd === "monitor_profile_update") client.requireCapability?.("monitor_profile_update", "Changing the ApexAgent profile");
       return client.call(cmd, args);
     },

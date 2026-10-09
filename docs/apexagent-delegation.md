@@ -99,6 +99,10 @@ not a security boundary.
 `npm run desktop:dev` gives each checkout its own default development data
 directory. `APEX_DECK_DATA_DIR` overrides it. The daemon's capability list
 controls availability; unsupported hosts show an update instruction.
+Read-only work, named-worker catalogue routing, notes and spend controls require
+the project host to advertise `assistant_workspace_v3`. Older project daemons
+must be updated before these requests are sent. Remote daemons are upgraded
+separately from the Mac app.
 
 Core verification commands:
 
