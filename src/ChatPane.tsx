@@ -2804,7 +2804,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 color={color(entry.message.speaker.id)}
                 {...(newestReply.get(entry.message.speaker.id) === entry.message.seq ? { levels: levelsFor(entry.message.speaker.id), refills: refillsFor(entry.message.speaker.id) } : {})}
               />
-              <div className="bubble bot completed" data-seq={entry.message.seq}>
+              <div className="bubble bot completed" data-seq={entry.message.seq} data-activity="idle" style={{ "--agent-color": color(entry.message.speaker.id) } as CSSProperties}>
                 <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
@@ -2832,7 +2832,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           return (
             <div key={`d${id}`} className="bot-row">
               <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
-              <div className="bubble bot writing" aria-busy="true">
+              <div className="bubble bot writing" aria-busy="true" data-activity={asks[id]?.length ? "waiting" : "working"} style={{ "--agent-color": color(id) } as CSSProperties}>
                 <span className="speaker" style={{ color: color(id) }}>
                   {names.get(id) ?? id}
                 </span>

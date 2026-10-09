@@ -3,6 +3,8 @@
 // controls stay in thread details and the Agents tab.
 
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
+import { AppearanceSettings } from "./AppearanceSettings";
+import { defaultAppearanceSettings } from "./themes";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
@@ -15,10 +17,11 @@ import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { shortcutList } from "./shortcuts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "hosts" | "remote" | "devices" | "providers" | "threads" | "terminal" | "mods" | "shortcuts";
+export type SettingsSection = "general" | "appearance" | "hosts" | "remote" | "devices" | "providers" | "threads" | "terminal" | "mods" | "shortcuts";
 
 const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
   { id: "hosts", label: "Hosts" },
   { id: "remote", label: "Remote access" },
   { id: "devices", label: "Paired devices" },
@@ -48,6 +51,7 @@ interface Props {
 }
 
 export function SettingsPage({ section, onSection, settings, onChange, agents, profiles, backend, onClose }: Props) {
+  const appearance = settings.appearance ?? defaultAppearanceSettings();
   // Take focus from the deck, so typing never reaches a terminal underneath.
   const nav = useRef<HTMLElement>(null);
   useEffect(() => { nav.current?.querySelector<HTMLButtonElement>("button.active")?.focus(); }, []);
@@ -80,7 +84,8 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
           <h2>{section === "threads" ? "Defaults for new threads" : SECTIONS[index].label}</h2>
           {LEADS[section] && <p>{LEADS[section]}</p>}
         </header>
-        {section === "general" && <General backend={backend} />}
+        {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} />}
+        {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
         {section === "remote" && backend.remoteAccess && <RemoteAccessSettings backend={backend} remote={backend.remoteAccess} />}
         {section === "devices" && backend.hosts && <PairedDevicesSettings backend={backend} />}
@@ -95,6 +100,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
 }
 
 const LEADS: Partial<Record<SettingsSection, string>> = {
+  appearance: "Choose a skin, tune its surfaces, or bring one you made with AI. Changes apply to the whole deck.",
   hosts: "The machine this window runs its threads and terminals on: this Mac, or another one over SSH.",
   remote: "Let phones you pair reach this Mac when they aren't on its network.",
   devices: "Phones allowed to reach this machine from outside your network, and what each may do.",
@@ -120,13 +126,13 @@ function Stepper({ value, min, max, unit, label, onChange }: { value: number; mi
   </span>;
 }
 
-function General({ backend }: { backend: Backend }) {
+function General({ backend, themeName, onAppearance }: { backend: Backend; themeName: string; onAppearance: () => void }) {
   const [folder, setFolder] = useState("");
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
   useEffect(() => { backend.dataFolder().then(setFolder, () => setFolder("")); }, [backend]);
   return <div className="settings-card">
-    <Row label="Theme" note="Dark is the only theme for now."><select disabled value="dark" aria-label="Theme"><option value="dark">Dark</option></select></Row>
+    <Row label="Theme" note={themeName}><button onClick={onAppearance}>Appearance…</button></Row>
     <Row label="Saved in" note={<span className="mono">{folder || "…"}</span>}>
       {!backend.demo && <button disabled={!folder} onClick={() => backend.openTarget(folder, null, false).catch(() => {})}>Show in Finder</button>}
     </Row>

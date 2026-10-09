@@ -2,12 +2,13 @@ import { canvasPanes } from "./canvasPanes.ts";
 import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceFamily, workspaceHost } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
 import { HostPane, HostAgents } from "./HostPane";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { getBackend, type Backend, type HostEntry } from "./backend";
 import { connection, statusWords } from "./connection";
 import { SettingsPage, type SettingsSection } from "./SettingsPage";
 import { DEFAULT_SETTINGS, readSettings, type AppSettings } from "./settings";
+import { DEFAULT_APPEARANCE, themeMode, themeVariables } from "./themes";
 import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { DetailsHost } from "./ThreadDetails";
@@ -110,6 +111,19 @@ export function App() {
     if (status.lastAt) setPanes((list) => noteActive(list, paneId, status.lastAt!));
   }, []);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const appearance = settings.appearance?.current.appearance ?? DEFAULT_APPEARANCE;
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const variables = themeVariables(appearance);
+    root.dataset.deckTheme = themeMode(appearance);
+    root.dataset.deckLight = String(appearance.light);
+    for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
+    return () => {
+      for (const name of Object.keys(variables)) root.style.removeProperty(name);
+      delete root.dataset.deckTheme;
+      delete root.dataset.deckLight;
+    };
+  }, [appearance]);
   const disabledProviders = settings.disabledProviders;
   /** The settings section shown, or null while the deck is. */
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
@@ -1285,7 +1299,7 @@ export function App() {
           onMarkReadySeen={() => setAttention(clearReady)}
         />
         </div>
-        <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSection(next); setPicking(false); setMaximized(null); }} />
+        <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
         {(
           <div className="layout-presets" role="group" aria-label="Arrange panes">

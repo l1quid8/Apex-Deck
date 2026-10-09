@@ -5,12 +5,15 @@
 
 import type { Access, ParticipantConfig, RoomOptions, TurnPolicy } from "./types";
 import type { ChipParts } from "./botChip";
+import { readAppearance, type AppearanceSettings } from "./themes.ts";
 
 export interface DecisionSettings { enabled: boolean; provider: "jev" | "openrouter" | "cloudflare"; accountId: string; }
 export const DEFAULT_DECISION: DecisionSettings = { enabled: false, provider: "jev", accountId: "" };
 
 export interface AppSettings {
   decision?: DecisionSettings;
+  /** Saved only after a user changes Appearance; older settings files omit it. */
+  appearance?: AppearanceSettings;
   version: 1;
   /** Tools hidden from the add menus and bot form. */
   disabledProviders: string[];
@@ -84,6 +87,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       effort: typeof chips.effort === "boolean" ? chips.effort : d.botChips.effort,
       usage: typeof chips.usage === "boolean" ? chips.usage : d.botChips.usage,
     },
+    ...(saved.appearance !== null && typeof saved.appearance === "object" && !Array.isArray(saved.appearance) ? { appearance: readAppearance(saved.appearance) } : {}),
   };
 }
 

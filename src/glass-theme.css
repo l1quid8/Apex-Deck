@@ -1,0 +1,417 @@
+/* Optional glass appearance. Classic has no matching root selector, so it
+   continues to use the existing styles unchanged. */
+:root[data-deck-theme="glass"],
+:root[data-deck-theme="flat"] {
+  --deck-bg: #090d12;
+  --deck-panel: 13 19 26;
+  --deck-panel-raised: 22 31 41;
+  --deck-code: #060a0f;
+  --deck-line: 255 255 255;
+  --deck-text: #e4eaf0;
+  --deck-muted: #b0bccb;
+  --deck-warning: #f59e0b;
+  --deck-danger: #f87171;
+  --deck-accent: oklch(.85 .13 var(--deck-hue, 172));
+  --deck-accent-ink: #04211d;
+  --deck-glass-fill: rgb(var(--deck-panel) / var(--deck-opacity, .44));
+  --deck-edge: rgb(255 255 255 / .14);
+  --bg: var(--deck-bg);
+  --panel: rgb(var(--deck-panel));
+  --panel-2: rgb(var(--deck-panel-raised));
+  --line: rgb(var(--deck-line) / .14);
+  --text: var(--deck-text);
+  --muted: var(--deck-muted);
+  --accent: var(--deck-accent);
+  --accent-ink: var(--deck-accent-ink);
+  --warn: var(--deck-warning);
+  --danger: var(--deck-danger);
+  --radius: var(--deck-radius, 12px);
+  color-scheme: dark;
+}
+
+:root[data-deck-light="true"][data-deck-theme="glass"],
+:root[data-deck-light="true"][data-deck-theme="flat"] {
+  --deck-bg: #d9e4ec;
+  --deck-panel: 247 250 252;
+  --deck-panel-raised: 236 243 247;
+  --deck-code: #e9f0f5;
+  --deck-line: 20 40 58;
+  --deck-text: #142636;
+  --deck-muted: #475d6e;
+  --deck-warning: #a76000;
+  --deck-danger: #b3261e;
+  --deck-accent: oklch(.47 .12 var(--deck-hue, 172));
+  --deck-accent-ink: #fff;
+  --deck-edge: rgb(20 40 58 / .14);
+  --bg: var(--deck-bg);
+  --panel: rgb(var(--deck-panel));
+  --panel-2: rgb(var(--deck-panel-raised));
+  --line: rgb(var(--deck-line) / .15);
+  --text: var(--deck-text);
+  --muted: var(--deck-muted);
+  --accent: var(--deck-accent);
+  --accent-ink: var(--deck-accent-ink);
+  --warn: var(--deck-warning);
+  --danger: var(--deck-danger);
+  color-scheme: light;
+}
+
+:root[data-deck-theme="glass"] {
+  --deck-backdrop-image:
+    radial-gradient(ellipse at 12% 4%, oklch(.56 .14 var(--deck-hue, 172) / var(--deck-backdrop, .5)), transparent 46%),
+    radial-gradient(ellipse at 93% 17%, oklch(.46 .15 calc(var(--deck-hue, 172) + 75) / calc(var(--deck-backdrop, .5) * .8)), transparent 42%),
+    radial-gradient(ellipse at 52% 100%, oklch(.5 .12 calc(var(--deck-hue, 172) - 55) / calc(var(--deck-backdrop, .5) * .72)), transparent 48%);
+}
+:root[data-deck-light="true"][data-deck-theme="glass"] {
+  --deck-backdrop-image:
+    radial-gradient(ellipse at 12% 4%, oklch(.86 .09 var(--deck-hue, 172) / var(--deck-backdrop, .5)), transparent 46%),
+    radial-gradient(ellipse at 93% 17%, oklch(.84 .1 calc(var(--deck-hue, 172) + 75) / calc(var(--deck-backdrop, .5) * .8)), transparent 42%),
+    radial-gradient(ellipse at 52% 100%, oklch(.87 .08 calc(var(--deck-hue, 172) - 55) / calc(var(--deck-backdrop, .5) * .72)), transparent 48%);
+}
+/* Settings and full-window panels cover the deck, so they repaint the same
+   backdrop instead of showing the threads underneath. */
+:root[data-deck-theme="glass"] :is(body, .settings, .preview.full-window, .artifacts-panel.full-window, .artifacts-panel.mod-dock.maximized) {
+  background-color: var(--deck-bg);
+  background-image: var(--deck-backdrop-image);
+  background-attachment: fixed;
+}
+
+/* Frost and Liquid share one surface treatment; the numeric controls only
+   change its fill, blur, corner size, backdrop and spacing. */
+:root[data-deck-theme="glass"] :is(.pane, .rail, .thread, .thread-details, .composer-box, .md-code, .approval-plan, .quote-preview, .queued-inline) {
+  border-radius: var(--deck-radius, 12px);
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+}
+:root[data-deck-theme="glass"] :is(.pane, .rail, .thread-details, .composer-box, .md-code, .quote-preview, .queued-inline) {
+  background-color: var(--deck-glass-fill);
+  border-color: var(--deck-edge);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .12), 0 14px 38px -28px rgb(0 0 0 / .7);
+}
+:root[data-deck-theme="glass"] .thread-details { border-left-color: var(--deck-edge); }
+/* The title bar spans the window, so it stays square and lets the backdrop
+   through like the panes below it. */
+:root[data-deck-theme="glass"] .titlebar {
+  position: relative;
+  z-index: 1;
+  background-color: var(--deck-glass-fill);
+  border-bottom-color: var(--deck-edge);
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .1), 0 14px 38px -28px rgb(0 0 0 / .7);
+}
+/* The title bar's main button (+ New, + New agent) is accent-tinted glass
+   instead of a solid mint slab, so it still reads as the main action. */
+:root[data-deck-theme="glass"] .titlebar button.primary {
+  background: color-mix(in srgb, var(--accent) 26%, rgb(var(--deck-panel-raised) / var(--deck-opacity, .44)));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--deck-edge));
+  color: var(--text);
+  border-radius: max(8px, calc(var(--deck-radius, 12px) * .75));
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.3);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.3);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .18), 0 0 16px -6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+:root[data-deck-theme="glass"] .titlebar button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 38%, rgb(var(--deck-panel-raised) / var(--deck-opacity, .44)));
+  border-color: color-mix(in srgb, var(--accent) 75%, var(--deck-edge));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .22), 0 0 20px -4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+:root[data-deck-theme="glass"] .titlebar button.primary:disabled { box-shadow: inset 0 1px 0 rgb(255 255 255 / .1); }
+/* The title bar's icon buttons (workspaces, Settings, thread details) sit on
+   the same light glass as the tab group, and brighten when hovered or open. */
+:root[data-deck-theme="glass"] .titlebar button.icon {
+  background: rgb(var(--deck-panel) / calc(var(--deck-opacity, .44) * .6));
+  border-color: var(--deck-edge);
+  border-radius: max(8px, calc(var(--deck-radius, 12px) * .75));
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .12);
+  min-width: 34px;
+  min-height: 34px;
+}
+:root[data-deck-theme="glass"] .titlebar button.icon:hover:not(:disabled),
+:root[data-deck-theme="glass"] .titlebar button.icon:is(.active, [aria-expanded="true"]) {
+  background: var(--deck-well-fill);
+  color: var(--text);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .2);
+}
+:root[data-deck-theme="glass"] :is(.section-navigation, .layout-presets) {
+  background: rgb(var(--deck-panel) / calc(var(--deck-opacity, .44) * .6));
+  border-color: var(--deck-edge);
+  border-radius: max(8px, calc(var(--deck-radius, 12px) * .75));
+}
+:root[data-deck-theme="glass"] :is(.section-button.selected, .layout-presets button:hover:not(:disabled)) {
+  background: rgb(var(--deck-panel-raised) / calc(.35 + .6 * var(--deck-opacity, .44)));
+  border-color: var(--deck-edge);
+}
+:root[data-deck-theme="glass"] .section-button.selected {
+  border-radius: max(6px, calc(var(--deck-radius, 12px) * .6));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .1);
+}
+:root[data-deck-theme="glass"] .pane-head,
+:root[data-deck-theme="glass"] .composer { background: transparent; }
+:root[data-deck-theme="glass"] .pane-head { border-color: var(--deck-edge); }
+:root[data-deck-theme="glass"] .bubble.bot {
+  background: rgb(var(--deck-panel-raised) / calc(.35 + .6 * var(--deck-opacity, .44)));
+  border: 1px solid var(--deck-edge);
+  border-radius: var(--deck-radius, 12px);
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+}
+:root[data-deck-theme="glass"] .bubble.human {
+  border-radius: var(--deck-radius, 12px);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--deck-edge));
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+}
+:root[data-deck-theme="glass"] .composer-box {
+  --box: rgb(var(--deck-panel-raised) / var(--deck-opacity, .44));
+  border-color: var(--deck-edge);
+}
+:root[data-deck-theme="glass"] :is(.md-code, .md-code pre, .approval-detail, .diff, .answer-command) {
+  background: color-mix(in srgb, var(--deck-code) 88%, transparent);
+  color: var(--deck-text);
+  border-color: var(--deck-edge);
+}
+:root[data-deck-theme="glass"] :is(.speaker, .muted, .head-state, .details-head p, .approval-note, .approval-deadline, .approval-scope) {
+  color: var(--deck-muted);
+}
+:root[data-deck-theme="glass"] .speaker { color: var(--agent-color, var(--accent)); }
+:root[data-deck-theme="glass"] :is(.rail-row[aria-current="page"], .chip.to, .pin, .folder-chip, .tray, .steps .step) {
+  border-radius: max(5px, calc(var(--deck-radius, 12px) * .48));
+}
+:root[data-deck-theme="glass"] :is(.pane, .rail, .thread-details, .thread, .bubble, .composer-box, .pin, .details-bot, .md-code, .quote-preview, .folder-chip, .chip) {
+  border-radius: var(--deck-radius, 12px);
+}
+:root[data-deck-theme="glass"] :is(.pane-head, .pins, .composer, .details-section-body) {
+  padding-block: calc(8px * var(--deck-density, 1));
+}
+:root[data-deck-theme="glass"] .bubble { padding-block: calc(10px * var(--deck-density, 1) + 2px); }
+
+/* Menus, popovers and dialogs float over text. Most open inside a pane that
+   already blurs, and a blur inside a blur can't see past its parent, so these
+   keep the tint and edge but stay nearly solid to remain readable. */
+:root[data-deck-theme="glass"] :is(.composer-menu, .pane-menu, .hover-card, .usage-card, .bot-settings, .quick-add, .workspace-machine-menu,
+  .new-menu-list, .link-menu, .review-menu, .artifact-menu, .model-select > .model-menu, .selection-actions, .steer-pop, .mod-status-menu,
+  .host-menu, .attention-list, .proj-picker, .confirm, .toast, .mod-toast, .mod-modal, .library-viewer) {
+  --deck-pop: rgb(var(--deck-panel-raised) / max(.96, var(--deck-opacity, .44)));
+  background: linear-gradient(165deg, oklch(.8 .1 var(--deck-hue, 172) / .07), transparent 60%), var(--deck-pop);
+  border-radius: max(8px, calc(var(--deck-radius, 12px) * .6));
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .12), 0 18px 44px -18px rgb(0 0 0 / .6);
+}
+:root[data-deck-theme="glass"] .proj-picker .list-wrap.fade::after { background: linear-gradient(transparent, var(--deck-pop)); }
+
+/* Side panels, cards and strips let the backdrop through like the panes. */
+:root[data-deck-theme="glass"] :is(.settings-nav, .settings-card, .artifacts-panel, .preview, .changes, .agent-card, .library-tile, .mod-card,
+  .add-form, .connection-banner, .terminal-bar, .folder-list, .pins, .qform, .move-ask, .conn-retarget, .answer-strip) {
+  background-color: var(--deck-glass-fill);
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+}
+:root[data-deck-theme="glass"] :is(.settings-card, .agent-card, .library-tile, .mod-card) {
+  border-radius: var(--deck-radius, 12px);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .1), 0 14px 38px -28px rgb(0 0 0 / .7);
+}
+:root[data-deck-theme="glass"] .settings-nav { border-right-color: var(--deck-edge); }
+
+/* Settings › Appearance paints its own cards from these, so they follow the skin too.
+   The skin previews inside each tile keep their own colours. */
+:root[data-deck-theme="glass"] .appearance-settings {
+  --appearance-panel: var(--deck-glass-fill);
+  --appearance-raised: rgb(255 255 255 / .05);
+  --appearance-line: var(--deck-edge);
+}
+:root[data-deck-light="true"][data-deck-theme="glass"] .appearance-settings { --appearance-raised: rgb(255 255 255 / .4); }
+:root[data-deck-theme="glass"] .appearance-settings .appearance-section {
+  border-radius: var(--deck-radius, 12px);
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .1), 0 14px 38px -28px rgb(0 0 0 / .7);
+}
+:root[data-deck-theme="glass"] .appearance-settings .appearance-skin { border-radius: calc(var(--deck-radius, 12px) * .6); }
+
+/* Small controls. :where() keeps each override at its base rule's
+   specificity, so it replaces only that rule and never a more specific one. */
+:where(:root[data-deck-theme="glass"]) {
+  --deck-raised-fill: rgb(var(--deck-panel-raised) / calc(.25 + .5 * var(--deck-opacity, .44)));
+  --deck-well-fill: color-mix(in srgb, var(--deck-code) 55%, transparent);
+  --deck-hover-fill: color-mix(in srgb, var(--deck-text) 9%, transparent);
+}
+:where(:root[data-deck-theme="glass"]) button { background: var(--deck-raised-fill); border-color: var(--deck-edge); }
+:where(:root[data-deck-theme="glass"]) button:hover:not(:disabled) { background-color: color-mix(in srgb, var(--deck-text) 12%, var(--deck-raised-fill)); }
+:where(:root[data-deck-theme="glass"]) input,
+:where(:root[data-deck-theme="glass"]) select,
+:where(:root[data-deck-theme="glass"]) textarea,
+:where(:root[data-deck-theme="glass"]) .stepper,
+:where(:root[data-deck-theme="glass"]) .count,
+:where(:root[data-deck-theme="glass"]) kbd,
+:where(:root[data-deck-theme="glass"]) .quick-add-tools,
+:where(:root[data-deck-theme="glass"]) .artifacts-tabs,
+:where(:root[data-deck-theme="glass"]) .preview-servers,
+:where(:root[data-deck-theme="glass"]) .pair-thread-list,
+:where(:root[data-deck-theme="glass"]) .new-menu-filter,
+:where(:root[data-deck-theme="glass"]) .settings-row select,
+:where(:root[data-deck-theme="glass"]) .remote-addresses input,
+:where(:root[data-deck-theme="glass"]) .pair-scope select {
+  background: var(--deck-well-fill);
+  border-color: var(--deck-edge);
+}
+:where(:root[data-deck-theme="glass"]) .stepper button,
+:where(:root[data-deck-theme="glass"]) .quick-add-tools button.on,
+:where(:root[data-deck-theme="glass"]) .starters button,
+:where(:root[data-deck-theme="glass"]) .allowed-list li,
+:where(:root[data-deck-theme="glass"]) .example-row,
+:where(:root[data-deck-theme="glass"]) .answer-command,
+:where(:root[data-deck-theme="glass"]) .ws-row.active,
+:where(:root[data-deck-theme="glass"]) .ws-row.lit,
+:where(:root[data-deck-theme="glass"]) .pane-row.lit,
+:where(:root[data-deck-theme="glass"]) .settings-nav nav button.active,
+:where(:root[data-deck-theme="glass"]) .artifacts-tabs button[aria-selected="true"],
+:where(:root[data-deck-theme="glass"]) .artifacts-kind,
+:where(:root[data-deck-theme="glass"]) .artifacts-list button[aria-current="true"],
+:where(:root[data-deck-theme="glass"]) .titlebar button.icon.active,
+:where(:root[data-deck-theme="glass"]) .mod-button,
+:where(:root[data-deck-theme="glass"]) .mod-tabs button.active,
+:where(:root[data-deck-theme="glass"]) .host-switch-button,
+:where(:root[data-deck-theme="glass"]) .library-thumb,
+:where(:root[data-deck-theme="glass"]) .media-price-pill,
+:where(:root[data-deck-theme="glass"]) .transcript-pill {
+  background: var(--deck-raised-fill);
+  border-color: var(--deck-edge);
+}
+:where(:root[data-deck-theme="glass"]) .chip-add:hover:not(:disabled),
+:where(:root[data-deck-theme="glass"]) .chip-add[aria-expanded="true"],
+:where(:root[data-deck-theme="glass"]) .provider-grid label:hover,
+:where(:root[data-deck-theme="glass"]) .preview-servers button:hover,
+:where(:root[data-deck-theme="glass"]) .artifacts-list button:hover,
+:where(:root[data-deck-theme="glass"]) .mod-status-menu button:hover,
+:where(:root[data-deck-theme="glass"]) .transcript-pill:hover:not(:disabled),
+:where(:root[data-deck-theme="glass"]) .model-select-trigger:hover,
+:where(:root[data-deck-theme="glass"]) .model-select-trigger[aria-expanded="true"],
+:where(:root[data-deck-theme="glass"]) .model-menu-item:hover,
+:where(:root[data-deck-theme="glass"]) .model-menu-item:focus-visible,
+:where(:root[data-deck-theme="glass"]) .msg-action:hover:not(:disabled),
+:where(:root[data-deck-theme="glass"]) .msg-action:focus-visible {
+  background: var(--deck-hover-fill);
+}
+:where(:root[data-deck-theme="glass"]) .transcript-pill { -webkit-backdrop-filter: blur(var(--deck-blur, 0px)); backdrop-filter: blur(var(--deck-blur, 0px)); }
+:where(:root[data-deck-theme="glass"]) .pane-ws { background: var(--deck-raised-fill); }
+:where(:root[data-deck-theme="glass"]) .pane-ws .fold { --cut: transparent; }
+
+/* The empty-thread card, its emblem and the human bubble had fixed dark
+   greens; tie them to the accent so they read on Frost too. */
+:where(:is(:root[data-deck-theme="glass"], :root[data-deck-theme="flat"])) .empty-emblem {
+  background: color-mix(in srgb, var(--accent) 14%, var(--deck-raised-fill, var(--panel-2)));
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+:where(:is(:root[data-deck-theme="glass"], :root[data-deck-theme="flat"])) .picker-grid.single button {
+  background: color-mix(in srgb, var(--accent) 9%, var(--deck-raised-fill, var(--panel-2)));
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+:where(:is(:root[data-deck-theme="glass"], :root[data-deck-theme="flat"])) .picker-grid.single button:hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--deck-raised-fill, var(--panel-2)));
+}
+:where(:is(:root[data-deck-theme="glass"], :root[data-deck-theme="flat"])) .bubble.human {
+  background: color-mix(in srgb, var(--accent) 16%, var(--deck-raised-fill, var(--panel-2)));
+}
+:where(:is(:root[data-deck-theme="glass"], :root[data-deck-theme="flat"])) ::selection { background: color-mix(in srgb, var(--accent) 45%, transparent); color: inherit; }
+:where(:root[data-deck-light="true"]:is([data-deck-theme="glass"], [data-deck-theme="flat"])) :is(.details-backdrop, .artifacts-backdrop) { background: rgb(20 40 58 / .12); }
+
+/* Flat keeps the selected palette and radius while returning to solid panels.
+   Zeroing these here also disables activity bloom and animated edge light. */
+:root[data-deck-theme="flat"] {
+  --deck-glow: 0;
+  --deck-blur: 0px;
+}
+:root[data-deck-theme="flat"] body { background: var(--deck-bg); }
+:root[data-deck-theme="flat"] :is(.pane, .rail, .thread-details, .composer-box, .md-code, .bubble.bot, .bubble.human) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+:root[data-deck-theme="flat"] .bubble.bot { background: var(--panel-2); }
+:root[data-deck-theme="flat"] .composer-box { background: var(--panel-2); }
+
+/* Activity comes from real draft/ask state on the bubble. A completed reply
+   carries its agent color as metadata, but stays quiet. */
+:root[data-deck-theme="glass"] .bubble.bot[data-activity="working"] {
+  --activity-color: var(--agent-color, var(--accent));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--activity-color) calc(70% * var(--deck-glow, 0)), transparent),
+    0 0 calc(34px * var(--deck-glow, 0)) -12px color-mix(in srgb, var(--activity-color) calc(75% * var(--deck-glow, 0)), transparent),
+    inset 0 1px 0 rgb(255 255 255 / .12);
+}
+:root[data-deck-theme="glass"] .bubble.bot[data-activity="waiting"] {
+  box-shadow: 0 0 0 1px color-mix(in srgb, #f59e0b calc(65% * var(--deck-glow, 0)), transparent),
+    0 0 calc(28px * var(--deck-glow, 0)) -10px color-mix(in srgb, #f59e0b calc(72% * var(--deck-glow, 0)), transparent),
+    inset 0 1px 0 rgb(255 255 255 / .12);
+}
+:root[data-deck-theme="glass"] .bubble.bot[data-activity="working"]::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: conic-gradient(from 0deg, transparent 0 68%, color-mix(in srgb, var(--agent-color, var(--accent)) 78%, white), transparent 94%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: calc(.78 * var(--deck-glow, 0));
+  animation: deck-bubble-sheen 7s linear infinite;
+}
+@keyframes deck-bubble-sheen { to { transform: rotate(360deg); } }
+
+/* Approval cards are the safety boundary: solid amber surfaces and fixed
+   action colors stay readable regardless of imported hue/frost values. */
+:root[data-deck-theme="glass"] .approval,
+:root[data-deck-theme="flat"] .approval {
+  background: #fff4d6;
+  color: #2d220d;
+  border: 1px solid #d18a00;
+  border-radius: 10px;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: 0 0 0 1px rgb(209 138 0 / .18), 0 0 calc(22px * var(--deck-glow, 0)) -8px #d18a00;
+  font-size: max(12px, 1em);
+}
+:root[data-deck-theme="glass"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) ,
+:root[data-deck-theme="flat"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) {
+  color: #2d220d;
+  font-size: max(12px, 1em);
+}
+:root[data-deck-theme="glass"] .approval :is(.approval-head, .approval-detail, .approval-actions, .approval-scope, .approval-plan),
+:root[data-deck-theme="flat"] .approval :is(.approval-head, .approval-detail, .approval-actions, .approval-scope, .approval-plan) {
+  background: #fff4d6;
+  border-color: #e2bd68;
+}
+:root[data-deck-theme="glass"] .approval .approval-kind,
+:root[data-deck-theme="flat"] .approval .approval-kind { color: #805000; }
+/* The base diff colors suit dark surfaces; light approval diffs need deeper ink. */
+:root[data-deck-light="true"]:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .approval .diff-line.add {
+  color: #14532d;
+}
+:root[data-deck-light="true"]:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .approval .diff-line.del {
+  color: #7f1d1d;
+}
+:root[data-deck-theme="glass"] .approval-actions button[data-answer="once"],
+:root[data-deck-theme="glass"] .approval-actions button[data-answer="always"],
+:root[data-deck-theme="flat"] .approval-actions button[data-answer="once"],
+:root[data-deck-theme="flat"] .approval-actions button[data-answer="always"] {
+  background: #9a5b00;
+  border-color: #9a5b00;
+  color: #fff;
+  font-size: max(12px, 1em);
+}
+:root[data-deck-theme="glass"] .approval-actions button[data-answer="deny"],
+:root[data-deck-theme="flat"] .approval-actions button[data-answer="deny"] {
+  background: #fff4d6;
+  border-color: #a3261e;
+  color: #8b211b;
+  font-size: max(12px, 1em);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-deck-theme="glass"] .bubble.bot[data-activity="working"]::after { animation: none; }
+}
