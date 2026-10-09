@@ -68,3 +68,33 @@ test("AI prompt describes supported data and makes no generation claim", () => {
   assert.match(prompt, /calm ocean palette/);
   assert.doesNotMatch(prompt, /Deck generated|AI generated/i);
 });
+
+test("custom hex accent survives export/import and persisted current/saved skins", async () => {
+  const { readAppearance } = await import("../src/themes.ts");
+  const custom = parseSkin(skin({ ...validAppearance, accentColor: "#aB12Ef" }));
+  assert.equal(custom.appearance.accentColor, "#ab12ef");
+  assert.deepEqual(parseSkin(JSON.stringify(custom)), custom);
+  const stored = readAppearance(JSON.parse(JSON.stringify({ current: custom, saved: [custom] })));
+  assert.deepEqual(stored.current, custom);
+  assert.deepEqual(stored.saved, [custom]);
+  assert.equal(themeVariables(custom.appearance)["--deck-custom-accent"], "#ab12ef");
+  assert.notEqual(themeMode({ ...DEFAULT_APPEARANCE, accentColor: "#ab12ef" }), "classic");
+});
+
+test("hex accent rejects CSS, names, alpha, and wrong types", () => {
+  for (const accentColor of ["red", "#abc", "#12345678", "#123456;display:none", 123, null]) {
+    assert.throws(() => parseSkin(skin({ ...validAppearance, accentColor })));
+  }
+});
+
+test("color picker conversion preserves saturation and brightness, including neutrals", async () => {
+  const { accentHex, colorAppearance } = await import("../src/themes.ts");
+  assert.deepEqual(colorAppearance("#aBc"), { accentColor: "#aabbcc", hue: 210 });
+  assert.equal(accentHex({ ...validAppearance, ...colorAppearance("#101010") }), "#101010");
+  assert.equal(accentHex({ ...validAppearance, ...colorAppearance("#ffffff") }), "#ffffff");
+  assert.equal(accentHex({ ...validAppearance, ...colorAppearance("#ff0000") }), "#ff0000");
+  assert.throws(() => colorAppearance("#oops"));
+  assert.match(accentHex(validAppearance), /^#[0-9a-f]{6}$/);
+  assert.equal(themeVariables({ ...validAppearance, ...colorAppearance("#101010") })["--deck-custom-accent-ink"], "#ffffff");
+  assert.equal(themeVariables({ ...validAppearance, ...colorAppearance("#ffffff") })["--deck-custom-accent-ink"], "#000000");
+});

@@ -1,5 +1,7 @@
 export interface AppearanceValues {
   hue: number;
+  /** Exact user-picked accent; omitted by legacy hue-only skins. */
+  accentColor?: string;
   glow: number;
   blur: number;
   opacity: number;
@@ -74,10 +76,14 @@ export function parseSkin(text: string): SkinFile {
   if (value.author !== undefined && typeof value.author !== "string") throw new Error("Skin author must be text.");
   if (!isRecord(value.appearance)) throw new Error("Skin appearance must be an object.");
   const source = value.appearance;
-  const knownAppearance = new Set<string>(FIELD_NAMES);
+  const knownAppearance = new Set<string>([...FIELD_NAMES, "accentColor"]);
   for (const key of Object.keys(source)) if (!knownAppearance.has(key)) throw new Error(`Unknown appearance setting: ${key}.`);
 
   const normalized: Record<string, unknown> = {};
+  if (source.accentColor !== undefined) {
+    if (typeof source.accentColor !== "string" || !/^#[0-9a-f]{6}$/i.test(source.accentColor)) throw new Error("Accent color must be a six-digit hex color (such as #35aabb).");
+    normalized.accentColor = source.accentColor.toLowerCase();
+  }
   for (const [key, [min, max]] of Object.entries(RANGES)) {
     const raw = source[key];
     if (key === "backdrop" && value.version === 1 && raw === undefined) {
@@ -109,6 +115,10 @@ export function parseSkin(text: string): SkinFile {
 export function themeVariables(values: AppearanceValues): Record<string, string> {
   if (themeMode(values) === "classic") return {};
   return {
+    ...(values.accentColor ? {
+      "--deck-custom-accent": values.accentColor,
+      "--deck-custom-accent-ink": accentInk(values.accentColor),
+    } : {}),
     "--deck-hue": String(values.hue),
     "--deck-glow": String(values.glow / 100),
     "--deck-blur": `${values.blur}px`,
@@ -120,14 +130,14 @@ export function themeVariables(values: AppearanceValues): Record<string, string>
 }
 
 export function themeMode(values: AppearanceValues): "classic" | "flat" | "glass" {
-  if (FIELD_NAMES.every((field) => values[field] === DEFAULT_APPEARANCE[field])) return "classic";
+  if (!values.accentColor && FIELD_NAMES.every((field) => values[field] === DEFAULT_APPEARANCE[field])) return "classic";
   return values.flat ? "flat" : "glass";
 }
 
 /** Build a truthful prompt for an external AI to return an importable skin JSON file. */
 export function skinPrompt(description: string): string {
   const brief = description.trim() || "a distinctive, usable Apex Deck appearance";
-  return `Create an Apex Deck appearance skin for this description: ${brief}\n\nReturn only one JSON object using this contract: {"format":"apex-glass-playground","version":2,"name":"Name","appearance":{"hue":0,"glow":0,"blur":0,"opacity":100,"radius":14,"backdrop":0,"density":1,"light":false,"flat":false}}. Use only these appearance fields: hue (number 0–360), glow (number 0–100), blur (number 0–40), opacity (number 30–100), radius (number 4–30), backdrop (number 0–100), density (exactly 0.72 or 1), light (boolean), flat (boolean). Do not include CSS, scripts, extra keys, or external assets. This prompt requests JSON for the user's import workflow; Apex Deck does not generate the skin itself.`;
+  return `Create an Apex Deck appearance skin for this description: ${brief}\n\nReturn only one JSON object using this contract: {"format":"apex-glass-playground","version":2,"name":"Name","appearance":{"hue":0,"glow":0,"blur":0,"opacity":100,"radius":14,"backdrop":0,"density":1,"light":false,"flat":false}}. Optional accentColor is an exact six-digit hex color such as #35aabb; omit it for the legacy hue palette. Use only these appearance fields: accentColor (optional hex string), hue (number 0–360), glow (number 0–100), blur (number 0–40), opacity (number 30–100), radius (number 4–30), backdrop (number 0–100), density (exactly 0.72 or 1), light (boolean), flat (boolean). Do not include CSS, scripts, extra keys, or external assets. This prompt requests JSON for the user's import workflow; Apex Deck does not generate the skin itself.`;
 }
 
 export function defaultAppearanceSettings(): AppearanceSettings {
@@ -148,4 +158,36 @@ export function readAppearance(raw: unknown): AppearanceSettings {
     }
   }
   return { current, saved };
+}
+
+/** Normalize picker/hex input and derive a hue for the background color field. */
+export function colorAppearance(input: string): Pick<AppearanceValues, "accentColor" | "hue"> {
+  let hex = input.trim();
+  if (/^#[0-9a-f]{3}$/i.test(hex)) hex = "#" + [...hex.slice(1)].map(c => c + c).join("");
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) throw new Error("Enter a hex color such as #35aabb.");
+  hex = hex.toLowerCase();
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let hue = 0;
+  if (d) hue = ((max === r ? (g - b) / d : max === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60 + 360) % 360;
+  return { accentColor: hex, hue: Math.round(hue) };
+}
+
+function accentInk(hex: string): string {
+  const rgb = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
+  const luminance = .2126 * rgb[0] + .7152 * rgb[1] + .0722 * rgb[2];
+  return luminance > .179 ? "#000000" : "#ffffff";
+}
+
+/** Show the existing OKLCH accent in the picker without altering legacy skins. */
+export function accentHex(values: AppearanceValues): string {
+  if (values.accentColor) return values.accentColor;
+  if (themeMode(values) === "classic") return "#71e6b5";
+  const L = values.light ? .47 : .85, C = values.light ? .12 : .13;
+  const a = C * Math.cos(values.hue * Math.PI / 180), b = C * Math.sin(values.hue * Math.PI / 180);
+  const l = (L + .3963377774 * a + .2158037573 * b) ** 3;
+  const m = (L - .1055613458 * a - .0638541728 * b) ** 3;
+  const s = (L - .0894841775 * a - 1.291485548 * b) ** 3;
+  return "#" + [4.0767416621*l - 3.3077115913*m + .2309699292*s, -1.2684380046*l + 2.6097574011*m - .3413193965*s, -.0041960863*l - .7034186147*m + 1.707614701*s]
+    .map(v => Math.round(Math.max(0, Math.min(1, v <= .0031308 ? 12.92*v : 1.055*v**(1/2.4)-.055)) * 255).toString(16).padStart(2, "0")).join("");
 }

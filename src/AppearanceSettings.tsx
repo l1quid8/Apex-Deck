@@ -1,9 +1,8 @@
-import { useRef, useState, type ChangeEvent, type CSSProperties } from "react";
-import { BUILTIN_SKINS, parseSkin, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
+import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
+import { BUILTIN_SKINS, accentHex, colorAppearance, parseSkin, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
 
 const FILE_LIMIT = 32_000;
-const SLIDERS: { key: "hue" | "glow" | "blur" | "opacity" | "radius" | "backdrop"; label: string; help: string; min: number; max: number; suffix: string }[] = [
-  { key: "hue", label: "Accent hue", help: "Buttons, links and selected threads.", min: 0, max: 360, suffix: "°" },
+const SLIDERS: { key: "glow" | "blur" | "opacity" | "radius" | "backdrop"; label: string; help: string; min: number; max: number; suffix: string }[] = [
   { key: "glow", label: "Glow", help: "Strength of the light around active work.", min: 0, max: 100, suffix: "%" },
   { key: "blur", label: "Frost", help: "Blur behind glass surfaces.", min: 0, max: 40, suffix: "px" },
   { key: "opacity", label: "Surface", help: "Lower values let more backdrop through.", min: 30, max: 100, suffix: "%" },
@@ -18,6 +17,7 @@ function asSkin(name: string, appearance: AppearanceValues): SkinFile {
 function previewStyle(appearance: AppearanceValues): CSSProperties {
   return {
     "--appearance-hue": appearance.hue,
+    "--appearance-accent": accentHex(appearance),
     "--appearance-glow": appearance.glow / 100,
     "--appearance-blur": `${appearance.blur}px`,
     "--appearance-opacity": appearance.opacity / 100,
@@ -47,6 +47,10 @@ export function AppearanceSettings({ value, onChange }: { value: AppearanceState
   const current = value.current;
   const appearance = current.appearance;
   const saved = value.saved ?? [];
+  const color = accentHex(appearance);
+  const [hexInput, setHexInput] = useState(color);
+  const [hexError, setHexError] = useState(false);
+  useEffect(() => { setHexInput(color); setHexError(false); }, [color]);
 
   const apply = (skin: SkinFile) => {
     onChange({ ...value, current: skin });
@@ -149,6 +153,22 @@ export function AppearanceSettings({ value, onChange }: { value: AppearanceState
     <section className="appearance-section" aria-labelledby="appearance-tune-title">
       <div className="appearance-section-heading"><div><h3 id="appearance-tune-title">Tune this skin</h3><p>Changes apply as you move each control.</p></div></div>
       <div className="appearance-controls">
+        <div className="appearance-option appearance-color">
+          <div className="appearance-control-copy"><label htmlFor="appearance-color">Accent color</label><small>Pick any color, or enter its hex value.</small></div>
+          <div className="appearance-color-inputs">
+            <input id="appearance-color" type="color" value={color} onChange={event => { tune(colorAppearance(event.currentTarget.value)); setHexInput(event.currentTarget.value); setHexError(false); }} />
+            <input aria-label="Accent hex color" type="text" value={hexInput} spellCheck={false} maxLength={7} aria-invalid={hexError} aria-describedby={hexError ? "appearance-color-error" : undefined}
+              onChange={event => {
+                const input = event.currentTarget.value;
+                setHexInput(input);
+                setHexError(false);
+                if (/^#[0-9a-f]{6}$/i.test(input)) tune(colorAppearance(input));
+              }}
+              onBlur={() => { try { const patch = colorAppearance(hexInput); tune(patch); setHexInput(patch.accentColor!); setHexError(false); } catch { setHexError(true); } }}
+              onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+          </div>
+        </div>
+        {hexError && <p id="appearance-color-error" role="alert">Enter a hex color such as #35aabb.</p>}
         {SLIDERS.map(({ key, label, help, min, max, suffix }) => <div className="appearance-slider" key={key}>
           <div className="appearance-control-copy"><label htmlFor={`appearance-${key}`}>{label}</label><small>{help}</small></div>
           <input id={`appearance-${key}`} type="range" min={min} max={max} step="1" value={appearance[key]} onChange={(event) => tune({ [key]: Number(event.currentTarget.value) })} />

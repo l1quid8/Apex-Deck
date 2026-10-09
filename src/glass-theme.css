@@ -11,8 +11,8 @@
   --deck-muted: #b0bccb;
   --deck-warning: #f59e0b;
   --deck-danger: #f87171;
-  --deck-accent: oklch(.85 .13 var(--deck-hue, 172));
-  --deck-accent-ink: #04211d;
+  --deck-accent: var(--deck-custom-accent, oklch(.85 .13 var(--deck-hue, 172)));
+  --deck-accent-ink: var(--deck-custom-accent-ink, #04211d);
   --deck-glass-fill: rgb(var(--deck-panel) / var(--deck-opacity, .44));
   --deck-edge: rgb(255 255 255 / .14);
   --bg: var(--deck-bg);
@@ -40,8 +40,8 @@
   --deck-muted: #475d6e;
   --deck-warning: #a76000;
   --deck-danger: #b3261e;
-  --deck-accent: oklch(.47 .12 var(--deck-hue, 172));
-  --deck-accent-ink: #fff;
+  --deck-accent: var(--deck-custom-accent, oklch(.47 .12 var(--deck-hue, 172)));
+  --deck-accent-ink: var(--deck-custom-accent-ink, #fff);
   --deck-edge: rgb(20 40 58 / .14);
   --bg: var(--deck-bg);
   --panel: rgb(var(--deck-panel));
@@ -347,21 +347,6 @@
     0 0 calc(28px * var(--deck-glow, 0)) -10px color-mix(in srgb, #f59e0b calc(72% * var(--deck-glow, 0)), transparent),
     inset 0 1px 0 rgb(255 255 255 / .12);
 }
-:root[data-deck-theme="glass"] .bubble.bot[data-activity="working"]::after {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  padding: 1px;
-  pointer-events: none;
-  background: conic-gradient(from 0deg, transparent 0 68%, color-mix(in srgb, var(--agent-color, var(--accent)) 78%, white), transparent 94%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: calc(.78 * var(--deck-glow, 0));
-  animation: deck-bubble-sheen 7s linear infinite;
-}
-@keyframes deck-bubble-sheen { to { transform: rotate(360deg); } }
 
 /* Approval cards are the safety boundary: solid amber surfaces and fixed
    action colors stay readable regardless of imported hue/frost values. */
@@ -413,5 +398,4 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root[data-deck-theme="glass"] .bubble.bot[data-activity="working"]::after { animation: none; }
 }

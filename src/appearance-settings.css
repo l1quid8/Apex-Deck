@@ -113,7 +113,7 @@
   border-radius: max(5px, calc(var(--appearance-radius, 12px) * .55));
   background: #0b1118;
   color: #eaf1f6;
-  --preview-accent: oklch(.78 .15 var(--appearance-hue, 172));
+  --preview-accent: var(--appearance-accent, oklch(.78 .15 var(--appearance-hue, 172)));
   --preview-panel: rgb(22 31 41 / var(--appearance-opacity, .65));
   --preview-edge: rgb(255 255 255 / .18);
 }
@@ -379,3 +379,8 @@
   .appearance-settings .appearance-inline-form { align-items: stretch; }
   .appearance-settings .appearance-inline-form input[type="text"] { min-width: 100%; }
 }
+
+.appearance-settings .appearance-color-inputs { display: flex; align-items: center; gap: 8px; flex: none; }
+.appearance-settings .appearance-color-inputs input[type="color"] { width: 44px; height: 36px; padding: 3px; cursor: pointer; }
+.appearance-settings .appearance-color-inputs input[type="text"] { width: 96px; min-width: 0; height: 36px; font-family: monospace; }
+.appearance-settings .appearance-color { flex-wrap: wrap; }
