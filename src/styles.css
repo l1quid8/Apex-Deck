@@ -1994,7 +1994,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 @media (max-width: 720px) { .starters { grid-template-columns: minmax(0, 1fr); } }
 .new-menu > .primary, .attention-button { white-space: nowrap; }
 /* Between the wrapped phone layout and a full window the title bar is tight: keep the mark, drop the name. */
-@media (max-width: 960px) and (min-width: 721px) {
+@media (max-width: 960px) and (min-width: 881px) {
   .titlebar-start > .brand { font-size: 0; gap: 0; }
 }
 
@@ -2065,6 +2065,15 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   .titlebar-start, .titlebar-end { flex: none; min-width: 0; gap: 8px; }
   .titlebar-end { margin-left: auto; }
   .titlebar-start > .attention { margin-left: 0; }
+}
+/* Below 880px the tabs no longer fit between both button groups, so they get
+   their own full-width row, as on a phone. Wider, anything that still doesn't
+   fit (an extra button, a long attention count) wraps instead of pushing the
+   bar past the window edge. */
+.titlebar { flex-wrap: wrap; row-gap: 8px; }
+@media (max-width: 880px) {
+  .titlebar > .section-navigation { order: 5; width: 100%; margin-left: 0; justify-content: center; }
+  .titlebar .section-button { flex: 1; justify-content: center; }
 }
 
 /* A command-line bot that has said nothing for a while: muted, not alarming. */
