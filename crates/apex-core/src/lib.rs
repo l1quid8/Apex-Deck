@@ -17,6 +17,7 @@ mod room;
 pub mod testing;
 mod types;
 mod view;
+mod write_gate;
 
 pub use concurrent::{ConcurrentRoom, TurnBatch};
 pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
@@ -25,6 +26,7 @@ pub use participant::{
     DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
 };
 pub use room::{ChangeRecord, Compaction, Room, RoomEvent, RoomOptions, RoomSnapshot, TurnPolicy};
+pub use write_gate::{CheckoutWriteGate, WriteLease, WriteWaitError};
 pub use types::{
     Access, AgentTool, Backend, ContextUse, MediaSettings, Message, ModelChoice, ParticipantConfig, ParticipantId, PlanUsage,
     PlanWindow, Speaker, TokenTotals,

@@ -29,9 +29,13 @@ pub enum Command {
     ArtifactsSave { room: String, artifacts: Value },
     MonitorList {},
     MonitorGet { workspace_id: String },
+    AssistantMessage { #[serde(flatten)] input: crate::assistant_service::AssistantMessageInput },
+    AssistantTasksList { owner: crate::assistant_tasks::TaskOwner },
+    AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
     MonitorSuggestSources { cwd: String },
     MonitorAssign { workspace_id: String, cwd: String, host_id: String, text: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, profile: apex_core::ParticipantConfig, #[serde(default)] only_if_absent: bool },
     MonitorSourcesUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, mode: String },
+    MonitorProfileUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, revision: u64, profile: ParticipantConfig },
     MonitorMessage { workspace_id: String, text: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorPause { workspace_id: String, paused: bool, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorCheckNow { workspace_id: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
@@ -148,6 +152,9 @@ impl Host {
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
             MonitorList {} => reply(self.monitor_list()?),
             MonitorGet { workspace_id } => reply(self.monitor_get(&workspace_id)?),
+            AssistantMessage { input } => reply(self.assistant_message(input).await?),
+            AssistantTasksList { owner } => reply(self.assistant_tasks_list(owner)?),
+            AssistantTaskAction { input } => reply(self.assistant_task_action(input).await?),
             MonitorSuggestSources { cwd } => reply(serde_json::json!({ "files": self.monitor_suggest_sources(&cwd)? })),
             MonitorAssign { workspace_id, cwd, host_id, text, files, threads, profile, only_if_absent } => {
                 let host = Arc::clone(self);
@@ -157,6 +164,9 @@ impl Host {
             MonitorSourcesUpdate { workspace_id, cwd, host_id, conversation_id, files, threads, mode } => {
                 let host = Arc::clone(self);
                 reply(blocking(move || host.monitor_sources_update(&workspace_id, &cwd, &host_id, &conversation_id, files, threads, &mode)).await?)
+            }
+            MonitorProfileUpdate { workspace_id, cwd, host_id, conversation_id, revision, profile } => {
+                reply(self.monitor_profile_update(&workspace_id, crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id }, revision, profile)?)
             }
             MonitorMessage { workspace_id, text, cwd, host_id, conversation_id } => {
                 let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
@@ -182,7 +192,7 @@ impl Host {
             ApiKeyStatus { names } => reply(blocking(move || Ok(apex_adapters::keys::status(&names))).await?),
             ApiKeySave { name, key } => reply(blocking(move || apex_adapters::keys::save(&name, &key)).await?),
             ApiKeyRemove { name } => reply(blocking(move || apex_adapters::keys::remove(&name)).await?),
-            RoomDelete { id } => reply(self.room_delete(id)?),
+            RoomDelete { id } => reply(self.room_delete_owned(id).await?),
             StartupFolders {} => reply(self.startup_folders()),
             AgentsDetect {} => reply(self.agents_detect()),
             ListToolServers { room, agent } => reply(self.list_tool_servers(room, agent).await?),
@@ -305,7 +315,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 83);
+        assert_eq!(names.len(), 87);
         assert!(names.contains(&"api_quote".to_string()));
         assert!(names.contains(&"room_answer".to_string()));
         assert!(names.contains(&"room_import".to_string()));
@@ -468,7 +478,7 @@ mod tests {
             id: "finding-a".into(), summary: "Build is failing".into(),
             reason: "The latest build reported an error".into(), confidence: "high".into(),
             next_step: "Inspect the compiler output".into(), evidence: vec![], status: "open".into(),
-            first_seen_at: 11, last_seen_at: 12, last_notified_at: None, snoozed_until: None,
+            first_seen_at: 11, last_seen_at: 12, last_notified_at: None, snoozed_until: None, deadline_at: None, deadline_assessed_at: None,
         };
         monitor.findings.push(finding.clone());
         let store = Store::new(data.join("saved-chats-v1"));

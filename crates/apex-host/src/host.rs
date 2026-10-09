@@ -17,6 +17,15 @@ use crate::quit::QuitGate;
 use crate::storage::{SavedRoom, Store};
 use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images};
 
+fn reject_registry_link(directory: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err("Process recovery namespaces cannot be symlinks.".into()),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not inspect process recovery namespace: {error}")),
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct RoomHandle {
     /// Serializes snapshot reads with persistence and numbered event emission.
@@ -24,8 +33,8 @@ pub(crate) struct RoomHandle {
     live: Arc<Mutex<LiveRoomState>>,
     pub(crate) observation_revision: Arc<AtomicU64>,
     pub(crate) room: Arc<futures::lock::Mutex<Room>>,
-    runtime: ConcurrentRoom,
-    checkpoint: Arc<Mutex<SavedRoom>>,
+    pub(crate) runtime: ConcurrentRoom,
+    pub(crate) checkpoint: Arc<Mutex<SavedRoom>>,
     pub(crate) deleted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
@@ -34,7 +43,9 @@ pub(crate) struct RoomHandle {
     /// Reached without the transcript lock while a provider is running.
     approvals: Arc<apex_core::ApprovalDesk>,
     /// Where this room's command-line participants run.
-    context: BuildContext,
+    pub(crate) context: BuildContext,
+    pub(crate) task_run_id: Arc<Mutex<Option<String>>>,
+    pub(crate) task_error: Arc<Mutex<Option<String>>>,
 }
 
 impl RoomHandle {
@@ -76,6 +87,13 @@ pub struct Host {
     chains: AtomicUsize,
     /// Set by a shell whose command line isn't a list of folders (the daemon).
     startup: Mutex<Option<Vec<String>>>,
+    pub(crate) assistant_conversations: crate::assistant_conversation::ConversationStore,
+    pub(crate) assistant_runs: Mutex<HashMap<String, Arc<crate::assistant_service::AssistantRun>>>,
+    pub(crate) assistant_apply: tokio::sync::Mutex<()>,
+    pub(crate) assistant_isolated_slots: crate::assistant_isolation::IsolatedSlots,
+    write_gates: Mutex<HashMap<PathBuf, apex_core::CheckoutWriteGate>>,
+    room_lifecycle: Mutex<()>,
+    pub(crate) assistant_tasks: crate::assistant_tasks::AssistantTasks,
     pub(crate) monitor_wake: Arc<tokio::sync::Notify>,
     pub(crate) monitor_clock: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -103,13 +121,20 @@ impl Host {
     pub(crate) fn store(&self) -> &Store { &self.store }
 
     pub fn new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Arc<Host> {
+        Self::try_new(paths, runtime).expect("Could not open Apex Deck host data")
+    }
+
+    pub fn try_new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Result<Arc<Host>, String> {
+        crate::storage::prepare_private_root(&paths.data)?;
+        let assistant_tasks = crate::assistant_tasks::AssistantTasks::open(paths.data.join("assistant-tasks-v1.json")).map_err(|e| e.to_string())?;
+        let assistant_conversations = crate::assistant_conversation::ConversationStore::open(paths.data.join("assistant-conversations-v1.json")).map_err(|e| e.to_string())?;
         let store = Store::new(paths.data.join("saved-chats-v1"));
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
         let compacting = Arc::clone(&snapshots);
         std::thread::spawn(move || compacting.compact());
         apex_adapters::allow_reading(&paths.data.join("attachments"));
         apex_adapters::keys::use_folder(&paths.data);
-        Arc::new(Host {
+        let host = Arc::new(Host {
             paths,
             runtime,
             events: Bus::default(),
@@ -121,9 +146,104 @@ impl Host {
             rooms: Mutex::default(),
             chains: AtomicUsize::new(0),
             startup: Mutex::new(None),
+            assistant_tasks,
+            assistant_conversations,
+            assistant_runs: Mutex::default(),
+            assistant_apply: tokio::sync::Mutex::new(()),
+            assistant_isolated_slots: crate::assistant_isolation::IsolatedSlots::new(),
+            write_gates: Mutex::default(),
+            room_lifecycle: Mutex::default(),
             monitor_wake: Arc::new(tokio::sync::Notify::new()),
             monitor_clock: Mutex::new(None),
-        })
+        });
+        for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
+            if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
+                host.checkout_gate(std::path::Path::new(&task.owner.cwd)).restore_hold(task.id)
+                    .map_err(|error| format!("Could not restore task checkout ownership: {error:?}"))?;
+            }
+        }
+        // A daemon may have been killed while a CLI still owned descendants.
+        // Verified recovery stops those groups; ambiguity reserves the checkout.
+        let process_root = host.paths.data.join("worker-processes");
+        reject_registry_link(&process_root)?;
+        let entries = match std::fs::read_dir(&process_root) {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("Could not read worker recovery registry: {error}")),
+        };
+        if let Some(entries) = entries {
+            for entry in entries {
+                let entry = entry.map_err(|error| format!("Could not enumerate worker recovery registry: {error}"))?;
+                let kind = entry.file_type().map_err(|error| format!("Could not inspect worker recovery registry: {error}"))?;
+                if !kind.is_dir() { return Err("Worker recovery registry contains a linked or non-directory entry.".into()); }
+                let id = entry.file_name().to_string_lossy().into_owned();
+                if let Err(error) = host.recover_worker_cleanup(&id) {
+                    let cwd = host.store.room(&id)?.and_then(|saved| saved.cwd)
+                        .ok_or_else(|| format!("Worker cleanup needs attention for {id}, and its saved checkout is unavailable: {error}"))?;
+                    let owner = host.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.map(|entry|entry.task_id).unwrap_or_else(||format!("recovery:{id}"));
+                    host.checkout_gate(Path::new(&cwd)).restore_hold(owner)
+                        .map_err(|why| format!("Could not reserve the checkout for worker recovery: {why:?}"))?;
+                    eprintln!("[apex-deck] worker cleanup needs attention for {id}: {error}");
+                }
+            }
+        }
+        let operation_root = host.paths.data.join("operation-processes");
+        reject_registry_link(&operation_root)?;
+        match std::fs::read_dir(operation_root) {
+            Ok(entries) => for entry in entries {
+                let entry = entry.map_err(|error| format!("Could not enumerate task operation recovery registry: {error}"))?;
+                let kind = entry.file_type().map_err(|error| format!("Could not inspect task operation recovery registry: {error}"))?;
+                if !kind.is_dir() { return Err("Task operation recovery registry contains a linked or non-directory entry.".into()); }
+                host.recover_task_operations(&entry.file_name().to_string_lossy())?;
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(format!("Could not read task operation recovery registry: {error}")),
+        }
+        Ok(host)
+    }
+
+    pub(crate) fn recover_task_operations(&self, task_id: &str) -> Result<(), String> {
+        let active = self.assistant_runs.lock().unwrap().get(task_id).cloned();
+        if active.is_some_and(|run| !run.finished.load(Ordering::SeqCst)) {
+            return Err("Wait for the active task operation to stop before recovering its processes.".into());
+        }
+        let safe = export::safe_file_name(task_id)?;
+        apex_adapters::recover_owned_processes(&self.paths.data.join("operation-processes").join(safe))
+            .map_err(|error| format!("Task setup or verification cleanup needs attention: {error}"))
+    }
+
+    pub(crate) fn recover_worker_cleanup(&self, id: &str) -> Result<(), String> {
+        let safe = export::safe_file_name(id)?;
+        let directory = self.paths.data.join("worker-processes").join(safe);
+        if self.handle(id).is_ok_and(|handle|handle.busy()) { return Err("Wait for the active worker attempt to stop before recovering its cleanup hold.".into()); }
+        apex_adapters::recover_owned_processes(&directory)?;
+        if let Ok(handle) = self.handle(id) {
+            if handle.busy() { return Err("Wait for the active worker attempt to stop before recovering its cleanup hold.".into()); }
+            let participants = handle.checkpoint.lock().unwrap().snapshot.participants.clone();
+            let mut released = false;
+            for participant in participants { released |= handle.runtime.release_cleanup_hold(&participant.id); }
+            if released { self.room_event(id, RoomEvent::EditorChanged { id: None }); }
+        }
+        if let Some(saved) = self.store.room(id)? {
+            if let Some(cwd) = saved.cwd { self.checkout_gate(Path::new(&cwd)).release(&format!("recovery:{id}")); }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn assistant_data_dir(&self) -> &Path { &self.paths.data }
+
+    pub(crate) fn checkout_gate(&self, cwd: &Path) -> apex_core::CheckoutWriteGate {
+        let key = crate::assistant_git::checkout_root(cwd).unwrap_or_else(|_| std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()));
+        self.write_gates.lock().unwrap().entry(key).or_default().clone()
+    }
+
+    pub(crate) async fn append_assistant_note(&self, id: &str, text: String) -> Result<(), String> {
+        let handle = self.handle(id)?;
+        let error = Mutex::new(None);
+        handle.room.lock().await.append_assistant_note(text, &self.turn_sink(id, &handle, &error));
+        checkpoint_room(&handle, &self.store, id).await?;
+        if let Some(error) = error.into_inner().unwrap() { return Err(error); }
+        Ok(())
     }
 
     /// The numbered events this host sends.
@@ -195,6 +315,7 @@ impl Host {
                 _ => {}
             }
         }
+        if let Some(handle) = handle { self.observe_assistant_event(room, handle, &event); }
         self.emit(HostEvent::Room { room: room.to_string(), event, recovery_seq });
         // The caller may hold this room's event lock, so the switch is set
         // and announced here directly rather than through `room_set_plan`.
@@ -206,6 +327,34 @@ impl Host {
         }
     }
 
+    pub(crate) fn assistant_changed(&self, workspace_id: &str) {
+        self.emit(HostEvent::AssistantTasksChanged { workspace_id: workspace_id.into(), revision: self.assistant_tasks.snapshot_revision() });
+    }
+
+    fn observe_assistant_event(&self, room: &str, handle: &RoomHandle, event: &RoomEvent) {
+        let Some(entry) = self.assistant_tasks.execution(room).ok().flatten() else { return; };
+        let Some(run_id) = handle.task_run_id.lock().unwrap().clone() else { return; };
+        let Some(task) = self.assistant_tasks.get(&entry.task_id).ok().flatten() else { return; };
+        if task.attempts.last().is_none_or(|a| a.run_id != run_id) { return; }
+        let mut changed = false;
+        match event {
+            RoomEvent::Failed { error, .. } => { *handle.task_error.lock().unwrap() = Some(error.clone()); }
+            RoomEvent::Stopped => { *handle.task_error.lock().unwrap() = Some("Worker stopped; edits are retained for review.".into()); }
+            RoomEvent::MessageAdded { message } if message.text.contains("[Worker cleanup incomplete:") => {
+                *handle.task_error.lock().unwrap() = Some(message.text.clone());
+            }
+            RoomEvent::Usage { input_tokens, output_tokens, cost_micros, .. } => {
+                changed = self.assistant_tasks.add_run_usage(&entry.task_id, &run_id, crate::assistant_tasks::TaskUsage { input_tokens: *input_tokens, output_tokens: *output_tokens, cost_micros: *cost_micros }).is_ok();
+            }
+            RoomEvent::ApprovalRequested { .. } | RoomEvent::QuestionRequested { .. } | RoomEvent::ApprovalResolved { .. } | RoomEvent::QuestionResolved { .. } => {
+                let (approvals, questions) = { let live = handle.live.lock().unwrap(); (live.approvals.clone(), live.questions.clone()) };
+                changed = self.assistant_tasks.set_run_waits(&entry.task_id, &run_id, approvals, questions).is_ok();
+            }
+            _ => {}
+        }
+        if changed { self.assistant_changed(&entry.workspace_id); }
+    }
+
     /// Set the Plan switch and save it. False if it already was `on`.
     fn store_plan(&self, id: &str, handle: &RoomHandle, on: bool) -> Result<bool, String> {
         if handle.plan.swap(on, Ordering::SeqCst) == on { return Ok(false); }
@@ -215,7 +364,7 @@ impl Host {
         Ok(true)
     }
 
-    fn handle(&self, id: &str) -> Result<RoomHandle, String> {
+    pub(crate) fn handle(&self, id: &str) -> Result<RoomHandle, String> {
         self.rooms.lock().unwrap().get(id).cloned().ok_or_else(|| format!("no group chat with id {id}"))
     }
 
@@ -344,6 +493,8 @@ impl Host {
     /// Open group chat `id`, restoring saved data before creating a new room.
     /// `cwd` is the workspace folder; command-line participants run there.
     pub fn room_create(self: &Arc<Self>, id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String>) -> Result<RoomSnapshot, String> {
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some_and(|entry| entry.is_tombstoned()) { return Err("This execution thread was deleted.".into()); }
         if let Some(handle) = self.rooms.lock().unwrap().get(&id) {
             // Already open, as when a window that reloaded opens its chats
             // again: keep the room, and any turn it's running, as it is.
@@ -351,6 +502,8 @@ impl Host {
         }
         let saved = self.store.room(&id)?;
         let cwd = saved.as_ref().and_then(|s| s.cwd.clone()).or(cwd);
+        self.recover_worker_cleanup(&id)?;
+        let cargo_target_dir = self.assistant_tasks.execution(&id).map_err(|e|e.to_string())?.and_then(|entry|self.assistant_tasks.get(&entry.task_id).ok().flatten()).and_then(|task|task.result_data).and_then(|data|data["cargoTargetDir"].as_str().map(PathBuf::from));
         let context = BuildContext {
             codex_hook: if cfg!(unix) { std::env::current_exe().ok() } else { None },
 
@@ -358,6 +511,8 @@ impl Host {
             path: agents::login_path(),
             temp: thread_temp_dir(&id).ok(),
             media_dir: self.attachment_dir(&id).ok(),
+            process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
+            cargo_target_dir,
         };
         let mut seen: Vec<&ParticipantId> = Vec::new();
         for config in &participants {
@@ -384,12 +539,16 @@ impl Host {
         let stop = room.stop_handle();
         let plan = room.plan_handle();
         let approvals = room.approvals_handle();
-        let runtime = ConcurrentRoom::new(room);
+        let mut runtime = ConcurrentRoom::new(room);
+        if let Some(cwd) = &context.cwd {
+            let owner = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.map(|entry| entry.task_id);
+            runtime = runtime.with_write_gate(self.checkout_gate(cwd), owner);
+        }
         let checkpoint = Arc::new(Mutex::new(SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, plan, approvals, context });
+            .insert(id, RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, plan, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
         Ok(snapshot)
     }
 
@@ -399,7 +558,8 @@ impl Host {
         let seq = handle.recovery.lock().unwrap();
         let snapshot = handle.checkpoint.lock().unwrap().snapshot.clone();
         let live = handle.live.lock().unwrap();
-        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq}))
+        let execution = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({"snapshot":snapshot,"active":live.active,"approvals":live.approvals,"questions":live.questions,"next_steps":live.next_steps,"plan":handle.plan.load(Ordering::SeqCst),"recovery_seq":*seq,"assistantTaskId":execution.map(|e|e.task_id),"runId":handle.task_run_id.lock().unwrap().clone()}))
     }
 
     fn turn_sink<'a>(&'a self, id: &'a str, handle: &'a RoomHandle, error: &'a Mutex<Option<String>>) -> impl Fn(RoomEvent) + Send + Sync + 'a {
@@ -430,7 +590,7 @@ impl Host {
         }
     }
 
-    async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>, routed: bool) -> Result<TurnBatch, String> {
+    pub(crate) async fn prepare_post(&self, id: &str, handle: &RoomHandle, text: &str, targets: Option<Vec<ParticipantId>>, routed: bool) -> Result<TurnBatch, String> {
         let observation_revision = handle.observation_revision.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let room = handle.room.lock().await;
@@ -465,7 +625,7 @@ impl Host {
         Ok(batch.with_advisor(advisor))
     }
 
-    async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
+    pub(crate) async fn run_batch(&self, id: &str, handle: &RoomHandle, batch: TurnBatch) -> Result<(), String> {
         let _chain = Chain::start(&self.chains);
         let error = Mutex::new(None);
         handle.runtime.run(batch, &self.turn_sink(id, handle, &error)).await;
@@ -500,7 +660,8 @@ impl Host {
     }
 
     /// Compatibility command for the existing UI; resolves when this chain ends.
-    pub async fn room_post(&self, id: String, text: String) -> Result<(), String> {
+    pub async fn room_post(self: &Arc<Self>, id: String, text: String) -> Result<(), String> {
+        if self.assistant_continue_thread(&id, Some(text.clone()), vec![], None).await? { return Ok(()); }
         let handle = self.handle(&id)?;
         let batch = self.prepare_post(&id, &handle, &text, None, true).await?;
         self.run_batch(&id, &handle, batch).await
@@ -512,6 +673,7 @@ impl Host {
 
     /// Saves the human message once, then runs targets in the background.
     pub async fn room_post_to(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, routed: bool) -> Result<(), String> {
+        if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None).await? { return Ok(()); }
         let handle = self.handle(&id)?;
         let batch = self.prepare_post(&id, &handle, &text, Some(targets), routed).await?;
         self.run_batch_in_background(id, handle, batch);
@@ -523,6 +685,7 @@ impl Host {
     /// rounds that may follow: `None` keeps the room's limit, `Some(0)` buys
     /// exactly one reply each.
     pub async fn room_turn(self: &Arc<Self>, id: String, participants: Vec<ParticipantId>, hops: Option<usize>) -> Result<(), String> {
+        if self.assistant_continue_thread(&id, None, participants.clone(), hops).await? { return Ok(()); }
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(&id)?;
         let batch = handle.runtime.begin_turn(participants, hops).await?;
@@ -534,6 +697,9 @@ impl Host {
     }
 
     pub fn room_stop(&self, id: String, participant: Option<ParticipantId>) {
+        if let Some(entry) = self.assistant_tasks.execution(&id).ok().flatten() {
+            if let Some(run) = self.assistant_runs.lock().unwrap().get(&entry.task_id) { run.stop.store(true, Ordering::SeqCst); }
+        }
         if let Ok(handle) = self.handle(&id) {
             handle.observation_revision.fetch_add(1, Ordering::SeqCst);
             handle.runtime.stop(participant.as_ref());
@@ -784,11 +950,10 @@ impl Host {
     }
 
     pub fn room_close(&self, id: String) {
-        if let Some(handle) = self.rooms.lock().unwrap().remove(&id) {
-            handle.runtime.stop(None);
-            handle.stop.store(true, Ordering::SeqCst);
-            handle.approvals.reject_all();
-        }
+        // Closing a view detaches it. Active jobs and assistant children are host owned.
+        let mut rooms = self.rooms.lock().unwrap();
+        if rooms.get(&id).is_some_and(|h| h.busy()) || self.assistant_tasks.execution(&id).ok().flatten().is_some() { return; }
+        rooms.remove(&id);
     }
 
     /// The models an OpenAI-compatible server offers, for the model picker.
@@ -930,9 +1095,15 @@ impl Host {
     }
 
     pub fn room_delete(&self, id: String) -> Result<(), String> {
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
         let handle = self.handle(&id).ok();
+        if self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.is_some() {
+            if handle.as_ref().is_some_and(|h|h.busy()) { return Err("Stop this task and wait for its worker cleanup before deleting its chat.".into()); }
+            self.assistant_tasks.tombstone_execution(&id).map_err(|e|e.to_string())?;
+        }
         self.snapshots.delete(&id);
-        self.room_close(id.clone());
+        if let Some(handle) = &handle { handle.runtime.stop(None); handle.stop.store(true, Ordering::SeqCst); handle.approvals.reject_all(); }
+        self.rooms.lock().unwrap().remove(&id);
         if let Ok(name) = export::safe_file_name(&id) {
             let _ = std::fs::remove_dir_all(thread_temp_root().join(name));
         }
@@ -940,6 +1111,18 @@ impl Host {
             Some(handle) => delete_checkpoint(&handle, &self.store, &id),
             None => self.store.delete_room(&id),
         }
+    }
+
+    /// Explicit deletion waits for a task's exact worker attempt before removing its saved room.
+    pub async fn room_delete_owned(self: &Arc<Self>, id: String) -> Result<(), String> {
+        if let Some(entry) = self.assistant_tasks.execution(&id).map_err(|e|e.to_string())? {
+            let task = self.assistant_tasks.get(&entry.task_id).map_err(|e|e.to_string())?.ok_or("Owning task not found")?;
+            if !matches!(task.status, crate::assistant_tasks::TaskStatus::Done | crate::assistant_tasks::TaskStatus::Cancelled) {
+                self.assistant_task_action(crate::assistant_service::AssistantActionInput { task_id: task.id.clone(), revision: task.revision, owner: task.owner.clone(), action: "cancel".into(), text: None, destination: None, new_worker_profiles: vec![], checks: None, mode: None }).await?;
+            }
+            self.assistant_changed(&entry.workspace_id);
+        }
+        self.room_delete(id)
     }
 
     /// Save an exported thread in the Downloads folder. Returns where it went.
@@ -1124,6 +1307,11 @@ impl Host {
     /// `replace` the saved room is written over in one step and only then
     /// closed, so a failed write leaves it whole and open. Artifacts stay.
     pub fn room_import(&self, id: String, snapshot: RoomSnapshot, cwd: Option<String>, replace: bool) -> Result<(), String> {
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if let Some(entry) = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())? {
+            if entry.is_tombstoned() { return Err("This assistant chat was deleted and cannot be restored from a stale session.".into()); }
+            if replace { return Err("An assistant worker chat cannot be moved or replaced while its task owns it.".into()); }
+        }
         let mut clean = snapshot.fork(snapshot.transcript.len());
         clean.changes.clear();
         clean.baseline = None;
@@ -1144,7 +1332,12 @@ impl Host {
             }
             Err(_) => self.store.save_room(&id, &saved)?,
         }
-        self.room_close(id.clone());
+        // Replacing a room is an explicit lifecycle action, unlike detaching a view.
+        if let Some(handle) = self.rooms.lock().unwrap().remove(&id) {
+            handle.runtime.stop(None);
+            handle.stop.store(true, Ordering::SeqCst);
+            handle.approvals.reject_all();
+        }
         // Its checkpoints are of the old folder.
         self.snapshots.delete(&id);
         Ok(())
@@ -1445,6 +1638,22 @@ fn copy_folder_attachment(dir: &Path, source: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn direct_host_construction_secures_the_parent_of_saved_rooms_and_checkpoints() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("apex-host-private-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let host = Host::try_new(HostPaths { data: path.clone(), downloads: None }, runtime.handle().clone()).unwrap();
+        host.session_save(serde_json::json!({ "version": 1 })).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o700);
+        assert!(path.join("saved-chats-v1/session.json").is_file());
+        drop(host);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn export_names_keep_only_safe_characters() {
         assert_eq!(safe_name("welcome-email-v3.html").unwrap(), "welcome-email-v3.html");
@@ -1535,7 +1744,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), runtime, room,
+        let handle = RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }

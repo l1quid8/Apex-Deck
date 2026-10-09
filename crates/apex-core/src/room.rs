@@ -591,7 +591,7 @@ impl Room {
             return Ok(());
         }
         let reply = outcome.map_err(|error| error.to_string())?;
-        if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
+        if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
             self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens, reply.cost_micros);
             on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros });
         }
@@ -637,6 +637,11 @@ impl Room {
         self.roster.iter().filter(|p| !p.named_only()).map(|p| p.config().id.clone()).collect()
     }
 
+    /// Runtime exclusions used by assistant routing; these cannot be inferred from a saved profile.
+    pub fn named_only_ids(&self) -> Vec<String> {
+        self.roster.iter().filter(|p| p.named_only()).map(|p| p.config().id.to_string()).collect()
+    }
+
     fn named_only(&self, id: &ParticipantId) -> bool {
         self.roster.iter().any(|p| &p.config().id == id && p.named_only())
     }
@@ -651,6 +656,11 @@ impl Room {
         let message = Message { servers, seq: self.transcript.len(), speaker, text, at };
         self.transcript.push(message.clone());
         on_event(RoomEvent::MessageAdded { message });
+    }
+
+    /// A host-owned coordination note; it never authorizes a worker turn.
+    pub fn append_assistant_note(&mut self, text: String, on_event: EventSink<'_>) {
+        self.push(Speaker::Bot(ParticipantId::new("apex-agent")), text, on_event);
     }
 
     pub fn resolve_targets(&self, text: &str) -> Vec<ParticipantId> {
@@ -743,7 +753,7 @@ impl Room {
                 Vec::new()
             }
             Ok(reply) => {
-                if reply.input_tokens.is_some() || reply.output_tokens.is_some() {
+                if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
                     self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens, reply.cost_micros);
                     on_event(RoomEvent::Usage {
                         id: id.clone(),
@@ -779,6 +789,7 @@ impl Room {
     ) -> Result<Reply, ParticipantError> {
         let partial = Mutex::new(String::new());
         let capture = |update: Progress<'_>| {
+            if stop.load(Ordering::SeqCst) { return; }
             if let Progress::Text(text) = update { partial.lock().unwrap().push_str(text); }
             progress(update);
         };
@@ -790,7 +801,24 @@ impl Room {
         }.fuse();
         pin_mut!(response, cancelled);
         futures::select_biased! {
-            _ = cancelled => Ok(Reply::text(format!("{}\n\n[Interrupted]", partial.lock().unwrap().trim()).trim().to_string())),
+            _ = cancelled => {
+                let mut cleanup = participant.cancel_active_turn().await;
+                // CLI adapters observe the process exit and reap the direct
+                // child after the tree signal. Keep the response alive for a
+                // short bounded window so Stop does not release its slot
+                // before that cleanup can finish.
+                if cleanup.as_ref().is_ok_and(|active| *active) {
+                    let settle = async { let _ = (&mut response).await; }.fuse();
+                    let deadline = futures_timer::Delay::new(std::time::Duration::from_millis(500)).fuse();
+                    pin_mut!(settle, deadline);
+                    futures::select_biased! { _ = settle => {}, _ = deadline => {} }
+                    cleanup = participant.cancel_active_turn().await;
+                }
+                match cleanup {
+                    Ok(_) => Ok(Reply::text(format!("{}\n\n[Interrupted]", partial.lock().unwrap().trim()).trim().to_string())),
+                    Err(error) => Err(ParticipantError::CleanupIncomplete(error)),
+                }
+            },
             result = response => result,
         }
     }
@@ -928,6 +956,43 @@ mod approver_tests {
     use crate::approval::ActionKind;
     use futures::FutureExt;
     use std::sync::Mutex;
+
+    #[test]
+    fn cost_only_reply_is_recorded_and_emits_usage() {
+        let bot = Arc::new(crate::testing::ScriptedParticipant::new("bot", &["reply"]));
+        let mut room = Room::new(vec![bot], RoomOptions::default());
+        let id = ParticipantId::new("bot");
+        let events = Mutex::new(Vec::new());
+        room.settle(&id, 0, Ok(Reply {
+            text: "reply".into(), input_tokens: None, output_tokens: None, cost_micros: Some(1_000_000),
+        }), &|event| events.lock().unwrap().push(event));
+        assert_eq!(room.usage()[&id].cost_micros, 1_000_000);
+        assert!(events.lock().unwrap().iter().any(|event| matches!(event, RoomEvent::Usage { input_tokens: None, output_tokens: None, cost_micros: Some(1_000_000), .. })));
+    }
+
+    struct CostOnlyParticipant { config: ParticipantConfig }
+    #[async_trait]
+    impl Participant for CostOnlyParticipant {
+        fn config(&self) -> &ParticipantConfig { &self.config }
+        async fn respond(&self, _request: TurnRequest, _on_delta: crate::participant::DeltaSink<'_>) -> Result<Reply, ParticipantError> {
+            Ok(Reply { text: "summary".into(), input_tokens: None, output_tokens: None, cost_micros: Some(2_000_000) })
+        }
+    }
+
+    #[test]
+    fn cost_only_compaction_is_recorded_and_emits_usage() {
+        let config: ParticipantConfig = serde_json::from_value(serde_json::json!({
+            "id":"summary", "display_name":"Summary", "backend":{"kind":"agent","tool":"claude_code"}
+        })).unwrap();
+        let compactor = CostOnlyParticipant { config };
+        let mut room = Room::new(Vec::new(), RoomOptions::default());
+        room.push(Speaker::Human, "content".into(), &|_| {});
+        let events = Mutex::new(Vec::new());
+        futures::executor::block_on(room.compact(&compactor, &|event| events.lock().unwrap().push(event))).unwrap();
+        let id = ParticipantId::new("summary");
+        assert_eq!(room.usage()[&id].cost_micros, 2_000_000);
+        assert!(events.lock().unwrap().iter().any(|event| matches!(event, RoomEvent::Usage { cost_micros: Some(2_000_000), .. })));
+    }
 
     #[test]
     fn the_next_steps_question_is_never_asked_in_plan_mode() {

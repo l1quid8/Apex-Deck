@@ -12,7 +12,7 @@ use apex_core::{Access,
 };
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 
 use crate::ansi::AnsiStripper;
 use crate::events::{self, EventReader, OutputFormat};
@@ -21,6 +21,7 @@ use crate::codex_server::{self, TurnError};
 use crate::presets::{agent_command_with, clean_effort, clean_model, output_format};
 use crate::codex_hook;
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
+use crate::owned_process::{OwnedChild, Registry};
 
 /// How long a turn may go without any sign of life before the tool is
 /// killed. Every update the tool sends restarts the clock, so long turns
@@ -55,11 +56,22 @@ pub struct CliParticipant {
     /// While the thread's Plan switch is on: the bot's own access, which a
     /// planning Claude gets back when the person agrees to start the work.
     plan: Option<Access>,
+    /// Disable every tool for a text-only monitor turn.
+    tools_disabled: bool,
+    processes: Registry,
+    cargo_target_dir: Option<PathBuf>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, processes: Registry::default(), cargo_target_dir: None }
+    }
+
+    /// Start a text-only turn with tools disabled at both the CLI and
+    /// protocol boundaries. Only Claude currently has a verified path.
+    pub fn with_tools_disabled(mut self) -> Self {
+        self.tools_disabled = true;
+        self
     }
 
     /// Run the tool in the folder, and with the PATH, given by `context`.
@@ -68,6 +80,8 @@ impl CliParticipant {
         self.path = context.path.clone();
         self.codex_hook = context.codex_hook.clone();
         self.temp = context.temp.clone();
+        self.processes = Registry::new(context.process_registry.clone());
+        self.cargo_target_dir = context.cargo_target_dir.clone();
         self
     }
 
@@ -80,10 +94,23 @@ impl CliParticipant {
     /// to read what it prints.
     fn command_line(&self) -> Result<(String, Vec<String>, OutputFormat), ParticipantError> {
         match &self.config.backend {
+            Backend::Cli { .. } if self.tools_disabled => Err(ParticipantError::Failed("This CLI does not have a verified tool-free mode, so the monitor check did not run.".into())),
             Backend::Cli { program, args } => Ok((program.clone(), args.clone(), OutputFormat::Text)),
             Backend::Agent { tool, model } => {
-                let (program, args) =
+                if self.tools_disabled && *tool != AgentTool::ClaudeCode {
+                    return Err(ParticipantError::Failed("This CLI does not have a verified tool-free mode, so the monitor check did not run.".into()));
+                }
+                let (program, mut args) =
                     agent_command_with(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.access, self.plan.is_some());
+                if self.tools_disabled {
+                    let mut safe = Vec::with_capacity(args.len());
+                    let mut i = 0;
+                    while i < args.len() {
+                        if args[i] == "--settings" { i += 2; } else { safe.push(args[i].clone()); i += 1; }
+                    }
+                    safe.extend(["--safe-mode", "--restricted", "--tools", "", "--strict-mcp-config", "--setting-sources", ""].into_iter().map(str::to_owned));
+                    args = safe;
+                }
                 Ok((program, args, output_format(*tool)))
             }
             _ => Err(ParticipantError::NotConfigured("backend is not a command-line tool".into())),
@@ -92,12 +119,12 @@ impl CliParticipant {
 
     /// Start `program` in the workspace folder with every standard stream
     /// connected to us.
-    fn start(&self, program: &str, args: &[String]) -> Result<Child, ParticipantError> {
+    fn start(&self, program: &str, args: &[String]) -> Result<OwnedChild, ParticipantError> {
         self.start_with(program, args, &[])
     }
 
     /// `start`, with extra environment variables for the program.
-    fn start_with(&self, program: &str, args: &[String], env: &[(&str, std::ffi::OsString)]) -> Result<Child, ParticipantError> {
+    fn start_with(&self, program: &str, args: &[String], env: &[(&str, std::ffi::OsString)]) -> Result<OwnedChild, ParticipantError> {
         let mut command = Command::new(program);
         command.args(args);
         command.envs(env.iter().map(|(name, value)| (*name, value)));
@@ -111,6 +138,7 @@ impl CliParticipant {
         if let Some(temp) = self.temp.as_ref().filter(|dir| dir.is_dir()) {
             command.env("TMPDIR", temp).env("TMP", temp).env("TEMP", temp);
         }
+        if let Some(target_dir) = &self.cargo_target_dir { command.env("CARGO_TARGET_DIR", target_dir); }
         if let Some(cwd) = &self.cwd {
             // A missing folder would otherwise be reported as a missing program.
             if !cwd.is_dir() {
@@ -125,8 +153,8 @@ impl CliParticipant {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
+            .kill_on_drop(true);
+        self.processes.spawn(&mut command)
             .map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     ParticipantError::NotConfigured(format!("program `{program}` was not found"))
@@ -177,6 +205,7 @@ impl CliParticipant {
                 let hint = sign_in_hint(program, &summary).map(|h| format!(" {h}")).unwrap_or_default();
                 Err(ParticipantError::Failed(format!("`{program}` reported an error: {summary}{hint}")))
             }
+            Err(TurnError::CleanupIncomplete(why)) => Err(ParticipantError::CleanupIncomplete(why)),
         }
     }
 
@@ -232,6 +261,7 @@ impl CliParticipant {
             .wait()
             .await
             .map_err(|e| ParticipantError::Failed(format!("waiting for `{program}` failed: {e}")))?;
+        child.terminate_tree().await.map_err(ParticipantError::CleanupIncomplete)?;
         let _ = writer.await;
         let stderr_text = errors.await.unwrap_or_default();
 
@@ -289,9 +319,10 @@ impl CliParticipant {
     ) -> Result<Reply, ParticipantError> {
         let child = self.start(program, args)?;
         let cwd = self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned());
-        let finished = claude_session::run(child, prompt, cwd, on_progress, approver, self.plan)
+        let finished = claude_session::run_with_policy(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled)
             .await
             .map_err(|e| ParticipantError::Failed(format!("talking to `{program}` failed: {e}")))?;
+        if let Some(error) = finished.cleanup_error { return Err(ParticipantError::CleanupIncomplete(error)); }
         self.settle(program, finished.success, &finished.status, &finished.stderr, finished.reader)
     }
 }
@@ -491,7 +522,7 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan };
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -502,7 +533,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access) };
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone() };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -513,7 +544,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, args, format) = self.command_line()?;
@@ -559,6 +590,17 @@ impl Participant for CliParticipant {
                 _ = tokio::time::sleep(left.max(Duration::from_millis(50))) => {
                     let over = last_heard.lock().unwrap().elapsed() >= self.timeout;
                     if over && !asking.load(Ordering::SeqCst) {
+                        let mut cleanup = self.processes.terminate_all().await.err();
+                        // Give the protocol task time to consume EOF and wait
+                        // the direct child so it is reaped before returning.
+                        let _ = tokio::time::timeout(Duration::from_millis(500), &mut turn).await;
+                        if cleanup.is_some() {
+                            let retry = self.processes.terminate_all().await.err();
+                            cleanup = cleanup.or(retry);
+                        }
+                        if let Some(cleanup) = cleanup {
+                            return Err(ParticipantError::CleanupIncomplete(format!("`{program}` timed out and its worker tree could not be verified stopped: {cleanup}")));
+                        }
                         return Err(ParticipantError::Failed(format!(
                             "`{program}` went {} seconds without any output, so it was stopped",
                             self.timeout.as_secs()
@@ -567,6 +609,10 @@ impl Participant for CliParticipant {
                 }
             }
         }
+    }
+
+    async fn cancel_active_turn(&self) -> Result<bool, String> {
+        self.processes.terminate_all().await
     }
 }
 

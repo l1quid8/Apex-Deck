@@ -20,6 +20,9 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "name", content = "payload")]
 pub enum HostEvent {
+    /// Durable assistant ledger changed. Clients reload only their owning project.
+    #[serde(rename = "assistant-tasks-changed")]
+    AssistantTasksChanged { #[serde(rename = "workspaceId")] workspace_id: String, revision: u64 },
     /// Something happened in a group chat.
     #[serde(rename = "room-event")]
     Room { room: String, event: RoomEvent, #[serde(skip_serializing_if = "Option::is_none")] recovery_seq: Option<u64> },
@@ -44,6 +47,7 @@ impl HostEvent {
     /// The event name the desktop UI listens for.
     pub fn name(&self) -> &'static str {
         match self {
+            HostEvent::AssistantTasksChanged { .. } => "assistant-tasks-changed",
             HostEvent::Room { .. } => "room-event",
             HostEvent::PtyData { .. } => "pty-data",
             HostEvent::PtyExit { .. } => "pty-exit",

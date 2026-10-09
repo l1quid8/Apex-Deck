@@ -4,7 +4,7 @@
 
 use std::sync::Mutex;
 
-use apex_core::{Backend, ParticipantConfig};
+use apex_core::ParticipantConfig;
 
 use crate::host::Host;
 use crate::monitor::{MonitorDocument, ProjectMonitor};
@@ -122,6 +122,9 @@ impl Host {
             if only_if_absent && monitors.iter().any(|m| m.workspace_id == workspace_id) {
                 return Err("ApexAgent already has a responsibility for this project. Refresh before trying again.".into());
             }
+            if !only_if_absent && self.assistant_tasks.list(Some(&workspace_id)).map_err(|e|e.to_string())?.iter().any(|task| !matches!(task.status, crate::assistant_tasks::TaskStatus::Done | crate::assistant_tasks::TaskStatus::Cancelled) || task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true)) {
+                return Err("Finish or cancel this project's assistant tasks before replacing its responsibility.".into());
+            }
             monitors.retain(|m| m.workspace_id != workspace_id);
             let at = now();
             let mut monitor = ProjectMonitor::new(
@@ -214,6 +217,30 @@ impl Host {
         })
     }
 
+    /// Change only the saved reasoning profile, guarded by the assignment
+    /// shown to the caller. Old check replies cannot merge into this revision.
+    pub(crate) fn monitor_profile_update(
+        &self, workspace_id: &str, owner: MonitorOwner, revision: u64,
+        profile: ParticipantConfig,
+    ) -> Result<ProjectMonitor, String> {
+        crate::monitor_check::monitor_profile_ok(&profile)?;
+        self.change_monitor_owned(workspace_id, Some(owner), |monitor, at| {
+            if monitor.revision != revision {
+                return Err("ApexAgent has changed. Refresh before changing its profile.".into());
+            }
+            monitor.profile_id = profile.id.to_string();
+            monitor.profile = Some(profile);
+            monitor.revision = monitor.revision.checked_add(1).ok_or("ApexAgent revision exhausted.")?;
+            monitor.active_check = None;
+            monitor.pending_check_at = None;
+            monitor.wake_reason = "profile_updated".into();
+            monitor.next_check_at = if monitor.paused { None } else { Some(at) };
+            monitor.error = None;
+            monitor.record_activity(at, "profile_updated", "ApexAgent's reasoning profile changed.");
+            Ok(())
+        })
+    }
+
     /// Suggest bounded, likely project planning files without opening or
     /// reading their contents. Symlink entries and symlinked folders are
     /// excluded so discovery cannot leave the selected workspace.
@@ -282,10 +309,21 @@ impl Host {
         self.monitor_message_owned(workspace_id, None, message)
     }
 
+    /// Immediate assistant conversation preserves the monitoring responsibility and active check.
+    pub(crate) fn monitor_chat_message_owned(&self, workspace_id: &str, owner: MonitorOwner, role: &str, message: &str) -> Result<ProjectMonitor, String> {
+        if !matches!(role, "human" | "assistant") { return Err("Invalid assistant conversation role.".into()); }
+        let message = text(message)?;
+        self.change_monitor_owned(workspace_id, Some(owner), |monitor, at| {
+            monitor.append_message(role, &message, at, vec![])?;
+            monitor.snapshot_version = monitor.snapshot_version.saturating_add(1);
+            Ok(())
+        })
+    }
+
     pub(crate) fn monitor_message_owned(&self, workspace_id: &str, owner: Option<MonitorOwner>, message: &str) -> Result<ProjectMonitor, String> {
         let message = text(message)?;
         self.change_monitor_owned(workspace_id, owner, |monitor, at| {
-            monitor.redirect(message, at);
+            monitor.redirect(message, at)?;
             Ok(())
         })
     }
@@ -353,7 +391,7 @@ mod tests {
     use crate::monitor::Finding;
     use crate::storage::SavedRoom;
     use crate::HostPaths;
-    use apex_core::{Room, RoomOptions, RoomSnapshot};
+    use apex_core::{Backend, Room, RoomOptions, RoomSnapshot};
 
     fn empty_snapshot() -> RoomSnapshot {
         Room::new(vec![], RoomOptions::default()).snapshot()
@@ -401,6 +439,44 @@ mod tests {
 
     fn reopen(f: &Fixture) -> Arc<Host> {
         Host::new(HostPaths { data: f.data.clone(), downloads: None }, f._runtime.handle().clone())
+    }
+
+    #[test]
+    fn profile_change_preserves_history_and_sources_and_invalidates_old_check() {
+        let f = fixture("profile-change");
+        let initial = f.host.monitor_assign(assignment(&f)).unwrap();
+        f.host.monitor_message("w", "Also watch the docs").unwrap();
+        let before = f.host.change_monitor("w", |monitor, at| {
+            assert!(monitor.claim(at, true).is_some());
+            Ok(())
+        }).unwrap();
+        let owner = MonitorOwner { cwd: initial.cwd.clone(), host_id: initial.host_id.clone(), conversation_id: initial.conversation_id.clone() };
+        let mut next = profile();
+        next.id = apex_core::ParticipantId::new("replacement");
+        let updated = f.host.monitor_profile_update("w", owner.clone(), before.revision, next).unwrap();
+        assert_eq!(updated.profile_id, "replacement");
+        assert_eq!(updated.files, before.files);
+        assert_eq!(updated.messages, before.messages);
+        assert_eq!(updated.decisions, before.decisions);
+        assert_eq!(updated.findings, before.findings);
+        assert!(updated.active_check.is_none());
+        assert!(updated.revision > before.revision);
+        assert_eq!(reopen(&f).monitor_get("w").unwrap(), Some(updated.clone()));
+        assert!(f.host.monitor_profile_update("w", owner, before.revision, profile()).is_err());
+        assert_eq!(f.host.monitor_get("w").unwrap(), Some(updated));
+    }
+
+    #[test]
+    fn immediate_conversation_preserves_periodic_monitoring_and_live_claim() {
+        let f = fixture("immediate-chat");
+        let initial = f.host.monitor_assign(assignment(&f)).unwrap();
+        let before = f.host.change_monitor("w", |monitor,at| { assert!(monitor.claim(at,true).is_some()); Ok(()) }).unwrap();
+        let updated = f.host.monitor_chat_message_owned("w", MonitorOwner { cwd:initial.cwd,host_id:initial.host_id,conversation_id:initial.conversation_id }, "human", "What's next?").unwrap();
+        assert_eq!(updated.responsibility,before.responsibility);
+        assert_eq!(updated.revision,before.revision);
+        assert_eq!(updated.active_check,before.active_check);
+        assert!(updated.snapshot_version > before.snapshot_version);
+        assert_eq!(updated.messages.last().unwrap().text,"What's next?");
     }
 
     #[test]
@@ -506,7 +582,7 @@ mod tests {
                     m.findings.push(Finding {
                         id: id.into(), summary: format!("Blocker {id}"), reason: "r".into(), confidence: "observed".into(),
                         next_step: "n".into(), evidence: Vec::new(), status: "open".into(),
-                        first_seen_at: at, last_seen_at: at, last_notified_at: None, snoozed_until: None,
+                        first_seen_at: at, last_seen_at: at, last_notified_at: None, snoozed_until: None, deadline_at: None, deadline_assessed_at: None,
                     });
                 }
                 Ok(())
@@ -621,7 +697,7 @@ mod tests {
                 m.findings.push(Finding {
                     id: id.clone(), summary: "Old item".into(), reason: "r".into(), confidence: "observed".into(),
                     next_step: "n".into(), evidence: Vec::new(), status: if id.ends_with("-8") { "resolved" } else { "dismissed" }.into(),
-                    first_seen_at: at, last_seen_at: at, last_notified_at: None, snoozed_until: None,
+                    first_seen_at: at, last_seen_at: at, last_notified_at: None, snoozed_until: None, deadline_at: None, deadline_assessed_at: None,
                 });
             }
             Ok(())
@@ -651,7 +727,7 @@ mod tests {
             m.findings.push(Finding {
                 id: "finding-preserved".into(), summary: "Keep this".into(), reason: "reason".into(), confidence: "observed".into(),
                 next_step: "step".into(), evidence: Vec::new(), status: "open".into(), first_seen_at: at,
-                last_seen_at: at, last_notified_at: None, snoozed_until: None,
+                last_seen_at: at, last_notified_at: None, snoozed_until: None, deadline_at: None, deadline_assessed_at: None,
             });
             Ok(())
         }).unwrap();
@@ -790,7 +866,7 @@ mod tests {
             monitor.findings.push(Finding {
                 id: "finding-active".into(), summary: "Needs a choice".into(), reason: "reason".into(), confidence: "observed".into(),
                 next_step: "step".into(), evidence: Vec::new(), status: "open".into(), first_seen_at: at,
-                last_seen_at: at, last_notified_at: None, snoozed_until: None,
+                last_seen_at: at, last_notified_at: None, snoozed_until: None, deadline_at: None, deadline_assessed_at: None,
             });
             Ok(())
         }).unwrap();

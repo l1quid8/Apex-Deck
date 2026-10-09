@@ -23,6 +23,7 @@ pub mod keys;
 mod mcp;
 pub mod media;
 mod openai;
+mod owned_process;
 mod plan_cache;
 mod presets;
 
@@ -39,6 +40,7 @@ pub use api_info::{balance as api_balance, model as api_model, ApiModel, MediaSp
 pub use cli::CliParticipant;
 pub use openai::{list_models, OpenAiCompatParticipant};
 pub use presets::{agent_command, allow_reading};
+pub use owned_process::{OwnedChild as OwnedProcessChild, Registry as OwnedProcessRegistry};
 
 /// Pass on what a tool's output amounted to: text, activity and changes.
 pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressSink<'_>) {
@@ -75,6 +77,12 @@ pub struct BuildContext {
     /// scratch files go away when the thread is deleted. `None` keeps the
     /// system's.
     pub temp: Option<PathBuf>,
+    /// Persistent per-thread storage for worker process ownership records.
+    /// Host data, not scratch space; used to recover live process groups
+    /// after a daemon restart.
+    pub process_registry: Option<PathBuf>,
+    /// Isolated Rust build output for task workspaces.
+    pub cargo_target_dir: Option<PathBuf>,
     /// The thread's attachments folder, where bots whose model makes
     /// pictures or videos save them. `None` turns those bots off.
     pub media_dir: Option<PathBuf>,
@@ -131,14 +139,21 @@ async fn read_codex_plan(context: &BuildContext) -> Result<PlanUsage, String> {
     if let Some(cwd) = context.cwd.as_ref().filter(|dir| dir.is_dir()) {
         command.current_dir(cwd);
     }
-    let child = command
+    command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    let child = owned_process::Registry::new(context.process_registry.clone()).spawn(&mut command)
         .map_err(|e| format!("could not start codex: {e}"))?;
     codex_server::read_plan(child).await
+}
+
+/// Verify and stop worker groups persisted by an earlier host process.
+/// Ambiguous or reused PIDs are left untouched and reported for manual
+/// cleanup; callers should keep the room's editor/write lease held on error.
+pub fn recover_owned_processes(directory: &std::path::Path) -> Result<(), String> {
+    owned_process::recover(directory)
 }
 
 /// Splits a byte stream into text without cutting a multi-byte character in

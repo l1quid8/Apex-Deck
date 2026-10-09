@@ -157,6 +157,17 @@ impl Store {
     }
 }
 
+/// Create the host-owned data directory and remove group/other access.
+pub(crate) fn prepare_private_root(root: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(root).map_err(|e| format!("Could not create private data folder: {e}"))?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Could not make private data folder private: {e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +176,18 @@ mod tests {
     fn temp() -> PathBuf {
         std::env::temp_dir().join(format!("apex-deck-storage-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_private_root_removes_group_and_other_access() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        prepare_private_root(&root).unwrap();
+        assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o777, 0o700);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

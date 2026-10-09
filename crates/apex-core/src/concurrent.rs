@@ -19,6 +19,7 @@ type Prepared = (Arc<dyn Participant>, TurnRequest, usize, Arc<ApprovalDesk>);
 
 type Sink<'a> = &'a (dyn Fn(RoomEvent) + Send + Sync);
 type Ready = Shared<BoxFuture<'static, ()>>;
+static NEXT_WRITE_OWNER: AtomicU64 = AtomicU64::new(1);
 struct Slot {
     tail: Mutex<Ready>,
     stop: Arc<AtomicBool>,
@@ -56,6 +57,9 @@ pub struct TurnBatch {
     pending: Arc<AtomicUsize>,
     generations: HashMap<ParticipantId, u64>,
     advisor: Option<Arc<dyn crate::decision::TurnAdvisor>>,
+    write_owner: String,
+    retained_owner: bool,
+    retain_write_lease: Arc<AtomicBool>,
 }
 impl TurnBatch {
     pub fn with_advisor(mut self, advisor: Arc<dyn crate::decision::TurnAdvisor>) -> Self { self.advisor = Some(advisor); self }
@@ -71,6 +75,9 @@ pub struct ConcurrentRoom {
     slots: Arc<Mutex<HashMap<ParticipantId, Arc<Slot>>>>,
     pending: Arc<AtomicUsize>,
     editor: Arc<Mutex<Option<ParticipantId>>>,
+    write_gate: Option<crate::CheckoutWriteGate>,
+    write_owner: Option<String>,
+    cleanup_holds: Arc<Mutex<HashMap<ParticipantId, (String, bool)>>>,
 }
 impl ConcurrentRoom {
     pub fn new(room: Room) -> Self {
@@ -79,13 +86,38 @@ impl ConcurrentRoom {
             slots: Arc::default(),
             pending: Arc::default(),
             editor: Arc::default(),
+            write_gate: None,
+            write_owner: None,
+            cleanup_holds: Arc::default(),
         }
+    }
+    /// Attach the host's checkout-wide gate. `owner` is a stable task id;
+    /// omit it for ordinary manual batches, which get unique transient owners.
+    pub fn with_write_gate(mut self, gate: crate::CheckoutWriteGate, owner: Option<String>) -> Self {
+        self.write_gate = Some(gate);
+        self.write_owner = owner;
+        self
     }
     pub fn room(&self) -> Arc<AsyncMutex<Room>> {
         self.room.clone()
     }
     pub fn busy(&self) -> bool {
         self.pending.load(Ordering::SeqCst) != 0
+    }
+    /// Release a cleanup hold only after the caller has verified that every
+    /// process owned by this participant has stopped. Durable task owners are
+    /// left to the host task lifecycle; transient manual owners are released.
+    pub fn release_cleanup_hold(&self, id: &ParticipantId) -> bool {
+        if self.busy() { return false; }
+        let Some((owner, durable)) = self.cleanup_holds.lock().unwrap().remove(id) else { return false; };
+        {
+            let mut editor = self.editor.lock().unwrap();
+            if editor.as_ref() == Some(id) { *editor = None; }
+        }
+        if !durable {
+            if let Some(gate) = &self.write_gate { gate.release(&owner); }
+        }
+        true
     }
     pub async fn targets(&self, text: &str) -> Vec<ParticipantId> {
         self.room.lock().await.resolve_targets(text)
@@ -210,6 +242,9 @@ impl ConcurrentRoom {
             pending: self.pending.clone(),
             generations,
             advisor: None,
+            write_owner: self.write_owner.clone().unwrap_or_else(|| format!("manual-{}", NEXT_WRITE_OWNER.fetch_add(1, Ordering::Relaxed))),
+            retained_owner: self.write_owner.is_some(),
+            retain_write_lease: Arc::default(),
         }
     }
     pub fn stop(&self, id: Option<&ParticipantId>) {
@@ -222,13 +257,17 @@ impl ConcurrentRoom {
         }
     }
     pub async fn run(&self, mut batch: TurnBatch, sink: Sink<'_>) {
+        // Serialize a room's roster while it shares an owner on a checkout gate.
+        if self.write_gate.is_some() { batch.sequential = true; }
+        let mut write_lease: Option<crate::WriteLease> = None;
         let mut hops = 0;
         loop {
             let tickets = std::mem::take(&mut batch.tickets);
             let mut next = Vec::new();
             if batch.sequential {
                 for ticket in tickets {
-                    next.extend(self.run_one(ticket, None, batch.advisor.as_deref(), sink).await);
+                    self.admit_writer(&ticket, &batch, &mut write_lease).await;
+                    next.extend(self.run_one(ticket, None, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -248,7 +287,7 @@ impl ConcurrentRoom {
                     tickets
                         .into_iter()
                         .zip(prepared)
-                        .map(|(t, p)| self.run_one(t, p, batch.advisor.as_deref(), sink)),
+                        .map(|(t, p)| self.run_one(t, p, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner)),
                 )
                 .await
                 {
@@ -281,9 +320,43 @@ impl ConcurrentRoom {
                 .collect();
         }
         let _room = self.room.lock().await;
+        if batch.retain_write_lease.load(Ordering::SeqCst) {
+            if let Some(lease) = write_lease.as_mut() { lease.retain(); }
+        }
         drop(batch);
         if !self.busy() {
+            drop(write_lease);
             sink(RoomEvent::Idle);
+        }
+    }
+    async fn admit_writer(&self, ticket: &Ticket, batch: &TurnBatch, lease: &mut Option<crate::WriteLease>) {
+        let Some(gate) = &self.write_gate else { return; };
+        if lease.is_some() { return; }
+        ticket.previous.clone().await;
+        {
+            let _slots = self.slots.lock().unwrap();
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) { return; }
+            ticket.slot.stop.store(false, Ordering::SeqCst);
+        }
+        let should_admit = {
+            let room = self.room.lock().await;
+            room.request_for(&ticket.id).is_some_and(|(participant, request)| {
+                request.access != Some(Access::Read)
+                    || (request.plan && participant.config().access != Access::Read)
+            })
+        };
+        if !should_admit { return; }
+        let stop = ticket.slot.stop.clone();
+        // Cancellation while queued removes the waiter; never reduce access to Read.
+        let acquired = if batch.retained_owner {
+            gate.acquire_retained(batch.write_owner.clone(), stop).await
+        } else {
+            gate.acquire(batch.write_owner.clone(), stop).await
+        };
+        match acquired {
+            Ok(guard) => *lease = Some(guard),
+            Err(crate::WriteWaitError::Cancelled) => {},
+            Err(crate::WriteWaitError::Occupied(_)) => unreachable!("acquisition queues behind its owner"),
         }
     }
     async fn run_one(
@@ -292,6 +365,9 @@ impl ConcurrentRoom {
         prepared: Option<Prepared>,
         advisor: Option<&dyn crate::decision::TurnAdvisor>,
         sink: Sink<'_>,
+        retain_write_lease: Arc<AtomicBool>,
+        write_owner: String,
+        durable_owner: bool,
     ) -> Vec<ParticipantId> {
         let ready = ticket.previous.clone().now_or_never().is_some();
         let prepared = if ready {
@@ -328,12 +404,12 @@ impl ConcurrentRoom {
             request.effort_override = advisor.advise(participant.config(), messages, roster).await;
             if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) { return Vec::new(); }
         }
-        let editor = {
+        let mut editor = {
             let mut held = self.editor.lock().unwrap();
             if request.access != Some(Access::Read) && held.is_none() {
                 *held = Some(ticket.id.clone());
                 sink(RoomEvent::EditorChanged { id: held.clone() });
-                Some(EditorGuard { editor: self.editor.clone(), sink })
+                Some(EditorGuard { editor: self.editor.clone(), sink, retained: false })
             } else { None }
         };
         if request.access != Some(Access::Read) && editor.is_none() {
@@ -374,6 +450,16 @@ impl ConcurrentRoom {
             &approver,
         )
         .await;
+        let cleanup_error = match &outcome {
+            Err(crate::ParticipantError::CleanupIncomplete(error)) => Some(error.clone()),
+            _ => None,
+        };
+        if let Some(error) = &cleanup_error {
+            retain_write_lease.store(true, Ordering::SeqCst);
+            self.cleanup_holds.lock().unwrap().insert(ticket.id.clone(), (write_owner, durable_owner));
+            sink(RoomEvent::Failed { id: ticket.id.clone(), error: format!("worker cleanup incomplete: {error}") });
+            if let Some(editor) = editor.as_mut() { editor.retain(); }
+        }
         let mut room = self.room.lock().await;
         let cancelled = ticket.slot.stop.load(Ordering::SeqCst);
         desk.reject_for(&ticket.id);
@@ -401,9 +487,12 @@ impl ConcurrentRoom {
 struct EditorGuard<'a> {
     editor: Arc<Mutex<Option<ParticipantId>>>,
     sink: Sink<'a>,
+    retained: bool,
 }
+impl EditorGuard<'_> { fn retain(&mut self) { self.retained = true; } }
 impl Drop for EditorGuard<'_> {
     fn drop(&mut self) {
+        if self.retained { return; }
         let mut editor = self.editor.lock().unwrap();
         *editor = None;
         (self.sink)(RoomEvent::EditorChanged { id: None });

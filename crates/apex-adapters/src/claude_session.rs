@@ -23,7 +23,8 @@ use apex_core::{
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin};
+use tokio::process::ChildStdin;
+use crate::owned_process::OwnedChild;
 
 use crate::events::{EventReader, OutputFormat};
 use crate::report;
@@ -169,17 +170,31 @@ pub(crate) struct Finished {
     pub success: bool,
     pub status: String,
     pub stderr: String,
+    pub cleanup_error: Option<String>,
 }
 
 /// Run one turn. `child` must have been started with every standard
 /// stream piped and the flags from `presets.rs` for ask-first access.
+#[cfg(test)]
 pub(crate) async fn run(
-    mut child: Child,
+    child: OwnedChild,
     prompt: &str,
     cwd: Option<String>,
     on_progress: ProgressSink<'_>,
     approver: &dyn Approver,
     after_plan: Option<Access>,
+) -> std::io::Result<Finished> {
+    run_with_policy(child, prompt, cwd, on_progress, approver, after_plan, false).await
+}
+
+pub(crate) async fn run_with_policy(
+    mut child: OwnedChild,
+    prompt: &str,
+    cwd: Option<String>,
+    on_progress: ProgressSink<'_>,
+    approver: &dyn Approver,
+    after_plan: Option<Access>,
+    tools_disabled: bool,
 ) -> std::io::Result<Finished> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -250,7 +265,11 @@ pub(crate) async fn run(
                 // mode, Full included (probed 2026-10-06). The questions go
                 // out raw; the room cleans them for display, and the answers
                 // come back matched by position.
-                let reply = if request["subtype"] == "can_use_tool"
+                let reply = if tools_disabled && request["subtype"] == "can_use_tool" {
+                    json!({ "type": "control_response", "response": { "subtype": "success", "request_id": message["request_id"], "response": { "behavior": "deny", "message": "This turn is configured without tools." } } })
+                } else if tools_disabled {
+                    json!({ "type": "control_response", "response": { "subtype": "error", "request_id": message["request_id"], "error": "This turn is configured without tools or control requests." } })
+                } else if request["subtype"] == "can_use_tool"
                     && request["tool_name"] == "AskUserQuestion"
                 {
                     on_progress(Progress::Activity("Waiting for your answer"));
@@ -321,10 +340,12 @@ pub(crate) async fn run(
             (child.wait().await?, true)
         }
     };
+    let cleanup = child.terminate_tree().await.err();
     Ok(Finished {
-        success: status.success() || (killed && (reader.turn_over() || gave_up)),
+        success: cleanup.is_none() && (status.success() || (killed && (reader.turn_over() || gave_up))),
         status: status.to_string(),
         stderr: errors.await.unwrap_or_default(),
+        cleanup_error: cleanup,
         reader,
     })
 }
@@ -452,14 +473,14 @@ echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"The helper found PINEAPPLE."}]},"parent_tool_use_id":null}'
 echo '{"type":"result","is_error":false,"result":"The helper found PINEAPPLE."}'
 cat > /dev/null"#;
-        let child = tokio::process::Command::new("sh")
+        let mut command = tokio::process::Command::new("sh");
+        command
             .args(["-c", script])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        let child = crate::owned_process::Registry::default().spawn(&mut command).unwrap();
         let activity = std::sync::Mutex::new(Vec::<String>::new());
         let sink = |p: Progress<'_>| {
             if let Progress::Activity(a) = p {

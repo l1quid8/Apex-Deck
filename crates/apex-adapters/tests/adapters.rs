@@ -152,6 +152,138 @@ async fn cli_that_hangs_is_stopped_at_the_timeout() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn cli_timeout_terminates_the_process_tree_before_returning() {
+    let dir = fake_tool("cli-tree-timeout", "unused", "");
+    let pid_file = dir.join("descendant.pid");
+    let script = format!("sleep 30 & echo $! > '{}' ; wait", pid_file.display());
+    let bot = CliParticipant::new(config("cli", sh(&script)))
+        .with_timeout(Duration::from_millis(300));
+    let (result, _) = ask(&bot, "hi").await;
+    assert!(matches!(result, Err(ParticipantError::Failed(_))), "{result:?}");
+    let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let status = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+        let state = String::from_utf8_lossy(&status.stdout);
+        if state.trim().is_empty() || state.trim_start().starts_with('Z') { break; }
+        assert!(std::time::Instant::now() < deadline, "descendant {pid} survived timeout (state {})", state.trim());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn timeout_reports_incomplete_cleanup_when_ownership_record_cannot_be_removed() {
+    let dir = fake_tool("cli-cleanup-incomplete", "unused", "");
+    let registry = dir.join("registry");
+    std::fs::create_dir_all(&registry).unwrap();
+    let pid_file = dir.join("descendant.pid");
+    let script = format!("sleep 30 & echo $! > '{}' ; wait", pid_file.display());
+    let bot = CliParticipant::new(config("cli", sh(&script)))
+        .with_context(&BuildContext { process_registry: Some(registry.clone()), ..context_in(&dir) })
+        .with_timeout(Duration::from_millis(500));
+
+    let response = tokio::spawn(async move { ask(&bot, "hi").await.0 });
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let manifest = loop {
+        if let Some(path) = std::fs::read_dir(&registry).unwrap().flatten().map(|entry| entry.path()).find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json")) {
+            break path;
+        }
+        assert!(std::time::Instant::now() < deadline, "worker ownership record was not created");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    std::fs::remove_file(&manifest).unwrap();
+    std::fs::create_dir(&manifest).unwrap();
+
+    let result = tokio::time::timeout(Duration::from_secs(4), response).await.unwrap().unwrap();
+    assert!(matches!(result, Err(ParticipantError::CleanupIncomplete(_))), "{result:?}");
+    let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    wait_for_process_to_stop(pid).await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn startup_recovery_kills_only_the_still_verified_owned_group() {
+    struct GroupGuard(i32);
+    impl Drop for GroupGuard {
+        fn drop(&mut self) { unsafe { libc::kill(-self.0, libc::SIGKILL); } }
+    }
+
+    let dir = fake_tool("cli-registry-recovery", "unused", "");
+    let registry = dir.join("registry");
+    std::fs::create_dir_all(&registry).unwrap();
+    let pid_file = dir.join("descendant.pid");
+    let script = format!("sleep 30 & echo $! > '{}' ; wait", pid_file.display());
+    let bot = std::sync::Arc::new(CliParticipant::new(config("cli", sh(&script)))
+        .with_context(&BuildContext { process_registry: Some(registry.clone()), ..context_in(&dir) }));
+    let worker = bot.clone();
+    let response = tokio::spawn(async move { worker.respond(request("hi"), &|_| {}).await });
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let manifest = loop {
+        if let Some(path) = std::fs::read_dir(&registry).unwrap().flatten().map(|entry| entry.path()).find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json")) { break path; }
+        assert!(std::time::Instant::now() < deadline, "worker ownership record was not created");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    let group = record["pgid"].as_i64().unwrap() as i32;
+    let _guard = GroupGuard(group);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !pid_file.exists() {
+        assert!(std::time::Instant::now() < deadline, "fake worker did not start its descendant");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Model a daemon crash: preserve the child group and durable record while
+    // intentionally forgetting the provider future that owns the direct child.
+    std::mem::forget(response);
+    apex_adapters::recover_owned_processes(&registry).unwrap();
+    let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    wait_for_process_to_stop(pid).await;
+    assert!(!manifest.exists(), "recovery removes the verified ownership record");
+    drop(bot);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_hook_terminates_and_reaps_the_process_tree_before_response_finishes() {
+    let dir = fake_tool("cli-tree-stop", "unused", "");
+    let pid_file = dir.join("descendant.pid");
+    let script = format!("sleep 30 & echo $! > '{}' ; wait", pid_file.display());
+    let bot = std::sync::Arc::new(CliParticipant::new(config("cli", sh(&script))).with_context(&context_in(&dir)));
+    let participant = bot.clone();
+    let response = tokio::spawn(async move { participant.respond(request("hi"), &|_| {}).await });
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !pid_file.exists() {
+        assert!(std::time::Instant::now() < deadline, "fake worker did not start its descendant");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(bot.cancel_active_turn().await.unwrap());
+    let result = tokio::time::timeout(Duration::from_secs(1), response).await.unwrap().unwrap();
+    assert!(result.is_err(), "cancelled CLI unexpectedly completed successfully: {result:?}");
+    let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    let status = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+    let state = String::from_utf8_lossy(&status.stdout);
+    assert!(state.trim().is_empty() || state.trim_start().starts_with('Z'), "descendant {pid} survived Stop (state {})", state.trim());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+async fn wait_for_process_to_stop(pid: i32) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let status = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+        let state = String::from_utf8_lossy(&status.stdout);
+        if state.trim().is_empty() || state.trim_start().starts_with('Z') { break; }
+        assert!(std::time::Instant::now() < deadline, "descendant {pid} survived cleanup (state {})", state.trim());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn cli_that_keeps_printing_outlasts_the_timeout() {
     // Each line restarts the clock, so a turn longer than the limit is fine
     // as long as the tool never goes quiet for that long.
@@ -179,7 +311,7 @@ async fn cli_runs_in_the_workspace_folder() {
     let dir = std::env::temp_dir().join(format!("apex-deck-cwd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let real = std::fs::canonicalize(&dir).unwrap();
-    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None, temp: None, media_dir: None };
+    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; pwd -P"))).with_context(&context);
     let (result, _) = ask(&bot, "where are you?").await;
     assert_eq!(result.unwrap().text, real.to_string_lossy());
@@ -191,7 +323,7 @@ async fn cli_runs_in_the_workspace_folder() {
 async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
     let dir = std::env::temp_dir().join(format!("apex-deck-tmp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let context = BuildContext { cwd: None, path: None, codex_hook: None, temp: Some(dir.clone()), media_dir: None };
+    let context = BuildContext { cwd: None, path: None, codex_hook: None, temp: Some(dir.clone()), process_registry: None, cargo_target_dir: None, media_dir: None };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; printf %s \"$TMPDIR\""))).with_context(&context);
     let (result, _) = ask(&bot, "where is scratch?").await;
     assert_eq!(result.unwrap().text, dir.to_string_lossy());
@@ -201,7 +333,7 @@ async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
 #[cfg(unix)]
 #[tokio::test]
 async fn cli_reports_a_workspace_folder_that_no_longer_exists() {
-    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None, temp: None, media_dir: None };
+    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None };
     let bot = CliParticipant::new(config("cli", sh("echo hi"))).with_context(&context);
     let (result, _) = ask(&bot, "hi").await;
     match result {
@@ -229,7 +361,7 @@ async fn cli_finds_the_program_on_the_path_it_is_given() {
     assert!(matches!(missing, Err(ParticipantError::NotConfigured(_))), "{missing:?}");
 
     let path = format!("{}:/usr/bin:/bin", dir.to_string_lossy());
-    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None, temp: None, media_dir: None };
+    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None };
     let bot = CliParticipant::new(config("cli", backend)).with_context(&context);
     let (found, _) = ask(&bot, "hi").await;
     assert_eq!(found.unwrap().text, "found-on-custom-path");
@@ -267,7 +399,7 @@ async fn codex_agent_refuses_exec_even_when_model_effort_and_access_are_configur
     let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: Some("some-model".into()) });
     cfg.access = Access::Edits;
     cfg.effort = Some("high".into());
-    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, media_dir: None };
+    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None };
     let bot = build(cfg, &context);
     let (result, _) = ask(bot.as_ref(), "hey, testing").await;
     assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
@@ -549,7 +681,7 @@ fn fake_tool(tag: &str, name: &str, script: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 fn context_in(dir: &std::path::Path) -> BuildContext {
-    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, media_dir: None }
+    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None }
 }
 
 /// Run one turn the way the room does and collect text and activity.
@@ -966,6 +1098,48 @@ async fn claude_code_asks_before_writing_when_access_is_ask_first() {
     let (result, _, _) = work(bot.as_ref()).await;
     assert_eq!(result.unwrap().text, "I did not create the file.");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn tool_free_claude_monitor_refuses_tool_requests_without_asking() {
+    use apex_core::AgentTool;
+    let script = r#"#!/bin/sh
+case "$*" in
+  *"--safe-mode"*"--restricted"*"--tools "*"--strict-mcp-config"*) ;;
+  *) echo "monitor launch was not restricted: $*" >&2; exit 2 ;;
+esac
+case "$*" in *"--settings"*) echo "normal MCP settings were retained" >&2; exit 2 ;; esac
+IFS= read -r prompt
+echo '{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"mcp__probe__create_file","input":{"path":"outside"}}}'
+IFS= read -r answer
+case "$answer" in *'"behavior":"deny"'*) ;; *) echo "tool request was not denied: $answer" >&2; exit 3 ;; esac
+echo '{"type":"control_request","request_id":"r2","request":{"subtype":"initialize","input":{}}}'
+IFS= read -r control_answer
+case "$control_answer" in *'"subtype":"error"'*) ;; *) echo "control request was not rejected: $control_answer" >&2; exit 4 ;; esac
+case "$control_answer" in *'"request_id":"r2"'*) ;; *) echo "control response was unmatched: $control_answer" >&2; exit 4 ;; esac
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Observed safely."}'
+"#;
+    let dir = fake_tool("claude-monitor-tools", "claude", script);
+    let bot = CliParticipant::new(config("monitor", Backend::Agent { tool: AgentTool::ClaudeCode, model: None }))
+        .with_context(&context_in(&dir))
+        .with_tools_disabled();
+    let (result, _) = ask(&bot, "inspect only").await;
+    assert_eq!(result.unwrap().text, "Observed safely.");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn tool_free_monitor_refuses_custom_cli_before_starting_it() {
+    let dir = fake_tool("monitor-custom-cli", "custom-monitor", "#!/bin/sh\necho started > marker\necho unsafe\n");
+    let bot = CliParticipant::new(config("monitor", Backend::Cli {
+        program: "custom-monitor".into(), args: vec![],
+    })).with_context(&context_in(&dir)).with_tools_disabled();
+    let (result, _) = ask(&bot, "inspect only").await;
+    assert!(matches!(result, Err(ParticipantError::Failed(message)) if message.contains("verified tool-free mode")));
+    assert!(!dir.join("marker").exists(), "unsupported backend started despite tool-free mode");
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[cfg(unix)]

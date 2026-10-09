@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 struct Held {
     config: ParticipantConfig,
     release: Mutex<Option<oneshot::Receiver<()>>>,
+    started: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    cleanup_error: bool,
 }
 #[async_trait]
 impl Participant for Held {
@@ -18,9 +20,13 @@ impl Participant for Held {
     }
     async fn respond(
         &self,
-        _: TurnRequest,
+        request: TurnRequest,
         delta: DeltaSink<'_>,
     ) -> Result<Reply, ParticipantError> {
+        if self.config.access != apex_core::Access::Read {
+            assert_eq!(request.access, Some(self.config.access), "checkout contention must not silently downgrade writer access");
+        }
+        if let Some(started) = &self.started { started.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
         delta("unfinished");
         let release = self.release.lock().unwrap().take();
         if let Some(release) = release {
@@ -28,12 +34,17 @@ impl Participant for Held {
         }
         Ok(Reply::text("slow finished"))
     }
+    async fn cancel_active_turn(&self) -> Result<bool, String> {
+        if self.cleanup_error { Err("worker cleanup failed".into()) } else { Ok(false) }
+    }
 }
 fn setup() -> (ConcurrentRoom, oneshot::Sender<()>) {
     let (tx, rx) = oneshot::channel();
     let slow = Arc::new(Held {
         config: ScriptedParticipant::new("null", &[]).config().clone(),
         release: Mutex::new(Some(rx)),
+        started: None,
+        cleanup_error: false,
     });
     let fast = Arc::new(ScriptedParticipant::new("jigga", &["fast finished"]));
     (
@@ -41,6 +52,142 @@ fn setup() -> (ConcurrentRoom, oneshot::Sender<()>) {
         tx,
     )
 }
+
+#[test]
+fn checkout_gate_serializes_two_rooms_while_read_turns_continue() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    block_on(async {
+        let gate = apex_core::CheckoutWriteGate::new();
+        let started = Arc::new(AtomicUsize::new(0));
+        let make_writer = |id: &str| {
+            let (tx, rx) = oneshot::channel();
+            let mut config = ScriptedParticipant::new(id, &[]).config().clone();
+            config.access = apex_core::Access::Edits;
+            let participant = Arc::new(Held { config, release: Mutex::new(Some(rx)), started: Some(started.clone()), cleanup_error: false });
+            let runtime = ConcurrentRoom::new(Room::new(vec![participant], RoomOptions::default())).with_write_gate(gate.clone(), None);
+            (runtime, tx)
+        };
+        let (first, release_first) = make_writer("first");
+        let (second, release_second) = make_writer("second");
+        let first_batch = first.begin_post("@first edit", None, &|_| {}).await.unwrap();
+        let second_batch = second.begin_post("@second edit", None, &|_| {}).await.unwrap();
+        let read_only = ConcurrentRoom::new(Room::new(vec![Arc::new(ScriptedParticipant::new("reader", &["read done"]))], RoomOptions::default())).with_write_gate(gate.clone(), None);
+        let read_batch = read_only.begin_post("@reader inspect", None, &|_| {}).await.unwrap();
+        let control = async {
+            futures_timer::Delay::new(std::time::Duration::from_millis(30)).await;
+            assert_eq!(started.load(Ordering::SeqCst), 1, "only one checkout writer may start");
+            assert_eq!(gate.queued(), 1, "the second room must be queued");
+            read_only.run(read_batch, &|_| {}).await;
+            assert!(read_only.room().lock().await.transcript().iter().any(|m| m.text == "read done"));
+            let _ = release_first.send(());
+            let _ = release_second.send(());
+        };
+        futures::join!(first.run(first_batch, &|_| {}), second.run(second_batch, &|_| {}), control);
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+    });
+}
+
+#[test]
+fn a_plan_batch_retains_its_stable_task_owner_after_the_read_only_turn() {
+    block_on(async {
+        let gate = apex_core::CheckoutWriteGate::new();
+        let mut config = ScriptedParticipant::new("planner", &["plan ready"]).config().clone();
+        config.access = apex_core::Access::Edits;
+        let participant = Arc::new(ScriptedParticipant::from_config(config));
+        let runtime = ConcurrentRoom::new(Room::new(vec![participant], RoomOptions::default())).with_write_gate(gate.clone(), Some("task-42".into()));
+        runtime.room().lock().await.plan_handle().store(true, std::sync::atomic::Ordering::SeqCst);
+        let batch = runtime.begin_post("@planner plan", None, &|_| {}).await.unwrap();
+        runtime.run(batch, &|_| {}).await;
+        assert_eq!(gate.owner().as_deref(), Some("task-42"), "Plan ownership must survive batch completion");
+        assert!(gate.restore_hold("other-task").is_err(), "another writer cannot promote through the Plan hold");
+        gate.release("task-42");
+
+        let read_only = Arc::new(ScriptedParticipant::new("reader", &["plan ready"]));
+        let read_runtime = ConcurrentRoom::new(Room::new(vec![read_only], RoomOptions::default())).with_write_gate(gate.clone(), Some("read-task".into()));
+        read_runtime.room().lock().await.plan_handle().store(true, std::sync::atomic::Ordering::SeqCst);
+        let read_batch = read_runtime.begin_post("@reader plan", None, &|_| {}).await.unwrap();
+        read_runtime.run(read_batch, &|_| {}).await;
+        assert_eq!(gate.owner(), None, "a purely Read profile can plan without acquiring the checkout gate");
+    });
+}
+
+#[test]
+fn incomplete_worker_cleanup_keeps_manual_checkout_ownership_blocked() {
+    block_on(async {
+        let gate = apex_core::CheckoutWriteGate::new();
+        let (release, rx) = oneshot::channel();
+        let mut config = ScriptedParticipant::new("worker", &[]).config().clone();
+        config.access = apex_core::Access::Edits;
+        let participant = Arc::new(Held { config, release: Mutex::new(Some(rx)), started: None, cleanup_error: true });
+        let runtime = ConcurrentRoom::new(Room::new(vec![participant], RoomOptions::default())).with_write_gate(gate.clone(), None);
+        let batch = runtime.begin_post("@worker edit", None, &|_| {}).await.unwrap();
+        let sink = |event| {
+            if matches!(event, RoomEvent::TurnStarted { .. }) { runtime.stop(None); }
+        };
+        runtime.run(batch, &sink).await;
+        let held = gate.owner().expect("failed cleanup must preserve checkout ownership");
+        assert!(held.starts_with("manual-"));
+        assert!(runtime.release_cleanup_hold(&ParticipantId::new("worker")));
+        assert_eq!(gate.owner(), None, "verified recovery releases the transient manual owner");
+        let _ = release.send(());
+    });
+}
+
+#[test]
+fn cleanup_recovery_never_releases_a_durable_task_owner() {
+    block_on(async {
+        let gate = apex_core::CheckoutWriteGate::new();
+        let (_release, rx) = oneshot::channel();
+        let mut config = ScriptedParticipant::new("worker", &[]).config().clone();
+        config.access = apex_core::Access::Edits;
+        let participant = Arc::new(Held { config, release: Mutex::new(Some(rx)), started: None, cleanup_error: true });
+        let runtime = ConcurrentRoom::new(Room::new(vec![participant], RoomOptions::default())).with_write_gate(gate.clone(), Some("task-42".into()));
+        let batch = runtime.begin_post("@worker edit", None, &|_| {}).await.unwrap();
+        let sink = |event| { if matches!(event, RoomEvent::TurnStarted { .. }) { runtime.stop(None); } };
+        runtime.run(batch, &sink).await;
+        assert_eq!(gate.owner().as_deref(), Some("task-42"));
+        assert!(runtime.release_cleanup_hold(&ParticipantId::new("worker")));
+        assert_eq!(gate.owner().as_deref(), Some("task-42"), "the host task lifecycle owns durable reservation release");
+        gate.release("task-42");
+    });
+}
+
+#[test]
+fn a_manual_write_batch_keeps_its_gate_across_bot_hops() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    block_on(async {
+        let gate = apex_core::CheckoutWriteGate::new();
+        let (release_second, rx_second) = oneshot::channel();
+        let second_started = Arc::new(AtomicUsize::new(0));
+        let mut first_config = ScriptedParticipant::new("first", &["@second continue"]).config().clone();
+        first_config.access = apex_core::Access::Edits;
+        let first = Arc::new(ScriptedParticipant::from_config(first_config));
+        let mut second_config = ScriptedParticipant::new("second", &[]).config().clone();
+        second_config.access = apex_core::Access::Edits;
+        let second = Arc::new(Held { config: second_config, release: Mutex::new(Some(rx_second)), started: Some(second_started.clone()), cleanup_error: false });
+        let runtime = ConcurrentRoom::new(Room::new(vec![first, second], RoomOptions::default())).with_write_gate(gate.clone(), None);
+        let (release_other, rx_other) = oneshot::channel();
+        let other_started = Arc::new(AtomicUsize::new(0));
+        let mut other_config = ScriptedParticipant::new("other", &[]).config().clone();
+        other_config.access = apex_core::Access::Edits;
+        let other_participant = Arc::new(Held { config: other_config, release: Mutex::new(Some(rx_other)), started: Some(other_started.clone()), cleanup_error: false });
+        let other = ConcurrentRoom::new(Room::new(vec![other_participant], RoomOptions::default())).with_write_gate(gate.clone(), None);
+        let batch = runtime.begin_post("@first start", None, &|_| {}).await.unwrap();
+        let other_batch = other.begin_post("@other start", None, &|_| {}).await.unwrap();
+        let control = async {
+            futures_timer::Delay::new(std::time::Duration::from_millis(30)).await;
+            assert_eq!(second_started.load(Ordering::SeqCst), 1, "the next bot hop must start");
+            assert_eq!(other_started.load(Ordering::SeqCst), 0, "another manual batch stays queued between hops");
+            assert_eq!(gate.queued(), 1);
+            let _ = release_second.send(());
+            futures_timer::Delay::new(std::time::Duration::from_millis(30)).await;
+            assert_eq!(other_started.load(Ordering::SeqCst), 1);
+            let _ = release_other.send(());
+        };
+        futures::join!(runtime.run(batch, &|_| {}), other.run(other_batch, &|_| {}), control);
+    });
+}
+
 #[test]
 fn idle_model_finishes_before_another_models_turn_is_released() {
     block_on(async {
@@ -322,7 +469,7 @@ fn second_writer_is_read_only_until_editor_finishes() {
         let (tx, rx) = oneshot::channel();
         let mut config = ScriptedParticipant::new("null", &[]).config().clone();
         config.access = apex_core::Access::Full;
-        let slow = Arc::new(Held { config, release: Mutex::new(Some(rx)) });
+        let slow = Arc::new(Held { config, release: Mutex::new(Some(rx)), started: None, cleanup_error: false });
         let mut config = ScriptedParticipant::new("jigga", &["done", "done"]).config().clone();
         config.access = apex_core::Access::Full;
         let fast = Arc::new(ScriptedParticipant::from_config(config));
@@ -418,7 +565,7 @@ fn turn_settings_change_during_reply_preserves_current_turn_and_next_context() {
         config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("old-model".into()) };
         config.effort = Some("low".into());
         let original = config.clone();
-        let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(Held { config, release: Mutex::new(Some(rx)) })], RoomOptions::default()));
+        let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(Held { config, release: Mutex::new(Some(rx)), started: None, cleanup_error: false })], RoomOptions::default()));
         let events = Mutex::new(Vec::new());
         let sink = |event| events.lock().unwrap().push(event);
         let batch = runtime.begin_post("@null remember this", None, &sink).await.unwrap();

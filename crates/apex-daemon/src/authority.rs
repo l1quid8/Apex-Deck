@@ -52,7 +52,9 @@ pub fn command_needs(command: &Command) -> Need {
     match command {
         // Read-only.
         SessionLoad {} => read(GlobalRead),
-        MonitorList {} | MonitorGet { .. } => read(GlobalRead),
+        MonitorList {} | MonitorGet { .. } => read(Global),
+        AssistantTasksList { .. } => read(Global),
+        AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } => read(thread(id)),
         ArtifactsLoad { room } => read(thread(room)),
@@ -102,7 +104,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomFork { .. } => full(Global),
         SessionSave { .. } => full(Global),
         // ApexAgent reads whole project folders and any chat in them.
-        MonitorAssign { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
+        MonitorProfileUpdate { .. } | MonitorAssign { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
         SettingsLoad {} => full(Global),
         SettingsSave { .. } => full(Global),
         ReadAttachment { .. } => full(Global),
@@ -131,6 +133,7 @@ pub fn command_needs(command: &Command) -> Need {
 /// What a device needs to receive `event`.
 pub fn event_needs(event: &HostEvent) -> Need {
     match event {
+        HostEvent::AssistantTasksChanged { .. } => read(Scope::Global),
         HostEvent::Room { room, .. } => read(thread(room)),
         HostEvent::PtyData { .. } | HostEvent::PtyExit { .. } => full(Scope::Global),
         // Names other threads; limited devices reload with session_load instead.
@@ -228,11 +231,15 @@ mod tests {
         let options = json!({ "policy": "mention", "max_bot_hops": 0 });
         vec![
             ("session_load", Some((ReadOnly, "global_read")), json!({})),
-            ("monitor_list", Some((ReadOnly, "global_read")), json!({})),
-            ("monitor_get", Some((ReadOnly, "global_read")), json!({ "workspaceId": "w" })),
+            ("monitor_list", Some((ReadOnly, "global")), json!({})),
+            ("monitor_get", Some((ReadOnly, "global")), json!({ "workspaceId": "w" })),
+            ("assistant_tasks_list", Some((ReadOnly, "global")), json!({ "owner": {"workspaceId":"w","cwd":"/p","hostId":"local","conversationId":"c"} })),
+            ("assistant_message", Some((Full, "global")), json!({ "workspaceId":"w","cwd":"/p","hostId":"local","conversationId":"c","requestId":"r","text":"hi" })),
+            ("assistant_task_action", Some((Full, "global")), json!({ "taskId":"t","revision":1,"owner":{"workspaceId":"w","cwd":"/p","hostId":"local","conversationId":"c"},"action":"cancel" })),
             ("monitor_suggest_sources", Some((Full, "global")), json!({ "cwd": "/p" })),
             ("monitor_assign", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "text": "t", "profile": participant })),
             ("monitor_sources_update", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "files": [], "threads": [], "mode": "add" })),
+            ("monitor_profile_update", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "revision": 1, "profile": participant })),
             ("monitor_message", Some((Full, "global")), json!({ "workspaceId": "w", "text": "t" })),
             ("monitor_pause", Some((Full, "global")), json!({ "workspaceId": "w", "paused": true })),
             ("monitor_check_now", Some((Full, "global")), json!({ "workspaceId": "w" })),
@@ -364,6 +371,7 @@ mod tests {
     fn events() -> Vec<(HostEvent, Option<(Tier, &'static str)>)> {
         use apex_core::{ParticipantId, RoomEvent};
         vec![
+            (HostEvent::AssistantTasksChanged { workspace_id: "w".into(), revision: 1 }, Some((Tier::ReadOnly, "global"))),
             (HostEvent::Room { room: "mine".into(), event: RoomEvent::TurnStarted { id: ParticipantId::new("null") }, recovery_seq: None }, Some((Tier::ReadOnly, "thread"))),
             (HostEvent::PtyData { id: "p".into(), data: "x".into() }, Some((Tier::Full, "global"))),
             (HostEvent::PtyExit { id: "p".into(), code: None }, Some((Tier::Full, "global"))),
@@ -379,7 +387,7 @@ mod tests {
         let events = events();
         let mut names: Vec<&str> = events.iter().map(|(e, _)| e.name()).collect();
         names.dedup();
-        assert_eq!(names.len(), 6, "one row per event kind");
+        assert_eq!(names.len(), 7, "one row per event kind");
         for (event, need) in events {
             for tier in [Tier::ReadOnly, Tier::Chat, Tier::Full] {
                 for limit in [false, true] {

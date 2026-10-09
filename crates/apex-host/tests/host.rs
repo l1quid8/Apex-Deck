@@ -17,6 +17,48 @@ struct Running {
     seen: Arc<Mutex<Vec<Envelope>>>,
 }
 
+#[test]
+fn an_unreadable_process_recovery_registry_refuses_host_startup() {
+    let data = std::env::temp_dir().join(format!("apex-host-recovery-obstructed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    for (directory, expected) in [("worker-processes", "worker recovery registry"), ("operation-processes", "task operation recovery registry")] {
+        std::fs::write(data.join(directory), "not a recovery directory").unwrap();
+        let result = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        assert!(matches!(result, Err(error) if error.contains(expected)));
+        std::fs::remove_file(data.join(directory)).unwrap();
+    }
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn linked_process_recovery_namespaces_and_task_directories_refuse_startup() {
+    use std::os::unix::fs::symlink;
+    let root = std::env::temp_dir().join(format!("apex-host-recovery-linked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let data = root.join("data");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    for namespace in ["worker-processes", "operation-processes"] {
+        let directory = data.join(namespace);
+        symlink(&outside, &directory).unwrap();
+        let result = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        assert!(matches!(result, Err(error) if error.contains("cannot be symlinks")));
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        symlink(&outside, directory.join("task-1")).unwrap();
+        let result = Host::try_new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        assert!(matches!(result, Err(error) if error.contains("linked or non-directory entry")));
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 impl Running {
     fn start(data: &PathBuf) -> Running {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -386,10 +428,8 @@ fn importing_with_replace_swaps_an_unstarted_room_for_one_in_another_folder() {
     let _ = std::fs::remove_dir_all(data);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_replace_that_cannot_be_saved_leaves_the_thread_open_and_saved_where_it_was() {
-    use std::os::unix::fs::PermissionsExt;
     let data = std::env::temp_dir().join(format!("apex-host-replace-fails-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     let elsewhere = data.join("elsewhere");
@@ -403,11 +443,13 @@ fn a_replace_that_cannot_be_saved_leaves_the_thread_open_and_saved_where_it_was(
     host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":snapshot,"cwd":data.to_string_lossy()}})).unwrap();
     host.call(json!({"cmd":"room_create","args":{"id":"fork","participants":[],"options":RoomOptions::default()}})).unwrap();
 
-    // The new copy can't be written: the saved-chats folder takes no new files.
+    // Force the atomic writer to fail opening its temporary file. A directory
+    // at this path fails for root and ordinary users alike.
     let rooms = data.join("saved-chats-v1").join("rooms");
-    std::fs::set_permissions(&rooms, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let temp_file = rooms.join("666f726b.tmp");
+    std::fs::create_dir(&temp_file).unwrap();
     let moved = host.call(json!({"cmd":"room_import","args":{"id":"fork","snapshot":snapshot,"cwd":elsewhere.to_string_lossy(),"replace":true}}));
-    std::fs::set_permissions(&rooms, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_dir(&temp_file).unwrap();
     assert!(moved.is_err());
 
     // Still saved with its history in its first folder, and still open there.

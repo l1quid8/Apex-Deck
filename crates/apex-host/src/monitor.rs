@@ -5,7 +5,6 @@ pub const MAX_MESSAGES: usize = 200;
 pub const MAX_MESSAGE_BYTES: usize = 20 * 1024;
 pub const MAX_ACTIVITY: usize = 100;
 const RECOVERY_BACKOFF_MS: u64 = 15 * 60 * 1_000;
-static NEXT_MESSAGE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_CLAIM_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,6 +37,9 @@ pub struct ProjectMonitor {
     /// Last allocated finding suffix. Older documents are seeded from their findings.
     #[serde(default)]
     pub finding_id_counter: u64,
+    /// Last allocated message suffix. Older documents are seeded from retained messages.
+    #[serde(default)]
+    pub message_id_counter: u64,
     pub activity: Vec<MonitorActivity>,
     pub last_checked_at: Option<u64>,
     pub next_check_at: Option<u64>,
@@ -85,6 +87,12 @@ pub struct Finding {
     pub last_seen_at: u64,
     pub last_notified_at: Option<u64>,
     pub snoozed_until: Option<u64>,
+    /// Optional absolute UTC epoch-millisecond deadline supplied by the monitor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<u64>,
+    /// Last deadline assessed, to prevent repeated wakeups on quiet polls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_assessed_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,6 +159,7 @@ impl ProjectMonitor {
             messages: Vec::new(),
             findings: Vec::new(),
             finding_id_counter: 0,
+            message_id_counter: 0,
             activity: Vec::new(),
             last_checked_at: None,
             next_check_at: Some(now),
@@ -160,15 +169,22 @@ impl ProjectMonitor {
             pending_check_at: None,
             error: None,
         };
-        monitor.append_message("human", &monitor.responsibility.clone(), now, Vec::new());
+        monitor.message_id_counter = 1;
+        monitor.messages.push(MonitorMessage {
+            id: "message-1".into(),
+            role: "human".into(),
+            text: truncate_utf8(&monitor.responsibility, MAX_MESSAGE_BYTES),
+            at: now,
+            evidence: Vec::new(),
+        });
         monitor
     }
 
-    pub fn redirect(&mut self, text: String, now: u64) {
+    pub fn redirect(&mut self, text: String, now: u64) -> Result<(), String> {
         // Human direction must outlive the bounded conversation window.
         // Keep its order so a later correction can supersede an earlier one.
+        self.append_message("human", &text, now, Vec::new())?;
         self.decisions.push(truncate_utf8(&text, MAX_MESSAGE_BYTES));
-        self.append_message("human", &text, now, Vec::new());
         self.completed = false;
         self.revision = self.revision.saturating_add(1);
         self.active_check = None;
@@ -176,6 +192,7 @@ impl ProjectMonitor {
         self.wake_reason = "redirected".into();
         self.next_check_at = if self.paused { None } else { Some(now) };
         self.record_activity(now, "redirected", "The user redirected the monitor.");
+        Ok(())
     }
 
     pub fn set_paused(&mut self, paused: bool, now: u64) {
@@ -303,11 +320,8 @@ impl ProjectMonitor {
         }
     }
 
-    pub fn append_message(&mut self, role: &str, text: &str, at: u64, evidence: Vec<EvidenceRef>) {
-        let id = format!(
-            "message-{}",
-            NEXT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed)
-        );
+    pub fn append_message(&mut self, role: &str, text: &str, at: u64, evidence: Vec<EvidenceRef>) -> Result<(), String> {
+        let id = self.allocate_message_id()?;
         self.messages.push(MonitorMessage {
             id,
             role: role.to_owned(),
@@ -318,6 +332,19 @@ impl ProjectMonitor {
         if self.messages.len() > MAX_MESSAGES {
             self.messages.drain(..self.messages.len() - MAX_MESSAGES);
         }
+        Ok(())
+    }
+
+    fn allocate_message_id(&mut self) -> Result<String, String> {
+        let retained_max = self.messages.iter()
+            .filter_map(|message| message.id.strip_prefix("message-"))
+            .filter_map(|suffix| suffix.rsplit('-').next())
+            .filter_map(|suffix| suffix.parse::<u64>().ok())
+            .max().unwrap_or(0);
+        let next = self.message_id_counter.max(retained_max).checked_add(1)
+            .ok_or_else(|| "ApexAgent message IDs are exhausted.".to_string())?;
+        self.message_id_counter = next;
+        Ok(format!("message-{next}"))
     }
 
     pub fn record_activity(&mut self, at: u64, kind: &str, summary: &str) {
@@ -395,6 +422,33 @@ mod tests {
         assert_eq!(m.messages.len(), 1);
         assert_eq!(m.messages[0].role, "human");
         assert_eq!(m.messages[0].at, 1_000);
+        assert_eq!(m.messages[0].id, "message-1");
+    }
+
+    #[test]
+    fn message_ids_survive_reopen_and_transcript_trimming() {
+        let mut m = monitor();
+        for index in 0..MAX_MESSAGES {
+            m.append_message("assistant", &index.to_string(), 2_000 + index as u64, Vec::new()).unwrap();
+        }
+        assert_eq!(m.messages.len(), MAX_MESSAGES);
+        let mut legacy = serde_json::to_value(&m).unwrap();
+        legacy.as_object_mut().unwrap().remove("messageIdCounter");
+        let mut reopened: ProjectMonitor = serde_json::from_value(legacy).unwrap();
+        reopened.append_message("human", "continue", 5_000, Vec::new()).unwrap();
+        assert_eq!(reopened.messages.last().unwrap().id, "message-202");
+        assert_eq!(reopened.message_id_counter, 202);
+    }
+
+    #[test]
+    fn message_id_exhaustion_does_not_partially_redirect() {
+        let mut m = monitor();
+        m.message_id_counter = u64::MAX;
+        let decisions = m.decisions.clone();
+        let messages = m.messages.clone();
+        assert!(m.redirect("new direction".into(), 2_000).is_err());
+        assert_eq!(m.decisions, decisions);
+        assert_eq!(m.messages, messages);
     }
 
     #[test]
@@ -413,9 +467,11 @@ mod tests {
             last_seen_at: 1,
             last_notified_at: None,
             snoozed_until: None,
+            deadline_at: None,
+            deadline_assessed_at: None,
         });
         let claim = m.claim(1_000, false).unwrap();
-        m.redirect("Focus on the parser".into(), 2_000);
+        m.redirect("Focus on the parser".into(), 2_000).unwrap();
         assert_eq!(m.workspace_id, "workspace-1");
         assert_eq!(m.conversation_id, "conversation-1");
         assert_eq!(m.decisions, ["Use Rust", "Focus on the parser"]);
@@ -552,7 +608,7 @@ mod tests {
     fn stale_completion_does_not_consume_a_new_claim_or_request() {
         let mut m = monitor();
         let old = m.claim(1_000, false).unwrap();
-        m.redirect("Watch the new milestone".into(), 2_000);
+        m.redirect("Watch the new milestone".into(), 2_000).unwrap();
         let current = m.claim(2_000, false).unwrap();
         m.request_check_now(3_000).unwrap();
         let before = m.clone();
@@ -573,7 +629,7 @@ mod tests {
         assert_eq!(m, paused);
         m.set_paused(false, 5_000);
         m.request_check_now(6_000).unwrap();
-        m.redirect("Change direction".into(), 7_000);
+        m.redirect("Change direction".into(), 7_000).unwrap();
         assert_eq!(m.pending_check_at, None);
         assert_eq!(m.next_check_at, Some(7_000));
         assert_eq!(m.wake_reason, "redirected");
@@ -585,6 +641,7 @@ mod tests {
             confidence: "observed".into(), next_step: "Review".into(), evidence: vec![],
             status: status.into(), first_seen_at: 1, last_seen_at: 1,
             last_notified_at: None, snoozed_until: None,
+            deadline_at: None, deadline_assessed_at: None,
         }
     }
 
@@ -647,7 +704,7 @@ mod tests {
         let mut m = monitor();
         m.responsibility = "essential responsibility".into();
         for i in 0..250 {
-            m.append_message("assistant", &"x".repeat(30_000), i, vec![]);
+            m.append_message("assistant", &"x".repeat(30_000), i, vec![]).unwrap();
             m.record_activity(i, "tick", "tick");
         }
         assert_eq!(m.messages.len(), 200);
@@ -674,6 +731,8 @@ mod tests {
             last_seen_at: 1,
             last_notified_at: None,
             snoozed_until: None,
+            deadline_at: None,
+            deadline_assessed_at: None,
         });
         m.findings.push(Finding {
             id: "open".into(),
@@ -687,6 +746,8 @@ mod tests {
             last_seen_at: 1,
             last_notified_at: None,
             snoozed_until: None,
+            deadline_at: None,
+            deadline_assessed_at: None,
         });
         assert_eq!(
             m.notifiable_findings(2)

@@ -48,6 +48,8 @@ pub enum ParticipantError {
     NotConfigured(String),
     /// The backend was reached but the turn failed.
     Failed(String),
+    /// Owned external work may still be running after cancellation.
+    CleanupIncomplete(String),
 }
 
 impl std::fmt::Display for ParticipantError {
@@ -55,6 +57,7 @@ impl std::fmt::Display for ParticipantError {
         match self {
             Self::NotConfigured(m) => write!(f, "not configured: {m}"),
             Self::Failed(m) => write!(f, "{m}"),
+            Self::CleanupIncomplete(m) => write!(f, "worker cleanup incomplete: {m}"),
         }
     }
 }
@@ -131,4 +134,9 @@ pub trait Participant: Send + Sync {
     ) -> Result<Reply, ParticipantError> {
         self.respond_with_progress(request, on_progress).await
     }
+
+    /// Stop any active external work and wait for its cleanup. The room
+    /// calls this before dropping a response future on Stop. Implementations
+    /// must bound cleanup and report a failure when owned work may remain.
+    async fn cancel_active_turn(&self) -> Result<bool, String> { Ok(false) }
 }

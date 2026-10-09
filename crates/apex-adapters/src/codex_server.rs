@@ -33,7 +33,8 @@ use apex_core::{
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
+use crate::owned_process::{OwnedChild, Registry};
 
 use crate::claude_session::{helpers_line, HELPER_HEARTBEAT, HELPER_LIMIT};
 use crate::codex_hook::{
@@ -69,6 +70,7 @@ pub(crate) enum TurnError {
     Unavailable(String),
     /// The turn started and failed.
     Failed(String),
+    CleanupIncomplete(String),
 }
 
 fn sandbox(access: Access) -> &'static str {
@@ -569,7 +571,7 @@ async fn answers(
 /// Run one turn. `child` must have been started with `ARGS` and all three
 /// standard streams piped.
 pub(crate) async fn run(
-    mut child: Child,
+    mut child: OwnedChild,
     turn: Turn<'_>,
     prompt: &str,
     on_progress: ProgressSink<'_>,
@@ -863,7 +865,10 @@ pub(crate) async fn run(
         .is_err()
     {
         let _ = child.kill().await;
+        let _ = child.wait().await;
     }
+    let cleanup = child.terminate_tree().await;
+    if let Err(error) = cleanup { return Err(TurnError::CleanupIncomplete(format!("worker cleanup failed: {error}"))); }
 
     let outcome = reader.outcome();
     match outcome.error {
@@ -900,7 +905,7 @@ async fn initialize(
 
 /// Read the account's plan limits without starting a turn. `child` must
 /// have been started with `ARGS` and all three standard streams piped.
-pub(crate) async fn read_plan(mut child: Child) -> Result<PlanUsage, String> {
+pub(crate) async fn read_plan(mut child: OwnedChild) -> Result<PlanUsage, String> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
     let mut stderr = child.stderr.take().expect("stderr was piped");
@@ -920,7 +925,9 @@ pub(crate) async fn read_plan(mut child: Child) -> Result<PlanUsage, String> {
         .is_err()
     {
         let _ = child.kill().await;
+        let _ = child.wait().await;
     }
+    child.terminate_tree().await?;
     codex_plan(&result?["rateLimits"], false)
         .ok_or_else(|| "the answer had no rate limits".to_string())
 }
@@ -1276,14 +1283,13 @@ say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"agentMe
 say '{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"completed"}}}'
 read -r l; say '{"id":3,"result":{"rateLimits":{}}}'
 cat > /dev/null"#;
-        let child = tokio::process::Command::new("sh")
-            .args(["-c", script])
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", script])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        let child = Registry::default().spawn(&mut command).unwrap();
         let activity = std::sync::Mutex::new(Vec::<String>::new());
         let sink = |p: Progress<'_>| {
             if let Progress::Activity(a) = p {
@@ -1299,7 +1305,7 @@ cat > /dev/null"#;
         };
         let reply = match run(child, turn, "go", &sink, &apex_core::NoApprover, None).await {
             Ok(reply) => reply,
-            Err(TurnError::Unavailable(e) | TurnError::Failed(e)) => panic!("turn failed: {e}"),
+            Err(TurnError::Unavailable(e) | TurnError::Failed(e) | TurnError::CleanupIncomplete(e)) => panic!("turn failed: {e}"),
         };
         assert_eq!(
             reply.text,
@@ -1386,8 +1392,8 @@ pub async fn list_servers(
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    let mut child = command
-        .spawn()
+    let registry = Registry::default();
+    let mut child = registry.spawn(&mut command)
         .map_err(|e| format!("Couldn’t start codex for tool discovery: {e}"))?;
     let mut stdin = child.stdin.take().unwrap();
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
@@ -1399,5 +1405,7 @@ pub async fn list_servers(
     }
     .await;
     let _ = child.kill().await;
+    let _ = child.wait().await;
+    child.terminate_tree().await?;
     result
 }
