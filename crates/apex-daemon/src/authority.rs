@@ -52,6 +52,7 @@ pub fn command_needs(command: &Command) -> Need {
     match command {
         // Read-only.
         SessionLoad {} => read(GlobalRead),
+        MonitorList {} | MonitorGet { .. } => read(GlobalRead),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } => read(thread(id)),
         ArtifactsLoad { room } => read(thread(room)),
@@ -100,6 +101,8 @@ pub fn command_needs(command: &Command) -> Need {
         RoomImport { .. } => full(Global),
         RoomFork { .. } => full(Global),
         SessionSave { .. } => full(Global),
+        // ApexAgent reads whole project folders and any chat in them.
+        MonitorAssign { .. } | MonitorSourcesUpdate { .. } | MonitorSuggestSources { .. } | MonitorMessage { .. } | MonitorPause { .. } | MonitorCheckNow { .. } | MonitorResolve { .. } => full(Global),
         SettingsLoad {} => full(Global),
         SettingsSave { .. } => full(Global),
         ReadAttachment { .. } => full(Global),
@@ -225,6 +228,15 @@ mod tests {
         let options = json!({ "policy": "mention", "max_bot_hops": 0 });
         vec![
             ("session_load", Some((ReadOnly, "global_read")), json!({})),
+            ("monitor_list", Some((ReadOnly, "global_read")), json!({})),
+            ("monitor_get", Some((ReadOnly, "global_read")), json!({ "workspaceId": "w" })),
+            ("monitor_suggest_sources", Some((Full, "global")), json!({ "cwd": "/p" })),
+            ("monitor_assign", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "text": "t", "profile": participant })),
+            ("monitor_sources_update", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "files": [], "threads": [], "mode": "add" })),
+            ("monitor_message", Some((Full, "global")), json!({ "workspaceId": "w", "text": "t" })),
+            ("monitor_pause", Some((Full, "global")), json!({ "workspaceId": "w", "paused": true })),
+            ("monitor_check_now", Some((Full, "global")), json!({ "workspaceId": "w" })),
+            ("monitor_resolve", Some((Full, "global")), json!({ "workspaceId": "w", "findingId": "f", "status": "resolved" })),
             ("room_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
             ("room_diff", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
             ("artifacts_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),

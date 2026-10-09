@@ -1,0 +1,48 @@
+<div class="sh-win">
+  <div class="sh-top">
+    <div class="sh-logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#71e6b5" stroke-width="1.6"><path d="M12 2 22 12 12 22 2 12z"/></svg>Apex Deck</div>
+    <div class="sh-tabs" id="sh-tabs">
+      <button data-page="agents">Agents</button><button data-page="code">Code</button>
+      <button data-page="threads" class="sh-on">Threads</button><button data-page="library">Library</button>
+    </div>
+    <button class="aa-btn" data-page="settings" title="Settings">⚙</button>
+  </div>
+  <div class="sh-body">
+    <aside class="sh-side">
+      <h4>Projects</h4>
+      <div class="sh-item">▸ Mobile launch <small>This Mac</small></div>
+      <div class="sh-item">▸ Apex Deck <small>Hetzner</small></div>
+      <h4>Files · drag onto Apex</h4>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"file","label":"docs/launch-plan.md"}'>📄 docs/launch-plan.md</div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"file","label":"test-report.md"}'>📄 test-report.md</div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"file","label":"CHANGELOG.md"}'>📄 CHANGELOG.md</div>
+      <h4>Threads</h4>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"thread","label":"Release thread"}'>💬 Release thread <small>2m</small></div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"thread","label":"SSO fixes"}'>💬 SSO fixes <small>1h</small></div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"thread","label":"App Store copy"}'>💬 App Store copy <small>1d</small></div>
+    </aside>
+    <main class="sh-main">
+      <section class="sh-page sh-show" data-page="threads">
+        <h3 style="margin:0 0 18px">Release thread <span class="aa-muted" style="font-weight:400">· 3 bots</span></h3>
+        <div class="sh-msg"><div class="sh-ava"></div><div><b>Null</b><p>Build 214 is up on TestFlight. SSO login still flakes on the staging tenant; I'm looking at the token refresh.</p></div></div>
+        <div class="sh-msg"><div class="sh-ava"></div><div><b>Gronk</b><p>Store screenshots are done for 6.7" and 6.1". Waiting on final copy.</p></div></div>
+        <div class="sh-msg"><div class="sh-ava"></div><div><b>Human</b><p>Ship the copy by Friday. What's left before Nov 1?</p></div></div>
+      </section>
+      <section class="sh-page" data-page="code">
+        <h3 style="margin:0 0 14px">test-report.md</h3>
+        <div class="sh-file">## Nightly · Oct 9
+Unit          412 / 412 passing
+UI smoke       38 / 38  passing
+...
+SSO login:     3 of 12 failing   (line 14)
+  - refresh token expired after 60s
+  - tenant switch drops session</div>
+      </section>
+      <section class="sh-page" data-page="agents"><h3>Agents</h3><p class="aa-muted">Claude · Codex · Venice bots… (Deck's normal Agents page)</p></section>
+      <section class="sh-page" data-page="library"><h3>Library</h3><p class="aa-muted">Pictures and files from every machine.</p></section>
+      <section class="sh-page" data-page="settings"><h3>Settings</h3><p class="aa-muted">Appearance · Machines · Keys</p></section>
+    </main>
+  </div>
+</div>
+<div id="aa-layer"><div id="bb-mount"></div><div id="cv-mount"></div><div id="av-mount"></div></div>
+<div class="st-bar"><button class="aa-btn" id="st-prev">‹</button><span id="st-count"></span><button class="aa-btn" id="st-next">›</button><b id="st-title"></b><span class="st-note" id="st-note"></span><label class="aa-muted"><input type="checkbox" id="st-motion"> Reduce motion</label></div>

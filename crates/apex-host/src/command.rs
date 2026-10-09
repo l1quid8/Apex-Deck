@@ -27,6 +27,15 @@ pub enum Command {
     DecisionKeySave { provider: String, key: String },
     ArtifactsLoad { room: String },
     ArtifactsSave { room: String, artifacts: Value },
+    MonitorList {},
+    MonitorGet { workspace_id: String },
+    MonitorSuggestSources { cwd: String },
+    MonitorAssign { workspace_id: String, cwd: String, host_id: String, text: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, profile: apex_core::ParticipantConfig, #[serde(default)] only_if_absent: bool },
+    MonitorSourcesUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, mode: String },
+    MonitorMessage { workspace_id: String, text: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
+    MonitorPause { workspace_id: String, paused: bool, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
+    MonitorCheckNow { workspace_id: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
+    MonitorResolve { workspace_id: String, finding_id: String, status: String, #[serde(default)] snoozed_until: Option<u64>, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     ArtifactExport { name: String, contents: String, path: Option<String> },
     PreviewProbe { address: String },
     DataFolder {},
@@ -137,6 +146,34 @@ impl Host {
             DecisionKeySave { provider, key } => reply(crate::decision::save_credential(&provider, &key)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
+            MonitorList {} => reply(self.monitor_list()?),
+            MonitorGet { workspace_id } => reply(self.monitor_get(&workspace_id)?),
+            MonitorSuggestSources { cwd } => reply(serde_json::json!({ "files": self.monitor_suggest_sources(&cwd)? })),
+            MonitorAssign { workspace_id, cwd, host_id, text, files, threads, profile, only_if_absent } => {
+                let host = Arc::clone(self);
+                let assignment = crate::monitor_commands::Assignment { workspace_id, cwd, host_id, text, files, threads, profile };
+                reply(blocking(move || host.monitor_assign_if_absent(assignment, only_if_absent)).await?)
+            }
+            MonitorSourcesUpdate { workspace_id, cwd, host_id, conversation_id, files, threads, mode } => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.monitor_sources_update(&workspace_id, &cwd, &host_id, &conversation_id, files, threads, &mode)).await?)
+            }
+            MonitorMessage { workspace_id, text, cwd, host_id, conversation_id } => {
+                let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
+                reply(self.monitor_message_owned(&workspace_id, owner, &text)?)
+            }
+            MonitorPause { workspace_id, paused, cwd, host_id, conversation_id } => {
+                let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
+                reply(self.monitor_pause_owned(&workspace_id, owner, paused)?)
+            }
+            MonitorCheckNow { workspace_id, cwd, host_id, conversation_id } => {
+                let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
+                reply(self.monitor_check_now_owned(&workspace_id, owner)?)
+            }
+            MonitorResolve { workspace_id, finding_id, status, snoozed_until, cwd, host_id, conversation_id } => {
+                let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
+                reply(self.monitor_resolve_owned(&workspace_id, owner, &finding_id, &status, snoozed_until)?)
+            }
             ArtifactExport { name, contents, path } => reply(self.artifact_export(name, contents, path)?),
             PreviewProbe { address } => reply(self.preview_probe(address).await?),
             DataFolder {} => reply(self.data_folder()),
@@ -237,6 +274,19 @@ mod tests {
         assert!(matches!(command, Command::ExportThread { file_name, .. } if file_name == "a.md"));
         let command = Command::from_json(json!({ "cmd": "room_post_to", "args": { "id": "r", "text": "hi", "targets": ["null"] } })).unwrap();
         assert!(matches!(command, Command::RoomPostTo { targets, .. } if targets == vec![ParticipantId::new("null")]));
+        assert!(matches!(Command::from_json(json!({ "cmd": "monitor_list" })).unwrap(), Command::MonitorList {}));
+        assert!(matches!(Command::from_json(json!({ "cmd": "monitor_get", "args": { "workspaceId": "workspace" } })).unwrap(), Command::MonitorGet { workspace_id } if workspace_id == "workspace"));
+        let command = Command::from_json(json!({ "cmd": "monitor_suggest_sources", "args": { "cwd": "/project" } })).unwrap();
+        assert!(matches!(command, Command::MonitorSuggestSources { cwd } if cwd == "/project"));
+        let command = Command::from_json(json!({ "cmd": "monitor_sources_update", "args": { "workspaceId": "w", "cwd": "/project", "hostId": "local", "conversationId": "c", "files": ["README.md"], "threads": ["r"], "mode": "add" } })).unwrap();
+        assert!(matches!(command, Command::MonitorSourcesUpdate { workspace_id, cwd, host_id, conversation_id, files, threads, mode } if workspace_id == "w" && cwd == "/project" && host_id == "local" && conversation_id == "c" && files == ["README.md"] && threads == ["r"] && mode == "add"));
+        let profile = json!({ "id": "helper", "display_name": "Helper", "backend": { "kind": "open_ai_compatible", "base_url": "http://x", "model": "m" } });
+        let command = Command::from_json(json!({ "cmd": "monitor_assign", "args": { "workspaceId": "w", "cwd": "/p", "hostId": "local", "text": "t", "files": ["a.md"], "threads": ["r"], "profile": profile } })).unwrap();
+        assert!(matches!(command, Command::MonitorAssign { workspace_id, host_id, files, threads, .. } if workspace_id == "w" && host_id == "local" && files == ["a.md"] && threads == ["r"]));
+        let command = Command::from_json(json!({ "cmd": "monitor_resolve", "args": { "workspaceId": "w", "findingId": "f", "status": "snoozed", "snoozedUntil": 5 } })).unwrap();
+        assert!(matches!(command, Command::MonitorResolve { finding_id, snoozed_until: Some(5), .. } if finding_id == "f"));
+        assert!(matches!(Command::from_json(json!({ "cmd": "monitor_check_now", "args": { "workspaceId": "w" } })).unwrap(), Command::MonitorCheckNow { .. }));
+        assert!(matches!(Command::from_json(json!({ "cmd": "monitor_pause", "args": { "workspaceId": "w", "paused": true, "cwd": "/p", "hostId": "h", "conversationId": "c" } })).unwrap(), Command::MonitorPause { cwd: Some(cwd), host_id: Some(host), conversation_id: Some(conversation), .. } if cwd == "/p" && host == "h" && conversation == "c"));
     }
 
     #[test]
@@ -255,7 +305,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 74);
+        assert_eq!(names.len(), 83);
         assert!(names.contains(&"api_quote".to_string()));
         assert!(names.contains(&"room_answer".to_string()));
         assert!(names.contains(&"room_import".to_string()));
@@ -264,6 +314,12 @@ mod tests {
         assert!(names.contains(&"decision_key_save".to_string()));
         assert!(names.contains(&"session_load".to_string()));
         assert!(names.contains(&"mod_env_get".to_string()));
+        assert!(names.contains(&"monitor_list".to_string()));
+        assert!(names.contains(&"monitor_get".to_string()));
+        assert!(names.contains(&"monitor_suggest_sources".to_string()));
+        for write in ["monitor_assign", "monitor_sources_update", "monitor_message", "monitor_pause", "monitor_check_now", "monitor_resolve"] {
+            assert!(names.contains(&write.to_string()), "{write}");
+        }
     }
 
     /// The names in `call("…")` and `invoke<T>("…")` in a UI source file.
@@ -326,11 +382,114 @@ mod tests {
         let library = call(json!({ "cmd": "library_list" })).unwrap();
         assert_eq!(library[0]["bytes"], json!(8), "{library}");
         assert_eq!(call(json!({ "cmd": "room_post", "args": { "id": "nope", "text": "hi" } })), Err("no group chat with id nope".into()));
+        let project = data.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("README.md"), "not returned").unwrap();
+        assert_eq!(call(json!({ "cmd": "monitor_suggest_sources", "args": { "cwd": project.to_string_lossy() } })).unwrap(), json!({ "files": ["README.md"] }));
         let saved_chats = std::fs::canonicalize(data.join("saved-chats-v1")).unwrap().to_string_lossy().into_owned();
         let listed = call(json!({ "cmd": "folder_list", "args": { "path": data.to_string_lossy() } })).unwrap();
         assert!(listed["folders"].as_array().unwrap().contains(&json!("saved-chats-v1")), "{listed}");
         assert_eq!(listed["truncated"], json!(false));
         assert_eq!(call(json!({ "cmd": "folder_list", "args": { "path": saved_chats } })).unwrap()["path"], json!(saved_chats));
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn monitor_mutations_reject_stale_owner_guards_and_keep_legacy_calls() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let data = std::env::temp_dir().join(format!("apex-host-monitor-guard-{}-{nonce}", std::process::id()));
+        let first_project = data.join("first");
+        let second_project = data.join("second");
+        std::fs::create_dir_all(&first_project).unwrap();
+        std::fs::create_dir_all(&second_project).unwrap();
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let call = |value: Value| runtime.block_on(host.call(Command::from_json(value).unwrap()));
+        let profile = json!({ "id": "helper", "display_name": "Helper", "backend": { "kind": "open_ai_compatible", "base_url": "http://127.0.0.1:9", "model": "m" } });
+        let assign = |cwd: &std::path::Path, text: &str, only_if_absent: bool| json!({
+            "cmd": "monitor_assign", "args": { "workspaceId": "w", "cwd": cwd.to_string_lossy(), "hostId": "local", "text": text, "profile": profile, "onlyIfAbsent": only_if_absent }
+        });
+        let first = call(assign(&first_project, "first responsibility", false)).unwrap();
+        assert!(call(assign(&first_project, "must not replace", true)).is_err());
+        assert_eq!(call(json!({ "cmd": "monitor_get", "args": { "workspaceId": "w" } })).unwrap(), first);
+
+        let second = call(assign(&second_project, "second responsibility", false)).unwrap();
+        let stale = json!({ "cwd": first["cwd"], "hostId": first["hostId"], "conversationId": first["conversationId"] });
+        let guarded = |cmd: &str, mut args: Value| {
+            args.as_object_mut().unwrap().extend(stale.as_object().unwrap().clone());
+            json!({ "cmd": cmd, "args": args })
+        };
+        for command in [
+            guarded("monitor_message", json!({ "workspaceId": "w", "text": "stale redirect" })),
+            guarded("monitor_pause", json!({ "workspaceId": "w", "paused": true })),
+            guarded("monitor_check_now", json!({ "workspaceId": "w" })),
+            guarded("monitor_resolve", json!({ "workspaceId": "w", "findingId": "gone", "status": "resolved" })),
+        ] {
+            assert!(call(command).is_err());
+            assert_eq!(call(json!({ "cmd": "monitor_get", "args": { "workspaceId": "w" } })).unwrap(), second);
+        }
+        assert!(call(json!({ "cmd": "monitor_pause", "args": { "workspaceId": "w", "paused": true, "cwd": second["cwd"] } })).is_err());
+        assert_eq!(call(json!({ "cmd": "monitor_get", "args": { "workspaceId": "w" } })).unwrap(), second);
+        let third = call(assign(&second_project, "third responsibility", false)).unwrap();
+        let stale_conversation = json!({ "cwd": second["cwd"], "hostId": second["hostId"], "conversationId": second["conversationId"] });
+        let mut pause_args = json!({ "workspaceId": "w", "paused": true });
+        pause_args.as_object_mut().unwrap().extend(stale_conversation.as_object().unwrap().clone());
+        assert!(call(json!({ "cmd": "monitor_pause", "args": pause_args })).is_err());
+        assert_eq!(call(json!({ "cmd": "monitor_get", "args": { "workspaceId": "w" } })).unwrap(), third);
+        let legacy = call(json!({ "cmd": "monitor_message", "args": { "workspaceId": "w", "text": "legacy call" } })).unwrap();
+        assert_eq!(legacy["messages"].as_array().unwrap().last().unwrap()["text"], "legacy call");
+        let null_guard = call(json!({ "cmd": "monitor_pause", "args": { "workspaceId": "w", "paused": true, "cwd": null, "hostId": null, "conversationId": null } })).unwrap();
+        assert_eq!(null_guard["paused"], true);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn monitor_reads_return_empty_null_persisted_findings_and_corruption_errors() {
+        use crate::monitor::{Finding, MonitorDocument, ProjectMonitor};
+        use crate::storage::Store;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let data = std::env::temp_dir().join(format!("apex-host-monitors-{}-{nonce}", std::process::id()));
+        let paths = HostPaths { data: data.clone(), downloads: None };
+        let host = Host::new(paths.clone(), runtime.handle().clone());
+        let call = |host: &Arc<Host>, value: Value| runtime.block_on(host.call(Command::from_json(value).unwrap()));
+
+        assert_eq!(call(&host, json!({ "cmd": "monitor_list" })), Ok(json!([])));
+        assert_eq!(call(&host, json!({ "cmd": "monitor_get", "args": { "workspaceId": "missing" } })), Ok(Value::Null));
+
+        let mut monitor = ProjectMonitor::new(
+            "workspace-a".into(), "conversation-a".into(), "/workspace".into(),
+            "host-a".into(), "profile-a".into(), "Keep the project healthy".into(),
+            vec![], vec![], 10,
+        );
+        let finding = Finding {
+            id: "finding-a".into(), summary: "Build is failing".into(),
+            reason: "The latest build reported an error".into(), confidence: "high".into(),
+            next_step: "Inspect the compiler output".into(), evidence: vec![], status: "open".into(),
+            first_seen_at: 11, last_seen_at: 12, last_notified_at: None, snoozed_until: None,
+        };
+        monitor.findings.push(finding.clone());
+        let store = Store::new(data.join("saved-chats-v1"));
+        store.save_monitors(&MonitorDocument { version: 1, monitors: vec![monitor.clone()] }).unwrap();
+
+        // A fresh host simulates an owner host recreated after restart. Reads must come
+        // from disk directly and retain attention details such as findings.
+        drop(host);
+        let reopened = Host::new(paths, runtime.handle().clone());
+        let listed = call(&reopened, json!({ "cmd": "monitor_list" })).unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["workspaceId"], json!("workspace-a"));
+        assert_eq!(listed[0]["findings"][0]["id"], json!("finding-a"));
+        assert_eq!(listed[0]["findings"][0]["summary"], json!(finding.summary));
+        assert_eq!(call(&reopened, json!({ "cmd": "monitor_get", "args": { "workspaceId": "workspace-a" } })), Ok(json!(monitor)));
+        assert_eq!(call(&reopened, json!({ "cmd": "monitor_get", "args": { "workspaceId": "other" } })), Ok(Value::Null));
+
+        std::fs::write(data.join("saved-chats-v1").join("monitor.json"), "broken document").unwrap();
+        assert!(call(&reopened, json!({ "cmd": "monitor_list" })).unwrap_err().contains("Could not read saved data"));
+        assert!(call(&reopened, json!({ "cmd": "monitor_get", "args": { "workspaceId": "workspace-a" } })).unwrap_err().contains("Could not read saved data"));
+        assert_eq!(std::fs::read_to_string(data.join("saved-chats-v1").join("monitor.json")).unwrap(), "broken document");
         let _ = std::fs::remove_dir_all(data);
     }
 }

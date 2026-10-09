@@ -17,7 +17,10 @@
 
 use std::time::{Duration, Instant};
 
-use apex_core::{Access, ActionKind, Answer, Approver, Decision, Progress, ProgressSink, ProposedAction, Question, QuestionOption};
+use apex_core::{
+    Access, ActionKind, Answer, Approver, Decision, Progress, ProgressSink, ProposedAction,
+    Question, QuestionOption,
+};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
@@ -33,8 +36,12 @@ pub(crate) fn user_message(prompt: &str) -> Value {
 /// input back, which is where a client could change it; we pass it through.
 pub(crate) fn permission_response(request_id: &Value, input: &Value, decision: Decision) -> Value {
     let response = match decision {
-        Decision::Approve | Decision::ApproveAlways => json!({ "behavior": "allow", "updatedInput": input }),
-        Decision::Reject => json!({ "behavior": "deny", "message": "The person reading the chat rejected this action." }),
+        Decision::Approve | Decision::ApproveAlways => {
+            json!({ "behavior": "allow", "updatedInput": input })
+        }
+        Decision::Reject => {
+            json!({ "behavior": "deny", "message": "The person reading the chat rejected this action." })
+        }
     };
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
 }
@@ -42,14 +49,25 @@ pub(crate) fn permission_response(request_id: &Value, input: &Value, decision: D
 /// Claude's AskUserQuestion input, as questions for the person.
 pub(crate) fn ask_user_questions(input: &Value) -> Vec<Question> {
     let text = |v: &Value| v.as_str().unwrap_or("").to_string();
-    input["questions"].as_array().into_iter().flatten().map(|q| Question {
-        header: text(&q["header"]),
-        question: text(&q["question"]),
-        options: q["options"].as_array().into_iter().flatten()
-            .map(|o| QuestionOption { label: text(&o["label"]), description: text(&o["description"]) })
-            .collect(),
-        multi_select: q["multiSelect"].as_bool().unwrap_or(false),
-    }).collect()
+    input["questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|q| Question {
+            header: text(&q["header"]),
+            question: text(&q["question"]),
+            options: q["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|o| QuestionOption {
+                    label: text(&o["label"]),
+                    description: text(&o["description"]),
+                })
+                .collect(),
+            multi_select: q["multiSelect"].as_bool().unwrap_or(false),
+        })
+        .collect()
 }
 
 /// The answer to AskUserQuestion. Answered: allowed, with the answers added
@@ -59,16 +77,27 @@ pub(crate) fn question_response(request_id: &Value, input: &Value, answer: Answe
     let response = match answer {
         Answer::Answered(chosen) => {
             let mut answers = serde_json::Map::new();
-            for (question, picked) in input["questions"].as_array().into_iter().flatten().zip(chosen) {
+            for (question, picked) in input["questions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .zip(chosen)
+            {
                 if let Some(text) = question["question"].as_str() {
                     answers.insert(text.to_string(), json!(picked.join(", ")));
                 }
             }
-            let mut updated = if input.is_object() { input.clone() } else { json!({}) };
+            let mut updated = if input.is_object() {
+                input.clone()
+            } else {
+                json!({})
+            };
             updated["answers"] = Value::Object(answers);
             json!({ "behavior": "allow", "updatedInput": updated })
         }
-        Answer::Skipped => json!({ "behavior": "deny", "message": "The person skipped this question." }),
+        Answer::Skipped => {
+            json!({ "behavior": "deny", "message": "The person skipped this question." })
+        }
     };
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
 }
@@ -77,7 +106,12 @@ pub(crate) fn question_response(request_id: &Value, input: &Value, answer: Answe
 /// planning. Approved: allowed, and Claude's mode for the rest of the turn
 /// goes back to what the bot's own access allows. Refused: Claude keeps
 /// planning. A read-only bot can't start the work at all.
-pub(crate) fn plan_exit_response(request_id: &Value, input: &Value, decision: Decision, own: Access) -> Value {
+pub(crate) fn plan_exit_response(
+    request_id: &Value,
+    input: &Value,
+    decision: Decision,
+    own: Access,
+) -> Value {
     let mode = match own {
         Access::Full => Some("bypassPermissions"),
         Access::Edits => Some("acceptEdits"),
@@ -85,24 +119,28 @@ pub(crate) fn plan_exit_response(request_id: &Value, input: &Value, decision: De
         Access::Read => None,
     };
     let response = match (decision.approved(), mode) {
-        (_, None) => json!({ "behavior": "deny", "message": "This bot can only read, so it can't start the work. The person can hand your plan to another bot." }),
+        (_, None) => {
+            json!({ "behavior": "deny", "message": "This bot can only read, so it can't start the work. The person can hand your plan to another bot." })
+        }
         (true, Some(mode)) => json!({
             "behavior": "allow",
             "updatedInput": input,
             "updatedPermissions": [{ "type": "setMode", "mode": mode, "destination": "session" }],
         }),
-        (false, Some(_)) => json!({ "behavior": "deny", "message": "The person wants to keep planning." }),
+        (false, Some(_)) => {
+            json!({ "behavior": "deny", "message": "The person wants to keep planning." })
+        }
     };
     json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })
 }
 
 /// How long a reply waits for helper agents still working in the
 /// background before it is handed in without them.
-const HELPER_LIMIT: Duration = Duration::from_secs(30 * 60);
+pub(crate) const HELPER_LIMIT: Duration = Duration::from_secs(30 * 60);
 
 /// How often the work line is refreshed while helpers work. It also keeps
 /// the turn's silence limit from stopping a reply that is only waiting.
-const HELPER_HEARTBEAT: Duration = Duration::from_secs(30);
+pub(crate) const HELPER_HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// The work line while a reply waits for its helpers.
 pub(crate) fn helpers_line(helpers: usize, waited: Duration) -> String {
@@ -170,7 +208,10 @@ pub(crate) async fn run(
             }
             let since = *waiting_since.get_or_insert_with(Instant::now);
             reader.await_follow_up();
-            on_progress(Progress::Activity(&helpers_line(reader.helpers(), since.elapsed())));
+            on_progress(Progress::Activity(&helpers_line(
+                reader.helpers(),
+                since.elapsed(),
+            )));
         }
         let next = match waiting_since {
             None => lines.next_line().await?,
@@ -183,7 +224,10 @@ pub(crate) async fn run(
                 match tokio::time::timeout(wait, lines.next_line()).await {
                     Ok(next) => next?,
                     Err(_) => {
-                        on_progress(Progress::Activity(&helpers_line(reader.helpers(), since.elapsed())));
+                        on_progress(Progress::Activity(&helpers_line(
+                            reader.helpers(),
+                            since.elapsed(),
+                        )));
                         continue;
                     }
                 }
@@ -193,7 +237,10 @@ pub(crate) async fn run(
         if let Ok(message) = serde_json::from_str::<Value>(&line) {
             if message["type"] == "system" && message["subtype"] == "init" {
                 if let Some(servers) = message["mcp_servers"].as_array() {
-                    let names: Vec<apex_core::server_request::ToolServer> = servers.iter().filter_map(|s| s["name"].as_str().map(|name| name.to_owned().into())).collect();
+                    let names: Vec<apex_core::server_request::ToolServer> = servers
+                        .iter()
+                        .filter_map(|s| s["name"].as_str().map(|name| name.to_owned().into()))
+                        .collect();
                     on_progress(Progress::ToolServers(&names));
                 }
             }
@@ -203,11 +250,16 @@ pub(crate) async fn run(
                 // mode, Full included (probed 2026-10-06). The questions go
                 // out raw; the room cleans them for display, and the answers
                 // come back matched by position.
-                let reply = if request["subtype"] == "can_use_tool" && request["tool_name"] == "AskUserQuestion" {
+                let reply = if request["subtype"] == "can_use_tool"
+                    && request["tool_name"] == "AskUserQuestion"
+                {
                     on_progress(Progress::Activity("Waiting for your answer"));
                     let answer = approver.ask(ask_user_questions(&request["input"])).await;
                     question_response(&message["request_id"], &request["input"], answer)
-                } else if let (true, Some(own)) = (request["subtype"] == "can_use_tool" && request["tool_name"] == "ExitPlanMode", after_plan) {
+                } else if let (true, Some(own)) = (
+                    request["subtype"] == "can_use_tool" && request["tool_name"] == "ExitPlanMode",
+                    after_plan,
+                ) {
                     // Started by the Plan switch: Claude has a plan and asks
                     // to start the work. A read-only bot is refused unasked.
                     let decision = if own == Access::Read {
@@ -215,7 +267,15 @@ pub(crate) async fn run(
                     } else {
                         let plan = request["input"]["plan"].as_str().unwrap_or("").to_string();
                         on_progress(Progress::Activity("Waiting for you: start the work?"));
-                        approver.decide(ProposedAction { kind: ActionKind::Plan, title: "Start the work?".into(), detail: plan, expires_at: None, risky: false }).await
+                        approver
+                            .decide(ProposedAction {
+                                kind: ActionKind::Plan,
+                                title: "Start the work?".into(),
+                                detail: plan,
+                                expires_at: None,
+                                risky: false,
+                            })
+                            .await
                     };
                     plan_exit_response(&message["request_id"], &request["input"], decision, own)
                 } else if request["subtype"] == "can_use_tool" {
@@ -224,9 +284,12 @@ pub(crate) async fn run(
                     let decision = match crate::mcp::claude_tool(tool) {
                         Some((_, name)) if !crate::mcp::needs_approval(name) => Decision::Approve,
                         _ => {
-                            on_progress(Progress::Activity(&format!("Waiting for approval: {}", action.title)));
+                            on_progress(Progress::Activity(&format!(
+                                "Waiting for approval: {}",
+                                action.title
+                            )));
                             approver.decide(action).await
-                        },
+                        }
                     };
                     permission_response(&message["request_id"], &request["input"], decision)
                 } else {
@@ -273,15 +336,33 @@ mod tests {
     #[test]
     fn starting_the_work_hands_back_the_bots_own_access() {
         let input = json!({"plan": "1. Do it"});
-        let response = |decision, own| plan_exit_response(&json!("p1"), &input, decision, own)["response"]["response"].clone();
+        let response = |decision, own| {
+            plan_exit_response(&json!("p1"), &input, decision, own)["response"]["response"].clone()
+        };
         let mode = |own| response(Decision::Approve, own)["updatedPermissions"][0]["mode"].clone();
-        assert_eq!(response(Decision::Approve, Access::Full)["behavior"], "allow");
-        assert_eq!(response(Decision::Approve, Access::Full)["updatedInput"], input);
-        assert_eq!(response(Decision::Approve, Access::Full)["updatedPermissions"][0], json!({"type": "setMode", "mode": "bypassPermissions", "destination": "session"}));
+        assert_eq!(
+            response(Decision::Approve, Access::Full)["behavior"],
+            "allow"
+        );
+        assert_eq!(
+            response(Decision::Approve, Access::Full)["updatedInput"],
+            input
+        );
+        assert_eq!(
+            response(Decision::Approve, Access::Full)["updatedPermissions"][0],
+            json!({"type": "setMode", "mode": "bypassPermissions", "destination": "session"})
+        );
         assert_eq!(mode(Access::Edits), "acceptEdits");
         assert_eq!(mode(Access::Ask), "default");
-        assert_eq!(response(Decision::Reject, Access::Full), json!({"behavior": "deny", "message": "The person wants to keep planning."}));
-        assert_eq!(response(Decision::Approve, Access::Read)["behavior"], "deny", "a read-only bot never starts the work");
+        assert_eq!(
+            response(Decision::Reject, Access::Full),
+            json!({"behavior": "deny", "message": "The person wants to keep planning."})
+        );
+        assert_eq!(
+            response(Decision::Approve, Access::Read)["behavior"],
+            "deny",
+            "a read-only bot never starts the work"
+        );
     }
 
     #[test]
@@ -296,14 +377,30 @@ mod tests {
         assert_eq!(asked[0].options[0].description, "warm");
         assert!(asked[1].multi_select);
 
-        let reply = question_response(&json!("r1"), &input, Answer::Answered(vec![vec!["blue".into()], vec!["apple".into(), "pear".into()]]));
+        let reply = question_response(
+            &json!("r1"),
+            &input,
+            Answer::Answered(vec![
+                vec!["blue".into()],
+                vec!["apple".into(), "pear".into()],
+            ]),
+        );
         let response = &reply["response"]["response"];
         assert_eq!(response["behavior"], "allow");
-        assert_eq!(response["updatedInput"]["answers"], json!({"Which colour?": "blue", "Which fruit?": "apple, pear"}));
-        assert_eq!(response["updatedInput"]["questions"], input["questions"], "the input goes back as it came");
+        assert_eq!(
+            response["updatedInput"]["answers"],
+            json!({"Which colour?": "blue", "Which fruit?": "apple, pear"})
+        );
+        assert_eq!(
+            response["updatedInput"]["questions"], input["questions"],
+            "the input goes back as it came"
+        );
 
         let skipped = question_response(&json!("r2"), &input, Answer::Skipped);
-        assert_eq!(skipped["response"]["response"], json!({"behavior": "deny", "message": "The person skipped this question."}));
+        assert_eq!(
+            skipped["response"]["response"],
+            json!({"behavior": "deny", "message": "The person skipped this question."})
+        );
     }
 
     #[test]
@@ -317,14 +414,26 @@ mod tests {
         );
         let denied = permission_response(&json!("r2"), &input, Decision::Reject);
         assert_eq!(denied["response"]["response"]["behavior"], "deny");
-        assert!(denied["response"]["response"]["message"].as_str().unwrap().contains("rejected"));
+        assert!(denied["response"]["response"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("rejected"));
     }
 
     #[test]
     fn the_helper_line_counts_helpers_and_minutes() {
-        assert_eq!(helpers_line(2, Duration::from_secs(10)), "2 helpers still working");
-        assert_eq!(helpers_line(1, Duration::from_secs(190)), "1 helper still working · 3 min");
-        assert_eq!(helpers_line(0, Duration::from_secs(0)), "Helpers finished, writing up");
+        assert_eq!(
+            helpers_line(2, Duration::from_secs(10)),
+            "2 helpers still working"
+        );
+        assert_eq!(
+            helpers_line(1, Duration::from_secs(190)),
+            "1 helper still working · 3 min"
+        );
+        assert_eq!(
+            helpers_line(0, Duration::from_secs(0)),
+            "Helpers finished, writing up"
+        );
     }
 
     /// A stand-in for Claude Code: the first turn starts a helper and ends,
@@ -343,30 +452,75 @@ echo '{"type":"system","subtype":"init"}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"The helper found PINEAPPLE."}]},"parent_tool_use_id":null}'
 echo '{"type":"result","is_error":false,"result":"The helper found PINEAPPLE."}'
 cat > /dev/null"#;
-        let child = tokio::process::Command::new("sh").args(["-c", script])
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .kill_on_drop(true).spawn().unwrap();
+        let child = tokio::process::Command::new("sh")
+            .args(["-c", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
         let activity = std::sync::Mutex::new(Vec::<String>::new());
-        let sink = |p: Progress<'_>| if let Progress::Activity(a) = p { activity.lock().unwrap().push(a.to_string()) };
-        let finished = run(child, "go", None, &sink, &apex_core::NoApprover, None).await.unwrap();
+        let sink = |p: Progress<'_>| {
+            if let Progress::Activity(a) = p {
+                activity.lock().unwrap().push(a.to_string())
+            }
+        };
+        let finished = run(child, "go", None, &sink, &apex_core::NoApprover, None)
+            .await
+            .unwrap();
         assert!(finished.success);
-        assert_eq!(finished.reader.outcome().text, "Helpers launched.\n\nThe helper found PINEAPPLE.");
-        assert!(activity.lock().unwrap().iter().any(|a| a == "1 helper still working"), "a background shell is not a helper: {:?}", activity.lock().unwrap());
+        assert_eq!(
+            finished.reader.outcome().text,
+            "Helpers launched.\n\nThe helper found PINEAPPLE."
+        );
+        assert!(
+            activity
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|a| a == "1 helper still working"),
+            "a background shell is not a helper: {:?}",
+            activity.lock().unwrap()
+        );
     }
 
     #[test]
     fn the_prompt_is_sent_as_a_user_message() {
-        assert_eq!(user_message("hello"), json!({ "type": "user", "message": { "role": "user", "content": "hello" } }));
+        assert_eq!(
+            user_message("hello"),
+            json!({ "type": "user", "message": { "role": "user", "content": "hello" } })
+        );
     }
 }
 
 /// Names of Claude's connected MCP servers, without running a turn.
-pub async fn list_servers(cwd: Option<String>, path: Option<String>) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
+pub async fn list_servers(
+    cwd: Option<String>,
+    path: Option<String>,
+) -> Result<Vec<apex_core::server_request::ToolServer>, String> {
     let mut command = tokio::process::Command::new("claude");
-    if let Some(path) = path { command.env("PATH", path); }
-    command.args(["mcp", "list"]).stdin(std::process::Stdio::null()).kill_on_drop(true);
-    if let Some(cwd) = cwd { command.current_dir(cwd); }
-    let output = command.output().await.map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
-    if !output.status.success() { return Err("Couldn't list Claude tool servers".into()); }
-    Ok(crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout)).into_iter().map(Into::into).collect())
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command
+        .args(["mcp", "list"])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("Couldn't list Claude tool servers: {e}"))?;
+    if !output.status.success() {
+        return Err("Couldn't list Claude tool servers".into());
+    }
+    Ok(
+        crate::mcp::claude_connected(&String::from_utf8_lossy(&output.stdout))
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    )
 }

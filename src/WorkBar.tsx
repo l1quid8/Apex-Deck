@@ -169,7 +169,15 @@ export function WorkBar({ work, attachedCount, files, tools, toolsWhere, canCopy
         matches={(f, q) => findFiles([f], q).length > 0} none={files.length ? "No files match." : "Files you drop on a thread or browse to show up here."}
         onPick={(f) => { close(); onAttach(f.path); }}
         row={(f, lit) => (
-          <button className={`pk-row ${lit ? "hl" : ""}`} role="option" aria-selected={false} title={f.path} onClick={() => { close(); onAttach(f.path); }}>
+          <button className={`pk-row ${lit ? "hl" : ""}`} role="option" aria-selected={false} title={`${f.path} · Drag onto ApexAgent to watch`}
+            draggable={!!project.path && (f.path.startsWith(`${project.path}/`) || !f.path.startsWith("/"))}
+            onDragStart={(event) => {
+              const relative = f.path.startsWith(`${project.path}/`) ? f.path.slice(project.path.length + 1) : f.path;
+              if (!project.path || relative.startsWith("/")) { event.preventDefault(); return; }
+              event.dataTransfer.effectAllowed = "copy";
+              event.dataTransfer.setData("application/x-apex-agent-source", JSON.stringify({ workspaceId: project.id, hostId: project.hostId, cwd: project.path, kind: "file", sourceId: relative }));
+            }}
+            onClick={() => { close(); onAttach(f.path); }}>
             <span className={`file-ico ${fileKind(f.name)}`}><Glyph name={fileKind(f.name) === "img" ? "image" : "doc"} size={15} /></span>
             <span className="nm">{f.name}</span>
           </button>

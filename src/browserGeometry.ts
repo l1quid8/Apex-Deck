@@ -27,5 +27,5 @@ export function covered(pane: Box, overlays: Box[]): boolean {
 }
 
 /** What counts as drawn over the page. A modal dialog covers the whole window. */
-export const OVERLAYS = "[role=dialog],[role=alertdialog],[role=menu],[role=listbox]";
+export const OVERLAYS = "[role=dialog],[role=alertdialog],[role=menu],[role=listbox],[data-apex-agent-overlay]";
 export const MODAL = "[aria-modal=true]";

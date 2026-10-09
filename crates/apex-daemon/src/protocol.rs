@@ -74,6 +74,7 @@ impl Daemon {
         // The daemon's arguments (`--data-dir PATH`) are not workspaces.
         host.set_startup_folders(Vec::new());
         let devices = Arc::new(Devices::open(&paths.data));
+        host.start_monitor_clock()?;
         Ok(Arc::new(Daemon { host, host_id: crate::identity::host_id(&paths.data)?, boot_id: crate::identity::boot_id(), token, devices, data: paths.data.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] endpoint: Default::default(),

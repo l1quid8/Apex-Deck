@@ -15,6 +15,7 @@ files:
   # Dev-only launchers; smoke.mjs stays so the packaged app can be smoke-tested.
   - "!desktop/run-smoke.mjs"
   - "!desktop/dev.mjs"
+  - "!desktop/run-widget-smoke.mjs"
 extraResources:
   - from: target/release/apex-daemon
     to: bin/apex-daemon

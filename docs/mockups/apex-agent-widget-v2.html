@@ -1,0 +1,2558 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ApexAgent · floating assistant · v2</title>
+<style>:root{--bg:#090d12;--panel:#0e141b;--panel-2:#151e28;--line:#24303d;--text:#e4eaf0;--muted:#91a0af;
+--accent:#71e6b5;--brand-mint:#3def91;--brand-cyan:#1ed7ee;--accent-ink:#04211d;--warn:#f59e0b;--danger:#f87171;
+--radius:12px;--aa-glow:#71e6b5;--aa-amber:#fbbf24;color-scheme:dark}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:#05080b;color:var(--text);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;overflow:hidden}
+button{font:inherit;color:inherit}
+.aa-btn{height:30px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.aa-btn:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.aa-btn-primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.aa-btn-ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.aa-chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--line);background:var(--panel-2);font-size:12px}
+.aa-kbd{font:11px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:4px;padding:0 5px;color:var(--muted)}
+.aa-muted{color:var(--muted)}
+/* fake deck shell */
+.sh-win{position:absolute;inset:0;display:grid;grid-template-rows:44px 1fr;background:var(--bg)}
+.sh-top{display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.sh-logo{font-weight:700;letter-spacing:.2px;margin-right:auto;display:flex;gap:8px;align-items:center}
+.sh-tabs{display:flex;gap:4px;margin-right:auto}
+.sh-tabs button{height:28px;padding:0 12px;border-radius:7px;border:1px solid transparent;background:none;color:var(--muted);cursor:pointer}
+.sh-tabs button.sh-on{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+.sh-body{display:grid;grid-template-columns:230px 1fr;min-height:0}
+.sh-side{border-right:1px solid var(--line);padding:12px 8px;overflow:auto;background:var(--panel)}
+.sh-side h4{margin:10px 8px 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.sh-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:grab;color:var(--text)}
+.sh-item:hover{background:var(--panel-2)}
+.sh-item small{color:var(--muted);margin-left:auto}
+.sh-main{position:relative;overflow:hidden;padding:22px 30px}
+.sh-page{display:none;max-width:760px}.sh-page.sh-show{display:block}
+.sh-msg{display:grid;grid-template-columns:28px 1fr;gap:10px;margin:0 0 18px}
+.sh-ava{width:28px;height:28px;border-radius:7px;background:var(--panel-2);border:1px solid var(--line)}
+.sh-msg b{display:block;margin-bottom:2px}.sh-msg p{margin:0;color:#c9d3dc}
+.sh-file{font:12px/1.6 ui-monospace,Menlo,monospace;color:#b9c6d2;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;white-space:pre}
+/* step bar (lead) */
+.st-bar{position:fixed;left:0;right:0;bottom:0;height:46px;z-index:90;display:flex;align-items:center;gap:10px;padding:0 14px;background:#03060a;border-top:1px solid var(--line);font-size:12px}
+.st-bar b{color:var(--accent)}.st-note{color:var(--muted);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#aa-layer{position:fixed;inset:44px 0 46px 0;z-index:50;pointer-events:none}
+#aa-layer>*>*{pointer-events:auto}
+/* docked browser (native view drawn above the window, like Deck's BrowserView) */
+.sh-page-browser{max-width:none;height:100%}
+.sh-native{position:absolute;top:0;right:0;bottom:0;width:58%;z-index:70;background:#f4f6f8;color:#16202a;border-left:1px solid var(--line);display:flex;flex-direction:column}
+.sh-nat-bar{height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#e3e8ee;font:12px ui-monospace,Menlo,monospace;color:#34414e}
+.sh-nat-dot{width:8px;height:8px;border-radius:50%;background:#22a55a}
+.sh-nat-tag,.sh-nat-pic{margin-left:auto;font:600 11px -apple-system,system-ui,sans-serif;padding:2px 8px;border-radius:9px;background:#22a55a;color:#fff}
+.sh-nat-pic{display:none;background:#5b6672}
+.sh-nat-body{padding:22px 26px}.sh-nat-body p{color:#46525e;margin:4px 0 18px}
+.sh-nat-blk{height:14px;border-radius:7px;background:#d5dce3;margin:0 0 12px;width:80%}.sh-nat-short{width:46%}
+html.aa-browser-frozen .sh-native{z-index:auto;filter:saturate(.75)}
+html.aa-browser-frozen .sh-nat-tag{display:none}html.aa-browser-frozen .sh-nat-pic{display:inline}
+
+/* av */
+/* av: floating ApexAgent avatar, its tooltip, menu, drop state, and the Make-it-yours editor */
+/* position comes only from AA.avatarBox() (set inline by av.js); no edge offsets here */
+#av-mount{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none}
+.av-wrap{position:absolute;width:56px;height:56px;z-index:2;pointer-events:auto;transition:width .25s ease}
+.av-wrap.av-is-tab{width:6px}
+.av-wrap.av-is-drag{transition:none}
+
+.av-hit{position:absolute;left:0;top:0;width:56px;height:56px;margin:0;padding:0;border:0;border-radius:50%;background:none;cursor:grab;outline:none;touch-action:none;-webkit-tap-highlight-color:transparent}
+.av-hit:focus-visible{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--aa-glow)}
+.av-is-drag .av-hit{cursor:grabbing}
+.av-is-tab .av-hit{top:6px;width:100%;height:44px;border-radius:3px}
+
+/* glow, rings, status marks (all in the avatar's colour). Nothing reaches past 16px (AA.GLOW). */
+.av-halo{position:absolute;inset:-14px;border-radius:50%;pointer-events:none;opacity:.8;
+  background:radial-gradient(closest-side,color-mix(in srgb,var(--aa-glow) 42%,transparent),color-mix(in srgb,var(--aa-glow) 12%,transparent) 62%,transparent 100%);
+  animation:av-breathe 4s ease-in-out infinite}
+.av-st-new .av-halo{animation-duration:2.6s}
+.av-st-needs .av-halo{inset:-16px;opacity:.9;animation:av-pulse 1.6s ease-in-out infinite}
+.av-st-paused .av-halo,.av-st-offline .av-halo{opacity:0;animation:none}
+.av-is-tab .av-halo{display:none}
+
+.av-swirl{position:absolute;inset:-7px;border-radius:50%;pointer-events:none;display:none;
+  background:conic-gradient(from 0deg,transparent 0deg,transparent 150deg,var(--aa-glow) 300deg,transparent 360deg);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 2px));
+          mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 2px))}
+.av-st-checking .av-swirl{display:block;animation:av-spin 1.1s linear infinite}
+
+/* adding a source: spinner ring (hidden on the edge tab, which is too thin for it) */
+.av-spin{position:absolute;inset:-6px;border-radius:50%;pointer-events:none;display:none;
+  border:2px solid transparent;border-top-color:var(--aa-glow);border-right-color:color-mix(in srgb,var(--aa-glow) 40%,transparent)}
+.av-is-adding .av-spin{display:block;animation:av-spin .9s linear infinite}
+
+.av-open-ring{position:absolute;inset:-5px;border-radius:50%;pointer-events:none;display:none;
+  border:1.5px solid color-mix(in srgb,var(--aa-glow) 75%,transparent);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--aa-glow) 12%,transparent)}
+.av-is-open .av-open-ring{display:block}
+
+.av-drop-ring{position:absolute;inset:-9px;border-radius:50%;pointer-events:none;display:none;border:2px dashed var(--aa-glow)}
+.av-is-drop .av-drop-ring{display:block}
+
+.av-offring{position:absolute;inset:-5px;border-radius:50%;pointer-events:none;display:none;border:1.5px dashed #8a95a3}
+.av-st-offline .av-offring{display:block}
+
+/* the body */
+.av-shape{position:absolute;left:0;top:0;width:var(--av-s,56px);height:var(--av-s,56px);transition:filter .3s ease,opacity .3s ease}
+.av-st-new .av-shape{animation:av-hello 2.4s ease-in-out infinite}
+.av-st-paused .av-shape{filter:saturate(.15) brightness(.7);opacity:.7}
+.av-st-offline .av-shape{filter:grayscale(1) brightness(.55);opacity:.6}
+
+.av-scope{--aa-glow:var(--av-pick,#3def91)}
+.av-c-mint{--av-pick:#3def91}
+.av-c-cyan{--av-pick:#1ed7ee}
+.av-c-violet{--av-pick:#a78bfa}
+.av-c-amber{--av-pick:#fbbf24}
+.av-scope.av-tone-amber{--aa-glow:var(--aa-amber)}
+.av-scope.av-tone-grey{--aa-glow:#7d8896}
+
+.av-b-orb,.av-b-bot,.av-b-blob,.av-ant,.av-eye,.av-glass,.av-bridge{position:absolute;display:none}
+.av-look-orb .av-b-orb{display:block}
+.av-look-bot .av-b-bot,.av-look-bot .av-ant{display:block}
+.av-look-blob .av-b-blob{display:block}
+
+.av-b-orb{inset:0;border-radius:50%;
+  background:radial-gradient(circle at 34% 28%,rgba(255,255,255,.75) 0,rgba(255,255,255,0) 14%),
+    radial-gradient(circle at 60% 70%,color-mix(in srgb,var(--aa-glow) 35%,#03100d) 0,color-mix(in srgb,var(--aa-glow) 85%,#03100d) 70%,var(--aa-glow) 100%);
+  box-shadow:inset -5px -7px 12px rgba(0,0,0,.28),inset 2px 3px 6px rgba(255,255,255,.28),
+    0 0 12px color-mix(in srgb,var(--aa-glow) 70%,transparent)}
+
+.av-b-bot{left:14%;right:14%;top:26%;bottom:12%;border-radius:32%;
+  background:linear-gradient(165deg,color-mix(in srgb,var(--aa-glow) 24%,#16222d),#0a121a 75%);
+  border:1.5px solid var(--aa-glow);
+  box-shadow:0 0 10px color-mix(in srgb,var(--aa-glow) 55%,transparent),inset 0 0 8px color-mix(in srgb,var(--aa-glow) 22%,transparent)}
+.av-ant{left:49%;top:10%;width:2px;height:14%;border-radius:2px;background:var(--aa-glow)}
+.av-ant::after{content:"";position:absolute;left:-2px;top:-3px;width:6px;height:6px;border-radius:50%;background:var(--aa-glow);box-shadow:0 0 6px var(--aa-glow)}
+
+.av-b-blob{inset:7%;border-radius:46% 54% 52% 48%/52% 44% 56% 48%;
+  background:radial-gradient(circle at 36% 30%,rgba(255,255,255,.7) 0,rgba(255,255,255,0) 20%),
+    linear-gradient(150deg,var(--aa-glow),color-mix(in srgb,var(--aa-glow) 50%,#03100d));
+  box-shadow:inset -4px -6px 10px rgba(0,0,0,.22),0 0 12px color-mix(in srgb,var(--aa-glow) 60%,transparent);
+  animation:av-morph 7s ease-in-out infinite}
+
+/* eyes, blinking about every 5s */
+.av-eye{top:40%;width:11%;height:17%;border-radius:50%;transform-origin:50% 50%;
+  background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.9) 0,rgba(255,255,255,0) 30%),#05201a;
+  animation:av-blink 5s infinite}
+.av-eye-l{left:31%}
+.av-eye-r{left:58%}
+.av-eyes-on .av-eye{display:block}
+.av-look-bot .av-eye{background:var(--aa-glow);box-shadow:0 0 6px var(--aa-glow)}
+
+/* glasses */
+.av-glass{top:37%;width:25%;height:26%;border-radius:50%;border:2px solid #0a1714;background:rgba(255,255,255,.12)}
+.av-glass-l{left:21%}
+.av-glass-r{left:54%}
+.av-bridge{left:46%;top:47%;width:8%;height:2px;background:#0a1714}
+.av-glasses-on .av-glass,.av-glasses-on .av-bridge{display:block}
+.av-look-bot .av-glass{border-color:var(--aa-glow);background:none}
+.av-look-bot .av-bridge{background:var(--aa-glow)}
+
+/* hello sparkle, needs count, paused glyph, offline dot, edge tab */
+.av-hi{position:absolute;left:-14px;top:-12px;display:none;padding:3px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
+  background:var(--aa-glow);color:var(--accent-ink);font:700 11px/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  box-shadow:0 2px 10px color-mix(in srgb,var(--aa-glow) 50%,transparent);animation:av-hi 2.4s ease-in-out infinite}
+.av-st-new .av-hi{display:block}
+
+.av-needs{position:absolute;top:-6px;right:-8px;display:none;min-width:20px;height:20px;padding:0 6px;border-radius:10px;pointer-events:none;
+  background:var(--aa-amber);color:#1d1500;font:700 12px/20px -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;text-align:center;
+  box-shadow:0 0 0 2px var(--bg)}
+.av-has-needs .av-needs{display:block}
+
+.av-pause{position:absolute;right:-4px;bottom:-4px;display:none;width:20px;height:20px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line)}
+.av-pause::before,.av-pause::after{content:"";position:absolute;top:6px;width:2px;height:6px;border-radius:1px;background:var(--text)}
+.av-pause::before{left:6px}
+.av-pause::after{left:11px}
+.av-st-paused .av-pause{display:block}
+
+.av-offdot{position:absolute;right:-1px;bottom:-1px;display:none;width:11px;height:11px;border-radius:50%;background:#8a95a3;border:2px solid var(--bg)}
+.av-st-offline .av-offdot{display:block}
+
+.av-tabbar{position:absolute;left:0;top:0;right:0;bottom:0;display:none;background:linear-gradient(180deg,transparent,var(--aa-glow) 20%,var(--aa-glow) 80%,transparent);box-shadow:0 0 10px var(--aa-glow)}
+.av-edge-right .av-tabbar{border-radius:3px 0 0 3px}
+.av-edge-left .av-tabbar{border-radius:0 3px 3px 0}
+.av-is-tab .av-tabbar{display:block}
+.av-is-tab .av-shape,.av-is-tab .av-swirl,.av-is-tab .av-open-ring,.av-is-tab .av-drop-ring,.av-is-tab .av-offring,.av-is-tab .av-spin,
+.av-is-tab .av-pause,.av-is-tab .av-offdot,.av-is-tab .av-hi,.av-is-tab .av-needs{display:none !important}
+
+/* tooltip, drop label, flash label, menu (all aa-overlay: floating over the page) */
+.av-tip{position:absolute;top:50%;display:none;width:max-content;max-width:260px;padding:7px 10px;border-radius:8px;transform:translateY(-50%);
+  background:var(--panel-2);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.4);color:var(--text);
+  font-size:12px;line-height:1.35;white-space:normal;pointer-events:none}
+.av-edge-right .av-tip{right:66px}
+.av-edge-left .av-tip{left:66px}
+.av-wrap:hover .av-tip{display:block}
+.av-is-drag .av-tip,.av-menu-on .av-tip,.av-is-drop .av-tip,.av-is-flashing .av-tip{display:none !important}
+
+.av-drop-label{position:absolute;top:50%;display:none;transform:translateY(-50%);padding:6px 10px;border-radius:8px;pointer-events:none;white-space:nowrap;
+  background:var(--aa-glow);color:var(--accent-ink);font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  box-shadow:0 6px 18px color-mix(in srgb,var(--aa-glow) 40%,transparent)}
+.av-edge-right .av-drop-label{right:66px}
+.av-edge-left .av-drop-label{left:66px}
+.av-is-drop .av-drop-label{display:block}
+
+.av-flash{position:absolute;top:50%;display:none;max-width:220px;padding:6px 10px;border-radius:8px;transform:translateY(-50%);pointer-events:none;
+  background:var(--panel-2);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.4);color:var(--text);font-size:12px;line-height:1.35;white-space:normal}
+.av-edge-right .av-flash{right:66px}
+.av-edge-left .av-flash{left:66px}
+.av-flash.av-is-shown{display:block}
+.av-flash-amber{color:var(--aa-amber);border-color:var(--aa-amber)}
+
+.av-menu{position:absolute;top:0;display:none;min-width:212px;padding:6px;border-radius:10px;z-index:3;
+  background:var(--panel);border:1px solid var(--line);box-shadow:0 14px 34px rgba(0,0,0,.5)}
+.av-edge-right .av-menu{right:66px}
+.av-edge-left .av-menu{left:66px}
+.av-menu.av-is-shown{display:block}
+.av-mi{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;height:30px;padding:0 10px;border:0;border-radius:7px;
+  background:none;color:var(--text);font-size:13px;text-align:left;cursor:pointer}
+.av-mi:hover,.av-mi:focus-visible{background:var(--panel-2);outline:none;box-shadow:inset 0 0 0 1px var(--accent)}
+.av-mi-sep{height:1px;margin:5px 4px;background:var(--line)}
+.av-menu .aa-kbd{font-size:11px}
+
+/* static small copy (mini) */
+.av-mini{position:relative;display:inline-block;width:var(--av-s,56px);height:var(--av-s,56px);vertical-align:middle;flex:none}
+.av-mini .av-shape,.av-mini .av-shape *{animation:none !important}
+
+/* Make it yours editor */
+.av-ed{display:grid;gap:12px;font-size:12px;color:var(--text)}
+.av-ed-top{display:flex;align-items:center;gap:12px}
+.av-ed-prev{display:inline-block;flex:none;width:64px;height:64px}
+.av-ed-who{min-width:0}
+.av-ed-handle{font:600 13px ui-monospace,Menlo,monospace;color:var(--accent)}
+.av-ed-sub{color:var(--muted);font-size:12px}
+.av-ed-field{display:grid;gap:5px}
+.av-ed-label{color:var(--muted);font-size:12px;font-weight:600}
+.av-ed-name{width:100%;height:30px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit}
+.av-ed-name:focus{outline:none;border-color:var(--accent)}
+.av-ed-choices{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.av-ed-choice{display:grid;justify-items:center;gap:6px;padding:8px 6px;border-radius:10px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font:inherit;cursor:pointer}
+.av-ed-choice.av-is-on{border-color:var(--accent);color:var(--text)}
+.av-ed-cprev{display:block;height:34px}
+.av-ed-swatches{display:flex;gap:10px}
+.av-ed-swatch{width:28px;height:28px;padding:0;border-radius:50%;border:2px solid var(--panel);background:var(--sw);cursor:pointer;box-shadow:0 0 0 1px var(--line)}
+.av-ed-swatch.av-is-on{box-shadow:0 0 0 2px var(--text)}
+.av-ed-toggles{display:flex;gap:8px}
+.av-ed-toggle{height:30px;padding:0 12px;border-radius:15px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font:inherit;cursor:pointer}
+.av-ed-toggle.av-is-on{border-color:var(--accent);color:var(--text);background:color-mix(in srgb,var(--accent) 14%,var(--panel-2))}
+
+/* keyframes: glow animates opacity only, never scale, so it cannot pass AA.GLOW */
+@keyframes av-breathe{0%,100%{opacity:.55}50%{opacity:1}}
+@keyframes av-pulse{0%,100%{opacity:.6}50%{opacity:1}}
+@keyframes av-spin{to{transform:rotate(360deg)}}
+@keyframes av-hello{0%,100%{transform:translateY(0) rotate(0)}25%{transform:translateY(-4px) rotate(-6deg)}50%{transform:translateY(0) rotate(0)}75%{transform:translateY(-2px) rotate(4deg)}}
+@keyframes av-hi{0%,100%{transform:translateY(0) scale(1);opacity:.95}50%{transform:translateY(-3px) scale(1.06);opacity:1}}
+@keyframes av-blink{0%,93%,100%{transform:scaleY(1)}95.5%{transform:scaleY(.1)}}
+@keyframes av-morph{0%,100%{border-radius:46% 54% 52% 48%/52% 44% 56% 48%}33%{border-radius:56% 44% 42% 58%/46% 58% 42% 54%}66%{border-radius:42% 58% 55% 45%/60% 40% 58% 42%}}
+
+/* reduce motion: no looping animation; status still shows by colour, shape and marks */
+.aa-reduce-motion .av-halo,.aa-reduce-motion .av-swirl,.aa-reduce-motion .av-spin,.aa-reduce-motion .av-hi,.aa-reduce-motion .av-shape,
+.aa-reduce-motion .av-eye,.aa-reduce-motion .av-b-blob{animation:none !important}
+.aa-reduce-motion .av-st-needs .av-halo{opacity:1}
+
+/* cv */
+#cv-mount{position:absolute;inset:0;pointer-events:none}
+.cv-frame{position:absolute;display:flex;flex-direction:column;min-height:0;pointer-events:auto;color:var(--text);
+  background:color-mix(in srgb,var(--panel) 94%,transparent);
+  -webkit-backdrop-filter:blur(22px) saturate(1.25);backdrop-filter:blur(22px) saturate(1.25);
+  border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 30px 80px -12px rgba(0,0,0,.6),0 8px 24px rgba(0,0,0,.35);
+  opacity:0;visibility:hidden;transform:scale(.94);
+  transition:opacity .22s ease,transform .26s cubic-bezier(.2,.8,.2,1),visibility 0s linear .26s}
+.cv-frame[data-edge=right]{box-shadow:0 30px 80px -12px rgba(0,0,0,.6),0 8px 24px rgba(0,0,0,.35),10px 0 30px -12px color-mix(in srgb,var(--aa-glow) 40%,transparent)}
+.cv-frame[data-edge=left]{box-shadow:0 30px 80px -12px rgba(0,0,0,.6),0 8px 24px rgba(0,0,0,.35),-10px 0 30px -12px color-mix(in srgb,var(--aa-glow) 40%,transparent)}
+.cv-frame.cv-is-open{opacity:1;visibility:visible;transform:none;transition:opacity .22s ease,transform .26s cubic-bezier(.2,.8,.2,1),visibility 0s}
+
+.cv-head{display:flex;align-items:center;gap:10px;min-height:58px;padding:8px 10px 8px 14px;border-bottom:1px solid var(--line);flex:none}
+.cv-id{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.cv-avwrap{flex:none;display:flex}
+.cv-ph{display:block;width:28px;height:28px;border-radius:50%;background:radial-gradient(circle at 35% 30%,var(--brand-mint),var(--brand-cyan) 75%)}
+.cv-idtxt{min-width:0;flex:1}
+.cv-name{font-weight:650;font-size:14px;line-height:1.25}
+.cv-status{display:flex;align-items:flex-start;gap:6px;font-size:12px;line-height:1.35;color:var(--muted);min-width:0}
+.cv-status span{min-width:0;overflow-wrap:anywhere}
+.cv-dot{display:inline-block;width:7px;height:7px;margin-top:4px;border-radius:50%;background:var(--muted);flex:none}
+.cv-d-new,.cv-d-checking{background:var(--brand-cyan)}
+.cv-d-watching{background:var(--accent)}
+.cv-d-needs{background:var(--aa-amber)}
+.cv-d-paused{background:var(--muted)}
+.cv-d-offline{background:var(--danger)}
+.cv-proj{min-height:28px;max-width:172px;flex:none;padding:4px 10px;border-radius:14px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font-size:12px;line-height:1.3;text-align:left;cursor:pointer;display:flex;align-items:center;gap:6px}
+.cv-proj:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.cv-pname{min-width:0;overflow-wrap:anywhere}
+.cv-pcount{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--aa-amber);color:#2b1d00;font-size:11px;font-weight:700;display:inline-grid;place-items:center;flex:none}
+.cv-caret{color:var(--muted);flex:none}
+.cv-icons{display:flex;gap:2px;flex:none}
+.cv-ib{width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:var(--muted);display:grid;place-items:center;cursor:pointer;padding:0}
+.cv-ib:hover{background:var(--panel-2);color:var(--text)}
+
+.cv-others{display:flex;flex-direction:column;gap:4px;padding:6px 12px;border-bottom:1px solid var(--line);flex:none}
+.cv-others:empty{display:none}
+.cv-other{min-height:28px;padding:4px 10px;border:0;border-radius:8px;background:color-mix(in srgb,var(--aa-amber) 10%,transparent);color:var(--text);font-size:12px;line-height:1.35;text-align:left;cursor:pointer}
+.cv-other:hover{background:color-mix(in srgb,var(--aa-amber) 18%,transparent)}
+
+.cv-tabs{display:flex;gap:4px;padding:8px 12px;border-bottom:1px solid var(--line);flex:none}
+.cv-tab{height:28px;padding:0 12px;border-radius:8px;border:1px solid transparent;background:none;color:var(--muted);cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+.cv-tab:hover{color:var(--text)}
+.cv-tab.cv-is-on{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+.cv-count{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--aa-amber);color:#2b1d00;font-size:11px;font-weight:700;display:inline-grid;place-items:center}
+
+.cv-view{flex:1;min-height:0;overflow:auto;padding:18px 16px 14px}
+.cv-chat{display:flex;flex-direction:column;gap:16px}
+.cv-setup:empty{display:none}
+.cv-pane{min-height:100%}
+.cv-empty{font-size:12px;color:var(--muted);text-align:center;padding:24px 8px;margin:0;line-height:1.5}
+
+.cv-me{display:flex;justify-content:flex-end}
+.cv-bub{max-width:82%;background:color-mix(in srgb,var(--accent) 16%,var(--panel-2));border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));border-radius:14px 14px 4px 14px;padding:8px 12px;white-space:pre-line;font-size:13px;line-height:1.5}
+.cv-agent{display:flex;gap:10px;align-items:flex-start;max-width:96%}
+.cv-ava{flex:none;display:flex;margin-top:1px}
+.cv-agent-body{min-width:0;flex:1}
+.cv-txt{white-space:pre-line;font-size:13px;line-height:1.55;color:#dbe3ea}
+.cv-time{font-size:12px;color:var(--muted)}
+.cv-agent-body .cv-time{display:block;margin-top:4px}
+.cv-check{align-self:center;font-size:12px;color:var(--muted);text-align:center;padding:0 10px}
+
+.cv-chip{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:10px;font-size:12px;font-weight:600;flex:none}
+.cv-chip-amber{background:color-mix(in srgb,var(--aa-amber) 16%,transparent);color:var(--aa-amber);border:1px solid color-mix(in srgb,var(--aa-amber) 40%,transparent)}
+.cv-chip-note{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+.cv-chip-draft{background:var(--panel);color:var(--muted);border:1px solid var(--line)}
+
+.cv-blk{flex:1;min-width:0;border:1px solid color-mix(in srgb,var(--aa-amber) 50%,var(--line));border-left:3px solid var(--aa-amber);border-radius:12px;background:color-mix(in srgb,var(--aa-amber) 6%,var(--panel-2));padding:11px 13px}
+.cv-blk.cv-is-done{border-color:var(--line);border-left:3px solid var(--brand-mint);background:var(--panel-2);opacity:.8}
+.cv-blk.cv-is-snoozed{border-color:var(--line);border-left:3px solid var(--muted);background:var(--panel-2);opacity:.8}
+.cv-blk-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.cv-line{display:grid;grid-template-columns:76px 1fr;gap:8px;font-size:12px;color:#c3ccd5;margin-top:6px;line-height:1.45}
+.cv-lbl{color:var(--muted)}
+.cv-ev{margin-top:9px}
+.cv-src{min-height:28px;padding:0 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--accent);font:12px ui-monospace,Menlo,monospace;cursor:pointer;overflow-wrap:anywhere;text-align:left}
+.cv-src:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+.cv-quote{margin:6px 0 0;padding:7px 9px;border-left:2px solid var(--line);font:12px/1.5 ui-monospace,Menlo,monospace;color:#b9c6d2;background:var(--panel);border-radius:0 6px 6px 0;white-space:pre-wrap}
+.cv-acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.cv-btn{height:28px;padding:0 10px;font-size:12px}
+.cv-done{margin-top:10px;font-size:12px;color:var(--brand-mint);display:flex;gap:6px;align-items:center}
+.cv-done.cv-muted{color:var(--muted)}
+.cv-mock{font-size:12px;color:var(--muted);margin-left:2px}
+
+.cv-doc{flex:1;min-width:0;border:1px solid var(--line);border-radius:12px;background:var(--panel-2);overflow:hidden}
+.cv-doc-head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);font-size:13px;min-width:0;flex-wrap:wrap}
+.cv-doc-head b{font-weight:600;min-width:0;overflow-wrap:anywhere}
+.cv-doc-body{padding:12px 13px 4px;white-space:pre-wrap;font-size:13px;line-height:1.55;color:#d6dee6}
+.cv-doc-acts{display:flex;gap:6px;padding:10px 12px 12px;flex-wrap:wrap;align-items:center}
+
+.cv-note{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.5;color:#cfd8e0;padding:9px 11px;border:1px dashed var(--line);border-radius:10px}
+.cv-note span:last-child{min-width:0}
+
+.cv-typing{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);padding-left:30px}
+.cv-dots{display:inline-flex;gap:3px;align-items:center}
+.cv-dots i{display:block;width:5px;height:5px;border-radius:50%;background:var(--accent);opacity:.3;animation:cv-blink 1.1s infinite ease-in-out}
+.cv-dots i:nth-child(2){animation-delay:.15s}
+.cv-dots i:nth-child(3){animation-delay:.3s}
+@keyframes cv-blink{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}
+
+.cv-composer{flex:none;border-top:1px solid var(--line);padding:10px 12px 10px;display:flex;flex-direction:column;gap:8px;background:color-mix(in srgb,var(--panel) 80%,transparent)}
+.cv-composer[hidden]{display:none}
+.cv-ctx:empty,.cv-sugg:empty{display:none}
+.cv-ctx-chip{display:inline-flex;align-items:center;gap:6px;align-self:flex-start;max-width:100%;min-height:26px;padding:2px 4px 2px 10px;border-radius:13px;background:var(--panel-2);border:1px solid var(--line);font-size:12px;color:var(--muted)}
+.cv-ctx-chip b{color:var(--text);font-weight:500;min-width:0;overflow-wrap:anywhere}
+.cv-x{width:24px;height:24px;flex:none;border:0;border-radius:12px;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0}
+.cv-x:hover{background:var(--line);color:var(--text)}
+.cv-sugg{display:flex;gap:6px;flex-wrap:wrap}
+.cv-sg{height:28px;padding:0 11px;border-radius:14px;border:1px solid var(--line);background:transparent;color:var(--text);font-size:12px;cursor:pointer}
+.cv-sg:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+.cv-inrow{display:flex;align-items:flex-end;gap:6px;background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:6px 6px 6px 12px}
+.cv-inrow:focus-within{border-color:color-mix(in srgb,var(--accent) 55%,var(--line))}
+.cv-ta{flex:1;min-width:0;min-height:22px;max-height:120px;resize:none;border:0;outline:0;background:transparent;color:var(--text);font:inherit;font-size:13px;line-height:1.45;padding:4px 0}
+.cv-ta::placeholder{color:var(--muted)}
+.cv-mic{width:30px;height:30px;flex:none;display:grid;place-items:center;border:0;border-radius:8px;background:transparent;color:var(--muted);opacity:.45;cursor:not-allowed;padding:0}
+.cv-send{width:30px;height:30px;flex:none;border:0;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-weight:700;font-size:15px;cursor:pointer;padding:0}
+.cv-send:hover{filter:brightness(1.08)}
+.cv-hint{font-size:12px;color:var(--muted);line-height:1.4}
+
+.cv-switcher-pop{position:absolute;left:12px;right:12px;top:64px;z-index:4;background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:6px;box-shadow:0 18px 40px rgba(0,0,0,.5)}
+.cv-switcher-pop[hidden]{display:none}
+.cv-pick{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:32px;padding:4px 10px;border:0;border-radius:8px;background:transparent;color:var(--text);cursor:pointer;font-size:13px;text-align:left}
+.cv-pick:hover{background:var(--line)}
+.cv-pick small{color:var(--muted);font-size:12px}
+
+.cv-proj:focus-visible,.cv-ib:focus-visible,.cv-tab:focus-visible,.cv-x:focus-visible,.cv-send:focus-visible,.cv-sg:focus-visible,.cv-src:focus-visible,.cv-other:focus-visible,.cv-pick:focus-visible,.cv-frame button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.aa-reduce-motion .cv-frame,.aa-reduce-motion .cv-frame.cv-is-open{transition:none}
+.aa-reduce-motion .cv-dots i{animation:none;opacity:.7}
+
+/* su */
+/* su: in-chat first-run setup (replaces the old setup form) */
+@keyframes su-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes su-flash{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--aa-glow) 75%,transparent)}100%{box-shadow:0 0 0 9px transparent}}
+.su-msg{display:flex;align-items:flex-start;gap:8px;margin:0 0 12px;max-width:100%}
+.su-msg.su-enter,.su-foot.su-enter{animation:su-in .45s ease both;animation-delay:calc(var(--i,0) * 120ms)}
+.su-av{width:20px;height:20px;flex:none;margin-top:3px;display:flex;align-items:center;justify-content:center}
+.su-av svg{display:block}
+.su-dot{width:14px;height:14px;border-radius:50%;background:var(--aa-glow);display:block}
+.su-bub{min-width:0;flex:1;background:var(--panel-2);border:1px solid var(--line);border-radius:4px 12px 12px 12px;padding:9px 12px;font-size:13px;line-height:1.45;color:var(--text);overflow-wrap:anywhere}
+.su-bub p{margin:0}
+.su-hint{margin:8px 0 0!important;color:var(--muted);font-size:12px}
+.su-group{margin-top:10px}
+.su-glabel{font-size:12px;color:var(--muted);margin:0 0 5px}
+.su-glabel em{font-style:normal;opacity:.85}
+.su-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start}
+.su-chip{position:relative;display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:28px;padding:0 0 0 8px;border-radius:14px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;font-size:12px;line-height:1.35;box-sizing:border-box}
+.su-chip .su-ic{display:inline-flex;color:var(--muted);flex:none}
+.su-txt{display:flex;flex-direction:column;min-width:0;padding:4px 0}
+.su-lbl{overflow-wrap:anywhere;word-break:break-word;min-width:0}
+.su-why{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.su-x{flex:none;min-width:28px;min-height:28px;width:28px;height:28px;border:0;border-radius:0 14px 14px 0;background:none;color:var(--muted);font:inherit;font-size:16px;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center}
+.su-x:hover{color:var(--text);background:color-mix(in srgb,var(--text) 8%,transparent)}
+.su-flash{animation:su-flash 1.2s ease-out 2}
+.su-add.su-chip{border-style:dashed;color:var(--muted);background:transparent;padding:0 9px;cursor:pointer;min-height:28px}
+.su-add.su-chip:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.su-add.su-chip[aria-expanded="true"]{color:var(--text);border-color:var(--accent)}
+.su-search{margin-top:8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:8px;max-width:300px;box-sizing:border-box;width:100%}
+.su-q{width:100%;height:28px;border-radius:7px;border:1px solid var(--line);background:var(--panel);color:var(--text);font:inherit;font-size:12px;padding:0 9px;outline:none;box-sizing:border-box}
+.su-q:focus,.su-goal-in:focus{border-color:var(--accent)}
+.su-results{margin-top:6px;display:grid;gap:2px}
+.su-res{display:flex;align-items:flex-start;gap:8px;min-height:28px;padding:4px 6px;border-radius:7px;border:0;background:none;color:var(--text);font:inherit;font-size:12px;line-height:1.35;cursor:pointer;text-align:left;width:100%;box-sizing:border-box}
+.su-res:hover{background:var(--panel-2)}
+.su-res .su-ic{display:inline-flex;color:var(--muted);flex:none;padding-top:2px}
+.su-rl{min-width:0;overflow-wrap:anywhere;flex:1}
+.su-res small{color:var(--muted);font-size:12px;flex:none;max-width:45%;overflow-wrap:anywhere;text-align:right}
+.su-none{color:var(--muted);font-size:12px;padding:4px 6px;margin:0}
+.su-pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.su-pill{min-height:28px;padding:0 11px;border-radius:14px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;max-width:100%;text-align:left;overflow-wrap:anywhere}
+.su-pill:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.su-pill.su-is-sel{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,var(--panel-2))}
+.su-pill-other{color:var(--muted);border-style:dashed;background:transparent}
+.su-tick{color:var(--accent);font-weight:700}
+.su-goal-in{height:28px;min-width:220px;max-width:100%;box-sizing:border-box;border:1px solid var(--accent);border-radius:14px;background:var(--bg);color:var(--text);font:inherit;font-size:12px;padding:0 11px;outline:none}
+.su-foot{margin:12px 0 4px 28px;display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.su-go{min-height:30px}
+.su-model{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.su-link{min-height:28px;padding:0 2px;border:0;background:none;color:var(--accent);font:inherit;font-size:12px;cursor:pointer;text-decoration:underline;text-underline-offset:2px;display:inline-flex;align-items:center}
+.su-profiles{display:grid;gap:2px;width:100%;max-width:300px;box-sizing:border-box;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px}
+.su-prof{display:flex;align-items:center;gap:8px;min-height:28px;padding:4px 8px;border-radius:7px;cursor:pointer;font-size:12px;color:var(--text)}
+.su-prof:hover{background:var(--panel-2)}
+.su-prof input{accent-color:var(--accent);margin:0}
+.su-prof small{margin-left:auto;color:var(--muted);font-size:12px}
+.aa-reduce-motion .su-msg.su-enter,
+.aa-reduce-motion .su-foot.su-enter,
+.aa-reduce-motion .su-flash{animation:none}
+
+/* bb */
+/* bb: speech bubbles beside the floating avatar */
+#bb-mount{position:absolute;inset:0;pointer-events:none}
+.bb-stack{--bb-bg:#131c26;--bb-from:14px;position:absolute;display:flex;flex-direction:column;gap:8px;width:max-content;max-width:300px;pointer-events:none}
+.bb-stack.bb-side-l{--bb-from:-14px}
+.bb-stack.bb-hide{display:none}
+.bb-stack.bb-empty::after{display:none}
+.bb-stack::after{content:'';position:absolute;top:calc(var(--bb-tail,50%) - 5px);width:10px;height:10px;background:var(--bb-bg);transform:rotate(45deg);border-radius:2px}
+.bb-stack.bb-side-r::after{right:-5px}
+.bb-stack.bb-side-l::after{left:-5px}
+
+.bb-item{position:relative;pointer-events:auto;min-width:0;max-width:100%;box-sizing:border-box;padding:9px 12px;border-radius:12px;border:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,0) 60%),var(--bb-bg);box-shadow:0 10px 28px -14px rgba(0,0,0,.7);color:var(--text);font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+.bb-item.bb-enter{transform-origin:100% 100%;animation:bb-pop .38s cubic-bezier(.2,.9,.3,1.2)}
+.bb-stack.bb-side-l .bb-item.bb-enter{transform-origin:0 100%}
+.bb-item.bb-out{animation:bb-fade .2s ease forwards;pointer-events:none}
+.bb-item.bb-d1{opacity:.72;transform:scale(.98)}
+.bb-item.bb-d2{opacity:.42;transform:scale(.96)}
+.bb-d2 .bb-sub{display:none}
+@keyframes bb-pop{0%{opacity:0;transform:translateX(var(--bb-from,14px)) scale(.86)}60%{opacity:1;transform:translateX(0) scale(1.03)}100%{opacity:1;transform:none}}
+@keyframes bb-fade{to{opacity:0;transform:translateY(4px)}}
+@keyframes bb-spin{to{transform:rotate(360deg)}}
+
+.bb-row{display:flex;gap:8px;align-items:flex-start}
+.bb-text{flex:1;min-width:0;white-space:normal}
+.bb-routine .bb-text{color:#c3ced9}
+.bb-sub{margin-top:2px;font-size:12px;line-height:1.4;color:var(--muted);white-space:normal}
+.bb-proj{margin-bottom:3px;font-size:12px;line-height:1.3;color:var(--muted);white-space:normal}
+.bb-x{flex:none;width:28px;height:28px;margin:-6px -6px -6px 0;padding:0;border:0;border-radius:8px;background:none;color:var(--muted);font-size:16px;line-height:1;cursor:pointer}
+.bb-x:hover{color:var(--text);background:var(--panel-2)}
+.bb-spin{flex:none;width:12px;height:12px;margin-top:4px;box-sizing:border-box;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:bb-spin .8s linear infinite}
+.bb-warn{border-color:color-mix(in srgb,var(--aa-amber) 55%,var(--line))}
+.bb-warn .bb-sub{color:var(--aa-amber)}
+
+.bb-decision{border-color:color-mix(in srgb,var(--aa-amber) 40%,var(--line));box-shadow:inset 3px 0 0 var(--aa-amber),0 10px 28px -14px rgba(0,0,0,.7)}
+.bb-decision.bb-glow{box-shadow:inset 3px 0 0 var(--aa-amber),0 0 0 1px color-mix(in srgb,var(--aa-amber) 16%,transparent),0 0 26px -6px color-mix(in srgb,var(--aa-amber) 55%,transparent),0 10px 28px -14px rgba(0,0,0,.7)}
+.bb-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.bb-chip{display:inline-flex;align-items:center;min-height:22px;padding:2px 8px;border-radius:11px;border:1px solid var(--line);background:var(--panel);font:12px ui-monospace,Menlo,monospace;color:var(--muted);white-space:normal;overflow-wrap:anywhere}
+.bb-held-line{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:var(--muted)}
+.bb-reply{display:flex;gap:6px;margin-top:10px}
+.bb-input{flex:1;min-width:0;height:28px;padding:0 9px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit;font-size:13px;outline:none}
+.bb-input::placeholder{color:var(--muted)}
+.bb-input:focus{border-color:color-mix(in srgb,var(--accent) 60%,var(--line))}
+.bb-send{height:28px;padding:0 10px}
+.bb-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.bb-act{height:28px;padding:0 10px;font-size:12px}
+.bb-sent{margin-top:8px;font-size:12px;font-weight:600;color:var(--accent)}
+
+.aa-reduce-motion .bb-item.bb-enter{animation:none}
+.aa-reduce-motion .bb-item.bb-out{animation:none;opacity:0}
+.aa-reduce-motion .bb-spin{animation:none}
+
+/* cf */
+.cf-wrap{color:var(--text);font-size:13px;line-height:1.45;padding:2px 2px 0;overflow-wrap:anywhere}
+.cf-wrap>.cf-sec:first-child{border-top:0;padding-top:4px}
+.cf-sec{padding:14px 0;border-top:1px solid var(--line)}
+.cf-h{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600;margin:0 0 8px}
+.cf-sub{color:var(--muted);font-size:12px;margin:2px 0 0;line-height:1.4}
+.cf-grow{flex:1;min-width:0}
+.cf-txt{flex:1;min-width:0;overflow-wrap:anywhere}
+.cf-now{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
+.cf-now-text{flex:1;min-width:0;line-height:1.45;overflow-wrap:anywhere}
+.cf-now .aa-btn{height:28px;padding:0 10px;font-size:12px;margin-top:6px}
+.cf-dot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:5px;background:var(--brand-mint)}
+.cf-dot-watching{background:var(--brand-mint)}
+.cf-dot-checking{background:var(--brand-cyan);animation:cf-pulse 1.2s ease-in-out infinite}
+.cf-dot-needs{background:var(--aa-amber)}
+.cf-dot-paused{background:#5b6876}
+.cf-dot-offline{background:transparent;border:1.5px dashed var(--muted)}
+@keyframes cf-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}
+.aa-reduce-motion .cf-dot-checking{animation:none}
+.cf-item{display:flex;align-items:center;gap:10px;min-height:34px;padding:5px 0;border-bottom:1px solid var(--line);color:var(--text)}
+.cf-item:last-child{border-bottom:0}
+.cf-muted-row{color:var(--muted);font-size:12px;min-height:28px;padding:4px 0}
+.cf-ic{display:inline-flex;color:var(--muted);flex:none;width:16px;justify-content:center}
+.cf-link{background:none;border:0;padding:0 2px;min-height:28px;color:var(--accent);cursor:pointer;font-size:12px;display:inline-flex;align-items:center;text-align:left}
+.cf-link:hover{text-decoration:underline}
+.cf-link.cf-danger{color:var(--danger)}
+.cf-link.cf-on{color:var(--text);font-weight:600}
+.cf-mini{height:28px;padding:0 10px;font-size:12px;flex:none}
+.cf-icon{width:28px;height:28px;border-radius:7px;border:0;background:none;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:none;padding:0}
+.cf-icon:hover{background:var(--panel-2);color:var(--text)}
+.cf-inline{display:flex;flex-wrap:wrap;gap:14px;padding:0 0 8px 0}
+.cf-tag{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:0 6px;line-height:18px;flex:none}
+.cf-sched{border-bottom:1px solid var(--line)}
+.cf-sched .cf-item{border-bottom:0}
+.cf-sched-add{margin-top:6px}
+.cf-srcs{display:flex;flex-direction:column}
+.cf-src{min-height:36px}
+.cf-adding{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;flex:none}
+.cf-spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--brand-cyan);display:inline-block;animation:cf-spin .8s linear infinite}
+@keyframes cf-spin{to{transform:rotate(360deg)}}
+.aa-reduce-motion .cf-spin{animation:none}
+.cf-x{width:28px;height:28px;border-radius:50%;border:0;background:none;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex:none}
+.cf-x:hover{background:var(--line);color:var(--text)}
+.cf-drop{margin-top:10px}
+.cf-foot{display:flex;gap:8px;padding-top:14px;border-top:1px solid var(--line);margin-top:4px}
+.cf-big{flex:1;height:38px;font-size:13px;font-weight:600;justify-content:center}
+.cf-seg{display:flex;gap:2px;padding:2px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px}
+.cf-seg button{flex:1;min-height:26px;border:0;border-radius:6px;background:none;color:var(--muted);font-size:12px;cursor:pointer;padding:2px 6px;overflow-wrap:anywhere}
+.cf-seg button:hover{color:var(--text)}
+.cf-seg button.cf-seg-on{background:var(--panel);color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
+.cf-route{margin-bottom:10px}
+.cf-route:last-child{margin-bottom:0}
+.cf-label{font-size:13px;margin-bottom:5px}
+.cf-row-sw{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.cf-row-sw:last-child{border-bottom:0}
+.cf-sw{width:36px;height:20px;border-radius:10px;border:0;background:#2a3642;position:relative;cursor:pointer;flex:none;padding:0;transition:background .15s}
+.cf-sw-on{background:var(--accent)}
+.cf-sw-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#e4eaf0;transition:transform .15s}
+.cf-sw-on .cf-sw-knob{transform:translateX(16px);background:var(--accent-ink)}
+.aa-reduce-motion .cf-sw,.aa-reduce-motion .cf-sw-knob{transition:none}
+.cf-end{padding-bottom:6px}
+.cf-total{font-size:13px;color:var(--text);margin:0 0 6px;padding:0 6px}
+.cf-proj{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:6px 8px;border:0;background:none;border-radius:8px;color:var(--text);cursor:pointer;text-align:left}
+.cf-proj:hover{background:var(--panel-2)}
+.cf-proj .cf-dot{margin:0}
+.cf-proj-name{display:block;font-size:13px;overflow-wrap:anywhere}
+.cf-proj .cf-sub{margin-top:0;font-size:11px;overflow-wrap:anywhere}
+.cf-count{min-width:20px;height:18px;padding:0 6px;border-radius:9px;background:rgba(251,191,36,.16);color:var(--aa-amber);font-size:11px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.cf-tick{width:16px;color:var(--accent);display:inline-flex;justify-content:center;flex:none}
+.cf-foot-sw{border-top:1px solid var(--line);margin-top:6px;padding-top:10px}
+.cf-foot-sw .cf-link{min-height:30px}
+
+/* lead fixes after QA: comfortable hit targets */
+.cv-x,.bb-x,.cf-x{min-width:28px;min-height:28px}
+.cv-src{min-height:26px}
+/* lead v2: the bubble already says Adding/Added, so the avatar keeps only its spinner ring */
+.av-flash{display:none!important}
+/* status words never split mid-word; the project chip gives up width first */
+.cv-idtxt{flex:0 0 auto;min-width:96px}
+.cv-status span{overflow-wrap:normal;word-break:normal;white-space:nowrap}
+/* v2 review fix: the name+status block never shrinks below its text (it used to be flex:1 + min-width:0,
+   so the chip slid over "Needs you · 1"); the chip takes only the space left and wraps inside itself */
+.cv-id{flex:0 0 auto}
+.cv-proj{flex:1 1 0;min-width:0;justify-content:flex-start}
+</style></head><body>
+<div id="in-card" style="position:fixed;left:250px;top:64px;width:470px;z-index:60;background:#0e141bf2;border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:0 20px 60px #000a;font-size:12.5px;line-height:1.5">
+<b style="font-size:14px">ApexAgent as a floating assistant · mockup v2</b>
+<p class="aa-muted" style="margin:6px 0 8px">Use ‹ › at the bottom to walk the story. Everything is clickable: drag the avatar, right-click it, ⌘K, Tab to it and press Enter, drag sidebar files onto it, reply in bubbles.</p>
+<b>New in v2</b>
+<ul style="margin:4px 0 8px;padding-left:18px;color:#c9d3dc">
+<li>Each project keeps its own chat, sources and blockers; the avatar counts across all of them</li>
+<li>Dropping a file says "Adding…", then "Added" only once it's saved; duplicates and bad drops are refused</li>
+<li>⌘K opens it (⌘J stays Deck's "next thing that needs you"); full keyboard use</li>
+<li>Moves beside a docked browser instead of vanishing under it</li>
+<li>Status line no longer cut off; the glow stays inside the window</li>
+<li>Review fixes: a drop stays with the project it was dropped on even if you switch mid-save; resolving a blocker also removes its bubble; the project chip no longer covers the status</li></ul>
+<b>Borrowed from Dot</b>
+<ul style="margin:4px 0 8px;padding-left:18px;color:#c9d3dc">
+<li>One ongoing conversation you keep talking to while it works</li>
+<li>Introduces itself and suggests what to watch from context (no setup form)</li>
+<li>Reaches out only with results or decisions; routine stays quiet</li>
+<li>Name + look are yours (shape, colour, eyes, glasses; handle @tyler-apex)</li>
+<li>Activity, Scheduled, Pause, where updates go, what it remembers</li></ul>
+<b>Left out on purpose</b>
+<ul style="margin:4px 0 0;padding-left:18px;color:#c9d3dc">
+<li>Voice calls, Slack/Teams, cloud computer, website sign-in: Deck has none of these yet (mic shown disabled)</li>
+<li>iPhone version: same bubble idea, later</li></ul>
+<button class="aa-btn" style="margin-top:10px" onclick="this.parentNode.style.display='none'">Got it</button>
+</div>
+<div class="sh-win">
+  <div class="sh-top">
+    <div class="sh-logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#71e6b5" stroke-width="1.6"><path d="M12 2 22 12 12 22 2 12z"/></svg>Apex Deck</div>
+    <div class="sh-tabs" id="sh-tabs">
+      <button data-page="agents">Agents</button><button data-page="code">Code</button>
+      <button data-page="threads" class="sh-on">Threads</button><button data-page="browser">Browser</button><button data-page="library">Library</button>
+    </div>
+    <button class="aa-btn" data-page="settings" title="Settings">⚙</button>
+  </div>
+  <div class="sh-body">
+    <aside class="sh-side">
+      <h4>Projects</h4>
+      <div class="sh-item">▸ Mobile launch <small>This Mac</small></div>
+      <div class="sh-item">▸ Apex Deck <small>Hetzner</small></div>
+      <h4>Files · drag onto Apex</h4>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"file","ref":"docs/launch-plan.md","label":"docs/launch-plan.md","project":"mobile"}'>📄 docs/launch-plan.md</div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"file","ref":"test-report.md","label":"test-report.md","project":"mobile"}'>📄 test-report.md</div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"file","ref":"CHANGELOG.md","label":"CHANGELOG.md","project":"mobile"}'>📄 CHANGELOG.md</div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"file","ref":"../shared/brand-notes.md","label":"../shared/brand-notes.md","project":"mobile"}'>📄 ../shared/brand-notes.md <small>outside</small></div>
+      <h4>Threads</h4>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"thread","ref":"thr-release","label":"Release thread","project":"mobile"}'>💬 Release thread <small>2m</small></div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"thread","ref":"thr-sso","label":"SSO fixes","project":"mobile"}'>💬 SSO fixes <small>1h</small></div>
+      <div class="sh-item" draggable="true" data-aa-drag='{"kind":"thread","ref":"thr-deploy","label":"Deploy checklist","project":"deck"}'>💬 Deploy checklist <small>Apex Deck</small></div>
+    </aside>
+    <main class="sh-main">
+      <section class="sh-page sh-show" data-page="threads">
+        <h3 style="margin:0 0 18px">Release thread <span class="aa-muted" style="font-weight:400">· 3 bots</span></h3>
+        <div class="sh-msg"><div class="sh-ava"></div><div><b>Null</b><p>Build 214 is up on TestFlight. SSO login still flakes on the staging tenant; I'm looking at the token refresh.</p></div></div>
+        <div class="sh-msg"><div class="sh-ava"></div><div><b>Gronk</b><p>Store screenshots are done for 6.7" and 6.1". Waiting on final copy.</p></div></div>
+        <div class="sh-msg"><div class="sh-ava"></div><div><b>Human</b><p>Ship the copy by Friday. What's left before Nov 1?</p></div></div>
+      </section>
+      <section class="sh-page" data-page="code">
+        <h3 style="margin:0 0 14px">test-report.md</h3>
+        <div class="sh-file">## Nightly · Oct 9
+Unit          412 / 412 passing
+UI smoke       38 / 38  passing
+...
+SSO login:     3 of 12 failing   (line 14)
+  - refresh token expired after 60s
+  - tenant switch drops session</div>
+      </section>
+      <section class="sh-page sh-page-browser" data-page="browser">
+        <h3 style="margin:0 0 6px">Release thread <span class="aa-muted" style="font-weight:400">· browser docked beside the chat</span></h3>
+        <p class="aa-muted" style="margin:0 0 14px;max-width:300px">The docked browser is a native view drawn above the whole window, so ordinary page elements can't sit on top of it.</p>
+        <div class="sh-native"><div class="sh-nat-bar"><span class="sh-nat-dot"></span>testflight.apple.com/app/mobile-launch<span class="sh-nat-tag">Live page</span><span class="sh-nat-pic">Picture of the page · live again when Apex closes</span></div>
+          <div class="sh-nat-body"><b>Mobile launch · Build 214</b><p>Testing · 38 testers · expires in 89 days</p><div class="sh-nat-blk"></div><div class="sh-nat-blk sh-nat-short"></div><div class="sh-nat-blk"></div></div></div>
+      </section>
+      <section class="sh-page" data-page="agents"><h3>Agents</h3><p class="aa-muted">Claude · Codex · Venice bots… (Deck's normal Agents page)</p></section>
+      <section class="sh-page" data-page="library"><h3>Library</h3><p class="aa-muted">Pictures and files from every machine.</p></section>
+      <section class="sh-page" data-page="settings"><h3>Settings</h3><p class="aa-muted">Appearance · Machines · Keys</p></section>
+    </main>
+  </div>
+</div>
+<div id="aa-layer"><div id="bb-mount"></div><div id="cv-mount"></div><div id="av-mount"></div></div>
+<div class="st-bar"><button class="aa-btn" id="st-prev">‹</button><span id="st-count"></span><button class="aa-btn" id="st-next">›</button><b id="st-title"></b><span class="st-note" id="st-note"></span><label class="aa-muted"><input type="checkbox" id="st-motion"> Reduce motion</label></div>
+
+<script>(function(){
+  const listeners = {};
+  const saved = (() => { try { return JSON.parse(localStorage.getItem('aa2-pos')||'null'); } catch { return null; } })();
+  // Fields that belong to ONE project. The top-level copies always show the current project;
+  // AA.switchProject() saves them into byProject[old] and loads byProject[new].
+  const SCOPED = ['status','needs','setup','sources','messages'];
+  const blank = () => ({status:'new', needs:0, setup:'none', sources:[], messages:[]});
+  const AA = window.AA = {
+    parts: {},
+    SCOPED,
+    state: {
+      page:'threads', open:false, size:'compact', tab:'chat', hidden:false,
+      pos: saved || {edge:'right', y: 420}, project:'mobile',
+      projects:[
+        {id:'mobile', name:'Mobile launch', folder:'~/code/mobile-launch', machine:'This Mac'},
+        {id:'deck', name:'Apex Deck', folder:'/srv/apex-deck', machine:'Hetzner'}],
+      byProject:{ mobile: blank(), deck: blank() },
+      ...blank(),
+      context:{label:'Threads › Release thread'}, switcher:false, browserFrozen:false,
+      look:{shape:'orb', color:'mint', eyes:true, glasses:false},
+      quiet:{on:false, from:'22:00', to:'08:00'}, routes:{routine:'panel', decisions:'bubble+phone'}
+    },
+    on(e, fn){ (listeners[e] ||= []).push(fn); },
+    emit(e, p){ (listeners[e]||[]).forEach(fn => { try { fn(p, AA.state); } catch(err){ console.error('[AA '+e+']', err); } }); },
+    set(patch){ Object.assign(AA.state, patch);
+      if (patch.pos) try { localStorage.setItem('aa2-pos', JSON.stringify(patch.pos)); } catch {}
+      AA.emit('change', patch); },
+    part(name, obj){ AA.parts[name] = obj; },
+    addMessage(m){ AA.state.messages = [...AA.state.messages, {time: m.time || 'now', id: m.id || ('m'+Math.random().toString(36).slice(2,8)), ...m}]; AA.emit('change', {messages:true}); },
+    bubble(b){ AA.emit('bubble', b); },
+    esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); },
+    layer(){ return document.getElementById('aa-layer').getBoundingClientRect(); },
+
+    /* ---------- per-project scope ---------- */
+    view(id){ // scoped fields for any project; the current one is read live
+      const s = AA.state; if (id === s.project) { const o = {}; SCOPED.forEach(k => o[k] = s[k]); return o; }
+      return s.byProject[id] || blank(); },
+    totalNeeds(){ return AA.state.projects.reduce((n, p) => n + (AA.view(p.id).needs || 0), 0); },
+    switchProject(id){ const s = AA.state; if (id === s.project || !s.byProject[id]) { AA.set({switcher:false}); return; }
+      const cur = {}; SCOPED.forEach(k => cur[k] = s[k]);
+      const by = {...s.byProject, [s.project]: cur};
+      AA.set({...by[id], byProject: by, project: id, switcher:false}); },
+    loadProjects(map){ // steps: replace every project's scoped data at once
+      const by = {}; AA.state.projects.forEach(p => by[p.id] = {...blank(), ...(map[p.id]||{})});
+      AA.set({...by[AA.state.project], byProject: by}); },
+
+    /* ---------- per-project writes ---------- */
+    patchProject(id, patch){ // write scoped fields to one project, current or not
+      const s = AA.state; if (id === s.project) return AA.set(patch);
+      AA.set({byProject: {...s.byProject, [id]: {...(s.byProject[id] || blank()), ...patch}}}); },
+    addMessageTo(id, m){
+      const msg = {time: m.time || 'now', id: m.id || ('m'+Math.random().toString(36).slice(2,8)), ...m};
+      AA.patchProject(id, {messages: [...AA.view(id).messages, msg]}); },
+
+    /* ---------- adding a source (drag-drop) ---------- */
+    // payload = {kind:'file'|'thread', ref, label, project}. Resolves {ok, reason?}.
+    // The destination is the project that was open at the moment of the drop. Switching projects
+    // while it saves doesn't move the result: only that project's sources and chat change.
+    // Emits 'source-add' {phase:'adding'|'added'|'duplicate'|'failed', label, project, reason?}.
+    addSource(payload){
+      const s = AA.state, dest = s.project, key = payload.kind + ':' + payload.ref, p = s.projects.find(x => x.id === dest);
+      const say = (phase, reason) => AA.emit('source-add', {phase, label: payload.label, kind: payload.kind, project: dest, reason});
+      if (AA.view(dest).sources.some(x => (x.kind + ':' + (x.ref || x.label)) === key && !x.failed)) { say('duplicate'); return Promise.resolve({ok:false, reason:'duplicate'}); }
+      const id = 'add-' + Math.random().toString(36).slice(2,7);
+      AA.patchProject(dest, {sources: [...AA.view(dest).sources, {id, kind: payload.kind, ref: payload.ref, label: payload.label, why: 'you dropped it here', on: true, pending: true}]});
+      say('adding');
+      return new Promise(res => setTimeout(() => {
+        let reason = null;
+        if (payload.project && payload.project !== dest) reason = 'It belongs to ' + ((s.projects.find(x => x.id === payload.project)||{}).name || 'another project') + ', not ' + (p ? p.name : 'this project') + '.';
+        else if (String(payload.ref).startsWith('..')) reason = "It's outside the " + (p ? p.name : 'project') + ' folder, so I can\'t read it.';
+        const list = AA.view(dest).sources;
+        if (reason) {
+          AA.patchProject(dest, {sources: list.filter(x => x.id !== id)});
+          say('failed', reason); res({ok:false, reason}); }
+        else {
+          AA.patchProject(dest, {sources: list.map(x => x.id === id ? {...x, pending:false} : x)});
+          say('added'); res({ok:true}); }
+      }, 1100));
+    },
+
+    /* ---------- geometry ---------- */
+    AVATAR: 56, GLOW: 16, EDGE: 20,   // EDGE >= GLOW + 4 so the glow never leaves the window
+    browserRect(){ // the docked browser's native view, in #aa-layer coords (null when not on that page)
+      const el = document.querySelector('.sh-native'); if (!el || AA.state.page !== 'browser') return null;
+      const L = AA.layer(), r = el.getBoundingClientRect(); if (!r.width) return null;
+      return {left: r.left - L.left, top: r.top - L.top, width: r.width, height: r.height}; },
+    avatarBox(){ // where the avatar sits: {left, top, size}; keeps clear of the docked browser
+      const L = AA.layer(), s = AA.state, A = AA.AVATAR, E = AA.EDGE, b = AA.browserRect();
+      let right = L.width;                        // usable area is [0, right)
+      if (b && s.pos.edge === 'right') right = b.left;
+      const left = s.pos.edge === 'right' ? right - A - E : E;
+      const top = Math.max(E, Math.min(s.pos.y, L.height - A - E));
+      return {left, top, size: A}; },
+    panelRect(){
+      const L = AA.layer(), s = AA.state, a = AA.avatarBox(), w = s.size === 'tall' ? 460 : 380;
+      const h = s.size === 'tall' ? L.height - 24 : Math.min(560, L.height - 24);
+      const left = s.pos.edge === 'right' ? Math.max(12, a.left - 16 - w) : a.left + a.size + 16;
+      let top = s.size === 'tall' ? 12 : a.top + a.size/2 - h/2;
+      top = Math.max(12, Math.min(top, L.height - h - 12));
+      return {left, top, width:w, height:h};
+    }
+  };
+
+  // Docked browser: like Deck's BrowserView, the native page is drawn ABOVE the window. While any
+  // element with class "aa-overlay" overlaps it, show a picture of the page instead (browserFrozen).
+  function freezeCheck(){
+    const b = AA.browserRect(); let hit = false;
+    if (b) { const L = AA.layer();
+      document.querySelectorAll('.aa-overlay').forEach(o => { const r = o.getBoundingClientRect(); if (!r.width || !r.height) return;
+        if (getComputedStyle(o).visibility === 'hidden' || +getComputedStyle(o).opacity === 0) return;
+        const x = r.left - L.left, y = r.top - L.top;
+        if (x < b.left + b.width && x + r.width > b.left && y < b.top + b.height && y + r.height > b.top) hit = true; }); }
+    if (hit !== AA.state.browserFrozen) { AA.state.browserFrozen = hit; document.documentElement.classList.toggle('aa-browser-frozen', hit); AA.emit('change', {browserFrozen: hit}); }
+  }
+  AA.freezeCheck = freezeCheck;
+  window.addEventListener('DOMContentLoaded', () => {
+    for (const [n, p] of Object.entries(AA.parts)) { try { p.mount && p.mount(); } catch(err){ console.error('[mount '+n+']', err); } }
+    AA.emit('change', {});
+    AA.emit('ready');
+    setInterval(freezeCheck, 150);
+  });
+})();
+</script>
+<script>/* av */
+(function(){
+  var SIZE = 56, TAB = 6, SNAP_MS = 560;
+  var FLASH_MS = {added: 1200, duplicate: 1200, failed: 1600};
+  var PICK = {mint:'#3def91', cyan:'#1ed7ee', violet:'#a78bfa', amber:'#fbbf24'};
+  var SHAPES = {orb:'Orb', bot:'Bot', blob:'Blob'};
+  var PULSE = {'new':1, watching:1, checking:1, needs:1};
+  var DRAG_TYPE = 'application/x-apex-drag';
+  var wrap = null, hit = null, tipEl = null, menuEl = null, needsEl = null, flashEl = null;
+  var lastCheck = Date.now() - 4*60*1000, checkTimer = null, snapTimer = null, flashTimer = null;
+  var busy = false, dragging = false, dropOn = false, menuOn = false, g = null, suppressClick = false;
+  var adding = false, flashing = false, lastMenu = '';
+  var editors = [];
+
+  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+  function look(){
+    var l = AA.state.look || {};
+    return { name: l.name || 'Apex', shape: l.shape || 'orb', color: l.color || 'mint',
+             eyes: l.eyes !== false, glasses: !!l.glasses };
+  }
+  function project(){ return (AA.state.projects || []).filter(function(p){ return p.id === AA.state.project; })[0] || null; }
+  function ago(){
+    var m = Math.round((Date.now() - lastCheck) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return m + 'm ago';
+    return Math.round(m / 60) + 'h ago';
+  }
+  function needsPhrase(){
+    var parts = [];
+    AA.state.projects.forEach(function(p){
+      var k = AA.view(p.id).needs || 0;
+      if (k > 0) parts.push(k + ' in ' + p.name);
+    });
+    var n = AA.totalNeeds();
+    return (n === 1 ? '1 needs you' : n + ' need you') + ' · ' + parts.join(', ');
+  }
+  function phrase(){
+    var s = AA.state, st = s.status, p = project(), pn = p ? p.name : 'your project';
+    if (AA.totalNeeds() > 0) return needsPhrase();
+    if (s.hidden) return 'still working on ' + pn + ' · click to show';
+    if (st === 'new') return 'just met you';
+    if (st === 'checking') return 'checking ' + pn + ' now';
+    if (st === 'needs') return 'needs a look';
+    if (st === 'paused') return 'paused on ' + pn;
+    if (st === 'offline') return 'offline, can’t reach ' + (p ? p.machine : 'the machine');
+    return 'watching ' + pn + ' · last check ' + ago();
+  }
+  function tipText(lk){ return lk.name + ' · ' + phrase() + ' · ⌘K'; }
+
+  /* ---------- markup ---------- */
+  function shapeClass(lk){
+    return 'av-shape av-look-' + lk.shape + (lk.eyes ? ' av-eyes-on' : '') + (lk.glasses ? ' av-glasses-on' : '');
+  }
+  function shapeHTML(lk){
+    return '<span class="' + shapeClass(lk) + '">' +
+      '<span class="av-b-orb"></span>' +
+      '<span class="av-b-bot"></span><span class="av-ant"></span>' +
+      '<span class="av-b-blob"></span>' +
+      '<span class="av-eye av-eye-l"></span><span class="av-eye av-eye-r"></span>' +
+      '<span class="av-glass av-glass-l"></span><span class="av-glass av-glass-r"></span><span class="av-bridge"></span>' +
+      '</span>';
+  }
+  function miniFor(lk, size){
+    return '<span class="av-mini av-scope av-c-' + lk.color + '" style="--av-s:' + size + 'px" aria-hidden="true">' + shapeHTML(lk) + '</span>';
+  }
+  function wrapHTML(){
+    var lk = look();
+    return '<div class="av-wrap av-scope av-c-' + lk.color + ' av-edge-right av-st-new">' +
+      '<span class="av-halo"></span><span class="av-swirl"></span><span class="av-spin"></span>' +
+      '<span class="av-open-ring"></span><span class="av-drop-ring"></span><span class="av-offring"></span>' +
+      '<button class="av-hit" type="button" aria-label="Apex" aria-haspopup="menu" aria-expanded="false"><span class="av-tabbar"></span>' + shapeHTML(lk) + '</button>' +
+      '<span class="av-hi">✦ Hi</span><span class="av-needs">0</span><span class="av-pause"></span><span class="av-offdot"></span>' +
+      '<div class="av-drop-label aa-overlay">Drop to watch</div>' +
+      '<div class="av-flash aa-overlay" role="status" aria-live="polite"></div>' +
+      '<div class="av-tip aa-overlay" role="tooltip"></div>' +
+      '<div class="av-menu aa-overlay" role="menu"></div>' +
+      '</div>';
+  }
+  function menuItem(act, label, kbd){
+    return '<button type="button" class="av-mi" role="menuitem" data-act="' + act + '"><span>' + label + '</span>' +
+      (kbd ? '<kbd class="aa-kbd">' + kbd + '</kbd>' : '') + '</button>';
+  }
+  function menuHTML(){
+    var s = AA.state, paused = s.status === 'paused';
+    return menuItem('open', s.open ? 'Close chat' : 'Open chat', '⌘K') + menuItem('check', 'Check now') +
+      menuItem('pause', paused ? 'Resume' : 'Pause') + '<div class="av-mi-sep"></div>' +
+      menuItem('hide', 'Hide for now') + menuItem('move', 'Move to other side');
+  }
+
+  /* ---------- geometry: position only from AA.avatarBox() ---------- */
+  function boxFor(edge, y){ // exactly what AA.avatarBox() returns for {edge, y}, without moving the avatar
+    var saved = AA.state.pos;
+    AA.state.pos = {edge: edge, y: y};
+    try { return AA.avatarBox(); } finally { AA.state.pos = saved; }
+  }
+  function tabLeft(edge, box){ return edge === 'right' ? box.left + box.size + AA.EDGE - TAB : 0; }
+  function dragBounds(){
+    var L = AA.layer(), b = AA.browserRect(), A = AA.AVATAR, E = AA.EDGE;
+    return {minX: E, maxX: Math.max(E, (b ? b.left : L.width) - A - E), minY: E, maxY: Math.max(E, L.height - A - E)};
+  }
+  function place(){
+    var s = AA.state, box = AA.avatarBox();
+    wrap.style.right = 'auto';
+    wrap.style.left = (s.hidden ? tabLeft(s.pos.edge, box) : box.left) + 'px';
+    wrap.style.top = box.top + 'px';
+  }
+
+  /* ---------- avatar state ---------- */
+  function update(){
+    if (!wrap) return;
+    var s = AA.state, lk = look(), st = s.status || 'watching', n = AA.totalNeeds();
+    var amber = n > 0 && st !== 'offline', pulse = n > 0 && !!PULSE[st];
+    var tone = st === 'offline' ? 'grey' : (amber ? 'amber' : '');
+    wrap.className = ['av-wrap', 'av-scope', 'av-c-' + lk.color, 'av-edge-' + s.pos.edge, 'av-st-' + st,
+      pulse ? 'av-st-needs' : '', tone ? 'av-tone-' + tone : '', s.hidden ? 'av-is-tab' : '',
+      s.open ? 'av-is-open' : '', n > 0 ? 'av-has-needs' : '', dropOn ? 'av-is-drop' : '',
+      dragging ? 'av-is-drag' : '', busy ? 'av-is-snapping' : '', menuOn ? 'av-menu-on' : '',
+      adding ? 'av-is-adding' : '', flashing ? 'av-is-flashing' : ''].filter(Boolean).join(' ');
+    wrap.querySelector('.av-shape').className = shapeClass(lk);
+    if (!busy && !dragging) place();
+    hit.setAttribute('aria-label', lk.name + ' — ' + phrase() + '. Press Enter to ' + (s.open ? 'close' : 'open'));
+    hit.setAttribute('aria-expanded', s.open || menuOn ? 'true' : 'false');
+    needsEl.textContent = n;
+    tipEl.textContent = tipText(lk);
+    if (menuOn) { var h = menuHTML(); if (h !== lastMenu) { menuEl.innerHTML = h; lastMenu = h; } placeMenu(); }
+  }
+
+  /* ---------- menu ---------- */
+  function placeMenu(){
+    var L = AA.layer(), r = wrap.getBoundingClientRect(), h = menuEl.offsetHeight;
+    var top = clamp(r.top - L.top - 6, AA.EDGE, Math.max(AA.EDGE, L.height - h - AA.EDGE));
+    menuEl.style.top = (top - (r.top - L.top)) + 'px';
+  }
+  function openMenu(fromKey){
+    menuOn = true; lastMenu = menuHTML(); menuEl.innerHTML = lastMenu;
+    menuEl.classList.add('av-is-shown'); update();
+    if (fromKey) { var f = menuEl.querySelector('.av-mi'); if (f) f.focus(); }
+  }
+  function closeMenu(){
+    if (!menuOn) return;
+    var inside = menuEl.contains(document.activeElement);
+    menuOn = false; menuEl.classList.remove('av-is-shown'); update();
+    if (inside) hit.focus();
+  }
+  function onMenuClick(e){
+    var b = e.target.closest('.av-mi'); if (!b) return;
+    var act = b.getAttribute('data-act'); closeMenu();
+    if (act === 'open') AA.set({open: !AA.state.open, hidden: false});
+    else if (act === 'check') checkNow();
+    else if (act === 'pause') AA.set({status: AA.state.status === 'paused' ? 'watching' : 'paused'});
+    else if (act === 'hide') AA.set({hidden: true});
+    else if (act === 'move') springTo(AA.state.pos.edge === 'right' ? 'left' : 'right', AA.state.pos.y);
+  }
+  function onMenuKey(e){
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    var items = [].slice.call(menuEl.querySelectorAll('.av-mi')); if (!items.length) return;
+    e.preventDefault();
+    var down = e.key === 'ArrowDown', i = items.indexOf(document.activeElement), j;
+    if (i < 0) j = down ? 0 : items.length - 1;
+    else j = (i + (down ? 1 : -1) + items.length) % items.length;
+    items[j].focus();
+  }
+  function checkNow(){
+    var st = AA.state.status;
+    if (st === 'checking') return;
+    var back = st === 'paused' ? 'paused' : 'watching';
+    AA.set({status: 'checking'});
+    clearTimeout(checkTimer);
+    checkTimer = setTimeout(function(){
+      lastCheck = Date.now();
+      if (AA.state.status === 'checking') AA.set({status: back});
+    }, 2500);
+  }
+
+  /* ---------- flash label (adding / added / failed / duplicate) ---------- */
+  function showFlash(text, tone, ms){
+    if (!flashEl) return;
+    clearTimeout(flashTimer);
+    flashEl.textContent = text;
+    flashEl.className = 'av-flash aa-overlay av-is-shown' + (tone ? ' av-flash-' + tone : '');
+    flashing = true; update();
+    if (ms) flashTimer = setTimeout(hideFlash, ms);
+  }
+  function hideFlash(){
+    clearTimeout(flashTimer);
+    if (flashEl) flashEl.classList.remove('av-is-shown');
+    flashing = false; update();
+  }
+  function onSourceAdd(p){
+    if (!wrap || !p) return;
+    if (p.phase === 'adding') { adding = true; showFlash('Adding…', '', 0); }
+    else if (p.phase === 'added') { adding = false; showFlash('Added', '', FLASH_MS.added); }
+    else if (p.phase === 'failed') { adding = false; showFlash('Couldn’t add', 'amber', FLASH_MS.failed); }
+    else if (p.phase === 'duplicate') { adding = false; showFlash('Already watching', '', FLASH_MS.duplicate); }
+    else return;
+    update();
+  }
+
+  /* ---------- drag, snap, click ---------- */
+  function springTo(edge, y){
+    var L = AA.layer(), r = wrap.getBoundingClientRect(), hid = AA.state.hidden;
+    var box = boxFor(edge, y);
+    var tx = hid ? tabLeft(edge, box) : box.left, ty = box.top;
+    busy = true; dragging = false;
+    wrap.classList.remove('av-is-drag');
+    wrap.style.left = (r.left - L.left) + 'px'; wrap.style.top = (r.top - L.top) + 'px';
+    void wrap.offsetWidth;                       // start the spring from where the drag ended
+    wrap.classList.add('av-is-snapping');
+    wrap.style.left = tx + 'px'; wrap.style.top = ty + 'px';
+    clearTimeout(snapTimer);
+    snapTimer = setTimeout(function(){
+      busy = false;
+      AA.set({pos: {edge: edge, y: ty}});        // ty is exactly what AA.avatarBox() gives for this pos
+    }, SNAP_MS);
+  }
+  function onDown(e){
+    if (e.button !== 0 || busy) return;
+    closeMenu();
+    suppressClick = false;
+    var L = AA.layer(), r = wrap.getBoundingClientRect();
+    g = {x: e.clientX, y: e.clientY, left: r.left - L.left, top: r.top - L.top, moved: false, id: e.pointerId};
+    try { hit.setPointerCapture(e.pointerId); } catch (_) {}
+  }
+  function onMove(e){
+    if (!g) return;
+    var dx = e.clientX - g.x, dy = e.clientY - g.y;
+    if (!g.moved) {
+      if (Math.hypot(dx, dy) < 4) return;
+      g.moved = true; dragging = true; wrap.classList.add('av-is-drag');
+    }
+    var bd = dragBounds();
+    wrap.style.left = clamp(g.left + dx, bd.minX, bd.maxX) + 'px';
+    wrap.style.top = clamp(g.top + dy, bd.minY, bd.maxY) + 'px';
+    wrap.style.right = 'auto';
+  }
+  function onUp(e){
+    if (!g) return;
+    var gg = g; g = null;
+    try { hit.releasePointerCapture(e.pointerId); } catch (_) {}
+    if (!gg.moved) return;                       // a plain tap: the click event does the toggling
+    suppressClick = true;                        // the browser still fires click after a drag
+    var L = AA.layer(), r = wrap.getBoundingClientRect(), bd = dragBounds();
+    var edge = (r.left - L.left + SIZE / 2) < L.width / 2 ? 'left' : 'right';
+    springTo(edge, clamp(r.top - L.top, bd.minY, bd.maxY));
+  }
+  function onCancel(){
+    g = null; dragging = false; wrap.classList.remove('av-is-drag'); update();
+  }
+  function onClick(){
+    if (suppressClick) { suppressClick = false; return; }
+    AA.set({open: !AA.state.open, hidden: false});
+  }
+
+  /* ---------- keyboard ---------- */
+  function onHitKey(e){
+    var s = AA.state, k = e.key;
+    if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) { e.preventDefault(); openMenu(true); return; }
+    if (k === 'ArrowUp' || k === 'ArrowDown') {
+      e.preventDefault();
+      var bd = dragBounds(), top = AA.avatarBox().top;
+      AA.set({pos: {edge: s.pos.edge, y: clamp(top + (k === 'ArrowUp' ? -24 : 24), bd.minY, bd.maxY)}});
+      return;
+    }
+    if (k === 'ArrowLeft' || k === 'ArrowRight') {
+      e.preventDefault();
+      AA.set({pos: {edge: k === 'ArrowLeft' ? 'left' : 'right', y: AA.avatarBox().top}});
+    }
+  }
+  function onKey(e){
+    if (e.key === 'Escape') {
+      if (menuOn) { e.preventDefault(); closeMenu(); hit.focus(); return; }
+      if (AA.state.open) { e.preventDefault(); AA.set({open: false}); hit.focus(); }
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      var open = !AA.state.open;
+      AA.set({open: open, hidden: false});
+      if (open) { var ta = document.querySelector('#cv-mount textarea'); if (ta) ta.focus(); }
+    }
+  }
+
+  /* ---------- drop target ---------- */
+  function isApexDrag(e){
+    var t = e.dataTransfer && e.dataTransfer.types;
+    return !!t && Array.prototype.indexOf.call(t, DRAG_TYPE) >= 0;
+  }
+  function setDrop(on){
+    dropOn = on; update();
+  }
+  function onDragStart(e){
+    var el = e.target && e.target.closest ? e.target.closest('[data-aa-drag]') : null;
+    if (!el || !e.dataTransfer) return;
+    var raw = el.getAttribute('data-aa-drag');
+    e.dataTransfer.setData(DRAG_TYPE, raw);
+    e.dataTransfer.setData('text/plain', raw);
+    e.dataTransfer.effectAllowed = 'copy';
+  }
+
+  /* ---------- mount ---------- */
+  function mount(){
+    var host = document.getElementById('av-mount');
+    if (!host) return;
+    host.innerHTML = wrapHTML();
+    wrap = host.querySelector('.av-wrap');
+    hit = wrap.querySelector('.av-hit');
+    tipEl = wrap.querySelector('.av-tip');
+    menuEl = wrap.querySelector('.av-menu');
+    needsEl = wrap.querySelector('.av-needs');
+    flashEl = wrap.querySelector('.av-flash');
+
+    hit.addEventListener('pointerdown', onDown);
+    hit.addEventListener('pointermove', onMove);
+    hit.addEventListener('pointerup', onUp);
+    hit.addEventListener('pointercancel', onCancel);
+    hit.addEventListener('click', onClick);
+    hit.addEventListener('keydown', onHitKey);
+    wrap.addEventListener('contextmenu', function(e){ e.preventDefault(); openMenu(false); });
+    menuEl.addEventListener('click', onMenuClick);
+    menuEl.addEventListener('keydown', onMenuKey);
+    document.addEventListener('pointerdown', function(e){ if (menuOn && !wrap.contains(e.target)) closeMenu(); }, true);
+
+    wrap.addEventListener('dragover', function(e){
+      if (!isApexDrag(e)) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDrop(true);
+    });
+    wrap.addEventListener('dragleave', function(e){ if (!wrap.contains(e.relatedTarget)) setDrop(false); });
+    wrap.addEventListener('drop', function(e){
+      if (!isApexDrag(e)) return;
+      e.preventDefault(); setDrop(false);
+      var raw = e.dataTransfer.getData(DRAG_TYPE) || e.dataTransfer.getData('text/plain') || '{}';
+      var obj = {}; try { obj = JSON.parse(raw) || {}; } catch (_) {}
+      if (obj.kind && obj.ref) AA.addSource(obj);   // 'source-add' events tell the story from here
+    });
+    document.addEventListener('dragstart', onDragStart);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', function(){ update(); });
+    setInterval(function(){ if (wrap) update(); }, 30000);
+    update();
+  }
+
+  /* ---------- "Make it yours" editor ---------- */
+  function slug(s){ return String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'apex'; }
+  function setLook(patch){ AA.set({look: Object.assign({}, look(), patch)}); }
+  function editorHTML(){
+    return '<div class="av-ed">' +
+      '<div class="av-ed-top"><span class="av-ed-prev" data-role="prev"></span>' +
+        '<div class="av-ed-who"><div class="av-ed-handle" data-role="handle"></div>' +
+        '<div class="av-ed-sub">Your Apex. Only you see this.</div></div></div>' +
+      '<label class="av-ed-field"><span class="av-ed-label">Name</span>' +
+        '<input class="av-ed-name" data-role="name" maxlength="20" spellcheck="false" autocomplete="off"></label>' +
+      '<div class="av-ed-label">Shape</div><div class="av-ed-choices" data-role="shape"></div>' +
+      '<div class="av-ed-label">Color</div><div class="av-ed-swatches" data-role="color"></div>' +
+      '<div class="av-ed-toggles">' +
+        '<button type="button" class="av-ed-toggle" data-kind="eyes" aria-pressed="false">Eyes</button>' +
+        '<button type="button" class="av-ed-toggle" data-kind="glasses" aria-pressed="false">Glasses</button>' +
+      '</div></div>';
+  }
+  function syncEditor(ed){
+    var el = ed.el, lk = look();
+    var input = el.querySelector('[data-role=name]');
+    if (input && document.activeElement !== input && input.value !== lk.name) input.value = lk.name;
+    var raw = input ? input.value : lk.name;
+    el.querySelector('[data-role=handle]').textContent = '@tyler-' + slug(raw);
+    el.querySelector('[data-role=prev]').innerHTML = miniFor(lk, 64);
+    el.querySelector('[data-role=shape]').innerHTML = Object.keys(SHAPES).map(function(sh){
+      var on = lk.shape === sh;
+      return '<button type="button" class="av-ed-choice' + (on ? ' av-is-on' : '') + '" data-shape="' + sh +
+        '" aria-pressed="' + on + '"><span class="av-ed-cprev">' + miniFor(Object.assign({}, lk, {shape: sh}), 34) +
+        '</span><span>' + SHAPES[sh] + '</span></button>';
+    }).join('');
+    el.querySelector('[data-role=color]').innerHTML = Object.keys(PICK).map(function(c){
+      var on = lk.color === c;
+      return '<button type="button" class="av-ed-swatch' + (on ? ' av-is-on' : '') + '" data-color="' + c +
+        '" aria-pressed="' + on + '" aria-label="' + c + '" style="--sw:' + PICK[c] + '"></button>';
+    }).join('');
+    el.querySelectorAll('[data-kind]').forEach(function(b){
+      var on = !!lk[b.getAttribute('data-kind')];
+      b.classList.toggle('av-is-on', on); b.setAttribute('aria-pressed', on);
+    });
+  }
+  function renderLook(el){
+    if (!el) return;
+    editors = editors.filter(function(x){ return x.el.isConnected && x.el !== el; });
+    var ed = {el: el};
+    el.innerHTML = editorHTML();
+    el.addEventListener('click', function(e){
+      var b = e.target.closest('button'); if (!b || !el.contains(b)) return;
+      if (b.hasAttribute('data-shape')) setLook({shape: b.getAttribute('data-shape')});
+      else if (b.hasAttribute('data-color')) setLook({color: b.getAttribute('data-color')});
+      else if (b.hasAttribute('data-kind')) { var k = b.getAttribute('data-kind'), o = {}; o[k] = !look()[k]; setLook(o); }
+    });
+    el.querySelector('[data-role=name]').addEventListener('input', function(e){ setLook({name: e.target.value.slice(0, 20)}); });
+    editors.push(ed);
+    syncEditor(ed);
+  }
+  function syncEditors(){
+    editors = editors.filter(function(x){ return x.el.isConnected; });
+    editors.forEach(syncEditor);
+  }
+
+  AA.on('change', function(){ update(); syncEditors(); });
+  AA.on('source-add', onSourceAdd);
+  AA.part('av', {
+    mount: mount,
+    mini: function(size){ return miniFor(look(), size || SIZE); },
+    renderLook: renderLook
+  });
+})();
+</script>
+<script>/* cv */
+(function(){
+  'use strict';
+  const ICON = {
+    expand:'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5h4v4M13.5 2.5l-4.5 4.5M6.5 13.5h-4v-4M2.5 13.5l4.5-4.5"/></svg>',
+    collapse:'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2.5v4h4M13.5 2.5l-4 4M6.5 13.5v-4h-4M2.5 13.5l4-4"/></svg>',
+    close:'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>'
+  };
+  const SUGGESTIONS = ['What needs me?', 'What changed today?', 'Check now'];
+  let frame, head, others, tabsEl, view, composer, ctxEl, suggEl, ta;
+  let lastTab = null, lastOpen = false, lastCount = 0, lastProject = null;
+
+  const E = s => AA.esc(s);
+  const st = () => AA.state;
+
+  function av(size){
+    try { if (AA.parts.av && typeof AA.parts.av.mini === 'function') return AA.parts.av.mini(size); }
+    catch (err) { console.error('[cv] av.mini', err); }
+    return '<span class="cv-ph" style="width:'+size+'px;height:'+size+'px"></span>';
+  }
+  function projectOf(s){
+    const list = s.projects || [];
+    return list.find(p => p.id === s.project) || list[0] || {id:'', name:'No project', machine:'This Mac'};
+  }
+  function sourceCount(s){ return (s.sources || []).filter(x => x.on).length || 6; }
+  function plural(n, word){ return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+  // Short header wording (may wrap to a second line) and the full sentence for the title tooltip.
+  function statusShort(s, proj){
+    const n = s.needs || 0;
+    switch (s.status) {
+      case 'new': return 'Getting set up';
+      case 'watching': return 'Watching · ' + (s.checkedAgo || '4m ago');
+      case 'checking': return 'Checking…';
+      case 'needs': return 'Needs you' + (n ? ' · ' + n : '');
+      case 'paused': return 'Paused';
+      case 'offline': return 'Offline · ' + (proj.machine || 'This Mac') + ' asleep';
+      default: return 'Watching';
+    }
+  }
+  function statusTitle(s, proj){
+    const n = s.needs || 0;
+    switch (s.status) {
+      case 'new': return 'Getting set up for ' + proj.name + '.';
+      case 'watching': return 'Watching ' + proj.name + '. Last checked ' + (s.checkedAgo || '4m ago') + '.';
+      case 'checking': return 'Checking ' + sourceCount(s) + ' sources for ' + proj.name + ' now.';
+      case 'needs': return n ? 'Needs you: ' + plural(n, 'decision') + ' waiting in ' + proj.name + '.' : 'Needs you in ' + proj.name + '.';
+      case 'paused': return 'Paused. I am not checking ' + proj.name + ' right now.';
+      case 'offline': return 'Offline. ' + (proj.machine || 'This Mac') + ' is asleep, so I cannot check ' + proj.name + '.';
+      default: return 'Watching ' + proj.name + '.';
+    }
+  }
+
+  function positionFrame(){
+    const s = st(), r = AA.panelRect(), pos = s.pos || {edge:'right', y:420};
+    frame.style.left = r.left + 'px';
+    frame.style.top = r.top + 'px';
+    frame.style.width = r.width + 'px';
+    frame.style.height = r.height + 'px';
+    const ay = Math.max(0, Math.min(100, ((pos.y + AA.AVATAR / 2 - r.top) / r.height) * 100));
+    frame.style.transformOrigin = (pos.edge === 'left' ? '0%' : '100%') + ' ' + ay.toFixed(1) + '%';
+    frame.dataset.edge = pos.edge === 'left' ? 'left' : 'right';
+    frame.classList.toggle('cv-is-open', !!s.open);
+    frame.setAttribute('aria-hidden', s.open ? 'false' : 'true');
+  }
+
+  function renderHead(){
+    const s = st(), proj = projectOf(s), tall = s.size === 'tall';
+    const pending = AA.view(proj.id).needs || 0;
+    head.innerHTML =
+      '<div class="cv-id"><span class="cv-avwrap">' + av(28) + '</span><div class="cv-idtxt">' +
+        '<div class="cv-name">Apex</div>' +
+        '<div class="cv-status" title="' + E(statusTitle(s, proj)) + '"><i class="cv-dot cv-d-' + E(s.status) + '" aria-hidden="true"></i><span>' + E(statusShort(s, proj)) + '</span></div>' +
+      '</div></div>' +
+      '<button class="cv-proj" data-cv-act="switch" aria-haspopup="true" aria-expanded="' + (!!s.switcher) + '" aria-label="Switch project. Now ' + E(proj.name) + ' on ' + E(proj.machine || 'This Mac') + (pending ? ', ' + plural(pending, 'thing') + ' need you' : '') + '" title="Switch project (⌘K)">' +
+        '<span class="cv-pname">' + E(proj.name) + ' · ' + E(proj.machine || 'This Mac') + '</span>' +
+        (pending ? '<b class="cv-pcount">' + pending + '</b>' : '') +
+        '<span class="cv-caret" aria-hidden="true">▾</span></button>' +
+      '<div class="cv-icons">' +
+        '<button class="cv-ib" data-cv-act="size" title="' + (tall ? 'Make smaller' : 'Make taller') + '" aria-label="' + (tall ? 'Make smaller' : 'Make taller') + '">' + (tall ? ICON.collapse : ICON.expand) + '</button>' +
+        '<button class="cv-ib" data-cv-act="close" title="Close (Esc)" aria-label="Close">' + ICON.close + '</button>' +
+      '</div>';
+  }
+
+  // Other projects that need you: one quiet line each, tapping switches to that project.
+  function renderOthers(){
+    const s = st();
+    others.innerHTML = (s.projects || []).filter(p => p.id !== s.project && (AA.view(p.id).needs || 0) > 0)
+      .map(p => '<button class="cv-other" data-cv-act="goto" data-id="' + E(p.id) + '">' + E(p.name) + ' needs you too · ' + AA.view(p.id).needs + '</button>')
+      .join('');
+  }
+
+  function onPopCapture(e){
+    // cf draws the switcher rows; take the click here so the pick goes through AA.switchProject.
+    const t = e.target.closest && e.target.closest('[data-id]');
+    if (!t || t.hasAttribute('data-cv-act')) return;
+    const id = t.getAttribute('data-id');
+    if (!(st().projects || []).some(p => p.id === id)) return;
+    e.preventDefault(); e.stopPropagation();
+    AA.switchProject(id);
+  }
+
+  function renderSwitcher(){
+    let pop = frame.querySelector('.cv-switcher-pop');
+    if (!st().switcher) { if (pop) pop.remove(); return; }
+    if (!pop) {
+      pop = document.createElement('div');
+      pop.className = 'cv-switcher-pop aa-overlay';
+      pop.setAttribute('role', 'menu');
+      pop.setAttribute('aria-label', 'Projects');
+      pop.addEventListener('click', onPopCapture, true);
+      frame.appendChild(pop);
+    }
+    pop.style.top = (head.offsetHeight + 4) + 'px';
+    pop.innerHTML = '';
+    const cf = AA.parts.cf;
+    if (cf && typeof cf.renderSwitcher === 'function') {
+      try { cf.renderSwitcher(pop); } catch (err) { console.error('[cv] cf.renderSwitcher', err); }
+    } else {
+      pop.innerHTML = (st().projects || []).map(p =>
+        '<button class="cv-pick" data-cv-act="pick" data-id="' + E(p.id) + '" role="menuitem"><span>' + E(p.name) + '</span><small>' + E(p.machine) + '</small></button>'
+      ).join('');
+    }
+  }
+
+  function renderTabs(){
+    const s = st();
+    const defs = [['chat', 'Chat'], ['activity', 'Activity'], ['settings', '⚙']];
+    tabsEl.innerHTML = defs.map(([k, label]) => {
+      const on = (s.tab || 'chat') === k;
+      const count = (k === 'activity' && s.needs > 0) ? ' <span class="cv-count">' + s.needs + '</span>' : '';
+      const aria = k === 'settings' ? ' aria-label="Settings" title="Settings"' : '';
+      return '<button role="tab" class="cv-tab' + (on ? ' cv-is-on' : '') + '" data-cv-act="tab" data-tab="' + k + '" aria-selected="' + on + '"' + aria + '>' + label + count + '</button>';
+    }).join('');
+  }
+
+  function agentAvatar(){ return '<span class="cv-ava">' + av(20) + '</span>'; }
+
+  function renderMsg(m){
+    if (m.kind === 'setup') return '';
+    if (m.kind === 'check') return '<div class="cv-check">' + E(m.text) + '</div>';
+    if (m.from === 'me') return '<div class="cv-me"><div class="cv-bub">' + E(m.text) + '</div></div>';
+    if (m.kind === 'blocker') return blockerHTML(m);
+    if (m.kind === 'draft') return draftHTML(m);
+    if (m.kind === 'note') {
+      return '<div class="cv-note"><span class="cv-chip cv-chip-note">Remembered</span><span>' + E(m.text) + '</span></div>';
+    }
+    return '<div class="cv-agent">' + agentAvatar() + '<div class="cv-agent-body"><div class="cv-txt">' + E(m.text) + '</div>' +
+      (m.time ? '<span class="cv-time">' + E(m.time) + '</span>' : '') + '</div></div>';
+  }
+
+  function blockerHTML(m){
+    const status = m.status || 'open';
+    const done = status === 'resolved';
+    const snoozed = status === 'snoozed';
+    const cls = 'cv-blk' + (done ? ' cv-is-done' : '') + (snoozed ? ' cv-is-snoozed' : '');
+    const lines =
+      (m.observed ? '<div class="cv-line"><span class="cv-lbl">Observed</span><span>' + E(m.observed) + '</span></div>' : '') +
+      (m.inference ? '<div class="cv-line"><span class="cv-lbl">My read</span><span>' + E(m.inference) + '</span></div>' : '');
+    const evidence = (m.evidence || []).map((ev, i) => {
+      const chip = ev.line != null && ev.line !== '' ? ev.label + ':' + ev.line : ev.label;
+      return '<div class="cv-ev"><button class="cv-src" data-cv-act="src" data-id="' + E(m.id) + '" data-index="' + i + '" title="Open source" aria-label="Open source ' + E(chip) + '">' + E(chip) + '</button>' +
+        (ev.quote ? '<pre class="cv-quote">' + E(ev.quote) + '</pre>' : '') + '</div>';
+    }).join('');
+    let foot = '';
+    if (status === 'open') {
+      foot = '<div class="cv-acts">' +
+        '<button class="aa-btn aa-btn-primary cv-btn" data-cv-act="resolve" data-id="' + E(m.id) + '">Resolve</button>' +
+        '<button class="aa-btn cv-btn" data-cv-act="snooze" data-id="' + E(m.id) + '">Snooze 1 day</button>' +
+        '<button class="aa-btn aa-btn-ghost cv-btn" data-cv-act="notblocker" data-id="' + E(m.id) + '">Not a blocker</button>' +
+      '</div>';
+    } else if (done) {
+      foot = '<div class="cv-done">✓ ' + (m.by === 'not' ? 'Marked not a blocker by you' : 'Resolved by you') + '</div>';
+    } else if (snoozed) {
+      foot = '<div class="cv-done cv-muted">Snoozed · back tomorrow</div>';
+    }
+    return '<div class="cv-agent">' + agentAvatar() + '<div class="' + cls + '">' +
+      '<div class="cv-blk-head"><span class="cv-chip cv-chip-amber">Blocker</span>' +
+        (m.time ? '<span class="cv-time">' + E(m.time) + '</span>' : '') + '</div>' +
+      '<div class="cv-txt">' + E(m.text) + '</div>' + lines + evidence + foot +
+    '</div></div>';
+  }
+
+  function draftHTML(m){
+    return '<div class="cv-agent">' + agentAvatar() + '<div class="cv-doc">' +
+      '<div class="cv-doc-head"><span class="cv-chip cv-chip-draft">Draft</span><b>' + E(m.title || 'Untitled') + '</b></div>' +
+      '<div class="cv-doc-body">' + E(m.text || '') + '</div>' +
+      '<div class="cv-doc-acts">' +
+        '<button class="aa-btn cv-btn" data-cv-act="mock">Open as file</button>' +
+        '<button class="aa-btn cv-btn" data-cv-act="mock">Edit in chat</button>' +
+      '</div></div></div>';
+  }
+
+  // Chat for the CURRENT project only (core swaps messages/setup per project).
+  function buildChat(el){
+    const s = st();
+    const wrap = document.createElement('div');
+    wrap.className = 'cv-chat';
+    el.appendChild(wrap);
+    if ((s.setup === 'none' || s.setup === 'proposing') && AA.parts.su && typeof AA.parts.su.render === 'function') {
+      const slot = document.createElement('div');
+      slot.className = 'cv-setup';
+      wrap.appendChild(slot);
+      try { AA.parts.su.render(slot); } catch (err) { console.error('[cv] su.render', err); }
+    }
+    const msgs = s.messages || [];
+    if (!msgs.length && s.setup === 'done') {
+      wrap.insertAdjacentHTML('beforeend', '<p class="cv-empty">Nothing yet. Ask me anything, or let me keep watching.</p>');
+    }
+    wrap.insertAdjacentHTML('beforeend', msgs.map(renderMsg).join(''));
+    if (s.status === 'checking') {
+      wrap.insertAdjacentHTML('beforeend',
+        '<div class="cv-typing"><span class="cv-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Apex is checking ' + sourceCount(s) + ' sources</span></div>');
+    }
+  }
+
+  function buildPart(el, name, fn, fallback){
+    const p = AA.parts[name];
+    if (p && typeof p[fn] === 'function') {
+      try { p[fn](el); return; } catch (err) { console.error('[cv] ' + name + '.' + fn, err); }
+    }
+    el.innerHTML = '<p class="cv-empty">' + E(fallback) + '</p>';
+  }
+
+  function renderView(){
+    const s = st(), tab = s.tab || 'chat';
+    const prevTop = view.scrollTop;
+    const wasBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 40;
+    const tabChanged = tab !== lastTab;
+    const openedNow = !!s.open && !lastOpen;
+    const projChanged = s.project !== lastProject;
+    const newMsgs = (s.messages || []).length > lastCount;
+
+    view.innerHTML = '';
+    const pane = document.createElement('div');
+    pane.className = 'cv-pane';
+    view.appendChild(pane);
+    if (tab === 'chat') buildChat(pane);
+    else if (tab === 'activity') buildPart(pane, 'cf', 'renderActivity', 'Activity shows up here.');
+    else buildPart(pane, 'cf', 'renderSettings', 'Settings are coming soon.');
+
+    if (tab === 'chat') {
+      if (projChanged) view.scrollTop = view.scrollHeight;               // switched project: start at the latest
+      else if (s.setup !== 'done' && !newMsgs) view.scrollTop = (tabChanged || openedNow) ? 0 : prevTop; // setup reads top-down
+      else view.scrollTop = (tabChanged || openedNow || wasBottom || newMsgs) ? view.scrollHeight : prevTop;
+    } else {
+      view.scrollTop = tabChanged ? 0 : prevTop;
+    }
+    lastTab = tab;
+    lastOpen = !!s.open;
+    lastCount = (s.messages || []).length;
+  }
+
+  function renderComposer(){
+    const s = st(), chat = (s.tab || 'chat') === 'chat';
+    composer.hidden = !chat;
+    const ctxLabel = s.context && s.context.label;
+    ctxEl.innerHTML = ctxLabel
+      ? '<span class="cv-ctx-chip">Looking at: <b>' + E(ctxLabel) + '</b><button class="cv-x" data-cv-act="dropctx" aria-label="Stop looking at this" title="Stop looking at this">×</button></span>'
+      : '';
+    const msgs = s.messages || [];
+    const last = msgs[msgs.length - 1];
+    const showSugg = chat && (!msgs.length || (last && last.from === 'agent'));
+    suggEl.innerHTML = showSugg
+      ? SUGGESTIONS.map(t => '<button class="cv-sg" data-cv-act="sugg" data-text="' + E(t) + '">' + E(t) + '</button>').join('')
+      : '';
+  }
+
+  function grow(){
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(120, ta.scrollHeight) + 'px';
+  }
+
+  function sendText(text){
+    text = (text || '').trim();
+    if (!text) return;
+    AA.addMessage({from:'me', kind:'text', text});
+    AA.emit('user-message', text);
+  }
+  function sendFromBox(){
+    const v = ta.value;
+    ta.value = '';
+    grow();
+    sendText(v);
+    ta.focus();
+  }
+
+  function decide(id, how){
+    const s = st();
+    const target = (s.messages || []).find(m => m.id === id);
+    if (!target) return;
+    const wasOpen = !target.status || target.status === 'open';
+    const messages = s.messages.map(m => m.id === id
+      ? {...m, status: how === 'snooze' ? 'snoozed' : 'resolved', by: how}
+      : m);
+    const needs = wasOpen ? Math.max(0, (s.needs || 0) - 1) : (s.needs || 0);
+    const patch = {messages, needs};
+    if (needs === 0 && s.status === 'needs') patch.status = 'watching';
+    AA.set(patch);
+  }
+
+  function focusAvatar(){
+    const b = document.querySelector('.av-hit');
+    if (b) b.focus();
+  }
+
+  function onClick(e){
+    const t = e.target.closest && e.target.closest('[data-cv-act]');
+    if (!t || !frame.contains(t)) return;
+    const s = st(), act = t.dataset.cvAct, id = t.dataset.id;
+    switch (act) {
+      case 'close': AA.set({open:false, switcher:false}); focusAvatar(); break;
+      case 'size': AA.set({size: s.size === 'tall' ? 'compact' : 'tall'}); break;
+      case 'switch': AA.set({switcher: !s.switcher}); break;
+      case 'pick': AA.switchProject(id); break;
+      case 'goto': AA.switchProject(id); break;
+      case 'tab': AA.set({tab: t.dataset.tab}); break;
+      case 'send': sendFromBox(); break;
+      case 'sugg': sendText(t.dataset.text); break;
+      case 'dropctx': AA.set({context:null}); break;
+      case 'resolve': decide(id, 'resolve'); break;
+      case 'snooze': decide(id, 'snooze'); break;
+      case 'notblocker': decide(id, 'not'); break;
+      case 'mock': mockNote(t.parentElement); break;
+      case 'src':
+        AA.emit('open-source', {id, index: +t.dataset.index});
+        mockNote(t.parentElement);
+        break;
+    }
+  }
+  function mockNote(parent){
+    if (!parent || parent.querySelector('.cv-mock')) return;
+    const n = document.createElement('span');
+    n.className = 'cv-mock';
+    n.textContent = '(mockup)';
+    parent.appendChild(n);
+  }
+
+  // Esc: switcher first, then the panel (focus goes back to the avatar).
+  function onKey(e){
+    const s = st();
+    if (e.key !== 'Escape' || !s.open) return;
+    if (s.switcher) {
+      AA.set({switcher:false});
+      const chip = frame.querySelector('.cv-proj'); if (chip) chip.focus();
+    } else {
+      AA.set({open:false});
+      focusAvatar();
+    }
+  }
+
+  function onTaKey(e){
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendFromBox();
+    }
+  }
+
+  // Source adds (drag and drop). Only 'added', 'failed' and 'duplicate' post a note; never 'adding'.
+  // The note goes to the project the drop was for (e.project), even if the human switched since.
+  function onSourceAdd(e){
+    const label = e.label || 'that', to = m => AA.addMessageTo(e.project || AA.state.project, m);
+    if (e.phase === 'added') to({from:'agent', kind:'text', text:'Added ' + label + ' to what I watch.'});
+    else if (e.phase === 'failed') to({from:'agent', kind:'text', text:"Couldn't add " + label + '. ' + (e.reason || '')});
+    else if (e.phase === 'duplicate') to({from:'agent', kind:'text', text:"I'm already watching " + label + '.'});
+  }
+
+  function keyOf(el){
+    return el && el.dataset && el.dataset.cvAct
+      ? [el.dataset.cvAct, el.dataset.id || '', el.dataset.tab || '', el.dataset.index || ''].join('|') : null;
+  }
+
+  function render(){
+    if (!frame) return;
+    const s = st();
+    if (lastProject !== null && s.project !== lastProject) ta.value = '';   // switching clears the draft
+    // Header and tabs are rebuilt on every change; keep keyboard focus on the same control.
+    const act = document.activeElement;
+    const key = (act && act !== ta && frame.contains(act)) ? keyOf(act) : null;
+    positionFrame();
+    renderHead();
+    renderOthers();
+    renderSwitcher();
+    renderTabs();
+    renderView();
+    renderComposer();
+    grow();
+    if (key) {
+      const again = Array.from(frame.querySelectorAll('[data-cv-act]')).find(x => keyOf(x) === key);
+      if (again) again.focus();
+    }
+    lastProject = s.project;
+  }
+
+  function mount(){
+    const host = document.getElementById('cv-mount');
+    if (!host) return;
+    frame = document.createElement('div');
+    frame.className = 'cv-frame aa-overlay';
+    frame.setAttribute('role', 'dialog');
+    frame.setAttribute('aria-label', 'Apex conversation');
+    frame.innerHTML =
+      '<header class="cv-head"></header>' +
+      '<div class="cv-others"></div>' +
+      '<nav class="cv-tabs" role="tablist" aria-label="Apex sections"></nav>' +
+      '<div class="cv-view"></div>' +
+      '<div class="cv-composer">' +
+        '<div class="cv-ctx"></div>' +
+        '<div class="cv-sugg"></div>' +
+        '<div class="cv-inrow">' +
+          '<textarea class="cv-ta" rows="1" placeholder="Message Apex. It keeps working while you talk" aria-label="Message Apex"></textarea>' +
+          '<button class="cv-mic" type="button" disabled title="Voice, later" aria-label="Voice, later"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2"/></svg></button>' +
+          '<button class="cv-send" type="button" data-cv-act="send" aria-label="Send">↑</button>' +
+        '</div>' +
+        '<div class="cv-hint">⌘K opens or closes Apex · Esc closes</div>' +
+      '</div>';
+    host.appendChild(frame);
+    head = frame.querySelector('.cv-head');
+    others = frame.querySelector('.cv-others');
+    tabsEl = frame.querySelector('.cv-tabs');
+    view = frame.querySelector('.cv-view');
+    composer = frame.querySelector('.cv-composer');
+    ctxEl = frame.querySelector('.cv-ctx');
+    suggEl = frame.querySelector('.cv-sugg');
+    ta = frame.querySelector('.cv-ta');
+
+    frame.addEventListener('click', onClick);
+    ta.addEventListener('keydown', onTaKey);
+    ta.addEventListener('input', grow);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', positionFrame);
+    AA.on('change', render);
+    AA.on('source-add', onSourceAdd);
+    render();
+  }
+
+  AA.part('cv', {mount});
+})();
+</script>
+<script>/* su */
+/* su: first-run setup inside the chat. Suggestions and choices are kept per project id. */
+(function(){
+  // Suggestions per project. Each source: {id, kind:'file'|'thread'|'git', ref, label, why, on}.
+  const SUGGEST = {
+    mobile: {
+      goal: 'Keep the Nov 1 launch on track',
+      list: [
+        {id:'m-launch', kind:'file', ref:'docs/launch-plan.md', label:'docs/launch-plan.md', why:'mentions Nov 1 eight times', on:true},
+        {id:'m-test', kind:'file', ref:'test-report.md', label:'test-report.md', why:'SSO is failing, 3 of 12', on:true},
+        {id:'m-release', kind:'thread', ref:'thread:release', label:'Release thread', why:'you posted here 6 times this week', on:true},
+        {id:'m-sso', kind:'thread', ref:'thread:sso-fixes', label:'SSO fixes', why:'linked from test-report.md', on:true},
+        {id:'m-git', kind:'git', ref:'main', label:'main branch', why:'commits from the last 7 days', on:true}
+      ],
+      pool: [
+        {id:'m-privacy', kind:'file', ref:'docs/privacy.md', label:'docs/privacy.md', why:'linked from the launch plan', on:true},
+        {id:'m-appstore', kind:'thread', ref:'thread:app-store-copy', label:'App Store copy', why:'you used this yesterday', on:true}
+      ]
+    },
+    deck: {
+      goal: 'Keep ApexAgent on track to merge',
+      list: [
+        {id:'d-plan', kind:'file', ref:'docs/plans/agents-assistant-scheduling.md', label:'docs/plans/agents-assistant-scheduling.md', why:"the plan you're building", on:true},
+        {id:'d-deploy', kind:'thread', ref:'thread:deploy-checklist', label:'Deploy checklist', why:'you posted here this week', on:true},
+        {id:'d-git', kind:'git', ref:'main', label:'main branch', why:'commits from the last 7 days', on:true},
+        {id:'d-changelog', kind:'file', ref:'CHANGELOG.md', label:'CHANGELOG.md', why:'changed this week', on:true}
+      ],
+      pool: [
+        {id:'d-readme', kind:'file', ref:'README.md', label:'README.md', why:'project overview', on:true},
+        {id:'d-revert', kind:'thread', ref:'thread:revert-code', label:'Revert code', why:'talks about the build rollback', on:true}
+      ]
+    }
+  };
+  const FALLBACK = {goal:'Keep this project on track', list:[], pool:[]};
+  const GROUPS = [
+    {kind:'file', title:'Files', note:''},
+    {kind:'thread', title:'Chats', note:'you used these this week'},
+    {kind:'git', title:'Git', note:'last 7 days'}
+  ];
+  const INTS = [
+    {id:'blockers', label:'Blockers', on:true},
+    {id:'decisions', label:'Decisions', on:true},
+    {id:'deadline', label:'Deadline at risk', on:true},
+    {id:'every', label:'Every change', on:false}
+  ];
+  const PROFILES = [
+    {id:'luna', name:'GPT-6 Luna', note:'default'},
+    {id:'sonnet', name:'Claude Sonnet', note:'deeper checks'},
+    {id:'venice', name:'Venice Mini', note:'cheapest'}
+  ];
+  const ICONS = {
+    file:'<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 1.75h5.2L12.5 5v9.25h-8.5z"/><path d="M6.5 9h3.5M6.5 11.5h3.5"/></svg>',
+    thread:'<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2.5 3.25h11v7h-6.2L4.5 13v-2.75h-2z"/></svg>',
+    git:'<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4.5" cy="3.5" r="1.6"/><circle cx="4.5" cy="12.5" r="1.6"/><circle cx="11.5" cy="5.5" r="1.6"/><path d="M4.5 5.1v5.8M11.5 7.1c0 3-7 2.2-7 4.2"/></svg>'
+  };
+  const clone = x => JSON.parse(JSON.stringify(x));
+  const srcKey = x => x.kind + ':' + x.ref;
+
+  // Draft choices, one per project id. Re-renders for the same project keep the edits.
+  const drafts = {};
+  let host = null, focusSel = null, flashTimer = null, played = false;
+  const bound = new WeakSet();
+
+  function draft(){
+    const pid = AA.state.project;
+    if (!drafts[pid]) {
+      const sug = SUGGEST[pid] || FALLBACK;
+      drafts[pid] = {
+        chips: clone(sug.list), removed: [], pool: clone(sug.pool), goal: 'g1', goalText: '',
+        goalOpen: false, goalDraft: '', ints: clone(INTS), profile: 'luna', profilesOpen: false,
+        searchOpen: false, searchQ: '', flashId: null
+      };
+    }
+    return drafts[pid];
+  }
+  function projInfo(){
+    const p = (AA.state.projects || []).find(x => x.id === AA.state.project);
+    return {name: p ? p.name : 'this project', machine: p ? p.machine : 'this machine'};
+  }
+  function avatarHtml(){
+    const m = AA.parts.av && AA.parts.av.mini ? AA.parts.av.mini(20) : '<span class="su-dot"></span>';
+    return `<span class="su-av">${m}</span>`;
+  }
+  function chipHtml(d, c){
+    const flash = d.flashId === c.id ? ' su-flash' : '';
+    return `<span class="su-chip${flash}"><span class="su-ic">${ICONS[c.kind] || ICONS.file}</span>`
+      + `<span class="su-txt"><span class="su-lbl">${AA.esc(c.label)}</span><span class="su-why">${AA.esc(c.why)}</span></span>`
+      + `<button type="button" class="su-x" data-act="remove" data-id="${AA.esc(c.id)}" aria-label="${AA.esc("Don't watch " + c.label)}">×</button></span>`;
+  }
+  function groupsHtml(d){
+    return GROUPS.map(g => {
+      const list = d.chips.filter(c => c.kind === g.kind);
+      if (!list.length) return '';
+      return `<div class="su-group"><p class="su-glabel">${g.title}${g.note ? ' · <em>' + AA.esc(g.note) + '</em>' : ''}</p>`
+        + `<div class="su-chips">${list.map(c => chipHtml(d, c)).join('')}</div></div>`;
+    }).join('');
+  }
+  function candidates(d){ // removed suggestions first, then this project's extra pool
+    const seen = new Set(d.chips.map(srcKey));
+    return d.removed.concat(d.pool).filter(x => { if (seen.has(srcKey(x))) return false; seen.add(srcKey(x)); return true; });
+  }
+  function resultsHtml(d){
+    const q = d.searchQ.trim().toLowerCase();
+    const list = candidates(d).filter(p => !q || p.label.toLowerCase().includes(q));
+    if (!list.length) return `<p class="su-none">${q ? 'Nothing else matches "' + AA.esc(d.searchQ.trim()) + '"' : 'Nothing else to add'}</p>`;
+    return list.map(p => `<button type="button" class="su-res" data-act="pick" data-id="${AA.esc(p.id)}"><span class="su-ic">${ICONS[p.kind] || ICONS.file}</span><span class="su-rl">${AA.esc(p.label)}</span><small>${AA.esc(p.why)}</small></button>`).join('');
+  }
+  function addHtml(d){
+    return `<div class="su-chips su-addrow" style="margin-top:8px"><button type="button" class="su-chip su-add" data-act="search" aria-expanded="${d.searchOpen}">+ Add</button></div>`
+      + (d.searchOpen ? `<div class="su-search"><input class="su-q" type="search" placeholder="Search files and chats" aria-label="Search files and chats" value="${AA.esc(d.searchQ)}"><div class="su-results">${resultsHtml(d)}</div></div>` : '');
+  }
+  function pillHtml(act, id, label, sel){
+    return `<button type="button" class="su-pill${sel ? ' su-is-sel' : ''}" data-act="${act}" data-id="${AA.esc(id)}" aria-pressed="${sel}">${sel ? '<span class="su-tick">✓</span>' : ''}${AA.esc(label)}</button>`;
+  }
+  function goalsHtml(d){
+    const goals = [
+      {id:'g1', label: (SUGGEST[AA.state.project] || FALLBACK).goal},
+      {id:'tests', label:'Keep tests green'},
+      {id:'morning', label:'Tell me what changed each morning'}
+    ];
+    let html = goals.map(g => pillHtml('goal', g.id, g.label, d.goal === g.id)).join('');
+    if (d.goalOpen) {
+      html += `<input class="su-goal-in" type="text" maxlength="80" placeholder="Type a goal" aria-label="Your goal" value="${AA.esc(d.goalDraft)}">`;
+    } else if (d.goal === 'other' && d.goalText) {
+      html += pillHtml('other', 'other', d.goalText, true);
+    } else {
+      html += `<button type="button" class="su-pill su-pill-other" data-act="other">Something else</button>`;
+    }
+    return html;
+  }
+  function intsHtml(d){
+    return d.ints.map(i => pillHtml('int', i.id, i.label, i.on)).join('');
+  }
+  function footHtml(d, i){
+    const p = PROFILES.find(x => x.id === d.profile) || PROFILES[0];
+    const txt = d.profile === 'luna' ? `Uses your default model (${p.name})` : `Uses ${p.name}`;
+    return `<div class="su-foot${played ? '' : ' su-enter'}" style="--i:${i}">`
+      + `<button type="button" class="aa-btn aa-btn-primary su-go" data-act="go">Looks good — start watching</button>`
+      + `<div class="su-model"><span>${txt} · </span><button type="button" class="su-link" data-act="profiles" aria-expanded="${d.profilesOpen}">change</button></div>`
+      + (d.profilesOpen ? `<div class="su-profiles" role="radiogroup" aria-label="Model">${PROFILES.map(x => `<label class="su-prof"><input type="radio" name="su-profile" value="${x.id}"${x.id === d.profile ? ' checked' : ''}><span>${AA.esc(x.name)}</span><small>${AA.esc(x.note)}</small></label>`).join('')}</div>` : '')
+      + `</div>`;
+  }
+  function msgHtml(i, inner){
+    return `<div class="su-msg${played ? '' : ' su-enter'}" style="--i:${i}">${avatarHtml()}<div class="su-bub">${inner}</div></div>`;
+  }
+
+  function draw(el){
+    if (!el) return;
+    host = el;
+    if (AA.state.setup !== 'proposing') { el.innerHTML = ''; return; }
+    const d = draft(), p = projInfo();
+    el.innerHTML = msgHtml(0, `<p>Hi — I'm Apex. I'll keep ${AA.esc(p.name)} moving while you work, and only interrupt when something needs you.</p>`)
+      + msgHtml(1, `<p>Here's what I'll watch in ${AA.esc(p.name)} (on ${AA.esc(p.machine)}). OK?</p>${groupsHtml(d)}${addHtml(d)}<p class="su-hint">Tip: drag a file or chat onto me to add it later.</p>`)
+      + msgHtml(2, `<p>What should I keep on track?</p><div class="su-pills">${goalsHtml(d)}</div>`)
+      + msgHtml(3, `<p>What should interrupt you?</p><div class="su-pills">${intsHtml(d)}</div>`)
+      + footHtml(d, 4);
+    played = true;
+    if (focusSel) {
+      const f = el.querySelector(focusSel);
+      if (f) f.focus();
+      focusSel = null;
+    }
+  }
+
+  function pick(d, id){
+    const p = candidates(d).find(x => x.id === id);
+    if (!p) return;
+    d.removed = d.removed.filter(x => srcKey(x) !== srcKey(p));
+    d.chips.push({id:p.id, kind:p.kind, ref:p.ref, label:p.label, why:p.why, on:true});
+    d.searchOpen = false; d.searchQ = '';
+  }
+  function remove(d, id){
+    const c = d.chips.find(x => x.id === id);
+    if (!c) return;
+    d.chips = d.chips.filter(x => x !== c);
+    d.removed = d.removed.filter(x => srcKey(x) !== srcKey(c)).concat([c]);
+  }
+  function commitGoal(d, value){
+    const v = String(value == null ? d.goalDraft : value).trim();
+    if (v) { d.goal = 'other'; d.goalText = v; }
+    d.goalOpen = false; d.goalDraft = '';
+  }
+  function finish(){
+    const d = draft(), p = projInfo();
+    const sources = d.chips.map(c => ({id:c.id, kind:c.kind, ref:c.ref, label:c.label, why:c.why, on:true}));
+    AA.set({setup:'done', status:'watching', sources});
+    const n = sources.length;
+    AA.addMessage({from:'agent', kind:'text', text:`On it. Watching ${n} source${n === 1 ? '' : 's'} in ${p.name} on ${p.machine}. I'll stay quiet unless something changes.`});
+  }
+
+  function onClick(e){
+    const t = e.target.closest('[data-act]');
+    if (!t || !host || !host.contains(t)) return;
+    const a = t.dataset.act, id = t.dataset.id;
+    const d = draft();
+    if (a === 'go') { finish(); return; }
+    if (a === 'remove') remove(d, id);
+    else if (a === 'search') { d.searchOpen = !d.searchOpen; d.searchQ = ''; if (d.searchOpen) focusSel = '.su-q'; }
+    else if (a === 'pick') pick(d, id);
+    else if (a === 'goal') { d.goal = id; d.goalOpen = false; }
+    else if (a === 'other') { d.goalOpen = true; d.goalDraft = d.goal === 'other' ? d.goalText : ''; focusSel = '.su-goal-in'; }
+    else if (a === 'int') { const it = d.ints.find(x => x.id === id); if (it) it.on = !it.on; }
+    else if (a === 'profiles') { d.profilesOpen = !d.profilesOpen; }
+    else return;
+    draw(host);
+  }
+  function onInput(e){
+    const t = e.target, d = draft();
+    if (t.classList.contains('su-goal-in')) { d.goalDraft = t.value; return; }
+    if (t.classList.contains('su-q')) {
+      d.searchQ = t.value;
+      const r = host && host.querySelector('.su-results');
+      if (r) r.innerHTML = resultsHtml(d);
+    }
+  }
+  function onKey(e){
+    const t = e.target, d = draft();
+    if (t.classList.contains('su-goal-in')) {
+      if (e.key === 'Enter') { e.preventDefault(); commitGoal(d, t.value); draw(host); }
+      else if (e.key === 'Escape') { d.goalOpen = false; d.goalDraft = ''; draw(host); }
+    } else if (t.classList.contains('su-q') && e.key === 'Enter') {
+      e.preventDefault();
+      const first = host.querySelector('.su-res');
+      if (first) { pick(d, first.dataset.id); draw(host); }
+    }
+  }
+  function onFocusOut(e){
+    const t = e.target;
+    // silent commit so a click elsewhere keeps the typed goal
+    if (t.classList && t.classList.contains('su-goal-in')) commitGoal(draft(), t.value);
+  }
+  function onChange(e){
+    const t = e.target;
+    if (t.name === 'su-profile') { const d = draft(); d.profile = t.value; d.profilesOpen = false; draw(host); }
+  }
+
+  function bind(el){
+    if (bound.has(el)) return;
+    bound.add(el);
+    el.addEventListener('click', onClick);
+    el.addEventListener('input', onInput);
+    el.addEventListener('keydown', onKey);
+    el.addEventListener('focusout', onFocusOut);
+    el.addEventListener('change', onChange);
+  }
+
+  function render(el){
+    if (!el) return;
+    host = el;
+    bind(el);
+    draw(el);
+  }
+
+  // A drop that finished (core emits 'added' only after the file checks pass) while the proposal is open.
+  AA.on('source-add', ev => {
+    if (!ev || ev.phase !== 'added' || AA.state.setup !== 'proposing' || (ev.project && ev.project !== AA.state.project)) return;
+    const d = draft(), kind = ev.kind || 'file';
+    let c = d.chips.find(x => x.label === ev.label);
+    if (!c) {
+      c = {id:'d-' + Math.random().toString(36).slice(2, 7), kind, ref:ev.label, label:ev.label, why:'you dropped it here', on:true};
+      d.chips.push(c);
+    }
+    d.flashId = c.id;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { d.flashId = null; if (host && host.isConnected) draw(host); }, 1800);
+    if (host && host.isConnected) draw(host);
+  });
+
+  AA.part('su', {mount(){}, render});
+})();
+</script>
+<script>/* bb */
+/* bb: speech bubbles beside the floating avatar */
+(function(){
+  const ROUTINE_MS = 6000, FADE_MS = 3000, FAIL_MS = 6000, ADDING_MS = 600000, TICK = 200, MAX_VISIBLE = 3, GAP = 12, MARGIN = 8;
+  const SNOOZE_TEXT = "Okay — I'll bring it back at 3:40 PM.";
+  const MOON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+  const SPIN = '<span class="bb-spin" aria-hidden="true"></span>';
+  let items = [];          // oldest -> newest; each item remembers the project it belongs to
+  const els = new Map();   // id -> wrapper element
+  let mount = null, stack = null, lastProject = null;
+
+  const quietOn = () => !!(AA.state.quiet && AA.state.quiet.on);
+  const quietTo = () => String((AA.state.quiet && AA.state.quiet.to) || '08:00').replace(/^0/, '');
+  const projectName = id => ((AA.state.projects || []).find(p => p.id === id) || {}).name || 'Another project';
+  // routine bubbles show only for the current project; decisions show from any project, with a label
+  // a decision bubble belongs to one finding; once that finding is resolved, snoozed or gone, the bubble goes too
+  const findingOpen = it => {
+    if (!it.finding) return true;
+    const m = (AA.view(it.project).messages || []).find(x => x.id === it.finding);
+    return !!m && m.status === 'open';
+  };
+  const visibleItems = () => items.filter(i => i.tone === 'decision' ? findingOpen(i) : i.project === AA.state.project);
+  const showLabel = it => it.tone === 'decision' && it.project !== AA.state.project;
+
+  function inner(it, held){
+    const e = AA.esc;
+    const x = '<button class="bb-x" data-act="close" aria-label="Dismiss">×</button>';
+    const label = showLabel(it) ? '<div class="bb-proj">' + e(projectName(it.project)) + ' ·</div>' : '';
+    const row = '<div class="bb-row">' + (it.spin ? SPIN : '') + '<span class="bb-text">' + e(it.text) + '</span>' + x + '</div>';
+    const sub = it.sub ? '<div class="bb-sub">' + e(it.sub) + '</div>' : '';
+    if (it.tone !== 'decision') return label + row + sub;
+    let h = label + row + sub;
+    if (it.evidence && it.evidence.length) {
+      h += '<div class="bb-chips">' + it.evidence.map(l => '<span class="bb-chip">' + e(l) + '</span>').join('') + '</div>';
+    }
+    if (held) h += '<div class="bb-held-line">' + MOON + '<span>Quiet hours — held for ' + e(quietTo()) + '</span></div>';
+    if (it.phase === 'sent') return h + '<div class="bb-sent">Sent ✓</div>';
+    h += '<div class="bb-reply"><input class="bb-input" type="text" placeholder="Reply…" aria-label="Reply to Apex">' +
+      '<button class="aa-btn aa-btn-primary bb-send" data-act="send">Send</button></div>';
+    h += '<div class="bb-actions"><button class="aa-btn bb-act" data-act="chat">Open chat</button>' +
+      '<button class="aa-btn bb-act" data-act="snooze">Snooze 1h</button></div>';
+    return h;
+  }
+
+  function build(it){
+    const el = document.createElement('div');
+    el.className = 'bb-item aa-overlay';
+    el.dataset.id = it.id;
+    el.addEventListener('pointerenter', () => { it.hover = true; });
+    el.addEventListener('pointerleave', () => { it.hover = false; });
+    el.addEventListener('focusin', () => { it.focus = true; });
+    el.addEventListener('focusout', e => { if (!el.contains(e.relatedTarget)) it.focus = false; });
+    el.addEventListener('animationend', e => { if (e.target === el) el.classList.remove('bb-enter'); });
+    return el;
+  }
+
+  // Place the stack beside the avatar box: 12px clear of it, vertically centred on it, inside the layer.
+  function place(){
+    if (!stack || !mount) return;
+    const st = AA.state, L = AA.layer(), a = AA.avatarBox();
+    const right = st.pos.edge !== 'left';
+    stack.style.left = ''; stack.style.right = ''; stack.style.top = '';
+    if (right) stack.style.right = (L.width - a.left + GAP) + 'px';
+    else stack.style.left = (a.left + a.size + GAP) + 'px';
+    // never wider than the room between the avatar and the window edge
+    const room = right ? a.left - GAP - MARGIN : L.width - (a.left + a.size + GAP) - MARGIN;
+    stack.style.maxWidth = Math.max(0, Math.min(300, room)) + 'px';
+    const vis = visibleItems().slice(-MAX_VISIBLE);
+    if (st.open || !vis.length) return;
+    const anchorY = a.top + a.size / 2;
+    const h = stack.offsetHeight;
+    const top = Math.max(8, Math.min(anchorY - h / 2, L.height - 8 - h));
+    stack.style.top = top + 'px';
+    const tail = Math.max(14, Math.min(anchorY - top, h - 14));
+    stack.style.setProperty('--bb-tail', tail + 'px');
+  }
+
+  function render(){
+    if (!mount || !stack) return;
+    const st = AA.state;
+    const held = quietOn();
+    if (lastProject !== null && st.project !== lastProject) {
+      // the human switched projects: routine bubbles from the old project go; decisions stay (labelled)
+      items = items.filter(i => i.tone === 'decision' || i.project === st.project);
+    }
+    lastProject = st.project;
+    items = items.filter(i => i.tone !== 'decision' || findingOpen(i));   // settled findings drop their bubble for good
+    const vis = visibleItems().slice(-MAX_VISIBLE);
+    const visIds = new Set(vis.map(i => i.id));
+
+    // retire bubbles that are gone or pushed out of the stack
+    for (const [id, el] of [...els]) {
+      if (!visIds.has(id) && !el.classList.contains('bb-out')) {
+        el.classList.add('bb-out');
+        setTimeout(() => { if (el.isConnected) el.remove(); if (els.get(id) === el) els.delete(id); }, 220);
+      }
+    }
+
+    vis.forEach((it, k) => {
+      const isDecision = it.tone === 'decision';
+      const isHeld = held && isDecision;
+      let el = els.get(it.id);
+      if (!el || el.classList.contains('bb-out') || el.dataset.tone !== it.tone) {
+        if (el) el.remove();
+        el = build(it);
+        el.dataset.tone = it.tone;
+        els.set(it.id, el);
+        stack.appendChild(el);
+        if (!isHeld) el.classList.add('bb-enter');   // held decisions appear without the pop
+      }
+      const sig = [it.phase, it.tone, it.text, it.sub || '', (it.evidence || []).join('|'), isHeld ? 1 : 0,
+        it.spin ? 1 : 0, showLabel(it) ? it.project : '', it.warn ? 1 : 0].join('\u0001');
+      if (el.dataset.sig !== sig) { el.innerHTML = inner(it, isHeld); el.dataset.sig = sig; }
+      el.classList.toggle('bb-decision', isDecision);
+      el.classList.toggle('bb-routine', !isDecision);
+      el.classList.toggle('bb-warn', !!it.warn);
+      el.classList.toggle('bb-held', isHeld);
+      el.classList.toggle('bb-glow', isDecision && !isHeld);
+      const depth = vis.length - 1 - k;
+      el.classList.toggle('bb-d1', depth === 1);
+      el.classList.toggle('bb-d2', depth >= 2);
+    });
+
+    // keep DOM order oldest (top) to newest (bottom)
+    const want = vis.map(i => els.get(i.id));
+    const cur = [...stack.children].filter(c => want.includes(c));
+    if (cur.some((c, i) => c !== want[i])) want.forEach(el => stack.appendChild(el));
+
+    stack.classList.toggle('bb-empty', !vis.length);
+    stack.classList.toggle('bb-hide', !!st.open);
+    stack.classList.toggle('bb-side-l', st.pos.edge === 'left');
+    stack.classList.toggle('bb-side-r', st.pos.edge !== 'left');
+    place();
+  }
+
+  function removeItem(id){
+    items = items.filter(i => i.id !== id);
+    render();
+  }
+
+  // add or update a bubble in place; it belongs to data.project, or to the project that is current right now
+  function put(id, data, life){
+    if (data.tone === 'routine' && quietOn()) return;   // quiet hours: routine stays silent
+    const fields = Object.assign({tone:'routine', text:'', sub:'', evidence:[], spin:false, warn:false}, data,
+      {project: data.project || AA.state.project, phase: 'pending', left: life});
+    const found = items.find(i => i.id === id);
+    if (found) Object.assign(found, fields);
+    else items = [...items, Object.assign({id, hover:false, focus:false}, fields)];
+    render();
+  }
+
+  function send(it, el){
+    const inp = el && el.querySelector('.bb-input');
+    const text = inp ? inp.value.trim() : '';
+    if (!text) { if (inp) inp.focus(); return; }
+    // post to the bubble's own project, switching first if needed
+    if (it.project && it.project !== AA.state.project) AA.switchProject(it.project);
+    AA.emit('user-message', text);
+    AA.addMessage({from: 'me', kind: 'text', text});
+    it.phase = 'sent';
+    render();
+    setTimeout(() => { if (items.includes(it)) removeItem(it.id); }, 1100);
+  }
+
+  function act(btn, it){
+    const a = btn.dataset.act;
+    if (a === 'close') return removeItem(it.id);
+    if (a === 'chat') {
+      if (it.project && it.project !== AA.state.project) AA.switchProject(it.project);
+      return AA.set({open: true, tab: 'chat'});
+    }
+    if (a === 'snooze') { removeItem(it.id); return AA.bubble({id: 'snz', tone: 'routine', text: SNOOZE_TEXT}); }
+    if (a === 'send') return send(it, btn.closest('.bb-item'));
+  }
+
+  const itemOf = target => {
+    const el = target.closest && target.closest('.bb-item');
+    return el ? items.find(i => i.id === el.dataset.id) : null;
+  };
+
+  AA.on('bubble', b => {
+    if (!b || b.id == null) return;
+    put(String(b.id), {
+      tone: b.tone === 'decision' ? 'decision' : 'routine',
+      text: b.text || '', sub: b.sub || '', evidence: b.evidence || [],
+      finding: b.finding || null, project: b.project || AA.state.project
+    }, ROUTINE_MS);
+  });
+
+  // drop feedback: one bubble per destination project, updated in place. It stays with the project the
+  // drop was for, so switching projects mid-save never shows the result under the wrong project.
+  AA.on('source-add', e => {
+    if (!e || !e.label) return;
+    const L = e.label, project = e.project || AA.state.project, id = 'src-add:' + project;
+    if (e.phase === 'adding') return put(id, {project, spin: true, text: 'Adding ' + L + '…'}, ADDING_MS);
+    if (e.phase === 'added') return put(id, {project, text: 'Added ' + L + '. I\'ll watch it from now on.'}, FADE_MS);
+    if (e.phase === 'duplicate') return put(id, {project, text: 'I\'m already watching ' + L + '.'}, FADE_MS);
+    if (e.phase === 'failed') return put(id, {project, warn: true, text: 'Couldn\'t add ' + L, sub: e.reason || ''}, FAIL_MS);
+  });
+
+  // routine bubbles fade after their life; paused on hover/focus and while the panel is open
+  setInterval(() => {
+    if (AA.state.open || !items.length) return;
+    let changed = false;
+    items.slice().forEach(it => {
+      if (it.tone !== 'routine' || it.hover || it.focus || it.phase === 'sent') return;
+      it.left -= TICK;
+      if (it.left <= 0) { items = items.filter(i => i !== it); changed = true; }
+    });
+    if (changed) render();
+  }, TICK);
+
+  // the avatar and the docked browser move on their own; keep the stack beside the avatar
+  setInterval(place, 250);
+
+  AA.part('bb', {
+    mount(){
+      mount = document.getElementById('bb-mount');
+      stack = document.createElement('div');
+      stack.className = 'bb-stack bb-empty bb-side-r';
+      mount.appendChild(stack);
+      mount.addEventListener('click', e => {
+        const btn = e.target.closest('[data-act]');
+        if (!btn) return;
+        const it = itemOf(btn);
+        if (it) act(btn, it);
+      });
+      mount.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('bb-input')) {
+          const it = itemOf(e.target);
+          if (it) send(it, e.target.closest('.bb-item'));
+        }
+      });
+      AA.on('change', render);
+      window.addEventListener('resize', place);
+      render();
+    },
+    clear(){
+      items = [];
+      els.forEach(el => el.remove());
+      els.clear();
+      render();
+    }
+  });
+})();
+</script>
+<script>/* cf */
+(function(){
+  const AA = window.AA;
+  const esc = s => AA.esc(s);
+  const svg = (d, w) => `<svg width="${w||14}" height="${w||14}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  const ICON = {
+    tick: svg('<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/>'),
+    doc: svg('<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M9.5 13h5M9.5 17h5"/>'),
+    arrow: svg('<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>'),
+    chat: svg('<path d="M4 5h16v11H9l-5 4z"/>'),
+    git: svg('<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10c0 4-12 2-12 6"/>'),
+    more: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
+    x: svg('<path d="M6 6l12 12M18 6 6 18"/>', 12),
+    check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 16)
+  };
+  const KIND_ICON = {file: ICON.doc, thread: ICON.chat, git: ICON.git};
+  const DEFAULT_SOURCES = [
+    {id:'src-launch', kind:'file', label:'docs/launch-plan.md'},
+    {id:'src-tests', kind:'file', label:'test-report.md'},
+    {id:'src-changelog', kind:'file', label:'CHANGELOG.md'},
+    {id:'src-release', kind:'thread', label:'Release thread'},
+    {id:'src-sso', kind:'thread', label:'SSO fixes'},
+    {id:'src-git', kind:'git', label:'git · main'}
+  ];
+  const SEED_CHECKS = [
+    {label:'9:14 · 6 sources · nothing new', icon:'tick'},
+    {label:'8:51 · test-report.md changed · 1 blocker', icon:'doc'},
+    {label:'8:02 · redirected by you', icon:'arrow'},
+    {label:'7:30 · 6 sources · nothing new', icon:'tick'},
+    {label:'Yesterday · launch-plan.md changed · 1 decision', icon:'doc'}
+  ];
+  const MODELS = ['GPT-6 Luna', 'Claude Sonnet', 'Claude Opus'];
+  const DEFAULT_RULES = {blockers:true, decisions:true, deadline:true, every:false};
+  const RULE_ROWS = [
+    ['blockers', 'Blockers', 'Apex is stuck and needs a choice from you'],
+    ['decisions', 'Decisions', 'Apex has a choice ready for you to approve'],
+    ['deadline', 'Deadline at risk', 'A date you set is slipping'],
+    ['every', 'Every change', 'A ping for each file or thread change']
+  ];
+  const ROUTINE = [['panel','In the panel'], ['bubble','Bubble'], ['bubble+phone','Bubble + iPhone']];
+  const DECISION = [['bubble+phone','Bubble + iPhone'], ['bubble','Bubble'], ['panel','In the panel']];
+
+  // UI-only state. el is re-rendered on every change, so this lives here.
+  const ui = {
+    menu: null,
+    schedItems: [{id:'sch-1', label:'Weekdays 9:00 · morning summary', paused:false}],
+    memories: [
+      {id:'m1', text:'SSO deferred past Nov 1 — you, Oct 9'},
+      {id:'m2', text:'You prefer drafts before anything is sent'},
+      {id:'m3', text:'Launch date: Nov 1'}
+    ],
+    moreNotes: false,
+    modelOpen: false,
+    model: 'GPT-6 Luna',
+    confirmStop: false,
+    seeded: false
+  };
+  let schedSeq = 2;
+
+  function proj(){
+    const s = AA.state;
+    return s.projects.find(p => p.id === s.project) || s.projects[0] || {id:'none', name:'Apex', machine:''};
+  }
+  function dotKind(st){
+    return st === 'checking' ? 'checking' : st === 'paused' ? 'paused' : st === 'offline' ? 'offline' : st === 'needs' ? 'needs' : 'watching';
+  }
+  function ensureSources(){
+    // demo only: the first project starts with the six example sources
+    if (!AA.state.sources.length && !ui.seeded && AA.state.project === 'mobile'){
+      ui.seeded = true;
+      AA.state.sources = DEFAULT_SOURCES.map(x => ({...x, on:true}));
+    }
+  }
+  function togglePause(){
+    AA.set({status: AA.state.status === 'paused' ? 'watching' : 'paused'});
+  }
+  function bind(el, fn){
+    el.onclick = e => {
+      const t = e.target && e.target.closest ? e.target.closest('[data-cf]') : null;
+      if (t) fn(t.getAttribute('data-cf'), t);
+    };
+  }
+  function sw(on, act, attrs){
+    return `<button class="cf-sw${on ? ' cf-sw-on' : ''}" role="switch" aria-checked="${!!on}" data-cf="${act}" ${attrs||''}><span class="cf-sw-knob"></span></button>`;
+  }
+  function seg(key, opts, cur){
+    return `<div class="cf-seg" role="radiogroup">${opts.map(o => `<button role="radio" aria-checked="${o[0]===cur}" class="${o[0]===cur ? 'cf-seg-on' : ''}" data-cf="route" data-k="${key}" data-v="${o[0]}">${esc(o[1])}</button>`).join('')}</div>`;
+  }
+
+  /* ---------- Activity (current project only) ---------- */
+  function renderActivity(el){
+    ensureSources();
+    const s = AA.state, p = proj(), paused = s.status === 'paused';
+    const live = s.sources.filter(x => !x.pending), n = live.length;
+    const blockers = s.messages.filter(m => m.kind === 'blocker' && m.status === 'open');
+    let now;
+    if (s.status === 'checking') now = `Checking ${n} sources…`;
+    else if (paused) now = 'Paused by you';
+    else if (s.status === 'offline') now = `${esc(p.name)} is offline on ${esc(p.machine)} · I'll retry when it's back`;
+    else if (s.status === 'needs') now = `${esc(p.name)} needs you · ${s.needs} waiting`;
+    else if (s.status === 'new') now = `Getting ${esc(p.name)} set up`;
+    else now = `Watching ${esc(p.name)} · next look ~20 min — I check sooner when files change`;
+    const dot = s.status === 'checking' ? 'cf-dot-checking' : paused ? 'cf-dot-paused' : s.status === 'offline' ? 'cf-dot-offline' : s.status === 'needs' ? 'cf-dot-needs' : 'cf-dot-watching';
+    const checks = [
+      ...s.messages.filter(m => m.kind === 'check').reverse().map(m => ({label:m.text, icon:'tick'})),
+      ...SEED_CHECKS
+    ].slice(0, 5);
+
+    const needsHtml = s.needs > 0 ? `
+      <section class="cf-sec"><div class="cf-h">Needs you</div>
+        ${blockers.length ? blockers.map(m => `<div class="cf-item"><span class="cf-txt">${esc(m.text)}</span><button class="aa-btn cf-mini" data-cf="go-chat">Open</button></div>`).join('') : '<p class="cf-sub">Nothing open right now.</p>'}
+      </section>` : '';
+
+    const sourceRows = s.sources.length ? s.sources.map(x => x.pending
+      ? `<div class="cf-item cf-src"><span class="cf-ic">${KIND_ICON[x.kind] || ICON.doc}</span><span class="cf-txt">${esc(x.label)}</span><span class="cf-adding"><span class="cf-spin" aria-hidden="true"></span>Adding…</span></div>`
+      : `<div class="cf-item cf-src"><span class="cf-ic">${KIND_ICON[x.kind] || ICON.doc}</span><span class="cf-txt">${esc(x.label)}</span><button class="cf-x" data-cf="src-rm" data-id="${esc(x.id)}" aria-label="Stop watching ${esc(x.label)}">${ICON.x}</button></div>`
+    ).join('') : '<p class="cf-sub">Nothing is watched in this project yet.</p>';
+
+    el.innerHTML = `<div class="cf-wrap">
+      <section class="cf-sec"><div class="cf-h">Now</div>
+        <div class="cf-now"><span class="cf-dot ${dot}"></span>
+          <div class="cf-now-text">${now}${paused ? ' · <button class="cf-link" data-cf="resume">Resume</button>' : ''}</div>
+        </div>
+      </section>
+      ${needsHtml}
+      <section class="cf-sec"><div class="cf-h">Recent checks</div>
+        ${checks.map(c => `<div class="cf-muted-row cf-item"><span class="cf-ic">${ICON[c.icon]}</span><span class="cf-txt">${esc(c.label)}</span></div>`).join('')}
+      </section>
+      <section class="cf-sec"><div class="cf-h">Scheduled</div>
+        <p class="cf-sub">No fixed schedule — Apex decides when to look.</p>
+        <div style="margin-top:6px">
+        ${ui.schedItems.map(it => `<div class="cf-sched">
+          <div class="cf-item"><span class="cf-txt">${esc(it.label)}</span>${it.paused ? '<span class="cf-tag">Paused</span>' : ''}<button class="cf-icon" data-cf="sched-menu" data-id="${it.id}" aria-label="More options">${ICON.more}</button></div>
+          ${ui.menu === it.id ? `<div class="cf-inline"><button class="cf-link" data-cf="sched-pause" data-id="${it.id}">${it.paused ? 'Resume' : 'Pause'}</button><button class="cf-link cf-danger" data-cf="sched-del" data-id="${it.id}">Delete</button></div>` : ''}
+        </div>`).join('')}
+        </div>
+        <button class="cf-link cf-sched-add" data-cf="sched-add">+ Add a fixed time</button>
+      </section>
+      <section class="cf-sec"><div class="cf-h">Watching in ${esc(p.name)}</div>
+        <div class="cf-srcs">${sourceRows}</div>
+        <p class="cf-sub cf-drop">Drag files or chats onto Apex to add more</p>
+      </section>
+      <div class="cf-foot">
+        <button class="aa-btn cf-big" data-cf="pause">${paused ? 'Resume Apex' : 'Pause Apex'}</button>
+        <button class="aa-btn aa-btn-primary cf-big" data-cf="check-now"${s.status === 'checking' ? ' disabled' : ''}>Check now</button>
+      </div>
+    </div>`;
+    bind(el, (act, t) => activityAction(el, act, t));
+  }
+
+  function activityAction(el, act, t){
+    const id = t.getAttribute('data-id');
+    switch (act){
+      case 'resume': AA.set({status:'watching'}); break;
+      case 'pause': togglePause(); break;
+      case 'go-chat': AA.set({tab:'chat'}); break;
+      case 'check-now': {
+        const n = AA.state.sources.filter(x => !x.pending).length;
+        AA.set({status:'checking'});
+        AA.addMessage({from:'agent', kind:'check', text:`Checked ${n} sources · nothing new · now`});
+        setTimeout(() => { if (AA.state.status === 'checking') AA.set({status:'watching'}); }, 2500);
+        break;
+      }
+      case 'sched-menu': ui.menu = ui.menu === id ? null : id; break;
+      case 'sched-pause': { const it = ui.schedItems.find(x => x.id === id); if (it) it.paused = !it.paused; ui.menu = null; break; }
+      case 'sched-del': ui.schedItems = ui.schedItems.filter(x => x.id !== id); ui.menu = null; break;
+      case 'sched-add': ui.schedItems = [...ui.schedItems, {id:'sch-' + (schedSeq++), label:'Daily 18:00 · end-of-day note', paused:false}]; break;
+      case 'src-rm': AA.set({sources: AA.state.sources.filter(x => x.id !== id)}); break;
+    }
+    renderActivity(el);
+  }
+
+  /* ---------- Settings ---------- */
+  function renderSettings(el){
+    const s = AA.state, rules = s.rules || DEFAULT_RULES, q = s.quiet, r = s.routes, p = proj();
+    const paused = s.status === 'paused';
+    const notes = ui.moreNotes
+      ? [...ui.memories, {id:'m4', text:'Ask before any paid job'}, {id:'m5', text:'Short morning summaries'}]
+      : ui.memories;
+    const modelLabel = ui.model === 'GPT-6 Luna' ? 'GPT-6 Luna (default from Settings)' : ui.model;
+
+    el.innerHTML = `<div class="cf-wrap">
+      <section class="cf-sec"><div class="cf-h">Make it yours</div><div data-cf-look></div></section>
+
+      <section class="cf-sec"><div class="cf-h">Where to reach you</div>
+        <div class="cf-route"><div class="cf-label">Routine updates</div>${seg('routine', ROUTINE, r.routine)}</div>
+        <div class="cf-route"><div class="cf-label">Decisions</div>${seg('decisions', DECISION, r.decisions)}</div>
+      </section>
+
+      <section class="cf-sec"><div class="cf-h">What needs you</div>
+        ${RULE_ROWS.map(([k, t, d]) => `<div class="cf-row-sw"><div class="cf-grow"><div>${t}</div><div class="cf-sub">${d}</div></div>${sw(rules[k], 'rule', `data-k="${k}"`)}</div>`).join('')}
+      </section>
+
+      <section class="cf-sec"><div class="cf-h">Quiet hours</div>
+        <div class="cf-row-sw"><div class="cf-grow"><div>${esc(q.from)} – ${esc(q.to)}</div><div class="cf-sub">Decisions wait until morning unless a deadline is under 24 h away.</div></div>${sw(q.on, 'quiet')}</div>
+      </section>
+
+      <section class="cf-sec"><div class="cf-h">What I remember</div>
+        ${notes.map(m => `<div class="cf-item"><span class="cf-txt">${esc(m.text)}</span><button class="cf-icon" data-cf="forget" data-id="${m.id}" aria-label="Forget this note">${ICON.x}</button></div>`).join('')}
+        ${ui.moreNotes ? '' : '<button class="cf-link" data-cf="notes-all">See all notes</button>'}
+      </section>
+
+      <section class="cf-sec"><div class="cf-h">Model</div>
+        <div class="cf-row-sw"><div class="cf-grow"><div>${esc(modelLabel)}</div></div><button class="cf-link" data-cf="model-change">Change</button></div>
+        ${ui.modelOpen ? `<div class="cf-inline" style="padding-top:8px">${MODELS.map(m => `<button class="cf-link${m === ui.model ? ' cf-on' : ''}" data-cf="model-pick" data-v="${esc(m)}">${esc(m)}</button>`).join('')}</div>` : ''}
+      </section>
+
+      <section class="cf-sec"><div class="cf-h">Visibility</div>
+        <div class="cf-row-sw"><div class="cf-grow"><div>Hide the avatar</div><div class="cf-sub">Apex keeps working. The avatar shrinks to a small edge tab.</div><div class="cf-sub">Over a docked browser, Apex moves beside the page so it never covers it.</div></div>${sw(s.hidden, 'hide')}</div>
+        <div class="cf-row-sw"><div class="cf-grow"><div>Pause Apex</div><div class="cf-sub">Stops checking until you resume. Nothing new is read.</div></div>${sw(paused, 'pause')}</div>
+        <p class="cf-sub" style="margin-top:8px">Reduce motion follows macOS. Open or close Apex with <span class="aa-kbd">⌘K</span>.</p>
+      </section>
+
+      <section class="cf-sec cf-end">${ui.confirmStop
+        ? `<p class="cf-sub" style="margin-bottom:6px">${esc(p.name)} leaves Apex's watch list. Its threads and files stay where they are.</p><div class="cf-inline"><button class="cf-link cf-danger" data-cf="stop-yes">Stop watching ${esc(p.name)}</button><button class="cf-link" data-cf="stop-no">Cancel</button></div>`
+        : (s.projects.length > 1 ? `<button class="cf-link cf-danger" data-cf="stop-ask">Stop watching ${esc(p.name)}</button>` : '')}
+      </section>
+    </div>`;
+
+    const sub = el.querySelector('[data-cf-look]');
+    if (sub){
+      if (AA.parts.av && typeof AA.parts.av.renderLook === 'function') AA.parts.av.renderLook(sub);
+      else sub.innerHTML = '<p class="cf-sub">The avatar editor (shape, colour, eyes, glasses) appears here.</p>';
+    }
+    bind(el, (act, t) => settingsAction(el, act, t));
+  }
+
+  function settingsAction(el, act, t){
+    const k = t.getAttribute('data-k'), v = t.getAttribute('data-v'), id = t.getAttribute('data-id');
+    switch (act){
+      case 'route': AA.set({routes: {...AA.state.routes, [k]: v}}); break;
+      case 'rule': { const rules = {...(AA.state.rules || DEFAULT_RULES)}; rules[k] = !rules[k]; AA.set({rules}); break; }
+      case 'quiet': AA.set({quiet: {...AA.state.quiet, on: !AA.state.quiet.on}}); break;
+      case 'forget': ui.memories = ui.memories.filter(m => m.id !== id); break;
+      case 'notes-all': ui.moreNotes = true; break;
+      case 'model-change': ui.modelOpen = !ui.modelOpen; break;
+      case 'model-pick': ui.model = v; ui.modelOpen = false; break;
+      case 'hide': AA.set({hidden: !AA.state.hidden}); break;
+      case 'pause': togglePause(); break;
+      case 'stop-ask': ui.confirmStop = true; break;
+      case 'stop-no': ui.confirmStop = false; break;
+      case 'stop-yes': {
+        const s = AA.state, cur = s.project;
+        const next = s.projects.find(x => x.id !== cur);
+        if (!next) { ui.confirmStop = false; break; }
+        // switch first (core saves the current project's data), then drop it from the lists
+        AA.switchProject(next.id);
+        const by = {...AA.state.byProject}; delete by[cur];
+        AA.set({projects: AA.state.projects.filter(x => x.id !== cur), byProject: by});
+        ui.confirmStop = false;
+        break;
+      }
+    }
+    renderSettings(el);
+  }
+
+  /* ---------- Project switcher (every project, its own status) ---------- */
+  function renderSwitcher(el){
+    const s = AA.state, total = AA.totalNeeds(), n = s.projects.length;
+    el.classList.add('aa-overlay');
+    const head = total === 0
+      ? `Nothing needs you across ${n} project${n === 1 ? '' : 's'}`
+      : `${total === 1 ? '1 needs' : total + ' need'} you across ${n} project${n === 1 ? '' : 's'}`;
+    el.innerHTML = `<div class="cf-wrap">
+      <div class="cf-h">Projects</div>
+      <p class="cf-total">${head}</p>
+      ${s.projects.map(p => {
+        const v = AA.view(p.id), cur = p.id === s.project;
+        return `<button class="cf-proj" data-cf="proj" data-id="${esc(p.id)}" aria-current="${cur}">
+          <span class="cf-dot cf-dot-${dotKind(v.status)}"></span>
+          <span class="cf-grow"><span class="cf-proj-name">${esc(p.name)}</span><span class="cf-sub">${esc(p.machine)}</span></span>
+          ${v.needs > 0 ? `<span class="cf-count">${v.needs}</span>` : ''}
+          <span class="cf-tick">${cur ? ICON.check : ''}</span>
+        </button>`;
+      }).join('')}
+      <div class="cf-foot-sw">
+        <button class="cf-link" data-cf="add-proj">+ Watch another project</button>
+        <p class="cf-sub">One Apex for all projects.</p>
+      </div>
+    </div>`;
+    bind(el, (act, t) => {
+      if (act === 'proj') AA.switchProject(t.getAttribute('data-id'));
+      else if (act === 'add-proj'){
+        const st = AA.state; let id = 'docs', k = 2;
+        while (st.byProject[id] || st.projects.some(p => p.id === id)) id = 'docs' + (k++);
+        const projects = [...st.projects, {id, name:'Docs site', folder:'~/code/docs', machine:'This Mac'}];
+        AA.set({projects, byProject: {...st.byProject, [id]: {status:'new', needs:0, setup:'none', sources:[], messages:[]}}});
+        AA.switchProject(id);
+      }
+      renderSwitcher(el);
+    });
+  }
+
+  AA.part('cf', {mount(){}, renderActivity, renderSettings, renderSwitcher});
+})();
+</script>
+<script>(function(){
+  const S = AA.state;
+  function page(p){ document.querySelectorAll('.sh-page').forEach(e=>e.classList.toggle('sh-show', e.dataset.page===p));
+    document.querySelectorAll('#sh-tabs button').forEach(b=>b.classList.toggle('sh-on', b.dataset.page===p));
+    AA.set({page:p, context: p==='threads'?{label:'Threads › Release thread'}: p==='code'?{label:'Code › test-report.md'}: p==='browser'?{label:'Browser › TestFlight build 214'}:null}); }
+  AA.page = page;
+  document.addEventListener('click', e => { const b = e.target.closest('[data-page]'); if (b && !b.closest('.sh-page')) page(b.dataset.page); });
+  window.STEPS = [];   // filled by lead later; helpers: ignore
+  let cur = 0;
+  window.go = function(n){ cur = Math.max(0, Math.min(n, STEPS.length-1)); const st = STEPS[cur]; if (!st) return;
+    st.apply(); document.getElementById('st-count').textContent = (cur+1)+' / '+STEPS.length;
+    document.getElementById('st-title').textContent = st.title; document.getElementById('st-note').textContent = st.note; };
+  AA.on('ready', () => {
+    document.getElementById('st-prev').onclick = () => go(cur-1);
+    document.getElementById('st-next').onclick = () => go(cur+1);
+    document.getElementById('st-motion').onchange = e => document.documentElement.classList.toggle('aa-reduce-motion', e.target.checked);
+    if (STEPS.length) go(0);
+  });
+})();
+</script>
+<script>(function(){
+  const blocker = () => ({id:'blk1', from:'agent', kind:'blocker', status:'open', time:'9:41',
+    text:'SSO tests are failing, and the launch plan needs SSO before Nov 1. Defer SSO, or move the date?',
+    observed:'3 of 12 SSO login tests fail in last night\'s report.',
+    inference:'At the current fix rate SSO won\'t be ready for Nov 1.',
+    evidence:[{label:'test-report.md', line:14, quote:'SSO login: 3 of 12 failing'},
+              {label:'docs/launch-plan.md', line:22, quote:'SSO must ship before release'}]});
+  const deckBlocker = () => ({id:'dblk1', from:'agent', kind:'blocker', status:'open', time:'8:55',
+    text:'The ApexAgent branch is 14 commits behind main, and the plan says it must be rebased before Null\'s final review.',
+    observed:'feat/apex-agent is 14 commits behind main; the glass theme commits touch src/App.tsx.',
+    inference:'The App.tsx overlap will need a hand merge before review.',
+    evidence:[{label:'Git · feat/apex-agent', line:0, quote:'14 behind, 9 ahead of main'},
+              {label:'docs/plans/agents-assistant-scheduling.md', line:211, quote:'rebase on main before final review'}]});
+  const storeCopy = () => ({id:'q1', from:'agent', kind:'blocker', status:'open', time:'22:14',
+    text:'Store copy is due tomorrow and has no owner yet.',
+    observed:'docs/launch-plan.md lists "App Store copy · due Oct 10 · owner: —".',
+    inference:'Nobody is on it, so it may miss the deadline.',
+    evidence:[{label:'docs/launch-plan.md', line:31, quote:'App Store copy · due Oct 10 · owner: —'}]});
+  const watched = [
+    {id:'s1',kind:'file',ref:'docs/launch-plan.md',label:'docs/launch-plan.md',why:'mentions Nov 1 eight times',on:true},
+    {id:'s2',kind:'file',ref:'test-report.md',label:'test-report.md',why:'nightly results',on:true},
+    {id:'s3',kind:'thread',ref:'thr-release',label:'Release thread',why:'you used it this week',on:true},
+    {id:'s4',kind:'thread',ref:'thr-sso',label:'SSO fixes',why:'you used it this week',on:true},
+    {id:'s5',kind:'git',ref:'git:main',label:'main · last 7 days',why:'local Git',on:true}];
+  const deckWatched = [
+    {id:'d1',kind:'file',ref:'docs/plans/agents-assistant-scheduling.md',label:'docs/plans/agents-assistant-scheduling.md',why:'the plan you\'re building',on:true},
+    {id:'d2',kind:'thread',ref:'thr-deploy',label:'Deploy checklist',why:'you used it today',on:true},
+    {id:'d3',kind:'git',ref:'git:main',label:'main · last 7 days',why:'Git on Hetzner',on:true}];
+  const hello = {id:'h1', from:'agent', kind:'text', time:'9:02', text:"On it. I'll check when something changes and stay quiet otherwise. Next look: in about 20 min."};
+  const deckHello = {id:'dh1', from:'agent', kind:'text', time:'8:30', text:"Watching Apex Deck on Hetzner. It keeps running while your Mac sleeps."};
+  const checks = [{id:'c1',from:'agent',kind:'check',time:'9:14',text:'Checked 6 sources · nothing new · 9:14'},
+                  {id:'c2',from:'agent',kind:'check',time:'9:38',text:'test-report.md changed · checking'}];
+  const intro = on => { const el = document.getElementById('in-card'); if (el) el.style.display = on ? '' : 'none'; };
+  const MOB = (p) => Object.assign({status:'watching', needs:0, setup:'done', sources:watched, messages:[hello]}, p||{});
+  const DECK = (p) => Object.assign({status:'watching', needs:0, setup:'done', sources:deckWatched, messages:[deckHello]}, p||{});
+  // ui = non-project fields; mob/deck = each project's own data
+  function base(ui, mob, deck){ const bb = AA.parts.bb; bb && bb.clear && bb.clear(); intro(false);
+    AA.set(Object.assign({open:false, size:'compact', tab:'chat', hidden:false, switcher:false, project:'mobile',
+      pos:{edge:'right', y:430}, quiet:{on:false,from:'22:00',to:'08:00'},
+      projects:[{id:'mobile', name:'Mobile launch', folder:'~/code/mobile-launch', machine:'This Mac'},
+                {id:'deck', name:'Apex Deck', folder:'/srv/apex-deck', machine:'Hetzner'}],
+      look:{shape:'orb',color:'mint',eyes:true,glasses:false}}, ui||{}));
+    AA.loadProjects({mobile: MOB(mob), deck: DECK(deck)}); }
+  const later = (ms, fn) => setTimeout(fn, ms);
+  const drop = (label) => { const el = [...document.querySelectorAll('[data-aa-drag]')].find(e => e.textContent.includes(label));
+    return JSON.parse(el.dataset.aaDrag); };
+  window.STEPS = [
+    {title:'Meet Apex', note:'A small glowing avatar floats over every page. No setup form — it just says hi.',
+      apply(){ AA.page('threads'); base({}, {status:'new', setup:'none', sources:[], messages:[]}); intro(true); }},
+    {title:'First click: setup happens in chat', note:'It already knows the project and suggests what to watch. Tap × to drop a source; one button to start.',
+      apply(){ AA.page('threads'); base({open:true, size:'tall'}, {status:'new', setup:'proposing', sources:[], messages:[]}); }},
+    {title:'Watching (calm glow)', note:'Close the chat and keep working. The slow breathing glow means it is watching. Drag it anywhere; it snaps to an edge. The glow stays inside the window.',
+      apply(){ AA.page('threads'); base({}, {messages:[hello, checks[0]]}); }},
+    {title:'Keyboard works too', note:'Tab to the avatar: Enter or Space opens it, arrow keys move it, Esc closes and puts you back on the avatar. ⌘K opens it from anywhere.',
+      apply(){ AA.page('threads'); base({}, {messages:[hello, checks[0]]}); later(150, () => { const b = document.querySelector('.av-hit'); b && b.focus(); }); }},
+    {title:'Follows you to every page', note:'Switch to Code (or any tab): same Apex, same place, still watching Mobile launch. It never switches its assignment because you changed pages.',
+      apply(){ AA.page('code'); base({}, {messages:[hello, checks[0]]}); }},
+    {title:'Checking (swirl)', note:'test-report.md changed, so Apex looks sooner than planned. The swirl means it is reading.',
+      apply(){ AA.page('code'); base({}, {status:'checking', messages:[hello, checks[0], checks[1]]}); }},
+    {title:'A blocker: amber + speech bubble', note:'Something needs you, so it speaks up next to the avatar with the evidence. You can answer right in the bubble.',
+      apply(){ AA.page('code'); base({}, {status:'needs', needs:1, messages:[hello, checks[0], checks[1], blocker()]});
+        later(250, () => AA.bubble({id:'blk1', tone:'decision', finding:'blk1', project:'mobile', text:'SSO tests are failing and the launch plan needs SSO before Nov 1. Defer SSO or move the date?', evidence:['test-report.md:14','launch-plan.md:22']})); }},
+    {title:'Open the chat: evidence, not guesses', note:'The blocker shows what it saw (with file + line) separately from what it thinks. Reading it does not clear it.',
+      apply(){ AA.page('code'); base({open:true}, {status:'needs', needs:1, messages:[hello, checks[0], checks[1], blocker()]}); }},
+    {title:'Redirect without restarting', note:'"Defer SSO, keep November 1, and draft the revised plan." Same assignment continues; the decision is remembered.',
+      apply(){ AA.page('code'); const b = blocker(); b.status = 'resolved';
+        base({open:true, size:'tall'}, {messages:[hello, checks[0], b,
+          {id:'u1',from:'me',kind:'text',time:'9:44',text:'Defer SSO, keep November 1, and draft the revised plan.'},
+          {id:'n1',from:'agent',kind:'note',time:'9:44',text:"I'll remember: SSO is deferred past Nov 1. I won't raise the SSO tests as a launch blocker again unless that changes."},
+          {id:'d1',from:'agent',kind:'draft',time:'9:45',title:'Launch plan — revised (draft)',text:'Nov 1 · Mobile launch (unchanged)\n• SSO moves to 1.1 (target Nov 15)\n• Email + password login ships at launch\n• Release notes: mention SSO "coming soon"\n\nNothing is changed in the repo until you say so.'},
+          {id:'t2',from:'agent',kind:'text',time:'9:45',text:'Still watching the rest: store copy is due Friday, and 2 UI tests are new since yesterday.'}]}); }},
+    {title:'Drag a file onto Apex: Adding… then Added', note:'Dropping CHANGELOG.md shows "Adding…" while it is saved. "Added" only appears once the save worked. Try dragging it from the sidebar yourself.',
+      apply(){ AA.page('threads'); base({}); later(250, () => AA.addSource(drop('CHANGELOG.md'))); }},
+    {title:'Same file twice: no duplicate', note:'Drop CHANGELOG.md again and Apex says it is already watching it. The list stays the same.',
+      apply(){ AA.page('threads'); base({}, {sources:[...watched, {id:'s6',kind:'file',ref:'CHANGELOG.md',label:'CHANGELOG.md',why:'you dropped it here',on:true}]});
+        later(250, () => AA.addSource(drop('CHANGELOG.md'))); }},
+    {title:'A drop that can\'t be added', note:'A file outside the project folder (or a chat from another project) is refused with the reason. Nothing is added.',
+      apply(){ AA.page('threads'); base({}); later(250, () => AA.addSource(drop('brand-notes.md'))); }},
+    {title:'Activity lives inside', note:'What it is doing now, what needs you, recent checks, anything scheduled, and what it watches. Pause and Check now are here.',
+      apply(){ AA.page('threads'); base({open:true, tab:'activity'}, {sources:[...watched, {id:'s6',kind:'file',ref:'CHANGELOG.md',label:'CHANGELOG.md',why:'you dropped it here',on:true}]}); }},
+    {title:'Configuration lives inside too', note:'Make it yours, where updates go, quiet hours, what it remembers, and Hide (keeps working) vs Pause (stops).',
+      apply(){ AA.page('threads'); base({open:true, tab:'settings', size:'tall'}); }},
+    {title:'One Apex, many projects', note:'The avatar counts what needs you across every project (here 2). The switcher shows each project\'s own state.',
+      apply(){ AA.page('threads'); base({open:true, switcher:true}, {status:'needs', needs:1, messages:[hello, checks[0], blocker()]}, {status:'needs', needs:1, messages:[deckHello, deckBlocker()]}); }},
+    {title:'Each project keeps its own chat', note:'Switched to Apex Deck: its own messages, sources and blocker. Mobile launch\'s chat is untouched and still waiting for you.',
+      apply(){ AA.page('threads'); base({open:true}, {status:'needs', needs:1, messages:[hello, checks[0], blocker()]}, {status:'needs', needs:1, messages:[deckHello, deckBlocker()]}); AA.switchProject('deck'); }},
+    {title:'Over a docked browser', note:'The browser page is drawn above the window, so Apex sits just left of it and opens to the left. The page stays live and clickable. If anything of Apex\'s ever did overlap it, the page would show a picture until that closes, like Deck\'s menus do today.',
+      apply(){ AA.page('browser'); base({open:true}, {messages:[hello, checks[0]]}); }},
+    {title:'Hide for now', note:'The avatar tucks into a thin glowing tab on the edge. Apex keeps working; amber if something needs you.',
+      apply(){ AA.page('threads'); base({hidden:true}); }},
+    {title:'Paused / offline', note:'Paused = dimmed (you stopped it). Offline = grey dashed ring (the machine that runs it is asleep).',
+      apply(){ AA.page('threads'); base({pos:{edge:'left', y:380}}, {status:'paused'}); }},
+    {title:'Quiet hours + left edge', note:'Dropped on the left edge. During quiet hours routine updates stay silent; decisions wait for morning.',
+      apply(){ AA.page('library'); base({pos:{edge:'left', y:260}, quiet:{on:true, from:'22:00', to:'08:00'}}, {status:'needs', needs:1, messages:[hello, storeCopy()]});
+        later(250, () => AA.bubble({id:'q', tone:'decision', finding:'q1', project:'mobile', text:'Store copy is due tomorrow and has no owner yet.'})); }}
+  ];
+})();
+</script>
+</body></html>

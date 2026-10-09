@@ -82,6 +82,14 @@ impl Store {
         self.write(&self.root.join("settings.json"), settings)
     }
 
+    pub fn monitors(&self) -> Result<Option<crate::monitor::MonitorDocument>, String> {
+        self.read(&self.root.join("monitor.json"))
+    }
+
+    pub fn save_monitors(&self, document: &crate::monitor::MonitorDocument) -> Result<(), String> {
+        self.write(&self.root.join("monitor.json"), document)
+    }
+
     /// The folder every saved file lives in.
     pub fn folder(&self) -> &Path {
         &self.root
@@ -256,6 +264,25 @@ mod tests {
         std::fs::write(root.join("session.json"), "broken saved file").unwrap();
         assert!(Store::new(root.clone()).session().is_err());
         assert_eq!(std::fs::read_to_string(root.join("session.json")).unwrap(), "broken saved file");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn monitors_round_trip_after_store_restart_and_corruption_is_reported() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        assert!(store.monitors().unwrap().is_none());
+        let monitor = crate::monitor::ProjectMonitor::new(
+            "ws".into(), "conversation".into(), "/repo".into(), "host".into(), "profile".into(),
+            "Continue the task".into(), vec![], vec![], 1234,
+        );
+        let document = crate::monitor::MonitorDocument { version: 1, monitors: vec![monitor] };
+        store.save_monitors(&document).unwrap();
+        let reopened = Store::new(root.clone());
+        assert_eq!(reopened.monitors().unwrap().unwrap().monitors[0].conversation_id, "conversation");
+        std::fs::write(root.join("monitor.json"), "broken").unwrap();
+        assert!(reopened.monitors().is_err());
+        assert_eq!(std::fs::read_to_string(root.join("monitor.json")).unwrap(), "broken");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

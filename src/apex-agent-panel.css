@@ -1,0 +1,63 @@
+.apex-agent-backdrop { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 22px; background: #03070bd9; }
+.apex-agent { --aa-line: color-mix(in srgb, var(--line, #24303d) 90%, transparent); --aa-surface: color-mix(in srgb, var(--panel, #0e141b) 92%, transparent); width: min(760px, 100%); height: min(780px, 100%); min-height: min(420px, 100%); display: flex; flex-direction: column; overflow: hidden; color: var(--text, #e4eaf0); background: var(--aa-surface); border: 1px solid var(--aa-line); border-radius: 16px; box-shadow: 0 30px 80px #0009, 0 0 34px color-mix(in srgb, var(--accent, #71e6b5) 8%, transparent); -webkit-backdrop-filter: blur(22px) saturate(1.25); backdrop-filter: blur(22px) saturate(1.25); }
+.apex-agent.widget { width: 100%; height: 100%; min-height: 0; border-radius: inherit; box-shadow: none; }
+.apex-agent-head { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 16px 18px 12px; border-bottom: 1px solid var(--aa-line); }
+.apex-agent-head > div:first-child { min-width: 0; }
+.apex-agent-head .eyebrow { display: block; margin: 0 0 5px; color: var(--muted, #91a0af); font-size: 11px; }
+.apex-agent-head h1 { max-width: 100%; margin: 0; overflow-wrap: anywhere; font-size: 15px; line-height: 1.35; font-weight: 600; }
+.apex-agent-head-actions { flex: none; display: flex; align-items: center; gap: 7px; }
+.apex-agent-head-actions button, .apex-agent-tabs button, .apex-agent-source-picker > button, .apex-agent-settings > button { min-height: 30px; padding: 0 10px; color: var(--text, #e4eaf0); border: 1px solid var(--aa-line); border-radius: 8px; background: color-mix(in srgb, var(--panel-2, #151e28) 78%, transparent); cursor: pointer; }
+.apex-agent-head-actions .icon { width: 30px; padding: 0; font-size: 18px; }
+.apex-agent-status { color: var(--accent, #71e6b5); white-space: nowrap; font-size: 11px; }
+.apex-agent-status.paused { color: var(--warn, #fbbf24); }
+.apex-agent-tabs { flex: none; display: flex; gap: 4px; padding: 8px 14px 0; border-bottom: 1px solid var(--aa-line); }
+.apex-agent-tabs button { border-color: transparent; background: transparent; color: var(--muted, #91a0af); }
+.apex-agent-tabs button.active { color: var(--text, #e4eaf0); border-color: var(--aa-line); background: color-mix(in srgb, var(--panel-2, #151e28) 85%, transparent); }
+.apex-agent-tabpanel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.apex-agent-transcript { flex: 1; min-height: 80px; overflow-y: auto; padding: 18px clamp(14px, 5vw, 36px); }
+.apex-agent-message { max-width: 680px; margin: 0 0 16px; }
+.apex-agent-message.human { margin-left: auto; }
+.apex-agent-message-role, .apex-agent-muted { color: var(--muted, #91a0af); font-size: 11px; }
+.apex-agent-message-role time { margin-left: 8px; }
+.apex-agent-message p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.apex-agent-evidence, .apex-agent-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.apex-agent-evidence button, .apex-agent-evidence-link { max-width: 100%; padding: 6px 8px; color: var(--accent, #71e6b5); border: 1px solid var(--aa-line); border-radius: 8px; background: var(--panel, #0e141b); text-align: left; font-size: 11px; cursor: pointer; }
+.apex-agent-evidence button small, .apex-agent-evidence-link small { display: block; max-width: 520px; overflow: hidden; color: var(--muted, #91a0af); text-overflow: ellipsis; white-space: nowrap; }
+.apex-agent-composer { flex: none; display: flex; align-items: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--aa-line); }
+.apex-agent-composer textarea, .apex-agent-setup-form textarea { flex: 1; min-width: 0; min-height: 42px; max-height: 150px; resize: vertical; padding: 10px 11px; color: var(--text, #e4eaf0); border: 1px solid var(--aa-line); border-radius: 10px; background: var(--panel, #0e141b); font: inherit; }
+.apex-agent-composer button, .apex-agent-setup-form button, .apex-agent-settings .primary { flex: none; min-height: 36px; padding: 0 14px; color: var(--accent-ink, #04211d); border: 1px solid var(--accent, #71e6b5); border-radius: 9px; background: var(--accent, #71e6b5); font: inherit; font-weight: 600; cursor: pointer; }
+.apex-agent button:disabled { opacity: .52; cursor: default; }
+.apex-agent-setup { display: flex; flex-direction: column; gap: 16px; padding: 20px; overflow-y: auto; }
+.apex-agent-intro { padding: 16px; border: 1px solid var(--aa-line); border-radius: 12px; background: color-mix(in srgb, var(--accent, #71e6b5) 6%, var(--panel, #0e141b)); }
+.apex-agent-intro strong { font-size: 15px; }
+.apex-agent-intro p { margin: 5px 0 0; color: var(--muted, #91a0af); }
+.apex-agent-recent { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 9px 10px 11px; border: 1px solid var(--aa-line); border-radius: 10px; }
+.apex-agent-recent legend { padding: 0 5px; font-size: 11px; font-weight: 600; }
+.apex-agent-recent legend span { color: var(--muted, #91a0af); font-weight: 400; }
+.apex-agent-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 27px; max-width: 100%; padding: 3px 9px; color: var(--text, #e4eaf0); border: 1px solid var(--aa-line); border-radius: 15px; background: color-mix(in srgb, var(--panel-2, #151e28) 82%, transparent); font-size: 11px; overflow-wrap: anywhere; }
+.apex-agent-chip input { margin: 0; accent-color: var(--accent, #71e6b5); }
+.apex-agent-chip.removable { cursor: pointer; }
+.apex-agent-chip.removable span:first-of-type { color: var(--muted, #91a0af); font-size: 14px; }
+.apex-agent-source-picker { display: grid; gap: 7px; }
+.apex-agent-chips { align-items: flex-start; }
+.apex-agent-setup-form { display: flex; align-items: flex-end; gap: 8px; padding-top: 5px; }
+.apex-agent-empty { padding: 24px 18px; color: var(--muted, #91a0af); }
+.apex-agent-error { flex: none; padding: 8px 16px; color: var(--danger, #f87171); background: color-mix(in srgb, var(--danger, #f87171) 10%, transparent); }
+.apex-agent-busy { flex: none; padding: 5px 16px; color: var(--muted, #91a0af); font-size: 10px; }
+.apex-agent-findings { display: grid; gap: 8px; margin: 6px 0 12px; }
+.apex-agent-findings article { display: grid; gap: 6px; padding: 10px; border: 1px solid color-mix(in srgb, var(--warn, #fbbf24) 45%, var(--aa-line)); border-radius: 9px; background: color-mix(in srgb, var(--warn, #fbbf24) 5%, var(--panel, #0e141b)); }
+.apex-agent-findings article.settled { opacity: .58; }
+.apex-agent-findings article small { display: block; color: var(--muted, #91a0af); }
+.apex-agent-buttons { display: flex; flex-wrap: wrap; gap: 5px; align-items: flex-start; }
+.apex-agent-buttons button { min-height: 27px; padding: 3px 8px; color: var(--text, #e4eaf0); border: 1px solid var(--aa-line); border-radius: 7px; background: var(--panel-2, #151e28); font-size: 10px; cursor: pointer; }
+.apex-agent-activity-view, .apex-agent-settings { display: grid; gap: 12px; padding: 16px; overflow-y: auto; }
+.apex-agent-controls { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; }
+.apex-agent-controls p, .apex-agent-settings p { margin: 4px 0; color: var(--muted, #91a0af); }
+.apex-agent-activity-row { display: flex; gap: 10px; padding: 7px 0; border-top: 1px solid color-mix(in srgb, var(--line, #24303d) 60%, transparent); font-size: 11px; }
+.apex-agent-activity-row time { flex: none; width: 120px; color: var(--muted, #91a0af); }
+.apex-agent-settings h2 { margin: 4px 0 0; font-size: 12px; }
+.apex-agent-settings label { display: grid; gap: 5px; font-size: 11px; }
+.apex-agent-settings input, .apex-agent-settings select { width: 100%; min-height: 34px; padding: 7px 9px; color: var(--text, #e4eaf0); border: 1px solid var(--aa-line); border-radius: 8px; background: var(--panel, #0e141b); font: inherit; }
+.apex-agent-settings > button { justify-self: start; }
+.apex-agent-sr-only, .apex-agent .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 600px) { .apex-agent-backdrop { padding: 8px; } .apex-agent { height: 100%; } .apex-agent-head { padding: 12px; } .apex-agent-setup { padding: 14px; } .apex-agent-composer { padding: 10px; } .apex-agent-controls { flex-direction: column; } .apex-agent-head-actions { gap: 4px; flex-wrap: wrap; justify-content: flex-end; } .apex-agent-status { max-width: none; overflow: visible; white-space: normal; text-align: right; } }

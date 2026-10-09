@@ -1,0 +1,48 @@
+:root{--bg:#090d12;--panel:#0e141b;--panel-2:#151e28;--line:#24303d;--text:#e4eaf0;--muted:#91a0af;
+--accent:#71e6b5;--brand-mint:#3def91;--brand-cyan:#1ed7ee;--accent-ink:#04211d;--warn:#f59e0b;--danger:#f87171;
+--radius:12px;--aa-glow:#71e6b5;--aa-amber:#fbbf24;color-scheme:dark}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:#05080b;color:var(--text);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;overflow:hidden}
+button{font:inherit;color:inherit}
+.aa-btn{height:30px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.aa-btn:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.aa-btn-primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.aa-btn-ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.aa-chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--line);background:var(--panel-2);font-size:12px}
+.aa-kbd{font:11px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:4px;padding:0 5px;color:var(--muted)}
+.aa-muted{color:var(--muted)}
+/* fake deck shell */
+.sh-win{position:absolute;inset:0;display:grid;grid-template-rows:44px 1fr;background:var(--bg)}
+.sh-top{display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.sh-logo{font-weight:700;letter-spacing:.2px;margin-right:auto;display:flex;gap:8px;align-items:center}
+.sh-tabs{display:flex;gap:4px;margin-right:auto}
+.sh-tabs button{height:28px;padding:0 12px;border-radius:7px;border:1px solid transparent;background:none;color:var(--muted);cursor:pointer}
+.sh-tabs button.sh-on{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+.sh-body{display:grid;grid-template-columns:230px 1fr;min-height:0}
+.sh-side{border-right:1px solid var(--line);padding:12px 8px;overflow:auto;background:var(--panel)}
+.sh-side h4{margin:10px 8px 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.sh-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:grab;color:var(--text)}
+.sh-item:hover{background:var(--panel-2)}
+.sh-item small{color:var(--muted);margin-left:auto}
+.sh-main{position:relative;overflow:hidden;padding:22px 30px}
+.sh-page{display:none;max-width:760px}.sh-page.sh-show{display:block}
+.sh-msg{display:grid;grid-template-columns:28px 1fr;gap:10px;margin:0 0 18px}
+.sh-ava{width:28px;height:28px;border-radius:7px;background:var(--panel-2);border:1px solid var(--line)}
+.sh-msg b{display:block;margin-bottom:2px}.sh-msg p{margin:0;color:#c9d3dc}
+.sh-file{font:12px/1.6 ui-monospace,Menlo,monospace;color:#b9c6d2;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;white-space:pre}
+/* step bar (lead) */
+.st-bar{position:fixed;left:0;right:0;bottom:0;height:46px;z-index:90;display:flex;align-items:center;gap:10px;padding:0 14px;background:#03060a;border-top:1px solid var(--line);font-size:12px}
+.st-bar b{color:var(--accent)}.st-note{color:var(--muted);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#aa-layer{position:fixed;inset:44px 0 46px 0;z-index:50;pointer-events:none}
+#aa-layer>*>*{pointer-events:auto}
+/* docked browser (native view drawn above the window, like Deck's BrowserView) */
+.sh-page-browser{max-width:none;height:100%}
+.sh-native{position:absolute;top:0;right:0;bottom:0;width:58%;z-index:70;background:#f4f6f8;color:#16202a;border-left:1px solid var(--line);display:flex;flex-direction:column}
+.sh-nat-bar{height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#e3e8ee;font:12px ui-monospace,Menlo,monospace;color:#34414e}
+.sh-nat-dot{width:8px;height:8px;border-radius:50%;background:#22a55a}
+.sh-nat-tag,.sh-nat-pic{margin-left:auto;font:600 11px -apple-system,system-ui,sans-serif;padding:2px 8px;border-radius:9px;background:#22a55a;color:#fff}
+.sh-nat-pic{display:none;background:#5b6672}
+.sh-nat-body{padding:22px 26px}.sh-nat-body p{color:#46525e;margin:4px 0 18px}
+.sh-nat-blk{height:14px;border-radius:7px;background:#d5dce3;margin:0 0 12px;width:80%}.sh-nat-short{width:46%}
+html.aa-browser-frozen .sh-native{z-index:auto;filter:saturate(.75)}
+html.aa-browser-frozen .sh-nat-tag{display:none}html.aa-browser-frozen .sh-nat-pic{display:inline}

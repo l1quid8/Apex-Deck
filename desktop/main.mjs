@@ -664,7 +664,7 @@ app.whenReady().then(async () => {
   const first = createWindow(LOCAL);
   rememberWindows();
   if (smoke) {
-    const { runSmoke } = env.APEX_DECK_MULTI_HOST_ROOT ? { runSmoke: (await import('./multi-host-smoke.mjs')).runMultiHostSmoke } : await import('./smoke.mjs');
+    const { runSmoke } = env.APEX_DECK_WIDGET_SMOKE ? await import('./widget-smoke.mjs') : env.APEX_DECK_MULTI_HOST_ROOT ? { runSmoke: (await import('./multi-host-smoke.mjs')).runMultiHostSmoke } : await import('./smoke.mjs');
     const code = await runSmoke(first.win, { sidecar: () => local, browser: first.browser }).catch((e) => {
       console.error(`smoke: ${e.stack ?? e}`);
       return 1;

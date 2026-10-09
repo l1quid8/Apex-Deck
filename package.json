@@ -12,6 +12,7 @@
     "desktop": "cargo build -p apex-daemon --features remote && vite build && electron .",
     "desktop:dev": "cargo build -p apex-daemon --features remote && node desktop/dev.mjs",
     "desktop:smoke": "cargo build -p apex-daemon --features remote && vite build && node desktop/run-smoke.mjs",
+    "desktop:smoke:widget": "cargo build -p apex-daemon --features remote && npm run build && node desktop/run-widget-smoke.mjs",
     "desktop:package": "cargo build --release -p apex-daemon --features remote && vite build && node scripts/package-mac.mjs --dir",
     "desktop:dmg": "cargo build --release -p apex-daemon --features remote && vite build && node scripts/package-mac.mjs",
     "desktop:smoke:multi-host": "cargo build -p apex-daemon --features remote && vite build && node --experimental-strip-types desktop/run-multi-host-smoke.mjs",

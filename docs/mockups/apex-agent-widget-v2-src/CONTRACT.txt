@@ -1,0 +1,110 @@
+APEXAGENT WIDGET MOCKUP v2 — CONTRACT (read fully before writing anything)
+=====================================================================
+Goal: a clickable HTML mockup of ApexAgent as a floating, draggable glowing avatar that
+persists across every page of Apex Deck, opens into a conversation, and keeps Activity +
+configuration INSIDE that panel. Reference model: OpenAI "Dot" (an always-on agent you keep
+talking to while it works; it reaches out with results or decisions that need you).
+Replaces today's setup FORM (four boxes + 8 checkboxes) — there must be NO setup form.
+
+Files (all in /tmp/jigga-aa2):
+  core.css      tokens + primitives (DON'T EDIT)      shell.html  fake Deck window (DON'T EDIT)
+  core.js       window.AA API (DON'T EDIT)            main.js     story steps (lead writes)
+  parts/<prefix>.css + parts/<prefix>.js            <- helpers write ONLY their own two files
+  assemble.cjs  builds /tmp/jigga-aa2/out.html from all of the above (lead runs it)
+  preview.cjs   `node_modules/.bin/electron preview.cjs <step> <out.png>` screenshot one step
+
+HARD RULES
+ 1. Write only your own files: parts/<prefix>.css and parts/<prefix>.js. Write them with Bash
+    (cat > file <<'EOF'), never with the Write/Edit tools, and never create .html or .md files.
+ 2. Every class/id you create starts with your prefix + '-' (av-, cv-, su-, bb-, cf-).
+    NEVER use these Deck class names: badge, picker, row, mono, card, active, selected, open, tab.
+    State classes too: use av-is-open, not "open".
+ 3. Use only core tokens: var(--bg) --panel --panel-2 --line --text --muted --accent
+    --accent-ink --warn --danger --brand-mint --brand-cyan --aa-glow --aa-amber --radius.
+    Body text >= 12px, buttons >= 28px tall, contrast readable on dark.
+ 4. No network, no external fonts/images. SVG/CSS only. No alert()/prompt(). No clipboard.
+ 5. Respect reduce motion: when document.documentElement has class "aa-reduce-motion",
+    stop all looping animations (use the selector .aa-reduce-motion .your-thing {animation:none}).
+ 6. Plain JS (ES2020), no modules, no imports. Wrap in an IIFE. Register with AA.part(name, obj).
+ 7. Copy is plain, friendly English. ApexAgent's default name is "Apex"; handle @tyler-apex.
+ 8. Demo project: "Mobile launch" (folder ~/code/mobile-launch, machine "This Mac"),
+    second project "Apex Deck" (machine "Hetzner"). Blocker story: SSO tests are failing
+    (test-report.md line 14 "SSO login: 3 of 12 failing") and the launch plan requires SSO
+    before Nov 1 (docs/launch-plan.md line 22 "SSO must ship before release").
+    Redirect: "Defer SSO, keep November 1, and draft the revised plan."
+
+v2 CHANGES (Null's review + human's list). These override anything below.
+ A. PER-PROJECT SCOPE. status, needs, setup, sources, messages belong to ONE project.
+    Top-level AA.state.<those> always show the CURRENT project. Never change state.project
+    directly: call AA.switchProject(id). AA.view(id) -> that project's {status,needs,setup,
+    sources,messages}. AA.totalNeeds() -> sum of needs over ALL projects (the avatar's amber
+    number). projects[] entries no longer carry status/needs; read them with AA.view(p.id).
+ B. ADDING A SOURCE. Drag payload (data-aa-drag JSON) = {kind, ref, label, project}. On drop call
+    AA.addSource(payload) (returns a Promise). Core emits 'source-add' {phase, label, kind, reason?}
+    with phase 'adding' -> then 'added' | 'failed' (reason given); or 'duplicate' at once.
+    NEVER say "added"/"got it" before phase 'added'. A pending source has pending:true.
+ C. SHORTCUT is Cmd+K (Ctrl+K). Cmd+J is taken by Deck ("next thing that needs you"). Never use J.
+ D. KEYBOARD. The avatar is a real <button>: Enter/Space opens/closes the panel; arrow Up/Down
+    move it 24px (AA.set({pos})), Left/Right move it to that edge; Shift+F10 / ContextMenu key
+    opens its menu; Esc closes the panel/menu and puts focus back on the avatar.
+ E. DOCKED BROWSER. On page 'browser' a native view (.sh-native) covers the right part of the
+    window and is drawn ABOVE #aa-layer. Two rules: (1) the avatar never sits over it: always
+    position from AA.avatarBox() (core moves it to the browser's left side). (2) Anything else
+    you draw that can overlap the page (panel frame, bubbles, menus, tooltips) gets the class
+    "aa-overlay"; core then swaps the live page for a picture (html.aa-browser-frozen).
+ F. GLOW STAYS INSIDE. Position the avatar ONLY from AA.avatarBox() ({left,top,size} in layer
+    coords; EDGE margin 20px). The glow may extend at most AA.GLOW (16px) past the avatar,
+    including during pulse animations (animate opacity, not scale beyond that). Nothing of
+    yours may extend past the window edge.
+ G. NO CUT-OFF TEXT. No text may end in "…" from text-overflow. If it can be long, wrap to a
+    second line or shorten the wording.
+
+THE AA API (core.js)
+  AA.state                       current state object (read only; change via AA.set)
+  AA.set(patch)                  shallow-merge + emit('change', state, patch)
+  AA.on(evt, fn) / AA.emit(evt, payload)
+  AA.part(name, obj)             register; core calls obj.mount() once after DOM ready
+  AA.parts.<name>                other parts' objects (call their documented functions)
+  AA.addMessage(msg)             push to state.messages (msg shape below), emits 'change'
+  AA.bubble(b)                   emit('bubble', b)  b = {id, text, tone:'routine'|'decision', sub?}
+  AA.esc(str)                    HTML-escape
+  Mount points (in shell.html, all position:fixed overlay layer #aa-layer, z-index 50):
+     #av-mount  avatar          #cv-mount  panel          #bb-mount  bubbles
+
+STATE FIELDS
+  page: 'threads'|'code'|'agents'|'library'|'settings'   (the Deck page under the widget)
+  status: 'new'|'watching'|'checking'|'needs'|'paused'|'offline'
+  needs: number of open decisions/blockers (amber count)
+  open: bool (panel visible)   size: 'compact'|'tall'   tab: 'chat'|'activity'|'settings'
+  hidden: bool ("hide for now": avatar shrinks to a 6px edge tab; work continues)
+  pos: {edge:'right'|'left', y: px from top}            (avatar location)
+  project: id   projects: [{id,name,folder,machine,status,needs}]
+  setup: 'none'|'proposing'|'done'   (first-run in-chat setup state)
+  sources: [{id,kind:'file'|'thread'|'git',label,why,on:bool}]
+  messages: [{id, from:'agent'|'me', kind:'text'|'blocker'|'draft'|'setup'|'note'|'check',
+              text, evidence?:[{label, quote, line}], status?:'open'|'resolved'|'snoozed',
+              time}]
+  context: {label:'Threads › Release thread'} what the human is looking at (or null)
+  switcher: bool (project switcher popover visible)
+  look: {shape:'orb'|'bot'|'blob', color:'mint'|'cyan'|'violet'|'amber', eyes:bool, glasses:bool}
+  quiet: {on:bool, from:'22:00', to:'08:00'}  routes: {routine:'panel', decisions:'bubble+phone'}
+
+EXTRA v2 API: AA.view, AA.totalNeeds, AA.switchProject, AA.loadProjects(map), AA.addSource,
+  AA.avatarBox, AA.browserRect, AA.EDGE, AA.GLOW. page may also be 'browser'.
+
+PART OWNERSHIP + PUBLIC FUNCTIONS
+  av (avatar)    renders #av-mount. Must expose AA.parts.av.renderLook(el) (the "Make it yours"
+                 editor, used inside cf settings) and AA.parts.av.mini(size) -> HTML string of
+                 the avatar at a given px size (used in panel header + agent messages).
+  cv (panel)     renders #cv-mount: frame, header, tabs, chat list, composer. For tab 'chat' with
+                 state.setup==='proposing' it calls AA.parts.su.render(el) at the top of the chat.
+                 For tab 'activity' calls AA.parts.cf.renderActivity(el); 'settings' ->
+                 AA.parts.cf.renderSettings(el). Header project chip toggles state.switcher and
+                 calls AA.parts.cf.renderSwitcher(el) for the popover.
+  su (setup)     AA.parts.su.render(el): the in-chat "Here's what I'll watch. OK?" proposal.
+  bb (bubbles)   listens to 'bubble'; renders speech bubbles next to the avatar in #bb-mount.
+  cf (config)    renderActivity(el), renderSettings(el), renderSwitcher(el).
+  qa             /tmp/jigga-aa2/qa/check.cjs (no CSS/JS part).
+Re-render on AA.on('change'). Keep renders idempotent (el.innerHTML = ... is fine), but keep
+focus/scroll where sensible. Panel geometry: AA.panelRect() returns {left,top,width,height}
+computed by core from pos/size so bb and cv agree where things are.

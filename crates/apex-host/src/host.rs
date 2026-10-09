@@ -76,6 +76,8 @@ pub struct Host {
     chains: AtomicUsize,
     /// Set by a shell whose command line isn't a list of folders (the daemon).
     startup: Mutex<Option<Vec<String>>>,
+    pub(crate) monitor_wake: Arc<tokio::sync::Notify>,
+    pub(crate) monitor_clock: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -98,6 +100,7 @@ impl Host {
     /// Open the host's data in `paths.data`. Old snapshots are compacted on a
     /// background thread, and agents may read the attachments folder.
     pub(crate) fn runtime(&self) -> &tokio::runtime::Handle { &self.runtime }
+    pub(crate) fn store(&self) -> &Store { &self.store }
 
     pub fn new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Arc<Host> {
         let store = Store::new(paths.data.join("saved-chats-v1"));
@@ -118,6 +121,8 @@ impl Host {
             rooms: Mutex::default(),
             chains: AtomicUsize::new(0),
             startup: Mutex::new(None),
+            monitor_wake: Arc::new(tokio::sync::Notify::new()),
+            monitor_clock: Mutex::new(None),
         })
     }
 
@@ -880,6 +885,20 @@ impl Host {
         self.store.save_artifacts(&room, &artifacts)
     }
 
+    /// Saved project monitors, including their findings and attention state.
+    /// A missing document means there are no monitors; a corrupt document is
+    /// an error so clients do not silently lose cached attention.
+    pub fn monitor_list(&self) -> Result<Vec<crate::monitor::ProjectMonitor>, String> {
+        Ok(self.store.monitors()?.unwrap_or_default().monitors)
+    }
+
+    /// The saved monitor for one workspace, or `None` when there is none.
+    pub fn monitor_get(&self, workspace_id: &str) -> Result<Option<crate::monitor::ProjectMonitor>, String> {
+        Ok(self.store.monitors()?.and_then(|document| {
+            document.monitors.into_iter().find(|monitor| monitor.workspace_id == workspace_id)
+        }))
+    }
+
     /// Write an artifact out of the app: to the path chosen in the save dialog,
     /// or, with none, to the exports folder, for opening in its default app.
     /// Returns where it went.
@@ -1162,12 +1181,14 @@ impl Host {
 
     /// End every terminal. Called on the way out.
     pub fn shutdown(&self) {
+        if let Some(clock) = self.monitor_clock.lock().unwrap().take() { clock.abort(); }
         self.ptys.kill_all();
     }
 
     /// Stop every running turn as the stop button does, wait up to `limit`
     /// for the chains to end and save, then end every terminal.
     pub async fn wind_down(&self, limit: std::time::Duration) {
+        if let Some(clock) = self.monitor_clock.lock().unwrap().take() { clock.abort(); }
         let open: Vec<String> = self.rooms.lock().unwrap().keys().cloned().collect();
         for id in open {
             self.room_stop(id, None);

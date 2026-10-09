@@ -27,6 +27,8 @@ export interface ProjectSidebarProps {
   focusedPane: string | null;
   hosts: HostEntry[];
   attention: Record<string, Signal>;
+  /** ApexAgent blockers per project; these stay until resolved, not until read. */
+  monitorAttention?: Record<string, { blocking: boolean; signal: Signal | null }>;
   threadStatus: Record<string, ThreadStatus>;
   statusOf(pane: Pane): PaneStatus;
   programOf(pane: Pane): string;
@@ -111,6 +113,12 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     const title = <ThreadName className="pane-row-title" title={pane.title} onRename={(name) => props.onRenamePane(pane.id, name)} renameRequest={where === "recent" ? undefined : props.paneRename[pane.id]} label={kindName} />;
     return (
       <div role="button" tabIndex={0} key={`${where}:${pane.id}`} data-pane-row={pane.id}
+        draggable={pane.kind === "chat" && !!workspace}
+        onDragStart={(event) => {
+          if (pane.kind !== "chat" || !workspace) return;
+          event.dataTransfer.effectAllowed = "copy";
+          event.dataTransfer.setData("application/x-apex-agent-source", JSON.stringify({ workspaceId: workspace.id, hostId, cwd: workspace.path, kind: "thread", sourceId: pane.id }));
+        }}
         className={["pane-row", flat && "flat", pane.id === props.focusedPane && !pane.closed && "focused", pane.closed && "closed", !pane.closed && "on-canvas", pane.unread && "unread", lit && "lit"].filter(Boolean).join(" ")}
         title={pane.closed ? "Closed. Click to open it again." : undefined}
         onClick={() => props.onOpenPane(pane)}
@@ -151,6 +159,8 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     const inside = panes
       .filter((p) => p.workspaceId === workspace.id && props.attention[p.id] && !deleting.has(p.id) && !p.archived)
       .map((p) => ({ where: p.kind === "chat" ? "Threads" as const : "Code" as const, signal: props.attention[p.id] }));
+    const monitorSignal = props.monitorAttention?.[workspace.id]?.signal;
+    if (monitorSignal) inside.push({ where: "Threads", signal: monitorSignal });
     const flag = workspaceFlag(inside, section === "code" ? "Code" : section === "threads" ? "Threads" : null);
     const more = (el: HTMLElement) => el.querySelector<HTMLElement>(".project-more");
     const newWhat = section === "code" ? "terminal" : "thread";

@@ -1,0 +1,12 @@
+/* lead fixes after QA: comfortable hit targets */
+.cv-x,.bb-x,.cf-x{min-width:28px;min-height:28px}
+.cv-src{min-height:26px}
+/* lead v2: the bubble already says Adding/Added, so the avatar keeps only its spinner ring */
+.av-flash{display:none!important}
+/* status words never split mid-word; the project chip gives up width first */
+.cv-idtxt{flex:0 0 auto;min-width:96px}
+.cv-status span{overflow-wrap:normal;word-break:normal;white-space:nowrap}
+/* v2 review fix: the name+status block never shrinks below its text (it used to be flex:1 + min-width:0,
+   so the chip slid over "Needs you · 1"); the chip takes only the space left and wraps inside itself */
+.cv-id{flex:0 0 auto}
+.cv-proj{flex:1 1 0;min-width:0;justify-content:flex-start}

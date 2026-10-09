@@ -67,6 +67,7 @@ export function backoff(attempt: number): number {
 }
 
 interface Pending {
+  command: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 }
@@ -130,7 +131,7 @@ export class DaemonClient {
     if (!link || !this.ready) return Promise.reject(new Error(NOT_CONNECTED));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      this.pending.set(id, { command: cmd, resolve: resolve as (value: unknown) => void, reject });
       link.send(JSON.stringify({ id, cmd, args }));
     });
   }
@@ -236,7 +237,17 @@ export class DaemonClient {
     if (!waiting) return;
     this.pending.delete(frame.id);
     // A refusal's `reason` word, when the daemon gives one, rides on the error for callers that switch on it.
-    if (typeof frame.err === "string") waiting.reject(typeof frame.reason === "string" ? Object.assign(new Error(frame.err), { reason: frame.reason }) : new Error(frame.err));
+    if (typeof frame.err === "string") {
+      const unsupportedMonitor = waiting.command.startsWith("monitor_")
+        && frame.err.includes(`unknown variant \`${waiting.command}\``);
+      const message = unsupportedMonitor
+        ? "This host’s Apex Deck service does not support project monitoring. Update the service on the project machine, then reconnect."
+        : frame.err;
+      waiting.reject(Object.assign(new Error(message), {
+        ...(typeof frame.reason === "string" ? { reason: frame.reason } : {}),
+        ...(unsupportedMonitor ? { reason: "monitor_unsupported" } : {}),
+      }));
+    }
     else waiting.resolve(frame.ok ?? null);
   }
 

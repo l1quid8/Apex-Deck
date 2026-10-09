@@ -12,9 +12,11 @@
 //! kept as ordinary text, which means a tool that prints a plain answer
 //! still works.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use apex_core::{ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction};
+use apex_core::{
+    ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction,
+};
 use serde_json::Value;
 
 /// How a tool's standard output should be read.
@@ -97,6 +99,15 @@ pub(crate) struct EventReader {
     /// Claude Code: helper agents started in the background that have not
     /// reported back yet.
     helpers: usize,
+    /// Codex app server: the reply's own thread. Helpers run in threads of
+    /// their own on the same stream, and their events are not the reply.
+    thread: Option<String>,
+    /// Codex app server: the threads of helpers this thread started that
+    /// have not finished yet.
+    helper_threads: HashSet<String>,
+    /// The reply so far, kept when a follow-up turn starts after helpers
+    /// report back. The follow-up's text is added to it.
+    earlier: Option<String>,
 }
 
 impl EventReader {
@@ -120,6 +131,9 @@ impl EventReader {
             last_request: None,
             images: Vec::new(),
             helpers: 0,
+            thread: None,
+            helper_threads: HashSet::new(),
+            earlier: None,
         }
     }
 
@@ -127,7 +141,11 @@ impl EventReader {
     pub(crate) fn push(&mut self, text: &str) -> Vec<Step> {
         if self.format == OutputFormat::Text {
             self.streamed.push_str(text);
-            return if text.is_empty() { Vec::new() } else { vec![Step::Text(text.to_string())] };
+            return if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![Step::Text(text.to_string())]
+            };
         }
         self.partial.push_str(text);
         let mut steps = Vec::new();
@@ -149,11 +167,19 @@ impl EventReader {
     }
 
     pub(crate) fn outcome(self) -> Outcome {
-        let mut text = self.final_text.filter(|t| !t.trim().is_empty()).unwrap_or(self.streamed);
+        let last = self.final_text.filter(|t| !t.trim().is_empty());
+        let mut text = match (self.earlier, last) {
+            (Some(earlier), Some(last)) => format!("{}\n\n{last}", earlier.trim_end()),
+            (Some(earlier), None) => earlier,
+            (None, Some(last)) => last,
+            (None, None) => self.streamed,
+        };
         attach_images(&mut text, &self.images);
         let has_reply = !text.trim().is_empty();
         Outcome {
-            error: self.failure.or(if has_reply { None } else { self.last_error }),
+            error: self
+                .failure
+                .or(if has_reply { None } else { self.last_error }),
             text,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
@@ -166,23 +192,57 @@ impl EventReader {
         self.turn_over
     }
 
-    /// Claude Code: helper agents still working in the background. When
-    /// one finishes, Claude Code starts a follow-up turn by itself to pass
-    /// on what it found, as long as its input is still open.
-    pub(crate) fn helpers(&self) -> usize {
-        self.helpers
+    /// True once the turn has failed, so nothing more will come of it.
+    pub(crate) fn failed(&self) -> bool {
+        self.failure.is_some()
     }
 
-    /// Keep reading after a `result` for the follow-up turn the helpers
-    /// will start. Its reply is added to this one.
+    /// Helper agents still working in the background. When one finishes,
+    /// Claude Code starts a follow-up turn by itself to pass on what it
+    /// found, as long as its input is still open. Codex does not, so Deck
+    /// starts that turn once they are all done.
+    pub(crate) fn helpers(&self) -> usize {
+        match self.format {
+            OutputFormat::CodexServer => self.helper_threads.len(),
+            _ => self.helpers,
+        }
+    }
+
+    /// Codex app server: read only this thread's events as the reply.
+    pub(crate) fn own_thread(&mut self, thread: &str) {
+        self.thread = Some(thread.to_string());
+    }
+
+    /// Keep reading after the turn ends, for the follow-up turn that passes
+    /// on what the helpers found. Its reply is added to this one.
     pub(crate) fn await_follow_up(&mut self) {
         self.turn_over = false;
+        if let Some(text) = self.final_text.take().filter(|t| !t.trim().is_empty()) {
+            self.earlier = Some(match self.earlier.take() {
+                Some(earlier) => format!("{}\n\n{text}", earlier.trim_end()),
+                None => text,
+            });
+        }
     }
 
     /// Add a line of Deck's own to the end of the reply.
     pub(crate) fn add_note(&mut self, note: &str) {
-        let text = self.final_text.take().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| self.streamed.clone());
-        self.final_text = Some(if text.trim().is_empty() { note.to_string() } else { format!("{}\n\n{note}", text.trim_end()) });
+        // After a follow-up, everything shown is already in `earlier`.
+        let shown = if self.earlier.is_some() {
+            String::new()
+        } else {
+            self.streamed.clone()
+        };
+        let text = self
+            .final_text
+            .take()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or(shown);
+        self.final_text = Some(if text.trim().is_empty() {
+            note.to_string()
+        } else {
+            format!("{}\n\n{note}", text.trim_end())
+        });
     }
 
     /// Everything shown as reply text so far.
@@ -209,7 +269,11 @@ impl EventReader {
     /// Start a new message of the reply, set apart from the one before it.
     fn new_message(&mut self, steps: &mut Vec<Step>) {
         if !self.streamed.is_empty() && !self.streamed.ends_with("\n\n") {
-            let gap = if self.streamed.ends_with('\n') { "\n" } else { "\n\n" };
+            let gap = if self.streamed.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
             self.say(gap, steps);
         }
         self.message_start = self.streamed.len();
@@ -260,7 +324,9 @@ impl EventReader {
                 if own {
                     self.note_claude_request(&event["message"]);
                 }
-                let Some(blocks) = event["message"]["content"].as_array() else { return };
+                let Some(blocks) = event["message"]["content"].as_array() else {
+                    return;
+                };
                 for block in blocks {
                     match block["type"].as_str() {
                         Some("tool_use") => {
@@ -290,10 +356,16 @@ impl EventReader {
             }
             // The outcome of a tool call comes back as a message from "user".
             Some("user") => {
-                let Some(blocks) = event["message"]["content"].as_array() else { return };
+                let Some(blocks) = event["message"]["content"].as_array() else {
+                    return;
+                };
                 for block in blocks.iter().filter(|b| b["type"] == "tool_result") {
-                    let done = block["tool_use_id"].as_str().and_then(|id| self.edits.remove(id));
-                    if let (Some(changes), false) = (done, block["is_error"].as_bool().unwrap_or(false)) {
+                    let done = block["tool_use_id"]
+                        .as_str()
+                        .and_then(|id| self.edits.remove(id));
+                    if let (Some(changes), false) =
+                        (done, block["is_error"].as_bool().unwrap_or(false))
+                    {
                         steps.extend(changes.into_iter().map(Step::Change));
                     }
                 }
@@ -303,7 +375,11 @@ impl EventReader {
                 let text = event["result"].as_str().map(str::to_string);
                 if event["is_error"].as_bool().unwrap_or(false) {
                     let listed = event["errors"].as_array().map(|errors| {
-                        errors.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" | ")
+                        errors
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" | ")
                     });
                     self.failure = text
                         .filter(|t| !t.trim().is_empty())
@@ -313,7 +389,11 @@ impl EventReader {
                     // A follow-up turn after helpers report back adds to
                     // the reply instead of replacing it.
                     self.final_text = match (self.final_text.take(), text) {
-                        (Some(before), Some(after)) if !before.trim().is_empty() && !after.trim().is_empty() => Some(format!("{}\n\n{}", before.trim_end(), after)),
+                        (Some(before), Some(after))
+                            if !before.trim().is_empty() && !after.trim().is_empty() =>
+                        {
+                            Some(format!("{}\n\n{}", before.trim_end(), after))
+                        }
                         (Some(before), Some(after)) if after.trim().is_empty() => Some(before),
                         (_, after) => after,
                     };
@@ -335,7 +415,14 @@ impl EventReader {
                 // Background shells (a dev server, say) can run for ever and
                 // need no reply; only helper agents report back.
                 self.helpers = event["tasks"].as_array().map_or(0, |tasks| {
-                    tasks.iter().filter(|t| t["task_type"].as_str().is_some_and(|kind| kind.contains("agent"))).count()
+                    tasks
+                        .iter()
+                        .filter(|t| {
+                            t["task_type"]
+                                .as_str()
+                                .is_some_and(|kind| kind.contains("agent"))
+                        })
+                        .count()
                 });
             }
             Some("rate_limit_event") => {
@@ -352,8 +439,11 @@ impl EventReader {
     /// window is; the last request alone says that.
     fn note_claude_request(&mut self, message: &Value) {
         let usage = &message["usage"];
-        let Some(input) = usage["input_tokens"].as_u64() else { return };
-        let cached = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0) + usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+        let Some(input) = usage["input_tokens"].as_u64() else {
+            return;
+        };
+        let cached = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0)
+            + usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
         let model = message["model"].as_str().unwrap_or("").to_string();
         self.last_request = Some((input + cached, model));
     }
@@ -363,14 +453,28 @@ impl EventReader {
     fn claude_context(&self, models: &Value) -> Option<ContextUse> {
         let (used, model) = self.last_request.as_ref()?;
         let models = models.as_object()?;
-        let entry = models.get(model).or_else(|| if models.len() == 1 { models.values().next() } else { None })?;
+        let entry = models.get(model).or_else(|| {
+            if models.len() == 1 {
+                models.values().next()
+            } else {
+                None
+            }
+        })?;
         let window = entry["contextWindow"].as_u64().filter(|w| *w > 0)?;
-        Some(ContextUse { used_tokens: *used, window_tokens: window })
+        Some(ContextUse {
+            used_tokens: *used,
+            window_tokens: window,
+        })
     }
 
     fn claude_activity(&self, tool: &str, input: &Value) -> String {
         let field = |key: &str| input[key].as_str().map(str::trim).filter(|s| !s.is_empty());
-        let path = || field("file_path").or(field("notebook_path")).or(field("path")).map(|p| self.short_path(p));
+        let path = || {
+            field("file_path")
+                .or(field("notebook_path"))
+                .or(field("path"))
+                .map(|p| self.short_path(p))
+        };
         let line = match tool {
             "Read" => path().map(|p| format!("Reading {p}")),
             "Edit" | "MultiEdit" | "NotebookEdit" => path().map(|p| format!("Editing {p}")),
@@ -390,14 +494,23 @@ impl EventReader {
     /// that do not change files.
     fn claude_changes(&self, tool: &str, input: &Value) -> Vec<FileChange> {
         let text = |value: &Value| value.as_str().unwrap_or("").to_string();
-        let Some(path) = input["file_path"].as_str().or(input["notebook_path"].as_str()) else { return Vec::new() };
+        let Some(path) = input["file_path"]
+            .as_str()
+            .or(input["notebook_path"].as_str())
+        else {
+            return Vec::new();
+        };
         let path = self.short_path(path);
         let diff = match tool {
             "Edit" => replaced(&text(&input["old_string"]), &text(&input["new_string"])),
             "MultiEdit" => input["edits"]
                 .as_array()
                 .map(|edits| {
-                    edits.iter().map(|e| replaced(&text(&e["old_string"]), &text(&e["new_string"]))).collect::<Vec<_>>().join("@@\n")
+                    edits
+                        .iter()
+                        .map(|e| replaced(&text(&e["old_string"]), &text(&e["new_string"])))
+                        .collect::<Vec<_>>()
+                        .join("@@\n")
                 })
                 .unwrap_or_default(),
             // What was in the file before is not reported, so a written
@@ -421,17 +534,33 @@ impl EventReader {
             return ProposedAction {
                 kind: ActionKind::Edit,
                 title: format!("{verb} {}", change.path),
-                detail: changes.iter().map(|c| c.diff.as_str()).collect::<Vec<_>>().join("\n"),
+                detail: changes
+                    .iter()
+                    .map(|c| c.diff.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 expires_at: None,
                 risky: false,
             };
         }
         if tool == "Bash" {
             let command = input["command"].as_str().unwrap_or("").to_string();
-            return ProposedAction { kind: ActionKind::Command, title: "Run a command".to_string(), detail: command, expires_at: None, risky: false };
+            return ProposedAction {
+                kind: ActionKind::Command,
+                title: "Run a command".to_string(),
+                detail: command,
+                expires_at: None,
+                risky: false,
+            };
         }
         let detail = serde_json::to_string_pretty(input).unwrap_or_default();
-        ProposedAction { kind: ActionKind::Other, title: self.claude_activity(tool, input), detail, expires_at: None, risky: false }
+        ProposedAction {
+            kind: ActionKind::Other,
+            title: self.claude_activity(tool, input),
+            detail,
+            expires_at: None,
+            risky: false,
+        }
     }
 
     // ------------------------------------------------------------------ Codex
@@ -460,12 +589,24 @@ impl EventReader {
                 self.editing(&item["changes"], steps);
                 // This mode names the files that changed but not what changed in them.
                 if kind == "item.completed" && item["status"] == "completed" {
-                    steps.extend(self.changes_in(&item["changes"]).into_iter().map(Step::Change));
+                    steps.extend(
+                        self.changes_in(&item["changes"])
+                            .into_iter()
+                            .map(Step::Change),
+                    );
                 }
             }
             ("item.started", Some("web_search")) => {
-                let query = item["query"].as_str().map(str::trim).filter(|q| !q.is_empty());
-                self.doing(query.map_or("Searching the web".to_string(), |q| format!("Searching the web for {q}")), steps);
+                let query = item["query"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty());
+                self.doing(
+                    query.map_or("Searching the web".to_string(), |q| {
+                        format!("Searching the web for {q}")
+                    }),
+                    steps,
+                );
             }
             ("item.started", Some("mcp_tool_call")) => {
                 let server = item["server"].as_str().unwrap_or("a connected tool");
@@ -473,7 +614,10 @@ impl EventReader {
                 self.doing(format!("Using {server} {tool}").trim().to_string(), steps);
             }
             ("item.completed", Some("error")) => {
-                self.last_error = item["message"].as_str().map(str::to_string).or(self.last_error.take());
+                self.last_error = item["message"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or(self.last_error.take());
             }
             ("turn.completed", _) => {
                 let usage = &event["usage"];
@@ -481,11 +625,16 @@ impl EventReader {
                 self.output_tokens = usage["output_tokens"].as_u64().or(self.output_tokens);
             }
             ("turn.failed", _) => {
-                let message = event["error"]["message"].as_str().unwrap_or("the turn failed");
+                let message = event["error"]["message"]
+                    .as_str()
+                    .unwrap_or("the turn failed");
                 self.failure = Some(message.to_string());
             }
             ("error", _) => {
-                self.last_error = event["message"].as_str().map(str::to_string).or(self.last_error.take());
+                self.last_error = event["message"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or(self.last_error.take());
             }
             _ => {}
         }
@@ -499,6 +648,15 @@ impl EventReader {
         let params = &message["params"];
         let item = &params["item"];
         let kind = item["type"].as_str();
+        if let (Some(own), Some(from)) = (&self.thread, params["threadId"].as_str()) {
+            if own != from {
+                // A helper's thread closing means it will not report back.
+                if message["method"] == "thread/closed" {
+                    self.helper_threads.remove(from);
+                }
+                return;
+            }
+        }
         match message["method"].as_str() {
             Some("item/agentMessage/delta") => {
                 let id = params["itemId"].as_str().unwrap_or("");
@@ -522,12 +680,21 @@ impl EventReader {
                     // Kept so that a request to approve this edit, which
                     // names only the item, can show what the edit is.
                     if let Some(id) = item["id"].as_str() {
-                        self.edits.insert(id.to_string(), self.changes_in(&item["changes"]));
+                        self.edits
+                            .insert(id.to_string(), self.changes_in(&item["changes"]));
                     }
                 }
                 Some("webSearch") => {
-                    let query = item["query"].as_str().map(str::trim).filter(|q| !q.is_empty());
-                    self.doing(query.map_or("Searching the web".to_string(), |q| format!("Searching the web for {q}")), steps);
+                    let query = item["query"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|q| !q.is_empty());
+                    self.doing(
+                        query.map_or("Searching the web".to_string(), |q| {
+                            format!("Searching the web for {q}")
+                        }),
+                        steps,
+                    );
                 }
                 Some("mcpToolCall") => {
                     let server = item["server"].as_str().unwrap_or("a connected tool");
@@ -538,8 +705,25 @@ impl EventReader {
                 _ => {}
             },
             Some("item/completed") => match kind {
+                // A helper agent this thread started, or one finishing.
+                Some("subAgentActivity") => {
+                    let Some(helper) = item["agentThreadId"].as_str() else {
+                        return;
+                    };
+                    match item["kind"].as_str() {
+                        Some("started") => {
+                            self.helper_threads.insert(helper.to_string());
+                        }
+                        Some("completed" | "interrupted") => {
+                            self.helper_threads.remove(helper);
+                        }
+                        _ => {}
+                    }
+                }
                 Some("agentMessage") => {
-                    let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty()) else { return };
+                    let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty()) else {
+                        return;
+                    };
                     // If the pieces never came, the whole message is the
                     // first we see of it.
                     let id = item["id"].as_str().unwrap_or("");
@@ -553,7 +737,9 @@ impl EventReader {
                 // In planning mode Codex ends with its plan as an item of its
                 // own (probe notes, 2026-10-06). It is the reply.
                 Some("plan") => {
-                    let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty()) else { return };
+                    let Some(text) = item["text"].as_str().filter(|t| !t.trim().is_empty()) else {
+                        return;
+                    };
                     self.new_message(steps);
                     self.say(text, steps);
                     self.current_item = None;
@@ -566,12 +752,19 @@ impl EventReader {
                     }
                     // A declined or failed edit changed nothing.
                     if item["status"] == "completed" {
-                        steps.extend(self.changes_in(&item["changes"]).into_iter().map(Step::Change));
+                        steps.extend(
+                            self.changes_in(&item["changes"])
+                                .into_iter()
+                                .map(Step::Change),
+                        );
                     }
                 }
                 // Generated pictures arrive as their own item, saved to disk.
                 _ => {
-                    if let Some(path) = item["savedPath"].as_str().filter(|_| item["status"] == "completed") {
+                    if let Some(path) = item["savedPath"]
+                        .as_str()
+                        .filter(|_| item["status"] == "completed")
+                    {
                         self.images.push(path.to_string());
                     }
                 }
@@ -585,11 +778,17 @@ impl EventReader {
                 self.output_tokens = total["outputTokens"].as_u64().or(self.output_tokens);
                 // How full the window is comes from the latest request, not the total.
                 let last = &usage["last"];
-                let used = last["totalTokens"]
-                    .as_u64()
-                    .or_else(|| Some(last["inputTokens"].as_u64()? + last["outputTokens"].as_u64().unwrap_or(0)));
-                if let (Some(used), Some(window)) = (used, usage["modelContextWindow"].as_u64().filter(|w| *w > 0)) {
-                    steps.push(Step::Context(ContextUse { used_tokens: used, window_tokens: window }));
+                let used = last["totalTokens"].as_u64().or_else(|| {
+                    Some(last["inputTokens"].as_u64()? + last["outputTokens"].as_u64().unwrap_or(0))
+                });
+                if let (Some(used), Some(window)) = (
+                    used,
+                    usage["modelContextWindow"].as_u64().filter(|w| *w > 0),
+                ) {
+                    steps.push(Step::Context(ContextUse {
+                        used_tokens: used,
+                        window_tokens: window,
+                    }));
                 }
             }
             Some("account/rateLimits/updated") => {
@@ -606,14 +805,20 @@ impl EventReader {
             }
             Some("turn/completed") => {
                 self.turn_over = true;
-                match params["turn"]["status"].as_str() {
-                    Some("failed") => {
-                        self.failure = server_error(&params["turn"]["error"])
-                            .or(self.last_error.take())
-                            .or_else(|| Some("the turn failed".to_string()));
-                    }
-                    Some("interrupted") => self.failure = Some("the turn was interrupted".to_string()),
-                    _ => {}
+                let failure = match params["turn"]["status"].as_str() {
+                    Some("failed") => server_error(&params["turn"]["error"])
+                        .or(self.last_error.take())
+                        .or_else(|| Some("the turn failed".to_string())),
+                    Some("interrupted") => Some("the turn was interrupted".to_string()),
+                    _ => None,
+                };
+                // A follow-up after helpers that fails leaves the reply
+                // already written, with a word on why nothing was added.
+                match (failure, self.earlier.is_some()) {
+                    (Some(why), true) => self.add_note(&format!(
+                        "(Passing on what the helpers found failed: {why}.)"
+                    )),
+                    (failure, _) => self.failure = failure.or(self.failure.take()),
                 }
             }
             _ => {}
@@ -628,7 +833,11 @@ impl EventReader {
             [one] => format!("Edit {}", one.path),
             many => format!("Edit {} files", many.len()),
         };
-        let detail = changes.iter().map(|c| format!("{}\n{}", c.path, c.diff)).collect::<Vec<_>>().join("\n");
+        let detail = changes
+            .iter()
+            .map(|c| format!("{}\n{}", c.path, c.diff))
+            .collect::<Vec<_>>()
+            .join("\n");
         Some((title, detail))
     }
 
@@ -639,7 +848,12 @@ impl EventReader {
             .map(|changes| {
                 changes
                     .iter()
-                    .filter_map(|c| Some(FileChange::new(self.short_path(c["path"].as_str()?), c["diff"].as_str().unwrap_or(""))))
+                    .filter_map(|c| {
+                        Some(FileChange::new(
+                            self.short_path(c["path"].as_str()?),
+                            c["diff"].as_str().unwrap_or(""),
+                        ))
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -648,7 +862,13 @@ impl EventReader {
     fn editing(&mut self, changes: &Value, steps: &mut Vec<Step>) {
         let paths: Vec<String> = changes
             .as_array()
-            .map(|changes| changes.iter().filter_map(|c| c["path"].as_str()).map(|p| self.short_path(p)).collect())
+            .map(|changes| {
+                changes
+                    .iter()
+                    .filter_map(|c| c["path"].as_str())
+                    .map(|p| self.short_path(p))
+                    .collect()
+            })
             .unwrap_or_default();
         if !paths.is_empty() {
             self.doing(format!("Editing {}", paths.join(", ")), steps);
@@ -684,13 +904,25 @@ pub(crate) fn claude_plan(info: &Value) -> Option<PlanUsage> {
     };
     let mut windows: Vec<PlanWindow> = info["unifiedWindows"]
         .as_object()
-        .map(|all| all.iter().filter_map(|(name, value)| window(name, value)).collect())
+        .map(|all| {
+            all.iter()
+                .filter_map(|(name, value)| window(name, value))
+                .collect()
+        })
         .unwrap_or_default();
     // Without the list of windows, the event may still give the one it is about.
     if windows.is_empty() {
-        windows.extend(info["rateLimitType"].as_str().and_then(|name| window(name, info)));
+        windows.extend(
+            info["rateLimitType"]
+                .as_str()
+                .and_then(|name| window(name, info)),
+        );
     }
-    (!windows.is_empty()).then(|| PlanUsage { provider: AgentTool::ClaudeCode, windows, partial: false })
+    (!windows.is_empty()).then(|| PlanUsage {
+        provider: AgentTool::ClaudeCode,
+        windows,
+        partial: false,
+    })
 }
 
 /// Codex's plan usage from a rate limit snapshot. A missing window is
@@ -715,14 +947,25 @@ pub(crate) fn codex_plan(snapshot: &Value, partial: bool) -> Option<PlanUsage> {
     if partial && windows.is_empty() {
         return None;
     }
-    Some(PlanUsage { provider: AgentTool::Codex, windows, partial })
+    Some(PlanUsage {
+        provider: AgentTool::Codex,
+        windows,
+        partial,
+    })
 }
 
 /// The message of an app server error, with its detail when the message
 /// alone says little (a retry notice, for example).
 fn server_error(error: &Value) -> Option<String> {
-    let message = error["message"].as_str().map(str::trim).filter(|m| !m.is_empty())?;
-    match error["additionalDetails"].as_str().map(str::trim).filter(|d| !d.is_empty()) {
+    let message = error["message"]
+        .as_str()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())?;
+    match error["additionalDetails"]
+        .as_str()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+    {
         Some(detail) => Some(format!("{message} ({detail})")),
         None => Some(message.to_string()),
     }
@@ -783,11 +1026,29 @@ mod tests {
     }
 
     fn text(steps: &[Step]) -> String {
-        steps.iter().filter_map(|s| if let Step::Text(t) = s { Some(t.as_str()) } else { None }).collect()
+        steps
+            .iter()
+            .filter_map(|s| {
+                if let Step::Text(t) = s {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn activity(steps: &[Step]) -> Vec<&str> {
-        steps.iter().filter_map(|s| if let Step::Activity(a) = s { Some(a.as_str()) } else { None }).collect()
+        steps
+            .iter()
+            .filter_map(|s| {
+                if let Step::Activity(a) = s {
+                    Some(a.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     // The shapes below follow what Claude Code 2.1 and Codex 0.160 print.
@@ -821,7 +1082,12 @@ mod tests {
         assert_eq!(activity(&steps), ["Reading src/notes.txt"]);
         assert_eq!(
             outcome,
-            Outcome { text: "It says hello.".into(), error: None, input_tokens: Some(1104), output_tokens: Some(12) }
+            Outcome {
+                text: "It says hello.".into(),
+                error: None,
+                input_tokens: Some(1104),
+                output_tokens: Some(12)
+            }
         );
     }
 
@@ -875,7 +1141,10 @@ mod tests {
         let stream = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"There's an issue with the selected model (m)."}]}}
 {"type":"result","subtype":"success","is_error":true,"api_error_status":404,"result":"There's an issue with the selected model (m)."}"#;
         let (_, outcome) = read(OutputFormat::ClaudeStream, &[stream]);
-        assert_eq!(outcome.error.as_deref(), Some("There's an issue with the selected model (m)."));
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("There's an issue with the selected model (m).")
+        );
     }
 
     #[test]
@@ -893,11 +1162,19 @@ mod tests {
 "#;
         let (steps, outcome) = read(OutputFormat::CodexJson, &[stream]);
         assert_eq!(text(&steps), "I'll check the tests.\n\nAll tests pass.");
-        assert_eq!(activity(&steps), ["Running: bash -lc 'cargo test'", "Editing src/lib.rs"]);
+        assert_eq!(
+            activity(&steps),
+            ["Running: bash -lc 'cargo test'", "Editing src/lib.rs"]
+        );
         assert_eq!(changes(&steps), [("src/lib.rs", 0, 0)]);
         assert_eq!(
             outcome,
-            Outcome { text: "All tests pass.".into(), error: None, input_tokens: Some(900), output_tokens: Some(40) }
+            Outcome {
+                text: "All tests pass.".into(),
+                error: None,
+                input_tokens: Some(900),
+                output_tokens: Some(40)
+            }
         );
     }
 
@@ -913,7 +1190,10 @@ mod tests {
         let failed = r#"{"type":"error","message":"Reconnecting... 5/5 (unexpected status 401 Unauthorized)"}
 {"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: Missing bearer"}}"#;
         let (_, outcome) = read(OutputFormat::CodexJson, &[failed]);
-        assert_eq!(outcome.error.as_deref(), Some("unexpected status 401 Unauthorized: Missing bearer"));
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some("unexpected status 401 Unauthorized: Missing bearer")
+        );
 
         let only_errors = r#"{"type":"error","message":"model not supported"}"#;
         let (_, outcome) = read(OutputFormat::CodexJson, &[only_errors]);
@@ -944,11 +1224,19 @@ mod tests {
         ));
         assert!(reader.turn_over());
         assert_eq!(text(&steps), "I'll check the tests.\n\nAll pass.");
-        assert_eq!(activity(&steps), ["Thinking", "Running: cargo test", "Editing src/lib.rs"]);
+        assert_eq!(
+            activity(&steps),
+            ["Thinking", "Running: cargo test", "Editing src/lib.rs"]
+        );
         assert_eq!(changes(&steps), [("src/lib.rs", 0, 0)]);
         assert_eq!(
             reader.outcome(),
-            Outcome { text: "All pass.".into(), error: None, input_tokens: Some(700), output_tokens: Some(30) }
+            Outcome {
+                text: "All pass.".into(),
+                error: None,
+                input_tokens: Some(700),
+                output_tokens: Some(30)
+            }
         );
     }
 
@@ -960,8 +1248,59 @@ mod tests {
 "#;
         let mut reader = EventReader::new(OutputFormat::CodexServer, None);
         let steps = reader.push(stream);
-        assert_eq!(text(&steps), "Looking around first.\n\nCreate `colour.txt` containing `blue`.\n");
-        assert_eq!(reader.outcome().text, "Create `colour.txt` containing `blue`.\n");
+        assert_eq!(
+            text(&steps),
+            "Looking around first.\n\nCreate `colour.txt` containing `blue`.\n"
+        );
+        assert_eq!(
+            reader.outcome().text,
+            "Create `colour.txt` containing `blue`.\n"
+        );
+    }
+
+    #[test]
+    fn codex_helpers_are_counted_and_their_own_threads_are_not_the_reply() {
+        let mut reader = EventReader::new(OutputFormat::CodexServer, None);
+        reader.own_thread("T");
+        let helper = |kind: &str, id: &str| {
+            format!(
+                r#"{{"method":"item/completed","params":{{"threadId":"T","item":{{"type":"subAgentActivity","id":"x","kind":"{kind}","agentThreadId":"{id}","agentPath":"/root/a"}}}}}}"#
+            )
+        };
+        reader.push(&format!(
+            "{}\n{}\n",
+            helper("started", "H1"),
+            helper("started", "H2")
+        ));
+        assert_eq!(reader.helpers(), 2);
+        // A helper's own message and turn end are not this reply's.
+        reader.push(concat!(
+            r#"{"method":"item/completed","params":{"threadId":"H1","item":{"type":"agentMessage","id":"h","text":"PINEAPPLE"}}}"#, "\n",
+            r#"{"method":"turn/completed","params":{"threadId":"H1","turn":{"status":"failed"}}}"#, "\n",
+        ));
+        assert!(!reader.turn_over() && !reader.failed());
+        reader.push(&format!("{}\n", helper("completed", "H1")));
+        reader.push(r#"{"method":"thread/closed","params":{"threadId":"H2"}}"#);
+        reader.push("\n");
+        assert_eq!(
+            reader.helpers(),
+            0,
+            "a closed helper thread will not report back"
+        );
+        reader.push(concat!(
+            r#"{"method":"item/completed","params":{"threadId":"T","item":{"type":"agentMessage","id":"m","text":"Launched."}}}"#, "\n",
+            r#"{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"completed"}}}"#, "\n",
+        ));
+        assert!(reader.turn_over());
+        // A follow-up that fails keeps what was already written.
+        reader.await_follow_up();
+        reader.push(concat!(r#"{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"interrupted"}}}"#, "\n"));
+        let outcome = reader.outcome();
+        assert_eq!(outcome.error, None);
+        assert_eq!(
+            outcome.text,
+            "Launched.\n\n(Passing on what the helpers found failed: the turn was interrupted.)"
+        );
     }
 
     #[test]
@@ -982,13 +1321,22 @@ mod tests {
         reader.push(stream);
         reader.finish();
         assert!(reader.turn_over());
-        assert_eq!(reader.outcome().error.as_deref(), Some("unexpected status 401 Unauthorized: Missing bearer"));
+        assert_eq!(
+            reader.outcome().error.as_deref(),
+            Some("unexpected status 401 Unauthorized: Missing bearer")
+        );
     }
 
     fn changes(steps: &[Step]) -> Vec<(&str, usize, usize)> {
         steps
             .iter()
-            .filter_map(|s| if let Step::Change(c) = s { Some((c.path.as_str(), c.added, c.removed)) } else { None })
+            .filter_map(|s| {
+                if let Step::Change(c) = s {
+                    Some((c.path.as_str(), c.added, c.removed))
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -1005,7 +1353,9 @@ mod tests {
         let mut reader = EventReader::new(OutputFormat::ClaudeStream, Some("/work/project".into()));
         let steps = reader.push(stream);
         assert_eq!(changes(&steps), [("a.txt", 1, 2)]);
-        let Some(Step::Change(change)) = steps.iter().find(|s| matches!(s, Step::Change(_))) else { panic!() };
+        let Some(Step::Change(change)) = steps.iter().find(|s| matches!(s, Step::Change(_))) else {
+            panic!()
+        };
         assert_eq!(change.diff, "-hi\n-there\n+hello\n");
         assert!(reader.turn_over());
     }
@@ -1014,13 +1364,46 @@ mod tests {
     fn claude_permission_requests_are_described_for_a_person() {
         let reader = EventReader::new(OutputFormat::ClaudeStream, Some("/work/project".into()));
         let edit = reader.claude_action("Edit", &serde_json::json!({"file_path":"/work/project/a.txt","old_string":"hi","new_string":"hello"}));
-        assert_eq!(edit, ProposedAction { kind: ActionKind::Edit, title: "Edit a.txt".into(), detail: "-hi\n+hello\n".into(), expires_at: None, risky: false });
-        let write = reader.claude_action("Write", &serde_json::json!({"file_path":"/work/project/new.txt","content":"x"}));
-        assert_eq!((write.kind, write.title.as_str(), write.detail.as_str()), (ActionKind::Edit, "Write new.txt", "+x\n"));
-        let run = reader.claude_action("Bash", &serde_json::json!({"command":"rm -rf build","description":"clean"}));
-        assert_eq!(run, ProposedAction { kind: ActionKind::Command, title: "Run a command".into(), detail: "rm -rf build".into(), expires_at: None, risky: false });
-        let other = reader.claude_action("WebFetch", &serde_json::json!({"url":"https://example.com"}));
-        assert_eq!((other.kind, other.title.as_str()), (ActionKind::Other, "Fetching https://example.com"));
+        assert_eq!(
+            edit,
+            ProposedAction {
+                kind: ActionKind::Edit,
+                title: "Edit a.txt".into(),
+                detail: "-hi\n+hello\n".into(),
+                expires_at: None,
+                risky: false
+            }
+        );
+        let write = reader.claude_action(
+            "Write",
+            &serde_json::json!({"file_path":"/work/project/new.txt","content":"x"}),
+        );
+        assert_eq!(
+            (write.kind, write.title.as_str(), write.detail.as_str()),
+            (ActionKind::Edit, "Write new.txt", "+x\n")
+        );
+        let run = reader.claude_action(
+            "Bash",
+            &serde_json::json!({"command":"rm -rf build","description":"clean"}),
+        );
+        assert_eq!(
+            run,
+            ProposedAction {
+                kind: ActionKind::Command,
+                title: "Run a command".into(),
+                detail: "rm -rf build".into(),
+                expires_at: None,
+                risky: false
+            }
+        );
+        let other = reader.claude_action(
+            "WebFetch",
+            &serde_json::json!({"url":"https://example.com"}),
+        );
+        assert_eq!(
+            (other.kind, other.title.as_str()),
+            (ActionKind::Other, "Fetching https://example.com")
+        );
         assert!(other.detail.contains("example.com"));
     }
 
@@ -1030,7 +1413,13 @@ mod tests {
 "#;
         let mut reader = EventReader::new(OutputFormat::CodexServer, Some("/work/project".into()));
         assert!(changes(&reader.push(started)).is_empty());
-        assert_eq!(reader.pending_edit("i4"), Some(("Edit src/lib.rs".into(), "src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n".into())));
+        assert_eq!(
+            reader.pending_edit("i4"),
+            Some((
+                "Edit src/lib.rs".into(),
+                "src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n".into()
+            ))
+        );
         assert_eq!(reader.pending_edit("nope"), None);
 
         let declined = r#"{"method":"item/completed","params":{"item":{"type":"fileChange","id":"i4","changes":[{"path":"/work/project/src/lib.rs","kind":"update","diff":"@@ -1 +1 @@\n-old\n+new\n"}],"status":"declined"}}}
@@ -1038,7 +1427,9 @@ mod tests {
         assert!(changes(&reader.push(declined)).is_empty());
         assert_eq!(reader.pending_edit("i4"), None);
 
-        let applied = declined.replace("declined", "completed").replace("i4", "i5");
+        let applied = declined
+            .replace("declined", "completed")
+            .replace("i4", "i5");
         assert_eq!(changes(&reader.push(&applied)), [("src/lib.rs", 1, 1)]);
     }
 
@@ -1059,7 +1450,10 @@ mod tests {
 {"method":"item/completed","params":{"item":{"type":"agentMessage","id":"i3","text":"Here it is."}}}
 "#;
         let (_, outcome) = read(OutputFormat::CodexServer, &[stream]);
-        assert_eq!(outcome.text, "Here it is.\n\nAttached image: /tmp/apple.png");
+        assert_eq!(
+            outcome.text,
+            "Here it is.\n\nAttached image: /tmp/apple.png"
+        );
     }
 
     #[test]
@@ -1087,7 +1481,10 @@ mod tests {
     fn paths_outside_the_workspace_are_shown_in_full() {
         let reader = EventReader::new(OutputFormat::ClaudeStream, Some("/work/project/".into()));
         assert_eq!(reader.short_path("/work/project/a/b.rs"), "a/b.rs");
-        assert_eq!(reader.short_path("/work/project-two/a.rs"), "/work/project-two/a.rs");
+        assert_eq!(
+            reader.short_path("/work/project-two/a.rs"),
+            "/work/project-two/a.rs"
+        );
         assert_eq!(reader.short_path("/work/project"), "/work/project");
         assert_eq!(reader.short_path("relative.rs"), "relative.rs");
     }
@@ -1095,13 +1492,36 @@ mod tests {
     // ------------------------------------------------------------- meters
 
     fn meters(steps: &[Step]) -> (Vec<ContextUse>, Vec<PlanUsage>) {
-        let context = steps.iter().filter_map(|s| if let Step::Context(c) = s { Some(*c) } else { None }).collect();
-        let plans = steps.iter().filter_map(|s| if let Step::Plan(p) = s { Some(p.clone()) } else { None }).collect();
+        let context = steps
+            .iter()
+            .filter_map(|s| {
+                if let Step::Context(c) = s {
+                    Some(*c)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let plans = steps
+            .iter()
+            .filter_map(|s| {
+                if let Step::Plan(p) = s {
+                    Some(p.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         (context, plans)
     }
 
     fn window(name: &str, used: u32, minutes: Option<u64>, resets: Option<u64>) -> PlanWindow {
-        PlanWindow { name: name.into(), used_percent: used, window_minutes: minutes, resets_at: resets }
+        PlanWindow {
+            name: name.into(),
+            used_percent: used,
+            window_minutes: minutes,
+            resets_at: resets,
+        }
     }
 
     // Printed by Claude Code on this machine, trimmed to the fields read.
@@ -1132,10 +1552,16 @@ mod tests {
         assert_eq!(claude_plan(&Value::Null), None);
         // Only the window the event is about, when the list is missing.
         let single = json!({ "rateLimitType": "five_hour", "utilization": 0.2, "resetsAt": 9 });
-        assert_eq!(claude_plan(&single).unwrap().windows, [window("five_hour", 20, Some(300), Some(9))]);
+        assert_eq!(
+            claude_plan(&single).unwrap().windows,
+            [window("five_hour", 20, Some(300), Some(9))]
+        );
         // A window without a figure is left out; an unknown name has no length.
         let mixed = json!({ "unifiedWindows": { "five_hour": { "resetsAt": 1 }, "other": { "utilization": 1.0 } } });
-        assert_eq!(claude_plan(&mixed).unwrap().windows, [window("other", 100, None, None)]);
+        assert_eq!(
+            claude_plan(&mixed).unwrap().windows,
+            [window("other", 100, None, None)]
+        );
     }
 
     #[test]
@@ -1149,7 +1575,13 @@ mod tests {
 "#;
         let (steps, outcome) = read(OutputFormat::ClaudeStream, &[turn]);
         let (context, _) = meters(&steps);
-        assert_eq!(context, [ContextUse { used_tokens: 26_560, window_tokens: 200_000 }]);
+        assert_eq!(
+            context,
+            [ContextUse {
+                used_tokens: 26_560,
+                window_tokens: 200_000
+            }]
+        );
         // The token totals still count the whole turn.
         assert_eq!(outcome.input_tokens, Some(52_809));
     }
@@ -1159,20 +1591,32 @@ mod tests {
         let no_window = r#"{"type":"assistant","message":{"model":"m","content":[],"usage":{"input_tokens":10}},"parent_tool_use_id":null}
 {"type":"result","is_error":false,"result":"","modelUsage":{"m":{"inputTokens":10}}}
 "#;
-        assert!(meters(&read(OutputFormat::ClaudeStream, &[no_window]).0).0.is_empty());
+        assert!(meters(&read(OutputFormat::ClaudeStream, &[no_window]).0)
+            .0
+            .is_empty());
         let no_request = r#"{"type":"result","is_error":false,"result":"","modelUsage":{"m":{"contextWindow":200000}}}
 "#;
-        assert!(meters(&read(OutputFormat::ClaudeStream, &[no_request]).0).0.is_empty());
+        assert!(meters(&read(OutputFormat::ClaudeStream, &[no_request]).0)
+            .0
+            .is_empty());
         // Several models and none matching the request: no guess.
         let ambiguous = r#"{"type":"assistant","message":{"model":"x","content":[],"usage":{"input_tokens":10}},"parent_tool_use_id":null}
 {"type":"result","is_error":false,"result":"","modelUsage":{"a":{"contextWindow":200000},"b":{"contextWindow":1000000}}}
 "#;
-        assert!(meters(&read(OutputFormat::ClaudeStream, &[ambiguous]).0).0.is_empty());
+        assert!(meters(&read(OutputFormat::ClaudeStream, &[ambiguous]).0)
+            .0
+            .is_empty());
         // One model under another name is the one that was used.
         let renamed = r#"{"type":"assistant","message":{"model":"x","content":[],"usage":{"input_tokens":10}},"parent_tool_use_id":null}
 {"type":"result","is_error":false,"result":"","modelUsage":{"x[1m]":{"contextWindow":1000000}}}
 "#;
-        assert_eq!(meters(&read(OutputFormat::ClaudeStream, &[renamed]).0).0, [ContextUse { used_tokens: 10, window_tokens: 1_000_000 }]);
+        assert_eq!(
+            meters(&read(OutputFormat::ClaudeStream, &[renamed]).0).0,
+            [ContextUse {
+                used_tokens: 10,
+                window_tokens: 1_000_000
+            }]
+        );
     }
 
     // Answered by `codex app-server` on this machine.
@@ -1183,15 +1627,27 @@ mod tests {
         let snapshot: Value = serde_json::from_str(CODEX_RATE_LIMITS).unwrap();
         assert_eq!(
             codex_plan(&snapshot, false),
-            Some(PlanUsage { provider: AgentTool::Codex, windows: vec![window("primary", 15, Some(10_080), Some(1791580627))], partial: false })
+            Some(PlanUsage {
+                provider: AgentTool::Codex,
+                windows: vec![window("primary", 15, Some(10_080), Some(1791580627))],
+                partial: false
+            })
         );
         let both = json!({ "primary": { "usedPercent": 40, "windowDurationMins": 300, "resetsAt": 5 }, "secondary": { "usedPercent": 19 } });
         assert_eq!(
             codex_plan(&both, false).unwrap().windows,
-            [window("primary", 40, Some(300), Some(5)), window("secondary", 19, None, None)]
+            [
+                window("primary", 40, Some(300), Some(5)),
+                window("secondary", 19, None, None)
+            ]
         );
         // A full read with no windows says the plan reports none.
-        assert_eq!(codex_plan(&json!({ "primary": null, "secondary": null }), false).unwrap().windows, []);
+        assert_eq!(
+            codex_plan(&json!({ "primary": null, "secondary": null }), false)
+                .unwrap()
+                .windows,
+            []
+        );
         assert_eq!(codex_plan(&Value::Null, false), None);
     }
 
@@ -1204,7 +1660,18 @@ mod tests {
         // Null windows clear previously known values; never retain a stale quota.
         assert_eq!(
             plans,
-            [PlanUsage { provider: AgentTool::Codex, windows: vec![window("primary", 15, Some(10_080), Some(1791580627))], partial: false }, PlanUsage { provider: AgentTool::Codex, windows: vec![], partial: false }]
+            [
+                PlanUsage {
+                    provider: AgentTool::Codex,
+                    windows: vec![window("primary", 15, Some(10_080), Some(1791580627))],
+                    partial: false
+                },
+                PlanUsage {
+                    provider: AgentTool::Codex,
+                    windows: vec![],
+                    partial: false
+                }
+            ]
         );
     }
 
@@ -1220,7 +1687,16 @@ mod tests {
         // has no total and is added up from its parts.
         assert_eq!(
             context,
-            [ContextUse { used_tokens: 31_400, window_tokens: 258_400 }, ContextUse { used_tokens: 520, window_tokens: 1000 }]
+            [
+                ContextUse {
+                    used_tokens: 31_400,
+                    window_tokens: 258_400
+                },
+                ContextUse {
+                    used_tokens: 520,
+                    window_tokens: 1000
+                }
+            ]
         );
         assert_eq!(outcome.input_tokens, Some(1));
     }

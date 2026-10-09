@@ -1,0 +1,199 @@
+/* av: floating ApexAgent avatar, its tooltip, menu, drop state, and the Make-it-yours editor */
+/* position comes only from AA.avatarBox() (set inline by av.js); no edge offsets here */
+#av-mount{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none}
+.av-wrap{position:absolute;width:56px;height:56px;z-index:2;pointer-events:auto;transition:width .25s ease}
+.av-wrap.av-is-tab{width:6px}
+.av-wrap.av-is-drag{transition:none}
+
+.av-hit{position:absolute;left:0;top:0;width:56px;height:56px;margin:0;padding:0;border:0;border-radius:50%;background:none;cursor:grab;outline:none;touch-action:none;-webkit-tap-highlight-color:transparent}
+.av-hit:focus-visible{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--aa-glow)}
+.av-is-drag .av-hit{cursor:grabbing}
+.av-is-tab .av-hit{top:6px;width:100%;height:44px;border-radius:3px}
+
+/* glow, rings, status marks (all in the avatar's colour). Nothing reaches past 16px (AA.GLOW). */
+.av-halo{position:absolute;inset:-14px;border-radius:50%;pointer-events:none;opacity:.8;
+  background:radial-gradient(closest-side,color-mix(in srgb,var(--aa-glow) 42%,transparent),color-mix(in srgb,var(--aa-glow) 12%,transparent) 62%,transparent 100%);
+  animation:av-breathe 4s ease-in-out infinite}
+.av-st-new .av-halo{animation-duration:2.6s}
+.av-st-needs .av-halo{inset:-16px;opacity:.9;animation:av-pulse 1.6s ease-in-out infinite}
+.av-st-paused .av-halo,.av-st-offline .av-halo{opacity:0;animation:none}
+.av-is-tab .av-halo{display:none}
+
+.av-swirl{position:absolute;inset:-7px;border-radius:50%;pointer-events:none;display:none;
+  background:conic-gradient(from 0deg,transparent 0deg,transparent 150deg,var(--aa-glow) 300deg,transparent 360deg);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 2px));
+          mask:radial-gradient(farthest-side,transparent calc(100% - 4px),#000 calc(100% - 2px))}
+.av-st-checking .av-swirl{display:block;animation:av-spin 1.1s linear infinite}
+
+/* adding a source: spinner ring (hidden on the edge tab, which is too thin for it) */
+.av-spin{position:absolute;inset:-6px;border-radius:50%;pointer-events:none;display:none;
+  border:2px solid transparent;border-top-color:var(--aa-glow);border-right-color:color-mix(in srgb,var(--aa-glow) 40%,transparent)}
+.av-is-adding .av-spin{display:block;animation:av-spin .9s linear infinite}
+
+.av-open-ring{position:absolute;inset:-5px;border-radius:50%;pointer-events:none;display:none;
+  border:1.5px solid color-mix(in srgb,var(--aa-glow) 75%,transparent);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--aa-glow) 12%,transparent)}
+.av-is-open .av-open-ring{display:block}
+
+.av-drop-ring{position:absolute;inset:-9px;border-radius:50%;pointer-events:none;display:none;border:2px dashed var(--aa-glow)}
+.av-is-drop .av-drop-ring{display:block}
+
+.av-offring{position:absolute;inset:-5px;border-radius:50%;pointer-events:none;display:none;border:1.5px dashed #8a95a3}
+.av-st-offline .av-offring{display:block}
+
+/* the body */
+.av-shape{position:absolute;left:0;top:0;width:var(--av-s,56px);height:var(--av-s,56px);transition:filter .3s ease,opacity .3s ease}
+.av-st-new .av-shape{animation:av-hello 2.4s ease-in-out infinite}
+.av-st-paused .av-shape{filter:saturate(.15) brightness(.7);opacity:.7}
+.av-st-offline .av-shape{filter:grayscale(1) brightness(.55);opacity:.6}
+
+.av-scope{--aa-glow:var(--av-pick,#3def91)}
+.av-c-mint{--av-pick:#3def91}
+.av-c-cyan{--av-pick:#1ed7ee}
+.av-c-violet{--av-pick:#a78bfa}
+.av-c-amber{--av-pick:#fbbf24}
+.av-scope.av-tone-amber{--aa-glow:var(--aa-amber)}
+.av-scope.av-tone-grey{--aa-glow:#7d8896}
+
+.av-b-orb,.av-b-bot,.av-b-blob,.av-ant,.av-eye,.av-glass,.av-bridge{position:absolute;display:none}
+.av-look-orb .av-b-orb{display:block}
+.av-look-bot .av-b-bot,.av-look-bot .av-ant{display:block}
+.av-look-blob .av-b-blob{display:block}
+
+.av-b-orb{inset:0;border-radius:50%;
+  background:radial-gradient(circle at 34% 28%,rgba(255,255,255,.75) 0,rgba(255,255,255,0) 14%),
+    radial-gradient(circle at 60% 70%,color-mix(in srgb,var(--aa-glow) 35%,#03100d) 0,color-mix(in srgb,var(--aa-glow) 85%,#03100d) 70%,var(--aa-glow) 100%);
+  box-shadow:inset -5px -7px 12px rgba(0,0,0,.28),inset 2px 3px 6px rgba(255,255,255,.28),
+    0 0 12px color-mix(in srgb,var(--aa-glow) 70%,transparent)}
+
+.av-b-bot{left:14%;right:14%;top:26%;bottom:12%;border-radius:32%;
+  background:linear-gradient(165deg,color-mix(in srgb,var(--aa-glow) 24%,#16222d),#0a121a 75%);
+  border:1.5px solid var(--aa-glow);
+  box-shadow:0 0 10px color-mix(in srgb,var(--aa-glow) 55%,transparent),inset 0 0 8px color-mix(in srgb,var(--aa-glow) 22%,transparent)}
+.av-ant{left:49%;top:10%;width:2px;height:14%;border-radius:2px;background:var(--aa-glow)}
+.av-ant::after{content:"";position:absolute;left:-2px;top:-3px;width:6px;height:6px;border-radius:50%;background:var(--aa-glow);box-shadow:0 0 6px var(--aa-glow)}
+
+.av-b-blob{inset:7%;border-radius:46% 54% 52% 48%/52% 44% 56% 48%;
+  background:radial-gradient(circle at 36% 30%,rgba(255,255,255,.7) 0,rgba(255,255,255,0) 20%),
+    linear-gradient(150deg,var(--aa-glow),color-mix(in srgb,var(--aa-glow) 50%,#03100d));
+  box-shadow:inset -4px -6px 10px rgba(0,0,0,.22),0 0 12px color-mix(in srgb,var(--aa-glow) 60%,transparent);
+  animation:av-morph 7s ease-in-out infinite}
+
+/* eyes, blinking about every 5s */
+.av-eye{top:40%;width:11%;height:17%;border-radius:50%;transform-origin:50% 50%;
+  background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.9) 0,rgba(255,255,255,0) 30%),#05201a;
+  animation:av-blink 5s infinite}
+.av-eye-l{left:31%}
+.av-eye-r{left:58%}
+.av-eyes-on .av-eye{display:block}
+.av-look-bot .av-eye{background:var(--aa-glow);box-shadow:0 0 6px var(--aa-glow)}
+
+/* glasses */
+.av-glass{top:37%;width:25%;height:26%;border-radius:50%;border:2px solid #0a1714;background:rgba(255,255,255,.12)}
+.av-glass-l{left:21%}
+.av-glass-r{left:54%}
+.av-bridge{left:46%;top:47%;width:8%;height:2px;background:#0a1714}
+.av-glasses-on .av-glass,.av-glasses-on .av-bridge{display:block}
+.av-look-bot .av-glass{border-color:var(--aa-glow);background:none}
+.av-look-bot .av-bridge{background:var(--aa-glow)}
+
+/* hello sparkle, needs count, paused glyph, offline dot, edge tab */
+.av-hi{position:absolute;left:-14px;top:-12px;display:none;padding:3px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
+  background:var(--aa-glow);color:var(--accent-ink);font:700 11px/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  box-shadow:0 2px 10px color-mix(in srgb,var(--aa-glow) 50%,transparent);animation:av-hi 2.4s ease-in-out infinite}
+.av-st-new .av-hi{display:block}
+
+.av-needs{position:absolute;top:-6px;right:-8px;display:none;min-width:20px;height:20px;padding:0 6px;border-radius:10px;pointer-events:none;
+  background:var(--aa-amber);color:#1d1500;font:700 12px/20px -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;text-align:center;
+  box-shadow:0 0 0 2px var(--bg)}
+.av-has-needs .av-needs{display:block}
+
+.av-pause{position:absolute;right:-4px;bottom:-4px;display:none;width:20px;height:20px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line)}
+.av-pause::before,.av-pause::after{content:"";position:absolute;top:6px;width:2px;height:6px;border-radius:1px;background:var(--text)}
+.av-pause::before{left:6px}
+.av-pause::after{left:11px}
+.av-st-paused .av-pause{display:block}
+
+.av-offdot{position:absolute;right:-1px;bottom:-1px;display:none;width:11px;height:11px;border-radius:50%;background:#8a95a3;border:2px solid var(--bg)}
+.av-st-offline .av-offdot{display:block}
+
+.av-tabbar{position:absolute;left:0;top:0;right:0;bottom:0;display:none;background:linear-gradient(180deg,transparent,var(--aa-glow) 20%,var(--aa-glow) 80%,transparent);box-shadow:0 0 10px var(--aa-glow)}
+.av-edge-right .av-tabbar{border-radius:3px 0 0 3px}
+.av-edge-left .av-tabbar{border-radius:0 3px 3px 0}
+.av-is-tab .av-tabbar{display:block}
+.av-is-tab .av-shape,.av-is-tab .av-swirl,.av-is-tab .av-open-ring,.av-is-tab .av-drop-ring,.av-is-tab .av-offring,.av-is-tab .av-spin,
+.av-is-tab .av-pause,.av-is-tab .av-offdot,.av-is-tab .av-hi,.av-is-tab .av-needs{display:none !important}
+
+/* tooltip, drop label, flash label, menu (all aa-overlay: floating over the page) */
+.av-tip{position:absolute;top:50%;display:none;width:max-content;max-width:260px;padding:7px 10px;border-radius:8px;transform:translateY(-50%);
+  background:var(--panel-2);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.4);color:var(--text);
+  font-size:12px;line-height:1.35;white-space:normal;pointer-events:none}
+.av-edge-right .av-tip{right:66px}
+.av-edge-left .av-tip{left:66px}
+.av-wrap:hover .av-tip{display:block}
+.av-is-drag .av-tip,.av-menu-on .av-tip,.av-is-drop .av-tip,.av-is-flashing .av-tip{display:none !important}
+
+.av-drop-label{position:absolute;top:50%;display:none;transform:translateY(-50%);padding:6px 10px;border-radius:8px;pointer-events:none;white-space:nowrap;
+  background:var(--aa-glow);color:var(--accent-ink);font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  box-shadow:0 6px 18px color-mix(in srgb,var(--aa-glow) 40%,transparent)}
+.av-edge-right .av-drop-label{right:66px}
+.av-edge-left .av-drop-label{left:66px}
+.av-is-drop .av-drop-label{display:block}
+
+.av-flash{position:absolute;top:50%;display:none;max-width:220px;padding:6px 10px;border-radius:8px;transform:translateY(-50%);pointer-events:none;
+  background:var(--panel-2);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.4);color:var(--text);font-size:12px;line-height:1.35;white-space:normal}
+.av-edge-right .av-flash{right:66px}
+.av-edge-left .av-flash{left:66px}
+.av-flash.av-is-shown{display:block}
+.av-flash-amber{color:var(--aa-amber);border-color:var(--aa-amber)}
+
+.av-menu{position:absolute;top:0;display:none;min-width:212px;padding:6px;border-radius:10px;z-index:3;
+  background:var(--panel);border:1px solid var(--line);box-shadow:0 14px 34px rgba(0,0,0,.5)}
+.av-edge-right .av-menu{right:66px}
+.av-edge-left .av-menu{left:66px}
+.av-menu.av-is-shown{display:block}
+.av-mi{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;height:30px;padding:0 10px;border:0;border-radius:7px;
+  background:none;color:var(--text);font-size:13px;text-align:left;cursor:pointer}
+.av-mi:hover,.av-mi:focus-visible{background:var(--panel-2);outline:none;box-shadow:inset 0 0 0 1px var(--accent)}
+.av-mi-sep{height:1px;margin:5px 4px;background:var(--line)}
+.av-menu .aa-kbd{font-size:11px}
+
+/* static small copy (mini) */
+.av-mini{position:relative;display:inline-block;width:var(--av-s,56px);height:var(--av-s,56px);vertical-align:middle;flex:none}
+.av-mini .av-shape,.av-mini .av-shape *{animation:none !important}
+
+/* Make it yours editor */
+.av-ed{display:grid;gap:12px;font-size:12px;color:var(--text)}
+.av-ed-top{display:flex;align-items:center;gap:12px}
+.av-ed-prev{display:inline-block;flex:none;width:64px;height:64px}
+.av-ed-who{min-width:0}
+.av-ed-handle{font:600 13px ui-monospace,Menlo,monospace;color:var(--accent)}
+.av-ed-sub{color:var(--muted);font-size:12px}
+.av-ed-field{display:grid;gap:5px}
+.av-ed-label{color:var(--muted);font-size:12px;font-weight:600}
+.av-ed-name{width:100%;height:30px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit}
+.av-ed-name:focus{outline:none;border-color:var(--accent)}
+.av-ed-choices{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.av-ed-choice{display:grid;justify-items:center;gap:6px;padding:8px 6px;border-radius:10px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font:inherit;cursor:pointer}
+.av-ed-choice.av-is-on{border-color:var(--accent);color:var(--text)}
+.av-ed-cprev{display:block;height:34px}
+.av-ed-swatches{display:flex;gap:10px}
+.av-ed-swatch{width:28px;height:28px;padding:0;border-radius:50%;border:2px solid var(--panel);background:var(--sw);cursor:pointer;box-shadow:0 0 0 1px var(--line)}
+.av-ed-swatch.av-is-on{box-shadow:0 0 0 2px var(--text)}
+.av-ed-toggles{display:flex;gap:8px}
+.av-ed-toggle{height:30px;padding:0 12px;border-radius:15px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font:inherit;cursor:pointer}
+.av-ed-toggle.av-is-on{border-color:var(--accent);color:var(--text);background:color-mix(in srgb,var(--accent) 14%,var(--panel-2))}
+
+/* keyframes: glow animates opacity only, never scale, so it cannot pass AA.GLOW */
+@keyframes av-breathe{0%,100%{opacity:.55}50%{opacity:1}}
+@keyframes av-pulse{0%,100%{opacity:.6}50%{opacity:1}}
+@keyframes av-spin{to{transform:rotate(360deg)}}
+@keyframes av-hello{0%,100%{transform:translateY(0) rotate(0)}25%{transform:translateY(-4px) rotate(-6deg)}50%{transform:translateY(0) rotate(0)}75%{transform:translateY(-2px) rotate(4deg)}}
+@keyframes av-hi{0%,100%{transform:translateY(0) scale(1);opacity:.95}50%{transform:translateY(-3px) scale(1.06);opacity:1}}
+@keyframes av-blink{0%,93%,100%{transform:scaleY(1)}95.5%{transform:scaleY(.1)}}
+@keyframes av-morph{0%,100%{border-radius:46% 54% 52% 48%/52% 44% 56% 48%}33%{border-radius:56% 44% 42% 58%/46% 58% 42% 54%}66%{border-radius:42% 58% 55% 45%/60% 40% 58% 42%}}
+
+/* reduce motion: no looping animation; status still shows by colour, shape and marks */
+.aa-reduce-motion .av-halo,.aa-reduce-motion .av-swirl,.aa-reduce-motion .av-spin,.aa-reduce-motion .av-hi,.aa-reduce-motion .av-shape,
+.aa-reduce-motion .av-eye,.aa-reduce-motion .av-b-blob{animation:none !important}
+.aa-reduce-motion .av-st-needs .av-halo{opacity:1}

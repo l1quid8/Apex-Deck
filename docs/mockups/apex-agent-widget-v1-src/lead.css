@@ -1,0 +1,3 @@
+/* lead fixes after QA: comfortable hit targets */
+.cv-x,.bb-x,.cf-x{min-width:28px;min-height:28px}
+.cv-src{min-height:26px}

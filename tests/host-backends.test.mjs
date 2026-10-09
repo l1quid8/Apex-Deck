@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 const mod=await import('../src/hostBackends.ts').catch(()=>({}));
 const store=await import('../src/hostConnections.ts').catch(()=>({}));
+
+test('source edits reject offline rather than saving after reconnection', async () => {
+  const c = store.hostConnectionStore('at', 'AT'); let calls = 0;
+  const guarded = mod.guardHostWrites({ call: async () => calls++ }, c);
+  await assert.rejects(guarded.call('monitor_sources_update', { workspaceId: 'p' }), /queued/);
+  assert.equal(calls, 0);
+  c.setStatus({ kind: 'connected', hostId: 'a' });
+  await guarded.call('monitor_sources_update', { workspaceId: 'p' });
+  assert.equal(calls, 1);
+});
 test('stable host registry starts only requested hosts and keeps preferences on Mac',async()=>{
   assert.equal(typeof mod.createHostBackends,'function');
   const seen=[];let starts=0;

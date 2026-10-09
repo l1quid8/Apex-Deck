@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { viewBounds, covered } from '../src/browserGeometry.ts';
+import { viewBounds, covered, OVERLAYS } from '../src/browserGeometry.ts';
 import { DECK_KEYS } from '../desktop/browser-keys.mjs';
 import { shortcutList, shortcutFor } from '../src/shortcuts.ts';
 
@@ -42,4 +42,11 @@ test('a key press in the page goes to the deck only when it is a deck shortcut',
   assert.equal(deckKey({ ...press('KeyT', { meta: true }), type: 'keyUp' }, true), false);
   assert.equal(deckKey(press('KeyT', { control: true, shift: true }), false), true);
   assert.equal(deckKey(press('KeyT', { control: true }), false), false, 'Ctrl+T stays with the page off macOS');
+});
+
+test('the assistant key reaches the deck from a live native browser', () => {
+  assert.equal(deckKey({ type: 'keyDown', code: 'KeyK', meta: true, control: false, shift: false, alt: false }, true), true);
+  assert.deepEqual(shortcutFor({ code: 'KeyK', metaKey: true, ctrlKey: false, shiftKey: false, altKey: false }, true), { kind: 'assistant' });
+  assert.deepEqual(shortcutFor({ code: 'KeyK', metaKey: false, ctrlKey: true, shiftKey: true, altKey: false }, false), { kind: 'assistant' });
+  assert.ok(OVERLAYS.split(',').includes('[data-apex-agent-overlay]'), 'avatar, bubbles and tooltips must hide an overlapping native browser');
 });

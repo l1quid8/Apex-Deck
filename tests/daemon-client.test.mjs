@@ -275,3 +275,19 @@ test('the welcome tells which apex-daemon version answered; an older helper does
   assert.equal(await fresh({ version: '0.5.1' }), '0.5.1');
   assert.equal(await fresh({}), null);
 });
+
+
+test('old hosts rejecting monitoring commands report an actionable compatibility error', async () => {
+  const { client, daemon } = await connected();
+  for (const command of ['monitor_get', 'monitor_assign', 'monitor_check_now']) {
+    const pending = client.call(command, { workspaceId: 'project' });
+    const check = assert.rejects(pending, /This host’s Apex Deck service does not support project monitoring.*Update.*reconnect/);
+    daemon.last().receive({ id: daemon.last().sent.at(-1).id, err: `unknown variant \`${command}\`, expected one of \`session_load\`, \`session_save\`` });
+    await check;
+  }
+  const pending = client.call('monitor_get');
+  const check = assert.rejects(pending, /Permission denied/);
+  daemon.last().receive({ id: daemon.last().sent.at(-1).id, err: 'Permission denied', reason: 'forbidden' });
+  await check;
+  client.close();
+});
