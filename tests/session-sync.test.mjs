@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { remoteSessionEdit } from "../src/sessionSync.ts";
+import { mergePhoneSessionChange, remoteSessionEdit } from "../src/sessionSync.ts";
 
 const ws = [{ id: "w", name: "apex-deck", path: "/p" }];
 const chat = (id, extra = {}) => ({ id, workspaceId: "w", kind: "chat", title: id, ...extra });
@@ -33,4 +33,26 @@ test("an older save of ours arriving late does not undo newer edits", () => {
 test("a session without threads or projects is ignored", () => {
   assert.equal(remoteSessionEdit({ workspaces: ws, panes: [] }, { version: 1 }, ours), null);
   assert.equal(remoteSessionEdit({ workspaces: ws, panes: [] }, null, ours), null);
+});
+
+test("a phone session change merges only its project registry into current presentation state", () => {
+  const current = {
+    version: 1, workspaces: ws, panes: [chat("a")], profiles: [{ id: "profile" }], activeWorkspace: "w",
+    focusedPane: "a", section: "threads", layout: "tabs", savedBy: "phone-current:5",
+  };
+  const next = mergePhoneSessionChange(current, {
+    ...current, workspaces: [{ id: "w", name: "Renamed", path: "/p" }], panes: [chat("a"), chat("b")], savedBy: "desktop:9",
+    profiles: [], activeWorkspace: null, section: "agents",
+  }, { tag: "phone-current", seq: 5 });
+  assert.deepEqual(next, {
+    ...current, workspaces: [{ id: "w", name: "Renamed", path: "/p" }], panes: [chat("a"), chat("b")],
+  });
+});
+
+test("a delayed echo from this phone cannot undo its newer registry edit", () => {
+  const current = {
+    version: 1, workspaces: ws, panes: [chat("a", { title: "Current" })], profiles: [], activeWorkspace: "w",
+    focusedPane: "a", section: "threads", layout: "tabs", savedBy: "phone-current:5",
+  };
+  assert.equal(mergePhoneSessionChange(current, session([chat("a")], "phone-current:4"), { tag: "phone-current", seq: 5 }), current);
 });

@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { botChangeGate, botSendGate } from "../phoneBots";
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
+import { ApexAgent } from "../ApexAgent";
+import { assistantPaneForOwner, currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
@@ -46,11 +48,14 @@ import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
 import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
 import { qrScanner } from "./remotePlugin";
-import { loadRoomState } from "../roomRecovery";
+import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../roomRecovery";
+import { mergePhoneSessionChange } from "../sessionSync";
+import type { AssistantTaskOwner, AssistantTaskSnapshot } from "../assistantTaskModel";
+import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
-import type { AgentTool, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomOptions, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
+import type { AgentTool, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomEvent, RoomOptions, RoomState, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
   ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Copy, Folder, Globe, Laptop, Lock, MessageSquare,
@@ -203,6 +208,12 @@ export function PhoneApp() {
   const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string } | null>(null);
   const [tick, setTick] = useState(0);
   const [session, setSession] = useState<AppSession | null>(readSession);
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  const pendingSessionEvents = useRef<AppSession[]>([]);
+  const sessionEventVersion = useRef(0);
+  const phoneSaveTag = useRef(`phone-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+  const phoneSaveSeq = useRef(0);
   /** An empty list at launch opens the camera once, from Add a machine. Machines clears it when it does. */
   const [scanAtLaunch, setScanAtLaunch] = useState(() => scansAtLaunch(machines.length, Boolean(plugin && scanner)));
   const [tab, setTab] = useState<Tab>(() => (scanAtLaunch ? "machines" : "threads"));
@@ -220,6 +231,10 @@ export function PhoneApp() {
   useEffect(() => { try { localStorage.setItem(FOLDS_KEY, JSON.stringify(folded)); } catch { /* retain choices for this session */ } }, [folded]);
   const [notice, setNotice] = useState("");
   const [ask, setAsk] = useState<Ask | null>(null);
+  const [assistantWorkspaceId, setAssistantWorkspaceId] = useState<string | null>(null);
+  const [assistantRegistry, setAssistantRegistry] = useState<AssistantRegistryState>(() => emptyAssistantRegistry());
+  const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
+  const [assistantRegistryErrors, setAssistantRegistryErrors] = useState<Record<string, string>>({});
   const [botChange, setBotChange] = useState<{ roomId: string; botId: string; error: string; pending: boolean } | null>(null);
   const botChangeLock = useRef(false);
   const [sheet, setSheet] = useState<SheetKind | null>(null);
@@ -357,7 +372,7 @@ export function PhoneApp() {
   const macOnline = mac?.status === "online";
   const linkOf = (id: string) => links.find((link) => link.id === id) ?? null;
   const downWords = (id: string, name: string) => { const link = linkOf(id); return link ? downLine(link) : `Connecting to ${name}`; };
-  const linkOfPane = (pane: Pane) => { const workspace = (session?.workspaces ?? []).find((item) => item.id === pane.workspaceId); return workspace ? linkOf(workspaceHost(workspace)) : null; };
+  const linkOfPane = (pane: Pane & { hostId?: string }) => { const workspace = (session?.workspaces ?? []).find((item) => item.id === pane.workspaceId); return workspace ? linkOf(pane.hostId ?? workspaceHost(workspace)) : null; };
   /** Where a bot is working, for Agents. A turn on a machine that dropped is cut off, not still going. */
   const botDoing = (id: string): { working: string | null; cutOff: string | null } => {
     const turns = (session?.panes ?? []).filter((pane) => !pane.archived && busy[pane.id]?.includes(id));
@@ -370,12 +385,41 @@ export function PhoneApp() {
   useEffect(() => {
     if (!macHost || !macOnline) return;
     let live = true;
+    const eventVersion = sessionEventVersion.current;
     macHost.backend.sessionLoad().then((loaded) => {
       if (!live || !loaded || loaded.version !== 1) return;
-      setSession(loaded);
-      try { localStorage.setItem(SESSION_KEY, JSON.stringify(loaded)); } catch { /* the list still shows from memory */ }
+      const next = sessionEventVersion.current === eventVersion
+        ? loaded
+        : sessionRef.current ?? pendingSessionEvents.current.reduce(
+          (current, remote) => mergePhoneSessionChange(current, remote, { tag: phoneSaveTag.current, seq: phoneSaveSeq.current }),
+          loaded,
+        );
+      pendingSessionEvents.current = [];
+      sessionRef.current = next;
+      setSession(next);
+      try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* the list still shows from memory */ }
     }).catch(() => {});
     return () => { live = false; };
+  }, [macHost, macOnline]);
+
+  // Thread/project changes from the Mac and other phones update this phone's registry.
+  // Machine pairing and presentation preferences remain in their phone-local stores.
+  useEffect(() => {
+    if (!macHost || !macOnline || !macHost.backend.onSessionChanged) return;
+    let live = true;
+    let stop = () => {};
+    macHost.backend.onSessionChanged((remote) => {
+      if (!live) return;
+      const current = sessionRef.current;
+      if (!current) { sessionEventVersion.current++; pendingSessionEvents.current.push(remote); return; }
+      const next = mergePhoneSessionChange(current, remote, { tag: phoneSaveTag.current, seq: phoneSaveSeq.current });
+      if (next === current) return;
+      sessionEventVersion.current++;
+      sessionRef.current = next;
+      setSession(next);
+      try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* the list still updates in memory */ }
+    }).then((unlisten) => { if (live) stop = unlisten; else unlisten(); }).catch(() => {});
+    return () => { live = false; stop(); };
   }, [macHost, macOnline]);
 
   // A machine that comes back may have finished, or started, turns while it was away:
@@ -412,16 +456,81 @@ export function PhoneApp() {
   }, [onlineKey]);
 
   const workspaces = session?.workspaces ?? [];
+  const phoneHost = (id: string) => hosts.find((host) => host.machine.id === id) ?? null;
+  const assistantProjects = useMemo(() => workspaces.filter((workspace) => !workspace.hidden).map((workspace) => {
+    const hostId = workspaceHost(workspace);
+    const host = hosts.find((item) => item.machine.id === hostId);
+    return { workspace, link: linkOf(hostId), allowed: canSeeNewThread(host?.access()) };
+  }), [workspaces, hosts, tick]);
+  const visibleAssistantRegistry = useMemo(() => currentAssistantRegistry(assistantRegistry,
+    Object.fromEntries(Object.entries(assistantOwners).filter(([workspaceId, owner]) => {
+      const project = assistantProjects.find((item) => item.workspace.id === workspaceId);
+      return !!project?.allowed && project.workspace.path === owner.cwd && workspaceHost(project.workspace) === owner.hostId;
+    })),
+  ), [assistantRegistry, assistantOwners, assistantProjects]);
   const savedPanes = session?.panes;
-  const panes = useMemo(() => (savedPanes ?? []).map((pane) => (seen[pane.id] ?? 0) > (pane.activeAt ?? 0) ? { ...pane, activeAt: seen[pane.id] } : pane), [savedPanes, seen]);
+  const humanPanes = useMemo(() => (savedPanes ?? []).map((pane) => (seen[pane.id] ?? 0) > (pane.activeAt ?? 0) ? { ...pane, activeAt: seen[pane.id] } : pane), [savedPanes, seen]);
+  const panes = useMemo(() => mergeAssistantPanes(humanPanes, visibleAssistantRegistry), [humanPanes, visibleAssistantRegistry]);
   const sections = useMemo(() => sidebarSections(panes, workspaces, "threads", new Set()), [panes, workspaces]);
   const openPane = panes.find((pane) => pane.id === openId) ?? null;
   const pendingWorkspace = workspaces.find((workspace) => workspace.id === pending?.workspaceId) ?? null;
   const viewingPending = pending !== null && openId === pending.id;
   const openWorkspace = viewingPending ? pendingWorkspace : workspaces.find((workspace) => workspace.id === openPane?.workspaceId) ?? null;
   const hostOf = (workspace: Workspace | null) => links.find((link) => link.id === (workspace ? workspaceHost(workspace) : "")) ?? null;
-  const openLink = hostOf(openWorkspace);
-  const phoneHost = (id: string) => hosts.find((host) => host.machine.id === id) ?? null;
+  const openHostId = openPane?.hostId ?? (openWorkspace ? workspaceHost(openWorkspace) : "");
+  const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
+  const openLink = linkOf(openHostId) ?? hostOf(openWorkspace);
+  const assistantWorkspace = workspaces.find((workspace) => workspace.id === assistantWorkspaceId) ?? null;
+  const assistantWorkspaceHost = assistantWorkspace ? phoneHost(workspaceHost(assistantWorkspace)) : null;
+
+  useEffect(() => {
+    let live = true;
+    const versions = new Map<string, number>();
+    const eligible = assistantProjects.filter((project) => project.allowed && project.link?.status === "online");
+    const refresh = async (project: typeof assistantProjects[number]) => {
+      const host = hosts.find((item) => item.machine.id === workspaceHost(project.workspace));
+      if (!host || !project.allowed || project.link?.status !== "online") return;
+      const version = (versions.get(project.workspace.id) ?? 0) + 1;
+      versions.set(project.workspace.id, version);
+      try {
+        const monitor = await host.backend.call<ProjectMonitor | null>("monitor_get", { workspaceId: project.workspace.id });
+        if (!live || versions.get(project.workspace.id) !== version) return;
+        if (monitor && (monitor.workspaceId !== project.workspace.id || monitor.cwd !== project.workspace.path || monitor.hostId !== host.machine.id))
+          throw new Error("ApexAgent returned an assignment for a different project folder or machine.");
+        if (!monitor) {
+          setAssistantOwners((all) => {
+            if (!(project.workspace.id in all)) return all;
+            const { [project.workspace.id]: _old, ...rest } = all;
+            return rest;
+          });
+          setAssistantRegistryErrors((all) => { const { [project.workspace.id]: _old, ...rest } = all; return rest; });
+          return;
+        }
+        const owner: AssistantTaskOwner = { workspaceId: monitor.workspaceId, cwd: monitor.cwd, hostId: monitor.hostId, conversationId: monitor.conversationId };
+        setAssistantOwners((all) => JSON.stringify(all[project.workspace.id]) === JSON.stringify(owner)
+          ? all : { ...all, [project.workspace.id]: owner });
+        const snapshot = await host.backend.call<AssistantTaskSnapshot>("assistant_tasks_list", { owner });
+        if (!live || versions.get(project.workspace.id) !== version) return;
+        setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot));
+        setAssistantRegistryErrors((all) => { const { [project.workspace.id]: _old, ...rest } = all; return rest; });
+      } catch (error) {
+        if (live && versions.get(project.workspace.id) === version) setAssistantRegistryErrors((all) => ({ ...all, [project.workspace.id]: words(error) }));
+      }
+    };
+    eligible.forEach((project) => { void refresh(project); });
+    const stops: (() => void)[] = [];
+    for (const host of hosts) {
+      const projects = eligible.filter((project) => workspaceHost(project.workspace) === host.machine.id);
+      if (!projects.length || !host.backend.onAssistantTasksChanged) continue;
+      void host.backend.onAssistantTasksChanged((payload) => {
+        if (!live) return;
+        const changed = payload as { workspaceId?: string } | null;
+        for (const project of projects) if (!changed?.workspaceId || changed.workspaceId === project.workspace.id) void refresh(project);
+      }).then((stop) => { if (live) stops.push(stop); else stop(); }).catch(() => {});
+    }
+    const timer = window.setInterval(() => eligible.forEach((project) => { void refresh(project); }), 30_000);
+    return () => { live = false; clearInterval(timer); stops.forEach((stop) => stop()); };
+  }, [assistantProjects, hosts]);
 
   const draftFor = (id: string) => drafts[id] ?? emptyDraft();
   const setDraft = (id: string, next: Draft) => setDrafts((all) => ({ ...all, [id]: next }));
@@ -486,8 +595,9 @@ export function PhoneApp() {
       if (!macHost) throw new Error(mac ? downLine(mac) : "Pair this phone with your Mac before saving a thread.");
       const fresh = await macHost.backend.sessionLoad();
       if (!fresh) throw new Error("The Mac has no saved threads.");
-      const next = { ...await change(fresh), savedBy: "phone" };
+      const next = { ...await change(fresh), savedBy: `${phoneSaveTag.current}:${++phoneSaveSeq.current}` };
       await macHost.backend.sessionSave(next);
+      sessionRef.current = next;
       setSession(next);
       try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* saved on the Mac */ }
       return next;
@@ -527,7 +637,7 @@ export function PhoneApp() {
 
   useEffect(() => {
     if (!openPane || !openWorkspace) { if (!viewingPending) setRoom(null); return; }
-    const host = phoneHost(workspaceHost(openWorkspace));
+    const host = phoneHost(openHostId);
     // Offline keeps what is already on screen under the banner; it reloads when the machine is back.
     // Bots that were mid-reply are cut off: their turn shows as interrupted, not still going.
     if (!host || toLink(host.connection.get().status) !== "online") {
@@ -543,7 +653,7 @@ export function PhoneApp() {
     let stop = () => {};
     const settingsHeard = new Map<string, ParticipantConfig>();
     let rosterHeard: ParticipantConfig[] | null = null;
-    loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openWorkspace.path).then((state) => {
+    const applyState = (state: RoomState) => {
       if (!live) return;
       setWaiting((all) => ({ ...all, [openPane.id]: state.approvals.map((card) => card.request) }));
       setBusy((all) => ({ ...all, [openPane.id]: state.active }));
@@ -565,9 +675,10 @@ export function PhoneApp() {
         plans: {},
         used: state.snapshot.usage ?? {},
       });
-    }).catch((error) => { if (live) setNotice(words(error)); });
-    host.backend.onRoomEvent((id, event) => {
-      if (!live || id !== openPane.id) return;
+    };
+    const applyEvent = (event: RoomEvent) => {
+      if (!live) return;
+      const id = openPane.id;
       if (event.type === "participants_changed") { rosterHeard = event.participants; settingsHeard.clear(); }
       if (event.type === "participants_changed") setRoom((current) => current && current.id === id ? { ...current, configs: event.participants, participants: event.participants.map(toPerson) } : current);
       if (event.type === "participant_changed") settingsHeard.set(event.participant.id, event.participant);
@@ -591,11 +702,28 @@ export function PhoneApp() {
         const working = applyTurnEvent(current.working, event, Date.now());
         return asks === current.asks && working === current.working ? current : { ...current, asks, working };
       });
-    }).then((unlisten) => { if (live) stop = unlisten; else unlisten(); }).catch(() => {});
-    return () => { live = false; stop(); };
+    };
+    const recovery = createRoomRecovery<RoomState, RoomEvent>({
+      load: () => loadRoomState(host.backend, openPane.id, [], NEW_THREAD, openPath),
+      apply: applyState,
+      event: applyEvent,
+      represented: representedRoomEvent,
+      fail: (error) => { if (live) setNotice(words(error)); },
+    });
+    // Install the listener first. Events received before or during the snapshot are
+    // buffered and replayed only when the snapshot does not already represent them.
+    host.backend.onRoomEvent((id, event) => {
+      if (!live || id !== openPane.id) return;
+      if (!recovery.capture(event)) applyEvent(event);
+    }).then((unlisten) => {
+      if (!live) { unlisten(); return; }
+      stop = unlisten;
+      void recovery.refresh();
+    }).catch((error) => { if (live) setNotice(words(error)); });
+    return () => { live = false; recovery.dispose(); stop(); };
     // Reloading follows the open thread and that machine's connection, not every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openPane?.id, openWorkspace?.id, openLink?.status]);
+  }, [openPane?.id, openWorkspace?.id, openLink?.status, openHostId, openPath]);
 
   // Who the message as typed goes to: its @names, or the bots named last when it has none.
   // Asked again as the draft changes and after each message, since a send can change it.
@@ -603,7 +731,7 @@ export function PhoneApp() {
   const typed = openId ? draftFor(openId).text : "";
   useEffect(() => {
     if (!room || !openWorkspace) return;
-    const host = phoneHost(workspaceHost(openWorkspace));
+    const host = phoneHost(openHostId);
     if (!host || toLink(host.connection.get().status) !== "online") return;
     // An untagged message behind a queued tag goes where that tag goes, before the thread has heard it.
     const sticky = queuedSticky(typed, room.participants.map((p) => p.id), room.policy, queued[room.id]?.items ?? []);
@@ -615,7 +743,7 @@ export function PhoneApp() {
     }, typed ? 150 : 0);
     return () => { live = false; window.clearTimeout(ask); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room?.id, room?.messages.length, openLink?.status, typed, queued[room?.id ?? ""]?.items]);
+  }, [room?.id, room?.messages.length, openLink?.status, openHostId, typed, queued[room?.id ?? ""]?.items]);
 
   // A bot's details belong to the thread they were opened in.
   useEffect(() => { setBotSheet(null); setSteerAsk(null); }, [openId]);
@@ -656,7 +784,7 @@ export function PhoneApp() {
         if (!starter) { setNotice("This phone has no saved bot to start a thread with. Add one on the Mac first."); return; }
         const made: Pane = { id: `pane-${Date.now().toString(36)}`, workspaceId: pending.workspaceId, kind: "chat", title: "New thread" };
         // Open the room before saving or showing it, so a second open keeps this bot.
-        const state = await loadRoomState(host.backend, made.id, [starter], NEW_THREAD, openWorkspace.path);
+        const state = await loadRoomState(host.backend, made.id, [starter], NEW_THREAD, openPath);
         await saveSession((current) => ({ ...current, panes: [...current.panes, made] }));
         pane = made;
         participants = state.snapshot.participants.map(toPerson);
@@ -667,7 +795,7 @@ export function PhoneApp() {
         setPending(null);
         setOpenId(made.id);
       } else if (pane && room?.id !== pane.id) {
-        const state = await loadRoomState(host.backend, pane.id, [], NEW_THREAD, openWorkspace.path);
+        const state = await loadRoomState(host.backend, pane.id, [], NEW_THREAD, openPath);
         participants = state.snapshot.participants.map(toPerson);
         transcriptLength = state.snapshot.transcript.length;
       }
@@ -1034,9 +1162,9 @@ export function PhoneApp() {
   const machineIcon = (hostId: string, size = 16) => hostId === "local"
     ? <span className="ph-host-icon" title={linkOf(hostId)?.name}><Laptop size={size} /></span>
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
-  const started = Boolean(openPane && ((room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
+  const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
-  const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null;
+  const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -1068,7 +1196,7 @@ export function PhoneApp() {
             draftThread={viewingPending}
             project={openWorkspace.name}
             machine={openLink.name}
-            path={openWorkspace.path}
+            path={openPath}
             kind={openLink.kind}
             link={openLink}
             hostIcon={machineIcon(openLink.id, 15)}
@@ -1110,8 +1238,8 @@ export function PhoneApp() {
             onResized={(chat) => { if (stuckRef.current) chat.scrollTop = chat.scrollHeight; }}
             covered={covered}
             onBack={() => { setOpenId(null); setSheet(null); }}
-            onMenu={() => openPane && setMenu({ kind: "thread", id: openPane.id })}
-            onMessageMenu={viewingPending ? undefined : (seq) => setMenu({ kind: "message", seq })}
+            onMenu={() => { if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
+            onMessageMenu={viewingPending || openPane?.assistantTaskId ? undefined : (seq) => setMenu({ kind: "message", seq })}
             onDraft={(text) => openId && setDraft(openId, { ...draft, text })}
             onRemoveFile={(name) => openId && setDraft(openId, { ...draft, files: draft.files.filter((file) => file.name !== name) })}
             onSend={() => { void send(); }}
@@ -1153,7 +1281,7 @@ export function PhoneApp() {
             onOpen={openThread}
             onNew={newAllowed ? startIn : undefined}
             onPick={newAllowed ? () => { setQuery(""); setMenu({ kind: "new" }); } : undefined}
-            onThreadMenu={(id) => setMenu({ kind: "thread", id })}
+            onThreadMenu={(id) => { if (!panes.find((pane) => pane.id === id)?.assistantTaskId) setMenu({ kind: "thread", id }); }}
             onProjectMenu={(id) => setMenu({ kind: "project", id })}
             onMachines={() => setTab("machines")}
             onRetry={(id) => phoneHost(id)?.connection.retryNow()}
@@ -1182,9 +1310,17 @@ export function PhoneApp() {
             onError={setNotice}
           />
         ) : (
-          <SideTab tab={tab} link={openLink ?? mac ?? null} agents={agents} covered={covered}
+          <SideTab tab={tab} link={openLink ?? mac ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
+            onAssistant={(workspaceId) => {
+              const workspace = workspaces.find((item) => item.id === workspaceId);
+              if (!workspace) return;
+              const projectHost = phoneHost(workspaceHost(workspace));
+              if (!projectHost) { setNotice(`Pair ${workspaceHost(workspace)} with this phone to open its project assistant.`); return; }
+              if (!canSeeNewThread(projectHost.access())) { setNotice(`Project assistant needs Full access on ${projectHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.`); return; }
+              setAssistantWorkspaceId(workspace.id);
+            }}
             onShow={() => {
             const host = openLink ? phoneHost(openLink.id) : macHost;
             if (!host || (openLink ?? mac)?.status !== "online") { setAgents([]); return; }
@@ -1210,6 +1346,36 @@ export function PhoneApp() {
             <button type="button" aria-label="Dismiss" onClick={() => setNotice("")}><X size={16} /></button>
           </div>
         )}
+        {assistantWorkspace && assistantWorkspaceHost && (canSeeNewThread(assistantWorkspaceHost.access())
+          ? <ApexAgent
+            key={JSON.stringify([assistantWorkspace.id, workspaceHost(assistantWorkspace), assistantWorkspace.path])}
+            workspace={assistantWorkspace}
+            backend={assistantWorkspaceHost.backend}
+            profiles={session?.profiles ?? []}
+            panes={panes}
+            onClose={() => setAssistantWorkspaceId(null)}
+            onOpenThread={(id) => {
+              const pane = panes.find((item) => item.id === id);
+              if (!pane) { setNotice("That thread isn't available in this phone's project registry."); return; }
+              const ownerWorkspace = workspaces.find((item) => item.id === pane.workspaceId);
+              if (!ownerWorkspace || !assistantWorkspace || (pane.hostId ?? workspaceHost(ownerWorkspace)) !== workspaceHost(assistantWorkspace)) {
+                setNotice(`That thread is not on ${assistantWorkspaceHost.machine.name}.`); return;
+              }
+              if (pane.assistantTaskId) {
+                const currentOwner = assistantOwners[pane.workspaceId];
+                const currentDescriptor = assistantPaneForOwner(visibleAssistantRegistry, pane.id, currentOwner);
+                const current = currentDescriptor && currentOwner
+                  && currentOwner.workspaceId === ownerWorkspace.id
+                  && currentOwner.cwd === ownerWorkspace.path
+                  && currentOwner.hostId === workspaceHost(ownerWorkspace)
+                  && currentDescriptor.executionPath === pane.executionPath;
+                if (!current) { setNotice("That worker thread belongs to an older project assistant assignment."); return; }
+              }
+              setAssistantWorkspaceId(null);
+              openThread(pane.id);
+            }}
+          />
+          : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.</p></section></div>)}
         {pairing && plugin && (
           <Sheet title={`Pair ${pairing.name}`} onClose={() => setPairing(null)}>
             <PairSheet plugin={plugin} link={pairing.link} label="iPhone" onClose={() => setPairing(null)} onPaired={(paired) => {
@@ -2242,7 +2408,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   );
 }
 
-function SideTab({ tab, link, agents, bots, covered, library, onShow }: { tab: Tab; link: LinkView | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; onShow(): void }) {
+function SideTab({ tab, link, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, onAssistant, onShow }: { tab: Tab; link: LinkView | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; onAssistant(workspaceId: string): void; onShow(): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
   // The Library lists every paired machine itself, so it doesn't follow one machine or wait on the Mac.
   if (tab === "library") return <main className="ph-content" inert={covered}>{library}</main>;
@@ -2260,6 +2426,24 @@ function SideTab({ tab, link, agents, bots, covered, library, onShow }: { tab: T
             <span className="ph-grow"><strong>{bot.display_name}</strong><small className={bot.working ? "ph-mint" : bot.cutOff ? "ph-amber" : undefined}>{bot.working ? `Working in ${bot.working}` : bot.cutOff ?? bot.tool}</small></span>
           </div>
         ))}</div>
+      </>}
+      {tab === "agents" && <>
+        <div className="ph-section">Project assistants</div>
+        {assistantProjects.length === 0
+          ? <div className="ph-empty"><h3>No projects yet</h3><p>Add a project from Threads to set up ApexAgent.</p></div>
+          : <div className="ph-group">{assistantProjects.map(({ workspace, link: projectLink, allowed }) => {
+            const available = projectLink?.status === "online" && allowed;
+            const error = assistantRegistryErrors[workspace.id];
+            const detail = error ? `ApexAgent unavailable: ${error}`
+              : !projectLink ? "Pair its machine to this phone"
+              : projectLink.status !== "online" ? downLine(projectLink)
+                : !allowed ? "Needs Full access on its machine" : `${projectLink.name} · Open project assistant`;
+            return <button key={workspace.id} type="button" className="ph-srow ph-project-assistant" disabled={!available} onClick={() => onAssistant(workspace.id)}>
+              <span className="ph-srow-icon ph-muted-icon"><MessageSquare size={18} /></span>
+              <span className="ph-grow"><strong>{workspace.name}</strong><small>{detail}</small></span>
+              {available && <ChevronRight size={16} />}
+            </button>;
+          })}</div>}
       </>}
       {link && !offline && tab === "agents" && (agents.length === 0
         ? <div className="ph-empty"><h3>No coding agents found</h3><p>Nothing installed on {link.name} yet.</p></div>

@@ -173,6 +173,43 @@ test('retryNow skips the wait', async () => {
   assert.deepEqual(timers.pending(), []);
 });
 
+test('retryNow does not start a second dial while the first dial is pending', async () => {
+  let finishDial;
+  let attempts = 0;
+  const daemon = fakeDaemon();
+  const client = new DaemonClient(() => {
+    attempts += 1;
+    const pending = daemon.connect();
+    return new Promise((resolve) => { finishDial = () => pending.then(resolve); });
+  }, { timers: fakeTimers() });
+  const started = client.start();
+  client.retryNow();
+  assert.equal(attempts, 1);
+
+  finishDial();
+  await tick();
+  const link = daemon.last();
+  link.receive({ id: link.sent[0].id, ok: welcome() });
+  assert.equal((await started).host_id, 'h1');
+  assert.equal(daemon.links.length, 1);
+  client.close();
+});
+
+test('close invalidates and closes a dial that completes later', async () => {
+  let finishDial;
+  const daemon = fakeDaemon();
+  const client = new DaemonClient(() => new Promise((resolve) => {
+    daemon.connect().then((link) => { finishDial = () => resolve(link); });
+  }), { timers: fakeTimers() });
+  client.start();
+  client.close();
+  await tick();
+  finishDial();
+  await tick();
+  assert.equal(daemon.last().closed, true);
+  assert.equal(daemon.last().sent.length, 0, 'a closed client never sends hello on a late link');
+});
+
 test('a welcome that does not resume after a drop asks for a resync', async () => {
   const { daemon, statuses, timers } = await connected();
   daemon.last().drop('gone');
@@ -274,6 +311,28 @@ test('the welcome tells which apex-daemon version answered; an older helper does
   };
   assert.equal(await fresh({ version: '0.5.1' }), '0.5.1');
   assert.equal(await fresh({}), null);
+});
+
+test('capabilities are optional and missing features fail with an update instruction', async () => {
+  const daemon = fakeDaemon(); const legacy = new DaemonClient(daemon.connect, { timers: fakeTimers() });
+  const started = legacy.start(); await tick();
+  daemon.last().receive({ id: daemon.last().sent[0].id, ok: welcome({ version: '0.6.4' }) });
+  await started;
+  assert.equal(legacy.helperVersion, '0.6.4');
+  const ordinary = legacy.call('session_load');
+  daemon.last().receive({ id: daemon.last().sent.at(-1).id, ok: { version: 1 } });
+  assert.deepEqual(await ordinary, { version: 1 });
+  assert.throws(() => legacy.requireCapability('assistant_delegation'), /does not advertise.*assistant delegation.*Update.*reconnect/i);
+  legacy.close();
+});
+
+test('advertised capabilities work regardless of helper version', async () => {
+  const daemon = fakeDaemon(); const client = new DaemonClient(daemon.connect, { timers: fakeTimers() });
+  const started = client.start(); await tick();
+  daemon.last().receive({ id: daemon.last().sent[0].id, ok: welcome({ version: '9.9.9-custom', capabilities: ['assistant_delegation'] }) });
+  await started;
+  assert.doesNotThrow(() => client.requireCapability('assistant_delegation'));
+  client.close();
 });
 
 

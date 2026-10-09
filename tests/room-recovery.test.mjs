@@ -54,6 +54,22 @@ test('snapshot boundary prevents doubled usage, changes and summaries while reta
   assert.equal(usage,14);assert.deepEqual(changes,['saved']);assert.deepEqual(summaries,['saved']);
 });
 
+test('events received after subscription but before the snapshot starts are replayed past its boundary', async () => {
+  let finish; const applied=[]; const events=[];
+  const recovery=mod.createRoomRecovery({
+    load:()=>new Promise(resolve=>finish=resolve), apply:state=>applied.push(state.recovery_seq),
+    fail:error=>assert.fail(String(error)),
+    represented:(state,event)=>event.recovery_seq <= state.recovery_seq,
+    event:event=>events.push(event.recovery_seq),
+  });
+  assert.equal(recovery.capture({recovery_seq:2}), true);
+  const loading=recovery.refresh();
+  recovery.capture({recovery_seq:3});
+  finish({recovery_seq:2}); await loading;
+  assert.deepEqual(applied,[2]);
+  assert.deepEqual(events,[3]);
+});
+
 test('room event boundary retains active streaming text but suppresses completed overlap', () => {
   const state={snapshot:{},active:['bot'],approvals:[],recovery_seq:3};
   assert.equal(typeof mod.representedRoomEvent,'function');

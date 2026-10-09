@@ -68,6 +68,24 @@ test('attachments travel as base64 over the daemon', async () => {
   assert.deepEqual(calls, [['save_attachment', { room: 't', name: 'a.bin', data: 'AQID' }], ['read_attachment', { path: '/att/a.bin' }]]);
 });
 
+test('isolated requests require the isolation capability before sending work', async () => {
+  const calls = [];
+  const available = new Set(['assistant_delegation']);
+  const client = {
+    call: async (cmd, args) => { calls.push([cmd, args]); return null; },
+    on: () => () => {},
+    requireCapability: (capability) => { if (!available.has(capability)) throw new Error(`Update host for ${capability}`); },
+  };
+  const transport = daemonTransport(client);
+  await transport.call('assistant_message', { mode: 'in_place' });
+  assert.throws(() => transport.call('assistant_message', { mode: 'isolated' }), /Update host for assistant_isolation/);
+  assert.throws(() => transport.call('assistant_task_action', { action: 'approve', mode: 'isolated' }), /Update host for assistant_isolation/);
+  assert.equal(calls.length, 1);
+  available.add('assistant_isolation');
+  await transport.call('assistant_message', { mode: 'isolated' });
+  assert.equal(calls.length, 2);
+});
+
 import { electronShell } from '../src/electronShell.ts';
 
 test('the shell saves and opens on this machine, and the host opens targets and copies drops', async () => {

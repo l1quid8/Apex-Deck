@@ -1,6 +1,7 @@
 import type { Signal } from './attention.ts';
 import type { ProjectMonitor } from './apexAgentModel.ts';
 import type { Workspace } from './types.ts';
+import type { AssistantTask, AssistantTaskOwner } from './assistantTaskModel.ts';
 
 /** Durable monitor attention, indexed by its host route, workspace, and folder. */
 export type MonitorAttentionState = Record<string, {
@@ -45,6 +46,33 @@ export function monitorAttentionSignal(monitor: ProjectMonitor | null, now: numb
     at,
     blocking: true,
   };
+}
+
+/** Derive project attention from tasks owned by the current monitor assignment. */
+export function assistantTaskAttentionSignal(tasks: AssistantTask[], owner: AssistantTaskOwner): Signal | null {
+  for (const task of tasks) {
+    if (task.workspaceId !== owner.workspaceId || task.owner.workspaceId !== owner.workspaceId
+      || task.owner.cwd !== owner.cwd || task.owner.hostId !== owner.hostId) {
+      throw new Error('Assistant task workspace, host, or folder does not match its owner.');
+    }
+  }
+  const current = tasks.filter((task) => task.owner.conversationId === owner.conversationId);
+  const needsYou = current.filter((task) => task.status === 'needs_you' || task.status === 'needs_clarification' || task.status === 'proposed');
+  if (needsYou.length) return {
+    kind: 'needs_input', note: `${needsYou.length} ApexAgent task${needsYou.length === 1 ? '' : 's'} need you`,
+    at: Math.min(...needsYou.map((task) => task.updatedAtMs || task.createdAtMs)), blocking: true,
+  };
+  const failed = current.filter((task) => task.status === 'failed' || task.status === 'interrupted');
+  if (failed.length) return {
+    kind: 'failed', note: `${failed.length} ApexAgent task${failed.length === 1 ? '' : 's'} failed or stopped`,
+    at: Math.min(...failed.map((task) => task.updatedAtMs || task.createdAtMs)),
+  };
+  const reviews = current.filter((task) => task.status === 'ready_for_review');
+  if (reviews.length) return {
+    kind: 'done', note: `${reviews.length} ApexAgent task${reviews.length === 1 ? '' : 's'} ready for review`,
+    at: Math.min(...reviews.map((task) => task.updatedAtMs || task.createdAtMs)),
+  };
+  return null;
 }
 
 /** Save or remove exactly one host/workspace snapshot. */

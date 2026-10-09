@@ -2,15 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { compatibleMonitorProfiles, defaultMonitorProfileId, parseProjectFiles } from '../src/apexAgentModel.ts';
 
-test('ApexAgent offers text API profiles and Claude Code, Codex and Grok agents, not Gemini or plain CLIs', () => {
+test('ApexAgent offers text API and Claude Code profiles, not Codex, Grok, Gemini or plain CLIs', () => {
   const profiles = [
     { id: 'api', display_name: 'API', backend: { kind: 'open_ai_compatible', base_url: 'https://api.example', model: 'model', api_key_env: null }, media: null },
     { id: 'cli', display_name: 'CLI', backend: { kind: 'cli', program: 'tool', args: [] } },
+    { id: 'claude', display_name: 'Claude', backend: { kind: 'agent', tool: 'claude_code', model: null } },
     { id: 'agent', display_name: 'Agent', backend: { kind: 'agent', tool: 'codex', model: null } },
+    { id: 'grok', display_name: 'Grok', backend: { kind: 'agent', tool: 'grok', model: null } },
     { id: 'gemini', display_name: 'Gemini', backend: { kind: 'agent', tool: 'gemini', model: null } },
     { id: 'video', display_name: 'Video API', backend: { kind: 'open_ai_compatible', base_url: 'https://api.example', model: 'video', api_key_env: null }, media: { duration: '5s' } },
   ];
-  assert.deepEqual(compatibleMonitorProfiles(profiles).map(p => p.id), ['api', 'agent']);
+  assert.deepEqual(compatibleMonitorProfiles(profiles).map(p => p.id), ['api', 'claude']);
 });
 
 test('ApexAgent prefers its saved compatible profile and otherwise uses the first compatible text profile', () => {

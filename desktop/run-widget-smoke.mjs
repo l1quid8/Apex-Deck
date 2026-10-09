@@ -21,19 +21,30 @@ const server = http.createServer(async (req, res) => {
   const request = JSON.parse(raw); calls++;
   if (request.tools?.length) { res.writeHead(500); res.end('Monitoring must be tool-free'); return; }
   const text = JSON.stringify(request.messages);
+  const conversation = text.includes('You are ApexAgent. Answer the human directly');
+  const clarify = text.includes('create an implementation task');
   const deferred = text.includes('Defer SSO');
-  const reply = {
-    message: deferred ? 'SSO is deferred. Revised plan: keep November 1, release without SSO, and track SSO after launch.' : 'SSO tests are failing, and the launch plan requires SSO before release. Decide whether to defer SSO or move the date.',
-    messageEvidence: deferred ? [] : [{id:'file:launch-plan.md'}, {id:'file:test-report.md'}],
-    findings: deferred ? [] : [{summary:'SSO blocks the November 1 launch', reason:'The required SSO tests are failing.', confidence:'observed', nextStep:'Decide whether to defer SSO.', evidence:[{id:'file:launch-plan.md',quote:'SSO must pass before release.'},{id:'file:test-report.md',quote:'SSO tests are failing.'}]}],
-    nextStep: deferred ? 'Monitor the remaining launch requirements.' : 'Ask the human about SSO.', nextCheckInMinutes:60, wakeReason:'Follow the launch requirements',
-  };
+  const reply = conversation
+    ? deferred
+      ? {kind:'answer',message:'SSO is deferred. Revised plan: keep November 1, release without SSO, and track SSO after launch.'}
+      : clarify
+        ? {kind:'clarify',message:'Which existing chat should receive this implementation task?',brief:'Prepare a test-only SSO change.'}
+        : {kind:'answer',message:'The November 1 release still requires SSO. I have kept that responsibility active and will continue checking the selected sources.'}
+    : {
+      message: deferred ? 'SSO is deferred. Revised plan: keep November 1, release without SSO, and track SSO after launch.' : 'SSO tests are failing, and the launch plan requires SSO before release. Decide whether to defer SSO or move the date.',
+      messageEvidence: deferred ? [] : [{id:'file:launch-plan.md'}, {id:'file:test-report.md'}],
+      findings: deferred ? [] : [{summary:'SSO blocks the November 1 launch', reason:'The required SSO tests are failing.', confidence:'observed', nextStep:'Decide whether to defer SSO.', evidence:[{id:'file:launch-plan.md',quote:'SSO must pass before release.'},{id:'file:test-report.md',quote:'SSO tests are failing.'}]}],
+      nextStep: deferred ? 'Monitor the remaining launch requirements.' : 'Ask the human about SSO.', nextCheckInMinutes:60, wakeReason:'Follow the launch requirements',
+    };
   res.writeHead(200, {'content-type':'text/event-stream'});
   res.end(`data: ${JSON.stringify({choices:[{delta:{content:JSON.stringify(reply)},finish_reason:null}]})}\n\ndata: ${JSON.stringify({choices:[{delta:{},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`);
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const url = `http://127.0.0.1:${server.address().port}`;
-const profiles = [{id:'widget-test',display_name:'Widget test model',backend:{kind:'open_ai_compatible',base_url:`${url}/v1`,model:'widget-test'}}];
+const profiles = [
+  {id:'widget-test',display_name:'Widget test model',backend:{kind:'open_ai_compatible',base_url:`${url}/v1`,model:'widget-test'}},
+  {id:'widget-alternate',display_name:'Widget alternate model',backend:{kind:'open_ai_compatible',base_url:`${url}/v1`,model:'widget-test'}},
+];
 const saved = path.join(data, 'saved-chats-v1');
 fs.mkdirSync(saved);
 fs.writeFileSync(path.join(saved,'session.json'),JSON.stringify({version:1,canvasVersion:1,workspaces:[{id:'launch',name:'Mobile launch',path:project},{id:'other',name:'Other project',path:other}],panes:[],profiles,activeWorkspace:'launch',section:'threads',layouts:{}}));

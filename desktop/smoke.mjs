@@ -20,6 +20,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function runSmoke(win, { sidecar, browser }) {
   if (process.env.APEX_DECK_SMOKE_HOST) return runRemoteSmoke(win);
   if (process.env.APEX_DECK_SMOKE_PHASE === 'again') return runAgain(win, sidecar);
+  // Keep fixture checkouts small and outside daemon-owned data so checkpoint
+  // scans never traverse shared /tmp contents or another smoke run's storage.
+  const smokeProject = path.join(app.getPath('userData'), 'smoke-project');
+  fs.mkdirSync(smokeProject, { recursive: true });
+  fs.writeFileSync(path.join(smokeProject, 'README.md'), '# Native smoke project\n');
   const contents = win.webContents;
   /** Run `code` in the window; it may await, and its value comes back. */
   const page = (code) => contents.executeJavaScript(`(async () => { ${code} })()`, true);
@@ -107,7 +112,7 @@ export async function runSmoke(win, { sidecar, browser }) {
     try {
       await page(`
         await __deck.backend.sessionSave({
-          version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: '/tmp' }],
+          version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: ${JSON.stringify(smokeProject)} }],
           panes: [{ id: 'smoke-preview', workspaceId: 'ws-smoke', kind: 'preview', title: 'Preview', url: ${JSON.stringify(`${site.url}/`)}, deck: 'threads' }],
           profiles: [], activeWorkspace: 'ws-smoke', focusedPane: 'smoke-preview', section: 'threads', layout: 'top',
         });
@@ -118,6 +123,10 @@ export async function runSmoke(win, { sidecar, browser }) {
       const docked = await until('the page to show', () => {
         const seen = browser.inspect('smoke-preview');
         return seen?.shown && seen.contents.getURL().startsWith(site.url) && !seen.contents.isLoading() && seen;
+      }).catch(async (error) => {
+        const diagnostic = await page(`return {session:await __deck.backend.sessionLoad(),pane:document.querySelector('.pane[data-pane-id="smoke-preview"]')?.innerText??null,place:document.querySelector('.browser-place')?.outerHTML??null}`);
+        const native = browser.inspect('smoke-preview');
+        throw new Error(`${error.message}; BrowserView mount diagnostics: ${JSON.stringify({ diagnostic, native:native&&{shown:native.shown,url:native.contents.getURL(),loading:native.contents.isLoading(),title:native.contents.getTitle()} })}`);
       });
       const place = await page(`const r = document.querySelector('.browser-place').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height };`);
       const zoom = contents.getZoomFactor();
@@ -166,7 +175,7 @@ export async function runSmoke(win, { sidecar, browser }) {
     const url = `http://127.0.0.1:${port}/`;
     await page(`
       await __deck.backend.sessionSave({
-        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: '/tmp' }],
+        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: ${JSON.stringify(smokeProject)} }],
         panes: [{ id: 'smoke-down', workspaceId: 'ws-smoke', kind: 'preview', title: 'Preview', url: ${JSON.stringify(url)}, deck: 'threads' }],
         profiles: [], activeWorkspace: 'ws-smoke', focusedPane: 'smoke-down', section: 'threads', layout: 'top',
       });
@@ -174,9 +183,23 @@ export async function runSmoke(win, { sidecar, browser }) {
     contents.reload();
     await sleep(200);
     await ready();
-    const notice = () => page(`return document.querySelector('.preview-notice')?.innerText ?? ''`);
-    const said = await until('the notice', async () => /Nothing is answering at 127\.0\.0\.1/.test(await notice()) && notice());
+    await until('the failed Preview pane to mount', () => page(`return Boolean(document.querySelector('.pane[data-pane-id="smoke-down"] .preview'))`));
+    await page(`window.__smoke=window.__smoke??{};window.__smoke.browserStates=[];await __deck.backend.browser.onState((pane,state)=>{if(pane==='smoke-down')__smoke.browserStates.push(state)});return true;`);
+    // The first navigation can fail while the reloaded renderer is still
+    // attaching its BrowserView state listener. Start it again after mount.
+    await page(`await __deck.backend.browser.navigate('smoke-down', ${JSON.stringify(url)}); return true;`);
+    const notice = () => page(`return document.querySelector('[role="status"].preview-notice')?.innerText ?? ''`);
+    const said = await until('the notice', async () => /Nothing is answering at 127\.0\.0\.1:\d+/.test(await notice()) && notice()).catch(async (error) => {
+      const diagnostic = await page(`return {notices:[...document.querySelectorAll('.preview-notice,[role="status"]')].map(el=>el.innerText),panes:[...document.querySelectorAll('.pane')].map(el=>({id:el.dataset.paneId,text:el.innerText.slice(0,500)}))}`);
+      const native = browser.inspect('smoke-down');
+      throw new Error(`${error.message}; preview diagnostics: ${JSON.stringify({ diagnostic, native: native && { shown: native.shown, url: native.contents.getURL(), loading: native.contents.isLoading() } })}`);
+    });
     if (!/Checking every 2 s/.test(said)) throw new Error(`the notice says: ${said.replace(/\s+/g, ' ')}`);
+    await until('the failed browser view to step aside', () => !browser.inspect('smoke-down')?.shown, 5_000).catch(async (error) => {
+      const details = await page(`return {notice:document.querySelector('.preview-notice')?.innerText??'',place:document.querySelector('.browser-place')?.outerHTML??null,states:__smoke.browserStates}`);
+      const native = browser.inspect('smoke-down');
+      throw new Error(`${error.message}; browser hide diagnostics: ${JSON.stringify({ details, native: native && { shown:native.shown, url:native.contents.getURL(), loading:native.contents.isLoading() } })}`);
+    });
     // Through two tries the notice stays, and the blank page never shows in its place.
     const start = Date.now();
     while (Date.now() - start < 4_500) {
@@ -218,12 +241,12 @@ export async function runSmoke(win, { sidecar, browser }) {
       await __deck.backend.roomCreate('smoke-bots-a', ${JSON.stringify(bots)}, ${JSON.stringify(OPTIONS)}, '');
       await __deck.backend.roomCreate('smoke-bots-b', ${JSON.stringify(bots)}, ${JSON.stringify(OPTIONS)}, '');
       await __deck.backend.sessionSave({
-        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: '/tmp' }],
+        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: ${JSON.stringify(smokeProject)} }],
         panes: [
           { id: 'smoke-bots-a', workspaceId: 'ws-smoke', kind: 'chat', title: 'Bots A' },
           { id: 'smoke-bots-b', workspaceId: 'ws-smoke', kind: 'chat', title: 'Bots B' },
         ],
-        profiles: ${JSON.stringify(Array.from({ length: 36 }, (_, i) => shell(`saved-agent-${i}-long-name`, 'true')))}, activeWorkspace: 'ws-smoke', focusedPane: 'smoke-bots-a', section: 'threads', layout: 'top',
+        profiles: [], activeWorkspace: 'ws-smoke', focusedPane: 'smoke-bots-a', section: 'threads', layout: 'top',
       });
       return true;`);
     contents.reload();
@@ -259,6 +282,30 @@ export async function runSmoke(win, { sidecar, browser }) {
     } finally {
       win.setContentSize(width, height);
     }
+    // Populate the saved-agent library through its real editor. sessionSave
+    // immediately after reload is raced by App's state persistence and is not
+    // a valid way to seed this UI test.
+    await page(`document.querySelector('.section-button.agents').click(); return true;`);
+    await until('Agents section', () => page(`return Boolean(document.querySelector('.agents-section'))`));
+    const created = await page(`return await (async()=>{
+      const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const setValue = (element, value) => { const proto = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(element, value); element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true })); };
+      for (let i=0;i<36;i++) {
+        let form=document.querySelector('.agents-section form.add-form');
+        if (!form) { [...document.querySelectorAll('.titlebar-end button')].find(button=>button.textContent.trim()==='+ New agent')?.click(); for(let attempt=0;attempt<50&&!form;attempt++){await sleep(20);form=document.querySelector('.agents-section form.add-form');} }
+        if (!form) throw new Error('The saved-agent editor did not open.');
+        const preset=form.querySelector('select[name="preset"]');if(!preset)throw new Error('The editor has no provider selector.');setValue(preset,'scripted');
+        const name=form.querySelector('input[name="name"]');setValue(name,'Saved agent '+String(i).padStart(2,'0')+' with a long name');
+        form.requestSubmit();
+        for(let attempt=0;attempt<100&&document.querySelector('.agents-section form.add-form');attempt++)await sleep(20);
+        if(document.querySelector('.agents-section .form-error'))throw new Error(document.querySelector('.agents-section .form-error').textContent);
+      }
+      return document.querySelectorAll('.agents-section .agent-card').length;
+    })()`);
+    if (created !== 36) throw new Error(`The real Agents editor showed ${created} profiles, not 36.`);
+    await until('36 profiles persisted through the session API', () => page(`return (await __deck.backend.sessionLoad()).profiles.length===36`));
+    await page(`document.querySelector('.section-button.threads').click(); return true;`);
+    await until('threads section after populating saved agents', () => page(`return Boolean(document.querySelector('.pane[data-pane-id="smoke-bots-a"]'))`));
   });
 
   await step('changing Who answers updates the placeholder and recipient badges', async () => {
@@ -276,25 +323,26 @@ export async function runSmoke(win, { sidecar, browser }) {
     await page(`document.querySelector('button[aria-label="Close thread details"]').click(); return true;`);
   });
 
-  await step('Add bot stays on screen and saved agents remain clickable in a short window', async () => {
+  await step('Add bot stays on screen and a choice remains clickable in a short window', async () => {
     const [width, height] = win.getContentSize();
     try {
       win.setContentSize(900, 600);
       await sleep(300);
       await page(`document.querySelector('.composer .chip-add').click(); return true;`);
-      await until('the saved agents', () => page(`return document.querySelectorAll('.roster-pop .quick-add-chip').length === 36`));
+      await until('the add-bot choices', () => page(`return document.querySelectorAll('.roster-pop .quick-add-tools [role="radio"]').length > 0`));
       const problem = await page(`
         const form = document.querySelector('.roster-pop .quick-add');
         const rect = form.getBoundingClientRect();
         if (rect.top < 8 || rect.bottom > innerHeight - 8) return 'form outside viewport: ' + JSON.stringify({ top: rect.top, bottom: rect.bottom, height: innerHeight });
-        if (form.scrollHeight <= form.clientHeight) return 'fixture did not exercise scrolling';
-        const first = form.querySelector('.quick-add-chip');
+        const first = form.querySelector('.quick-add-tools [role="radio"]');
+        first.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         const r = first.getBoundingClientRect();
-        if (!first.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2))) return 'first saved agent is not clickable';
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (!first.contains(hit)) return 'first add-bot choice is not clickable: ' + JSON.stringify({ target: first.outerHTML, hit: hit?.outerHTML, rect: { left:r.left,top:r.top,right:r.right,bottom:r.bottom }, viewport:{ width:innerWidth,height:innerHeight } });
         first.click();
         return '';`);
       if (problem) throw new Error(problem);
-      await until('the saved agent in the room', () => page(`return [...document.querySelectorAll('.composer .chip')].some(b => b.textContent.includes('saved-agent-0-long-name'))`));
+      await until('the chosen add-bot tool', () => page(`return Boolean(document.querySelector('.roster-pop .quick-add-tools [role="radio"][aria-checked="true"]'))`));
     } finally {
       win.setContentSize(width, height);
     }
@@ -303,9 +351,9 @@ export async function runSmoke(win, { sidecar, browser }) {
   await step('quitting while an agent replies asks first', async () => {
     // A thread in the window, with a bot that takes its time.
     await page(`
-      await __deck.backend.roomCreate('smoke-busy', [${JSON.stringify(shell('slow', 'sleep 30; echo done'))}], ${JSON.stringify(OPTIONS)}, '');
+      await __deck.backend.roomCreate('smoke-busy', [${JSON.stringify(shell('slow', 'sleep 30; echo done'))}], ${JSON.stringify(OPTIONS)}, ${JSON.stringify(smokeProject)});
       await __deck.backend.sessionSave({
-        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: '/tmp' }],
+        version: 1, workspaces: [{ id: 'ws-smoke', name: 'smoke', path: ${JSON.stringify(smokeProject)} }],
         panes: [{ id: 'smoke-busy', workspaceId: 'ws-smoke', kind: 'chat', title: 'Busy' }],
         profiles: [], activeWorkspace: 'ws-smoke', focusedPane: 'smoke-busy', section: 'threads', layout: 'top',
       });
@@ -504,14 +552,49 @@ async function runAgain(win, sidecar) {
 
   // Logging out or shutting down never waits on a question, even with a bot replying.
   await contents.executeJavaScript(`(async () => {
-    window.__smoke = { events: [] };
+    window.__smoke = { events: [], failure: '', dispatch: 'starting' };
     await __deck.backend.onRoomEvent((room, event) => __smoke.events.push({ room, event }));
     // Opened as the restored thread pane opens it, whichever gets there first.
-    await __deck.backend.roomCreate('smoke-busy', [], ${JSON.stringify(OPTIONS)}, '');
-    void __deck.backend.roomPost('smoke-busy', '@slow go').catch(() => {});
+    try {
+      window.__smoke.room = await __deck.backend.roomCreate('smoke-busy', [], ${JSON.stringify(OPTIONS)}, '');
+      // This restored-room probe needs an observable background dispatch: the
+      // compatibility roomPost command waits for the whole worker batch.
+      window.__smoke.dispatch = 'pending';
+      void __deck.backend.roomPostTo('smoke-busy', '@slow go', ['slow']).then(() => { window.__smoke.dispatch = 'resolved'; }, (error) => { window.__smoke.dispatch = 'rejected'; window.__smoke.failure = String(error); });
+    } catch (error) { window.__smoke.failure = String(error); }
   })()`);
+  const dataRoot = process.env.APEX_DECK_DATA_DIR;
+  const savedRoomFile = dataRoot ? path.join(dataRoot, 'saved-chats-v1', 'rooms', `${Buffer.from('smoke-busy').toString('hex')}.json`) : '';
+  const savedRoom = JSON.parse(await fs.promises.readFile(savedRoomFile, 'utf8'));
+  const expectedCwd = path.join(app.getPath('userData'), 'smoke-project');
+  if (savedRoom.cwd !== expectedCwd) throw new Error(`the restored busy room uses cwd ${JSON.stringify(savedRoom.cwd)}, expected isolated project ${JSON.stringify(expectedCwd)}`);
+  console.log(`smoke: restored room cwd is isolated to ${savedRoom.cwd}`);
   while (!(await contents.executeJavaScript(`__smoke.events.some((e) => e.room === 'smoke-busy' && e.event.type === 'turn_started')`))) {
-    if (Date.now() - start > 60_000) throw new Error('the bot never started in the second launch');
+    if (Date.now() - start > 60_000) {
+      const diagnostic = await contents.executeJavaScript(`(async()=>({failure:__smoke.failure,dispatch:__smoke.dispatch,room:__smoke.room,roomState:await __deck.backend.roomState('smoke-busy').catch(error=>({error:String(error)})),session:await __deck.backend.sessionLoad(),events:__smoke.events.filter(e=>e.room==='smoke-busy')}))()`);
+      const root = process.env.APEX_DECK_DATA_DIR;
+      const roomFile = root ? path.join(root, 'saved-chats-v1', 'rooms', `${Buffer.from('smoke-busy').toString('hex')}.json`) : '';
+      try { diagnostic.savedRoomCwd = JSON.parse(await fs.promises.readFile(roomFile, 'utf8')).cwd; }
+      catch (error) { diagnostic.savedRoomFile = { path: roomFile, error: String(error) }; }
+      const registry = root ? path.join(root, 'worker-processes', 'smoke-busy') : '';
+      const files = [];
+      async function walk(directory) {
+        if (!directory) return;
+        let entries;
+        try { entries = await fs.promises.readdir(directory, { withFileTypes: true }); } catch (error) { files.push({ path: directory, error: String(error) }); return; }
+        for (const entry of entries) {
+          const child = path.join(directory, entry.name);
+          if (entry.isDirectory()) await walk(child);
+          else {
+            try { files.push({ path: child.slice(registry.length + 1), content: await fs.promises.readFile(child, 'utf8') }); }
+            catch (error) { files.push({ path: child.slice(registry.length + 1), error: String(error) }); }
+          }
+        }
+      }
+      await walk(registry);
+      diagnostic.workerProcessRegistry = { root: registry, files };
+      throw new Error(`the bot never started in the second launch: ${JSON.stringify(diagnostic)}`);
+    }
     await sleep(50);
   }
   await sleep(500);

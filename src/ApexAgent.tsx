@@ -3,6 +3,7 @@ import type { Backend } from './backend';
 import type { Pane, ParticipantConfig, Workspace } from './types';
 import { workspaceHost } from './hostSession.ts';
 import { compatibleMonitorProfiles, defaultMonitorProfileId, monitorStatusLabel, parseProjectFiles, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
+import { ApexAgentTasks } from './ApexAgentTasks.tsx';
 
 function time(value: number | null | undefined): string {
   if (!value) return 'Not yet';
@@ -31,7 +32,6 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [selectedThreads, setSelectedThreads] = useState<string[]>([]);
   const [tab, setTab] = useState<'chat' | 'activity' | 'settings'>('chat');
-  const [draft, setDraft] = useState('');
   const profilesAvailable = useMemo(() => compatibleMonitorProfiles(profiles), [profiles]);
   const requestVersion = useRef(0);
   const requestEpoch = useRef(0);
@@ -128,7 +128,7 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
       sourceEditVersion.current++;
       autoSuggestionStarted.current = false;
       sourceRequestVersion.current++;
-      setResponsibility(''); setDraft(''); setSelectedFiles([]); setSelectedThreads(recentThreads.map((pane) => pane.id)); setTab('chat'); setSourcesLoading(false);
+      setResponsibility(''); setSelectedFiles([]); setSelectedThreads(recentThreads.map((pane) => pane.id)); setTab('chat'); setSourcesLoading(false);
     }
     mutationsPending.current = 0;
     setMonitor(null); setError(''); setLoading(true); setBusy(false);
@@ -176,6 +176,7 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
     const { workspaceId, routeHostId: hostId } = requestOwner;
     const epoch = requestEpoch.current;
     const version = ++requestVersion.current;
+    const sourceVersionAtStart = sourceEditVersion.current;
     const boundOwner = monitor ? { cwd: monitor.cwd, hostId: monitor.hostId, conversationId: monitor.conversationId } : {};
     mutationsPending.current++;
     setBusy(true); setError('');
@@ -186,7 +187,11 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
         if (isOlderSnapshot(result)) return;
         latestSnapshot.current = result;
         setMonitor(result);
-        if (command === 'monitor_assign' || command === 'monitor_sources_update') {
+        if (command === 'monitor_assign') {
+          sourcesDirty.current = false;
+          sourceEditVersion.current++;
+          setSelectedFiles(result.files); setSelectedThreads(result.threads);
+        } else if (command === 'monitor_sources_update' && sourceEditVersion.current === sourceVersionAtStart) {
           sourcesDirty.current = false;
           sourceEditVersion.current++;
           setSelectedFiles(result.files); setSelectedThreads(result.threads);
@@ -219,10 +224,13 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
       onlyIfAbsent: true,
     });
   };
-  const send = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!draft.trim()) return;
-    const text = draft.trim(); setDraft(''); void mutate('monitor_message', { text });
+  const acceptAssistantMonitor = (snapshot: ProjectMonitor) => {
+    const requestOwner = owner;
+    if (!validSnapshot(snapshot, requestOwner)) throw new Error('ApexAgent received a monitor for a different project folder or machine.');
+    if (isOlderSnapshot(snapshot)) return;
+    latestSnapshot.current = snapshot;
+    setMonitor(snapshot);
+    callbackRef.current?.(workspace.id, requestOwner.routeHostId, snapshot);
   };
   const openEvidence = (evidence: MonitorEvidence) => {
     const thread = chatThreads.find((pane) => pane.id === evidence.sourceId);
@@ -289,13 +297,11 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
       {monitor.messages.length === 0 && <div className="apex-agent-empty">ApexAgent is ready to talk about {workspace.name}.</div>}
       {findingCards}
     </div>
-    <form className="apex-agent-composer" onSubmit={send}>
-      <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Message ApexAgent about this project…" aria-label="Message ApexAgent" rows={2} />
-      <button className="primary" disabled={busy || !draft.trim()}>Send</button>
-    </form>
+    <ApexAgentTasks key={JSON.stringify([workspace.id, monitor.cwd, monitor.hostId, monitor.conversationId, connectionVersion])} backend={backend} owner={{ workspaceId: workspace.id, cwd: monitor.cwd, hostId: monitor.hostId, conversationId: monitor.conversationId }} panes={panes} profiles={profiles} onMonitorUpdate={acceptAssistantMonitor} onOpenThread={onOpenThread} />
   </> : <div className="apex-agent-setup">
     <div className="apex-agent-intro"><strong>Hi, I’m ApexAgent.</strong><p>I’ll keep an eye on {workspace.name} and help you stay on top of the work. What should I take responsibility for?</p></div>
-    {profilesAvailable.length === 0 && <div className="apex-agent-empty">Add a Claude Code, Codex, Grok or OpenAI-compatible text profile in Agents before assigning ApexAgent.</div>}
+    {profilesAvailable.length === 0 && <div className="apex-agent-empty">Add an OpenAI-compatible HTTP or Claude Code profile in Agents before assigning ApexAgent.</div>}
+    {profilesAvailable.length > 0 && <label className="apex-agent-profile">ApexAgent profile<select aria-label="ApexAgent profile" value={profileId} onChange={(event) => { setProfileId(event.target.value); window.localStorage?.setItem('apex-agent-profile', event.target.value); }}>{profilesAvailable.map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name}</option>)}</select></label>}
     {recentThreads.length > 0 && <fieldset className="apex-agent-recent"><legend>Recent project chats <span>Up to 3 are selected for context</span></legend>{recentThreads.map((pane) => <label className="apex-agent-chip" key={pane.id}><input type="checkbox" checked={selectedThreads.includes(pane.id)} onChange={(event) => editThreads((all) => event.target.checked ? [...all, pane.id] : all.filter((id) => id !== pane.id))} />{pane.title}</label>)}</fieldset>}
     <div className="apex-agent-source-picker"><button type="button" disabled={sourcesLoading || busy} onClick={() => void suggestSources()}>{sourcesLoading ? 'Looking for project files…' : 'Suggest local files'}</button><div className="apex-agent-chips">{selectedFiles.map((file) => <button type="button" className="apex-agent-chip removable" key={file} onClick={() => editFiles((all) => all.filter((item) => item !== file))}>{file}<span aria-hidden="true">×</span><span className="sr-only">Remove {file}</span></button>)}{!selectedFiles.length && <span className="apex-agent-muted">No local files selected</span>}</div></div>
     {profilesAvailable.length > 0 && <form className="apex-agent-setup-form" onSubmit={assign}><textarea value={responsibility} onChange={(event) => setResponsibility(event.target.value)} placeholder={`Tell ApexAgent what to own in ${workspace.name}…`} aria-label="Responsibility for ApexAgent" rows={3} required /><button className="primary" disabled={busy || !responsibility.trim() || !profileId}>Assign responsibility</button></form>}
@@ -307,7 +313,7 @@ export function ApexAgent({ workspace, backend, profiles, panes, onClose, onOpen
     {monitor.activity.map((item, index) => <div className="apex-agent-activity-row" key={`${item.at}:${index}`}><time>{time(item.at)}</time><span>{item.summary}</span></div>)}
   </div>;
   const settingsView = <div className="apex-agent-settings">
-    {monitor ? <><h2>Current assignment</h2><p>{monitor.responsibility}</p><label>Saved profile<input readOnly value={profiles.find((profile) => profile.id === monitor.profileId)?.display_name ?? monitor.profileId} /></label><p className="apex-agent-muted">The profile is saved with this assignment. Choose a profile when creating a new assignment.</p><h2>Sources</h2><div className="apex-agent-chips">{selectedFiles.map((file) => <button type="button" className="apex-agent-chip removable" key={file} onClick={() => editFiles((all) => all.filter((item) => item !== file))}>{file}<span aria-hidden="true">×</span><span className="sr-only">Remove {file}</span></button>)}{!selectedFiles.length && <span className="apex-agent-muted">No files selected</span>}</div><button type="button" disabled={busy || sourcesLoading} onClick={() => void suggestSources()}>Suggest local files</button><fieldset className="apex-agent-recent"><legend>Project chats</legend>{chatThreads.map((pane) => <label className="apex-agent-chip" key={pane.id}><input type="checkbox" checked={selectedThreads.includes(pane.id)} onChange={(event) => editThreads((all) => event.target.checked ? [...all, pane.id] : all.filter((id) => id !== pane.id))} />{pane.title}</label>)}</fieldset><button className="primary" type="button" disabled={busy} onClick={updateSources}>Save sources</button></> : <><h2>New assignment</h2><label>Chat profile<select value={profileId} onChange={(event) => { setProfileId(event.target.value); window.localStorage?.setItem('apex-agent-profile', event.target.value); }}><option value="">Choose a saved profile</option>{profilesAvailable.map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name}</option>)}</select></label><p className="apex-agent-muted">This profile will be used for this and future assignments.</p></>}
+    {monitor ? <><h2>Current assignment</h2><p>{monitor.responsibility}</p><label>Saved profile<select aria-label="Saved profile" value={monitor.profileId} disabled={busy} onChange={(event) => { const profile = profilesAvailable.find((item) => item.id === event.target.value); if (profile) void mutate('monitor_profile_update', { revision: monitor.revision, profile }); }}><option value={monitor.profileId}>{profiles.find((profile) => profile.id === monitor.profileId)?.display_name ?? 'Saved profile — no longer in Agents'}</option>{profilesAvailable.filter((profile) => profile.id !== monitor.profileId).map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name}</option>)}</select></label><p className="apex-agent-muted">Choose a profile for future checks.</p><h2>Sources</h2><div className="apex-agent-chips">{selectedFiles.map((file) => <button type="button" className="apex-agent-chip removable" key={file} onClick={() => editFiles((all) => all.filter((item) => item !== file))}>{file}<span aria-hidden="true">×</span><span className="sr-only">Remove {file}</span></button>)}{!selectedFiles.length && <span className="apex-agent-muted">No files selected</span>}</div><button type="button" disabled={busy || sourcesLoading} onClick={() => void suggestSources()}>Suggest local files</button><fieldset className="apex-agent-recent"><legend>Project chats</legend>{chatThreads.map((pane) => <label className="apex-agent-chip" key={pane.id}><input type="checkbox" checked={selectedThreads.includes(pane.id)} onChange={(event) => editThreads((all) => event.target.checked ? [...all, pane.id] : all.filter((id) => id !== pane.id))} />{pane.title}</label>)}</fieldset><button className="primary" type="button" disabled={busy} onClick={updateSources}>Save sources</button></> : <><h2>New assignment</h2><label>Chat profile<select value={profileId} onChange={(event) => { setProfileId(event.target.value); window.localStorage?.setItem('apex-agent-profile', event.target.value); }}><option value="">Choose a saved profile</option>{profilesAvailable.map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name}</option>)}</select></label><p className="apex-agent-muted">This profile will be used for this and future assignments.</p></>}
     {onHide && <button type="button" onClick={onHide}>Hide widget (keep watching)</button>}
     {onCustomize && <button type="button" onClick={onCustomize}>Appearance and quiet hours</button>}
   </div>;

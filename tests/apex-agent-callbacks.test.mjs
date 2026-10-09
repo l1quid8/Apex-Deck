@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { transform } from 'sucrase';
+import { compatibleMonitorProfiles } from '../src/apexAgentModel.ts';
 
 const source = await fs.readFile(new URL('../src/ApexAgent.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace('export function ApexAgent', 'function ApexAgent'), {
@@ -19,9 +20,9 @@ function componentHarness() {
     useMemo(fn) { cursor++; return fn(); },
     useEffect(fn, deps) { const i = cursor++; const prev = effects[i]; if (!prev || !deps || deps.some((v, j) => !Object.is(v, prev.deps[j]))) effects[i] = { fn, deps, changed: true }; },
   };
-  const component = new Function('React', 'useState', 'useRef', 'useMemo', 'useEffect', 'compatibleMonitorProfiles', 'defaultMonitorProfileId', 'monitorStatusLabel', 'parseProjectFiles', 'workspaceHost', 'window', `${compiled}; return ApexAgent;`)(
-    React, hooks.useState, hooks.useRef, hooks.useMemo, hooks.useEffect,
-    profiles => profiles, (_profiles, stored) => stored ?? 'profile-1', () => 'Active', text => text.split('\n').filter(path => path && !path.startsWith('../') && !path.startsWith('/')), w => w.hostId ?? 'local',
+  const component = new Function('React', 'useState', 'useRef', 'useMemo', 'useEffect', 'ApexAgentTasks', 'compatibleMonitorProfiles', 'assistantProfileChoices', 'defaultMonitorProfileId', 'monitorStatusLabel', 'parseProjectFiles', 'workspaceHost', 'window', `${compiled}; return ApexAgent;`)(
+    React, hooks.useState, hooks.useRef, hooks.useMemo, hooks.useEffect, function ApexAgentTasks() {},
+    compatibleMonitorProfiles, compatibleMonitorProfiles, (_profiles, stored) => stored ?? 'profile-1', () => 'Active', text => text.split('\n').filter(path => path && !path.startsWith('../') && !path.startsWith('/')), w => w.hostId ?? 'local',
     { confirm: message => { confirmations.push(message); return true; }, localStorage: { getItem: () => null, setItem() {} }, setInterval: fn => { intervals.add(fn); return fn; }, clearInterval: fn => intervals.delete(fn) },
   );
   let props;
@@ -114,10 +115,9 @@ test('an older poll cannot replace or callback over a newer mutation reply', asy
   let tree = h.render(base(backend, (...args) => changes.push(args))); await tick();
   const pollFn = [...h.intervals][0]; pollFn();
   tree = h.render(base(backend, (...args) => changes.push(args)));
-  const messageForm = find(tree, n => n.type === 'form' && n.props.className === 'apex-agent-composer');
-  find(messageForm, n => n.type === 'textarea')?.props.onChange({ target: { value: 'Please check the launch' } });
+  find(tree, n => n.type === 'button' && n.children?.[0] === 'Settings')?.props.onClick();
   tree = h.render(base(backend, (...args) => changes.push(args)));
-  find(tree, n => n.type === 'form' && n.props.className === 'apex-agent-composer')?.props.onSubmit({ preventDefault() {} });
+  find(tree, n => n.type === 'button' && n.children?.[0] === 'Save sources')?.props.onClick();
   mutation.resolve(monitor('new mutation')); await tick();
   poll.resolve(monitor('old poll')); await tick();
   assert.deepEqual(changes.map(([, , item]) => item.responsibility), ['initial', 'new mutation']);
@@ -243,6 +243,7 @@ test('chat-first setup uses project name, defaults a compatible profile, suggest
   let tree = h.render(props); await tick(); tree = h.render(props);
   assert.equal(find(tree, n => n.type === 'section' && n.props.role === 'region')?.props['aria-modal'], undefined, 'widget shell owns the nonmodal dialog; panel does not nest another dialog');
   assert.ok(find(tree, n => n.type === 'strong' && n.children?.[0] === 'Hi, I’m ApexAgent.'));
+  assert.equal(find(tree, n => n.type === 'select' && n.props['aria-label'] === 'ApexAgent profile')?.props.value, 'profile-1');
   assert.equal(find(tree, n => n.type === 'textarea' && n.props['aria-label'] === 'Responsibility for ApexAgent')?.props.placeholder, 'Tell ApexAgent what to own in project…');
   assert.equal(calls.filter(([command]) => command === 'monitor_suggest_sources').length, 1, 'the first empty monitor load automatically suggests sources once');
   find(tree, n => n.type === 'button' && n.children?.[0] === 'Suggest local files')?.props.onClick(); await tick();
@@ -371,5 +372,57 @@ test('paused and resolved viewing does not mutate findings, and future snoozes s
   assert.match(lifecycle, /Snoozed work/);
   assert.match(lifecycle, /Active work/);
   assert.deepEqual(calls.map(([command]) => command), ['monitor_get']);
+  h.unmount();
+});
+
+test('edits made while Save sources is pending stay dirty and are not overwritten', async () => {
+  const saved = deferred(), calls = [];
+  const loaded = monitor('saved', { hostId: 'host-a', files: ['README.md'], threads: ['chat-1'] });
+  const backend = { host: { id: 'host-a' }, call: async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'monitor_get') return loaded;
+    if (command === 'monitor_sources_update') return saved.promise;
+    return loaded;
+  } };
+  const h = componentHarness(); const props = { ...base(backend), profiles: [profile], panes: [pane('chat-1'), pane('chat-2')] };
+  let tree = h.render(props); await tick(); tree = h.render(props);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Settings')?.props.onClick(); tree = h.render(props);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'README.md')?.props.onClick(); tree = h.render(props);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Save sources')?.props.onClick();
+  await tick(); tree = h.render(props);
+  const chat2 = find(tree, node => node.type === 'input' && node.props.type === 'checkbox' && node.props.checked === false);
+  chat2.props.onChange({ target: { checked: true } }); tree = h.render(props);
+  saved.resolve({ ...loaded, files: [], threads: ['chat-1'] }); await tick(); tree = h.render(props);
+  assert.equal(find(tree, node => node.type === 'label' && node.children?.includes('chat-2'))?.children?.[0]?.props?.checked, true);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Save sources')?.props.onClick(); await tick();
+  const saves = calls.filter(([command]) => command === 'monitor_sources_update');
+  assert.deepEqual(saves[1]?.[1].threads, ['chat-1', 'chat-2']);
+  h.unmount();
+});
+
+test('an assigned profile can be updated with its current assignment revision', async () => {
+  const calls = [], loaded = monitor('saved', { hostId: 'host-a', revision: 7, profileId: 'profile-1' });
+  const claude = { ...profile, id: 'claude', display_name: 'Claude', backend: { kind: 'agent', tool: 'claude_code' } };
+  const backend = { host: { id: 'host-a' }, call: async (command, args) => { calls.push([command, args]); return command === 'monitor_get' ? loaded : { ...loaded, profileId: 'claude', revision: 8 }; } };
+  const h = componentHarness(); const props = { ...base(backend), profiles: [profile, claude] };
+  let tree = h.render(props); await tick(); tree = h.render(props);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Settings')?.props.onClick(); tree = h.render(props);
+  const select = find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Saved profile');
+  assert.ok(select, 'the saved profile remains editable');
+  select.props.onChange({ target: { value: 'claude' } }); await tick();
+  const update = calls.find(([command]) => command === 'monitor_profile_update');
+  assert.equal(update[1].conversationId, loaded.conversationId);
+  assert.equal(update[1].revision, 7);
+  assert.equal(update[1].profile.id, 'claude');
+  h.unmount();
+});
+
+test('a deleted assigned profile is identified rather than shown as an empty saved value', async () => {
+  const loaded = monitor('saved', { hostId: 'host-a', profileId: 'deleted-profile' });
+  const backend = { host: { id: 'host-a' }, call: async () => loaded };
+  const h = componentHarness(); const props = { ...base(backend), profiles: [profile] };
+  let tree = h.render(props); await tick(); tree = h.render(props);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Settings')?.props.onClick(); tree = h.render(props);
+  assert.ok(find(tree, node => node.type === 'option' && String(node.children?.[0]).includes('no longer in Agents')));
   h.unmount();
 });

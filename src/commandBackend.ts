@@ -29,6 +29,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     detectAgents: () => call<AgentInfo[]>("agents_detect"),
     sessionLoad: () => call<AppSession | null>("session_load"),
     sessionSave: (session) => call("session_save", { session }),
+    onAssistantTasksChanged: (cb) => transport.listen("assistant-tasks-changed", cb),
     onSessionChanged: (cb) => transport.listen<AppSession>("session-changed", cb),
     decisionKeyStatus: () => call<boolean>("decision_key_status", {}),
     settingsLoad: () => call<unknown>("settings_load"),

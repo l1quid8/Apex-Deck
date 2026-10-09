@@ -5,6 +5,8 @@ import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import os from 'node:os';
+import crypto from 'node:crypto';
 
 /** `APEX_DAEMON_BIN`, else the copy bundled with the app, else the dev build. */
 export function daemonBinary({ packaged, resourcesPath, repo, env }) {
@@ -14,6 +16,16 @@ export function daemonBinary({ packaged, resourcesPath, repo, env }) {
 }
 
 const withDataDir = (args, dataDir) => (dataDir ? [...args, '--data-dir', dataDir] : args);
+
+/** A persistent but checkout-specific data folder for `npm run desktop:dev`. */
+export function developmentDataDir(repo, env = process.env, home = os.homedir()) {
+  const explicit = env.APEX_DECK_DATA_DIR?.trim();
+  if (explicit) return explicit;
+  const checkout = path.resolve(repo);
+  const label = path.basename(checkout).replace(/[^a-zA-Z0-9_-]/g, '-') || 'checkout';
+  const identity = crypto.createHash('sha256').update(checkout).digest('hex').slice(0, 12);
+  return path.join(home, '.apex-deck', 'dev', `${label}-${identity}`);
+}
 
 /**
  * `serve` that stops when the app does; `--remote` when Remote access is on,

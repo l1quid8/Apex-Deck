@@ -30,6 +30,8 @@ export interface Welcome {
   resumed: boolean;
   /** The apex-daemon version. Helpers older than 0.5.1 don't send it. */
   version?: string;
+  /** Features implemented by this helper; absent on older protocol-v1 helpers. */
+  capabilities?: string[];
   /** Over iroh only: what this phone may do there. */
   access?: { tier: "read_only" | "chat" | "full"; threads: "all" | string[] };
   /** Over iroh only: the addresses the machine says it can be dialed on now. */
@@ -90,6 +92,18 @@ export class DaemonClient {
   get welcome(): Welcome | null {
     return this.latest;
   }
+  /** Capabilities advertised by the current welcome; older helpers advertise none. */
+  get capabilities(): readonly string[] {
+    const advertised = this.latest?.capabilities;
+    return Array.isArray(advertised) ? advertised.filter((value): value is string => typeof value === "string") : [];
+  }
+  hasCapability(capability: string): boolean {
+    return this.capabilities.includes(capability);
+  }
+  requireCapability(capability: string, feature = capability.replaceAll("_", " ")): void {
+    if (this.hasCapability(capability)) return;
+    throw new Error(`This host’s Apex Deck service does not advertise ${feature} support. Update the service on the project machine, then reconnect.`);
+  }
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
@@ -104,6 +118,9 @@ export class DaemonClient {
   /** Said by the daemon just before it closes the connection. */
   private parting: string | null = null;
   private closed = false;
+  /** Owns connection work before a link has been returned. */
+  private dialing = false;
+  private dialGeneration = 0;
   private started: Promise<Welcome> | null = null;
   private resolveStarted: ((welcome: Welcome) => void) | null = null;
   /** Sent with hello on a WebSocket. The desktop's stdio link doesn't use one. */
@@ -154,13 +171,15 @@ export class DaemonClient {
   /** Try to connect now instead of waiting. */
   retryNow(): void {
     if (this.closed || (this.link && this.ready)) return;
-    if (this.link) return; // an attempt is already under way
+    if (this.link || this.dialing) return; // a link or asynchronous dial already owns the attempt
     this.cancelRetry();
     void this.open();
   }
 
   close(): void {
     this.closed = true;
+    this.dialGeneration += 1;
+    this.dialing = false;
     this.cancelRetry();
     const link = this.link;
     this.drop(LOST);
@@ -178,18 +197,24 @@ export class DaemonClient {
   }
 
   private async open() {
+    if (this.closed || this.dialing) return;
+    this.dialing = true;
+    const generation = ++this.dialGeneration;
     let link: Link;
     try {
       link = await this.connect();
     } catch (e) {
+      if (generation !== this.dialGeneration) return;
+      this.dialing = false;
       if (e instanceof FinalError) this.stop(e.message);
       else this.lost(e instanceof Error ? e.message : String(e));
       return;
     }
-    if (this.closed) {
+    if (generation !== this.dialGeneration || this.closed) {
       link.close();
       return;
     }
+    this.dialing = false;
     this.link = link;
     this.ready = false;
     this.parting = null;

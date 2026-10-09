@@ -48,6 +48,9 @@ import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withAppro
 import { cyclePane, shortcutFor } from "./shortcuts";
 import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
+import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
+import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
+import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from "./assistantTaskModel.ts";
 import type { ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { PathPrompt } from "./PathPrompt";
@@ -148,7 +151,21 @@ export function App() {
   const [backend, setBackend] = useState<Backend | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [records, setRecords] = useState<{ workspaces: Workspace[]; panes: Pane[]; importedHostSessions: string[] }>({workspaces: loadWorkspaces(), panes: [], importedHostSessions: []});
-  const { workspaces, panes, importedHostSessions } = records;
+  const { workspaces, panes: savedPanesForSession, importedHostSessions } = records;
+  const panes = savedPanesForSession;
+  const [assistantRegistry, setAssistantRegistry] = useState<AssistantRegistryState>(() => emptyAssistantRegistry());
+  const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
+  const [assistantTaskSignals, setAssistantTaskSignals] = useState<Record<string, Signal>>({});
+  const [assistantTaskCounts, setAssistantTaskCounts] = useState<Record<string, number>>({});
+  const [assistantTaskErrors, setAssistantTaskErrors] = useState<Record<string, string>>({});
+  const currentAssistantRegistry = useMemo(() => selectCurrentAssistantRegistry(
+    assistantRegistry,
+    Object.fromEntries(Object.entries(assistantOwners).filter(([workspaceId, owner]) => {
+      const workspace = workspaces.find((item) => item.id === workspaceId && !item.hidden);
+      return !!workspace && workspace.path === owner.cwd && workspaceHost(workspace) === owner.hostId;
+    })),
+  ), [assistantRegistry, assistantOwners, workspaces]);
+  const viewPanes = useMemo(() => mergeAssistantPanes(panes, currentAssistantRegistry), [panes, currentAssistantRegistry]);
   /** The newest lists, for work that finishes after a folder picker or a host call. */
   const latest = useRef({ workspaces, panes });
   const saveTag = useRef(Math.random().toString(36).slice(2));
@@ -497,13 +514,13 @@ export function App() {
   };
 
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
-  const listed = useMemo(() => listedPanes(panes, workspaces), [panes, workspaces]);
+  const listed = useMemo(() => listedPanes(viewPanes, workspaces), [viewPanes, workspaces]);
   const currentMonitorAttention = useMemo(() => monitorAttentionEntries(monitorAttention, workspaces, Date.now()), [monitorAttention, workspaces, tick]);
-  const visiblePanes = useMemo(() => canvasPanes(panes, workspaces, deleting, section), [panes, workspaces, deleting, section]);
+  const visiblePanes = useMemo(() => canvasPanes(viewPanes, workspaces, deleting, section), [viewPanes, workspaces, deleting, section]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
   useEffect(() => {
-    if (focusedPane && panes.some((p) => p.id === focusedPane && p.kind === "chat")) setRecentThreads((recent) => (recent[0] === focusedPane ? recent : noteFocus(recent, focusedPane)));
-  }, [focusedPane, panes]);
+    if (focusedPane && viewPanes.some((p) => p.id === focusedPane && p.kind === "chat")) setRecentThreads((recent) => (recent[0] === focusedPane ? recent : noteFocus(recent, focusedPane)));
+  }, [focusedPane, viewPanes]);
   /** The thread the details sidebar shows; null when no thread is on screen. */
   const detailsTarget = section === "threads" && !picking ? detailsThread(focusedPane, shown.filter((p) => p.kind === "chat").map((p) => p.id), recentThreads) : null;
   detailsTargetRef.current = detailsTarget;
@@ -545,7 +562,8 @@ export function App() {
   const hostNameFor = (hostId: string) => { try { return backend?.machines?.connection(hostId).get().name ?? hostId; } catch { return hostId; } };
   const backendFor = (pane: Pane): Backend => {
     if (!backend) throw new Error("The backend is not ready yet.");
-    const { hostId } = paneDestination(pane, workspaces);
+    const { hostId: workspaceHostId } = paneDestination(pane, workspaces);
+    const hostId = (pane as Pane & { hostId?: string }).hostId ?? workspaceHostId;
     if (backend.machines) return backend.machines.get(hostId);
     if (hostId !== "local") throw new Error("This server is unavailable.");
     return backend;
@@ -772,11 +790,11 @@ export function App() {
       return;
     }
     // The icon counts what needs you or failed; Ready shows only in the title bar and rail.
-    const urgent = badgeCount([...live.map((id) => attention[id]), ...currentMonitorAttention.map((entry) => entry.signal)]);
+    const urgent = badgeCount([...live.map((id) => attention[id]), ...currentMonitorAttention.map((entry) => entry.signal), ...Object.values(assistantTaskSignals)]);
     const grew = urgent > flagged.current;
     flagged.current = urgent;
     backend?.flagAttention(urgent, grew && !document.hasFocus()).catch(() => {});
-  }, [attention, listed, currentMonitorAttention, backend]);
+  }, [attention, listed, currentMonitorAttention, assistantTaskSignals, backend]);
 
   // An approval left waiting for 2 minutes while the window is in the
   // background asks for Critical attention, once per card. Ready flags and
@@ -793,7 +811,9 @@ export function App() {
 
   /** Every project gets an entry, so the sidebar can tell "no blocker" from "not loaded". */
   const monitorSignalsByWorkspace = Object.fromEntries(workspaces.map((workspace) => {
-    const signal = currentMonitorAttention.find((entry) => entry.workspaceId === workspace.id)?.signal ?? null;
+    const monitorSignal = currentMonitorAttention.find((entry) => entry.workspaceId === workspace.id)?.signal ?? null;
+    const taskSignal = assistantTaskSignals[workspace.id] ?? null;
+    const signal = taskSignal?.kind === "needs_input" || !monitorSignal ? taskSignal ?? monitorSignal : monitorSignal;
     return [workspace.id, { blocking: !!signal?.blocking, signal }];
   }));
   const attentionItems: (AttentionItem & { monitor?: ProjectMonitor })[] = [...listed
@@ -820,6 +840,28 @@ export function App() {
         available: (() => { try { return reachable(entry.hostId); } catch { return false; } })(),
         monitor: entry.monitor,
       };
+    }), ...Object.entries(assistantTaskSignals).flatMap(([workspaceId, signal]) => {
+      const workspace = workspaces.find((item) => item.id === workspaceId && !item.hidden);
+      return workspace ? [{
+        paneId: `apex-task:${workspaceId}`,
+        title: signal.note,
+        workspace: workspace.name,
+        where: "Threads" as const,
+        signal,
+        hostName: hostNameFor(workspaceHost(workspace)),
+        available: (() => { try { return reachable(workspaceHost(workspace)); } catch { return false; } })(),
+      }] : [];
+    }), ...Object.entries(assistantTaskErrors).flatMap(([workspaceId, error]) => {
+      const workspace = workspaces.find((item) => item.id === workspaceId && !item.hidden);
+      return workspace ? [{
+        paneId: `apex-task:${workspaceId}`,
+        title: `ApexAgent tasks unavailable: ${error}`,
+        workspace: workspace.name,
+        where: "Threads" as const,
+        signal: { kind: "failed" as const, note: "ApexAgent task status unavailable", at: Date.now() },
+        hostName: hostNameFor(workspaceHost(workspace)),
+        available: (() => { try { return reachable(workspaceHost(workspace)); } catch { return false; } })(),
+      }] : [];
     })];
   const sectionFlags = {
     code: summarize(attentionItems.filter((i) => i.where === "Code").map((i) => i.signal)),
@@ -834,6 +876,10 @@ export function App() {
 
   /** × on a pane head. It never deletes: a thread is closed and stays in the rail. */
   const closePane = (id: string) => {
+    if (viewPanes.find((pane) => pane.id === id && (pane as Pane & { assistantTaskId?: string }).assistantTaskId)) {
+      takeOff(id);
+      return;
+    }
     const pane = panes.find((p) => p.id === id);
     if (!pane) return;
     if (pane.kind === "chat") {
@@ -902,7 +948,7 @@ export function App() {
   /** The workspace and machine of a pane, for its menus. */
   const hostOfPane = (pane: Pane) => {
     const workspace = workspaces.find((w) => w.id === pane.workspaceId);
-    return { workspace, hostId: workspace ? workspaceHost(workspace) : "local" };
+    return { workspace, hostId: (pane as Pane & { hostId?: string }).hostId ?? (workspace ? workspaceHost(workspace) : "local") };
   };
   /** Agents found on a pane's machine; a server's never borrow the Mac's. */
   const agentsOn = (hostId: string): AgentInfo[] => {
@@ -942,6 +988,7 @@ export function App() {
 
   /** Run what was chosen in a pane's ⋯ menu. */
   const runPaneMenu = (pane: Pane, action: PaneMenuAction, from: "rail" | "head" = "head") => {
+    if ((pane as Pane & { assistantTaskId?: string }).assistantTaskId) return;
     const bump = (all: Record<string, number>) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 });
     if (action === "rename") {
       if (from === "rail") {
@@ -1036,6 +1083,76 @@ export function App() {
     if (monitorHostVersion(hostId) !== version) return;
     setMonitorAttention((state) => reconcileMonitorHost(state, hostId, monitors, latest.current.workspaces));
   };
+  // Child execution panes belong to each project host's task registry, never
+  // the Mac-owned AppSession. Keep them in a view-only projection.
+  useEffect(() => {
+    if (!backend) return;
+    let live = true;
+    const versions = new Map<string, number>();
+    const projects = workspaces.filter((workspace) => !workspace.hidden);
+    const refresh = async (workspace: Workspace) => {
+      const workspaceId = workspace.id;
+      const ownerVersion = monitorOwnerVersion(workspaceId);
+      const hostId = workspaceHost(workspace);
+      let route: Backend;
+      try { route = hostBackend(hostId); } catch { return; }
+      const version = (versions.get(workspaceId) ?? 0) + 1;
+      versions.set(workspaceId, version);
+      const current = () => {
+        const latestWorkspace = latest.current.workspaces.find((item) => item.id === workspaceId);
+        return live && versions.get(workspaceId) === version && !!latestWorkspace && !latestWorkspace.hidden
+          && latestWorkspace.path === workspace.path && workspaceHost(latestWorkspace) === hostId
+          && monitorOwnerVersion(workspaceId) === ownerVersion && hostBackend(hostId) === route;
+      };
+      try {
+        const monitor = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
+        if (!current()) return;
+        if (monitor && (monitor.workspaceId !== workspaceId || monitor.hostId !== hostId || monitor.cwd !== workspace.path))
+          throw new Error("ApexAgent returned an assignment for a different project folder or machine.");
+        if (!monitor) {
+          setAssistantTaskCounts((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
+          setAssistantOwners((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
+          setAssistantTaskSignals((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
+          setAssistantTaskErrors((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
+          return;
+        }
+        const owner: AssistantTaskOwner = { workspaceId, cwd: monitor.cwd, hostId, conversationId: monitor.conversationId };
+        setAssistantOwners((all) => JSON.stringify(all[workspaceId]) === JSON.stringify(owner) ? all : { ...all, [workspaceId]: owner });
+        const snapshot = await route.call<AssistantTaskSnapshot>("assistant_tasks_list", { owner });
+        if (!current()) return;
+        setAssistantRegistry((state) => reduceAssistantSnapshot(state, owner, snapshot));
+        const signal = assistantTaskAttentionSignal(snapshot.tasks, owner);
+        setAssistantTaskCounts((all) => ({ ...all, [workspaceId]: snapshot.tasks.filter((task) => ['proposed','needs_clarification','needs_you','ready_for_review','failed','interrupted'].includes(task.status)).length }));
+        setAssistantTaskSignals((all) => {
+          if (!signal && !(workspaceId in all)) return all;
+          if (signal && JSON.stringify(all[workspaceId]) === JSON.stringify(signal)) return all;
+          const next = { ...all };
+          if (signal) next[workspaceId] = signal; else delete next[workspaceId];
+          return next;
+        });
+        setAssistantTaskErrors((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
+      } catch (error) {
+        if (current()) setAssistantTaskErrors((all) => ({ ...all, [workspaceId]: String(error) }));
+      }
+    };
+    projects.forEach((workspace) => { void refresh(workspace); });
+    const stops: (() => void)[] = [];
+    const hostIds = [...new Set(projects.map(workspaceHost))];
+    for (const hostId of hostIds) {
+      let route: Backend;
+      try { route = hostBackend(hostId); } catch { continue; }
+      if (!route.onAssistantTasksChanged) continue;
+      const owned = projects.filter((workspace) => workspaceHost(workspace) === hostId);
+      void route.onAssistantTasksChanged((payload) => {
+        if (!live) return;
+        const changed = payload as { workspaceId?: string } | null;
+        owned.filter((workspace) => !changed?.workspaceId || changed.workspaceId === workspace.id)
+          .forEach((workspace) => { void refresh(workspace); });
+      }).then((stop) => { if (live) stops.push(stop); else stop(); }).catch(() => {});
+    }
+    const timer = window.setInterval(() => projects.forEach((workspace) => { void refresh(workspace); }), 30_000);
+    return () => { live = false; clearInterval(timer); stops.forEach((stop) => stop()); };
+  }, [backend, workspaces, hostList]);
   /** Source saves and bubble replies keep the assignment they began with, even while the widget switches projects. */
   const mutateAssistant = async (workspaceId: string, command: string, args: Record<string, unknown>) => {
     const workspace = latest.current.workspaces.find((item) => item.id === workspaceId && !item.hidden);
@@ -1056,6 +1173,36 @@ export function App() {
       throw new Error("ApexAgent returned a different assignment. Reopen its conversation.");
     }
     guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, result);
+  };
+  const replyToAssistant = async (workspaceId: string, text: string) => {
+    const workspace = latest.current.workspaces.find((item) => item.id === workspaceId && !item.hidden);
+    if (!workspace) throw new Error("That project is no longer available.");
+    const hostId = workspaceHost(workspace);
+    const route = hostBackend(hostId);
+    const version = monitorOwnerVersion(workspaceId);
+    const currentBinding = () => {
+      const current = latest.current.workspaces.find((item) => item.id === workspaceId);
+      return !!current && !current.hidden && current.path === workspace.path && workspaceHost(current) === hostId
+        && monitorOwnerVersion(workspaceId) === version && hostBackend(hostId) === route;
+    };
+    const monitor = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
+    if (!currentBinding() || !monitor || monitor.workspaceId !== workspaceId || monitor.hostId !== hostId || monitor.cwd !== workspace.path) throw new Error("Reopen ApexAgent to check its assignment.");
+    const owner: AssistantTaskOwner = { workspaceId, hostId, cwd: workspace.path, conversationId: monitor.conversationId };
+    const existing = loadPendingRequest(localStorage, owner);
+    if (existing && existing.text !== text) throw new Error("A previous request is awaiting confirmation. Reopen ApexAgent to retry or discard it first.");
+    const threadLabels = latest.current.panes.filter((pane) => pane.workspaceId === workspaceId && pane.kind === 'chat').map((pane) => ({ id: pane.id, label: pane.title }));
+    const pending: PendingAssistantRequest = existing ?? { requestId: crypto.randomUUID(), owner, text, destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [], threadLabels };
+    savePendingRequest(localStorage, pending, owner);
+    const result = await route.call<{ monitor: ProjectMonitor }>("assistant_message", assistantMessageArgs(owner, pending, threadLabels));
+    const sameAssignment = (value: ProjectMonitor | null | undefined) => !!value && value.workspaceId === workspaceId
+      && value.cwd === owner.cwd && value.hostId === owner.hostId && value.conversationId === owner.conversationId;
+    if (!currentBinding() || !sameAssignment(result?.monitor)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
+    // A reply may complete after reassignment on another device. Confirm the
+    // live owner before acknowledging this durable request or painting its reply.
+    const confirmed = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
+    if (!currentBinding() || !sameAssignment(confirmed)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
+    guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, confirmed);
+    clearPendingRequest(localStorage, owner);
   };
   const addAssistantSource = async (payload: AssistantSourceDrop) => {
     const workspace = latest.current.workspaces.find((item) => item.id === payload.workspaceId && !item.hidden);
@@ -1238,7 +1385,7 @@ export function App() {
 
   const focusPane = (pane: Pane) => {
     // Opening a thread reads it, and brings it out of the archive.
-    if (pane.closed || pane.unread || pane.archived) setPanes((list) => list.map((p) => {
+    if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId && (pane.closed || pane.unread || pane.archived)) setPanes((list) => list.map((p) => {
       if (p.id !== pane.id) return p;
       const { unread: _read, archived: _out, ...rest } = p;
       return { ...rest, closed: false };
@@ -1284,8 +1431,9 @@ export function App() {
     else if (action.kind === "next_attention") {
       const next = [...attentionItems].sort((a, b) => urgency(a.signal.kind) - urgency(b.signal.kind) || b.signal.at - a.signal.at)[0];
       if (next?.paneId.startsWith("apex-monitor:")) openApexAgent(next.paneId.slice("apex-monitor:".length));
+      else if (next?.paneId.startsWith("apex-task:")) openApexAgent(next.paneId.slice("apex-task:".length));
       else {
-        const pane = next && panes.find((p) => p.id === next.paneId);
+        const pane = next && viewPanes.find((p) => p.id === next.paneId);
         if (pane) focusPane(pane);
       }
     } else if (action.kind === "cycle_pane") {
@@ -1428,7 +1576,8 @@ export function App() {
           items={attentionItems}
           onOpen={(paneId) => {
             if (paneId.startsWith("apex-monitor:")) { openApexAgent(paneId.slice("apex-monitor:".length)); return; }
-            const pane = panes.find((p) => p.id === paneId); if (pane) focusPane(pane);
+            if (paneId.startsWith("apex-task:")) { openApexAgent(paneId.slice("apex-task:".length)); return; }
+            const pane = viewPanes.find((p) => p.id === paneId); if (pane) focusPane(pane);
           }}
           onDecide={async (room, request, approve) => {
             const pane = panes.find(p => p.id === room); const card = openCards(room).find(c => c.request === request);
@@ -1476,12 +1625,13 @@ export function App() {
       </header>
 
       <ApexAgentWidget workspaces={workspaces.filter((workspace) => !workspace.hidden)} workspaceId={selectedApexWorkspace?.id ?? null} open={!!apexWorkspace} monitors={assistantMonitors}
+        taskCounts={Object.fromEntries(Object.entries(assistantTaskCounts).filter(([id]) => { const owner = assistantOwners[id]; return !!owner && workspaces.some((workspace) => workspace.id === id && !workspace.hidden && workspace.path === owner.cwd && workspaceHost(workspace) === owner.hostId); }))}
         appearanceRequest={apexAgentAppearanceRequest} hideRequest={apexAgentHideRequest}
         offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)}
         onOpen={openApexAgent} onSelect={openApexAgent} onClose={() => setApexAgentWorkspace(null)} onAddSource={addAssistantSource}
-        onReply={(workspaceId, text) => mutateAssistant(workspaceId, "monitor_message", { text })}
+        onReply={replyToAssistant}
         onRetry={(workspaceId) => mutateAssistant(workspaceId, "monitor_check_now", {})}>
-        {apexWorkspace && (apexAgentBackend ? <ApexAgent key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} widgetMode workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={panes} onMonitorChange={apexMonitorChange} onClose={() => setApexAgentWorkspace(null)} onHide={() => { setApexAgentHideRequest((request) => request + 1); setApexAgentWorkspace(null); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)} onOpenThread={(id) => { const pane = panes.find((item) => item.id === id); if (pane) focusPane(pane); setApexAgentWorkspace(null); }} /> : <section role="dialog" aria-label="ApexAgent"><button className="icon" onClick={() => setApexAgentWorkspace(null)} aria-label="Close ApexAgent">×</button><p role="alert">The project machine is unavailable.</p></section>)}
+        {apexWorkspace && (apexAgentBackend ? <ApexAgent key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} widgetMode workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={viewPanes} onMonitorChange={apexMonitorChange} onClose={() => setApexAgentWorkspace(null)} onHide={() => { setApexAgentHideRequest((request) => request + 1); setApexAgentWorkspace(null); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id); if (pane) focusPane(pane); setApexAgentWorkspace(null); }} /> : <section role="dialog" aria-label="ApexAgent"><button className="icon" onClick={() => setApexAgentWorkspace(null)} aria-label="Close ApexAgent">×</button><p role="alert">The project machine is unavailable.</p></section>)}
       </ApexAgentWidget>
       {monitorPollers.map(({ hostId, backend: hostRoute, version }) => <HostMonitors key={hostId} hostId={hostId} backend={hostRoute} getVersion={monitorHostVersion} onMonitors={acceptHostMonitors(version)} />)}
       {migrationNotice && <div className="connection-banner" role="status">{migrationNotice}<button onClick={() => setMigrationNotice("")}>Dismiss</button></div>}
@@ -1491,7 +1641,7 @@ export function App() {
           <ProjectSidebar
             backend={backend}
             section={section}
-            panes={panes}
+            panes={viewPanes}
             workspaces={workspaces}
             deleting={deleting}
             activeWorkspace={activeWorkspace}
@@ -1504,11 +1654,11 @@ export function App() {
             programOf={programOf}
             paneRename={railRename}
             workspaceRename={renameRequests}
-            paneMenu={(pane) => paneMenuEntries(pane, "rail")}
+            paneMenu={(pane) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? [] : paneMenuEntries(pane, "rail")}
             projectMenu={projectMenuEntries}
             onOpenPane={focusPane}
-            onTogglePin={(pane) => runPaneMenu(pane, "pin", "rail")}
-            onRenamePane={renamePane}
+            onTogglePin={(pane) => { if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId) runPaneMenu(pane, "pin", "rail"); }}
+            onRenamePane={(id, title) => { if (!viewPanes.find((pane) => pane.id === id && (pane as Pane & { assistantTaskId?: string }).assistantTaskId)) renamePane(id, title); }}
             onRenameWorkspace={(id, name) => setWorkspaces((list) => renameWorkspace(list, id, name))}
             onProjectClick={(workspace) => {
               // In Agents a project opens on the deck; elsewhere its row folds like Codex's.
@@ -1536,7 +1686,7 @@ export function App() {
         <main ref={canvasRef} className={`canvas section-${section}`}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} addRequest={newAgentRequest} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
-            backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = panes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
+            backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
           {(section === "code" || section === "threads") && !current && (
             <div className="picker">
               <img className="welcome-logo" src="/branding/mark.svg" alt="" width="80" height="80" />
@@ -1568,19 +1718,19 @@ export function App() {
               return (
                 <section
                   key={pane.id}
-                  data-pane-id={pane.id} data-host-id={workspace ? workspaceHost(workspace) : "missing"}
+                  data-pane-id={pane.id} data-host-id={(pane as Pane & { hostId?: string }).hostId ?? (workspace ? workspaceHost(workspace) : "missing")}
                   className={`pane ${pane.id === focusedPane ? "focused" : ""} ${paneDrag.dragging === pane.id ? "lifted" : ""}`}
                   style={visible && rect ? paneStyle(rect) : { display: "none" }}
-                  onMouseDown={() => { setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId); if (pane.unread) setPanes((list) => setUnread(list, pane.id, false)); }}
+                  onMouseDown={() => { setFocusedPane(pane.id); setActiveWorkspace(pane.workspaceId); if (pane.unread && !(pane as Pane & { assistantTaskId?: string }).assistantTaskId) setPanes((list) => setUnread(list, pane.id, false)); }}
                 >
                   <div className="pane-head" onPointerDown={(event) => paneDrag.begin(pane.id, event)} title={[workspace?.name, maximized || visiblePanes.length < 2 ? "" : "Drag onto another pane to move it"].filter(Boolean).join(" · ")}>
                     <span className={`dot ${status}`} title={attention[pane.id] ? attention[pane.id].note || label(attention[pane.id].kind) : status} />
                     {/* The project and its machine always stay; the title and status words give way first. */}
-                    {workspace && <span className="pane-ws" title={`${workspace.name}${workspaceHost(workspace) === "local" ? "" : ` on ${hostNameFor(workspaceHost(workspace))}`}${workspace.path ? ` · ${workspace.path}` : ""}`}>
-                      <ProjectFolder tint={workspaceHost(workspace) === "local" ? undefined : tints.get(workspaceHost(workspace))} size={12} />
+                    {workspace && <span className="pane-ws" title={`${workspace.name}${((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? "" : ` on ${hostNameFor((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))}`}${((pane as Pane & { executionPath?: string }).executionPath ?? workspace.path) ? ` · ${(pane as Pane & { executionPath?: string }).executionPath ?? workspace.path}` : ""}`}>
+                      <ProjectFolder tint={((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace)) === "local" ? undefined : tints.get((pane as Pane & { hostId?: string }).hostId ?? workspaceHost(workspace))} size={12} />
                       <span className="nm">{workspace.name}</span><span className="nm-short">{shortName(workspace.name)}</span>
                     </span>}
-                    <ThreadName className="pane-title" title={pane.title} onRename={title => renamePane(pane.id, title)} renameRequest={renameRequests[pane.id]} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
+                    <ThreadName className="pane-title" title={pane.title} onRename={title => { if (!(pane as Pane & { assistantTaskId?: string }).assistantTaskId) renamePane(pane.id, title); }} renameRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : renameRequests[pane.id]} label={pane.kind === "chat" ? "Thread name" : pane.kind === "preview" ? "Preview name" : "Terminal name"} />
                     {paneBackend?.host && paneBackend.host.id !== "local" && <span className="pane-host" title={paneBackend.host.name}>
                       <span className="tint" style={{ color: tints.get(paneBackend.host.id) }}><Glyph name="globe" size={12} /></span><span className="hn">{paneBackend.host.name}</span>
                     </span>}
@@ -1601,7 +1751,7 @@ export function App() {
                       {maximized === pane.id ? "▣" : "□"}
                     </button>
                     <span className="pane-menu-wrap" onPointerDown={(event) => event.stopPropagation()}>
-                      <button className="icon small" disabled={!paneBackend} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={headMenu?.id === pane.id} title="More"
+                      <button className="icon small" disabled={!paneBackend || Boolean((pane as Pane & { assistantTaskId?: string }).assistantTaskId)} aria-label={`More actions for ${pane.title}`} aria-haspopup="menu" aria-expanded={headMenu?.id === pane.id} title="More"
                         onClick={(event) => { const opener = event.currentTarget; setHeadMenu((open) => (open?.id === pane.id ? null : { id: pane.id, anchor: { rect: opener.getBoundingClientRect() }, opener })); }}>
                         ⋯
                       </button>
@@ -1630,7 +1780,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>

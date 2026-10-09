@@ -110,11 +110,13 @@ test('events come from the transport with the arguments the UI expects', async (
   await backend.onPtyData((id, data) => heard.push(['data', id, data]));
   await backend.onPtyExit((id, code) => heard.push(['exit', id, code]));
   await backend.onRoomEvent((room, event) => heard.push(['room', room, event]));
-  assert.deepEqual(transport.listens.map(l => l.event), ['pty-data', 'pty-exit', 'room-event']);
+  await backend.onAssistantTasksChanged((snapshot) => heard.push(['tasks', snapshot]));
+  assert.deepEqual(transport.listens.map(l => l.event), ['pty-data', 'pty-exit', 'room-event', 'assistant-tasks-changed']);
   transport.listens[0].cb({ id: 'p1', data: 'x' });
   transport.listens[1].cb({ id: 'p1', code: 0 });
   transport.listens[2].cb({ room: 't', event: { type: 'turn_started', id: 'p' } });
-  assert.deepEqual(heard, [['data', 'p1', 'x'], ['exit', 'p1', 0], ['room', 't', { type: 'turn_started', id: 'p' }]]);
+  transport.listens[3].cb({ workspaceId: 'w', revision: 12 });
+  assert.deepEqual(heard, [['data', 'p1', 'x'], ['exit', 'p1', 0], ['room', 't', { type: 'turn_started', id: 'p' }], ['tasks', { workspaceId: 'w', revision: 12 }]]);
 });
 
 test('attachments go to the transport\'s own methods', async () => {
@@ -161,7 +163,7 @@ test('apiBalance returns a finite number or null', async () => {
 
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
-  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged',
+  const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
     'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });

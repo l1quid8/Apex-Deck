@@ -9,6 +9,8 @@ import * as canvasPanes from '../src/canvasPanes.ts';
 import * as layout from '../src/layout.ts';
 import * as paneHost from '../src/paneHost.ts';
 import * as themes from '../src/themes.ts';
+import * as assistantRegistry from '../src/assistantRegistry.ts';
+import * as assistantTaskModel from '../src/assistantTaskModel.ts';
 
 const appUrl = new URL('../src/App.tsx', import.meta.url);
 const appSource = await fs.readFile(appUrl, 'utf8');
@@ -44,6 +46,7 @@ function importedNames() {
 
 function appHarness() {
   const states = [], refs = [], effects = [];
+  const stored = new Map();
   let cursor = 0, alive = true, props;
   const listeners = new Map();
   let sessionChanged;
@@ -78,6 +81,7 @@ function appHarness() {
     flagAttention: async () => {}, requestCriticalAttention: async () => {},
     onQuitRequested: async () => () => {},
     onSessionChanged: async fn => { sessionChanged = fn; return () => { sessionChanged = undefined; }; },
+    call: async (command) => command === 'monitor_get' ? null : { workspaceId: project.id, revision: 0, tasks: [], executions: [] },
   };
   const React = { Fragment: 'fragment', createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
   const hooks = {
@@ -110,7 +114,7 @@ function appHarness() {
     loadWidths: () => ({ rail: null, details: null }), saveWidths: () => {},
     SIDEBAR_DEFAULT: { details: 300 },
     SIDEBAR_DEFAULT: { details: 300 },
-    detailsOverlay: () => false, detailsThread: () => null, noteFocus: () => {},
+    detailsOverlay: () => false, detailsThread: () => null, noteFocus: (recent, id) => [id, ...(recent ?? []).filter((item) => item !== id)],
     approvalState: {},
     ...attention,
     ...monitorAttention,
@@ -118,6 +122,9 @@ function appHarness() {
     ...layout,
     ...paneHost,
     ...themes,
+    ...assistantRegistry,
+    ...assistantTaskModel,
+    selectCurrentAssistantRegistry: assistantRegistry.currentAssistantRegistry,
     hostTints: () => new Map(),
     usePaneDrag: () => ({ dragging: false }),
     layoutKey: () => '',
@@ -125,8 +132,9 @@ function appHarness() {
   };
   const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgent','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','AttentionMenu','ConfirmDialog','PathPrompt','SidebarHandle']);
   const globalValues = {
-    localStorage: { getItem: () => null, setItem() {} },
-    window: { addEventListener(name, fn) { listeners.set(name, fn); }, removeEventListener(name) { listeners.delete(name); }, setTimeout, clearTimeout },
+    localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
+    crypto: { randomUUID: () => `request-${stored.size + 1}` },
+    window: { addEventListener(name, fn) { listeners.set(name, fn); }, removeEventListener(name) { listeners.delete(name); }, setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {} },
     document: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, hasFocus: () => false, activeElement: null, body: {}, querySelector: () => null },
     navigator: { platform: 'Linux', userAgent: 'node' },
     ResizeObserver: class { observe() {} disconnect() {} },
@@ -154,7 +162,7 @@ function appHarness() {
   }
   function unmount() { alive = false; for (const effect of effects) effect?.cleanup?.(); }
   return {
-    render, unmount, backend, session,
+    render, unmount, backend, session, stored,
     emitSession(workspaces) { sessionChanged?.({ ...session, workspaces, panes: session.panes }); },
     setConnection(status, hostId = 'host-a') {
       const previous = connectionStates.get(hostId) ?? { status: { kind: 'connected' }, revision: 1 };
@@ -199,7 +207,7 @@ test('drop saves to the captured assignment and only accepts a still-current own
   const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
   child(tree, 'HostMonitors').props.onMonitors(project.hostId, [blocker]); tree = h.render();
   const calls = []; let finish;
-  h.backend.call = (cmd, args) => { calls.push({ cmd, args }); return new Promise(resolve => { finish = resolve; }); };
+  h.backend.call = (cmd, args) => { if (cmd === 'monitor_get') return Promise.resolve(null); calls.push({ cmd, args }); return new Promise(resolve => { finish = resolve; }); };
   const drop = { workspaceId: project.id, hostId: project.hostId, cwd: project.path, kind: 'file', sourceId: 'docs/plan.md' };
   const pending = child(tree, 'ApexAgentWidget').props.onAddSource(drop);
   assert.equal(calls[0].cmd, 'monitor_sources_update');
@@ -210,6 +218,47 @@ test('drop saves to the captured assignment and only accepts a still-current own
   tree = h.render(); assert.equal(hasMonitorAttention(tree), false);
   await assert.rejects(child(tree, 'ApexAgentWidget').props.onAddSource(drop), /folder|project|binding|owner/i);
   assert.equal(calls.length, 1, 'old drop payload cannot mutate the moved project');
+  h.unmount();
+});
+
+test('widget reply retains its request ID until the exact assignment response is confirmed', async () => {
+  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
+  const requests = [];
+  let wrongOwner = true;
+  h.backend.call = async (command, args) => {
+    if (command === 'monitor_get') return blocker;
+    if (command === 'assistant_message') {
+      requests.push(args);
+      return { monitor: wrongOwner ? { ...blocker, conversationId: 'old-assignment' } : blocker };
+    }
+    return { workspaceId: project.id, revision: 0, tasks: [], executions: [] };
+  };
+  const reply = child(tree, 'ApexAgentWidget').props.onReply;
+  await assert.rejects(reply(project.id, 'Check the release'), /assignment|conversation/i);
+  const key = assistantTaskModel.pendingRequestStorageKey({ workspaceId: project.id, cwd: project.path, hostId: project.hostId, conversationId: blocker.conversationId });
+  assert.ok(h.stored.has(key), 'an unconfirmed response retains durable retry identity');
+  wrongOwner = false;
+  await reply(project.id, 'Check the release');
+  assert.equal(requests[0].requestId, requests[1].requestId, 'retry reuses the same human request');
+  assert.equal(h.stored.has(key), false, 'only an exact confirmed response clears it');
+  h.unmount();
+});
+
+test('widget reply refuses an assignment changed while sending and keeps its original receipt', async () => {
+  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
+  let liveMonitor = blocker, finish, sent;
+  h.backend.call = (command, args) => {
+    if (command === 'monitor_get') return Promise.resolve(liveMonitor);
+    if (command === 'assistant_message') { sent = args; return new Promise(resolve => { finish = resolve; }); }
+    return Promise.resolve({ workspaceId: project.id, revision: 0, tasks: [], executions: [] });
+  };
+  const promise = child(tree, 'ApexAgentWidget').props.onReply(project.id, 'Check the release');
+  await tick();
+  liveMonitor = { ...blocker, conversationId: 'new-assignment' };
+  finish({ monitor: blocker });
+  await assert.rejects(promise, /assignment|conversation|changed/i);
+  assert.equal(JSON.parse(h.stored.get(assistantTaskModel.pendingRequestStorageKey(sent))).requestId, sent.requestId);
+  assert.equal(hasMonitorAttention(h.render()), false, 'the old conversation cannot restore attention');
   h.unmount();
 });
 

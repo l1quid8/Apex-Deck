@@ -50,9 +50,11 @@ export function createRoomRecovery<T, E = never>({ load, apply, fail, event, rep
   let generation = 0; let disposed = false; let loading = false; let complete = false; let buffered: E[] = [];
   return {
     pending: () => !complete,
-    capture(value: E): boolean { if (!loading) return false; buffered.push(value); return true; },
+    // Events may arrive after the listener is attached and before refresh starts.
+    // Keep them until a successful snapshot establishes which ones it represents.
+    capture(value: E): boolean { if (complete && !loading) return false; buffered.push(value); return true; },
     async refresh(): Promise<void> {
-      const ticket = ++generation; loading = true; complete = false; buffered = [];
+      const ticket = ++generation; loading = true; complete = false;
       try {
         const state = await load();
         if (disposed || ticket !== generation) return;

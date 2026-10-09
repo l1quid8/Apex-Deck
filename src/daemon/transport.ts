@@ -18,9 +18,14 @@ export function fromBase64(text: string): Uint8Array {
 }
 
 /** Commands and events over the daemon's protocol; files as base64. */
-export function daemonTransport(client: Pick<DaemonClient, "call" | "on">): Transport {
+export function daemonTransport(client: Pick<DaemonClient, "call" | "on"> & Partial<Pick<DaemonClient, "requireCapability">>): Transport {
   return {
-    call: (cmd, args) => client.call(cmd, args),
+    call: (cmd, args) => {
+      if (cmd.startsWith("assistant_")) client.requireCapability?.("assistant_delegation", "ApexAgent delegation");
+      if (cmd.startsWith("assistant_") && args?.mode === "isolated") client.requireCapability?.("assistant_isolation", "ApexAgent isolated worktrees");
+      if (cmd === "monitor_profile_update") client.requireCapability?.("monitor_profile_update", "Changing the ApexAgent profile");
+      return client.call(cmd, args);
+    },
     listen: async (event, cb) => client.on(event, cb),
     saveAttachment: (room, name, bytes) => client.call<string>("save_attachment", { room, name, data: toBase64(bytes) }),
     readAttachment: async (path) => {

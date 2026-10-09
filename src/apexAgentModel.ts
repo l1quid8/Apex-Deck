@@ -1,4 +1,5 @@
 import type { ParticipantConfig } from './types';
+import { assistantProfileChoices } from './assistantTaskModel.ts';
 
 export interface MonitorEvidence {
   sourceId: string;
@@ -55,9 +56,7 @@ export interface ProjectMonitor {
 }
 
 export function compatibleMonitorProfiles(profiles: ParticipantConfig[]): ParticipantConfig[] {
-  // Gemini's read-only mode is only a prompt, so it can't run checks.
-  return profiles.filter((profile) => !profile.media && (profile.backend.kind === 'open_ai_compatible'
-    || (profile.backend.kind === 'agent' && profile.backend.tool !== 'gemini')));
+  return assistantProfileChoices(profiles);
 }
 
 /** Prefer the last profile chosen for ApexAgent, falling back to the first compatible text profile. */

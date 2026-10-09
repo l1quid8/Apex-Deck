@@ -6,6 +6,7 @@ import {
   withMonitorSnapshot,
   reconcileMonitorHost,
   monitorAttentionEntries,
+  assistantTaskAttentionSignal,
 } from '../src/monitorAttention.ts';
 import { clearReady, seenFlags } from '../src/attention.ts';
 
@@ -178,4 +179,19 @@ test('a delayed successful host snapshot cannot undo a newer human resolution', 
   assert.equal(monitorAttentionSignal(reconciled[monitorAttentionKey('project', 'local', '/project')].monitor, 100), null);
   const next = { ...old, snapshotVersion: 1, conversationId: 'new-assignment' };
   assert.equal(withMonitorSnapshot(state, 'project', 'local', next, '/project')[monitorAttentionKey('project', 'local', '/project')].monitor, next, 'a different assignment has its own version sequence');
+});
+
+test('task attention filters orphaned monitor owners and flags needs-you, failure, and review states', () => {
+  const owner = { workspaceId: 'project', cwd: '/project', hostId: 'local', conversationId: 'current' };
+  const task = (id, status, conversationId = owner.conversationId) => ({
+    id, workspaceId: owner.workspaceId, owner: { ...owner, conversationId }, status,
+    createdAtMs: 10, updatedAtMs: 20,
+  });
+  assert.equal(assistantTaskAttentionSignal([task('old', 'needs_you', 'old-monitor')], owner), null);
+  assert.deepEqual(assistantTaskAttentionSignal([task('ask', 'needs_you')], owner), {
+    kind: 'needs_input', note: '1 ApexAgent task need you', at: 20, blocking: true,
+  });
+  assert.equal(assistantTaskAttentionSignal([task('bad', 'failed')], owner).kind, 'failed');
+  assert.equal(assistantTaskAttentionSignal([task('review', 'ready_for_review')], owner).kind, 'done');
+  assert.throws(() => assistantTaskAttentionSignal([task('wrong-host', 'needs_you')].map(item => ({ ...item, owner: { ...owner, hostId: 'other' } })), owner), /does not match its owner/);
 });

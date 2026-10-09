@@ -61,6 +61,9 @@ test('a client chats, resumes after a drop mid-turn, and is told to resync after
 
   const welcome = await client.start();
   assert.equal(welcome.protocol, 1);
+  assert.ok(welcome.capabilities.includes('assistant_delegation'), 'the current host enables its assistant commands');
+  assert.ok(welcome.capabilities.includes('assistant_isolation'), 'the current host enables isolated worktree tasks');
+  assert.ok(welcome.capabilities.includes('monitor_profile_update'));
   assert.equal(welcome.resumed, false);
 
   const room = await client.call('room_create', {

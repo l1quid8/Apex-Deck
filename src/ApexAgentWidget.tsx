@@ -24,11 +24,12 @@ function readStored<T>(key: string, fallback: T): T {
 function saveStored(key: string, value: unknown) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage can be disabled */ } }
 function monitorFor(monitors: ProjectMonitor[], id: string | null) { return monitors.find((monitor) => monitor.workspaceId === id); }
 
-export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpen, onClose, onSelect, onAddSource, children, offlineWorkspaceIds = [], onReply, onRetry, appearanceRequest = 0, hideRequest = 0 }: {
+export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpen, onClose, onSelect, onAddSource, children, offlineWorkspaceIds = [], onReply, onRetry, appearanceRequest = 0, hideRequest = 0, taskCounts = {} }: {
   workspaces: Workspace[];
   workspaceId: string | null;
   open: boolean;
   monitors: ProjectMonitor[];
+  taskCounts?: Record<string, number>;
   onOpen: (workspaceId: string) => void;
   onClose: () => void;
   onSelect: (workspaceId: string) => void;
@@ -79,7 +80,7 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
   const dragClickRef = useRef(false);
   const selected = workspaces.find((workspace) => workspace.id === workspaceId);
   const selectedMonitor = monitorFor(monitors, workspaceId);
-  const findings = useMemo(() => aggregateFindingCount(monitors, new Set(workspaces.map((workspace) => workspace.id))), [monitors, workspaces, clock]);
+  const findings = useMemo(() => aggregateFindingCount(monitors, new Set(workspaces.map((workspace) => workspace.id))) + workspaces.reduce((sum,workspace) => sum + (taskCounts[workspace.id] ?? 0), 0), [monitors, workspaces, clock, taskCounts]);
   const activeBubble = useMemo(() => firstActiveFinding(monitors, workspaces), [monitors, workspaces, clock]);
   const activeBubbleWorkspace = activeBubble && workspaces.find((workspace) => workspace.id === activeBubble.monitor.workspaceId);
   const bubbleKey = activeBubble ? `${activeBubble.monitor.workspaceId}:${activeBubble.finding.id}` : '';
@@ -252,7 +253,7 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
 
   return <div className={`apex-widget-root ${hidden ? 'is-hidden' : ''}`}>
     <div className={`apex-widget-avatar edge-${position.edge} apex-widget-${look.shape} apex-color-${look.color} status-${status} ${findings > 0 ? 'tone-needs-you' : ''} ${open ? 'is-open' : ''} ${dropActive ? 'is-drop' : ''}`} style={wrapStyle} data-apex-agent-overlay="avatar" onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false); }} onDrop={(event) => void onDrop(event)}>
-      <button ref={avatarRef} type="button" className="apex-widget-hit" aria-label={`${look.name}, ${widgetStatusLabel(status)}${findings ? `, ${findings} active findings` : ''}`} aria-haspopup="dialog" aria-expanded={open} onMouseEnter={() => setTipVisible(true)} onMouseLeave={() => setTipVisible(false)} onFocus={() => setTipVisible(true)} onBlur={() => setTipVisible(false)} onClick={activate} onContextMenu={(event) => { event.preventDefault(); setMenu((value) => !value); }} onKeyDown={(event) => {
+      <button ref={avatarRef} type="button" className="apex-widget-hit" aria-label={`${look.name}, ${widgetStatusLabel(status)}${findings ? `, ${findings} items need attention` : ''}`} aria-haspopup="dialog" aria-expanded={open} onMouseEnter={() => setTipVisible(true)} onMouseLeave={() => setTipVisible(false)} onFocus={() => setTipVisible(true)} onBlur={() => setTipVisible(false)} onClick={activate} onContextMenu={(event) => { event.preventDefault(); setMenu((value) => !value); }} onKeyDown={(event) => {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); move(event.key === 'ArrowLeft' ? 'left' : 'right'); }
         else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); positionAvatar({ edge: position.edge, y: position.y + (event.key === 'ArrowUp' ? -24 : 24) }); }
       }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}>
@@ -283,7 +284,7 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
       <header className="apex-widget-header"><div className="apex-widget-title"><strong>ApexAgent</strong><span>{selected.name}</span></div><div className="apex-widget-header-actions"><span className={`apex-widget-status status-${status}`}>{widgetStatusLabel(status)}</span><button onClick={closePanel} aria-label="Close ApexAgent">×</button></div></header>
       <div className="apex-widget-projects" aria-label="Choose project">
         {workspaces.filter((workspace) => !workspace.hidden).map((workspace) => {
-          const monitor = monitorFor(monitors, workspace.id); const count = activeMonitorFindings(monitor).length; const itemStatus = widgetStatus(workspace, monitor, offlineWorkspaceIds);
+          const monitor = monitorFor(monitors, workspace.id); const count = activeMonitorFindings(monitor).length + (taskCounts[workspace.id] ?? 0); const itemStatus = widgetStatus(workspace, monitor, offlineWorkspaceIds);
           return <button key={workspace.id} className={workspace.id === workspaceId ? 'selected' : ''} aria-pressed={workspace.id === workspaceId} onClick={() => chooseProject(workspace.id)}><span className={`apex-widget-dot status-${itemStatus}`} /><span className="apex-widget-project-name">{workspace.name}</span>{count > 0 && <span className="apex-widget-project-count">{count}</span>}</button>;
         })}
       </div>
