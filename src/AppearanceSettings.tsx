@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
-import { BUILTIN_SKINS, accentHex, colorAppearance, parseSkin, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
+import { BACKDROP_PATTERNS, BUILTIN_SKINS, MAX_GLOWS, MIN_GLOWS, accentHex, backdropLayers, backgroundPatch, colorAppearance, glowColorList, parseSkin, shuffledGlowColors, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
 
 const FILE_LIMIT = 32_000;
 const SLIDERS: { key: "glow" | "blur" | "opacity" | "radius" | "backdrop"; label: string; help: string; min: number; max: number; suffix: string }[] = [
@@ -36,6 +36,42 @@ function SkinPreview({ skin }: { skin: SkinFile }) {
     <span className="appearance-preview-wait"><i /> Waiting</span>
     <span className="appearance-preview-composer"><i /><b /></span>
   </span>;
+}
+
+/** Accept #rgb or #rrggbb (same rules as the accent field) and return lowercase #rrggbb, or null. */
+function normalizeHex(input: string): string | null {
+  let hex = input.trim();
+  if (/^#[0-9a-f]{3}$/i.test(hex)) hex = "#" + [...hex.slice(1)].map(c => c + c).join("");
+  return /^#[0-9a-f]{6}$/i.test(hex) ? hex.toLowerCase() : null;
+}
+
+/** One exact glow color: a color picker plus a hex box that commits on blur or Enter. */
+function GlowColorRow({ index, color, onCommit }: { index: number; color: string; onCommit: (hex: string) => void }) {
+  const [text, setText] = useState(color);
+  const [error, setError] = useState(false);
+  useEffect(() => { setText(color); setError(false); }, [color]);
+  const label = `Glow ${index + 1}`;
+  const errorId = `appearance-glow-${index}-error`;
+  const commitText = () => {
+    const hex = normalizeHex(text);
+    if (!hex) { setError(true); return; }
+    setText(hex);
+    setError(false);
+    if (hex !== color) onCommit(hex);
+  };
+  return <>
+    <div className="appearance-option appearance-glow">
+      <div className="appearance-control-copy"><strong>{label}</strong></div>
+      <div className="appearance-color-inputs">
+        <input type="color" aria-label={`${label} color`} value={color} onChange={event => { setError(false); onCommit(event.currentTarget.value); }} />
+        <input type="text" aria-label={`${label} hex color`} value={text} spellCheck={false} maxLength={7} aria-invalid={error} aria-describedby={error ? errorId : undefined}
+          onChange={event => { setText(event.currentTarget.value); setError(false); }}
+          onBlur={commitText}
+          onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+      </div>
+    </div>
+    {error && <p id={errorId} role="alert" className="appearance-glow-error">Enter a hex color such as #35aabb.</p>}
+  </>;
 }
 
 /** Appearance controls for the glass skin system. The parent owns persistence. */
@@ -133,6 +169,26 @@ export function AppearanceSettings({ value, onChange }: { value: AppearanceState
   const sameValues = (skin: SkinFile) => JSON.stringify(skin.appearance) === JSON.stringify(appearance);
   const selectedId = (gallery.find(({ skin }) => skin.name === current.name && sameValues(skin)) ?? gallery.find(({ skin }) => sameValues(skin)))?.id;
 
+  const colors = glowColorList(appearance);
+  const glowCount = colors.length;
+  const pattern = appearance.backdropPattern ?? "blobs";
+  const glowSize = appearance.glowSize ?? 100;
+  // Every Background control goes through here so Classic and flat skins switch to glass.
+  const tuneBackground = (patch: Partial<AppearanceValues>) => tune(backgroundPatch(appearance, patch));
+  const setGlowColor = (index: number, hex: string) => {
+    const next = [...colors];
+    next[index] = hex;
+    tuneBackground({ glowColors: next });
+  };
+  const addGlow = () => {
+    if (glowCount >= MAX_GLOWS) return;
+    tuneBackground(appearance.glowColors ? { glowColors: [...colors, shuffledGlowColors(1, appearance.light)[0]] } : { glowCount: glowCount + 1 });
+  };
+  const removeGlow = () => {
+    if (glowCount <= MIN_GLOWS) return;
+    tuneBackground(appearance.glowColors ? { glowColors: colors.slice(0, -1) } : { glowCount: glowCount - 1 });
+  };
+
   return <div className="appearance-settings">
     <header className="appearance-heading">
       <div><p>Skins change how Deck looks, never how it works.</p></div>
@@ -189,6 +245,52 @@ export function AppearanceSettings({ value, onChange }: { value: AppearanceState
           <span className="appearance-control-copy"><strong>Flat surfaces</strong><small>Solid panels without the glass effect.</small></span>
           <input type="checkbox" role="switch" checked={appearance.flat} onChange={(event) => tune({ flat: event.currentTarget.checked })} />
         </label>
+      </div>
+    </section>
+
+    <section className="appearance-section" aria-labelledby="appearance-background-title">
+      <div className="appearance-section-heading"><div><h3 id="appearance-background-title">Background</h3><p>The colored glow behind the glass.</p></div></div>
+      {appearance.flat && <p>Flat surfaces hide the background. Changing it here turns glass on.</p>}
+      <div className="appearance-pattern-grid" role="group" aria-label="Background pattern">
+        {BACKDROP_PATTERNS.map(({ id, name }) => {
+          // Tiles stay visible even when the Backdrop slider is low.
+          const layers = backdropLayers({ ...appearance, backdropPattern: id, backdrop: Math.max(appearance.backdrop, 70) }, 0.25);
+          return <button key={id} type="button" className="appearance-pattern" aria-pressed={pattern === id} onClick={() => tuneBackground({ backdropPattern: id })}>
+            <span className="appearance-pattern-preview" aria-hidden="true" style={{ backgroundColor: appearance.light ? "#eef1f6" : "#0b1020", backgroundImage: layers.image, backgroundSize: layers.size }} />
+            <strong>{name}</strong>
+          </button>;
+        })}
+      </div>
+      <div className="appearance-controls">
+        <label className="appearance-option">
+          <span className="appearance-control-copy"><strong>Match accent</strong><small>Glows follow the accent color. Turn this off to pick each glow.</small></span>
+          <input type="checkbox" role="switch" checked={appearance.glowColors === undefined} onChange={(event) => tuneBackground(event.currentTarget.checked ? { glowColors: undefined, glowCount } : { glowColors: colors })} />
+        </label>
+        <div className="appearance-option">
+          <div className="appearance-control-copy"><strong>Glows</strong><small>How many colored glows sit behind the glass.</small></div>
+          <div className="appearance-stepper">
+            <button type="button" aria-label="Fewer glows" disabled={glowCount <= MIN_GLOWS} onClick={removeGlow}>−</button>
+            <output aria-live="polite">{glowCount}</output>
+            <button type="button" aria-label="More glows" disabled={glowCount >= MAX_GLOWS} onClick={addGlow}>+</button>
+          </div>
+        </div>
+        {appearance.glowColors
+          ? colors.map((hex, index) => <GlowColorRow key={index} index={index} color={hex} onCommit={(next) => setGlowColor(index, next)} />)
+          : <div className="appearance-option">
+            <div className="appearance-control-copy"><strong>Glow colors</strong><small>Following the accent. Turn off Match accent to edit them.</small></div>
+            <div className="appearance-swatches" role="group" aria-label="Glow colors from the accent">
+              {colors.map((hex, index) => <span key={index} className="appearance-swatch" title={hex} style={{ backgroundColor: hex }} />)}
+            </div>
+          </div>}
+        <div className="appearance-slider">
+          <div className="appearance-control-copy"><label htmlFor="appearance-glow-size">Size</label><small>Makes the glows tighter or wider.</small></div>
+          <input id="appearance-glow-size" type="range" min={50} max={200} step="1" value={glowSize} onChange={(event) => tuneBackground({ glowSize: Number(event.currentTarget.value) })} />
+          <output htmlFor="appearance-glow-size">{glowSize}%</output>
+        </div>
+      </div>
+      <div className="appearance-actions appearance-background-actions">
+        <button type="button" onClick={() => tuneBackground({ glowColors: shuffledGlowColors(glowCount, appearance.light) })}>Shuffle colors</button>
+        <button type="button" onClick={() => tuneBackground({ backdropPattern: undefined, glowColors: undefined, glowCount: undefined, glowSize: undefined })}>Reset background</button>
       </div>
     </section>
 

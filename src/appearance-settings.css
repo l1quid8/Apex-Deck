@@ -384,3 +384,59 @@
 .appearance-settings .appearance-color-inputs input[type="color"] { width: 44px; height: 36px; padding: 3px; cursor: pointer; }
 .appearance-settings .appearance-color-inputs input[type="text"] { width: 96px; min-width: 0; height: 36px; font-family: monospace; }
 .appearance-settings .appearance-color { flex-wrap: wrap; }
+
+/* Background glow: pattern tiles, glow count stepper, and glow colors. */
+.appearance-settings .appearance-pattern-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(88px, 100%), 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+.appearance-settings .appearance-pattern {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px;
+  border-color: var(--appearance-line);
+  background: var(--appearance-raised);
+  text-align: left;
+}
+.appearance-settings .appearance-pattern[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.appearance-settings .appearance-pattern strong {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.appearance-settings .appearance-pattern-preview {
+  display: block;
+  height: 40px;
+  border: 1px solid var(--appearance-line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.appearance-settings .appearance-stepper { display: flex; flex: none; align-items: center; gap: 6px; }
+.appearance-settings .appearance-stepper button {
+  min-width: 36px;
+  padding: 5px 0;
+  font-size: 14px;
+  line-height: 1;
+}
+.appearance-settings .appearance-stepper button:disabled { opacity: .45; cursor: not-allowed; }
+.appearance-settings .appearance-stepper output {
+  min-width: 20px;
+  color: var(--appearance-ink);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.appearance-settings .appearance-swatches { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 60%; }
+.appearance-settings .appearance-swatch { width: 20px; height: 20px; border: 1px solid var(--appearance-line); border-radius: 50%; }
+.appearance-settings .appearance-glow input[aria-invalid="true"] { border-color: var(--danger); }
+.appearance-settings .appearance-glow-error { padding-bottom: 8px; color: var(--danger); }
+.appearance-settings .appearance-background-actions { padding-top: 11px; border-top: 1px solid var(--appearance-line); }

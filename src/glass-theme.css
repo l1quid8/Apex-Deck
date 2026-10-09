@@ -73,6 +73,7 @@
 :root[data-deck-theme="glass"] :is(body, .settings, .preview.full-window, .artifacts-panel.full-window, .artifacts-panel.mod-dock.maximized) {
   background-color: var(--deck-bg);
   background-image: var(--deck-backdrop-image);
+  background-size: var(--deck-backdrop-size, auto);
   background-attachment: fixed;
 }
 
@@ -89,6 +90,23 @@
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .12), 0 14px 38px -28px rgb(0 0 0 / .7);
 }
 :root[data-deck-theme="glass"] .thread-details { border-left-color: var(--deck-edge); }
+/* One frame for every surface: the sidebar, the panes and the docked details
+   panel float at the same distance from the title bar, the window edges and
+   each other, on every skin including Classic. 14px matches the gap between
+   panes (GAP in PaneLayout.tsx). */
+:root { --deck-gap: 14px; }
+:root .canvas { padding: var(--deck-gap); }
+:root :is(.rail, .thread-details.docked) {
+  margin-block: var(--deck-gap);
+  border: 1px solid var(--deck-edge, var(--line));
+  border-radius: var(--radius);
+}
+:root .rail { margin-left: var(--deck-gap); }
+:root .thread-details.docked { margin-right: var(--deck-gap); }
+/* The overlay's resize handle sits on its inset left edge and spans only its height;
+   App.tsx adds --deck-gap to the handle's right offset. */
+:root .sidebar-handle.overlay { top: var(--deck-gap); bottom: var(--deck-gap); }
+:root .thread-details.overlay { inset: var(--deck-gap) var(--deck-gap) var(--deck-gap) auto; border: 1px solid var(--deck-edge, var(--line)); border-radius: var(--radius); }
 /* The title bar spans the window, so it stays square and lets the backdrop
    through like the panes below it. */
 :root[data-deck-theme="glass"] .titlebar {

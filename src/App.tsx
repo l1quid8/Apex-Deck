@@ -1497,9 +1497,9 @@ export function App() {
             onChange={setSidebarWidth("details")}
             onActive={setResizing}
             className={overlayDetails ? "overlay" : ""}
-            style={overlayDetails ? { right: `min(${detailsWidth}px, 100%)` } : undefined}
+            style={overlayDetails ? { right: `calc(min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px)) + var(--deck-gap, 0px))` } : undefined}
           />
-          <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100%)` : detailsWidth }} aria-label="Thread details">
+          <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Thread details">
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}

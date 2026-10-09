@@ -10,7 +10,32 @@ export interface AppearanceValues {
   density: 0.72 | 1;
   light: boolean;
   flat: boolean;
+  /** Background glow layout; omitted means the original three blobs. */
+  backdropPattern?: BackdropPattern;
+  /** Exact glow colors, one per glow. Omitted means the glows follow the accent. */
+  glowColors?: string[];
+  /** How many accent-matched glows to draw when glowColors is omitted. */
+  glowCount?: number;
+  /** Glow size in percent of normal (50–200). */
+  glowSize?: number;
 }
+
+export const BACKDROP_PATTERNS = [
+  { id: "blobs", name: "Blobs" },
+  { id: "aurora", name: "Aurora" },
+  { id: "halo", name: "Halo" },
+  { id: "corners", name: "Corners" },
+  { id: "horizon", name: "Horizon" },
+  { id: "mesh", name: "Mesh" },
+  { id: "stripes", name: "Stripes" },
+  { id: "rings", name: "Rings" },
+  { id: "dots", name: "Dots" },
+  { id: "spotlight", name: "Spotlight" },
+  { id: "none", name: "None" },
+] as const;
+export type BackdropPattern = typeof BACKDROP_PATTERNS[number]["id"];
+export const MIN_GLOWS = 1;
+export const MAX_GLOWS = 8;
 
 export interface SkinFile {
   format: "apex-glass-playground";
@@ -76,13 +101,31 @@ export function parseSkin(text: string): SkinFile {
   if (value.author !== undefined && typeof value.author !== "string") throw new Error("Skin author must be text.");
   if (!isRecord(value.appearance)) throw new Error("Skin appearance must be an object.");
   const source = value.appearance;
-  const knownAppearance = new Set<string>([...FIELD_NAMES, "accentColor"]);
+  const knownAppearance = new Set<string>([...FIELD_NAMES, "accentColor", "backdropPattern", "glowColors", "glowCount", "glowSize"]);
   for (const key of Object.keys(source)) if (!knownAppearance.has(key)) throw new Error(`Unknown appearance setting: ${key}.`);
 
   const normalized: Record<string, unknown> = {};
   if (source.accentColor !== undefined) {
     if (typeof source.accentColor !== "string" || !/^#[0-9a-f]{6}$/i.test(source.accentColor)) throw new Error("Accent color must be a six-digit hex color (such as #35aabb).");
     normalized.accentColor = source.accentColor.toLowerCase();
+  }
+  if (source.backdropPattern !== undefined) {
+    if (!BACKDROP_PATTERNS.some(({ id }) => id === source.backdropPattern)) throw new Error(`Background pattern must be one of: ${BACKDROP_PATTERNS.map(({ id }) => id).join(", ")}.`);
+    normalized.backdropPattern = source.backdropPattern;
+  }
+  if (source.glowColors !== undefined) {
+    const colors = source.glowColors;
+    if (!Array.isArray(colors) || colors.length < MIN_GLOWS || colors.length > MAX_GLOWS) throw new Error(`Glow colors must be a list of ${MIN_GLOWS} to ${MAX_GLOWS} hex colors.`);
+    if (!colors.every((color) => typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color))) throw new Error("Each glow color must be a six-digit hex color (such as #35aabb).");
+    normalized.glowColors = colors.map((color: string) => color.toLowerCase());
+  }
+  if (source.glowCount !== undefined) {
+    if (!Number.isInteger(source.glowCount) || (source.glowCount as number) < MIN_GLOWS || (source.glowCount as number) > MAX_GLOWS) throw new Error(`Glow count must be a whole number from ${MIN_GLOWS} to ${MAX_GLOWS}.`);
+    normalized.glowCount = source.glowCount;
+  }
+  if (source.glowSize !== undefined) {
+    if (typeof source.glowSize !== "number" || !Number.isFinite(source.glowSize) || source.glowSize < 50 || source.glowSize > 200) throw new Error("Glow size must be between 50 and 200.");
+    normalized.glowSize = source.glowSize;
   }
   for (const [key, [min, max]] of Object.entries(RANGES)) {
     const raw = source[key];
@@ -126,18 +169,156 @@ export function themeVariables(values: AppearanceValues): Record<string, string>
     "--deck-radius": `${values.radius}px`,
     "--deck-backdrop": String(values.backdrop / 100),
     "--deck-density": String(values.density),
+    ...(customBackdrop(values) ? backdropVariables(values) : {}),
   };
 }
 
+const customBackdrop = (values: AppearanceValues): boolean =>
+  values.backdropPattern !== undefined || values.glowColors !== undefined || values.glowCount !== undefined || values.glowSize !== undefined;
+
+function backdropVariables(values: AppearanceValues): Record<string, string> {
+  const { image, size } = backdropLayers(values);
+  return { "--deck-backdrop-image": image, "--deck-backdrop-size": size };
+}
+
+/**
+ * The stylesheet's original three blobs (glass-theme.css). Custom blobs reuse these
+ * exact spots, stops and oklch lightness/chroma so turning off Match accent never jumps.
+ */
+export const LEGACY_GLOWS = [
+  { at: [12, 4], stop: 46, offset: 0, dark: [.56, .14], light: [.86, .09] },
+  { at: [93, 17], stop: 42, offset: 75, dark: [.46, .15], light: [.84, .1] },
+  { at: [52, 100], stop: 48, offset: -55, dark: [.5, .12], light: [.87, .08] },
+] as const;
+
+/** Accent-matched glow hues: the first three are the original blob offsets. */
+const AUTO_OFFSETS = [0, 75, -55, 150, -120, 30, -30, 200];
+const AUTO_WEIGHTS = [1, .8, .72, .78, .74, .8, .76, .72];
+
+/**
+ * Background edits should be visible: on a flat skin (Classic included) they turn
+ * glass on, and a zero Backdrop is lifted to the default strength.
+ */
+export function backgroundPatch(values: AppearanceValues, patch: Partial<AppearanceValues>): Partial<AppearanceValues> {
+  return { ...(values.flat ? { flat: false } : {}), ...(values.backdrop === 0 ? { backdrop: 50 } : {}), ...patch };
+}
+
+/** The glow colors as hex, whether picked exactly or derived from the accent hue. */
+export function glowColorList(values: AppearanceValues): string[] {
+  if (values.glowColors?.length) return [...values.glowColors];
+  const count = Math.min(MAX_GLOWS, Math.max(MIN_GLOWS, values.glowCount ?? 3));
+  return AUTO_OFFSETS.slice(0, count).map((offset, i) => {
+    const [L, C] = LEGACY_GLOWS[i]?.[values.light ? "light" : "dark"] ?? (values.light ? [.86, .09] : [.5, .14]);
+    return oklchHex(L, C, values.hue + offset);
+  });
+}
+
+/** A random set of colors that sit well together, spaced around the color wheel. */
+export function shuffledGlowColors(count: number, light: boolean, random: () => number = Math.random): string[] {
+  const base = random() * 360;
+  const spread = [30, 45, 360 / Math.max(2, count), 150][Math.floor(random() * 4)];
+  return Array.from({ length: count }, (_, i) => oklchHex(light ? .82 : .58, light ? .11 : .16, base + i * spread));
+}
+
+const BLOB_SPOTS = [[12, 4], [93, 17], [52, 100], [6, 62], [80, 78], [40, 30], [97, 96], [26, 92]];
+const CORNER_SPOTS = [[0, 0], [100, 0], [100, 100], [0, 100], [50, 0], [100, 50], [50, 100], [0, 50]];
+
+/**
+ * Build the background glow as CSS gradient layers. Every value is a number or
+ * a validated hex color, so the result cannot carry anything but gradients.
+ * pxScale shrinks pixel-sized patterns (stripes, rings, dots) for small previews.
+ */
+export function backdropLayers(values: AppearanceValues, pxScale = 1): { image: string; size: string } {
+  const pattern = values.backdropPattern ?? "blobs";
+  if (pattern === "none") return { image: "none", size: "auto" };
+  const colors = glowColorList(values);
+  const n = colors.length;
+  const strength = values.backdrop / 100;
+  const s = (values.glowSize ?? 100) / 100;
+  const col = (i: number, k = 1) => rgba(colors[i % n], Math.min(1, strength * AUTO_WEIGHTS[i % AUTO_WEIGHTS.length] * k));
+  const r = (v: number) => Math.round(v * 100) / 100;
+  const px = (v: number) => `${r(v * s * pxScale)}px`;
+  const spot = (i: number, [x, y]: number[], w: number, h: number, k = 1) =>
+    `radial-gradient(ellipse ${r(w * s)}% ${r(h * s)}% at ${x}% ${y}%, ${col(i, k)}, transparent)`;
+  const layers: string[] = [];
+  let size = "auto";
+  switch (pattern) {
+    case "blobs":
+      // Same form as the stylesheet: farthest-corner ellipse with a scaled fade stop.
+      colors.forEach((_, i) => {
+        const [x, y] = BLOB_SPOTS[i];
+        layers.push(`radial-gradient(ellipse at ${x}% ${y}%, ${col(i)}, transparent ${r((LEGACY_GLOWS[i]?.stop ?? 46) * s)}%)`);
+      });
+      break;
+    case "aurora":
+      colors.forEach((_, i) => layers.push(spot(i, [r((i + .5) / n * 100), 2 + (i % 2) * 12], 70 / n + 34, 34, 1.15)));
+      break;
+    case "halo":
+      // Overlapping spots around the middle blend into one glow instead of hard rings.
+      colors.forEach((_, i) => {
+        const angle = i / n * Math.PI * 2;
+        layers.push(spot(i, n === 1 ? [50, 45] : [r(50 + Math.cos(angle) * 9), r(45 + Math.sin(angle) * 9)], 44, 50, .9));
+      });
+      break;
+    case "corners":
+      colors.forEach((_, i) => layers.push(spot(i, CORNER_SPOTS[i], 46, 50)));
+      break;
+    case "horizon":
+      colors.forEach((_, i) => layers.push(spot(i, [n === 1 ? 50 : r(i / (n - 1) * 100), 102], 100 / n + 55, 58, 1.1)));
+      break;
+    case "mesh":
+      // An even 4 × 3 grid of soft spots. Colors run in reading order so all 12 cells cycle
+      // through every glow; counts that divide 4 also step a row so they form diagonals.
+      for (let row = 0; row < 3; row++) {
+        const shift = 4 % n === 0 ? row : 0;
+        for (let c = 0; c < 4; c++) layers.push(spot((row * 4 + c + shift) % n, [r((c + .5) * 25), r((row + .5) / 3 * 100)], 30, 40, .8));
+      }
+      break;
+    case "stripes": {
+      const band = 260;
+      const stops = colors.flatMap((_, i) => [`transparent ${px(i * band)}`, `${col(i, .42)} ${px(i * band + band / 2)}`]);
+      layers.push(`repeating-linear-gradient(135deg, ${stops.join(", ")}, transparent ${px(n * band)})`);
+      break;
+    }
+    case "rings": {
+      const band = 170;
+      const stops = colors.flatMap((_, i) => [`transparent ${px(i * band)}`, `${col(i, .36)} ${px(i * band + band / 2)}`]);
+      layers.push(`repeating-radial-gradient(circle at 18% 108%, ${stops.join(", ")}, transparent ${px(n * band)})`);
+      break;
+    }
+    case "dots": {
+      const cell = 24 * s * pxScale;
+      colors.forEach((_, i) => layers.push(`radial-gradient(circle at ${r((i + .5) / n * 100)}% 50%, ${col(i, 1.6)} ${r(Math.max(.8, 1.6 * pxScale))}px, transparent ${r(Math.max(1.3, 2.4 * pxScale))}px)`));
+      const dotSize = `${r(cell * n)}px ${r(cell)}px`;
+      colors.forEach((_, i) => layers.push(spot(i, BLOB_SPOTS[i], 48, 52, .5)));
+      size = [...colors.map(() => dotSize), ...colors.map(() => "auto")].join(", ");
+      break;
+    }
+    case "spotlight": {
+      const half = Math.min(170, 28 * s + n * 3);
+      const stops = colors.map((_, i) => `${col(i, .6)} ${r(180 - half + (i + .5) / n * half * 2)}deg`);
+      // A wide fade on each side keeps the fan's edges soft.
+      layers.push(`conic-gradient(from 0deg at 50% -12%, transparent ${r(180 - half - 24)}deg, ${stops.join(", ")}, transparent ${r(180 + half + 24)}deg)`);
+      break;
+    }
+  }
+  return { image: layers.join(", "), size };
+}
+
+function rgba(hex: string, alpha: number): string {
+  const [red, green, blue] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+  return `rgb(${red} ${green} ${blue} / ${Math.round(alpha * 1000) / 1000})`;
+}
+
 export function themeMode(values: AppearanceValues): "classic" | "flat" | "glass" {
-  if (!values.accentColor && FIELD_NAMES.every((field) => values[field] === DEFAULT_APPEARANCE[field])) return "classic";
+  if (!values.accentColor && !customBackdrop(values) && FIELD_NAMES.every((field) => values[field] === DEFAULT_APPEARANCE[field])) return "classic";
   return values.flat ? "flat" : "glass";
 }
 
 /** Build a truthful prompt for an external AI to return an importable skin JSON file. */
 export function skinPrompt(description: string): string {
   const brief = description.trim() || "a distinctive, usable Apex Deck appearance";
-  return `Create an Apex Deck appearance skin for this description: ${brief}\n\nReturn only one JSON object using this contract: {"format":"apex-glass-playground","version":2,"name":"Name","appearance":{"hue":0,"glow":0,"blur":0,"opacity":100,"radius":14,"backdrop":0,"density":1,"light":false,"flat":false}}. Optional accentColor is an exact six-digit hex color such as #35aabb; omit it for the legacy hue palette. Use only these appearance fields: accentColor (optional hex string), hue (number 0–360), glow (number 0–100), blur (number 0–40), opacity (number 30–100), radius (number 4–30), backdrop (number 0–100), density (exactly 0.72 or 1), light (boolean), flat (boolean). Do not include CSS, scripts, extra keys, or external assets. This prompt requests JSON for the user's import workflow; Apex Deck does not generate the skin itself.`;
+  return `Create an Apex Deck appearance skin for this description: ${brief}\n\nReturn only one JSON object using this contract: {"format":"apex-glass-playground","version":2,"name":"Name","appearance":{"hue":0,"glow":0,"blur":0,"opacity":100,"radius":14,"backdrop":0,"density":1,"light":false,"flat":false}}. Optional accentColor is an exact six-digit hex color such as #35aabb; omit it for the legacy hue palette. The background behind the glass is a set of colored glows: optional backdropPattern is one of ${BACKDROP_PATTERNS.map(({ id }) => id).join(", ")}; optional glowColors is a list of ${MIN_GLOWS} to ${MAX_GLOWS} six-digit hex colors, one per glow (omit it to derive the glows from the accent hue); optional glowCount (whole number ${MIN_GLOWS}–${MAX_GLOWS}) sets how many accent-derived glows there are when glowColors is omitted; optional glowSize (number 50–200, percent of normal) makes the glows tighter or wider. Use only these appearance fields: accentColor (optional hex string), backdropPattern (optional), glowColors (optional), glowCount (optional), glowSize (optional), hue (number 0–360), glow (number 0–100), blur (number 0–40), opacity (number 30–100), radius (number 4–30), backdrop (number 0–100), density (exactly 0.72 or 1), light (boolean), flat (boolean). Do not include CSS, scripts, extra keys, or external assets. This prompt requests JSON for the user's import workflow; Apex Deck does not generate the skin itself.`;
 }
 
 export function defaultAppearanceSettings(): AppearanceSettings {
@@ -183,8 +364,11 @@ function accentInk(hex: string): string {
 export function accentHex(values: AppearanceValues): string {
   if (values.accentColor) return values.accentColor;
   if (themeMode(values) === "classic") return "#71e6b5";
-  const L = values.light ? .47 : .85, C = values.light ? .12 : .13;
-  const a = C * Math.cos(values.hue * Math.PI / 180), b = C * Math.sin(values.hue * Math.PI / 180);
+  return oklchHex(values.light ? .47 : .85, values.light ? .12 : .13, values.hue);
+}
+
+function oklchHex(L: number, C: number, hue: number): string {
+  const a = C * Math.cos(hue * Math.PI / 180), b = C * Math.sin(hue * Math.PI / 180);
   const l = (L + .3963377774 * a + .2158037573 * b) ** 3;
   const m = (L - .1055613458 * a - .0638541728 * b) ** 3;
   const s = (L - .0894841775 * a - 1.291485548 * b) ** 3;
