@@ -16,6 +16,10 @@ const message = (id, role, at) => ({ id, role, at, text: `Message ${id}`, eviden
 const monitor = (workspaceId, messages = [], extras = {}) => ({ workspaceId, messages, findings: [], paused: false, ...extras });
 const projects = [{ id: 'mobile', name: 'Mobile launch' }, { id: 'billing', name: 'Billing API' }];
 
+// Stands in for the panels component: the harness only checks which panel was asked for.
+const PersonalPanelsStub = (props) => ({ type: PersonalPanelsStub, props, children: [] });
+const PersonalCallStub = (props) => ({ type: PersonalCallStub, props, children: [] });
+
 function harness(props) {
   const states = [];
   let cursor = 0;
@@ -25,7 +29,7 @@ function harness(props) {
     useMemo(fn) { cursor++; return fn(); },
     useEffect() { cursor++; },
   };
-  const component = new Function('React', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', `${compiled}\nreturn ApexAgentAll;`)(React, ...Object.values(hooks), mergeProjectConversations, replyTarget);
+  const component = new Function('React', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'PersonalPanels', 'PersonalCall', `${compiled}\nreturn ApexAgentAll;`)(React, ...Object.values(hooks), mergeProjectConversations, replyTarget, PersonalPanelsStub, PersonalCallStub);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
@@ -336,4 +340,44 @@ test('an approved or running task has one Stop task button on its newest line, a
     const tree = harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask(status, 'approved')], messages).lane }).render();
     assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Stop task'), null, status);
   }
+});
+
+test('a hand-off card says it is your turn, and "I did it" approves its hash', async () => {
+  const task = { id: 'ho-1', goal: 'Export the report', completionCriteria: [], targetHost: 'vps', status: 'needsYou', class: 'write', kind: 'command', operation, decision: { id: 'hd-1', kind: 'handOff', paramsHash: 'sha256:ho', prompt: '', status: 'open', openedAt: 2 }, receipts: [], updatedAt: 2 };
+  const { calls, lane } = personalLane([task], [pm('ho-m1', 'system', 'approval', 2, 'Hand-off: export the report', 'ho-1')]);
+  const tree = harness({ workspaces: projects, monitors: [], personal: lane }).render();
+  assert.match(textOf(tree), /Your turn: run this yourself, then tell me\./);
+  find(tree, node => node.type === 'button' && textOf(node) === 'I did it').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [['decide', 'hd-1', 'sha256:ho', true]]);
+});
+
+test('a proposed schedule shows a confirmation card that decides with its hash', async () => {
+  const { calls, lane } = personalLane();
+  lane.assistant.schedules = [{ id: 'sc-1', goal: 'Check disk every morning', argv: ['df', '-h', '/'], dailyAt: '08:00', status: 'proposed', createdAt: 1, runs: 0, paramsHash: 'sha256:sc', decision: { id: 'sd-1', kind: 'schedule', paramsHash: 'sha256:sc', prompt: '', status: 'open', openedAt: 2 } }];
+  const tree = harness({ workspaces: projects, monitors: [], personal: lane }).render();
+  assert.match(textOf(tree), /Daily at 08:00/);
+  find(tree, node => node.type === 'button' && textOf(node) === 'Confirm schedule').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [['decide', 'sd-1', 'sha256:sc', true]]);
+});
+
+test('an approval with a repeat plan lists how often it runs and when it stops', () => {
+  const task = { ...personalTask('needsYou'), operation: { ...operation, plan: { everyMs: 600000, maxRuns: 4, until: { outputContains: 'OK' } } } };
+  const { lane } = personalLane([task], [pm('pl-1', 'system', 'approval', 2, 'Approval needed', 'pt-1')]);
+  const tree = harness({ workspaces: projects, monitors: [], personal: lane }).render();
+  assert.match(textOf(tree), /every 10 min, up to 4 runs/);
+  assert.match(textOf(tree), /output contains “OK”/);
+});
+
+test('the menu opens the Memory panel over the transcript', () => {
+  const { lane } = personalLane([], [pm('pm-1', 'assistant', 'chat', 1, 'Hi')]);
+  const h = harness({ workspaces: projects, monitors: [], personal: lane });
+  let tree = h.render();
+  assert.equal(find(tree, node => node.type === PersonalPanelsStub), null);
+  find(tree, node => node.type === 'button' && node.props.role === 'menuitem' && textOf(node) === 'Memory').props.onClick();
+  tree = h.render();
+  const panel = find(tree, node => node.type === PersonalPanelsStub);
+  assert.equal(panel.props.initial, 'memory');
+  assert.equal(panel.props.lane, lane);
 });

@@ -210,9 +210,16 @@ pub struct TokenTotals {
     pub output: u64,
     /// Turns that reported a count.
     pub turns: u64,
-    /// What those turns cost in millionths of a US dollar, when the backend says.
+    /// What those turns cost in millionths of a US dollar, as the provider reported it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cost_micros: u64,
+    /// Turns whose cost wasn't reported. Their cost is unknown, not zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unknown_cost_turns: u64,
+    /// Costs that were estimated (such as a media quote), in millionths of a US dollar.
+    /// Kept apart from `cost_micros` so totals never present an estimate as reported.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub estimated_cost_micros: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -220,12 +227,51 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl TokenTotals {
-    /// Count one turn. A side the backend didn't report adds nothing.
+    /// Count one turn. A side the backend didn't report adds nothing to the
+    /// tokens. A missing cost is counted as unknown, never as $0.
     pub fn add(&mut self, input: Option<u64>, output: Option<u64>, cost_micros: Option<u64>) {
         self.input = self.input.saturating_add(input.unwrap_or(0));
         self.output = self.output.saturating_add(output.unwrap_or(0));
-        self.cost_micros = self.cost_micros.saturating_add(cost_micros.unwrap_or(0));
+        match cost_micros {
+            Some(cost) => self.cost_micros = self.cost_micros.saturating_add(cost),
+            None => self.unknown_cost_turns = self.unknown_cost_turns.saturating_add(1),
+        }
         self.turns += 1;
+    }
+
+    /// Count one turn whose cost is an estimate rather than a reported figure.
+    pub fn add_estimate(&mut self, input: Option<u64>, output: Option<u64>, estimated_micros: u64) {
+        self.input = self.input.saturating_add(input.unwrap_or(0));
+        self.output = self.output.saturating_add(output.unwrap_or(0));
+        self.estimated_cost_micros = self.estimated_cost_micros.saturating_add(estimated_micros);
+        self.turns += 1;
+    }
+
+    /// Count one turn from a reply. An estimated cost lands in `estimated_cost_micros`.
+    pub fn add_turn(&mut self, input: Option<u64>, output: Option<u64>, cost_micros: Option<u64>, estimated: bool) {
+        match cost_micros {
+            Some(cost) if estimated => self.add_estimate(input, output, cost),
+            _ => self.add(input, output, cost_micros),
+        }
+    }
+}
+
+#[cfg(test)]
+mod token_totals_tests {
+    use super::TokenTotals;
+
+    #[test]
+    fn unknown_cost_is_counted_not_zeroed() {
+        let mut totals = TokenTotals::default();
+        totals.add(Some(10), Some(2), Some(500));
+        totals.add(Some(10), Some(2), None);
+        totals.add_estimate(None, None, 7_000);
+        assert_eq!(totals.cost_micros, 500, "reported cost is only what the provider reported");
+        assert_eq!(totals.unknown_cost_turns, 1, "a turn without a cost is unknown");
+        assert_eq!(totals.estimated_cost_micros, 7_000, "estimates stay separate from reported cost");
+        assert_eq!(totals.turns, 3);
+        let loaded: TokenTotals = serde_json::from_str(r#"{"input":1,"output":2,"turns":1}"#).unwrap();
+        assert_eq!((loaded.unknown_cost_turns, loaded.estimated_cost_micros), (0, 0), "old saved totals still load");
     }
 }
 

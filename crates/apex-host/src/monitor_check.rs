@@ -34,6 +34,11 @@ pub(crate) fn monitor_profile_ok(config: &ParticipantConfig) -> Result<(), Strin
 /// Run the bounded tool-free assessment used by both scheduled and immediate
 /// ApexAgent conversations.
 pub(crate) async fn reason(config: ParticipantConfig, request: TurnRequest) -> Result<String, String> {
+    reason_reply(config, request).await.map(|reply| reply.text)
+}
+
+/// `reason`, with the token counts and cost the backend reported.
+pub(crate) async fn reason_reply(config: ParticipantConfig, request: TurnRequest) -> Result<apex_core::Reply, String> {
     monitor_profile_ok(&config)?;
     if let Backend::OpenAiCompatible { api_key_env: Some(name), .. } = &config.backend {
         if apex_adapters::keys::lookup(name).is_none() {
@@ -67,7 +72,6 @@ pub(crate) async fn reason(config: ParticipantConfig, request: TurnRequest) -> R
     )
     .await
     .map_err(|_| "ApexAgent check timed out.".to_string())?
-    .map(|reply| reply.text)
     .map_err(|error| error.to_string())
 }
 

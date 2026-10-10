@@ -22,6 +22,11 @@ pub const MAX_MESSAGES: usize = 500;
 pub const MAX_TEXT_BYTES: usize = 20 * 1024;
 /// Settled events kept for request-id deduplication.
 pub const MAX_SETTLED_EVENTS: usize = 500;
+pub const MAX_COSTS: usize = 1_000;
+pub const MAX_SETTLED_TASKS: usize = 300;
+pub const MAX_RECEIPTS: usize = 50;
+pub const MAX_NOTICES: usize = 300;
+pub const MAX_FACTS: usize = 400;
 const MAX_REQUEST_ID_BYTES: usize = 128;
 const MAX_ARGV: usize = 32;
 const MAX_ARG_BYTES: usize = 1024;
@@ -48,7 +53,246 @@ pub struct Counters {
     pub event: u64,
     pub task: u64,
     pub decision: u64,
+    #[serde(default)]
+    pub fact: u64,
+    #[serde(default)]
+    pub schedule: u64,
+    #[serde(default)]
+    pub notice: u64,
+    #[serde(default)]
+    pub rule: u64,
 }
+
+/// What kind of action something is. The assistant's rule for the class
+/// decides whether it runs, asks or is handed to the human.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum ToolClass {
+    #[default]
+    Read,
+    Write,
+    Send,
+    Spend,
+}
+
+/// Dot's four rule choices, from least to most careful.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionMode {
+    /// Do it without asking.
+    Auto,
+    /// Do it only when the human's own message asked for it.
+    OnRequest,
+    /// Ask first, every time.
+    Ask,
+    /// Prepare it and hand it to the human; nothing runs.
+    HandOff,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionModes {
+    pub read: ActionMode,
+    pub write: ActionMode,
+    pub send: ActionMode,
+    pub spend: ActionMode,
+}
+
+impl Default for ActionModes {
+    fn default() -> Self {
+        ActionModes { read: ActionMode::Auto, write: ActionMode::Ask, send: ActionMode::Ask, spend: ActionMode::Ask }
+    }
+}
+
+impl ActionModes {
+    pub fn get(&self, class: ToolClass) -> ActionMode {
+        match class { ToolClass::Read => self.read, ToolClass::Write => self.write, ToolClass::Send => self.send, ToolClass::Spend => self.spend }
+    }
+}
+
+/// A standing rule ("show me drafts before sending"). Rules can only make
+/// the assistant more careful, never less.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StandingRule {
+    pub id: String,
+    pub text: String,
+    pub class: ToolClass,
+    pub mode: ActionMode,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Budget {
+    /// Most it may spend per day, in millionths of a dollar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_limit_micros: Option<u64>,
+    /// With a limit set, a reply whose cost isn't reported still goes ahead.
+    #[serde(default)]
+    pub unknown_cost_ok: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Privacy {
+    /// No cloud model and no network tools.
+    #[serde(default)]
+    pub local_only: bool,
+    /// Model hosts it may call. Empty means any.
+    #[serde(default)]
+    pub allowed_endpoints: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuietHours {
+    /// "22:00" local time.
+    pub start: String,
+    pub end: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Look {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FactKind {
+    Preference,
+    Fact,
+    Decision,
+    Commitment,
+}
+
+/// Something worth remembering across conversations, with where it came from.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Fact {
+    pub id: String,
+    pub text: String,
+    pub kind: FactKind,
+    /// The human said it outright. Otherwise the assistant inferred it.
+    pub explicit: bool,
+    /// 0–100.
+    pub confidence: u8,
+    pub source: FactSource,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<u64>,
+}
+
+impl Fact {
+    pub fn current(&self, now: u64) -> bool {
+        self.deleted_at.is_none() && self.superseded_by.is_none() && self.expires_at.is_none_or(|at| at > now)
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FactSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ScheduleStatus {
+    /// Waiting for the human to confirm it.
+    Proposed,
+    Active,
+    Cancelled,
+}
+
+/// A set-time job the human confirmed. Each firing makes one task.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Schedule {
+    pub id: String,
+    pub goal: String,
+    pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_ms: Option<u64>,
+    /// "08:30" in the assistant's time zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_at: Option<u64>,
+    pub status: ScheduleStatus,
+    pub created_at: u64,
+    /// What the human confirmed: the operation every firing runs.
+    pub params_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_task_id: Option<String>,
+    #[serde(default)]
+    pub runs: u32,
+    /// The human's confirmation, bound to `params_hash`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<PendingDecision>,
+}
+
+/// Something the assistant brings to the human's attention.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Notice {
+    pub id: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub urgent: bool,
+    pub at: u64,
+    /// Held until then by quiet hours or the digest.
+    pub deliver_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_at: Option<u64>,
+    /// Same fingerprint as one already delivered means nothing new to say.
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CostSource {
+    Reported,
+    Estimated,
+    Unknown,
+}
+
+/// One outbound call and what it cost, as far as anyone knows.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CostEntry {
+    pub at: u64,
+    /// `reply`, `helper`, `summary` or `check`.
+    pub purpose: String,
+    /// `text`, `image`, `audio`, `video` or `tool`.
+    pub kind: String,
+    pub source: CostSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// Context sent to the provider.
+    pub bytes_out: u64,
+    pub endpoint: String,
+}
+
+fn utc() -> String { "UTC".into() }
+fn default_context_budget() -> u64 { 24_000 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +313,58 @@ pub struct PersonalAssistant {
     pub messages: Vec<PersonalMessage>,
     pub events: Vec<PersonalEvent>,
     pub tasks: Vec<PersonalTask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<Look>,
+    /// IANA name for display; the offset is what the host computes with.
+    #[serde(default = "utc")]
+    pub timezone: String,
+    #[serde(default)]
+    pub utc_offset_minutes: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_hours: Option<QuietHours>,
+    #[serde(default)]
+    pub modes: ActionModes,
+    #[serde(default)]
+    pub rules: Vec<StandingRule>,
+    #[serde(default)]
+    pub budget: Budget,
+    #[serde(default)]
+    pub privacy: Privacy,
+    #[serde(default = "default_context_budget")]
+    pub context_budget_chars: u64,
+    #[serde(default)]
+    pub facts: Vec<Fact>,
+    #[serde(default)]
+    pub schedules: Vec<Schedule>,
+    #[serde(default)]
+    pub notices: Vec<Notice>,
+    #[serde(default)]
+    pub costs: Vec<CostEntry>,
+    /// Other machines this assistant may run things on, and where.
+    #[serde(default)]
+    pub machines: Vec<MachineLink>,
+    /// Phones that get its notices as pushes.
+    #[serde(default)]
+    pub push_devices: Vec<PushDevice>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PushDevice {
+    pub token: String,
+    pub added_at: u64,
+}
+
+/// A machine besides the host that may run this assistant's operations,
+/// only while it's connected. Nothing fails over to another machine.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineLink {
+    pub host_id: String,
+    pub name: String,
+    pub folder: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -99,6 +395,11 @@ pub enum EventSource {
     /// Pause or resume the assistant. Applied as soon as it's saved: while
     /// paused it still answers, but no task starts.
     Pause { paused: bool },
+    /// Remove one schedule. Its running task, if any, is left alone.
+    CancelSchedule { schedule_id: String },
+    /// A timer or a helper finishing: work the host gave itself. Never
+    /// starts a task or answers a decision.
+    Internal { what: String },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -106,6 +407,8 @@ pub enum EventSource {
 pub enum EventState {
     Received,
     Processing,
+    /// Waiting for the human to OK its cost before the model is called.
+    Held,
     Done,
     Failed,
 }
@@ -123,6 +426,9 @@ pub struct PersonalEvent {
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The human OK'd this reply's cost (over the budget, or unknown).
+    #[serde(default)]
+    pub spend_approved: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -133,6 +439,10 @@ pub enum TaskStatus {
     /// Approved and ready for the worker.
     Queued,
     Running,
+    /// Approved, but waiting for a time, another task or a machine (`wait` says which).
+    Waiting,
+    /// Can't go on without a change only the human can make.
+    Blocked,
     Done,
     Failed,
     Cancelled,
@@ -151,6 +461,74 @@ pub struct OperationSpec {
     pub host: String,
     pub cwd: String,
     pub argv: Vec<String>,
+    /// When and how often it runs. Part of what an approval covers, so a
+    /// changed schedule asks again. Absent for a plain run-once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<RunPlan>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_runs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<StopCondition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<u64>,
+    /// Another task that must finish first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+/// When a repeating check is finished. Checked in code against each run.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StopCondition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_contains: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_lacks: Option<String>,
+}
+
+impl StopCondition {
+    pub fn empty(&self) -> bool {
+        self.exit_code.is_none() && self.output_contains.is_none() && self.output_lacks.is_none()
+    }
+
+    /// Every given part has to hold.
+    pub fn met(&self, exit_code: i32, output: &str) -> bool {
+        !self.empty()
+            && self.exit_code.is_none_or(|code| code == exit_code)
+            && self.output_contains.as_deref().is_none_or(|text| output.contains(text))
+            && self.output_lacks.as_deref().is_none_or(|text| !output.contains(text))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
+pub enum TaskWait {
+    Timer { at: u64 },
+    Dependency { task_id: String },
+    Machine { host_id: String },
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskKind {
+    #[default]
+    Command,
+    /// A research job: one model call with only its assignment, read-only,
+    /// whose answer comes back as evidence, never as instructions.
+    Helper,
 }
 
 impl OperationSpec {
@@ -169,6 +547,12 @@ pub enum DecisionKind {
     Approve,
     /// A non-repeatable operation may or may not have happened. Run it again?
     Uncertain,
+    /// The human does this step themselves; approving means "I did it".
+    HandOff,
+    /// Go ahead although the cost is unknown or over the budget?
+    Spend,
+    /// Confirm a schedule.
+    Schedule,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -266,6 +650,23 @@ pub struct PersonalTask {
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_update: Option<String>,
+    #[serde(default)]
+    pub class: ToolClass,
+    #[serde(default)]
+    pub kind: TaskKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<TaskWait>,
+    /// Finished runs of a repeating task.
+    #[serde(default)]
+    pub runs_done: u32,
+    /// The task that started this one (a helper's main task).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<String>,
+    /// A helper's assignment, the only context it gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<String>,
 }
 
 impl PersonalAssistant {
@@ -284,6 +685,58 @@ impl PersonalAssistant {
         format!("pd-{}", self.counters.decision)
     }
 
+    pub(crate) fn next_fact_id(&mut self) -> String {
+        self.counters.fact += 1;
+        format!("f-{}", self.counters.fact)
+    }
+
+    pub(crate) fn next_schedule_id(&mut self) -> String {
+        self.counters.schedule += 1;
+        format!("ps-{}", self.counters.schedule)
+    }
+
+    pub(crate) fn next_notice_id(&mut self) -> String {
+        self.counters.notice += 1;
+        format!("pn-{}", self.counters.notice)
+    }
+
+    pub(crate) fn next_rule_id(&mut self) -> String {
+        self.counters.rule += 1;
+        format!("pr-{}", self.counters.rule)
+    }
+
+    /// The strictest of the class's mode and every standing rule for it.
+    pub fn mode_for(&self, class: ToolClass) -> ActionMode {
+        self.rules.iter().filter(|rule| rule.class == class).map(|rule| rule.mode).fold(self.modes.get(class), ActionMode::max)
+    }
+
+    /// Local wall-clock minutes since midnight for a UTC time in ms.
+    pub fn local_minutes(&self, at: u64) -> u32 {
+        let local = at as i64 / 60_000 + i64::from(self.utc_offset_minutes);
+        local.rem_euclid(24 * 60) as u32
+    }
+
+    /// The UTC ms when today's local day started.
+    pub fn local_day_start(&self, at: u64) -> u64 {
+        let offset = i64::from(self.utc_offset_minutes) * 60_000;
+        let local = at as i64 + offset;
+        (local - local.rem_euclid(86_400_000) - offset).max(0) as u64
+    }
+
+    pub(crate) fn add_cost(&mut self, entry: CostEntry) {
+        self.costs.push(entry);
+        if self.costs.len() > MAX_COSTS {
+            let extra = self.costs.len() - MAX_COSTS;
+            self.costs.drain(..extra);
+        }
+    }
+
+    /// Reported plus estimated spend since local midnight, in micros.
+    pub fn spent_today(&self, now: u64) -> u64 {
+        let start = self.local_day_start(now);
+        self.costs.iter().filter(|c| c.at >= start).filter_map(|c| c.micros).sum()
+    }
+
     pub(crate) fn post(&mut self, role: &str, kind: &str, text: String, task_id: Option<String>, event_id: Option<String>, at: u64) {
         let id = self.next_message_id();
         self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id });
@@ -295,6 +748,22 @@ impl PersonalAssistant {
 
     pub(crate) fn task_mut(&mut self, id: &str) -> Option<&mut PersonalTask> {
         self.tasks.iter_mut().find(|task| task.id == id)
+    }
+
+    /// Old finished tasks go, oldest first, and long receipt lists are cut,
+    /// so a daily schedule can't grow the record forever.
+    pub(crate) fn prune_tasks(&mut self) {
+        let settled = self.tasks.iter().filter(|t| t.status.settled()).count();
+        let mut extra = settled.saturating_sub(MAX_SETTLED_TASKS);
+        self.tasks.retain(|t| {
+            if extra > 0 && t.status.settled() { extra -= 1; false } else { true }
+        });
+        for task in &mut self.tasks {
+            if task.receipts.len() > MAX_RECEIPTS {
+                let cut = task.receipts.len() - MAX_RECEIPTS;
+                task.receipts.drain(..cut);
+            }
+        }
     }
 
     /// Settled events beyond the limit are dropped oldest first. Pending ones never are.
@@ -340,6 +809,9 @@ impl PersonalAssistant {
 
 fn request_id(id: &str) -> Result<String, String> {
     let id = id.trim();
+    if id.starts_with("internal:") {
+        return Err("Request ids starting with \"internal:\" are the host's own.".into());
+    }
     if id.is_empty() || id.len() > MAX_REQUEST_ID_BYTES || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':') {
         return Err("The request needs a short id made of letters, digits, '-', '_' or ':'.".into());
     }
@@ -463,7 +935,21 @@ impl crate::Host {
                 profile: Some(input.profile), allowed_folders: vec![folder.to_string_lossy().into_owned()],
                 paused: false, revision: 1, created_at: at, counters: Counters::default(),
                 messages: vec![], events: vec![], tasks: vec![],
+                look: None, timezone: utc(), utc_offset_minutes: 0, quiet_hours: None,
+                modes: ActionModes::default(), rules: vec![], budget: Budget::default(), privacy: Privacy::default(),
+                context_budget_chars: default_context_budget(), facts: vec![], schedules: vec![], notices: vec![], costs: vec![],
+                machines: vec![], push_devices: vec![],
             };
+            let mut assistant = assistant;
+            // It introduces itself and says what it can do, the way Dot does.
+            let intro = format!(
+                "Hi, I'm {name}. I live on this server, so I keep working when your phone and Mac are closed. \
+                 I can check on this machine, run something later or every so often until something happens, \
+                 keep an eye on things on a schedule, remember what you tell me, and send helpers to think something \
+                 through while we keep talking. Reading runs without asking; anything that changes things asks you first. \
+                 You can change that in Rules.",
+                name = assistant.name);
+            assistant.post("assistant", "chat", intro, None, None, at);
             assistants.push(assistant.clone());
             Ok(assistant)
         })
@@ -502,7 +988,7 @@ impl crate::Host {
             };
             assistant.events.push(PersonalEvent {
                 id: event_id.clone(), request_id: request, source, received_at: at,
-                state, attempts: 0, error: None,
+                state, attempts: 0, error: None, spend_approved: false,
             });
             assistant.prune_events();
             Ok((event_id, false))
@@ -528,6 +1014,11 @@ impl crate::Host {
     pub fn personal_pause(&self, id: &str, request_id: &str, paused: bool) -> Result<Accepted, String> {
         self.personal_accept(id, request_id, EventSource::Pause { paused }, None)
     }
+
+    /// Cancel one schedule. Tasks it already started are left alone.
+    pub fn personal_schedule_cancel(&self, id: &str, request_id: &str, schedule_id: &str) -> Result<Accepted, String> {
+        self.personal_accept(id, request_id, EventSource::CancelSchedule { schedule_id: schedule_id.into() }, None)
+    }
 }
 
 #[cfg(test)]
@@ -536,7 +1027,7 @@ pub(crate) mod tests {
 
     #[test]
     fn operation_hash_changes_with_any_material_parameter() {
-        let spec = OperationSpec { tool: "host.command".into(), host: "h".into(), cwd: "/a".into(), argv: vec!["df".into(), "-h".into(), "/".into()] };
+        let spec = OperationSpec { tool: "host.command".into(), host: "h".into(), cwd: "/a".into(), argv: vec!["df".into(), "-h".into(), "/".into()], plan: None };
         let base = spec.hash();
         assert!(base.starts_with("sha256:"));
         assert_eq!(base, spec.clone().hash());

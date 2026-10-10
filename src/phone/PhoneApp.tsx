@@ -492,7 +492,7 @@ export function PhoneApp() {
     hosts: hosts.map((host) => ({ id: host.machine.id, name: host.machine.name, remote: true })),
     hostBackend: (id) => { const host = phoneHost(id); if (!host) throw new Error("That machine isn't paired with this phone."); return host.backend; },
     offlineHost: (id) => linkOf(id)?.status !== "online",
-    open: tab === "agents" || personalOpen, device: "phone",
+    open: tab === "agents" || personalOpen, device: "phone", onOpen: () => setPersonalOpen(true),
   });
   const assistantWorkspaceHost = assistantWorkspace ? phoneHost(workspaceHost(assistantWorkspace)) : null;
 
@@ -2454,11 +2454,14 @@ function SideTab({ tab, link, agents, bots, covered, library, assistantProjects,
         <div className="ph-section">Your assistant</div>
         <div className="ph-group">{(() => {
           const waiting = personal.assistant?.tasks.filter((task) => task.status === "needsYou" && task.decision?.status === "open").length ?? 0;
+          // Tasks that need you, plus delivered notices nobody has seen yet.
+          const unseen = personal.assistant?.notices?.filter((notice) => notice.deliveredAt && !notice.seenAt).length ?? 0;
+          const needYou = waiting + unseen;
           const usable = !!personal.assistant && !personal.offline;
-          const detail = personal.problem ?? (personal.offline ? `${personal.hostName} can't be reached` : !personal.assistant ? `Set it up on ${personal.hostName} from the Mac` : waiting ? `${personal.hostName} · ${waiting} need${waiting === 1 ? "s" : ""} you` : `${personal.hostName} · Open conversation`);
+          const detail = personal.problem ?? (personal.offline ? `${personal.hostName} can't be reached` : !personal.assistant ? `Set it up on ${personal.hostName} from the Mac` : needYou ? `${personal.hostName} · ${needYou} need${needYou === 1 ? "s" : ""} you` : `${personal.hostName} · Open conversation`);
           return <button type="button" className="ph-srow ph-project-assistant" disabled={!usable} onClick={onPersonal}>
             <span className="ph-srow-icon ph-muted-icon"><MessageSquare size={18} /></span>
-            <span className="ph-grow"><strong>{personal.name}</strong><small className={waiting ? "ph-amber" : undefined}>{detail}</small></span>
+            <span className="ph-grow"><strong>{personal.name}</strong><small className={needYou ? "ph-amber" : undefined}>{detail}</small></span>
             {usable && <ChevronRight size={16} />}
           </button>;
         })()}</div>

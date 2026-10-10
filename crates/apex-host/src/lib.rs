@@ -23,6 +23,7 @@ pub mod monitor_commands;
 pub mod monitor_check;
 pub mod monitor_clock;
 pub mod personal;
+pub mod personal_settings;
 pub mod personal_worker;
 pub mod events;
 pub mod quit;

@@ -106,6 +106,9 @@ pub enum RoomEvent {
         /// Millionths of a US dollar, when the backend reports a cost.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost_micros: Option<u64>,
+        /// True when `cost_micros` is an estimate, not a provider-reported cost.
+        #[serde(default, skip_serializing_if = "is_false")]
+        cost_estimated: bool,
     },
     /// How full a participant's context window is, from its latest request.
     ContextUsage { id: ParticipantId, used_tokens: u64, window_tokens: u64 },
@@ -154,6 +157,10 @@ impl RoomEvent {
     pub fn plan(plan: &crate::types::PlanUsage) -> Self {
         plan_event(plan)
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn plan_event(plan: &crate::types::PlanUsage) -> RoomEvent {
@@ -592,8 +599,8 @@ impl Room {
         }
         let reply = outcome.map_err(|error| error.to_string())?;
         if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
-            self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens, reply.cost_micros);
-            on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros });
+            self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens, reply.output_tokens, reply.cost_micros, reply.cost_estimated);
+            on_event(RoomEvent::Usage { id: id.clone(), input_tokens: reply.input_tokens, output_tokens: reply.output_tokens, cost_micros: reply.cost_micros, cost_estimated: reply.cost_estimated });
         }
         let summary = reply.text.trim();
         if summary.is_empty() || summary.eq_ignore_ascii_case(PASS_TOKEN) {
@@ -754,12 +761,13 @@ impl Room {
             }
             Ok(reply) => {
                 if reply.input_tokens.is_some() || reply.output_tokens.is_some() || reply.cost_micros.is_some() {
-                    self.usage.entry(id.clone()).or_default().add(reply.input_tokens, reply.output_tokens, reply.cost_micros);
+                    self.usage.entry(id.clone()).or_default().add_turn(reply.input_tokens, reply.output_tokens, reply.cost_micros, reply.cost_estimated);
                     on_event(RoomEvent::Usage {
                         id: id.clone(),
                         input_tokens: reply.input_tokens,
                         output_tokens: reply.output_tokens,
                         cost_micros: reply.cost_micros,
+                        cost_estimated: reply.cost_estimated,
                     });
                 }
                 let text = reply.text.trim();
@@ -958,13 +966,27 @@ mod approver_tests {
     use std::sync::Mutex;
 
     #[test]
+    fn media_quote_lands_as_estimated() {
+        let bot = Arc::new(crate::testing::ScriptedParticipant::new("bot", &["picture"]));
+        let mut room = Room::new(vec![bot], RoomOptions::default());
+        let id = ParticipantId::new("bot");
+        let events = Mutex::new(Vec::new());
+        room.settle(&id, 0, Ok(Reply {
+            text: "picture".into(), input_tokens: None, output_tokens: None, cost_micros: Some(40_000), cost_estimated: true,
+        }), &|event| events.lock().unwrap().push(event));
+        let totals = room.usage()[&id];
+        assert_eq!((totals.estimated_cost_micros, totals.cost_micros, totals.turns), (40_000, 0, 1), "a quote is an estimate, not reported spend");
+        assert!(events.lock().unwrap().iter().any(|event| matches!(event, RoomEvent::Usage { cost_micros: Some(40_000), cost_estimated: true, .. })));
+    }
+
+    #[test]
     fn cost_only_reply_is_recorded_and_emits_usage() {
         let bot = Arc::new(crate::testing::ScriptedParticipant::new("bot", &["reply"]));
         let mut room = Room::new(vec![bot], RoomOptions::default());
         let id = ParticipantId::new("bot");
         let events = Mutex::new(Vec::new());
         room.settle(&id, 0, Ok(Reply {
-            text: "reply".into(), input_tokens: None, output_tokens: None, cost_micros: Some(1_000_000),
+            text: "reply".into(), input_tokens: None, output_tokens: None, cost_micros: Some(1_000_000), cost_estimated: false,
         }), &|event| events.lock().unwrap().push(event));
         assert_eq!(room.usage()[&id].cost_micros, 1_000_000);
         assert!(events.lock().unwrap().iter().any(|event| matches!(event, RoomEvent::Usage { input_tokens: None, output_tokens: None, cost_micros: Some(1_000_000), .. })));
@@ -975,7 +997,7 @@ mod approver_tests {
     impl Participant for CostOnlyParticipant {
         fn config(&self) -> &ParticipantConfig { &self.config }
         async fn respond(&self, _request: TurnRequest, _on_delta: crate::participant::DeltaSink<'_>) -> Result<Reply, ParticipantError> {
-            Ok(Reply { text: "summary".into(), input_tokens: None, output_tokens: None, cost_micros: Some(2_000_000) })
+            Ok(Reply { text: "summary".into(), input_tokens: None, output_tokens: None, cost_micros: Some(2_000_000), cost_estimated: false })
         }
     }
 

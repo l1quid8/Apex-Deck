@@ -141,6 +141,19 @@ export function tokenLine(use: TokenTotals | undefined): string {
   return `${use.input.toLocaleString()} in, ${use.output.toLocaleString()} out over ${turns} in this thread. Input includes the conversation and files the tool re-read from its cache.`;
 }
 
+/** A chat's spend as the usage card words it: "$1.20", "$1.20 + $0.05 est.", "$1.20 + 2 unknown". Undefined when there is nothing to show. */
+export function spendLine(use: TokenTotals | undefined, money: (usd: number) => string): string | undefined {
+  if (!use) return undefined;
+  const parts: string[] = [];
+  const reported = use.cost_micros ?? 0;
+  const estimated = use.estimated_cost_micros ?? 0;
+  const unknown = use.unknown_cost_turns ?? 0;
+  if (reported > 0) parts.push(money(reported / 1e6));
+  if (estimated > 0) parts.push(`${money(estimated / 1e6)} est.`);
+  if (unknown > 0) parts.push(`${unknown} unknown`);
+  return parts.length ? parts.join(" + ") : undefined;
+}
+
 /** What a plan window is called: "5-hour", "weekly". */
 export function windowLabel(w: PlanWindow): string {
   const minutes = w.window_minutes;

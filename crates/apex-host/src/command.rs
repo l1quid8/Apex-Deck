@@ -42,6 +42,26 @@ pub enum Command {
     PersonalDecide { assistant_id: String, request_id: String, decision_id: String, params_hash: String, approve: bool },
     PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
+    PersonalScheduleCancel { assistant_id: String, request_id: String, schedule_id: String },
+    PersonalConfigure { assistant_id: String, settings: crate::personal_settings::Settings },
+    PersonalRuleAdd { assistant_id: String, text: String, class: crate::personal::ToolClass, mode: crate::personal::ActionMode },
+    PersonalRuleRemove { assistant_id: String, rule_id: String },
+    PersonalMemoryAdd { assistant_id: String, text: String },
+    PersonalMemoryCorrect { assistant_id: String, fact_id: String, text: String },
+    PersonalMemoryForget { assistant_id: String, fact_id: String },
+    PersonalNoticesSeen { assistant_id: String, up_to: u64 },
+    PersonalPushRegister { assistant_id: String, token: String },
+    PersonalMachineLink { assistant_id: String, host_id: String, name: String, folder: String },
+    PersonalMachineUnlink { assistant_id: String, host_id: String },
+    PersonalMachineClaim { assistant_id: String, host_id: String },
+    PersonalMachineResult { assistant_id: String, host_id: String, #[serde(flatten)] result: crate::personal_worker::machine::RemoteResult },
+    PersonalMachineAllow { assistant_id: String, assistant_host_id: String, folder: String },
+    PersonalMachineAllowed {},
+    PersonalExecuteLocal { assistant_id: String, assistant_host_id: String, operation: crate::personal::OperationSpec },
+    PersonalConnectors {},
+    PersonalBrowserView {},
+    PersonalBrowserTakeOver { on: bool },
+    PersonalBrowserInput { input: crate::personal_worker::browser::Input },
     MonitorAssign { workspace_id: String, cwd: String, host_id: String, text: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, profile: apex_core::ParticipantConfig, #[serde(default)] only_if_absent: bool },
     MonitorSourcesUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, mode: String },
     MonitorProfileUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, revision: u64, profile: ParticipantConfig },
@@ -176,6 +196,29 @@ impl Host {
             PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
             PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
             PersonalPause { assistant_id, request_id, paused } => reply(self.personal_pause(&assistant_id, &request_id, paused)?),
+            PersonalScheduleCancel { assistant_id, request_id, schedule_id } => reply(self.personal_schedule_cancel(&assistant_id, &request_id, &schedule_id)?),
+            PersonalConfigure { assistant_id, settings } => reply(self.personal_configure(&assistant_id, settings)?),
+            PersonalRuleAdd { assistant_id, text, class, mode } => reply(self.personal_rule_add(&assistant_id, &text, class, mode)?),
+            PersonalRuleRemove { assistant_id, rule_id } => reply(self.personal_rule_remove(&assistant_id, &rule_id)?),
+            PersonalMemoryAdd { assistant_id, text } => reply(self.personal_memory_add(&assistant_id, &text)?),
+            PersonalMemoryCorrect { assistant_id, fact_id, text } => reply(self.personal_memory_correct(&assistant_id, &fact_id, &text)?),
+            PersonalMemoryForget { assistant_id, fact_id } => reply(self.personal_memory_forget(&assistant_id, &fact_id)?),
+            PersonalNoticesSeen { assistant_id, up_to } => reply(self.personal_notices_seen(&assistant_id, up_to)?),
+            PersonalPushRegister { assistant_id, token } => reply(self.personal_push_register(&assistant_id, &token)?),
+            PersonalMachineLink { assistant_id, host_id, name, folder } => reply(self.personal_machine_link(&assistant_id, &host_id, &name, &folder)?),
+            PersonalMachineUnlink { assistant_id, host_id } => reply(self.personal_machine_unlink(&assistant_id, &host_id)?),
+            PersonalMachineClaim { assistant_id, host_id } => reply(self.personal_machine_claim(&assistant_id, &host_id)?),
+            PersonalMachineResult { assistant_id, host_id, result } => reply(self.personal_machine_result(&assistant_id, &host_id, result)?),
+            PersonalMachineAllow { assistant_id, assistant_host_id, folder } => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.personal_machine_allow(&assistant_id, &assistant_host_id, &folder)).await?)
+            }
+            PersonalMachineAllowed {} => reply(self.personal_machine_allowed()?),
+            PersonalExecuteLocal { assistant_id, assistant_host_id, operation } => reply(self.personal_execute_local(&assistant_id, &assistant_host_id, operation).await?),
+            PersonalConnectors {} => reply(blocking(|| Ok(crate::personal_worker::connectors::status())).await?),
+            PersonalBrowserView {} => reply(self.personal_browser_view().await?),
+            PersonalBrowserTakeOver { on } => reply(self.personal_browser_take_over(on).await?),
+            PersonalBrowserInput { input } => reply(self.personal_browser_input(input).await?),
             MonitorSuggestSources { cwd } => reply(serde_json::json!({ "files": self.monitor_suggest_sources(&cwd)? })),
             MonitorAssign { workspace_id, cwd, host_id, text, files, threads, profile, only_if_absent } => {
                 let host = Arc::clone(self);
@@ -342,7 +385,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 96);
+        assert_eq!(names.len(), 116);
         assert!(names.contains(&"personal_send".to_string()));
         assert!(names.contains(&"assistant_overview".to_string()));
         assert!(names.contains(&"api_quote".to_string()));

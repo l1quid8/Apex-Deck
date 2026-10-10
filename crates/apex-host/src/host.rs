@@ -210,6 +210,7 @@ impl Host {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
             Err(error) => return Err(format!("Could not read task operation recovery registry: {error}")),
         }
+        host.redispatch_recovered_queued()?;
         Ok(host)
     }
 
@@ -375,8 +376,10 @@ impl Host {
             RoomEvent::MessageAdded { message } if message.text.contains("[Worker cleanup incomplete:") => {
                 *handle.task_error.lock().unwrap() = Some(message.text.clone());
             }
-            RoomEvent::Usage { input_tokens, output_tokens, cost_micros, .. } => {
-                if let Ok(updated) = self.assistant_tasks.add_run_usage(&entry.task_id, &run_id, crate::assistant_tasks::TaskUsage { input_tokens: *input_tokens, output_tokens: *output_tokens, cost_micros: *cost_micros }) {
+            RoomEvent::Usage { input_tokens, output_tokens, cost_micros, cost_estimated, .. } => {
+                // An estimate is not a reported cost, so for the spend limit it counts as unknown.
+                let reported = if *cost_estimated { None } else { *cost_micros };
+                if let Ok(updated) = self.assistant_tasks.add_run_usage(&entry.task_id, &run_id, crate::assistant_tasks::TaskUsage { input_tokens: *input_tokens, output_tokens: *output_tokens, cost_micros: reported, unknown_cost_turns: u64::from(reported.is_none()) }) {
                     changed = true;
                     if updated.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true) {
                         if let Some(run) = self.assistant_runs.lock().unwrap().get(&entry.task_id) {
@@ -1473,7 +1476,7 @@ fn persist_event(handle: &RoomHandle, store: &Store, id: &str, event: &RoomEvent
         // The room adds these up too; a full checkpoint replaces this copy
         // with the room's, so nothing is counted twice. Saving each one now
         // keeps the totals if the app quits before the chain ends.
-        RoomEvent::Usage { id, input_tokens, output_tokens, cost_micros } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add(*input_tokens, *output_tokens, *cost_micros),
+        RoomEvent::Usage { id, input_tokens, output_tokens, cost_micros, cost_estimated } => checkpoint.snapshot.usage.entry(id.clone()).or_default().add_turn(*input_tokens, *output_tokens, *cost_micros, *cost_estimated),
         _ => {}
     }
     store.save_room(id, &checkpoint)
@@ -1710,10 +1713,10 @@ mod tests {
         let (handle, store, path) = checkpoint_fixture("usage");
         let null = ParticipantId::new("null");
         for (input, output, cost) in [(Some(100), Some(5), Some(420)), (Some(20), None, None)] {
-            persist_event(&handle, &store, "room", &RoomEvent::Usage { id: null.clone(), input_tokens: input, output_tokens: output, cost_micros: cost }).unwrap();
+            persist_event(&handle, &store, "room", &RoomEvent::Usage { id: null.clone(), input_tokens: input, output_tokens: output, cost_micros: cost, cost_estimated: false }).unwrap();
         }
         let saved = store.room("room").unwrap().unwrap().snapshot;
-        assert_eq!(saved.usage.get(&null), Some(&apex_core::TokenTotals { input: 120, output: 5, turns: 2, cost_micros: 420 }));
+        assert_eq!(saved.usage.get(&null), Some(&apex_core::TokenTotals { input: 120, output: 5, turns: 2, cost_micros: 420, unknown_cost_turns: 1, ..Default::default() }));
         std::fs::remove_dir_all(path).unwrap();
     }
 

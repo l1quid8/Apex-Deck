@@ -37,7 +37,7 @@ import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, apiModelGroups, defaultEffort
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
 import { Avatar, type Refills } from "./Avatar";
-import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, tokenLine, windowLabel, type Levels } from "./battery";
+import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
 import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
@@ -851,7 +851,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           if (recoveredState?.recovery_seq == null) { void durableRecovery.refresh(); break; }
           setUsed((u) => {
             const before = u[event.id] ?? { input: 0, output: 0, turns: 0 };
-            return { ...u, [event.id]: { input: before.input + (event.input_tokens ?? 0), output: before.output + (event.output_tokens ?? 0), turns: before.turns + 1, cost_micros: (before.cost_micros ?? 0) + (event.cost_micros ?? 0) } };
+            // A missing cost is counted as unknown, never as $0. An estimate is kept apart from reported spend.
+            const cost = event.cost_micros;
+            const estimate = cost != null && event.cost_estimated === true;
+            return { ...u, [event.id]: {
+              input: before.input + (event.input_tokens ?? 0),
+              output: before.output + (event.output_tokens ?? 0),
+              turns: before.turns + 1,
+              cost_micros: (before.cost_micros ?? 0) + (cost != null && !estimate ? cost : 0),
+              unknown_cost_turns: (before.unknown_cost_turns ?? 0) + (cost == null ? 1 : 0),
+              estimated_cost_micros: (before.estimated_cost_micros ?? 0) + (cost != null && estimate ? cost : 0),
+            } };
           });
           break;
         case "context_usage": {
@@ -2201,8 +2211,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const account = accountOf(p);
     if (!account || !p) return undefined;
     const left = balances[account.key];
-    const spent = used[p.id]?.cost_micros;
-    const parts = [left != null ? `${dollars(left)} left` : "", spent ? `this chat ${dollars(spent / 1e6)}` : ""].filter(Boolean);
+    const spent = spendLine(used[p.id], dollars);
+    const parts = [left != null ? `${dollars(left)} left` : "", spent ? `this chat ${spent}` : ""].filter(Boolean);
     return parts.length ? <span key="money" className="bot-meter bot-meter-money" title={left != null ? "Prepaid balance on this provider account" : "What this chat has cost on this provider"}>{left != null ? "bal" : "cost"}<span>{parts.join(" · ")}</span></span> : null;
   };
 
@@ -2251,7 +2261,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const reports = (p.backend.kind === "agent" && p.backend.tool !== "gemini" && p.backend.tool !== "grok") || p.backend.kind === "open_ai_compatible";
     const account = accountOf(p);
     const left = account ? balances[account.key] : undefined;
-    const spent = used[p.id]?.cost_micros;
+    const spent = spendLine(used[p.id], dollars);
     const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
     return (
       <div className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
@@ -2266,7 +2276,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </div>
           {!!spent && <div className="usage-row">
             <span className="usage-label">Cost</span>
-            <span>{dollars(spent / 1e6)} in this chat</span>
+            <span>{spent} in this chat</span>
           </div>}
         </> : <div className="usage-row">
           <span className="usage-label">Plan</span>

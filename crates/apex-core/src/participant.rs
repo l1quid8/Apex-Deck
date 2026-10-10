@@ -33,6 +33,8 @@ pub struct Reply {
     pub output_tokens: Option<u64>,
     /// What the turn cost in millionths of a US dollar, when known.
     pub cost_micros: Option<u64>,
+    /// True when `cost_micros` is an estimate (such as a price quote), not a figure the provider reported.
+    pub cost_estimated: bool,
 }
 
 impl Reply {

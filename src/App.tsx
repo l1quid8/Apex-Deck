@@ -1380,7 +1380,7 @@ export function App() {
     try { return dotState(backend.machines.connection(hostId).get().status) === "off"; } catch { return true; }
   };
   // The personal assistant on its durable host; polled only while the conversation is open.
-  const personal = usePersonalAssistant({ hosts: hostList, hostBackend, offlineHost, open: apexAgentAllOpen });
+  const personal = usePersonalAssistant({ hosts: hostList, hostBackend, offlineHost, open: apexAgentAllOpen, bridge: true });
   /** A thread's history and bots, read from where it runs now. */
   const snapshotOf = async (pane: Pane, workspace: Workspace) =>
     (await loadRoomState(hostBackend(workspaceHost(workspace)), pane.id, [], settings.newThread, workspace.path)).snapshot;

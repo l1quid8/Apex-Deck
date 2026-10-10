@@ -7,6 +7,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, session, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dockedBrowser, flushProfile } from './browser.mjs';
 import { appFile, safeName, startupFolders, writeNew } from './files.mjs';
@@ -204,6 +206,68 @@ function deckWindow(event) {
 }
 const fromUi = event => deckWindow(event) !== null;
 const watchedContents = new Set();
+// Google sign-in for Gmail and Drive. The system browser does the sign-in; the code comes back to a server on this Mac only.
+const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/drive.readonly';
+const GOOGLE_SIGN_IN_MS = 5 * 60 * 1000;
+const googlePage = (res, message) => {
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(`<!doctype html><meta charset="utf-8"><title>Apex Deck</title><p style="font-family:system-ui">${message}</p>`);
+};
+ipcMain.handle('google:signIn', (event, { clientId, clientSecret } = {}) => {
+  if (!fromUi(event)) throw new Error('Not the Deck window.');
+  if (!clientId || !clientSecret) throw new Error('Enter the OAuth client ID and secret first.');
+  return new Promise((resolve, reject) => {
+    const state = crypto.randomBytes(16).toString('base64url');
+    const verifier = crypto.randomBytes(32).toString('base64url');
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    const server = http.createServer();
+    let redirectUri = '';
+    let timer = null;
+    let settled = false;
+    const finish = (failure, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      server.close();
+      if (failure) reject(failure);
+      else resolve(value);
+    };
+    server.on('request', async (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (url.pathname !== '/') { res.writeHead(404).end(); return; }
+      const code = url.searchParams.get('code');
+      const failed = url.searchParams.get('error');
+      if (failed || !code || url.searchParams.get('state') !== state) {
+        googlePage(res, 'Sign-in was not completed. You can close this tab.');
+        finish(new Error(failed ? `Google said: ${failed}` : 'Google sign-in did not match this request.'));
+        return;
+      }
+      googlePage(res, 'You can close this tab.');
+      try {
+        const response = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, code, code_verifier: verifier, grant_type: 'authorization_code', redirect_uri: redirectUri }),
+        });
+        const body = await response.json();
+        if (!response.ok || !body.refresh_token) throw new Error(body.error_description ?? body.error ?? 'Google did not return a refresh token.');
+        finish(null, { refreshToken: body.refresh_token });
+      } catch (cause) {
+        finish(cause instanceof Error ? cause : new Error(String(cause)));
+      }
+    });
+    timer = setTimeout(() => finish(new Error('Google sign-in timed out. Try again.')), GOOGLE_SIGN_IN_MS);
+    server.listen(0, '127.0.0.1', () => {
+      redirectUri = `http://127.0.0.1:${server.address().port}`;
+      const auth = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      auth.search = new URLSearchParams({
+        response_type: 'code', client_id: clientId, redirect_uri: redirectUri, scope: GOOGLE_SCOPES,
+        access_type: 'offline', prompt: 'consent', state, code_challenge: challenge, code_challenge_method: 'S256',
+      }).toString();
+      shell.openExternal(auth.toString()).catch((cause) => finish(cause instanceof Error ? cause : new Error(String(cause))));
+    });
+  });
+});
 ipcMain.handle('daemon:connect', async (event, hostId = LOCAL) => {
   if (!fromUi(event)) throw new Error('Not the Deck window.');
   knownHost(hostId);

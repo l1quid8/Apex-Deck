@@ -485,6 +485,62 @@ mod tests {
     }
 
     #[test]
+    fn a_request_recovered_from_restart_is_answered_once_on_retry() {
+        let path = std::env::temp_dir().join(format!(
+            "apex-conversation-answer-once-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = ConversationStore::open(&path).unwrap();
+        store.begin(request(), false).unwrap();
+        drop(store);
+        let reopened = ConversationStore::open(&path).unwrap();
+        let BeginOutcome::Started(retried) = reopened.begin(request(), true).unwrap() else {
+            panic!("a request recovered from restart runs again on retry with the same ID");
+        };
+        reopened
+            .finish("req-1", &request().owner, retried.revision, "answer".into())
+            .unwrap();
+        assert!(
+            matches!(
+                reopened.begin(request(), true).unwrap(),
+                BeginOutcome::Existing(saved) if saved.response.as_deref() == Some("answer")
+            ),
+            "a completed request returns its saved answer"
+        );
+        assert!(
+            reopened
+                .finish("req-1", &request().owner, retried.revision, "again".into())
+                .is_err(),
+            "a second answer is refused"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_retry_of_an_interrupted_request_keeps_the_task_it_created() {
+        let path = std::env::temp_dir().join(format!(
+            "apex-conversation-task-link-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = ConversationStore::open(&path).unwrap();
+        store.begin(request(), false).unwrap();
+        store.attach_task("req-1", &request().owner, "task-1").unwrap();
+        drop(store);
+        let reopened = ConversationStore::open(&path).unwrap();
+        let BeginOutcome::Started(retried) = reopened.begin(request(), true).unwrap() else {
+            panic!("an interrupted request runs again on retry");
+        };
+        assert_eq!(
+            retried.task_id.as_deref(),
+            Some("task-1"),
+            "the retry reuses the task this request already created"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn failed_persistence_does_not_commit_an_in_memory_request_or_response() {
         let dir =
             std::env::temp_dir().join(format!("apex-conversation-rollback-{}", std::process::id()));
@@ -595,6 +651,9 @@ pub struct ConversationRecord {
     pub status: ConversationStatus,
     pub response: Option<String>,
     pub revision: u64,
+    /// The task this request created, recorded before any worker runs, so a retry reuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -731,6 +790,7 @@ impl ConversationStore {
             status: ConversationStatus::Pending,
             response: None,
             revision: 1,
+            task_id: None,
         };
         document.records.insert(request.request_id, record.clone());
         if let Err(error) = self.save_locked(&document) {
@@ -774,6 +834,33 @@ impl ConversationStore {
             return Err(error);
         }
         Ok(result)
+    }
+
+    /// Record the task this pending request created. Called right after creation, before any worker runs.
+    pub fn attach_task(
+        &self,
+        request_id: &str,
+        owner: &TaskOwner,
+        task_id: &str,
+    ) -> Result<(), ConversationError> {
+        let mut document = self.inner.document.lock().unwrap();
+        let before = document.clone();
+        let record = document
+            .records
+            .get_mut(request_id)
+            .ok_or(ConversationError::NotFound)?;
+        if &record.request.owner != owner {
+            return Err(ConversationError::NotOwner);
+        }
+        if record.status != ConversationStatus::Pending {
+            return Err(ConversationError::InvalidTransition);
+        }
+        record.task_id = Some(task_id.into());
+        if let Err(error) = self.save_locked(&document) {
+            *document = before;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn get(

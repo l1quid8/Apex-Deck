@@ -423,6 +423,8 @@ impl Job<'_> {
         Ok(Reply {
             text: reply_text(self.model, &details, cost, prompt, note, &path, false),
             cost_micros: cost.map(|c| (c * 1_000_000.0).round() as u64),
+            // The price comes from our table, not from Venice's answer, so it is an estimate.
+            cost_estimated: cost.is_some(),
             ..Reply::default()
         })
     }
@@ -538,6 +540,8 @@ impl Job<'_> {
         Ok(Reply {
             text: reply_text(self.model, &shown, quote, prompt, None, &path, true),
             cost_micros: quote.map(|c| (c * 1_000_000.0).round() as u64),
+            // Venice's pre-job quote, not a charge Venice reported after the job.
+            cost_estimated: quote.is_some(),
             ..Reply::default()
         })
     }

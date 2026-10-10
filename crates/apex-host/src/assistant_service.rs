@@ -248,9 +248,10 @@ impl Host {
             threads,
             evidence,
         };
+        // A request recovered from a restart is answered once on a retry with the same ID. A completed one returns its saved response.
         let begin = self
             .assistant_conversations
-            .begin(request.clone(), false)
+            .begin(request.clone(), true)
             .map_err(|e| e.to_string())?;
         let record = match begin {
             assistant_conversation::BeginOutcome::Existing(rec) => {
@@ -336,10 +337,20 @@ impl Host {
                     }
                     return Err("The completed assistant request has no response record.".into());
                 }
-                return Err("This request is already being processed or was interrupted. Retry with a new request ID after reviewing its task.".into());
+                return Err("This request is already being processed. Wait for it to finish before sending it again.".into());
             }
             assistant_conversation::BeginOutcome::Started(rec) => rec,
         };
+        // A retry of a request that already created its task answers with that task. It never creates a second one.
+        if let Some(task_id) = record.task_id.clone() {
+            if self.assistant_tasks.get(&task_id).map_err(|e| e.to_string())?.is_some() {
+                let saved = json!({"message":"This request already created its task. Showing that task.","task":{"id":task_id},"taskMonitor":Value::Null,"pane":Value::Null});
+                self.assistant_conversations
+                    .finish(&input.request_id, &owner, record.revision, saved.to_string())
+                    .map_err(|e| e.to_string())?;
+                return Box::pin(self.assistant_message_with(input, reason)).await;
+            }
+        }
         self.monitor_chat_message_owned(
             &owner.workspace_id,
             crate::monitor_commands::MonitorOwner {
@@ -441,6 +452,7 @@ impl Host {
                         None,
                     )
                     .map_err(|e| e.to_string())?;
+                self.assistant_conversations.attach_task(&input.request_id, &owner, &task.id).map_err(|e| e.to_string())?;
                 task = self.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(initial_task_data(&input, &[]))).map_err(|e|e.to_string())?;
                 self.assistant_changed(&owner.workspace_id);
                 json!({"message":message,"task":task,"taskMonitor":task_monitor(Some(&task)),"pane":Value::Null})
@@ -450,6 +462,7 @@ impl Host {
                     .assistant_tasks
                     .create_proposal(owner.clone(), input.text.clone(), brief)
                     .map_err(|e| e.to_string())?;
+                self.assistant_conversations.attach_task(&input.request_id, &owner, &task.id).map_err(|e| e.to_string())?;
                 task = self.assistant_tasks.set_result_data(&task.id, task.revision, &owner, Some(initial_task_data(&input, &[]))).map_err(|e|e.to_string())?;
                 self.assistant_changed(&owner.workspace_id);
                 json!({"message":message,"task":task,"taskMonitor":task_monitor(Some(&task)),"pane":Value::Null})
@@ -481,6 +494,7 @@ impl Host {
                         Some(destination),
                     )
                     .map_err(|e| e.to_string())?;
+                self.assistant_conversations.attach_task(&input.request_id, &owner, &task.id).map_err(|e| e.to_string())?;
                 task = self
                     .assistant_tasks
                     .set_task_details(
@@ -1043,6 +1057,45 @@ impl Host {
         Ok(())
     }
 
+    /// Dispatch every task that was queued and never started when the service stopped.
+    /// Call once at startup, before any new request arrives.
+    pub(crate) fn redispatch_recovered_queued(self: &Arc<Self>) -> Result<(), String> {
+        for task in self.assistant_tasks.list(None).map_err(|e| e.to_string())? {
+            if task.status != TaskStatus::Queued || !task.attempts.is_empty() {
+                continue;
+            }
+            let Some(destination) = task.destination.clone() else { continue };
+            let owner = task.owner.clone();
+            let data = task.result_data.clone().unwrap_or_else(|| json!({}));
+            let profiles: Vec<ParticipantConfig> =
+                serde_json::from_value(data["workerProfiles"].clone()).unwrap_or_default();
+            let input = AssistantMessageInput {
+                workspace_id: owner.workspace_id.clone(),
+                cwd: owner.cwd.clone(),
+                host_id: owner.host_id.clone(),
+                conversation_id: owner.conversation_id.clone(),
+                request_id: task.id.clone(),
+                text: task.original_request.clone(),
+                destination: Some(destination.clone()),
+                new_worker_profiles: profiles.clone(),
+                thread_labels: vec![],
+                mode: serde_json::from_value(data["mode"].clone()).unwrap_or(task.mode),
+                checks: serde_json::from_value(data["checks"].clone()).unwrap_or_default(),
+                worker_profiles: vec![],
+                spend_limit_micros: data["spendLimitMicros"].as_u64(),
+            };
+            self.schedule_dispatch(
+                &task,
+                &owner,
+                input,
+                destination.thread_id.clone().unwrap_or_default(),
+                destination.workers.clone(),
+                profiles,
+            );
+        }
+        Ok(())
+    }
+
     fn fail_dispatch(
         &self,
         queued: &AssistantTask,
@@ -1151,14 +1204,14 @@ impl Host {
         }
         match task.status {
             TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::Interrupted => {}
-            TaskStatus::NeedsYou if task.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true)
+            TaskStatus::NeedsYou if task.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true || data["restartedWhileWaiting"] == true)
                 && task.attempts.last().is_some_and(|attempt| attempt.finished_at_ms.is_some()) => {},
             TaskStatus::NeedsYou => return Err("Answer the worker's open question or approval first, or cancel the current attempt.".into()),
             TaskStatus::Running | TaskStatus::Applying => return Err("This assistant task is still running.".into()),
             _ => return Err("This assistant task cannot be continued in its current state.".into()),
         }
         if budget_exceeded(&task) {
-            return Err("Raise or remove this task's spend limit before resuming.".into());
+            return Err("Raise or remove this task's spend limit, or resume it from its pause to accept an unreported cost, before resuming.".into());
         }
         let monitor = self
             .monitor_get(&task.owner.workspace_id)?
@@ -1465,7 +1518,16 @@ impl Host {
             "resume_budget" => {
                 if task.status != TaskStatus::NeedsYou || !task.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true) { return Err("This task is not paused at a spend limit.".into()); }
                 let id = task.execution_thread_id.as_deref().ok_or("Task has no execution chat to resume.")?;
-                self.continue_thread_expected(id, Some("Resume the original task after my spend-limit change.".into()), vec![], Some(input.revision)).await?;
+                // An unreported cost is accepted here, by the human, so the task can continue. A reported cost over the limit is not.
+                let mut revision = input.revision;
+                let over_reported = task.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64())
+                    .is_some_and(|limit| task.usage.as_ref().and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit));
+                if !over_reported && task.usage.as_ref().is_some_and(|usage| usage.unknown_cost_turns > 0) {
+                    let mut data = task.result_data.clone().unwrap_or_else(|| json!({}));
+                    data["unknownCostAccepted"] = json!(true);
+                    revision = self.assistant_tasks.set_result_data(&task.id, input.revision, &input.owner, Some(data)).map_err(|e| e.to_string())?.revision;
+                }
+                self.continue_thread_expected(id, Some("Resume the original task after my spend-limit change.".into()), vec![], Some(revision)).await?;
                 self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("Task not found after resume.".into())
             }
             "archive" => {
@@ -1836,6 +1898,15 @@ impl Host {
                 Ok(done)
             }
             "retry" | "continue" | "request_changes" => {
+                // Waiting on an approval or question when the service restarted: run the step again on the same chat.
+                if input.action == "retry"
+                    && task.status == TaskStatus::NeedsYou
+                    && task.result_data.as_ref().is_some_and(|data| data["restartedWhileWaiting"] == true)
+                {
+                    let id = task.execution_thread_id.as_deref().ok_or("Task has no execution chat to retry.")?;
+                    self.continue_thread_expected(id, Some("Run the step again after the service restarted.".into()), vec![], Some(input.revision)).await?;
+                    return self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("Task not found after retry.".into());
+                }
                 if task.status == TaskStatus::Interrupted && has_pending_integration(&task) {
                     return Err(
                         "Reconcile the interrupted project integration before retrying this task."
@@ -2214,8 +2285,7 @@ fn verify_read_only_workers(mode: TaskMode, profiles: &[ParticipantConfig]) -> R
 }
 
 fn budget_exceeded(task: &AssistantTask) -> bool {
-    task.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64())
-        .is_some_and(|limit| task.usage.as_ref().and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit))
+    crate::assistant_tasks::budget_hit(task.result_data.as_ref(), task.usage.as_ref())
 }
 
 fn append_history(data: &mut Value, kind: &str, text: &str) {
@@ -2334,7 +2404,10 @@ fn spawn_task_attempt(
         let worker_result = handle.checkpoint.lock().unwrap().snapshot.transcript.iter().rev()
             .find(|message| matches!(message.speaker, apex_core::Speaker::Bot(_)))
             .map(|message| message.text.clone());
-        let result = if result_data["budgetPaused"] == true { Some("Paused at the reported spend limit. Raise or remove the limit, then resume this task.".into()) }
+        let result = if result_data["budgetPaused"] == true {
+            let usage = host_for_task.assistant_tasks.get(&task_id).ok().flatten().and_then(|task| task.usage);
+            Some(crate::assistant_tasks::budget_pause_text(Some(&result_data), usage.as_ref()).into())
+        }
             else { run.error.lock().unwrap().clone().or(error.clone()).or(worker_result) };
         append_history(&mut result_data, if status == TaskStatus::NeedsYou { "pause" } else { "result" }, result.as_deref().unwrap_or("Worker attempt completed."));
         let outcome = TaskOutcome {
@@ -3186,7 +3259,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_zero_attempt_task_after_restart_waits_for_explicit_retry() {
+    fn queued_zero_attempt_task_after_restart_is_dispatched_again() {
         let f = fixture();
         let destination = TaskDestination {
             thread_id: Some("parent".into()),
@@ -3232,26 +3305,14 @@ mod tests {
             restarted_runtime.handle().clone(),
         )
         .unwrap();
-        let interrupted = restarted.assistant_tasks.get(&queued.id).unwrap().unwrap();
-        assert_eq!(interrupted.status, TaskStatus::Interrupted);
-        assert!(interrupted.attempts.is_empty());
-        let retry = restarted_runtime
-            .block_on(restarted.assistant_task_action(AssistantActionInput {
-                task_id: interrupted.id.clone(),
-                revision: interrupted.revision,
-                owner: f.owner.clone(),
-                action: "retry".into(),
-                mode: None,
-                text: None,
-                destination: None,
-                new_worker_profiles: vec![],
-                checks: None,
-             spend_limit_micros: None, }))
-            .unwrap();
+        let still_queued = restarted.assistant_tasks.get(&queued.id).unwrap().unwrap();
+        assert_eq!(still_queued.status, TaskStatus::Queued, "a task that never started stays queued across a restart");
+        assert!(still_queued.attempts.is_empty());
+        restarted.redispatch_recovered_queued().unwrap();
         let finished = restarted_runtime.block_on(async {
             // Same 15-second budget as wait_for; 3 seconds flaked under full-suite load.
             for _ in 0..1500 {
-                let task = restarted.assistant_tasks.get(&retry.id).unwrap().unwrap();
+                let task = restarted.assistant_tasks.get(&still_queued.id).unwrap().unwrap();
                 if matches!(
                     task.status,
                     TaskStatus::ReadyForReview | TaskStatus::Failed | TaskStatus::NeedsYou

@@ -304,6 +304,7 @@ impl CliParticipant {
             input_tokens: outcome.input_tokens,
             output_tokens: outcome.output_tokens,
             cost_micros: outcome.cost_micros,
+            cost_estimated: false,
         })
     }
 

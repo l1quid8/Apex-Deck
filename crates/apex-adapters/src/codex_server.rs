@@ -878,6 +878,7 @@ pub(crate) async fn run(
             input_tokens: outcome.input_tokens,
             output_tokens: outcome.output_tokens,
             cost_micros: None,
+            cost_estimated: false,
         }),
     }
 }

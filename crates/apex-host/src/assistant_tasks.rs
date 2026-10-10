@@ -86,7 +86,35 @@ pub enum TaskMode {
 pub struct TaskUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Provider-reported cost only. Estimates never count here.
     pub cost_micros: Option<u64>,
+    /// Turns whose cost wasn't reported (or was only estimated). Absent in older saves.
+    #[serde(default)]
+    pub unknown_cost_turns: u64,
+}
+
+/// Shown on a task whose approval or question was open when the service restarted.
+pub const RESTART_WAIT_NOTE: &str = "The service restarted while this waited for you. Choose Retry to run the step again.";
+
+/// Whether a task with a spend limit must stop for the human: the reported
+/// cost reached the limit, or some turn's cost is unknown and the human hasn't
+/// accepted unknown cost for this task yet.
+pub fn budget_hit(result_data: Option<&serde_json::Value>, usage: Option<&TaskUsage>) -> bool {
+    let Some(limit) = result_data.and_then(|data| data["spendLimitMicros"].as_u64()) else { return false };
+    let Some(usage) = usage else { return false };
+    usage.cost_micros.is_some_and(|cost| cost >= limit)
+        || (usage.unknown_cost_turns > 0 && result_data.map_or(true, |data| data["unknownCostAccepted"] != true))
+}
+
+/// What the task says when it stops at its limit.
+pub fn budget_pause_text(result_data: Option<&serde_json::Value>, usage: Option<&TaskUsage>) -> &'static str {
+    let limit = result_data.and_then(|data| data["spendLimitMicros"].as_u64());
+    let over_reported = limit.is_some_and(|limit| usage.and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit));
+    if over_reported {
+        "Paused at the reported spend limit. Raise or remove the limit, then resume this task."
+    } else {
+        "This task has a spend limit, but its cost isn't reported, so it needs your OK to continue."
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -481,11 +509,10 @@ impl AssistantTasks {
             .ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
         check_owner_revision(&current, expected_revision, owner)?;
         let budget_resume = current.status == TaskStatus::NeedsYou
-            && current.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true)
+            && current.result_data.as_ref().is_some_and(|data| data["budgetPaused"] == true || data["restartedWhileWaiting"] == true)
             && current.attempts.last().is_some_and(|attempt| attempt.finished_at_ms.is_some());
-        if current.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64())
-            .is_some_and(|limit| current.usage.as_ref().and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit))
-        { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Raise or remove the spend limit before starting another attempt.")); }
+        if budget_hit(current.result_data.as_ref(), current.usage.as_ref())
+        { return Err(TaskError::new(TaskErrorKind::InvalidTransition, "Raise or remove the spend limit, or accept the unreported cost, before starting another attempt.")); }
         if !budget_resume && !matches!(
             current.status,
             TaskStatus::Queued
@@ -503,7 +530,7 @@ impl AssistantTasks {
         let task = document.tasks.get_mut(task_id).unwrap();
         task.status = TaskStatus::Running;
         task.result = None;
-        if let Some(data) = task.result_data.as_mut() { data["budgetPaused"] = serde_json::json!(false); }
+        if let Some(data) = task.result_data.as_mut() { data["budgetPaused"] = serde_json::json!(false); data["restartedWhileWaiting"] = serde_json::json!(false); }
         task.updated_at_ms = now_ms();
         task.revision += 1;
         if let Some(previous) = task.attempts.last_mut() {
@@ -647,17 +674,17 @@ impl AssistantTasks {
         let task = document.tasks.get_mut(task_id).ok_or_else(|| TaskError::new(TaskErrorKind::NotFound, "Task not found."))?;
         let attempt = task.attempts.last_mut().filter(|a| a.run_id == run_id && a.finished_at_ms.is_none()).ok_or_else(|| TaskError::new(TaskErrorKind::StaleRevision, "This run no longer owns the task."))?;
         fn add(a: Option<u64>, b: Option<u64>) -> Option<u64> { match (a,b) { (None,None) => None, (a,b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))) } }
-        let usage = attempt.usage.get_or_insert(TaskUsage { input_tokens: None, output_tokens: None, cost_micros: None });
+        let usage = attempt.usage.get_or_insert(TaskUsage { input_tokens: None, output_tokens: None, cost_micros: None, unknown_cost_turns: 0 });
         usage.input_tokens = add(usage.input_tokens, delta.input_tokens);
         usage.output_tokens = add(usage.output_tokens, delta.output_tokens);
         usage.cost_micros = add(usage.cost_micros, delta.cost_micros);
-        let total = task.usage.get_or_insert(TaskUsage { input_tokens: None, output_tokens: None, cost_micros: None });
+        usage.unknown_cost_turns = usage.unknown_cost_turns.saturating_add(delta.unknown_cost_turns);
+        let total = task.usage.get_or_insert(TaskUsage { input_tokens: None, output_tokens: None, cost_micros: None, unknown_cost_turns: 0 });
         total.input_tokens = add(total.input_tokens, delta.input_tokens);
         total.output_tokens = add(total.output_tokens, delta.output_tokens);
         total.cost_micros = add(total.cost_micros, delta.cost_micros);
-        if task.result_data.as_ref().and_then(|data| data["spendLimitMicros"].as_u64())
-            .is_some_and(|limit| total.cost_micros.is_some_and(|cost| cost >= limit))
-        {
+        total.unknown_cost_turns = total.unknown_cost_turns.saturating_add(delta.unknown_cost_turns);
+        if budget_hit(task.result_data.as_ref(), task.usage.as_ref()) {
             task.result_data.get_or_insert_with(|| serde_json::json!({}))["budgetPaused"] = serde_json::json!(true);
         }
         task.updated_at_ms = now_ms();
@@ -808,7 +835,7 @@ impl AssistantTasks {
         let mut data = outcome.result_data.take().unwrap_or_else(|| serde_json::json!({}));
         if !data.is_object() { data = serde_json::json!({}); }
         if let Some(latest) = current.result_data.as_ref() {
-            for key in ["spendLimitMicros", "queuedNotes"] {
+            for key in ["spendLimitMicros", "queuedNotes", "unknownCostAccepted"] {
                 if let Some(value) = latest.get(key) { data[key] = value.clone(); }
             }
             for key in ["pendingApprovals", "pendingQuestions"] {
@@ -822,13 +849,11 @@ impl AssistantTasks {
             if history.len() > 200 { history.drain(..history.len() - 200); }
             if !history.is_empty() { data["taskHistory"] = serde_json::json!(history); }
         }
-        let over_limit = data["spendLimitMicros"].as_u64().is_some_and(|limit| {
-            current.usage.as_ref().and_then(|usage| usage.cost_micros).is_some_and(|cost| cost >= limit)
-        });
+        let over_limit = budget_hit(Some(&data), current.usage.as_ref());
         if outcome.status != TaskStatus::Cancelled && over_limit {
             outcome.status = TaskStatus::NeedsYou;
             data["budgetPaused"] = serde_json::json!(true);
-            outcome.result = Some("Paused at the reported spend limit. Raise or remove the limit, then resume this task.".into());
+            outcome.result = Some(budget_pause_text(Some(&data), current.usage.as_ref()).into());
         }
         outcome.result_data = (!data.as_object().is_some_and(|object| object.is_empty())).then_some(data);
         let task = document.tasks.get_mut(task_id).unwrap();
@@ -980,8 +1005,31 @@ impl AssistantTasks {
         let before = document.clone();
         let mut changed = false;
         for task in document.tasks.values_mut() {
+            let open_attempt = task.attempts.last().is_some_and(|attempt| attempt.finished_at_ms.is_none());
+            // Never started: nothing ran, so it stays queued and is dispatched again at startup.
+            if task.status == TaskStatus::Queued && task.attempts.is_empty() {
+                continue;
+            }
+            // Waiting on an approval or question: the in-memory channel died with the process,
+            // but the review data is durable. Keep it waiting; Retry re-runs the step.
+            if task.status == TaskStatus::NeedsYou && open_attempt && task.mode != TaskMode::Isolated {
+                let data = task.result_data.get_or_insert_with(|| serde_json::json!({}));
+                data["pendingApprovals"] = serde_json::json!([]);
+                data["pendingQuestions"] = serde_json::json!([]);
+                data["restartedWhileWaiting"] = serde_json::json!(true);
+                task.result = Some(RESTART_WAIT_NOTE.into());
+                task.revision += 1;
+                task.updated_at_ms = now_ms();
+                if let Some(attempt) = task.attempts.last_mut() {
+                    attempt.status = TaskStatus::NeedsYou;
+                    attempt.finished_at_ms = Some(now_ms());
+                    attempt.review_revision = None;
+                }
+                changed = true;
+                continue;
+            }
             if matches!(task.status, TaskStatus::Queued | TaskStatus::Running | TaskStatus::Applying)
-                || (task.status == TaskStatus::NeedsYou && task.attempts.last().is_some_and(|attempt|attempt.finished_at_ms.is_none()))
+                || (task.status == TaskStatus::NeedsYou && open_attempt)
             {
                 task.status = TaskStatus::Interrupted;
                 task.revision += 1;
@@ -1244,14 +1292,54 @@ mod tests {
         let store = AssistantTasks::open(ledger(&path)).unwrap();
         let task = store.submit_human_request(request("usage", "Fix it"), "brief".into(), Some(destination())).unwrap();
         let (task, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
-        store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: None, cost_micros: Some(7) }).unwrap();
-        let updated = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: Some(5), output_tokens: None, cost_micros: Some(3) }).unwrap();
+        store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: None, cost_micros: Some(7), unknown_cost_turns: 0 }).unwrap();
+        let updated = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: Some(5), output_tokens: None, cost_micros: Some(3), unknown_cost_turns: 0 }).unwrap();
         assert_eq!(updated.revision, task.revision, "usage events don't invalidate human actions");
-        assert_eq!(updated.usage, Some(TaskUsage { input_tokens: Some(5), output_tokens: None, cost_micros: Some(10) }));
+        assert_eq!(updated.usage, Some(TaskUsage { input_tokens: Some(5), output_tokens: None, cost_micros: Some(10), unknown_cost_turns: 0 }));
         let done = store.finish_attempt(&task.id, &run, TaskOutcome { status: TaskStatus::ReadyForReview, result: None, result_data: None, usage: None }).unwrap();
         assert_eq!(done.usage, updated.usage);
         assert_eq!(done.attempts[0].usage, updated.usage);
-        assert!(store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: Some(99), cost_micros: None }).is_err());
+        assert!(store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: Some(99), cost_micros: None, unknown_cost_turns: 0 }).is_err());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn a_task_waiting_on_an_approval_survives_restart_and_resumes_on_retry() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("waiting", "Review it"), "brief".into(), Some(destination())).unwrap();
+        let task = store.set_result_data(&task.id, task.revision, &owner(), Some(serde_json::json!({"mode":"read_only","diff":"+kept"}))).unwrap();
+        let (task, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        store.set_run_waits(&task.id, &run, vec![serde_json::json!({"id":"approval-1"})], vec![]).unwrap();
+        drop(store);
+        let reopened = AssistantTasks::open(ledger(&path)).unwrap();
+        let restored = reopened.get(&task.id).unwrap().unwrap();
+        assert_eq!(restored.status, TaskStatus::NeedsYou, "a step waiting for the human is not given up as interrupted");
+        assert!(restored.attempts[0].finished_at_ms.is_some(), "the dead attempt is closed");
+        let data = restored.result_data.clone().unwrap();
+        assert_eq!(data["diff"], "+kept", "review data survives the restart");
+        assert_eq!(data["pendingApprovals"], serde_json::json!([]), "the dead in-memory approval is cleared");
+        assert_eq!(restored.result.as_deref(), Some(RESTART_WAIT_NOTE));
+        let (resumed, _) = reopened.begin_attempt(&restored.id, restored.revision, &owner()).unwrap();
+        assert_eq!(resumed.attempts.len(), 2, "Retry runs the step again as a new attempt");
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn unknown_cost_pauses_a_task_with_a_spend_limit_until_accepted() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let task = store.submit_human_request(request("unknown", "Review it"), "brief".into(), Some(destination())).unwrap();
+        let task = store.set_result_data(&task.id, task.revision, &owner(), Some(serde_json::json!({"mode":"read_only","spendLimitMicros":10}))).unwrap();
+        let (task, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
+        let unpriced = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: Some(20), output_tokens: None, cost_micros: None, unknown_cost_turns: 1 }).unwrap();
+        assert_eq!(unpriced.result_data.as_ref().unwrap()["budgetPaused"], true, "a limit with an unreported cost pauses");
+        assert!(budget_hit(unpriced.result_data.as_ref(), unpriced.usage.as_ref()));
+        assert!(budget_pause_text(unpriced.result_data.as_ref(), unpriced.usage.as_ref()).contains("needs your OK to continue"));
+        let mut data = unpriced.result_data.clone().unwrap();
+        data["unknownCostAccepted"] = serde_json::json!(true);
+        let accepted = store.set_result_data(&task.id, unpriced.revision, &owner(), Some(data)).unwrap();
+        assert!(!budget_hit(accepted.result_data.as_ref(), accepted.usage.as_ref()), "accepting the unknown cost lets the task continue");
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -1262,9 +1350,9 @@ mod tests {
         let task = store.submit_human_request(request("cap", "Review it"), "brief".into(), Some(destination())).unwrap();
         let task = store.set_result_data(&task.id, task.revision, &owner(), Some(serde_json::json!({"mode":"read_only","spendLimitMicros":10}))).unwrap();
         let (task, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
-        let unknown = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: Some(20), output_tokens: None, cost_micros: None }).unwrap();
-        assert_ne!(unknown.result_data.as_ref().unwrap()["budgetPaused"], true, "unknown provider cost cannot invent a spend pause");
-        let met = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: None, cost_micros: Some(10) }).unwrap();
+        let unknown = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: Some(20), output_tokens: None, cost_micros: None, unknown_cost_turns: 1 }).unwrap();
+        assert_eq!(unknown.result_data.as_ref().unwrap()["budgetPaused"], true, "an unreported cost pauses a task that has a spend limit");
+        let met = store.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: None, cost_micros: Some(10), unknown_cost_turns: 0 }).unwrap();
         assert_eq!(met.result_data.as_ref().unwrap()["budgetPaused"], true);
         store.set_run_waiting(&task.id, &run, true).unwrap();
         let paused = store.finish_attempt(&task.id, &run, TaskOutcome { status: TaskStatus::NeedsYou, result: Some("Spend limit reached".into()), result_data: met.result_data, usage: None }).unwrap();
@@ -1274,12 +1362,12 @@ mod tests {
         let reopened = AssistantTasks::open(ledger(&path)).unwrap();
         let restored = reopened.get(&task.id).unwrap().unwrap();
         assert_eq!(restored.status, TaskStatus::NeedsYou, "a settled spend pause survives restart without starting work");
-        let mut data = restored.result_data.clone().unwrap(); data["spendLimitMicros"] = serde_json::json!(20);
+        let mut data = restored.result_data.clone().unwrap(); data["spendLimitMicros"] = serde_json::json!(20); data["unknownCostAccepted"] = serde_json::json!(true);
         let raised = reopened.set_result_data(&restored.id, restored.revision, &owner(), Some(data)).unwrap();
         let (resumed, next_run) = reopened.begin_attempt(&raised.id, raised.revision, &owner()).unwrap();
         assert_eq!(resumed.attempts.len(), 2); assert_ne!(next_run, run);
         assert_eq!(resumed.result_data.unwrap()["budgetPaused"], false);
-        assert!(reopened.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: None, cost_micros: Some(99) }).is_err());
+        assert!(reopened.add_run_usage(&task.id, &run, TaskUsage { input_tokens: None, output_tokens: None, cost_micros: Some(99), unknown_cost_turns: 0 }).is_err());
         std::fs::remove_dir_all(path).unwrap();
     }
 
@@ -1295,7 +1383,7 @@ mod tests {
         let (running, run) = store.begin_attempt(&task.id, task.revision, &owner()).unwrap();
         let mut stale_result = running.result_data.clone().unwrap();
         stale_result["taskHistory"].as_array_mut().unwrap().push(serde_json::json!({"atMs": 3, "kind": "result", "text": "Findings"}));
-        let used = store.add_run_usage(&task.id, &run, TaskUsage { cost_micros: Some(10), input_tokens: None, output_tokens: None }).unwrap();
+        let used = store.add_run_usage(&task.id, &run, TaskUsage { cost_micros: Some(10), input_tokens: None, output_tokens: None, unknown_cost_turns: 0 }).unwrap();
         let mut latest = used.result_data.clone().unwrap();
         latest["spendLimitMicros"] = serde_json::json!(5);
         latest["queuedNotes"] = serde_json::json!(["Keep archived chats untouched"]);
@@ -1384,7 +1472,7 @@ mod tests {
         drop(store);
         let reopened = AssistantTasks::open(ledger(&path)).unwrap();
         let restored = reopened.get(&first.id).unwrap().unwrap();
-        assert_eq!(restored.status, TaskStatus::Interrupted);
+        assert_eq!(restored.status, TaskStatus::Queued, "a task that never started stays queued across a restart");
         assert_eq!(restored.original_request, first.original_request);
         assert_eq!(reopened.submit_human_request(request("client-1", "Fix the bug"), "ignored".into(), Some(destination())).unwrap().id, first.id);
         std::fs::remove_dir_all(path).unwrap();
@@ -1573,6 +1661,7 @@ mod tests {
                         input_tokens: Some(12),
                         output_tokens: None,
                         cost_micros: Some(45),
+                        unknown_cost_turns: 0,
                     }),
                 },
             )
@@ -1626,6 +1715,7 @@ mod tests {
                     input_tokens: Some(10),
                     output_tokens: None,
                     cost_micros: None,
+                    unknown_cost_turns: 1,
                 },
             )
             .unwrap();
@@ -1651,7 +1741,7 @@ mod tests {
     }
 
     #[test]
-    fn all_queued_tasks_require_explicit_retry_after_restart() {
+    fn queued_tasks_that_never_started_stay_queued_after_restart() {
         let path = folder();
         let store = AssistantTasks::open(ledger(&path)).unwrap();
         let first = store
@@ -1697,7 +1787,8 @@ mod tests {
         );
         assert_eq!(
             recovered.get(&second.id).unwrap().unwrap().status,
-            TaskStatus::Interrupted
+            TaskStatus::Queued,
+            "a queued task that never started stays queued across a restart"
         );
         assert_eq!(queued_retry.attempts.len(), 1);
         std::fs::remove_dir_all(path).unwrap();

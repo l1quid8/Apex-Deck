@@ -177,6 +177,10 @@ export interface TokenTotals {
   turns: number;
   /** What those turns cost in millionths of a US dollar, when the provider says. */
   cost_micros?: number;
+  /** Turns whose cost wasn't reported. Their cost is unknown, not zero. */
+  unknown_cost_turns?: number;
+  /** Estimated costs (such as a media quote), in millionths of a US dollar. Not provider-reported. */
+  estimated_cost_micros?: number;
 }
 
 export interface Compaction {
@@ -263,7 +267,7 @@ export type RoomEvent = { recovery_seq?: number } & (
   /** A bot changed a file. */
   | { type: "changed"; id: string; change: FileChange }
   /** Tokens a finished turn used, when the backend reports them. */
-  | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cost_micros?: number | null }
+  | { type: "usage"; id: string; input_tokens: number | null; output_tokens: number | null; cost_micros?: number | null; cost_estimated?: boolean }
   /** How full a participant's context window was on its latest request. */
   | { type: "context_usage"; id: string; used_tokens: number; window_tokens: number }
   /** How much of a provider account's plan is used. With `partial`, windows not listed keep their last value. */

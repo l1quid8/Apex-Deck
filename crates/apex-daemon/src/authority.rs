@@ -56,7 +56,12 @@ pub fn command_needs(command: &Command) -> Need {
         AssistantTasksList { .. } => read(Global),
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
-        PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalPause { .. } => full(Global),
+        PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalPause { .. }
+        | PersonalScheduleCancel { .. } | PersonalConfigure { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
+        | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
+        | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
+        | PersonalMachineResult { .. } | PersonalMachineAllow { .. } | PersonalMachineAllowed {} | PersonalExecuteLocal { .. }
+        | PersonalConnectors {} | PersonalBrowserView {} | PersonalBrowserTakeOver { .. } | PersonalBrowserInput { .. } => full(Global),
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } => read(thread(id)),
@@ -255,6 +260,26 @@ mod tests {
             ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
             ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),
             ("personal_pause", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r4", "paused": true })),
+            ("personal_schedule_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r5", "scheduleId": "ps-1" })),
+            ("personal_configure", Some((Full, "global")), json!({ "assistantId": "asst-1", "settings": {} })),
+            ("personal_rule_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "ask", "class": "write", "mode": "ask" })),
+            ("personal_memory_forget", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1" })),
+            ("personal_machine_claim", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac" })),
+            ("personal_execute_local", Some((Full, "global")), json!({ "assistantId": "asst-1", "assistantHostId": "vps", "operation": { "tool": "host.command", "host": "mac", "cwd": "/x", "argv": ["ls"] } })),
+            ("personal_browser_input", Some((Full, "global")), json!({ "input": { "kind": "back" } })),
+            ("personal_rule_remove", Some((Full, "global")), json!({ "assistantId": "asst-1", "ruleId": "pr-1" })),
+            ("personal_memory_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "x" })),
+            ("personal_memory_correct", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1", "text": "x" })),
+            ("personal_notices_seen", Some((Full, "global")), json!({ "assistantId": "asst-1", "upTo": 1 })),
+            ("personal_push_register", Some((Full, "global")), json!({ "assistantId": "asst-1", "token": "ab" })),
+            ("personal_machine_link", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac", "name": "Mac", "folder": "/x" })),
+            ("personal_machine_unlink", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac" })),
+            ("personal_machine_result", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac", "taskId": "pt-1", "opId": "o" })),
+            ("personal_machine_allow", Some((Full, "global")), json!({ "assistantId": "asst-1", "assistantHostId": "vps", "folder": "/x" })),
+            ("personal_machine_allowed", Some((Full, "global")), json!({})),
+            ("personal_connectors", Some((Full, "global")), json!({})),
+            ("personal_browser_view", Some((Full, "global")), json!({})),
+            ("personal_browser_take_over", Some((Full, "global")), json!({ "on": true })),
             ("monitor_check_now", Some((Full, "global")), json!({ "workspaceId": "w" })),
             ("monitor_resolve", Some((Full, "global")), json!({ "workspaceId": "w", "findingId": "f", "status": "resolved" })),
             ("room_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),

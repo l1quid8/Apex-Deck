@@ -42,6 +42,7 @@ try {
 }
 
 contextBridge.exposeInMainWorld('apexDeck', {
+  googleSignIn: (args) => ipcRenderer.invoke('google:signIn', args),
   daemon: {
     connect: (hostId) => ipcRenderer.invoke('daemon:connect', hostId),
     send: (hostId, gen, line) => ipcRenderer.send('daemon:send', hostId, gen, line),

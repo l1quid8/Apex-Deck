@@ -92,3 +92,14 @@
 .apex-agent-operation dd { margin: 0; overflow-wrap: anywhere; }
 .apex-agent-all .apex-agent-more summary { list-style: none; }
 .apex-agent-all .apex-agent-more summary::-webkit-details-marker { display: none; }
+.apex-agent-task-chip[data-status="waiting"] { border-color: #7aa7ff; color: #7aa7ff; }
+.apex-agent-task-chip[data-status="blocked"] { border-color: #e8953a; color: #e8953a; }
+.apex-agent-helper { border-left: 2px solid var(--line); padding-left: 8px; color: var(--muted); }
+.apex-agent-helper-label { margin-left: 6px; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.apex-agent-notice { font-size: 12px; color: var(--muted); }
+.apex-agent-new-notices { padding: 0; border: 0; background: none; color: var(--accent, #71e6b5); font: inherit; cursor: pointer; text-decoration: underline; }
+.apex-agent-all .apex-agent-tabpanel { position: relative; }
+.apex-agent-panels-sheet { position: absolute; inset: 0; z-index: 6; display: flex; flex-direction: column; overflow: auto; background: var(--panel, var(--bg)); }
+.apex-agent-panels-top { display: flex; justify-content: flex-end; padding: 4px 8px 0; }
+.apex-agent-panels-sheet .personal-panels-body { max-height: none; flex: 1; }
+.apex-agent-all { position: relative; }

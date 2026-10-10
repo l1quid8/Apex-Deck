@@ -99,9 +99,14 @@ fn members(pgid: u32) -> Vec<u32> {
     pids.into_iter().take(count).filter_map(|pid| u32::try_from(pid).ok()).filter(|pid| *pid > 0).collect()
 }
 
+/// When this Mac booted, so a reboot is told apart from a reused id.
 #[cfg(target_os = "macos")]
 fn boot() -> String {
-    String::new()
+    let mut time = libc::timeval { tv_sec: 0, tv_usec: 0 };
+    let mut size = std::mem::size_of::<libc::timeval>();
+    // SAFETY: the name is NUL-terminated and the buffer is a timeval of `size` bytes.
+    let ok = unsafe { libc::sysctlbyname(c"kern.boottime".as_ptr(), (&raw mut time).cast(), &mut size, std::ptr::null_mut(), 0) } == 0;
+    if ok { format!("{}.{}", time.tv_sec, time.tv_usec) } else { String::new() }
 }
 
 /// `(group id, start time)` from `/proc/<pid>/stat`: fields 5 and 22.

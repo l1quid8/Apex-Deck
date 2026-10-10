@@ -1,0 +1,25 @@
+.personal-call { position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column; gap: 12px; padding: 14px; overflow: auto; background: var(--panel, var(--bg)); color: var(--text); font-size: 13px; }
+.personal-call-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }
+.personal-call-muted { color: var(--muted); font-size: 11.5px; }
+.personal-call-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
+.personal-call-orb { width: 150px; height: 150px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 35% 35%, var(--accent, #71e6b5), rgba(113, 230, 181, .25)); font-size: 14px; color: var(--text); box-shadow: 0 0 0 0 rgba(113, 230, 181, .45); }
+.personal-call-orb.is-listening { animation: personal-call-pulse 1.4s ease-out infinite; }
+.personal-call-orb.is-speaking { animation: personal-call-pulse .9s ease-in-out infinite alternate; }
+.personal-call-orb.is-thinking { opacity: .7; background: radial-gradient(circle at 35% 35%, #7aa7ff, rgba(122, 167, 255, .25)); }
+.personal-call-orb.is-paused { opacity: .5; }
+@keyframes personal-call-pulse {
+  from { transform: scale(1); box-shadow: 0 0 0 0 rgba(113, 230, 181, .45); }
+  to { transform: scale(1.06); box-shadow: 0 0 0 18px rgba(113, 230, 181, 0); }
+}
+@media (prefers-reduced-motion: reduce) { .personal-call-orb { animation: none !important; } }
+.personal-call-partial { margin: 0; max-width: 360px; color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
+.personal-call-reply { margin: 0; max-width: 360px; max-height: 30vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.personal-call-alert { margin: 0; color: #ef6b6b; }
+.personal-call-controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.personal-call-controls button, .personal-call-fallback button { padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: none; color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer; }
+.personal-call-controls button[aria-pressed="true"] { border-color: var(--accent, #71e6b5); color: var(--accent, #71e6b5); }
+.personal-call-talk { padding: 12px 26px !important; border-color: var(--accent, #71e6b5) !important; color: var(--accent, #71e6b5) !important; font-size: 14px !important; }
+.personal-call button:disabled, .personal-call input:disabled { opacity: .45; cursor: default; }
+.personal-call-fallback { display: flex; gap: 6px; }
+.personal-call-fallback input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+.personal-call-note { margin: 0; text-align: center; }

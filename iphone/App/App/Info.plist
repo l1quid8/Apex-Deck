@@ -35,6 +35,10 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing code shown on your computer.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Talk to your assistant in a voice call.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Your words are turned into text on this iPhone so you can talk to your assistant.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Apex Deck connects to your Mac and servers on this network.</string>
 	<key>UIApplicationSceneManifest</key>

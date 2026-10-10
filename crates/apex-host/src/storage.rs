@@ -99,6 +99,15 @@ impl Store {
         self.write(&self.root.join("personal-assistants.json"), document)
     }
 
+    /// Which remote assistants may run commands on this machine, and where.
+    pub fn personal_machine(&self) -> Result<Option<crate::personal_settings::MachineAllows>, String> {
+        self.read(&self.root.join("personal-machine.json"))
+    }
+
+    pub fn save_personal_machine(&self, allows: &crate::personal_settings::MachineAllows) -> Result<(), String> {
+        self.write(&self.root.join("personal-machine.json"), allows)
+    }
+
     /// The folder every saved file lives in.
     pub fn folder(&self) -> &Path {
         &self.root
