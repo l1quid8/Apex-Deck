@@ -44,8 +44,8 @@ impl Fake {
                 let fake = a.clone();
                 Box::pin(async move {
                     fake.reason_calls.fetch_add(1, Ordering::SeqCst);
-                    if fake.model_hangs.load(Ordering::SeqCst) {
-                        std::future::pending::<()>().await;
+                    while fake.model_hangs.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
                     }
                     let mut replies = fake.replies.lock().unwrap();
                     if replies.is_empty() { Ok("{\"reply\":\"ok\",\"task\":null}".into()) } else { replies.remove(0) }
@@ -55,8 +55,8 @@ impl Fake {
                 let fake = b.clone();
                 Box::pin(async move {
                     fake.runs.lock().unwrap().push(spec);
-                    if fake.tool_hangs.load(Ordering::SeqCst) {
-                        std::future::pending::<()>().await;
+                    while fake.tool_hangs.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
                     }
                     Ok(ToolRun { exit_code: 0, output: fake.output.lock().unwrap().clone() })
                 })
@@ -103,6 +103,15 @@ impl Fixture {
         let tasks = self.get().tasks;
         assert_eq!(tasks.len(), 1, "exactly one task");
         tasks[0].clone()
+    }
+
+    /// Wait, with the real worker running, until `done` holds.
+    async fn until(&self, what: &str, done: impl Fn(&PersonalAssistant) -> bool) {
+        for _ in 0..400 {
+            if done(&self.get()) { return; }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for: {what}");
     }
 
     async fn drain(&self, tools: &WorkerTools) {
@@ -469,4 +478,136 @@ async fn the_model_prompt_carries_the_current_time_and_no_stale_output() {
     assert!(!text.contains("55G"), "the 15-minute-old df output reached the model");
     assert!(text.contains("no longer current"));
     assert!(text.contains(&format!("It is now {}", clock(now()))));
+}
+
+// The worker does more than one thing at a time.
+
+#[tokio::test]
+async fn an_approval_and_its_command_go_ahead_while_a_reply_is_slow() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "How much disk is free?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.host.start_personal_worker_with(fake.tools()).unwrap();
+
+    fake.model_hangs.store(true, Ordering::SeqCst);
+    fixture.host.personal_send(&fixture.id, "phone-2", "Write me a long essay").unwrap();
+    fixture.until("the slow reply starts", |_| fake.reason_calls.load(Ordering::SeqCst) == 2).await;
+    fixture.decide("mac-1", true);
+    fixture.until("the approved command finishes", |a| a.tasks[0].status == TaskStatus::Done).await;
+    assert_eq!(fake.runs(), 1);
+    assert_eq!(fixture.lines("assistant", "chat"), 1, "the slow reply is still being written");
+
+    fake.model_hangs.store(false, Ordering::SeqCst);
+    fixture.until("the slow reply lands", |a| a.messages.iter().filter(|m| m.role == "assistant" && m.kind == "chat").count() == 2).await;
+}
+
+#[tokio::test]
+async fn a_message_is_answered_while_a_command_runs() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "How much disk is free?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fake.tool_hangs.store(true, Ordering::SeqCst);
+    fixture.host.start_personal_worker_with(fake.tools()).unwrap();
+    fixture.decide("mac-1", true);
+    fixture.until("the command starts", |a| a.tasks[0].status == TaskStatus::Running).await;
+
+    fixture.host.personal_send(&fixture.id, "phone-2", "Thanks, anything else?").unwrap();
+    fixture.until("the reply lands", |a| a.messages.iter().filter(|m| m.role == "assistant" && m.kind == "chat").count() == 2).await;
+    assert_eq!(fixture.task().status, TaskStatus::Running, "the command is still going");
+
+    fake.tool_hangs.store(false, Ordering::SeqCst);
+    fixture.until("the command finishes", |a| a.tasks[0].status == TaskStatus::Done).await;
+    assert_eq!(fake.runs(), 1);
+}
+
+#[tokio::test]
+async fn a_cancel_lands_while_the_command_is_still_running() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "How much disk is free?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fake.tool_hangs.store(true, Ordering::SeqCst);
+    fixture.host.start_personal_worker_with(fake.tools()).unwrap();
+    fixture.decide("mac-1", true);
+    fixture.until("the command starts", |a| a.tasks[0].status == TaskStatus::Running).await;
+    let task = fixture.task().id;
+    fixture.host.personal_cancel(&fixture.id, "mac-2", &task).unwrap();
+    fixture.until("the cancel applies", |a| a.tasks[0].status == TaskStatus::Cancelled).await;
+
+    fake.tool_hangs.store(false, Ordering::SeqCst);
+    fixture.until("the result is recorded", |a| a.messages.iter().any(|m| m.kind == "result")).await;
+    assert_eq!(fixture.task().status, TaskStatus::Cancelled, "a late result doesn't undo the cancel");
+    assert_eq!(fake.runs(), 1);
+}
+
+#[tokio::test]
+async fn replies_to_one_assistant_are_written_one_at_a_time_and_in_order() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.model_hangs.store(true, Ordering::SeqCst);
+    fixture.host.start_personal_worker_with(fake.tools()).unwrap();
+    fixture.host.personal_send(&fixture.id, "phone-1", "First").unwrap();
+    fixture.host.personal_send(&fixture.id, "phone-2", "Second").unwrap();
+    fixture.until("the first reply starts", |_| fake.reason_calls.load(Ordering::SeqCst) == 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst), 1, "the second waits so it can see the first reply");
+
+    fake.say("{\"reply\":\"one\",\"task\":null}");
+    fake.say("{\"reply\":\"two\",\"task\":null}");
+    fake.model_hangs.store(false, Ordering::SeqCst);
+    fixture.until("both replies land", |a| a.messages.iter().filter(|m| m.role == "assistant").count() == 2).await;
+    let replies: Vec<_> = fixture.get().messages.into_iter().filter(|m| m.role == "assistant").map(|m| m.text).collect();
+    assert_eq!(replies, ["one", "two"]);
+    assert_eq!(fake.reason_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn commands_that_are_not_safe_to_repeat_never_overlap() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(false);
+    fake.say(DISK_TASK);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "Disk?").unwrap();
+    fixture.host.personal_send(&fixture.id, "phone-2", "Disk again?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let decisions: Vec<_> = fixture.get().tasks.iter().map(|t| t.decision.clone().unwrap()).collect();
+    assert_eq!(decisions.len(), 2);
+    fake.tool_hangs.store(true, Ordering::SeqCst);
+    fixture.host.start_personal_worker_with(fake.tools()).unwrap();
+    for (n, d) in decisions.iter().enumerate() {
+        fixture.host.personal_decide(&fixture.id, &format!("mac-{n}"), &d.id, &d.params_hash, true).unwrap();
+    }
+    fixture.until("one command starts", |_| fake.runs() == 1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(fake.runs(), 1, "the second waits for the first");
+
+    fake.tool_hangs.store(false, Ordering::SeqCst);
+    fixture.until("both finish", |a| a.tasks.iter().all(|t| t.status == TaskStatus::Done)).await;
+    assert_eq!(fake.runs(), 2);
+}
+
+#[tokio::test]
+async fn read_only_commands_run_side_by_side() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "Disk?").unwrap();
+    fixture.host.personal_send(&fixture.id, "phone-2", "Disk again?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let decisions: Vec<_> = fixture.get().tasks.iter().map(|t| t.decision.clone().unwrap()).collect();
+    fake.tool_hangs.store(true, Ordering::SeqCst);
+    fixture.host.start_personal_worker_with(fake.tools()).unwrap();
+    for (n, d) in decisions.iter().enumerate() {
+        fixture.host.personal_decide(&fixture.id, &format!("mac-{n}"), &d.id, &d.params_hash, true).unwrap();
+    }
+    fixture.until("both commands start", |_| fake.runs() == 2).await;
+    fake.tool_hangs.store(false, Ordering::SeqCst);
+    fixture.until("both finish", |a| a.tasks.iter().all(|t| t.status == TaskStatus::Done)).await;
+    assert_eq!(fake.runs(), 2, "each ran once");
 }

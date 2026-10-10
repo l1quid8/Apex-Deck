@@ -2,8 +2,12 @@
 //! order, answers human messages with a tool-free model call, applies
 //! decisions and cancellations in code, and runs approved operations through
 //! the gateway check. No model keeps running while a task waits.
+//!
+//! Jobs run side by side: a slow reply doesn't hold up approvals, cancels or
+//! commands. Per assistant there is at most one reply in flight (so each one
+//! sees the last), and an operation that isn't safe to repeat runs alone.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{collections::{HashMap, HashSet}, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use apex_core::{ParticipantConfig, TurnRequest};
 use serde::Deserialize;
@@ -22,6 +26,9 @@ const EXCERPT_BYTES: usize = 4 * 1024;
 const MAX_EVENT_ATTEMPTS: u32 = 3;
 const MAX_TASK_ATTEMPTS: u32 = 3;
 const CONTEXT_MESSAGES: usize = 20;
+/// Replies and operations in flight at once, across all assistants.
+/// Approvals and cancels don't count: they're quick and never wait.
+const MAX_JOBS: usize = 4;
 /// A command result older than this is history, not the machine's current
 /// state, so its output is kept out of the model's context.
 const FRESH_RESULT_MS: u64 = 2 * 60 * 1000;
@@ -185,8 +192,13 @@ fn prompt(assistant: &PersonalAssistant, text: &str, now: u64) -> String {
     out
 }
 
+/// Replies and operations count toward `MAX_JOBS`; approvals and cancels don't.
+fn heavy_key(key: &str) -> bool {
+    key.starts_with("reply:") || key.starts_with("task:")
+}
+
 /// What one step of the worker found to do.
-enum Work {
+pub(crate) enum Work {
     Event(PersonalAssistant, PersonalEvent),
     Task(String, String),
 }
@@ -206,20 +218,37 @@ impl Host {
         let owner = Arc::downgrade(self);
         let wake = self.personal_wake.clone();
         *worker = Some(self.runtime().spawn(async move {
+            let mut jobs = tokio::task::JoinSet::new();
+            // Keys held by each running job, so a panicked job still frees them.
+            let mut held: HashMap<tokio::task::Id, Vec<String>> = HashMap::new();
             loop {
                 let Some(host) = owner.upgrade() else { break };
+                let busy: HashSet<String> = held.values().flatten().cloned().collect();
+                let heavy = busy.iter().filter(|key| heavy_key(key)).count();
                 let mut delay = Duration::from_secs(60);
-                match host.personal_step(&tools).await {
-                    Ok(true) => delay = Duration::ZERO,
-                    Ok(false) => {}
+                match host.personal_claim(&tools, &busy, usize::MAX, MAX_JOBS.saturating_sub(heavy)) {
+                    Ok(claimed) => {
+                        for (keys, work) in claimed {
+                            let (host, tools) = (host.clone(), tools.clone());
+                            let job = jobs.spawn(async move {
+                                if let Err(error) = host.personal_do(&tools, work).await {
+                                    eprintln!("Personal assistant: {error}");
+                                }
+                            });
+                            held.insert(job.id(), keys);
+                        }
+                    }
                     Err(error) => {
                         eprintln!("Personal assistant: {error}");
                         delay = Duration::from_secs(5);
                     }
                 }
                 drop(host);
-                if delay.is_zero() { continue; }
                 tokio::select! {
+                    Some(done) = jobs.join_next_with_id(), if !jobs.is_empty() => {
+                        let id = match done { Ok((id, ())) => id, Err(error) => error.id() };
+                        held.remove(&id);
+                    }
                     _ = wake.notified() => {},
                     _ = tokio::time::sleep(delay) => {},
                 }
@@ -241,25 +270,61 @@ impl Host {
     /// Do one thing: the oldest waiting event, else one approved task.
     /// `Ok(false)` when there was nothing to do.
     pub async fn personal_step(&self, tools: &WorkerTools) -> Result<bool, String> {
-        let work = self.change_personal(|assistants| {
+        match self.personal_claim(tools, &HashSet::new(), 1, 1)?.pop() {
+            None => Ok(false),
+            Some((_, work)) => self.personal_do(tools, work).await.map(|()| true),
+        }
+    }
+
+    /// Claim up to `max` jobs that don't clash with `busy`, at most `room` of
+    /// them replies or operations. Each comes with the keys it holds while it
+    /// runs: `reply:<assistant>` (one reply at a time), `task:<assistant>:<task>`,
+    /// and `write:<assistant>` for an operation that isn't safe to repeat.
+    pub(crate) fn personal_claim(&self, tools: &WorkerTools, busy: &HashSet<String>, max: usize, room: usize) -> Result<Vec<(Vec<String>, Work)>, String> {
+        self.change_personal(|assistants| {
+            let mut taken = busy.clone();
+            let mut out = Vec::new();
+            let mut heavy = 0;
             for assistant in assistants.iter_mut().filter(|a| !a.paused) {
-                if let Some(event) = assistant.events.iter_mut().find(|e| e.state == EventState::Received) {
+                let id = assistant.id.clone();
+                let mut events = Vec::new();
+                for event in assistant.events.iter_mut().filter(|e| e.state == EventState::Received) {
+                    let human = matches!(event.source, EventSource::Human { .. });
+                    let key = if human { format!("reply:{id}") } else { format!("event:{id}:{}", event.id) };
+                    if out.len() + events.len() >= max || (human && heavy >= room) || taken.contains(&key) { continue; }
+                    heavy += usize::from(human);
+                    taken.insert(key.clone());
                     event.state = EventState::Processing;
                     event.attempts += 1;
-                    let event = event.clone();
-                    assistant.revision += 1;
-                    return Ok(Some(Work::Event(assistant.clone(), event)));
+                    events.push((key, event.clone()));
                 }
-                if let Some(task) = assistant.tasks.iter().find(|t| t.status == TaskStatus::Queued) {
-                    return Ok(Some(Work::Task(assistant.id.clone(), task.id.clone())));
+                if !events.is_empty() {
+                    assistant.revision += 1;
+                }
+                for (key, event) in events {
+                    out.push((vec![key], Work::Event(assistant.clone(), event)));
+                }
+                for task in assistant.tasks.iter().filter(|t| t.status == TaskStatus::Queued) {
+                    if out.len() >= max || heavy >= room { break; }
+                    let mut keys = vec![format!("task:{id}:{}", task.id)];
+                    // Unknown tools count as unsafe to repeat; the gateway then refuses them.
+                    if !task.operation.as_ref().and_then(|op| (tools.tool)(&op.tool)).unwrap_or(false) {
+                        keys.push(format!("write:{id}"));
+                    }
+                    if keys.iter().any(|key| taken.contains(key)) { continue; }
+                    heavy += 1;
+                    taken.extend(keys.iter().cloned());
+                    out.push((keys, Work::Task(id.clone(), task.id.clone())));
                 }
             }
-            Ok(None)
-        })?;
+            Ok(out)
+        })
+    }
+
+    async fn personal_do(&self, tools: &WorkerTools, work: Work) -> Result<(), String> {
         match work {
-            None => Ok(false),
-            Some(Work::Event(assistant, event)) => self.personal_event(tools, assistant, event).await.map(|()| true),
-            Some(Work::Task(assistant, task)) => self.personal_run(tools, &assistant, &task).await.map(|()| true),
+            Work::Event(assistant, event) => self.personal_event(tools, assistant, event).await,
+            Work::Task(assistant, task) => self.personal_run(tools, &assistant, &task).await,
         }
     }
 
