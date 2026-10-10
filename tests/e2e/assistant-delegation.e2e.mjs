@@ -256,3 +256,119 @@ cat >/dev/null
   assert.equal(git('cat-file', '-t', done.resultData.resultCommit).trim(), 'commit');
   await assert.rejects(phone.call('assistant_task_action', { taskId: done.id, owner, revision: archived.revision, action: 'retry' }), /archiv/i);
 });
+
+
+for (const hostCount of [1, 2]) {
+  test(`cross-project proposals route on ${hostCount} isolated daemon host(s), recover receipts, and execute once`, { timeout: 90_000 }, async t => {
+    const base = fs.realpathSync(fs.mkdtempSync('/tmp/ade-handoff-'));
+    const hosts = [], projects = [];
+    const tools = path.join(base, 'tools'); fs.mkdirSync(tools);
+    fs.writeFileSync(path.join(tools, 'claude'), `#!/bin/sh
+case "$*" in *--help*) echo 'The workspace trust dialog is skipped when stdout is not a TTY.'; exit 0;; esac
+IFS= read -r prompt
+case "$prompt" in *'project 0'*) number=0;; *) number=1;; esac
+echo run >> '${base}/executions-'"$number"
+echo '{"type":"system","subtype":"init"}'
+sleep 0.3
+printf 'project %s result\\n' "$number" > result.txt
+echo '{"type":"result","subtype":"success","is_error":false,"result":"Project-local requested file created","usage":{"input_tokens":10,"output_tokens":4}}'
+cat >/dev/null
+`, { mode: 0o755 });
+    const env = { PATH: `${tools}:${process.env.PATH}`, SHELL: '/bin/false' };
+    let candidateAssignments = [];
+    const reasoner = http.createServer(async (request, response) => {
+      for await (const _chunk of request) { /* deterministic local model */ }
+      if (request.method !== 'POST') { response.end('{"data":[]}'); return; }
+      response.setHeader('Content-Type', 'text/event-stream');
+      response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ message: 'Two scoped proposals await approval.', citations: [], assignments: candidateAssignments }) } }] })}\n\ndata: [DONE]\n\n`);
+    });
+    await new Promise(resolve => reasoner.listen(0, '127.0.0.1', resolve));
+    t.after(async () => {
+      for (const host of hosts) { host.client?.close(); await host.daemon?.stop(); }
+      await new Promise(resolve => reasoner.close(resolve)); fs.rmSync(base, { recursive: true, force: true });
+    });
+    const profile = { id: 'assistant', display_name: 'Assistant', access: 'read', backend: { kind: 'open_ai_compatible', base_url: `http://127.0.0.1:${reasoner.address().port}/v1`, model: 'fixture', api_key_env: null } };
+    for (let i = 0; i < hostCount; i++) {
+      const data = path.join(base, `data-${i}`); fs.mkdirSync(data);
+      const host = { data, daemon: await serve(data, env) }; hosts.push(host);
+      host.connect = async () => { host.client = new DaemonClient(() => socketLink(path.join(data, 'daemon.sock'))); await host.client.start(); };
+      await host.connect();
+    }
+    for (let i = 0; i < 2; i++) {
+      const host = hosts[i % hostCount], cwd = path.join(base, `project-${i}`), counter = path.join(base, `executions-${i}`);
+      fs.mkdirSync(cwd);
+      const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
+      fs.writeFileSync(path.join(cwd, 'README.md'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base');
+      const workspaceId = `project-${i}`, threadId = `room-${i}`, workerId = `worker-${i}`;
+      await host.client.call('room_create', { id: threadId, cwd, options, participants: [{ id: workerId, display_name: workerId, access: 'ask', backend: { kind: 'agent', tool: 'claude_code', model: null } }] });
+      const assigned = await host.client.call('monitor_assign', { workspaceId, cwd, hostId: 'local', text: 'Track requested work', files: [], threads: [], profile });
+      const owner = { workspaceId, cwd, hostId: 'local', conversationId: assigned.conversationId };
+      await host.client.call('monitor_pause', { ...owner, paused: true });
+      const monitor = await host.client.call('monitor_get', { workspaceId });
+      const assignment = { owner, revision: monitor.revision, brief: `Create project ${i} result`, destination: { threadId, workers: [workerId], newThread: false }, mode: 'isolated', reviewCriteria: [] };
+      projects.push({ host, cwd, counter, owner, assignment });
+    }
+    candidateAssignments = projects.map(project => project.assignment);
+    const originalRequest = 'Ask worker-0 to update project-0 and worker-1 to update project-1.';
+    const overview = await hosts[0].client.call('assistant_overview', { owner: projects[0].owner, text: originalRequest, history: [], projects: projects.map(project => ({ ...project.owner, revision: project.assignment.revision, availability: 'online', routingThreads: [{ id: project.assignment.destination.threadId, workers: [{ id: project.assignment.destination.workers[0], display_name: project.assignment.destination.workers[0] }] }] })) });
+    assert.deepEqual(overview.assignments, candidateAssignments);
+    for (let i = 0; i < projects.length; i++) {
+      const project = projects[i];
+      project.input = { ...overview.assignments[i], requestId: `child-${i}`, batchId: 'two-project-batch', originalRequest };
+      if (i === 1) {
+        // Drop the real daemon socket after it has persisted the proposal but
+        // before DaemonClient receives its receipt. This is an uncertain write.
+        let lostReplyId;
+        const uncertain = new DaemonClient(async () => {
+          const link = await socketLink(path.join(project.host.data, 'daemon.sock'));
+          return { ...link,
+            send(line) { const message = JSON.parse(line); if (message.cmd === 'assistant_handoff_prepare') lostReplyId = message.id; link.send(line); },
+            onLine(callback) { link.onLine(line => { if (lostReplyId !== undefined && JSON.parse(line).id === lostReplyId) { link.close(); return; } callback(line); }); },
+          };
+        });
+        await uncertain.start();
+        try { await assert.rejects(uncertain.call('assistant_handoff_prepare', project.input), /lost|connection/i); }
+        finally { uncertain.close(); }
+      }
+      project.task = (await project.host.client.call('assistant_handoff_prepare', project.input)).task;
+      assert.equal(project.task.status, 'proposed'); assert.equal(project.task.attempts.length, 0); assert.equal(project.task.originalRequest, originalRequest);
+      assert.equal(project.task.mode, 'isolated'); assert.equal(fs.existsSync(project.counter), false);
+      const replay = await project.host.client.call('assistant_handoff_prepare', project.input);
+      assert.equal(replay.task.id, project.task.id);
+      for (const changed of [{ brief: 'Changed scope' }, { mode: 'read_only' }, { owner: projects[1 - i].owner }]) {
+        await assert.rejects(project.host.client.call('assistant_handoff_prepare', { ...project.input, ...changed }), /different|changed|scope|payload|request|assignment/i);
+      }
+      await assert.rejects(project.host.client.call('assistant_handoff_prepare', { ...project.input, requestId: `stale-${i}`, revision: project.input.revision - 1 }), /stale|revision/i);
+      await assert.rejects(project.host.client.call('assistant_handoff_prepare', { ...project.input, requestId: `unknown-${i}`, destination: { ...project.input.destination, workers: ['unknown'] } }), /unknown|worker/i);
+      if (hostCount === 1) await assert.rejects(project.host.client.call('assistant_handoff_prepare', { ...project.input, requestId: `wrong-project-${i}`, destination: projects[1 - i].input?.destination ?? projects[1 - i].assignment.destination }), /outside|project/i);
+    }
+    // Persisted child receipts are recovered independently after a disconnected
+    // destination. The coordinator's already prepared child is never recreated.
+    const recoveredHost = hosts[hostCount - 1]; recoveredHost.client.close(); await recoveredHost.daemon.stop();
+    recoveredHost.daemon = await serve(recoveredHost.data, env); await recoveredHost.connect();
+    for (const project of projects) {
+      const replay = await project.host.client.call('assistant_handoff_prepare', project.input);
+      assert.equal(replay.task.id, project.task.id); assert.equal(replay.task.attempts.length, 0);
+      if (hostCount === 2) {
+        const otherHost = hosts.find(host => host !== project.host);
+        await assert.rejects(otherHost.client.call('assistant_handoff_prepare', project.input), /unavailable|assignment|project/i);
+      }
+      const listed = await project.host.client.call('assistant_tasks_list', { owner: project.owner });
+      assert.equal(listed.tasks.length, 1);
+      await project.host.client.call('assistant_task_action', { taskId: replay.task.id, owner: project.owner, revision: replay.task.revision, action: 'approve', mode: 'isolated', destination: project.input.destination });
+    }
+    for (const project of projects) {
+      const read = async () => (await project.host.client.call('assistant_tasks_list', { owner: project.owner })).tasks.find(task => task.id === project.task.id);
+      const ready = await until('project-local isolated result', async () => { const task = await read(); return task.status === 'ready_for_review' ? task : null; }).catch(async error => { error.message += `: ${JSON.stringify(await read())}`; throw error; });
+      assert.equal(ready.attempts.length, 1); assert.notEqual(ready.resultData.executionPath, project.cwd);
+      assert.equal(fs.existsSync(path.join(project.cwd, 'result.txt')), false); assert.match(ready.resultData.reviewDiff, /result.txt/);
+      const recovered = await project.host.client.call('assistant_handoff_prepare', project.input);
+      assert.equal(recovered.task.id, ready.id); assert.equal(recovered.task.attempts.length, 1);
+      await assert.rejects(project.host.client.call('assistant_task_action', { taskId: ready.id, owner: project.owner, revision: ready.revision - 1, action: 'accept' }), /stale|changed|revision/i);
+      const done = await project.host.client.call('assistant_task_action', { taskId: ready.id, owner: project.owner, revision: ready.revision, action: 'accept' });
+      assert.equal(done.status, 'done'); assert.equal(fs.readFileSync(project.counter, 'utf8'), 'run\n');
+      assert.equal(fs.readFileSync(path.join(project.cwd, 'result.txt'), 'utf8'), `project ${projects.indexOf(project)} result\n`);
+    }
+  });
+}

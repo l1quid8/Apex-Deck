@@ -15,6 +15,8 @@ export async function runSmoke(win, { browser }) {
   const reveal=async selector=>{const rect=await page(`const el=document.querySelector(${JSON.stringify(selector)});if(!el)throw Error('Missing '+${JSON.stringify(selector)});el.scrollIntoView({block:'center',inline:'nearest'});const r=el.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height,viewportWidth:innerWidth,viewportHeight:innerHeight};`);assert.ok(rect.width>0&&rect.height>0&&rect.top>=0&&rect.bottom<=rect.viewportHeight&&rect.left>=0&&rect.right<=rect.viewportWidth,`${selector} can be fully brought into view: ${JSON.stringify(rect)}`);return rect;};
   const monitor=()=>page(`return await __deck.backend.call('monitor_get',{workspaceId:'launch'})`);
   const shot=async name=>{const directory=process.env.APEX_WIDGET_SCREENSHOTS; if(directory){fs.mkdirSync(directory,{recursive:true});fs.writeFileSync(path.join(directory,`${name}.png`),(await win.webContents.capturePage()).toPNG());}};
+  // The avatar opens the combined conversation; project setup and sources live under ⋯.
+  const openProject=async()=>{await click('.apex-widget-hit');await until('dock open',()=>page(`return Boolean(document.querySelector('.apex-agent-dock'))`));await page(`if(document.querySelector('.apex-agent-all')){const item=[...document.querySelectorAll('.apex-agent-more [role="menuitem"]')].find(e=>/^(Sources for|Watch) Mobile launch/.test(e.textContent.trim()));if(!item)throw Error('Missing Mobile launch menu item');item.click();}return true;`);};
   await until('connected UI',()=>page(`return Boolean(window.__deck&&!document.querySelector('.loading')&&document.querySelector('.apex-widget-hit'))`));
   await until('saved projects loaded',()=>page(`return Boolean(document.querySelector('[data-workspace="launch"]'))`)).catch(async error=>{console.error('startup diagnostics',await page('return {text:document.body.innerText,session:await __deck.backend.sessionLoad()}'));throw error;});
   win.setSize(1200,850); win.show(); win.focus(); await sleep(150);
@@ -22,6 +24,9 @@ export async function runSmoke(win, { browser }) {
     await page(`window.__widgetKeys=[];window.addEventListener('keydown',e=>__widgetKeys.push({key:e.key,code:e.code,defaultPrevented:e.defaultPrevented}));document.querySelector('.apex-widget-hit').focus();return true;`);
     await sleep(100);
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'Return'});win.webContents.sendInputEvent({type:'char',keyCode:'\r'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Return'});
+    // With nothing watched yet, the combined conversation sends setup through ⋯ → Watch <project>….
+    await until('combined conversation',()=>page(`return Boolean(document.querySelector('.apex-agent-all'))`));
+    await page(`const item=[...document.querySelectorAll('.apex-agent-more [role="menuitem"]')].find(e=>e.textContent.trim()==='Watch Mobile launch…');if(!item)throw Error('Missing Watch Mobile launch…');item.click();return true;`);
     await until('conversation',()=>page(`return Boolean(document.querySelector('.apex-agent-setup-form'))`)).catch(async error=>{console.error('keyboard diagnostics',await page(`return {keys:__widgetKeys,focus:document.activeElement?.outerHTML}`));throw error;});
     assert.equal(await page(`return document.querySelector('.apex-agent').getAttribute('aria-modal')`),null);
     const profile=await page(`const select=document.querySelector('[aria-label="Thinking with profile"],[aria-label="ApexAgent profile"]');return select&&{value:select.value,options:[...select.options].map(option=>({value:option.value,text:option.textContent.trim()}))}`);
@@ -34,37 +39,23 @@ export async function runSmoke(win, { browser }) {
     await until('original profile selection',()=>page(`return document.querySelector('[aria-label="Thinking with profile"],[aria-label="ApexAgent profile"]')?.value===${JSON.stringify(originalProfile)}`));
     await shot('setup');
   });
-  await step('dock changes real chat geometry and supports keyboard and pointer resizing',async()=>{
+  await step('v4 pop-up floats over the app without resizing it, with no tabs or AI picker',async()=>{
     const before=await page(`const dock=document.querySelector('.apex-agent-dock'),canvas=document.querySelector('.body > .canvas'),avatar=document.querySelector('.apex-widget-avatar');const d=dock.getBoundingClientRect(),c=canvas.getBoundingClientRect();return {dock:{left:d.left,right:d.right,width:d.width},canvas:{left:c.left,right:c.right,width:c.width},avatar:{open:avatar.classList.contains('is-open'),glow:getComputedStyle(avatar.querySelector('.apex-widget-core')).borderTopColor},separator:!!document.querySelector('[role="separator"][aria-label="Resize ApexAgent dock"]'),body:document.querySelector('.body').getBoundingClientRect().toJSON()};`);
-    assert.ok(before.dock.width>=450&&before.dock.width<=500,`Default dock is about 480px: ${JSON.stringify(before)}`);
-    assert.ok(before.canvas.width>100&&Math.abs(before.canvas.right-before.dock.left)<=2,`The dock takes real canvas width without covering chat: ${JSON.stringify(before)}`);
+    const extra=await page(`return {position:getComputedStyle(document.querySelector('.apex-agent-dock')).position,tabs:!!document.querySelector('.apex-agent-tabs'),picker:!!document.querySelector('[aria-label="Thinking with profile"]'),bodyRight:document.querySelector('.body').getBoundingClientRect().right}`);
+    assert.equal(extra.position,'fixed',`The pop-up floats: ${JSON.stringify(extra)}`);
+    assert.ok(before.dock.width>=360&&before.dock.width<=420,`The pop-up is about 400px wide: ${JSON.stringify(before)}`);
+    assert.ok(Math.abs(before.canvas.right-extra.bodyRight)<=2,`The app keeps its full width under the pop-up: ${JSON.stringify(before)}`);
+    assert.ok(!before.separator&&!extra.tabs&&!extra.picker,`No resize bar, tabs or AI picker: ${JSON.stringify(extra)}`);
     const green=before.avatar.glow.match(/\d+/g)?.map(Number)??[];
     assert.ok(before.avatar.open&&green[1]>green[0]&&green[1]>green[2],`The avatar remains visible and uses the green open state: ${JSON.stringify(before.avatar)}`);
-    assert.ok(before.separator,'A labelled separator is present');
-    await page(`const separator=document.querySelector('[role="separator"][aria-label="Resize ApexAgent dock"]');separator.focus();return true;`);
-    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Right'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Right'});await sleep(120);
-    const afterKeyboard=await page(`return document.querySelector('.apex-agent-dock').getBoundingClientRect().width`);
-    assert.ok(afterKeyboard<before.dock.width-5,`Right arrow resizes the dock: ${before.dock.width} -> ${afterKeyboard}`);
-    const handle=await page(`const r=document.querySelector('[role="separator"][aria-label="Resize ApexAgent dock"]').getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}`);
-    win.webContents.sendInputEvent({type:'mouseDown',x:handle.x,y:handle.y,button:'left',clickCount:1});
-    win.webContents.sendInputEvent({type:'mouseMove',x:handle.x-36,y:handle.y});
-    win.webContents.sendInputEvent({type:'mouseUp',x:handle.x-36,y:handle.y,button:'left',clickCount:1});await sleep(150);
-    const afterPointer=await page(`return document.querySelector('.apex-agent-dock').getBoundingClientRect().width`);
-    assert.ok(afterPointer>afterKeyboard+20,`Pointer drag resizes the dock: ${afterKeyboard} -> ${afterPointer}`);
-    await clickText('.apex-agent-head-actions button','Expand');await sleep(120);
-    const expanded=await page(`return {width:document.querySelector('.apex-agent-dock').getBoundingClientRect().width,canvas:getComputedStyle(document.querySelector('.body > .canvas')).display,button:[...document.querySelectorAll('.apex-agent-head-actions button')].map(b=>b.textContent.trim())}`);
-    assert.ok(expanded.width>=650||expanded.width>afterPointer+100,`Expand widens the dock: ${JSON.stringify(expanded)}`);
-    assert.equal(expanded.canvas,'none','Focused mode gives the app body to ApexAgent');
-    assert.ok(expanded.button.includes('Return to dock'),'Expanded mode offers a return action');
-    await clickText('.apex-agent-head-actions button','Return to dock');
-    await until('dock restored',()=>page(`return getComputedStyle(document.querySelector('.body > .canvas')).display!=='none'`));
+    await shot('v4-open');
   });
   await step('Escape closes dock and restores focus to the avatar',async()=>{
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
     await until('dock closed on Escape',()=>page(`return !document.querySelector('.apex-agent-dock')`));
     await until('avatar restored as focus target',()=>page(`return document.activeElement?.classList.contains('apex-widget-hit')`));
     assert.equal(await page(`return document.querySelector('.apex-widget-avatar')?.classList.contains('is-open')`),false);
-    await click('.apex-widget-hit');await until('dock reopened',()=>page(`return Boolean(document.querySelector('.apex-agent-dock'))`));
+    await openProject();await until('dock reopened',()=>page(`return Boolean(document.querySelector('.apex-agent-dock'))`));
   });
   let original;
   await step('chat-first responsibility collects approved evidence and reports SSO',async()=>{
@@ -72,9 +63,9 @@ export async function runSmoke(win, { browser }) {
     await type('[aria-label="Responsibility for ApexAgent"]','Keep the November 1 launch on track; flag unmet release requirements.');
     await clickText('.apex-agent-setup-form button','Assign responsibility');
     original=await until('saved assignment',monitor);
-    await until('assigned profile picker moves into the dock header',()=>page(`return Boolean(document.querySelector('.apex-agent-head [aria-label="Thinking with profile"]')&&document.querySelector('.apex-agent-setup-form')===null)`));
+    await until('setup form gives way to the conversation',()=>page(`return Boolean(document.querySelector('.assistant-chat-transcript')&&document.querySelector('.apex-agent-setup-form')===null&&!document.querySelector('[aria-label="Thinking with profile"]'))`));
     await until('evidence-backed finding',async()=>{const m=await monitor();return !m.activeCheck&&m.findings.some(f=>f.status==='open');});
-    await clickLabel('.apex-agent [aria-label]','Close ApexAgent');await sleep(100);await click('.apex-widget-hit');
+    await clickLabel('.apex-agent [aria-label]','Close ApexAgent');await sleep(100);await openProject();
     await until('finding in real chat',()=>page(`return document.querySelector('.apex-agent-findings')?.textContent.includes('SSO blocks')`));
     assert.equal((await monitor()).conversationId,original.conversationId);
     const composer=await page(`const c=document.querySelector('.assistant-request').getBoundingClientRect(),p=document.querySelector('.apex-agent-dock').getBoundingClientRect();return {top:c.top,bottom:c.bottom,panelBottom:p.bottom,viewport:innerHeight};`);
@@ -99,7 +90,7 @@ export async function runSmoke(win, { browser }) {
   });
   await step('changing the assigned profile preserves responsibility, sources, and history',async()=>{
     const before=await monitor();
-    await clickText('.apex-agent-head-actions button','Settings');
+    await clickText('.apex-agent-more [role="menuitem"]','Sources and AI');
     const picker=await page(`const select=document.querySelector('[aria-label="Saved profile"]');return select&&[...select.options].map(option=>({value:option.value,text:option.textContent.trim()}))`);
     const alternate=picker?.find(option=>option.text==='Widget alternate model');
     assert.ok(alternate,`The alternate saved profile is available: ${JSON.stringify(picker)}`);
@@ -109,26 +100,11 @@ export async function runSmoke(win, { browser }) {
     assert.equal(after.responsibility,before.responsibility);
     assert.deepEqual(after.files,before.files);
     assert.deepEqual(after.messages.map(({role,text})=>({role,text})),before.messages.map(({role,text})=>({role,text})));
-    await clickText('.apex-agent-tabs button','Chat');
-  });
-  await step('a clarification request appears as a native task card',async()=>{
-    await type('.assistant-request textarea','Please create an implementation task for the SSO test setup.');
-    await click('.assistant-request .primary');
-    const response=await until('clarification response',()=>page(`return [...document.querySelectorAll('.assistant-chat-message.assistant')].map(message=>message.textContent).find(text=>text.includes('Which existing chat should receive this implementation task'))`));
-    assert.match(response,/Which existing chat should receive this implementation task/);
-    await page(`const button=[...document.querySelectorAll('.assistant-needs-you button')].find(element=>element.textContent.trim().startsWith('View all'));if(!button)throw Error('Missing View all');button.click();return true;`);
-    await until('clarification task row',()=>page(`return [...document.querySelectorAll('.assistant-task-overview-row')].some(element=>element.textContent.includes('Please create an implementation task for the SSO test setup.'))`));
-    await page(`const row=[...document.querySelectorAll('.assistant-task-overview-row')].find(element=>element.textContent.includes('Please create an implementation task for the SSO test setup.'));if(!row)throw Error('Missing clarification task overview row');row.click();return true;`);
-    const card=await until('clarification task card',()=>page(`const card=document.querySelector('.assistant-task-card.status-needs_clarification');return card?.innerText??''`));
-    await clickText('.assistant-task-card summary','Original request and brief');
-    const detail=await page(`return document.querySelector('.assistant-task-card')?.innerText??''`);
-    assert.match(detail,/create an implementation task/i);
-    assert.ok(await page(`return Boolean(document.querySelector('.assistant-request textarea[aria-label="Task context message"]')&&document.querySelector('.assistant-request [aria-label^="Destination for "]'))`),'The selected task routes clarification through the shared composer and worker selector');
-    await shot('task-card');
+    await clickText('.apex-agent-more [role="menuitem"]','Back to conversation');
   });
   await step('reading and closing chat leave avatar and sidebar blocker visible',async()=>{
     await clickLabel('.apex-agent [aria-label]','Close ApexAgent');
-    await until('durable blocker and task badges',()=>page(`return document.querySelector('.apex-widget-count')?.textContent==='2'&&document.querySelector('.flag-count.needs_input')?.textContent==='2'`));
+    await until('durable blocker badges',()=>page(`return document.querySelector('.apex-widget-count')?.textContent==='1'&&document.querySelector('.flag-count.needs_input')?.textContent==='1'`));
     assert.match(await page(`return document.querySelector('.apex-widget-bubble')?.textContent??''`),/SSO blocks/);
     await shot('closed-blocker');
   });
@@ -136,7 +112,7 @@ export async function runSmoke(win, { browser }) {
     await page(`window.dispatchEvent(new KeyboardEvent('keydown',{code:'Digit1',key:'1',metaKey:true,bubbles:true}));return true;`);
     await until('Agents page',()=>page(`return Boolean(document.querySelector('.agents-section'))`));
     assert.equal(await page(`return document.querySelectorAll('.apex-widget-hit').length`),1);
-    await click('.apex-widget-hit');await until('conversation ready',()=>page(`return Boolean(document.querySelector('.assistant-request'))`));
+    await openProject();await until('conversation ready',()=>page(`return Boolean(document.querySelector('.assistant-request'))`));
     assert.equal((await monitor()).conversationId,original.conversationId);
   });
   await step('drop adds one source without replacing the assignment',async()=>{
@@ -153,32 +129,29 @@ export async function runSmoke(win, { browser }) {
     const m=await until('redirect result',async()=>{const m=await monitor();return !m.activeCheck&&m.messages.some(msg=>msg.role==='assistant'&&msg.text.includes('Revised plan'))&&m;});
     assert.equal(m.conversationId,original.conversationId);assert.ok(m.messages.some(msg=>msg.role==='human'&&msg.text.startsWith('Defer SSO')));
     // Reopen to receive the new snapshot immediately rather than waiting for the display poll.
-    await clickLabel('.apex-agent [aria-label]','Close ApexAgent');await sleep(100);await click('.apex-widget-hit');
+    await clickLabel('.apex-agent [aria-label]','Close ApexAgent');await sleep(100);await openProject();
     await until('redirect in chat',()=>page(`return document.querySelector('.assistant-chat-transcript')?.textContent.includes('Revised plan')`));await shot('redirect');
   });
   await step('explicit resolution clears badges and Check now does not reopen settled SSO',async()=>{
     await clickText('.apex-agent-findings button','Resolve');
     await until('resolved',async()=>!(await monitor()).findings.some(f=>f.status==='open'));
-    await clickText('.apex-agent-tabs button','Activity');
     const before=await monitor();
-    await clickText('.apex-agent-buttons button','Check now');
+    await clickText('.apex-agent-more [role="menuitem"]','Check now');
     const m=await until('check now finished',async()=>{const m=await monitor();return !m.activeCheck&&(m.snapshotVersion??0)>(before.snapshotVersion??0)&&m;});
     assert.ok(m.lastCheckedAt>=before.lastCheckedAt,'A completed check does not move the recorded time backward');
     assert.equal(m.findings.filter(f=>f.status==='open').length,0);
-    // The blocker is resolved, while the earlier clarification task remains
-    // actionable and must continue to account for one needs-you badge.
-    await until('resolved finding with clarification badge retained',()=>page(`return document.querySelector('.apex-widget-count')?.textContent==='1'&&document.querySelector('.flag-count.needs_input')?.textContent==='1'`));
+    // With no task waiting, resolving the only blocker clears both badges.
+    await until('resolved finding clears badges',()=>page(`return !document.querySelector('.apex-widget-count')&&!document.querySelector('.flag-count.needs_input')`));
   });
   await step('drag/arrow positioning stays inside a narrow viewport',async()=>{
     await clickLabel('.apex-agent [aria-label]','Close ApexAgent');win.setMinimumSize(320,500);win.setSize(420,700);await sleep(300);
     await page(`document.querySelector('.apex-widget-hit').focus();return true;`);
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'Right'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Right'});
-    await click('.apex-widget-hit');await sleep(200);
-    const bounds=await page(`const r=document.querySelector('.apex-agent-dock').getBoundingClientRect(),body=document.querySelector('.body'),br=body.getBoundingClientRect(),rail=document.querySelector('.rail')?.getBoundingClientRect(),canvas=document.querySelector('.body > .canvas').getBoundingClientRect(),separator=document.querySelector('[role="separator"][aria-label="Resize ApexAgent dock"]').getBoundingClientRect(),actions=document.querySelector('.apex-agent-head-actions').getBoundingClientRect();return {left:r.left,right:r.right,width:r.width,styleWidth:document.querySelector('.apex-agent-dock').style.width,top:r.top,bottom:r.bottom,w:innerWidth,h:innerHeight,body:{left:br.left,right:br.right,clientWidth:body.clientWidth},rail:rail&&{left:rail.left,right:rail.right,width:rail.width},canvas:{left:canvas.left,right:canvas.right,width:canvas.width},separator:{left:separator.left,right:separator.right},actions:{left:actions.left,right:actions.right}};`);
+    await openProject();await sleep(200);
+    const bounds=await page(`const r=document.querySelector('.apex-agent-dock').getBoundingClientRect(),body=document.querySelector('.body'),br=body.getBoundingClientRect(),rail=document.querySelector('.rail')?.getBoundingClientRect(),canvas=document.querySelector('.body > .canvas').getBoundingClientRect(),actions=document.querySelector('.apex-agent-head-actions').getBoundingClientRect();return {left:r.left,right:r.right,width:r.width,styleWidth:document.querySelector('.apex-agent-dock').style.width,top:r.top,bottom:r.bottom,w:innerWidth,h:innerHeight,body:{left:br.left,right:br.right,clientWidth:body.clientWidth},rail:rail&&{left:rail.left,right:rail.right,width:rail.width},canvas:{left:canvas.left,right:canvas.right,width:canvas.width},actions:{left:actions.left,right:actions.right}};`);
     assert.ok(bounds.left>=0&&bounds.right<=bounds.w&&bounds.top>=0&&bounds.bottom<=bounds.h,JSON.stringify(bounds));
     assert.ok(bounds.w <= 420, 'The responsive check must actually use a narrow viewport');
-    assert.ok(bounds.right<=bounds.body.right+1&&bounds.separator.left>=0&&bounds.actions.right<=bounds.right+1,`Dock resize and header actions remain inside the narrow body: ${JSON.stringify(bounds)}`);
-    await clickText('.apex-agent-tabs button','Chat');
+    assert.ok(bounds.right<=bounds.body.right+1&&bounds.actions.right<=bounds.right+1,`Dock resize and header actions remain inside the narrow body: ${JSON.stringify(bounds)}`);
     await reveal('.assistant-request textarea');
     await type('.assistant-request textarea','One more narrow-window follow-up.');
     await reveal('.assistant-request .primary');
@@ -189,70 +162,77 @@ export async function runSmoke(win, { browser }) {
     assert.equal(after.conversationId,original.conversationId);assert.equal(after.responsibility,original.responsibility);assert.ok(after.files.includes('CHANGELOG.md'));
     await shot('narrow');win.setSize(1200,850);await sleep(200);
   });
-  await step('a read-only task opens its exact linked worker chat and returns focus to the dock',async()=>{
-    await clickText('.apex-agent-tabs button','Chat');
-    await clickText('.assistant-advanced-toggle','Advanced options');
-    await page(`const set=(selector,value)=>{const el=document.querySelector(selector);if(!el)throw Error('Missing '+selector);Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event('change',{bubbles:true}));};set('[aria-label="Task destination"]','new');set('[aria-label="Execution mode"]','read_only');const label=[...document.querySelectorAll('.assistant-task-workers label')].find(item=>item.innerText.includes('Widget test model'));if(!label)throw Error('Missing local HTTP worker profile');label.click();return true;`);
-    await until('read-only worker is selected',()=>page(`return document.querySelector('[aria-label="Execution mode"]')?.value==='read_only'&&document.querySelector('[aria-label="Task destination"]')?.value==='new'&&document.querySelector('.assistant-task-workers input:checked')?.closest('label')?.innerText.includes('Widget test model')`));
-    const request='Please ask Widget test model to inspect the fixture in a new chat. Read-only linked-chat smoke task.';
-    await type('.assistant-request textarea',request);
-    await click('.assistant-request .primary');
-    // Read the host task ledger rather than treating the composer reply as completion.
-    const ready=await until('read-only task reaches Ready for review',()=>page(`return (async()=>{const monitor=await __deck.backend.call('monitor_get',{workspaceId:'launch'});const snapshot=await __deck.backend.call('assistant_tasks_list',{owner:{workspaceId:'launch',cwd:monitor.cwd,hostId:monitor.hostId,conversationId:monitor.conversationId}});return snapshot.tasks.find(task=>task.originalRequest===${JSON.stringify(request)}&&task.status==='ready_for_review'&&task.mode==='read_only'&&typeof task.executionThreadId==='string'&&task.executionThreadId.length>0)??null})()`));
-    assert.equal(ready.mode,'read_only');
-    assert.equal(ready.status,'ready_for_review');
-    assert.ok(ready.executionThreadId,`The ready task has an actual execution thread: ${JSON.stringify(ready)}`);
-    assert.ok((ready.attempts??[]).length>0,'The worker completed an actual attempt');
-    await clickText('.apex-agent-tabs button','Tasks');
-    await until('new task listed',()=>page(`return [...document.querySelectorAll('.assistant-task-overview-row')].some(row=>row.textContent.includes(${JSON.stringify(request)}))`));
-    await page(`const row=[...document.querySelectorAll('.assistant-task-overview-row')].find(item=>item.textContent.includes(${JSON.stringify(request)}));if(!row)throw Error('Missing read-only task row');row.click();return true;`);
-    await until('ready task detail',()=>page(`return document.querySelector('.assistant-task-card.status-ready_for_review')?.innerText.includes('Read only')`));
-    const taskGeometry=async()=>page(`const panel=document.querySelector('.apex-agent-dock').getBoundingClientRect(),card=document.querySelector('.assistant-task-card').getBoundingClientRect(),scroll=document.querySelector('.assistant-task-detail-scroll').getBoundingClientRect(),decision=document.querySelector('.assistant-task-decision-actions').getBoundingClientRect(),composerEl=document.querySelector('.assistant-request'),composer=composerEl.getBoundingClientRect();const rect=(r)=>({top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height});const layout=['.apex-agent-dock','.apex-agent.widget','.apex-agent-tabpanel','.assistant-tasks','.assistant-task-heading','.assistant-task-list','.assistant-task-card','.assistant-task-detail-scroll','.assistant-task-decision-actions','.assistant-request'].map(selector=>{const el=document.querySelector(selector);if(!el)return {selector,missing:true};const s=getComputedStyle(el);return {selector,rect:rect(el.getBoundingClientRect()),display:s.display,flex:s.flex,flexDirection:s.flexDirection,minHeight:s.minHeight,height:s.height,overflow:s.overflow,position:s.position}});const checkVisible=(target)=>{if(!target)return null;const r=target.getBoundingClientRect(),cs=getComputedStyle(target);let clip={left:0,top:0,right:innerWidth,bottom:innerHeight};const clips=[];for(let node=target.parentElement;node;node=node.parentElement){const style=getComputedStyle(node),box=node.getBoundingClientRect(),clipX=['hidden','clip','auto','scroll'].includes(style.overflowX),clipY=['hidden','clip','auto','scroll'].includes(style.overflowY);if(clipX||clipY){if(clipX){clip.left=Math.max(clip.left,box.left);clip.right=Math.min(clip.right,box.right)}if(clipY){clip.top=Math.max(clip.top,box.top);clip.bottom=Math.min(clip.bottom,box.bottom)}clips.push({tag:node.tagName,className:typeof node.className==='string'?node.className:'',rect:rect(box),overflowX:style.overflowX,overflowY:style.overflowY})}}const centerX=(Math.max(r.left,clip.left)+Math.min(r.right,clip.right))/2,centerY=(Math.max(r.top,clip.top)+Math.min(r.bottom,clip.bottom))/2,hit=centerX>=clip.left&&centerX<=clip.right&&centerY>=clip.top&&centerY<=clip.bottom?document.elementFromPoint(centerX,centerY):null;const overlapsComposer=r.left<composer.right&&r.right>composer.left&&r.top<composer.bottom&&r.bottom>composer.top;return {rect:rect(r),clip:rect({left:clip.left,top:clip.top,right:clip.right,bottom:clip.bottom,width:clip.right-clip.left,height:clip.bottom-clip.top}),clips,display:cs.display,visibility:cs.visibility,opacity:cs.opacity,fullyInsideClips:r.left>=clip.left-1&&r.right<=clip.right+1&&r.top>=clip.top-1&&r.bottom<=clip.bottom+1,hit:!!hit&&(target===hit||target.contains(hit)),hitTag:hit?.tagName,hitClass:typeof hit?.className==='string'?hit.className:'',overlapsComposer};};const reviewButton=[...document.querySelectorAll('.assistant-task-decision-actions button')].find(button=>button.textContent.trim()==='Mark reviewed');const ack=document.querySelector('.assistant-review-ack input[type="checkbox"]');return {panel:rect(panel),card:rect(card),scroll:rect(scroll),decision:rect(decision),review:checkVisible(reviewButton),ack:checkVisible(ack),composer:rect(composer),layout,viewport:{width:innerWidth,height:innerHeight}};`);
-    for(const width of [320]){
-      win.setSize(width,700);await sleep(250);
-      const compact=await page(`const body=document.querySelector('.body');return {enabled:body.classList.contains('apex-agent-dock-narrow'),rail:!!body.querySelector('.rail'),canvas:getComputedStyle(body.querySelector('.canvas')).display,dockWidth:document.querySelector('.apex-agent-dock').getBoundingClientRect().width,bodyWidth:body.getBoundingClientRect().width};`);
-      assert.ok(compact.enabled&&!compact.rail&&compact.canvas==='none'&&compact.dockWidth>=300,`At ${width}px, the open assistant temporarily owns the narrow body without changing saved rail visibility: ${JSON.stringify(compact)}`);
-      const regular=await taskGeometry();
-      assert.ok(regular.composer.top>=regular.card.bottom-1&&regular.composer.bottom<=regular.panel.bottom+1,`At ${width}px, the composer follows task detail and remains inside the dock in regular mode: ${JSON.stringify(regular)}`);
-      const reviewUsable=(geometry)=>{const visible=(item)=>item&&item.rect.width>0&&item.rect.height>0&&item.display!=='none'&&item.visibility!=='hidden'&&Number(item.opacity)>0&&item.fullyInsideClips&&item.hit&&!item.overlapsComposer;return visible(geometry.review)&&visible(geometry.ack)};
-      assert.ok(reviewUsable(regular),`At ${width}px, the review checkbox and Mark reviewed control are fully visible, hit-testable through every clipping ancestor, and clear of the composer in regular mode: ${JSON.stringify(regular)}`);
-      await clickText('.apex-agent-head-actions button','Expand');
-      await until(`expanded task at ${width}px`,()=>page(`return getComputedStyle(document.querySelector('.body > .canvas')).display==='none'`));
-      const expandedNarrow=await taskGeometry();
-      assert.ok(expandedNarrow.composer.top>=expandedNarrow.card.bottom-1&&expandedNarrow.composer.bottom<=expandedNarrow.panel.bottom+1,`At ${width}px, the composer follows task detail and remains inside the dock in expanded mode: ${JSON.stringify(expandedNarrow)}`);
-      assert.ok(reviewUsable(expandedNarrow),`At ${width}px, the review checkbox and Mark reviewed control are fully visible, hit-testable through every clipping ancestor, and clear of the composer in expanded mode: ${JSON.stringify(expandedNarrow)}`);
-      if(width===320) await shot('linked-task-320-expanded');
-      await clickText('.apex-agent-head-actions button','Return to dock');
-      await until(`dock restored at ${width}px`,()=>page(`return document.querySelector('.body')?.classList.contains('apex-agent-dock-narrow')&&[...document.querySelectorAll('.apex-agent-head-actions button')].some(button=>button.textContent.trim()==='Expand')`));
-    }
-    const narrowLink=await page(`const link=[...document.querySelectorAll('[aria-label="Related threads"] button')].find(button=>button.textContent.trim()==='Linked worker chat');return link&&{label:link.textContent.trim(),disabled:link.disabled};`);
-    assert.ok(narrowLink&&!narrowLink.disabled,'The linked worker chat remains available in the compact dock');
-    await clickText('[aria-label="Related threads"] button','Linked worker chat');
-    await until('narrow linked chat opens after closing the dock',()=>page(`return (async()=>{const session=await __deck.backend.sessionLoad();const toggle=document.querySelector('[aria-label="Hide workspaces"]');return session.focusedPane===${JSON.stringify(ready.executionThreadId)}&&!document.querySelector('.apex-agent-dock')&&!document.querySelector('.body.apex-agent-dock-narrow')&&toggle&&!toggle.disabled&&document.querySelector('.pane.focused .chat-body')})()`));
-    await shot('linked-chat-320');
-    win.setSize(1200,850);await sleep(250);
-    await click('.apex-widget-hit');await until('dock reopened in normal width',()=>page(`return Boolean(document.querySelector('.apex-agent-dock'))`));
-    await clickText('.apex-agent-tabs button','Tasks');
-    await until('ready task listed again',()=>page(`return [...document.querySelectorAll('.assistant-task-overview-row')].some(row=>row.textContent.includes(${JSON.stringify(request)}))`));
-    await page(`const row=[...document.querySelectorAll('.assistant-task-overview-row')].find(item=>item.textContent.includes(${JSON.stringify(request)}));if(!row)throw Error('Missing read-only task row');row.click();return true;`);
-    await until('ready task detail restored at normal width',()=>page(`return Boolean(document.querySelector('.assistant-task-card.status-ready_for_review'))`));
-    await clickText('.apex-agent-head-actions button','Expand');
-    await until('task detail in expanded mode',()=>page(`return getComputedStyle(document.querySelector('.body > .canvas')).display==='none'&&document.querySelector('.assistant-task-card.status-ready_for_review')`));
-    await shot('linked-task-expanded');
-    const link=await page(`const link=[...document.querySelectorAll('[aria-label="Related threads"] button')].find(button=>button.textContent.trim()==='Linked worker chat');return link&&{label:link.textContent.trim(),disabled:link.disabled};`);
-    assert.ok(link&&!link.disabled,`Task detail exposes its linked chat: ${JSON.stringify(link)}`);
-    await clickText('[aria-label="Related threads"] button','Linked worker chat');
-    await until('expected worker chat focused and dock restored',()=>page(`return (async()=>{const session=await __deck.backend.sessionLoad();return session.focusedPane===${JSON.stringify(ready.executionThreadId)}&&session.section==='threads'&&document.querySelector('.pane.focused .chat-body')&&document.querySelector('.apex-agent-dock')&&getComputedStyle(document.querySelector('.body > .canvas')).display!=='none'&&[...document.querySelectorAll('.apex-agent-head-actions button')].some(button=>button.textContent.trim()==='Expand')})()`));
-    const final=await page(`const avatar=document.querySelector('.apex-widget-avatar'),core=avatar?.querySelector('.apex-widget-core'),session=await __deck.backend.sessionLoad();return {focusedPane:session.focusedPane,section:session.section,focusedTitle:document.querySelector('.pane.focused .pane-title')?.textContent.trim(),dock:!!document.querySelector('.apex-agent-dock'),canvas:getComputedStyle(document.querySelector('.body > .canvas')).display,expand:[...document.querySelectorAll('.apex-agent-head-actions button')].some(button=>button.textContent.trim()==='Expand'),avatarOpen:avatar?.classList.contains('is-open'),avatarColor:core&&getComputedStyle(core).borderTopColor,chat:!!document.querySelector('.pane.focused .chat-body')};`);
-    assert.equal(final.focusedPane,ready.executionThreadId,`Shared chat focus matches the task's exact executionThreadId: ${JSON.stringify(final)}`);
-    assert.ok(final.focusedTitle?.includes(ready.id),`The visible focused pane is the task execution chat: ${JSON.stringify(final)}`);
-    assert.equal(final.section,'threads');
-    assert.ok(final.dock&&final.canvas!=='none'&&final.expand,`Linked navigation leaves the dock open in returned mode: ${JSON.stringify(final)}`);
-    const green=final.avatarColor?.match(/\d+/g)?.map(Number)??[];
-    assert.ok(final.avatarOpen&&green[1]>green[0]&&green[1]>green[2],`The avatar remains green/open with the dock: ${JSON.stringify(final)}`);
-    await shot('linked-chat-dock');
+  await step('optional full screen and Clear conversation; no ApexAgent button by + New',async()=>{
+    await clickLabel('.apex-agent [aria-label]','Close ApexAgent');await sleep(100);
+    assert.equal(await page(`return Boolean(document.querySelector('.apex-agent-entry'))`),false,'The ApexAgent button beside + New is gone');
+    await click('.apex-widget-hit');
+    await until('combined conversation',async()=>{const ready=await page(`return Boolean(document.querySelector('.apex-agent-all'))`);if(!ready)await page(`document.querySelector('.apex-agent-back')?.click();return true;`);return ready;});
+    await clickLabel('.apex-agent-all [aria-label]','Full screen');
+    const full=await until('full screen',()=>page(`const d=document.querySelector('.apex-agent-dock.apex-agent-full');if(!d)return null;const r=d.getBoundingClientRect();return {width:r.width,height:r.height,w:innerWidth,h:innerHeight,right:r.right,bottom:r.bottom}`));
+    assert.ok(full.width>full.w*0.9&&full.height>full.h*0.8&&full.right<=full.w&&full.bottom<=full.h,`Full screen covers the window: ${JSON.stringify(full)}`);
+    await shot('full-screen');
+    await clickLabel('.apex-agent-all [aria-label]','Exit full screen');
+    await until('pop-up size again',()=>page(`return Boolean(document.querySelector('.apex-agent-dock')&&!document.querySelector('.apex-agent-full'))`));
+    const saved=(await monitor()).messages.length;
+    assert.ok(await page(`return document.querySelectorAll('.apex-agent-all .assistant-chat-message:not(.apex-agent-needs-you):not(.apex-agent-check-failed)').length>0`),'Messages show before clearing');
+    await page(`window.confirm=()=>true;document.querySelector('.apex-agent-more').open=true;return true;`);
+    await clickText('.apex-agent-more [role="menuitem"]','Clear conversation');
+    await until('conversation cleared',()=>page(`return document.querySelectorAll('.apex-agent-all .assistant-chat-message:not(.apex-agent-needs-you):not(.apex-agent-check-failed)').length===0`));
+    assert.equal((await monitor()).messages.length,saved,'Clearing hides messages on screen; the assistant keeps its memory');
+    await shot('cleared');
   });
-  await step('native browser tracks real dock geometry without covering chat',async()=>{
+  await step('one conversation reasons across two projects with clickable citations',async()=>{
+    await page(`const session=await __deck.backend.sessionLoad();const workspace=session.workspaces.find(w=>w.id==='other');const profile=session.profiles.find(p=>p.id==='widget-test');const m=await __deck.backend.call('monitor_assign',{workspaceId:'other',cwd:workspace.path,hostId:'local',text:'Track Other project readiness.',files:['README.md'],threads:[],profile});await __deck.backend.call('monitor_pause',{workspaceId:'other',paused:true});return true;`);
+    await clickLabel('.apex-agent [aria-label]','Close ApexAgent'); await click('.apex-widget-hit');
+    await until('two projects in combined chat',()=>page(`return document.querySelector('.apex-agent-all .apex-agent-head-context')?.textContent.includes('1 paused')`));
+    await type('.apex-agent-all-composer textarea',"What's blocked everywhere?"); await click('.apex-agent-all-composer .primary');
+    await until('cross-project answer',()=>page(`return [...document.querySelectorAll('.apex-agent-all .assistant-chat-message')].some(message=>message.textContent.includes('cross-project draft')&&message.querySelector('.apex-agent-all-evidence button'))`));
+    assert.equal(await page(`return Boolean(document.querySelector('.apex-agent-tabs')||document.querySelector('[aria-label="ApexAgent project"]'))`),false);
+    await shot('all-project-reasoning');
+  });
+  await step('two-project plan, approval, task note and review use one shared composer',async()=>{
+    await page(`const session=await __deck.backend.sessionLoad();const profile=session.profiles.find(p=>p.id==='widget-test');for(const workspace of session.workspaces){await __deck.backend.call('room_create',{id:'handoff-'+workspace.id,cwd:workspace.path,options:{policy:'mention',max_bot_hops:0},participants:[profile]});}await __deck.backend.sessionSave({...session,panes:[...session.panes,...session.workspaces.map(workspace=>({id:'handoff-'+workspace.id,kind:'chat',title:'Smoke '+workspace.name,workspaceId:workspace.id,participants:[profile]}))]});return true;`);
+    win.webContents.reload();await until('handoff fixture reload',()=>page(`return Boolean(window.__deck&&!document.querySelector('.loading')&&document.querySelector('.apex-widget-hit'))`));await click('.apex-widget-hit');await until('shared composer restored',()=>page(`return Boolean(document.querySelector('.apex-agent-all-composer textarea'))`));
+    await type('.apex-agent-all-composer textarea','Ask Widget test model to inspect Mobile launch and Other project in their saved chats. Cross-project handoff smoke.');
+    await click('.apex-agent-all-composer .primary');
+    const proposals=await until('two durable cross-project proposals',()=>page(`const result=[];for(const workspaceId of ['launch','other']){const m=await __deck.backend.call('monitor_get',{workspaceId});const owner={workspaceId,cwd:m.cwd,hostId:m.hostId,conversationId:m.conversationId};const s=await __deck.backend.call('assistant_tasks_list',{owner});const task=s.tasks.find(task=>task.originalRequest.includes('Cross-project handoff smoke.'));if(!task||task.status!=='proposed')return null;result.push({owner,task});}return result;`));
+    assert.equal(proposals.length,2);assert.ok(proposals.every(item=>item.task.attempts.length===0&&item.task.mode==='read_only'));
+    await until('two inline proposals',()=>page(`return [...document.querySelectorAll('.assistant-task-conversation button')].filter(button=>button.textContent.startsWith('Open task · ')&&button.textContent.includes('Cross-project handoff smoke.')).length===2`));
+    assert.equal(await page(`return document.querySelectorAll('.apex-agent-all-composer textarea').length`),1);
+    assert.equal(await page(`return Boolean(document.querySelector('.assistant-task-conversation .assistant-request textarea')||document.querySelector('.apex-agent-tabs')||document.querySelector('[aria-label="ApexAgent project"]'))`),false);
+    await shot('cross-project-proposals');
+    for(const proposal of proposals){
+      await page(`const section=[...document.querySelectorAll('.assistant-task-conversation')].find(section=>section.dataset.assistantWorkspaceId===${JSON.stringify(proposal.owner.workspaceId)});const task=[...section.querySelectorAll('[data-assistant-task-id]')].find(task=>task.dataset.assistantTaskId===${JSON.stringify(proposal.task.id)});const button=[...task.querySelectorAll('button')].find(button=>button.textContent.startsWith('Open task · '));if(!button)throw Error('Missing project-owned task control');button.click();return true;`);
+      await until('shared task context',()=>page(`return document.querySelector('.apex-agent-all-composer')?.textContent.includes('Reply to')`));
+      const note='Preserve the fixture files. Shared composer task note.';
+      await type('.apex-agent-all-composer textarea',note);await click('.apex-agent-all-composer .primary');
+      await until('project-owned task note',()=>page(`const s=await __deck.backend.call('assistant_tasks_list',{owner:${JSON.stringify(proposal.owner)}});const task=s.tasks.find(task=>task.id===${JSON.stringify(proposal.task.id)});return task?.resultData?.taskHistory?.some(entry=>entry.kind==='note'&&entry.text.includes(${JSON.stringify(note)}));`));
+      await until('approval control',()=>page(`return [...document.querySelectorAll('.assistant-task-status-actions button')].some(button=>button.textContent==='Approve task'&&!button.disabled)`));
+      await clickText('.assistant-task-status-actions button','Approve task');
+      await until('proposal approved',()=>page(`const s=await __deck.backend.call('assistant_tasks_list',{owner:${JSON.stringify(proposal.owner)}});return s.tasks.some(task=>task.id===${JSON.stringify(proposal.task.id)}&&task.status!=='proposed');`));
+      await until('cross-project result ready',()=>page(`const s=await __deck.backend.call('assistant_tasks_list',{owner:${JSON.stringify(proposal.owner)}});return s.tasks.some(task=>task.id===${JSON.stringify(proposal.task.id)}&&task.status==='ready_for_review');`));
+      await until('result acknowledgement enabled',()=>page(`const result=document.querySelector('.assistant-review-material');result?.scrollIntoView({block:'center'});return document.querySelector('.assistant-review-ack input')?.disabled===false;`));
+      await shot('cross-project-review-'+proposal.owner.workspaceId);await click('.assistant-review-ack input');await clickText('.assistant-task-decision-actions button','Mark reviewed');
+      await until('cross-project review persisted',()=>page(`const s=await __deck.backend.call('assistant_tasks_list',{owner:${JSON.stringify(proposal.owner)}});return s.tasks.some(task=>task.id===${JSON.stringify(proposal.task.id)}&&task.status==='done'&&task.attempts.length===1);`));
+      await clickText('.assistant-task-conversation > button','Close task details');
+    }
+    assert.equal(await page(`return document.querySelectorAll('.apex-agent-all-composer textarea').length`),1);
+    await shot('cross-project-reviewed');
+  });
+  await step('delegated result is reviewed inside the single conversation',async()=>{
+    const ready = await page(`const session=await __deck.backend.sessionLoad();const profile=session.profiles.find(p=>p.id==='widget-test');const m=await __deck.backend.call('monitor_get',{workspaceId:'launch'});const response=await __deck.backend.call('assistant_message',{workspaceId:'launch',cwd:m.cwd,hostId:m.hostId,conversationId:m.conversationId,requestId:'v4-inline-task',text:'Please ask Widget test model to inspect the fixture in a new chat. Read-only linked-chat smoke task.',destination:{threadId:null,workers:['widget-test'],newThread:true},newWorkerProfiles:[profile],mode:'read_only',checks:[],threadLabels:[]});return response.task;`);
+    await until('delegated task ready',()=>page(`const m=await __deck.backend.call('monitor_get',{workspaceId:'launch'});const s=await __deck.backend.call('assistant_tasks_list',{owner:{workspaceId:'launch',cwd:m.cwd,hostId:m.hostId,conversationId:m.conversationId}});return s.tasks.some(t=>t.id===${JSON.stringify(ready.id)}&&t.status==='ready_for_review');`));
+    await until('review message in conversation',()=>page(`return [...document.querySelectorAll('.assistant-task-conversation button')].some(button=>button.textContent.startsWith('Review result · '))`));
+    await page(`[...document.querySelectorAll('.assistant-task-conversation button')].find(button=>button.textContent.startsWith('Review result · ')).click();return true;`);
+    await until('current result visible',()=>page(`const result=document.querySelector('.assistant-review-material');result?.scrollIntoView({block:'center'});return !!result;`));
+    await until('revision acknowledgement enabled',()=>page(`return document.querySelector('.assistant-review-ack input')?.disabled===false`));
+    await shot('conversational-task-review');
+    await click('.assistant-review-ack input'); await reveal('.assistant-task-decision-actions button');
+    await clickText('.assistant-task-decision-actions button','Mark reviewed');
+    await until('review persisted',()=>page(`const m=await __deck.backend.call('monitor_get',{workspaceId:'launch'});const s=await __deck.backend.call('assistant_tasks_list',{owner:{workspaceId:'launch',cwd:m.cwd,hostId:m.hostId,conversationId:m.conversationId}});return s.tasks.some(t=>t.id===${JSON.stringify(ready.id)}&&t.status==='done');`));
+    await shot('conversational-task-reviewed');
+  });
+  await step('native browser steps aside while the pop-up is open',async()=>{
     await clickLabel('.apex-agent [aria-label]','Close ApexAgent');
     await page(`const s=await __deck.backend.sessionLoad();await __deck.backend.sessionSave({...s,section:'code',activeWorkspace:'launch',focusedPane:'widget-browser',panes:[{id:'widget-browser',kind:'preview',title:'Browser',workspaceId:'launch',url:${JSON.stringify(process.env.APEX_WIDGET_SITE)}}]});return true;`);
     win.webContents.reload();await until('UI reloaded',()=>page(`return Boolean(window.__deck&&!document.querySelector('.loading'))`));
@@ -260,10 +240,10 @@ export async function runSmoke(win, { browser }) {
     const beforeDock=browser.inspect('widget-browser')?.bounds;
     await click('.apex-widget-hit');
     await until('assistant dock open',()=>page(`return Boolean(document.querySelector('.apex-agent-dock'))`));
-    const rects=await page(`const p=document.querySelector('.apex-agent-dock').getBoundingClientRect(),b=document.querySelector('.browser-place').getBoundingClientRect();return {overlap:Math.min(p.left,b.right)-Math.max(p.left,b.left)>0&&Math.min(p.bottom,b.bottom)-Math.max(p.top,b.top)>0,canvasRight:document.querySelector('.canvas').getBoundingClientRect().right,dockLeft:p.left,placeholderWidth:b.width};`);
-    assert.ok(Math.abs(rects.canvasRight-rects.dockLeft)<=2,`Browser placeholder and dock share body geometry: ${JSON.stringify(rects)}`);
-    assert.equal(rects.overlap,false,'The dock occupies its own body width instead of covering the browser pane');
-    await until('native browser bounds follow narrower placeholder',()=>{const current=browser.inspect('widget-browser');return current?.shown&&current.bounds.width<beforeDock.width;});
+    // The pop-up floats over the browser, so the native view must step aside while it is open.
+    await until('native browser hides under the pop-up',()=>!browser.inspect('widget-browser')?.shown);
+    await clickLabel('.apex-agent [aria-label]','Close ApexAgent');
+    await until('native browser returns at full size',()=>{const current=browser.inspect('widget-browser');return current?.shown&&current.bounds.width===beforeDock.width;});
     await shot('browser');
   });
   console.log(`widget smoke: ${passed} passed, 0 failed`);

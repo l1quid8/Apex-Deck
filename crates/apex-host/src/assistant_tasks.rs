@@ -36,6 +36,27 @@ pub struct HumanRequest {
     pub destination: Option<TaskDestination>,
 }
 
+/// Exact child preparation payload, retained independently of mutable task state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HandoffPreparation {
+    pub request_id: String,
+    pub batch_id: String,
+    pub owner: TaskOwner,
+    pub revision: u64,
+    pub original_request: String,
+    pub brief: String,
+    pub destination: TaskDestination,
+    pub mode: TaskMode,
+    pub review_criteria: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HandoffReceipt {
+    payload: HandoffPreparation,
+    task_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -200,6 +221,8 @@ struct Document {
     requests: BTreeMap<String, HumanRequestRecord>,
     #[serde(default)]
     executions: BTreeMap<String, ExecutionEntry>,
+    #[serde(default)]
+    handoffs: BTreeMap<String, HandoffReceipt>,
 }
 
 struct Inner {
@@ -291,6 +314,7 @@ impl AssistantTasks {
         }
         let mut document = self.inner.document.lock().unwrap();
         let before = document.clone();
+        if document.handoffs.contains_key(&request.request_id) { return Err(TaskError::new(TaskErrorKind::RequestIdConflict, "Request ID already belongs to a prepared handoff.")); }
         if let Some(saved) = document.requests.get(&request.request_id) {
             let same = saved.owner == request.owner
                 && saved.text == request.text
@@ -331,6 +355,29 @@ impl AssistantTasks {
                 task_id: task.id.clone(),
             },
         );
+        save_mutation(&self.inner, &mut document, before)?;
+        Ok(task)
+    }
+
+    pub fn prepared_handoff(&self, input: &HandoffPreparation) -> Result<Option<AssistantTask>, TaskError> {
+        let document = self.inner.document.lock().unwrap();
+        handoff_receipt(&document, input)
+    }
+
+    /// Receipt, proposal and batch metadata share one durable ledger mutation.
+    pub fn prepare_handoff(&self, input: HandoffPreparation) -> Result<AssistantTask, TaskError> {
+        let mut document = self.inner.document.lock().unwrap();
+        if let Some(task) = handoff_receipt(&document, &input)? { return Ok(task); }
+        if document.requests.contains_key(&input.request_id) {
+            return Err(TaskError::new(TaskErrorKind::RequestIdConflict, "Request ID already belongs to a human request."));
+        }
+        let before = document.clone();
+        let mut task = make_task(&mut document, input.owner.clone(), Some(input.destination.clone()), TaskOrigin::Proposal, input.original_request.clone(), input.brief.clone(), TaskStatus::Proposed);
+        task.mode = input.mode;
+        task.review_criteria = input.review_criteria.clone();
+        task.result_data = Some(serde_json::json!({"batchId":input.batch_id,"requestId":input.request_id,"monitorRevision":input.revision,"mode":input.mode,"checks":[],"taskHistory":[{"kind":"request","text":input.original_request}]}));
+        document.tasks.insert(task.id.clone(), task.clone());
+        document.handoffs.insert(input.request_id.clone(), HandoffReceipt { payload: input, task_id: task.id.clone() });
         save_mutation(&self.inner, &mut document, before)?;
         Ok(task)
     }
@@ -999,6 +1046,12 @@ fn make_task(
     task
 }
 
+fn handoff_receipt(document: &Document, input: &HandoffPreparation) -> Result<Option<AssistantTask>, TaskError> {
+    let Some(receipt) = document.handoffs.get(&input.request_id) else { return Ok(None); };
+    if receipt.payload != *input { return Err(TaskError::new(TaskErrorKind::RequestIdConflict, "That child request ID was used with a different preparation payload.")); }
+    document.tasks.get(&receipt.task_id).cloned().map(Some).ok_or_else(|| TaskError::new(TaskErrorKind::Storage, "Prepared handoff task is missing."))
+}
+
 fn check_owner_revision(
     task: &AssistantTask,
     expected_revision: u64,
@@ -1141,6 +1194,32 @@ mod tests {
             text: text.into(),
             destination: Some(destination()),
         }
+    }
+
+    #[test]
+    fn handoff_prepare_is_payload_bound_durable_and_proposal_only() {
+        let path = folder();
+        let store = AssistantTasks::open(ledger(&path)).unwrap();
+        let input = HandoffPreparation { request_id: "child-1".into(), batch_id: "batch-1".into(), owner: owner(), revision: 7, original_request: "Ask Null to fix login and Jigga to test billing".into(), brief: "Fix login".into(), destination: destination(), mode: TaskMode::Isolated, review_criteria: vec!["Login works".into()] };
+        let task = store.prepare_handoff(input.clone()).unwrap();
+        assert_eq!(task.status, TaskStatus::Proposed);
+        assert_eq!(task.mode, TaskMode::Isolated);
+        assert_ne!(task.original_request, task.brief);
+        assert!(task.execution_thread_id.is_none());
+        assert_eq!(task.result_data.as_ref().unwrap()["batchId"], "batch-1");
+        let reopened = AssistantTasks::open(ledger(&path)).unwrap();
+        assert_eq!(reopened.prepare_handoff(input.clone()).unwrap(), task);
+        for field in ["brief", "mode", "revision", "batchId", "owner", "destination", "originalRequest", "reviewCriteria"] {
+            let mut changed = serde_json::to_value(&input).unwrap();
+            changed[field] = match field { "mode" => serde_json::json!("read_only"), "revision" => serde_json::json!(8), "owner" => serde_json::json!({"workspaceId":"other","cwd":"/repo","hostId":"local","conversationId":"parent"}), "destination" => serde_json::json!({"threadId":"elsewhere","workers":["null"],"newThread":false}), "reviewCriteria" => serde_json::json!(["different"]), _ => serde_json::json!("different") };
+            assert_eq!(reopened.prepare_handoff(serde_json::from_value(changed).unwrap()).unwrap_err().kind, TaskErrorKind::RequestIdConflict);
+        }
+        assert_eq!(reopened.submit_human_request(request("child-1", "different human text"), "brief".into(), Some(destination())).unwrap_err().kind, TaskErrorKind::RequestIdConflict);
+        reopened.submit_human_request(request("human-1", "Human work"), "brief".into(), Some(destination())).unwrap();
+        let mut human_conflict = input.clone(); human_conflict.request_id = "human-1".into();
+        assert_eq!(reopened.prepare_handoff(human_conflict).unwrap_err().kind, TaskErrorKind::RequestIdConflict);
+        assert_eq!(reopened.list(None).unwrap().len(), 2);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -21,11 +21,22 @@ const server = http.createServer(async (req, res) => {
   const request = JSON.parse(raw); calls++;
   if (request.tools?.length) { res.writeHead(500); res.end('Monitoring must be tool-free'); return; }
   const text = JSON.stringify(request.messages);
+  const overview = (text.includes('one personal assistant across the supplied projects') || text.includes('one assistant across supplied projects'));
+  if (overview) {
+    const prompt = request.messages.find(message => typeof message.content === 'string' && (message.content.includes('one personal assistant across the supplied projects') || message.content.includes('one assistant across supplied projects')))?.content;
+    const input = JSON.parse(prompt.slice(prompt.indexOf('INPUT: ') + 7));
+    if (!['launch', 'other'].every(id => input.projects.some(project => project.workspaceId === id))) { res.writeHead(500); res.end('The global request must contain both actual project snapshots'); return; }
+  }
+  const handoffPhrase = 'Ask Widget test model to inspect Mobile launch and Other project in their saved chats. Cross-project handoff smoke.';
+  const overviewPrompt = overview && request.messages.find(message => typeof message.content === 'string' && message.content.includes('INPUT: '))?.content;
+  const overviewInput = overviewPrompt ? JSON.parse(overviewPrompt.slice(overviewPrompt.indexOf('INPUT: ') + 7)) : null;
+  const crossProjectHandoff = overviewInput?.humanRequest === handoffPhrase;
+  const assignments = crossProjectHandoff ? overviewInput.projects.map(project => { const thread = project.routingThreads.find(thread => thread.workers.some(worker => worker.id === 'widget-test')); if (!thread) throw new Error(`Missing fixture routing for ${project.workspaceId}`); return ({owner:{workspaceId:project.workspaceId,cwd:project.cwd,hostId:project.hostId,conversationId:project.conversationId},revision:project.revision,brief:`Read-only cross-project smoke inspection for ${project.workspaceId}.`,destination:{threadId:thread.id,workers:['widget-test'],newThread:false},mode:'read_only',reviewCriteria:[]}); }) : [];
   const conversation = text.includes('You are ApexAgent. Answer the human directly');
   const clarify = text.includes('create an implementation task');
-  const linkedChatTask = text.includes('Read-only linked-chat smoke task');
+  const linkedChatTask = text.includes('Read-only linked-chat smoke task') || text.includes('Read-only cross-project smoke inspection');
   const deferred = text.includes('Defer SSO');
-  const reply = conversation
+  const reply = overview ? crossProjectHandoff ? {message:'Two read-only smoke proposals are ready for your approval.',citations:[],assignments} : {message:'Mobile launch has saved SSO evidence; Other project is paused. This is a cross-project draft, with no changes made.',citations:[{workspaceId:'launch',sourceId:'file:test-report.md',quote:'SSO tests are failing.'}],assignments:[]} : conversation
     ? linkedChatTask
       ? {kind:'handoff',message:'I have assigned the read-only inspection to the selected worker in a new chat.',brief:'Inspect the deterministic smoke fixture and report what it contains without changing files.',threadId:'model-selected-thread-is-ignored',workers:['model-selected-worker-is-ignored'],reviewCriteria:[]}
       : deferred

@@ -12,6 +12,7 @@ pub mod pty;
 pub mod reply_images;
 pub mod storage;
 pub mod assistant_service;
+pub mod assistant_overview;
 pub mod assistant_git;
 pub mod assistant_isolation;
 pub mod assistant_tasks;

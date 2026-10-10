@@ -84,3 +84,21 @@ export function monitorStatusLabel(monitor: ProjectMonitor | null): string {
   if (monitor.completed) return 'Complete';
   return monitor.paused ? 'Paused' : 'Watching';
 }
+
+export interface AllProjectsEntry { workspaceId: string; project: string; message: MonitorMessage }
+
+/** One timeline for every watched project, oldest first, each line tagged with its project. */
+export function mergeProjectConversations(monitors: ProjectMonitor[], names: Record<string, string>): AllProjectsEntry[] {
+  return monitors
+    .flatMap((monitor) => monitor.messages.map((message) => ({ workspaceId: monitor.workspaceId, project: names[monitor.workspaceId] ?? 'Project', message })))
+    .sort((a, b) => a.message.at - b.message.at || a.workspaceId.localeCompare(b.workspaceId));
+}
+
+/** A reply goes to the project it names as a whole word ("UI" never matches "Build"); otherwise it continues the last project talked about. */
+export function replyTarget(text: string, projects: { id: string; name: string }[], fallback: string | null): string | null {
+  const wholeWord = (name: string) => new RegExp(`(^|[^\\p{L}\\p{N}])${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'iu');
+  const named = projects
+    .filter((project) => project.name.trim() && wholeWord(project.name).test(text))
+    .sort((a, b) => b.name.length - a.name.length)[0];
+  return named?.id ?? (projects.some((project) => project.id === fallback) ? fallback : projects[0]?.id ?? null);
+}

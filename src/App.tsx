@@ -2,7 +2,7 @@ import { canvasPanes } from "./canvasPanes.ts";
 import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceFamily, workspaceHost } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
 import { HostPane, HostAgents, HostMonitors } from "./HostPane";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 
 import { getBackend, type Backend, type HostEntry } from "./backend";
 import { connection, statusWords } from "./connection";
@@ -20,10 +20,12 @@ import { startHub } from "./hub";
 import { SectionNavigation } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { ApexAgent } from "./ApexAgent";
+import { ApexAgentTasks } from "./ApexAgentTasks";
+import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
+import { ApexAgentAll } from "./ApexAgentAll";
 import { ApexAgentWidget } from "./ApexAgentWidget";
-import { APEX_AGENT_DOCK_DEFAULT, APEX_AGENT_DOCK_FOCUSED, APEX_AGENT_DOCK_STORAGE_KEY, clampApexAgentDockWidth, shouldUseCompactApexAgentShell, storedApexAgentDockWidth } from "./apexAgentDockModel.ts";
 import "./apex-agent-dock.css";
-import type { AssistantSourceDrop } from "./apexAgentWidgetModel.ts";
+import { widgetCoordinates, widgetSidePanelPosition, type AssistantSourceDrop, type WidgetPosition } from "./apexAgentWidgetModel.ts";
 import { LibraryView } from "./LibraryView";
 import { DeckIcon } from "./DeckIcon";
 import { NewMenu } from "./NewMenu";
@@ -52,8 +54,8 @@ import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
-import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from "./assistantTaskModel.ts";
-import type { ProjectMonitor } from "./apexAgentModel.ts";
+import { assistantTasksForOwner, assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
+import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
@@ -180,28 +182,55 @@ export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
   const [apexAgentWorkspace, setApexAgentWorkspace] = useState<string | null>(null);
   const [apexAgentDockFocused, setApexAgentDockFocused] = useState(false);
-  const [apexAgentDockWidth, setApexAgentDockWidth] = useState(() => storedApexAgentDockWidth(typeof localStorage === "undefined" ? undefined : localStorage));
-  const dockResize = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   const [apexAgentAppearanceRequest, setApexAgentAppearanceRequest] = useState(0);
   const [apexAgentHideRequest, setApexAgentHideRequest] = useState(0);
   const [apexAgentSelection, setApexAgentSelection] = useState<string | null>(() => {
     try { return localStorage.getItem("apex-agent-selected-project"); } catch { return null; }
   });
+  /** ApexAgent opens on one conversation across every project; a single project opens only for its setup and sources. */
+  const [apexAgentAllOpen, setApexAgentAllOpen] = useState(false);
+  const [apexAvatarPosition, setApexAvatarPosition] = useState<WidgetPosition | null>(null);
+  const [apexAgentFull, setApexAgentFull] = useState(() => { try { return localStorage.getItem("apex-agent-full-screen") === "1"; } catch { return false; } });
+  // The conversation pop-up opens beside the avatar, on whichever edge it sits.
+  const apexFloatStyle = (() => {
+    if (apexAgentFull || !apexAvatarPosition || typeof window === "undefined") return undefined;
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const avatar = widgetCoordinates(apexAvatarPosition, viewport);
+    const width = Math.min(400, viewport.width - 48);
+    const height = Math.min(600, viewport.height - 140);
+    const top = Math.max(48, Math.min(avatar.top + 28 - height / 2, viewport.height - height - 16));
+    return { ...widgetSidePanelPosition(apexAvatarPosition.edge, avatar.left, viewport.width, width, 56, 16, 12), top, bottom: "auto", width, height } as CSSProperties;
+  })();
+  const toggleApexAgentFull = () => setApexAgentFull((full) => { try { localStorage.setItem("apex-agent-full-screen", full ? "0" : "1"); } catch { /* Lasts for this window. */ } return !full; });
+  const [, refreshAssistantRequests] = useState(0);
+  /** Clearing hides earlier messages on this Mac only; each project's assistant keeps its memory and open findings. */
+  const [apexAgentClearedAt, setApexAgentClearedAt] = useState(() => { try { return Number(localStorage.getItem("apex-agent-cleared-at")) || 0; } catch { return 0; } });
+  const [overviewEntries, setOverviewEntries] = useState<OverviewEntry[]>(() => loadOverviewEntries(localStorage));
+  const overviewHistory = useRef(overviewEntries); overviewHistory.current = overviewEntries;
+  const [handoffBatches, setHandoffBatches] = useState<HandoffBatch[]>(() => loadHandoffBatches(localStorage));
+  const handoffHistory = useRef(handoffBatches);
+  const handoffBusy = useRef(new Set<string>());
+  const [handoffWorking, setHandoffWorking] = useState<string[]>([]);
+  const [assistantTaskContext, setAssistantTaskContext] = useState<{ id: string; project: string; label: string; owner: AssistantTaskOwner; send: (text: string) => Promise<void> } | null>(null);
+
+  const clearApexAgentConversation = () => { const at = Date.now(); setApexAgentClearedAt(at); try { localStorage.setItem("apex-agent-cleared-at", String(at)); } catch { /* Lasts for this window. */ } };
   const openApexAgent = (workspaceId: string) => {
     if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
     setApexAgentSelection(workspaceId);
-    setApexAgentWorkspace(workspaceId);
+    setApexAgentWorkspace(null);
+    setApexAgentAllOpen(true);
     try { localStorage.setItem("apex-agent-selected-project", workspaceId); } catch { /* Selection still lasts for this window. */ }
   };
-  const closeApexAgent = () => { setApexAgentWorkspace(null); setApexAgentDockFocused(false); };
+  const openApexAgentProject = (workspaceId: string) => {
+    if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
+    setApexAgentSelection(workspaceId);
+    setApexAgentWorkspace(workspaceId);
+    setApexAgentAllOpen(true);
+  };
+  const closeApexAgent = () => { setApexAgentWorkspace(null); setApexAgentAllOpen(false); setApexAgentDockFocused(false); };
   const closeApexAgentAndReturnFocus = () => {
     closeApexAgent();
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".apex-widget-hit")?.focus());
-  };
-  const saveApexAgentDockWidth = (width: number) => {
-    const next = clampApexAgentDockWidth(width, dockAvailableWidth, apexAgentDockFocused);
-    setApexAgentDockWidth(next);
-    try { localStorage.setItem(APEX_AGENT_DOCK_STORAGE_KEY, String(next)); } catch { /* Width still lasts for this window. */ }
   };
 
   /** Where you stopped reading each thread, saved with it for "New since you looked". */
@@ -267,14 +296,9 @@ export function App() {
   const bodyRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLElement>(null);
   const [availableWidth, setAvailableWidth] = useState(0);
-  const [bodyWidth, setBodyWidth] = useState(0);
-  const apexAgentDockHasWorkspace = !!apexAgentWorkspace && workspaces.some((workspace) => workspace.id === apexAgentWorkspace && !workspace.hidden);
-  const compactApexAgentDock = shouldUseCompactApexAgentShell(apexAgentDockHasWorkspace, bodyWidth);
+  const [, setBodyWidth] = useState(0);
+  const compactApexAgentDock = false; // The v4 pop-up floats over the app, so the sidebar never has to give way.
   const railVisible = railOpen && !compactApexAgentDock;
-  const dockAvailableWidth = bodyRef.current && canvasRef.current
-    ? Math.max(0, bodyRef.current.getBoundingClientRect().right - canvasRef.current.getBoundingClientRect().left)
-    : availableWidth;
-  const renderedApexAgentDockWidth = clampApexAgentDockWidth(apexAgentDockFocused ? Math.max(apexAgentDockWidth, APEX_AGENT_DOCK_FOCUSED) : apexAgentDockWidth, dockAvailableWidth, apexAgentDockFocused);
   /** Sidebar widths the user dragged to; null keeps the default. */
   const [sidebarWidths, setSidebarWidths] = useState<SidebarWidths>(loadWidths);
   const setSidebarWidth = (which: Sidebar) => (width: number | null) => setSidebarWidths((old) => ({ ...old, [which]: width }));
@@ -1187,7 +1211,7 @@ export function App() {
     const route = hostBackend(hostId);
     const version = monitorOwnerVersion(workspaceId);
     const saved = Object.values(monitorAttention).find((entry) => entry.workspaceId === workspaceId && entry.hostId === hostId && entry.monitor.cwd === workspace.path)?.monitor;
-    if (!saved) { openApexAgent(workspaceId); throw new Error("Give ApexAgent a responsibility before adding sources or replying."); }
+    if (!saved) { openApexAgentProject(workspaceId); throw new Error("Give ApexAgent a responsibility before adding sources or replying."); }
     const result = await route.call<ProjectMonitor>(command, {
       workspaceId, cwd: workspace.path, hostId, conversationId: saved.conversationId, ...args,
     });
@@ -1200,7 +1224,7 @@ export function App() {
     }
     guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, result);
   };
-  const replyToAssistant = async (workspaceId: string, text: string) => {
+  const replyToAssistant = async (workspaceId: string, text: string, expectedRequest?: PendingAssistantRequest) => {
     const workspace = latest.current.workspaces.find((item) => item.id === workspaceId && !item.hidden);
     if (!workspace) throw new Error("That project is no longer available.");
     const hostId = workspaceHost(workspace);
@@ -1215,20 +1239,125 @@ export function App() {
     if (!currentBinding() || !monitor || monitor.workspaceId !== workspaceId || monitor.hostId !== hostId || monitor.cwd !== workspace.path) throw new Error("Reopen ApexAgent to check its assignment.");
     const owner: AssistantTaskOwner = { workspaceId, hostId, cwd: workspace.path, conversationId: monitor.conversationId };
     const existing = loadPendingRequest(localStorage, owner);
+    if (expectedRequest && (!existing || existing.requestId !== expectedRequest.requestId
+      || overviewOwnerKey(owner) !== overviewOwnerKey(expectedRequest.owner))) throw new Error("The saved request or project assignment changed. Reopen ApexAgent before retrying.");
     if (existing && existing.text !== text) throw new Error("A previous request is awaiting confirmation. Reopen ApexAgent to retry or discard it first.");
     const threadLabels = latest.current.panes.filter((pane) => pane.workspaceId === workspaceId && pane.kind === 'chat').map((pane) => ({ id: pane.id, label: pane.title }));
     const pending: PendingAssistantRequest = existing ?? { requestId: crypto.randomUUID(), owner, text, destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [], threadLabels };
     savePendingRequest(localStorage, pending, owner);
-    const result = await route.call<{ monitor: ProjectMonitor }>("assistant_message", assistantMessageArgs(owner, pending, threadLabels));
-    const sameAssignment = (value: ProjectMonitor | null | undefined) => !!value && value.workspaceId === workspaceId
-      && value.cwd === owner.cwd && value.hostId === owner.hostId && value.conversationId === owner.conversationId;
-    if (!currentBinding() || !sameAssignment(result?.monitor)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
-    // A reply may complete after reassignment on another device. Confirm the
-    // live owner before acknowledging this durable request or painting its reply.
-    const confirmed = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
-    if (!currentBinding() || !sameAssignment(confirmed)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
-    guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, confirmed);
-    clearPendingRequest(localStorage, owner);
+    try {
+      const result = await route.call<{ monitor: ProjectMonitor }>("assistant_message", assistantMessageArgs(owner, pending, threadLabels));
+      const sameAssignment = (value: ProjectMonitor | null | undefined) => !!value && value.workspaceId === workspaceId
+        && value.cwd === owner.cwd && value.hostId === owner.hostId && value.conversationId === owner.conversationId;
+      if (!currentBinding() || !sameAssignment(result?.monitor)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
+      // A reply may complete after reassignment on another device. Confirm the
+      // live owner before acknowledging this durable request or painting its reply.
+      const confirmed = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
+      if (!currentBinding() || !sameAssignment(confirmed)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
+      guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, confirmed);
+      if (loadPendingRequest(localStorage, owner)?.requestId === pending.requestId) clearPendingRequest(localStorage, owner);
+    } finally { refreshAssistantRequests((version) => version + 1); }
+  };
+  const openAssistantEvidence = async (workspaceId: string, evidence: MonitorEvidence) => {
+    const workspace = latest.current.workspaces.find((item) => item.id === workspaceId && !item.hidden);
+    if (!workspace) throw new Error("That project is no longer available.");
+    const thread = latest.current.panes.find((pane) => pane.workspaceId === workspaceId && pane.kind === 'chat' && pane.id === evidence.sourceId.replace(/^thread:/, ''));
+    if (thread) { focusPane(thread); return; }
+    if (evidence.sourceId.startsWith('thread:')) throw new Error("That source thread is no longer available in this project.");
+    const source = evidence.sourceId.replace(/^file:/, '');
+    if (!evidence.sourceId.startsWith('git:') && (!source || source.startsWith('/') || source.split(/[\\/]/).some((part) => part === '..') || /^[a-zA-Z]:/.test(source))) throw new Error("That evidence path is outside the project.");
+    await hostBackend(workspaceHost(workspace)).openTarget(evidence.sourceId.startsWith('git:') ? workspace.path : source, workspace.path || null, false);
+  };
+  const updateHandoffBatches = (batches: HandoffBatch[]) => {
+    saveHandoffBatches(localStorage, batches);
+    handoffHistory.current = batches; setHandoffBatches(batches);
+  };
+  const prepareHandoffBatch = async (batchId: string) => {
+    if (handoffBusy.current.has(batchId)) return;
+    handoffBusy.current.add(batchId); setHandoffWorking([...handoffBusy.current]);
+    try {
+      const batch = handoffHistory.current.find((item) => item.id === batchId);
+      if (!batch) throw new Error('The handoff plan is unavailable.');
+      for (let index = 0; index < batch.children.length; index++) {
+        const child = handoffHistory.current.find((item) => item.id === batchId)!.children[index];
+        if (child.status === 'proposed' || child.status === 'failed') continue;
+        const owner = child.payload.owner;
+        let status: HandoffBatch['children'][number]['status'] = 'uncertain'; let error = ''; let taskId: string | undefined;
+        try {
+          const workspace = latest.current.workspaces.find((item) => item.id === owner.workspaceId && !item.hidden);
+          if (!workspace || workspace.path !== owner.cwd || workspaceHost(workspace) !== owner.hostId) { status = 'failed'; throw new Error('The project owner changed. Reconfirm this work.'); }
+          if (!reachable(owner.hostId)) { status = 'offline'; throw new Error('Project machine is offline. Reconnect, then retry this saved proposal.'); }
+          const route = hostBackend(owner.hostId), version = monitorOwnerVersion(owner.workspaceId);
+          const bound = () => {
+            const current = latest.current.workspaces.find((item) => item.id === owner.workspaceId && !item.hidden);
+            return current && current.path === owner.cwd && workspaceHost(current) === owner.hostId
+              && monitorOwnerVersion(owner.workspaceId) === version && reachable(owner.hostId) && hostBackend(owner.hostId) === route;
+          };
+          const monitor = await route.call<ProjectMonitor | null>('monitor_get', { workspaceId: owner.workspaceId });
+          if (!bound() || !monitor || overviewOwnerKey(overviewOwner(monitor)) !== overviewOwnerKey(owner)) { status = 'failed'; throw new Error('The assignment or connection changed. Reconfirm this work.'); }
+          // The destination host reconciles the request receipt before checking a stale revision.
+          const receipt = await route.call<{ task: AssistantTask }>('assistant_handoff_prepare', { ...handoffPreparationArgs(child, overviewOwner(monitor)) });
+          if (!bound() || !receipt.task || overviewOwnerKey(receipt.task.owner) !== overviewOwnerKey(owner)) throw new Error('The preparation reply is uncertain. Retry the saved proposal.');
+          status = 'proposed'; taskId = receipt.task.id;
+        } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+        updateHandoffBatches(handoffHistory.current.map((item) => item.id !== batchId ? item : { ...item, children: item.children.map((saved, childIndex) => childIndex !== index ? saved : { ...saved, status, error, taskId }) }));
+      }
+    } finally { handoffBusy.current.delete(batchId); setHandoffWorking([...handoffBusy.current]); }
+  };
+  const replyAcrossProjects = async (text: string) => {
+    const startedAt = Date.now();
+    const captured = assistantMonitors.map((monitor) => {
+      const workspace = latest.current.workspaces.find((item) => item.id === monitor.workspaceId && !item.hidden)!;
+      const offline = !reachable(monitor.hostId);
+      return { monitor, workspace, offline, route: offline ? null : hostBackend(monitor.hostId), version: monitorOwnerVersion(workspace.id) };
+    });
+    const stillBound = () => captured.every(({ monitor, workspace, route, version }) => {
+      const current = latest.current.workspaces.find((item) => item.id === workspace.id && !item.hidden);
+      return !!current && current.path === monitor.cwd && workspaceHost(current) === monitor.hostId
+        && monitorOwnerVersion(workspace.id) === version && (!route || hostBackend(monitor.hostId) === route);
+    });
+    const snapshots = await Promise.all(captured.map(async (item) => {
+      if (!item.route) return item.monitor;
+      const current = await item.route.call<ProjectMonitor | null>('monitor_get', { workspaceId: item.workspace.id });
+      if (!current || overviewOwnerKey(overviewOwner(current)) !== overviewOwnerKey(overviewOwner(item.monitor))) throw new Error("A project assignment changed. Reopen ApexAgent.");
+      return current;
+    }));
+    if (!stillBound()) throw new Error("A project or connection changed. Reopen ApexAgent.");
+    const coordinatorIndex = captured.findIndex((item) => !!item.route);
+    if (coordinatorIndex < 0) throw new Error("All project machines are offline. Reconnect one to ask ApexAgent.");
+    const coordinator = captured[coordinatorIndex];
+    const taskSnapshots = await Promise.all(captured.map(async (item, index) => {
+      if (!item.route) return undefined;
+      try {
+        const owner = overviewOwner(snapshots[index]);
+        const snapshot = await item.route.call<AssistantTaskSnapshot>('assistant_tasks_list', { owner });
+        assistantTasksForOwner(snapshot, owner);
+        return snapshot;
+      } catch { return undefined; }
+    }));
+    if (!stillBound()) throw new Error("A project or connection changed. Reopen ApexAgent.");
+    const projects = snapshots.map((monitor, index) => ({ ...overviewProject(monitor, captured[index].workspace.name, captured[index].offline, taskSnapshots[index]?.tasks), routingThreads: overviewRouting(taskSnapshots[index]) }));
+    const history = visibleOverviewEntries(overviewHistory.current, snapshots).slice(-20).map((entry) => ({ role: entry.message.role, text: entry.message.text }));
+    const result = await coordinator.route!.call<{ message: string; citations: OverviewEntry['citations']; assignments?: HandoffAssignment[]; clarification?: string }>('assistant_overview', { owner: overviewOwner(snapshots[coordinatorIndex]), text, projects, history });
+    // Revalidate every live assignment after the tool-free synthesis, not just the coordinator.
+    await Promise.all(captured.map(async (item) => {
+      if (!item.route) return;
+      const current = await item.route.call<ProjectMonitor | null>('monitor_get', { workspaceId: item.workspace.id });
+      if (!current || current.revision !== snapshots[captured.indexOf(item)].revision || overviewOwnerKey(overviewOwner(current)) !== overviewOwnerKey(overviewOwner(item.monitor))) throw new Error("A project assignment changed while answering. Ask again.");
+    }));
+    if (!stillBound() || typeof result?.message !== 'string') throw new Error("The project context changed while answering. Ask again.");
+    const batch = handoffBatch(crypto.randomUUID(), text, result.assignments ?? [], projects);
+    if (batch.children.length) {
+      // Persist the exact IDs and payloads before any host mutation, including uncertain replies.
+      updateHandoffBatches([...handoffHistory.current, batch]);
+    }
+    const owners = snapshots.map(overviewOwner);
+    const added: OverviewEntry[] = [
+      { workspaceId: '*', project: 'All projects', owners, message: { id: crypto.randomUUID(), role: 'human', text, at: startedAt, evidence: [] } },
+      { workspaceId: '*', project: 'All projects', owners, citations: result.citations, message: { id: crypto.randomUUID(), role: 'assistant', text: result.clarification ? `${result.message}\n${result.clarification}` : result.message, at: Date.now(), evidence: [] } },
+    ];
+    setOverviewEntries((previous) => { const next = [...previous, ...added].slice(-100); try { localStorage.setItem('apex-agent-overview-history', JSON.stringify(next)); } catch { /* Keep this window's conversation when storage is unavailable. */ } return next; });
+    if (batch.children.length) await prepareHandoffBatch(batch.id);
   };
   const addAssistantSource = async (payload: AssistantSourceDrop) => {
     const workspace = latest.current.workspaces.find((item) => item.id === payload.workspaceId && !item.hidden);
@@ -1539,6 +1668,8 @@ export function App() {
   const apexWorkspace = apexAgentWorkspace ? workspaces.find((w) => w.id === apexAgentWorkspace) ?? null : null;
   const selectedApexWorkspace = workspaces.find((workspace) => workspace.id === apexAgentSelection && !workspace.hidden) ?? current ?? workspaces.find((workspace) => !workspace.hidden) ?? null;
   const assistantMonitors = Object.values(monitorAttention).flatMap((entry) => {
+
+
     const workspace = workspaces.find((item) => item.id === entry.workspaceId && !item.hidden);
     const monitor = entry.monitor;
     return workspace && workspaceHost(workspace) === entry.hostId && monitor.workspaceId === workspace.id && monitor.hostId === entry.hostId && monitor.cwd === workspace.path ? [monitor] : [];
@@ -1630,7 +1761,6 @@ export function App() {
             </button>
           </div>
         )}
-        {current && <button className="apex-agent-entry" onClick={() => openApexAgent(current.id)} title={`Open ApexAgent for ${current.name}`}>ApexAgent</button>}
         {section === "agents" && <button className="primary" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
         {section !== "agents" && creationBackend && <HostAgents backend={creationBackend} agents={agents}>{hostAgents => <NewMenu
           section={section}
@@ -1650,8 +1780,8 @@ export function App() {
         </div>
       </header>
 
-      <ApexAgentWidget workspaces={workspaces.filter((workspace) => !workspace.hidden)} workspaceId={selectedApexWorkspace?.id ?? null} open={!!apexWorkspace} monitors={assistantMonitors}
-        panelMode="dock"
+      <ApexAgentWidget workspaces={workspaces.filter((workspace) => !workspace.hidden)} workspaceId={selectedApexWorkspace?.id ?? null} open={!!apexWorkspace || apexAgentAllOpen} monitors={assistantMonitors}
+        panelMode="dock" onPositionChange={setApexAvatarPosition}
         taskCounts={Object.fromEntries(Object.entries(assistantTaskCounts).filter(([id]) => { const owner = assistantOwners[id]; return !!owner && workspaces.some((workspace) => workspace.id === id && !workspace.hidden && workspace.path === owner.cwd && workspaceHost(workspace) === owner.hostId); }))}
         appearanceRequest={apexAgentAppearanceRequest} hideRequest={apexAgentHideRequest}
         offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)}
@@ -1815,28 +1945,43 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
         </main>
-        {apexWorkspace && <aside className="apex-agent-dock" style={{ width: renderedApexAgentDockWidth }} aria-label={`ApexAgent dock for ${apexWorkspace.name}`}>
-          <div
-            className="apex-agent-dock-resizer"
-            role="separator"
-            aria-label="Resize ApexAgent dock"
-            aria-orientation="vertical"
-            aria-valuemin={clampApexAgentDockWidth(320, dockAvailableWidth, apexAgentDockFocused)}
-            aria-valuemax={clampApexAgentDockWidth(820, dockAvailableWidth, apexAgentDockFocused)}
-            aria-valuenow={renderedApexAgentDockWidth}
-            tabIndex={0}
-            onPointerDown={(event) => { if (event.button !== 0) return; dockResize.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: renderedApexAgentDockWidth }; event.currentTarget.setPointerCapture(event.pointerId); }}
-            onPointerMove={(event) => { const drag = dockResize.current; if (drag?.pointerId === event.pointerId) saveApexAgentDockWidth(drag.startWidth + drag.startX - event.clientX); }}
-            onPointerUp={(event) => { if (dockResize.current?.pointerId === event.pointerId) dockResize.current = null; }}
-            onPointerCancel={() => { dockResize.current = null; }}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); saveApexAgentDockWidth(renderedApexAgentDockWidth + (event.key === "ArrowLeft" ? 1 : -1) * (event.shiftKey ? 40 : 16)); }
-              else if (event.key === "Home") { event.preventDefault(); saveApexAgentDockWidth(APEX_AGENT_DOCK_DEFAULT); }
-              else if (event.key === "End") { event.preventDefault(); saveApexAgentDockWidth(820); }
-            }}
-          />
+        {!apexWorkspace && apexAgentAllOpen && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label="ApexAgent">
+          <ApexAgentAll workspaces={workspaces.filter((workspace) => !workspace.hidden)} monitors={assistantMonitors} onReply={replyToAssistant} onMutate={mutateAssistant} onSetUp={openApexAgentProject} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)}
+            offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence} onOverview={replyAcrossProjects} overviewEntries={visibleOverviewEntries(overviewEntries, assistantMonitors)}
+            taskContext={assistantTaskContext && assistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
+            tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, assistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
+              <small>Task plan · {batch.children.length} assignment{batch.children.length === 1 ? '' : 's'}</small><p>{batch.visibleChildren.length === batch.children.length ? batch.originalRequest : 'Saved proposals for available projects. Changed project assignments need a new plan.'}</p>
+              {batch.visibleChildren.map((child) => <div key={child.payload.requestId}><strong>{child.project} · {child.payload.destination.workers.join(', ')}</strong><p>{child.payload.brief}</p><small>{child.status === 'proposed' ? 'Prepared · task progress and review below' : child.status} · {child.payload.mode === 'isolated' ? 'Separate worktree' : 'Read only'}</small>{child.error && <p role="status">{child.error}</p>}</div>)}
+              {batch.visibleChildren.some((child) => child.status !== 'proposed' && child.status !== 'failed') && <button type="button" disabled={handoffWorking.includes(batch.id)} onClick={() => void prepareHandoffBatch(batch.id)}>Retry saved proposals</button>}
+            </article>), ...assistantMonitors.map((monitor) => {
+              if (offlineHost(monitor.hostId)) return <article className="assistant-chat-message assistant" key={monitor.workspaceId}><small>{workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} · Offline</small><p>Reconnect this machine to load and respond to delegated work.</p></article>;
+              let route: Backend; try { route = hostBackend(monitor.hostId); } catch { return null; }
+              const requestOwner = overviewOwner(monitor);
+              const pending = loadPendingRequest(localStorage, requestOwner);
+              const requestVersion = monitorOwnerVersion(monitor.workspaceId);
+              const requestRecovery = {
+                pending,
+                retry: async () => {
+                  if (!pending) return;
+                  if (monitorOwnerVersion(monitor.workspaceId) !== requestVersion || hostBackend(monitor.hostId) !== route) throw new Error('The project connection changed. Reopen ApexAgent before retrying.');
+                  await replyToAssistant(monitor.workspaceId, pending.text, pending);
+                },
+                discard: () => {
+                  const workspace = latest.current.workspaces.find((item) => item.id === monitor.workspaceId && !item.hidden);
+                  if (!workspace || workspace.path !== monitor.cwd || workspaceHost(workspace) !== monitor.hostId || monitorOwnerVersion(monitor.workspaceId) !== requestVersion || hostBackend(monitor.hostId) !== route) return;
+                  if (pending && loadPendingRequest(localStorage, requestOwner)?.requestId === pending.requestId) {
+                    clearPendingRequest(localStorage, requestOwner);
+                    refreshAssistantRequests((version) => version + 1);
+                  }
+                },
+              };
+              return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} requestRecovery={requestRecovery} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
+            })]}
+            clearedAt={apexAgentClearedAt} onClear={clearApexAgentConversation} fullScreen={apexAgentFull} onFullScreen={toggleApexAgentFull} />
+        </aside>}
+        {apexWorkspace && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label={`ApexAgent for ${apexWorkspace.name}`}>
           {apexAgentBackend
-            ? <ApexAgent key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} widgetMode workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={viewPanes} onMonitorChange={apexMonitorChange} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)} focused={apexAgentDockFocused} onToggleFocus={() => setApexAgentDockFocused((value) => !value)} projectSelector={<select aria-label="ApexAgent project" value={apexWorkspace.id} onChange={(event) => openApexAgent(event.target.value)}>{workspaces.filter((workspace) => !workspace.hidden).map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select>} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id); if (pane) focusPane(pane); setApexAgentDockFocused(false); if (compactApexAgentDock) closeApexAgent(); }} />
+            ? <ApexAgent key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} widgetMode workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={viewPanes} onMonitorChange={apexMonitorChange} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)} projectSelector={<button type="button" className="apex-agent-back" onClick={() => setApexAgentWorkspace(null)}>‹ All projects</button>} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id); if (pane) focusPane(pane); setApexAgentDockFocused(false); if (compactApexAgentDock) closeApexAgent(); }} />
             : <div className="apex-agent-dock-unavailable"><header><strong>ApexAgent</strong><button className="icon" onClick={closeApexAgentAndReturnFocus} aria-label="Close ApexAgent">×</button></header><p role="alert">The project machine is unavailable.</p><p>Reconnect the machine to use ApexAgent for {apexWorkspace.name}.</p></div>}
         </aside>}
         {section === "threads" && detailsOpen && detailsTarget && <>
