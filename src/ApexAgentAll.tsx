@@ -19,7 +19,7 @@ const whenText = (ts: number) => new Date(ts).toLocaleString(undefined, { month:
 
 /** Text with ``` fences shown as preformatted blocks. */
 function fenced(text: string) {
-  return text.split('```').map((part, index) => index % 2 ? <pre key={index}>{part.replace(/^\n/, '').replace(/\n$/, '')}</pre> : part.trim() ? <p key={index}>{part.trim()}</p> : null);
+  return text.split('```').map((part, index) => index % 2 ? (part.trim() ? <pre key={index}>{part.replace(/^\n/, '').replace(/\n$/, '')}</pre> : null) : part.trim() ? <p key={index}>{part.trim()}</p> : null);
 }
 
 function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) => void) {
@@ -198,7 +198,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           const stoppable = !!task && lastLine.get(task.id) === item.id && (task.status === 'queued' || task.status === 'running' || task.status === 'waiting' || task.status === 'blocked');
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           return <article className={`assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${asking ? ' apex-agent-needs-you' : ''}${kindClass}`} key={`${workspaceId}:${message.id}`}>
-            <small>{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button>{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}{task && (item.kind === 'approval' || item.kind === 'result' || item.kind === 'update' || stoppable) && <span className="apex-agent-task-chip" data-status={task.status}>{PERSONAL_STATUS[task.status] ?? task.status}</span>}</small>
+            <small>{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button>{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}{task && lastLine.get(task.id) === item.id && <span className="apex-agent-task-chip" data-status={task.status}>{PERSONAL_STATUS[task.status] ?? task.status}</span>}</small>
             {asking ? <p>{task!.decision!.kind === 'handOff' ? 'Your turn: run this yourself, then tell me.' : task!.decision!.kind === 'spend' || task!.decision!.kind === 'uncertain' ? task!.decision!.prompt : 'Approval needed to run this:'}</p> : fenced(message.text)}
             {asking && task!.operation && <dl className="apex-agent-operation">
               <dt>Command</dt><dd><code>{task!.operation.argv.join(' ')}</code></dd>

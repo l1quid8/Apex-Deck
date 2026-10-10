@@ -971,6 +971,41 @@ async fn a_repeating_check_stays_quiet_when_nothing_changes_and_stops_when_the_c
 }
 
 #[tokio::test]
+async fn a_repeat_count_over_the_cap_is_reported_as_the_limit_actually_set() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(&task_reply(r#"{"goal":"Watch for the file","argv":["cat","status"],"everyMinutes":1,"maxRuns":1440}"#));
+    fixture.host.personal_send(&fixture.id, "p1", "Check every minute for a day").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let task = fixture.task();
+    assert_eq!(task.operation.unwrap().plan.unwrap().max_runs, Some(500));
+    let texts: Vec<String> = fixture.get().messages.iter().map(|m| m.text.clone()).collect();
+    assert!(texts.iter().any(|t| t.contains("asked for 1440 runs") && t.contains("stops after 500 runs")), "{texts:?}");
+}
+
+#[tokio::test]
+async fn stopping_a_repeating_check_after_a_run_says_it_ran_and_empty_output_has_no_box() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(&task_reply(r#"{"goal":"Wait for the file","argv":["cat","status"],"everyMinutes":10,"maxRuns":10,"until":{"outputContains":"READY"}}"#));
+    fixture.host.personal_send(&fixture.id, "p1", "Tell me when it's ready").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.decide("m1", true);
+    *fake.output.lock().unwrap() = String::new();
+    let at = now();
+    while fake.runs() == 0 { assert!(fixture.host.personal_step_at(&fake.tools(), at).await.unwrap()); }
+    let result = fixture.get().messages.iter().rev().find(|m| m.kind == "result").map(|m| m.text.clone()).unwrap();
+    assert!(!result.contains("```"), "no empty output block: {result}");
+    assert!(result.contains("It printed nothing."), "{result}");
+    let task_id = fixture.task().id;
+    fixture.host.personal_cancel(&fixture.id, "phone-2", &task_id).unwrap();
+    fixture.drain(&fake.tools()).await;
+    let last = fixture.get().messages.last().unwrap().text.clone();
+    assert!(!last.contains("before anything ran"), "{last}");
+    assert!(last.starts_with("Cancelled after 1 run."), "{last}");
+}
+
+#[tokio::test]
 async fn cancelling_a_task_cancels_what_waits_for_it_and_nothing_runs() {
     let fixture = Fixture::new();
     let fake = Fake::new(true);

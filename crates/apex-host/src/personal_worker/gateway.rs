@@ -9,11 +9,11 @@ const READ_ONLY: &[&str] = &[
     "df", "du", "free", "uptime", "uname", "whoami", "id", "date", "hostname", "ls", "cat", "head", "tail", "wc",
     "stat", "file", "ps", "pgrep", "w", "who", "last", "lsblk", "nproc", "vmstat", "iostat", "ss", "netstat",
     "sort", "uniq", "echo", "which", "grep", "rg", "find", "ping", "dig", "nslookup", "host", "top", "git",
-    "systemctl", "journalctl", "docker", "ip", "sensors", "md5sum", "sha256sum", "tree", "true",
+    "systemctl", "journalctl", "docker", "ip", "sensors", "md5sum", "sha256sum", "tree", "true", "test", "[",
 ];
 /// Read-only programs that show a file's contents: pointed outside the
 /// assistant's folders, they always ask, whatever the rules say.
-const CONTENT_READERS: &[&str] = &["cat", "head", "tail", "grep", "rg", "find", "md5sum", "sha256sum", "wc", "tree", "ls", "stat", "file"];
+const CONTENT_READERS: &[&str] = &["cat", "head", "tail", "grep", "rg", "find", "md5sum", "sha256sum", "wc", "tree", "ls", "stat", "file", "test", "["];
 /// Programs that reach the network, refused in local-only mode.
 const NETWORK: &[&str] = &["ping", "dig", "nslookup", "host", "curl", "wget", "ssh", "scp", "rsync", "nc"];
 
@@ -140,6 +140,8 @@ mod tests {
         let folders = vec!["/srv/a".to_string()];
         assert_eq!(classify(&op(&["df", "-h", "/"]), &folders), (ToolClass::Read, false));
         assert_eq!(classify(&op(&["git", "status"]), &folders), (ToolClass::Read, false));
+        assert_eq!(classify(&op(&["test", "-e", "test.txt"]), &folders), (ToolClass::Read, false));
+        assert_eq!(classify(&op(&["test", "-e", "/home/me/.ssh/id_ed25519"]), &folders), (ToolClass::Read, true));
         assert_eq!(classify(&op(&["git", "push"]), &folders).0, ToolClass::Write);
         assert_eq!(classify(&op(&["rm", "-rf", "x"]), &folders).0, ToolClass::Write);
         assert_eq!(classify(&op(&["find", ".", "-delete"]), &folders).0, ToolClass::Write);

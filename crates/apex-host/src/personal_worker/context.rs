@@ -6,7 +6,7 @@
 
 use crate::personal::{Fact, PersonalAssistant, PersonalMessage, TaskStatus};
 
-use super::{age, clock, FRESH_RESULT_MS};
+use super::{age, clock, DEFAULT_REPEAT_RUNS, FRESH_RESULT_MS, MAX_REPEAT_RUNS};
 
 /// A line longer than this is cut in the context; the full text stays saved.
 const LINE_CHARS: usize = 1_500;
@@ -102,7 +102,8 @@ pub fn assemble(assistant: &PersonalAssistant, text: &str, now: u64, connected: 
          \"task\": {{\"goal\": \"...\", \"criteria\": [\"how we know it's done\"], \"argv\": [\"df\", \"-h\", \"/\"], \
          \"startInMinutes\": 60, \"everyMinutes\": 10, \"maxRuns\": 12, \"until\": {{\"exitCode\": 0, \"outputContains\": \"text\", \
          \"outputLacks\": \"text\"}}, \"after\": \"pt-3\", \"deadlineMinutes\": 120, \"timeoutSeconds\": 300, \"machine\": \"name\"}} \
-         — one command, now, later, or repeated until a condition holds (only the fields you need).\n\
+         — one command, now, later, or repeated until a condition holds (only the fields you need). A repeated task \
+         runs at most {max_runs} times ({default_runs} if you leave out \"maxRuns\"); never promise more runs than that.\n\
          \"schedule\": {{\"goal\": \"...\", \"argv\": [...], \"dailyAt\": \"08:00\"}} or with \"everyMinutes\" — a recurring job \
          the human confirms; use it for \"every day\" or set-time requests.\n\
          \"helpers\": [{{\"assignment\": \"a self-contained question\"}}] — up to 3 helpers think through separate questions \
@@ -118,6 +119,8 @@ pub fn assemble(assistant: &PersonalAssistant, text: &str, now: u64, connected: 
         modes = describe_mode(assistant),
         now = clock(now),
         offset = assistant.utc_offset_minutes,
+        max_runs = MAX_REPEAT_RUNS,
+        default_runs = DEFAULT_REPEAT_RUNS,
     );
     if assistant.paused {
         out.push_str("The human has paused you: keep answering, but nothing new starts until they resume. Say so if it matters.\n\n");

@@ -34,8 +34,8 @@ const MAX_TASK_ATTEMPTS: u32 = 3;
 /// Approvals and cancels don't count: they're quick and never wait.
 const MAX_JOBS: usize = 4;
 const MAX_HELPERS: usize = 3;
-const DEFAULT_REPEAT_RUNS: u32 = 24;
-const MAX_REPEAT_RUNS: u32 = 500;
+pub(crate) const DEFAULT_REPEAT_RUNS: u32 = 24;
+pub(crate) const MAX_REPEAT_RUNS: u32 = 500;
 const MAX_LATER_MS: u64 = 30 * 86_400_000;
 const MIN_SCHEDULE_MS: u64 = 5 * 60_000;
 /// A deadline this close, with the task not done, is worth a notice.
@@ -1069,7 +1069,12 @@ fn finish_run(assistant: &mut PersonalAssistant, task_id: &str, op_id: &str, ope
             receipt.output_hash = Some(hash.clone());
             receipt.phase = if run.exit_code == 0 || repeating { OpPhase::Verified } else { OpPhase::Failed };
             let rerun = if receipt.rerun_after_restart { " It ran again after a restart left the first run unfinished." } else { "" };
-            let body = format!("`{what}` exited with {}.{rerun}\n```\n{}\n```", run.exit_code, receipt.output_excerpt.trim_end());
+            let printed = receipt.output_excerpt.trim_end();
+            let body = if printed.trim().is_empty() {
+                format!("`{what}` exited with {}.{rerun} It printed nothing.", run.exit_code)
+            } else {
+                format!("`{what}` exited with {}.{rerun}\n```\n{printed}\n```", run.exit_code)
+            };
             if repeating {
                 task.runs_done += 1;
                 let runs = task.runs_done;
@@ -1335,6 +1340,14 @@ fn propose_task(assistant: &mut PersonalAssistant, tools: &WorkerTools, local: &
     let gate = gateway::gate(assistant, &task, Some(asked));
     let class_word = match task.class { ToolClass::Read => "reading", ToolClass::Write => "changing things", ToolClass::Send => "sending", ToolClass::Spend => "spending" };
     let plan = operation.plan.as_ref().map(|p| describe_plan(assistant, p)).filter(|p| !p.is_empty()).map(|p| format!(" ({p})")).unwrap_or_default();
+    // The reply was written before the app set the limit; say what was actually set.
+    let capped = match (proposed.max_runs, operation.plan.as_ref().and_then(|p| p.max_runs)) {
+        (Some(asked_runs), Some(set)) if asked_runs > set => Some(format!("The reply asked for {asked_runs} runs, but {set} is the most a task can do, so this one stops after {set} runs.")),
+        _ => None,
+    };
+    if let (Some(note), false) = (&capped, matches!(gate, gateway::Gate::Refuse(_))) {
+        assistant.post("system", "update", note.clone(), Some(task_id.clone()), Some(event_id.to_owned()), at);
+    }
     match gate {
         gateway::Gate::Refuse(why) => {
             assistant.post("system", "update", format!("No task was made: {why}"), None, Some(event_id.to_owned()), at);
@@ -1539,6 +1552,7 @@ fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) -> Ve
                 return Err("That task already finished.".to_string());
             }
             let running = task.status == TaskStatus::Running;
+            let ran = task.runs_done.max(task.receipts.len() as u32);
             let ids = cascade(assistant, task_id);
             let mut others = 0;
             for id in &ids {
@@ -1560,7 +1574,13 @@ fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) -> Ve
                 }
                 if id != task_id { others += 1; }
             }
-            let mut line = if running { "Cancelled. Stopping the command.".to_owned() } else { "Cancelled before anything ran.".to_owned() };
+            let mut line = if running {
+                "Cancelled. Stopping the command.".to_owned()
+            } else if ran > 0 {
+                format!("Cancelled after {ran} run{}. Nothing more will run.", if ran == 1 { "" } else { "s" })
+            } else {
+                "Cancelled before anything ran.".to_owned()
+            };
             if others > 0 { line.push_str(&format!(" Also stopped {others} step{} that depended on it.", if others == 1 { "" } else { "s" })); }
             Ok(Some((Some(task_id.clone()), line)))
         })(),

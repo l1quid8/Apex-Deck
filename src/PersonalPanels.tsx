@@ -152,7 +152,7 @@ export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: 
           {wait && <span> · {wait}</span>}
         </div>
         {unsettled && <div className="personal-panels-actions"><button type="button" disabled={locked} onClick={() => void run(() => lane.cancel(task.id))}>Stop task</button></div>}
-        {expanded && <pre>{receipt?.outputExcerpt || 'No output yet.'}</pre>}
+        {expanded && <pre>{receipt?.outputExcerpt.trim() ? receipt.outputExcerpt : receipt?.finishedAt ? 'It printed nothing.' : 'No output yet.'}</pre>}
       </div>
     );
   };
