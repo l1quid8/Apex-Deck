@@ -3,8 +3,9 @@ import { Capacitor } from "@capacitor/core";
 import { Keyboard } from "@capacitor/keyboard";
 
 import "../styles.css";
-import "./phone.css";
 import { PhoneApp } from "./PhoneApp";
+// Phone overrides follow the shared components' styles in both dev and bundled builds.
+import "./phone.css";
 
 const root = document.documentElement;
 const view = window.visualViewport;

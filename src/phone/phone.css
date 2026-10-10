@@ -869,3 +869,222 @@
 .ph-app .apex-agent { width: 100%; height: 100%; min-height: 0; border-radius: 0; }
 .ph-app .apex-agent-head { padding-top: max(12px, env(safe-area-inset-top)); }
 .ph-app .assistant-tasks { max-height: 52%; padding-inline: 12px; }
+
+/* ApexAgent conversation and task views: compact controls with room for the chat. */
+.ph-app .apex-agent-all {
+  min-height: 0;
+  overflow: hidden;
+}
+.ph-app .apex-agent-all .apex-agent-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: max(4px, env(safe-area-inset-top)) 12px 0;
+}
+.ph-app .apex-agent-all .apex-agent-head > .apex-agent-head-row:first-child {
+  min-height: 48px;
+  flex: none;
+  gap: 8px;
+}
+.ph-app .apex-agent-all .apex-agent-brand { flex: 1 1 auto; min-width: 0; }
+.ph-app .apex-agent-all .apex-agent-brand h1 { font-size: 16px; line-height: 1.15; }
+.ph-app .apex-agent-all .apex-agent-head-actions { flex: none; gap: 2px; }
+.ph-app .apex-agent-all .apex-agent-head-actions > button.icon,
+.ph-app .apex-agent-all .apex-agent-more > summary {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font-size: 20px;
+  cursor: pointer;
+}
+.ph-app .apex-agent-all .apex-agent-more { position: relative; flex: none; }
+.ph-app .apex-agent-all .apex-agent-more > summary { list-style: none; }
+.ph-app .apex-agent-all .apex-agent-more > summary::-webkit-details-marker { display: none; }
+.ph-app .apex-agent-all .apex-agent-more > div {
+  position: absolute;
+  z-index: 8;
+  top: 46px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: min(300px, calc(100vw - 32px));
+  max-height: min(60vh, 440px);
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel, var(--bg));
+  box-shadow: 0 8px 28px #0008;
+}
+.ph-app .apex-agent-all .apex-agent-more > div button {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  white-space: normal;
+}
+.ph-app .apex-agent-all .apex-agent-more > div button small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+.ph-app .apex-agent-all .apex-agent-head-context { min-height: 22px; padding: 0 2px 3px; }
+.ph-app .apex-agent-all .apex-agent-head-context > p { font-size: 11px; line-height: 1.3; }
+.ph-app .apex-agent-all .apex-agent-views {
+  min-height: 46px;
+  gap: 8px;
+  padding: 0;
+  overflow: visible;
+  border-top: 1px solid var(--line);
+}
+.ph-app .apex-agent-all .apex-agent-view-tab {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+.ph-app .apex-agent-all .apex-agent-tabpanel { min-height: 0; overflow: auto; }
+.ph-app .apex-agent-all .assistant-chat-transcript {
+  min-height: 0;
+  gap: 9px;
+  padding: 12px 16px 18px;
+}
+.ph-app .apex-agent-all .assistant-chat-message {
+  max-width: 94%;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 13px;
+}
+.ph-app .apex-agent-all .assistant-chat-message.human { align-self: flex-end; }
+.ph-app .apex-agent-all .assistant-chat-message.assistant { align-self: flex-start; }
+.ph-app .apex-agent-all .assistant-chat-message > small { display: block; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.ph-app .apex-agent-all .assistant-chat-message > p,
+.ph-app .apex-agent-all .assistant-chat-message .apex-agent-message-body {
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ph-app .apex-agent-all .assistant-chat-message .apex-agent-message-body,
+.ph-app .apex-agent-all .assistant-chat-message .apex-agent-message-body .md,
+.ph-app .apex-agent-all .assistant-chat-message .apex-agent-message-body p {
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ph-app .apex-agent-all .assistant-chat-message > p { margin: 5px 0 0; }
+.ph-app .apex-agent-all .apex-agent-message-meta { font-size: 11px; line-height: 1.35; }
+.ph-app .apex-agent-all .apex-agent-project-tag { min-height: 44px; padding: 0 4px; font-size: inherit; vertical-align: middle; }
+.ph-app .apex-agent-all-composer {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--panel, var(--bg));
+}
+.ph-app .apex-agent-all-composer > textarea,
+.ph-app .apex-agent-all-composer > .apex-agent-all-input {
+  grid-column: 1;
+  grid-row: 2;
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  max-height: 144px;
+  resize: none;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 22px;
+  overflow-y: auto;
+  -webkit-appearance: none;
+}
+.ph-app .apex-agent-all-composer > div,
+.ph-app .apex-agent-all-composer > .apex-agent-all-compose-row { display: contents; }
+.ph-app .apex-agent-all-composer > div > small,
+.ph-app .apex-agent-all-composer > .apex-agent-all-compose-row > .apex-agent-all-destination {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ph-app .apex-agent-all-composer > div > button,
+.ph-app .apex-agent-all-composer > .apex-agent-all-compose-row > .apex-agent-all-send,
+.ph-app .apex-agent-all-composer > .apex-agent-all-send {
+  grid-column: 2;
+  grid-row: 2;
+  width: 58px;
+  min-width: 58px;
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+.ph-app .apex-agent-all-composer .assistant-composer-heading { grid-column: 1 / -1; grid-row: 1; }
+.ph-app .apex-agent-all-composer .assistant-composer-heading button { min-height: 44px; }
+.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) { grid-template-rows: auto auto auto; }
+.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > div > small,
+.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > .apex-agent-all-compose-row > .apex-agent-all-destination { grid-row: 2; }
+.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > textarea,
+.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > .apex-agent-all-input { grid-row: 3; }
+.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > div > button,
+.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > .apex-agent-all-compose-row > .apex-agent-all-send,
+.ph-app .apex-agent-all-composer:has(.assistant-composer-heading) > .apex-agent-all-send { grid-row: 3; }
+.ph-app .apex-agent-all .apex-agent-task-card { margin: 8px 12px; max-width: calc(100% - 24px); padding: 12px; }
+.ph-app .apex-agent-all .apex-agent-task-decide > button,
+.ph-app .apex-agent-all .assistant-task-decision-actions button,
+.ph-app .apex-agent-all .assistant-task-card-actions button,
+.ph-app .apex-agent-all .assistant-task-card button,
+.ph-app .apex-agent-all .assistant-request button { min-height: 44px; padding: 8px 12px; font-size: 14px; }
+.ph-app .apex-agent-all .apex-agent-task-toggle { min-height: 44px; padding: 8px 0; font-size: 13px; }
+.ph-app .apex-agent-all .apex-agent-tasks-home { padding: 12px; }
+.ph-app .apex-agent-all .apex-agent-task-row { padding: 12px; }
+
+/* The overlay follows the same visible viewport as the phone, including the keyboard. */
+.ph-app .apex-agent-backdrop { bottom: auto; height: var(--ph-height, 100%); }
+:root[data-keyboard] .ph-app .apex-agent-all-composer { padding-bottom: 8px; }
+.ph-app .apex-agent-all-composer .apex-agent-all-send { align-self: end; }
+.ph-app .apex-agent-all-composer > .assistant-composer-heading { display: flex; }
+.ph-app .apex-agent-all .apex-agent-message-body .md { gap: 12px; margin-top: 6px; }
+.ph-app .apex-agent-all .apex-agent-message-body .md p { margin: 0; white-space: normal; }
+.ph-app .apex-agent-all .apex-agent-message-body .md-list { gap: 8px; }
+.ph-app .apex-agent-all .apex-agent-message-body .md-code-head button { min-height: 44px; }
+
+.ph-app .apex-agent-all .apex-agent-task-group h2 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.ph-app .apex-agent-all .apex-agent-message-body .md-code pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 12px;
+}

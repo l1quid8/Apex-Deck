@@ -9,7 +9,8 @@ const { transform } = require('sucrase');
 const source = fs.readFileSync(new URL('../src/ApexAgentAll.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
 const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity) }) };
-const textOf = node => typeof node === 'string' || typeof node === 'number' ? String(node) : node?.children?.map(textOf).join('') ?? '';
+const MarkdownStub = () => null;
+const textOf = node => typeof node === 'string' || typeof node === 'number' ? String(node) : node?.type === MarkdownStub ? node.props.text : node?.children?.map(textOf).join('') ?? '';
 const find = (node, predicate) => !node || typeof node !== 'object' ? null : predicate(node) ? node : node.children?.map(child => find(child, predicate)).find(Boolean) ?? null;
 const evidence = { sourceId: 'file:test-report.md', label: 'test-report.md', observedAt: 1, excerpt: 'Login tests failed.' };
 const message = (id, role, at) => ({ id, role, at, text: `Message ${id}`, evidence: [evidence] });
@@ -29,7 +30,7 @@ function harness(props) {
     useMemo(fn) { cursor++; return fn(); },
     useEffect() { cursor++; },
   };
-  const component = new Function('React', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'PersonalPanels', 'PersonalCall', `${compiled}\nreturn ApexAgentAll;`)(React, ...Object.values(hooks), mergeProjectConversations, replyTarget, PersonalPanelsStub, PersonalCallStub);
+  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'PersonalPanels', 'PersonalCall', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, PersonalPanelsStub, PersonalCallStub);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, render() { cursor = 0; return component({ ...callbacks, ...props }); } };

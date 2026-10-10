@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { Markdown } from './Markdown';
+import './apex-agent-panel.css';
+import './assistant-tasks.css';
+import './apex-agent-dock.css';
 import type { Workspace } from './types';
 import { mergeProjectConversations, replyTarget, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
 import type { PersonalLane, PersonalMessage, PersonalTask } from './personalAssistant.ts';
@@ -16,6 +20,11 @@ const PERSONAL = 'personal';
 const PERSONAL_STATUS: Record<string, string> = { needsYou: 'Needs you', queued: 'Approved', running: 'Running', waiting: 'Waiting', blocked: 'Blocked', done: 'Done', failed: 'Failed', cancelled: 'Cancelled' };
 const everyText = (ms: number) => `every ${Math.round(ms / 60000)} min`;
 const whenText = (ts: number) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// Reuse the app's Markdown renderer for replies; only web links open externally.
+const openMessageLink = (target: string) => {
+  if (/^https?:\/\//i.test(target)) window.open(target, '_blank', 'noopener,noreferrer');
+};
 
 /** Text with ``` fences shown as preformatted blocks. */
 function fenced(text: string) {
@@ -80,6 +89,13 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   // The assistant's detail panels open as a sheet over the transcript.
   const [panelOpen, setPanelOpen] = useState<PanelName | null>(null);
   const [calling, setCalling] = useState(false);
+  const composerInput = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const input = composerInput.current;
+    if (!input) return;
+    input.style.height = '0px';
+    input.style.height = `${Math.min(input.scrollHeight, 144)}px`;
+  }, [text]);
   const openPanel = (name: PanelName, event?: { currentTarget: EventTarget | null }) => {
     (event?.currentTarget as HTMLElement | null | undefined)?.closest?.('details')?.removeAttribute('open');
     setPanelOpen(name);
@@ -231,7 +247,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     <header className="apex-agent-head">
       <div className="apex-agent-head-row">
         <div className="apex-agent-brand"><h1>ApexAgent</h1></div>
-        <div className="apex-agent-head-actions"><details className="apex-agent-more"><summary aria-label="More ApexAgent options">⋯</summary><div role="menu">
+        <div className="apex-agent-head-actions">{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label="More ApexAgent options">⋯</summary><div role="menu">
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy} onClick={() => void run(async () => { await batch(active.filter((monitor) => monitor.paused === anyPaused), 'monitor_pause', { paused: !anyPaused }); })}>{anyPaused ? 'Resume watching' : 'Pause'}</button>}
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy || !active.some((monitor) => !monitor.paused)} onClick={() => void run(async () => { await batch(active.filter((monitor) => !monitor.paused), 'monitor_check_now', {}); })}>Check now</button>}
           {onClear && !!entries.length && <button type="button" role="menuitem" onClick={() => { if (window.confirm('Hide this conversation on this Mac? ApexAgent keeps its memory. Things that need you stay until you resolve them.')) onClear(); }}>Clear conversation</button>}
@@ -241,7 +257,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           {onCustomize && <button type="button" role="menuitem" onClick={onCustomize}>Quiet hours</button>}
           {onHide && <button type="button" role="menuitem" onClick={onHide}>Hide</button>}
           {workspaces.map((workspace) => <button type="button" role="menuitem" key={workspace.id} onClick={() => onSetUp(workspace.id)}>{monitors.some((monitor) => monitor.workspaceId === workspace.id) ? `Sources for ${workspace.name}` : `Watch ${workspace.name}…`}</button>)}
-        </div></details>{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}{onFullScreen && <button className="icon" onClick={onFullScreen} aria-pressed={fullScreen} aria-label={fullScreen ? 'Exit full screen' : 'Full screen'} title={fullScreen ? 'Exit full screen' : 'Full screen'}>{fullScreen ? '⤡' : '⤢'}</button>}<button className="icon" onClick={onClose} aria-label="Close ApexAgent">×</button></div>
+        </div></details>{onFullScreen && <button className="icon" onClick={onFullScreen} aria-pressed={fullScreen} aria-label={fullScreen ? 'Exit full screen' : 'Full screen'} title={fullScreen ? 'Exit full screen' : 'Full screen'}>{fullScreen ? '⤡' : '⤢'}</button>}<button className="icon" onClick={onClose} aria-label="Close ApexAgent">×</button></div>
       </div>
       <div className="apex-agent-head-row apex-agent-head-context"><p>{headline}{unseenNotices > 0 && <> · <button type="button" className="apex-agent-new-notices" onClick={() => setPanelOpen('notices')}>{unseenNotices} new</button></>}</p></div>
     </header>
@@ -255,13 +271,13 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           if (task && lines) return lines[0].id === item.id ? taskCard(task, lines) : null;
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
           return <article className={`assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`} key={`${workspaceId}:${message.id}`}>
-            <small>{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button>{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}</small>
-            {fenced(message.text)}
+            <small className="apex-agent-message-meta">{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}</small>
+            {message.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
           </article>;
         }
         return <article className={`assistant-chat-message ${message.role}`} key={`${workspaceId}:${message.id}`}>
-        <small>{message.role === 'human' ? 'You' : 'ApexAgent'} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(workspaceId); setDraftFallback(workspaceId); }} title={`Reply about ${project}`}>{project}</button></small>
-        <p>{message.text}</p>
+        <small className="apex-agent-message-meta">{message.role === 'human' ? 'You' : 'ApexAgent'} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(workspaceId); setDraftFallback(workspaceId); }} title={`Reply about ${project}`}>{project}</button></small>
+        {message.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
         {'citations' in entry && (entry.citations as { workspaceId: string; evidence: MonitorEvidence }[] | undefined)?.map((cite, index) => <div key={index}>{evidenceList([cite.evidence], onOpenEvidence && ((item) => void run(() => onOpenEvidence(cite.workspaceId, item))))}</div>)}
         {evidenceList(message.evidence ?? [], onOpenEvidence && ((item) => void run(() => onOpenEvidence(workspaceId, item))))}
       </article>;
@@ -310,9 +326,9 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     </div>}
     {(!!watched.length || !!selectedTaskContext || !!assistant) && <form className="apex-agent-all-composer" onSubmit={send}>
       {selectedTaskContext && <div className="assistant-composer-heading"><strong>{selectedTaskContext.project} · {selectedTaskContext.label}</strong><button type="button" onClick={() => { setDraftTaskContext(null); setFocus(null); setDraftFallback(null); onClearTaskContext?.(); }}>New message</button></div>}
-      <textarea value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); }} rows={2} aria-label="Message ApexAgent" placeholder={selectedTaskContext ? 'Reply to this task…' : target === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…'}
+      <textarea ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); }} rows={1} aria-label="Message ApexAgent" placeholder={selectedTaskContext ? 'Reply to this task…' : target === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…'}
         onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-      <div><small className="apex-agent-muted">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : target === PERSONAL ? `To ${personalTag}` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 ? ' · name a project to switch' : ''}</small><button className="primary" disabled={busy || !text.trim() || (!selectedTaskContext && !target && !globalReply)}>{busy ? 'Sending…' : 'Send'}</button></div>
+      <div className="apex-agent-all-compose-row"><small className="apex-agent-muted apex-agent-all-destination">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : target === PERSONAL ? `To ${personalTag}` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 ? ' · name a project to switch' : ''}</small><button className="primary apex-agent-all-send" disabled={busy || !text.trim() || (!selectedTaskContext && !target && !globalReply)}>{busy ? 'Sending…' : 'Send'}</button></div>
     </form>}
     {calling && personal && <PersonalCall lane={personal} onEnd={() => setCalling(false)} />}
     {busy && <div className="apex-agent-busy" role="status">Saving…</div>}
