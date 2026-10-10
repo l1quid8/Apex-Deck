@@ -51,7 +51,7 @@ impl Fake {
                     if replies.is_empty() { Ok("{\"reply\":\"ok\",\"task\":null}".into()) } else { replies.remove(0) }
                 })
             }),
-            execute: Arc::new(move |spec| {
+            execute: Arc::new(move |spec, _| {
                 let fake = b.clone();
                 Box::pin(async move {
                     fake.runs.lock().unwrap().push(spec);
@@ -424,10 +424,10 @@ async fn an_operation_for_another_machine_never_runs_here() {
 #[tokio::test]
 async fn the_real_command_tool_runs_argv_without_a_shell() {
     let dir = std::env::temp_dir();
-    let run = run_command(OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["echo".into(), "a;b $HOME".into()] }).await.unwrap();
+    let run = run_command(OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["echo".into(), "a;b $HOME".into()] }, Arc::new(|_| {})).await.unwrap();
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.output.trim(), "a;b $HOME");
-    assert!(run_command(OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["/no/such/program".into()] }).await.is_err());
+    assert!(run_command(OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["/no/such/program".into()] }, Arc::new(|_| {})).await.is_err());
 }
 
 fn result_message(at: u64) -> PersonalMessage {
@@ -539,10 +539,218 @@ async fn a_cancel_lands_while_the_command_is_still_running() {
     fixture.host.personal_cancel(&fixture.id, "mac-2", &task).unwrap();
     fixture.until("the cancel applies", |a| a.tasks[0].status == TaskStatus::Cancelled).await;
 
-    fake.tool_hangs.store(false, Ordering::SeqCst);
-    fixture.until("the result is recorded", |a| a.messages.iter().any(|m| m.kind == "result")).await;
-    assert_eq!(fixture.task().status, TaskStatus::Cancelled, "a late result doesn't undo the cancel");
+    // The command still "hangs", yet it's stopped and recorded straight away.
+    fixture.until("the stop is recorded", |a| a.messages.iter().any(|m| m.kind == "result")).await;
+    let task = fixture.task();
+    assert_eq!(task.status, TaskStatus::Cancelled);
+    assert_eq!(task.receipts.len(), 1);
+    assert_eq!(task.receipts[0].phase, OpPhase::Failed);
+    assert_eq!(task.receipts[0].exit_code, None, "no output from a stopped command is passed off as its result");
+    assert!(fixture.get().messages.iter().any(|m| m.kind == "result" && m.text.contains("was stopped because you cancelled")));
     assert_eq!(fake.runs(), 1);
+    assert!(fixture.host.personal_stops.lock().unwrap().is_empty(), "the stop signal is cleaned up");
+    fake.tool_hangs.store(false, Ordering::SeqCst);
+}
+
+/// True while `pid` is a live process (not gone, not a zombie waiting to be reaped).
+#[cfg(unix)]
+fn alive(pid: i32) -> bool {
+    if unsafe { libc::kill(pid, 0) } != 0 { return false; }
+    let state = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+    let state = String::from_utf8_lossy(&state.stdout);
+    !state.trim().is_empty() && !state.trim().starts_with('Z')
+}
+
+#[cfg(unix)]
+async fn wait_for_file(path: &std::path::Path) -> String {
+    for _ in 0..400 {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if text.ends_with('\n') { return text; }
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("{} never appeared", path.display());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_task_kills_the_running_command_and_everything_it_started() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    let folder = fixture.get().allowed_folders[0].clone();
+    std::fs::create_dir_all(&folder).unwrap();
+    // A command that starts a background child, then waits: both would run 5 minutes.
+    let task = serde_json::json!({"reply":"Approve and I'll run it.","task":{"goal":"Slow job","criteria":[],
+        "argv":["sh","-c","sleep 300 & echo $$ $! > pids.tmp; mv pids.tmp pids; wait"]}});
+    fake.say(&task.to_string());
+    fixture.host.personal_send(&fixture.id, "phone-1", "Run the slow job").unwrap();
+    fixture.drain(&fake.tools()).await;
+    let tools = WorkerTools { execute: WorkerTools::real().execute, ..fake.tools() };
+    fixture.host.start_personal_worker_with(tools).unwrap();
+    fixture.decide("mac-1", true);
+    let pids: Vec<i32> = wait_for_file(&std::path::Path::new(&folder).join("pids")).await
+        .split_whitespace().map(|p| p.parse().unwrap()).collect();
+    assert_eq!(pids.len(), 2);
+    assert!(pids.iter().all(|pid| alive(*pid)), "the command and its child are running");
+
+    let started = std::time::Instant::now();
+    fixture.host.personal_cancel(&fixture.id, "mac-2", &fixture.task().id).unwrap();
+    fixture.until("the stop is recorded", |a| a.messages.iter().any(|m| m.kind == "result")).await;
+    for _ in 0..400 {
+        if pids.iter().all(|pid| !alive(*pid)) { break; }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(pids.iter().all(|pid| !alive(*pid)), "the command and its child were killed: {pids:?}");
+    assert!(started.elapsed() < Duration::from_secs(3), "stopped promptly, not after the command would have ended");
+    let task = fixture.task();
+    assert_eq!(task.status, TaskStatus::Cancelled);
+    assert_eq!(task.receipts.len(), 1, "it ran once and wasn't started again");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_the_command_kills_its_background_child() {
+    let dir = std::env::temp_dir().join(format!("apex-personal-group-{}-{}", std::process::id(), FIXTURE.fetch_add(1, Ordering::SeqCst)));
+    std::fs::create_dir_all(&dir).unwrap();
+    let spec = OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(),
+        argv: vec!["sh".into(), "-c".into(), "sleep 300 & echo $! > pid.tmp; mv pid.tmp pid; wait".into()] };
+    let running = tokio::spawn(run_command(spec, Arc::new(|_| {})));
+    let pid: i32 = wait_for_file(&dir.join("pid")).await.trim().parse().unwrap();
+    assert!(alive(pid));
+    running.abort();
+    let _ = running.await;
+    for _ in 0..400 {
+        if !alive(pid) { break; }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!alive(pid), "dropping the command killed its background child");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_running_command_saves_its_process_group() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    let folder = fixture.get().allowed_folders[0].clone();
+    std::fs::create_dir_all(&folder).unwrap();
+    let task = serde_json::json!({"reply":"Approve and I'll run it.","task":{"goal":"Slow job","criteria":[],
+        "argv":["sh","-c","echo $$ > pid.tmp; mv pid.tmp pid; sleep 300"]}});
+    fake.say(&task.to_string());
+    fixture.host.personal_send(&fixture.id, "phone-1", "Run the slow job").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.host.start_personal_worker_with(WorkerTools { execute: WorkerTools::real().execute, ..fake.tools() }).unwrap();
+    fixture.decide("mac-1", true);
+    let shell: u32 = wait_for_file(&std::path::Path::new(&folder).join("pid")).await.trim().parse().unwrap();
+    fixture.until("the group is saved", |a| a.tasks[0].receipts.first().is_some_and(|r| r.process.is_some())).await;
+    let mark = fixture.task().receipts[0].process.clone().unwrap();
+    assert_eq!(mark.pgid, shell, "the command leads its own group");
+    fixture.host.personal_cancel(&fixture.id, "mac-2", &fixture.task().id).unwrap();
+    fixture.until("the stop is recorded", |a| a.messages.iter().any(|m| m.kind == "result")).await;
+}
+
+/// Start `script` in its own group, as a command left behind by a dead service.
+/// Returns the leader and the pids the script wrote to `pids`.
+#[cfg(unix)]
+async fn orphan(dir: &std::path::Path, script: &str) -> (std::process::Child, Vec<i32>) {
+    use std::os::unix::process::CommandExt;
+    std::fs::create_dir_all(dir).unwrap();
+    let child = std::process::Command::new("sh").args(["-c", script]).current_dir(dir).process_group(0).spawn().unwrap();
+    let pids = wait_for_file(&dir.join("pids")).await.split_whitespace().map(|p| p.parse().unwrap()).collect();
+    (child, pids)
+}
+
+/// Save `mark` as the attempt of a task that was running when the service died.
+#[cfg(unix)]
+async fn running_with(fixture: &Fixture, mark: crate::personal::ProcessMark) {
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "How much disk is free?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.decide("mac-1", true);
+    assert!(fixture.host.personal_step(&fake.tools()).await.unwrap());
+    let task_id = fixture.task().id;
+    fixture.host.change_assistant(&fixture.id, |assistant| {
+        let task = assistant.task_mut(&task_id).unwrap();
+        task.status = TaskStatus::Running;
+        task.receipts.push(OperationReceipt {
+            op_id: format!("{task_id}-op-1"), params_hash: task.operation.as_ref().unwrap().hash(), phase: OpPhase::Attempted,
+            started_at: now(), finished_at: None, exit_code: None, output_excerpt: String::new(), output_hash: None,
+            rerun_after_restart: false, note: None, process: Some(mark),
+        });
+        Ok(())
+    }).unwrap();
+}
+
+#[cfg(unix)]
+async fn gone(pids: &[i32]) -> bool {
+    for _ in 0..400 {
+        if pids.iter().all(|pid| !alive(*pid)) { return true; }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    false
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_kills_the_command_a_dead_service_left_running() {
+    let mut fixture = Fixture::new();
+    let (mut leader, pids) = orphan(&fixture.root.join("orphan"), "sleep 300 & echo $$ $! > pids.tmp; mv pids.tmp pids; wait").await;
+    assert!(pids.iter().all(|pid| alive(*pid)));
+    running_with(&fixture, process::mark(leader.id()).unwrap()).await;
+
+    fixture.restart();
+    assert!(gone(&pids).await, "the shell and its child were killed: {pids:?}");
+    let _ = leader.wait();
+    let receipt = fixture.task().receipts[0].clone();
+    assert_eq!(receipt.phase, OpPhase::Uncertain, "a stopped command may have half run, so it stays uncertain");
+    assert!(receipt.note.unwrap().contains("leftover processes were stopped"));
+    assert!(receipt.process.is_some(), "the record keeps which group it was");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_kills_children_whose_leader_already_exited() {
+    let mut fixture = Fixture::new();
+    let (mut leader, pids) = orphan(&fixture.root.join("orphan"), "sleep 300 & echo $! > pids.tmp; mv pids.tmp pids").await;
+    let mark = process::mark(leader.id());
+    let _ = leader.wait();
+    assert!(alive(pids[0]), "the background child outlives its shell");
+    running_with(&fixture, mark.unwrap()).await;
+
+    fixture.restart();
+    assert!(gone(&pids).await, "the left-behind child was killed: {pids:?}");
+    assert!(fixture.task().receipts[0].note.clone().unwrap().contains("leftover processes were stopped"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_leaves_alone_a_process_that_only_shares_the_id() {
+    let mut fixture = Fixture::new();
+    let (mut leader, pids) = orphan(&fixture.root.join("orphan"), "echo $$ > pids.tmp; mv pids.tmp pids; sleep 300").await;
+    // Same group id, different start: a later process that reused the id.
+    let mut mark = process::mark(leader.id()).unwrap();
+    mark.started -= 1;
+    running_with(&fixture, mark).await;
+
+    fixture.restart();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(alive(pids[0]), "a process that isn't the command was not killed");
+    assert!(fixture.task().receipts[0].note.clone().unwrap().contains("left alone"));
+    let _ = leader.kill();
+    let _ = leader.wait();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_with_nothing_left_running_says_so() {
+    let mut fixture = Fixture::new();
+    let (mut leader, _) = orphan(&fixture.root.join("orphan"), "echo $$ > pids.tmp; mv pids.tmp pids").await;
+    let mark = process::mark(leader.id());
+    let _ = leader.wait();
+    running_with(&fixture, mark.unwrap_or(crate::personal::ProcessMark { pgid: leader.id(), started: 0, boot: String::new() })).await;
+    fixture.restart();
+    assert!(fixture.task().receipts[0].note.clone().unwrap().contains("nothing from it was still running"));
 }
 
 #[tokio::test]

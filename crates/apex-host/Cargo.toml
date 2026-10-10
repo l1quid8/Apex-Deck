@@ -18,3 +18,6 @@ base64 = "0.22"
 sha2 = "0.10"
 
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -120,6 +120,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "keyring",
+ "libc",
  "portable-pty",
  "reqwest",
  "serde",

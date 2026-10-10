@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::personal::{
     now, valid_argv, DecisionKind, DecisionStatus, EventSource, EventState, OpPhase, OperationReceipt,
-    OperationSpec, PendingDecision, PersonalAssistant, PersonalEvent, PersonalMessage, PersonalTask, TaskStatus,
+    OperationSpec, PendingDecision, PersonalAssistant, ProcessMark, PersonalEvent, PersonalMessage, PersonalTask, TaskStatus,
 };
 use crate::Host;
 
@@ -34,6 +34,8 @@ const MAX_JOBS: usize = 4;
 const FRESH_RESULT_MS: u64 = 2 * 60 * 1000;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+/// Told which process group a command started in, so it can be saved.
+pub type Started = Arc<dyn Fn(ProcessMark) + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolRun {
@@ -45,7 +47,7 @@ pub struct ToolRun {
 #[derive(Clone)]
 pub struct WorkerTools {
     pub reason: Arc<dyn Fn(ParticipantConfig, TurnRequest) -> BoxFuture<Result<String, String>> + Send + Sync>,
-    pub execute: Arc<dyn Fn(OperationSpec) -> BoxFuture<Result<ToolRun, String>> + Send + Sync>,
+    pub execute: Arc<dyn Fn(OperationSpec, Started) -> BoxFuture<Result<ToolRun, String>> + Send + Sync>,
     /// `Some(idempotent)` for a known tool, `None` for anything else.
     pub tool: Arc<dyn Fn(&str) -> Option<bool> + Send + Sync>,
 }
@@ -54,29 +56,52 @@ impl WorkerTools {
     pub fn real() -> Self {
         WorkerTools {
             reason: Arc::new(|config, request| Box::pin(crate::monitor_check::reason(config, request))),
-            execute: Arc::new(|spec| Box::pin(run_command(spec))),
+            execute: Arc::new(|spec, started| Box::pin(run_command(spec, started))),
             // Read-only, so running it twice is harmless.
             tool: Arc::new(|name| (name == COMMAND_TOOL).then_some(true)),
         }
     }
 }
 
+/// Kills the command's whole process group unless it finished by itself, so
+/// a timeout or a cancel also ends anything the command started.
+struct GroupKill(Option<u32>);
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0.and_then(|pid| libc::pid_t::try_from(pid).ok()).filter(|pid| *pid > 0) {
+            // SAFETY: plain syscall; the group was made for this command alone.
+            unsafe { libc::killpg(pid, libc::SIGKILL) };
+        }
+    }
+}
+
 /// `host.command`: argv with no shell, in its folder, time- and size-limited.
-async fn run_command(spec: OperationSpec) -> Result<ToolRun, String> {
+/// Dropping the future (a cancel) kills the command and everything it started.
+async fn run_command(spec: OperationSpec, started: Started) -> Result<ToolRun, String> {
     let (program, args) = spec.argv.split_first().ok_or("The command is empty.")?;
-    let child = tokio::process::Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    command
         .args(args)
         .current_dir(&spec.cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("Could not start {program}: {e}"))?;
+        .kill_on_drop(true);
+    // Its own process group, so its children can be stopped with it.
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command.spawn().map_err(|e| format!("Could not start {program}: {e}"))?;
+    let mut group = GroupKill(child.id());
+    if let Some(mark) = child.id().and_then(process::mark) {
+        started(mark);
+    }
     let output = tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output())
         .await
         .map_err(|_| "The command took longer than 60 seconds and was stopped.".to_string())?
         .map_err(|e| format!("The command failed: {e}"))?;
+    group.0 = None;
     let mut bytes = output.stdout;
     bytes.extend_from_slice(&output.stderr);
     bytes.truncate(MAX_OUTPUT_BYTES);
@@ -260,11 +285,25 @@ impl Host {
         Ok(())
     }
 
-    /// Put interrupted work back where the worker can see it.
+    /// Put interrupted work back where the worker can see it, after
+    /// stopping any command the old service left running.
     pub(crate) fn personal_recover(&self) -> Result<(), String> {
         self.change_personal(|assistants| {
             for assistant in assistants {
-                if assistant.recover() { assistant.revision += 1; }
+                let mut changed = false;
+                for receipt in assistant.tasks.iter_mut().flat_map(|t| &mut t.receipts) {
+                    if receipt.phase != OpPhase::Attempted { continue }
+                    let Some(mark) = &receipt.process else { continue };
+                    let found = match process::stop_leftover(mark) {
+                        process::Leftover::Stopped => "its leftover processes were stopped",
+                        process::Leftover::Gone => "nothing from it was still running",
+                        process::Leftover::NotOurs => "the process now using its id isn't this command, so it was left alone",
+                    };
+                    eprintln!("Personal assistant: recovering {}: {found}.", receipt.op_id);
+                    receipt.note = Some(format!("The service restarted before this finished; {found}."));
+                    changed = true;
+                }
+                if assistant.recover() | changed { assistant.revision += 1; }
             }
             Ok(())
         })
@@ -334,7 +373,14 @@ impl Host {
 
     async fn personal_event(&self, tools: &WorkerTools, snapshot: PersonalAssistant, event: PersonalEvent) -> Result<(), String> {
         let EventSource::Human { text } = &event.source else {
-            return self.change_assistant(&snapshot.id, |assistant| { apply_control(assistant, &event); Ok(()) });
+            self.change_assistant(&snapshot.id, |assistant| { apply_control(assistant, &event); Ok(()) })?;
+            // The cancel is saved first, so a stopped command can't be mistaken for a finished one.
+            if let EventSource::Cancel { task_id } = &event.source {
+                if let Some(stop) = self.personal_stops.lock().unwrap().get(&format!("{}:{task_id}", snapshot.id)) {
+                    stop.notify_one();
+                }
+            }
+            return Ok(());
         };
         let Some(profile) = snapshot.profile.clone() else {
             return self.finish_event(&snapshot.id, &event.id, Err("This assistant has no model profile.".into()));
@@ -427,6 +473,17 @@ impl Host {
     /// the operation runs, and the attempt is saved before it starts.
     async fn personal_run(&self, tools: &WorkerTools, assistant_id: &str, task_id: &str) -> Result<(), String> {
         let local = self.local_host_id()?;
+        // Registered before the claim: a cancel saved after the claim always
+        // finds it, and `notify_one` keeps the signal if it lands before we wait.
+        let key = format!("{assistant_id}:{task_id}");
+        let stop = Arc::new(tokio::sync::Notify::new());
+        self.personal_stops.lock().unwrap().insert(key.clone(), stop.clone());
+        let result = self.personal_run_stoppable(tools, assistant_id, task_id, &local, &stop).await;
+        self.personal_stops.lock().unwrap().remove(&key);
+        result
+    }
+
+    async fn personal_run_stoppable(&self, tools: &WorkerTools, assistant_id: &str, task_id: &str, local: &str, stop: &tokio::sync::Notify) -> Result<(), String> {
         let claimed = self.change_assistant(assistant_id, |assistant| {
             let at = now();
             let host_id = assistant.host_id.clone();
@@ -481,7 +538,7 @@ impl Host {
             task.receipts.push(OperationReceipt {
                 op_id: op_id.clone(), params_hash: hash, phase: OpPhase::Attempted, started_at: at,
                 finished_at: None, exit_code: None, output_excerpt: String::new(), output_hash: None,
-                rerun_after_restart: uncertain, note: None,
+                rerun_after_restart: uncertain, note: None, process: None,
             });
             task.status = TaskStatus::Running;
             task.updated_at = at;
@@ -489,7 +546,26 @@ impl Host {
             Ok(Some((op_id, operation)))
         })?;
         let Some((op_id, operation)) = claimed else { return Ok(()) };
-        let result = (tools.execute)(operation.clone()).await;
+        // A cancel drops the running command, which kills it and its children.
+        let (marks, mut marked) = tokio::sync::mpsc::unbounded_channel();
+        let run = (tools.execute)(operation.clone(), Arc::new(move |mark| { let _ = marks.send(mark); }));
+        tokio::pin!(run);
+        let result = loop {
+            tokio::select! {
+                result = &mut run => break Some(result),
+                () = stop.notified() => break None,
+                Some(mark) = marked.recv() => {
+                    // Saved so a restart can stop whatever this leaves running.
+                    let saved = self.change_assistant(assistant_id, |assistant| {
+                        if let Some(receipt) = assistant.task_mut(task_id).and_then(|t| t.receipts.iter_mut().find(|r| r.op_id == op_id)) {
+                            receipt.process = Some(mark);
+                        }
+                        Ok(())
+                    });
+                    if let Err(error) = saved { eprintln!("Personal assistant: {error}"); }
+                }
+            }
+        };
         self.change_assistant(assistant_id, |assistant| {
             let at = now();
             let Some(task) = assistant.task_mut(task_id) else { return Ok(()) };
@@ -497,7 +573,12 @@ impl Host {
             receipt.finished_at = Some(at);
             let cancelled = task.status == TaskStatus::Cancelled;
             let (line, status) = match &result {
-                Ok(run) => {
+                None => {
+                    receipt.phase = OpPhase::Failed;
+                    receipt.note = Some("Stopped because the task was cancelled.".into());
+                    (format!("`{}` was stopped because you cancelled the task.", shown(&operation.argv)), TaskStatus::Cancelled)
+                }
+                Some(Ok(run)) => {
                     receipt.exit_code = Some(run.exit_code);
                     receipt.output_excerpt = excerpt(&run.output);
                     receipt.output_hash = Some(output_hash(&run.output));
@@ -506,7 +587,7 @@ impl Host {
                     let line = format!("`{}` exited with {}.{rerun}\n```\n{}\n```", shown(&operation.argv), run.exit_code, receipt.output_excerpt.trim_end());
                     (line, if run.exit_code == 0 { TaskStatus::Done } else { TaskStatus::Failed })
                 }
-                Err(error) => {
+                Some(Err(error)) => {
                     receipt.phase = OpPhase::Failed;
                     receipt.note = Some(error.clone());
                     (format!("`{}` didn't run: {error}", shown(&operation.argv)), TaskStatus::Failed)
@@ -598,7 +679,7 @@ fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) {
             if let Some(decision) = task.decision.as_mut().filter(|d| d.status == DecisionStatus::Open) {
                 decision.status = DecisionStatus::Superseded;
             }
-            let line = if running { "Cancelled. It was already running, so its result is still recorded." } else { "Cancelled before anything ran." };
+            let line = if running { "Cancelled. Stopping the command." } else { "Cancelled before anything ran." };
             Ok(Some((task.id.clone(), line.to_owned())))
         })(),
     };
@@ -617,6 +698,8 @@ fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) {
         }
     }
 }
+
+mod process;
 
 #[cfg(test)]
 mod tests;

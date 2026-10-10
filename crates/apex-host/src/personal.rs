@@ -226,6 +226,23 @@ pub struct OperationReceipt {
     pub rerun_after_restart: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The running command's process group, saved once it starts, so a
+    /// restart can stop what the old service left running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<ProcessMark>,
+}
+
+/// Which process group a command ran in, and when its leader started. The
+/// start time tells our group apart from a later one that reused the id.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessMark {
+    pub pgid: u32,
+    /// Microseconds since 1970 on macOS; clock ticks since boot on Linux.
+    pub started: u64,
+    /// Linux boot id, since tick counts restart at boot. Empty on macOS.
+    #[serde(default)]
+    pub boot: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -309,7 +326,7 @@ impl PersonalAssistant {
                 for receipt in &mut task.receipts {
                     if receipt.phase == OpPhase::Attempted {
                         receipt.phase = OpPhase::Uncertain;
-                        receipt.note = Some("The service restarted before this finished.".into());
+                        receipt.note.get_or_insert_with(|| "The service restarted before this finished.".into());
                     }
                 }
                 // The worker decides what an uncertain operation means.
