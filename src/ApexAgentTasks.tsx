@@ -9,6 +9,8 @@ import './assistant-tasks.css';
 type Action = 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'archive' | 'reconcile' | 'note' | 'set_budget' | 'resume_budget';
 type Props = {
   onSelectTask?: (task: AssistantTask, send: (text: string) => Promise<void>) => void;
+  /** A task left the conversation (dismissed), so any reply context pointing at it should close. */
+  onTaskClosed?: (taskId: string) => void;
   projectName?: string;
   requestRecovery?: { pending: PendingAssistantRequest | null; retry: () => Promise<void>; discard: () => void };
   clearedAt?: number;
@@ -38,7 +40,7 @@ const assistantMessageText = (message: unknown): string => {
   return message == null ? '' : objectText(message);
 };
 
-export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, view = 'tasks', messages = [], focused, onViewChange, children, onOpenEvidence, projectName, clearedAt = 0, onSelectTask, requestRecovery }: Props) {
+export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, view = 'tasks', messages = [], focused, onViewChange, children, onOpenEvidence, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery }: Props) {
   const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
   const [routingThreads, setRoutingThreads] = useState<{ id: string; workers: ParticipantConfig[] }[] | undefined>(undefined);
@@ -207,6 +209,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       listRequestVersion.current++;
       setTasks((current) => [result, ...current.filter((item) => item.id !== result.id)]);
       if (action === 'archive') setArchivedExecutions((current) => new Set([...current, task.id]));
+      if (action === 'dismiss') { setDetailId(null); setTaskContextId(null); onTaskClosed?.(task.id); }
       void loadTasks(captured, version);
       return true;
     } catch (cause) {
@@ -386,7 +389,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       <button type="button" disabled={busy} onClick={retryRecovery}>{busy ? 'Retrying…' : 'Retry request'}</button>
       <button type="button" disabled={busy} onClick={() => requestRecovery ? requestRecovery.discard() : discardPending()}>Discard saved request and start over</button>
     </article>}
-    {view === 'conversation' && tasks.filter((task) => !taskFinal(task.status) || task.updatedAtMs > clearedAt).map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
+    {view === 'conversation' && tasks.filter((task) => !task.resultData?.dismissedAtMs && (!taskFinal(task.status) || task.updatedAtMs > clearedAt)).map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
       <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}</small><p>{task.originalRequest}</p><p className="assistant-task-muted">Scope: {task.brief}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
       <button type="button" onClick={() => openTaskDetail(task)}>{task.status === 'ready_for_review' ? 'Review result' : 'Open task'} · {task.originalRequest}</button>
     </article>)}
@@ -439,7 +442,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
 
         {task.mode === 'isolated' && taskFinal(task.status) && !archivedExecutions.has(task.id) && <div className="assistant-task-actions">{shouldSuggestArchive(task) && <p className="assistant-task-warning">This terminal worktree is over 14 days old. Archive it to save disk space; the task result and history will remain available.</p>}<button type="button" disabled={busy} onClick={() => void act(task, 'archive')}>Archive isolated worktree</button><span className="assistant-task-muted">Removes the owned worktree and keeps this task’s result and history.</span></div>}
         {task.mode === 'isolated' && archivedExecutions.has(task.id) && <p className="assistant-task-muted">Isolated worktree archived{typeof resultData.worktreeDiskBytes === 'number' ? ` · saved worktree size ${formatBytes(resultData.worktreeDiskBytes)}` : ''}. Task result and history are retained.</p>}
-        {taskFinal(task.status) && <p className="assistant-task-muted">This task is {task.status}{task.status === 'cancelled' && task.mode === 'in_place' ? '; existing checkout edits remain.' : '.'}</p>}
+        {taskFinal(task.status) && <p className="assistant-task-muted">{task.resultData?.dismissedAtMs ? 'You dismissed this proposal, so nothing ran.' : <>This task is {task.status}{task.status === 'cancelled' && task.mode === 'in_place' ? '; existing checkout edits remain.' : '.'}</>}</p>}
         </div>
         {task.status === 'ready_for_review' && <div className="assistant-task-actions assistant-task-decision-actions"><label className="assistant-review-ack"><input type="checkbox" checked={reviewed(task)} disabled={!currentReviewVisible} onChange={(event) => setReviewedRevision((current) => ({ ...current, [task.id]: event.target.checked ? task.revision : -1 }))} />I opened and reviewed revision {task.revision}</label><button type="button" disabled={busy || !currentReviewVisible || !reviewed(task) || (task.reviewCriteria.length > 0 && reviewChecks.length !== task.reviewCriteria.length)} onClick={() => void act(task, task.mode === 'read_only' ? 'review' as Action : 'accept')}>{task.mode === 'read_only' ? 'Mark reviewed' : task.mode === 'isolated' ? 'Accept changes' : 'Accept and mark done'}</button></div>}
         {task.status !== 'ready_for_review' && <div className="assistant-task-actions assistant-task-status-actions">

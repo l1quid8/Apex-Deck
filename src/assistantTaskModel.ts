@@ -39,7 +39,7 @@ export interface AssistantTask {
   attempts: { number: number; runId: string; status: AssistantTaskStatus; startedAtMs: number; finishedAtMs: number | null; reviewRevision: number | null; usage: TaskUsage | null }[];
   status: AssistantTaskStatus;
   result: string | null;
-  resultData?: { reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; worktreeDiskBytes?: number; spendLimitMicros?: number | null; budgetPaused?: boolean; taskHistory?: TaskHistoryEntry[] } | null;
+  resultData?: { reviewDiff?: string; checks?: unknown[]; checkResults?: unknown[]; exclusions?: string[]; executionPath?: string; baselineCommit?: string; resultCommit?: string; pendingApprovals?: unknown[]; pendingQuestions?: unknown[]; startup?: unknown; integrationPlan?: unknown; applyJournal?: string; archivedAtMs?: number; dismissedAtMs?: number; worktreeDiskBytes?: number; spendLimitMicros?: number | null; budgetPaused?: boolean; taskHistory?: TaskHistoryEntry[] } | null;
   revision: number;
   mode: AssistantTaskMode;
   usage: TaskUsage | null;

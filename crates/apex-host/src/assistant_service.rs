@@ -1530,6 +1530,26 @@ impl Host {
                 self.continue_thread_expected(id, Some("Resume the original task after my spend-limit change.".into()), vec![], Some(revision)).await?;
                 self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("Task not found after resume.".into())
             }
+            "dismiss" => {
+                // A proposal nobody approved has no worker, checkout or run to
+                // stop, so dismissing it only records the human's decision.
+                let _apply_lock = self.assistant_apply.lock().await;
+                let latest = self.assistant_tasks.get(&task.id).map_err(|e| e.to_string())?.ok_or("Task not found.")?;
+                if latest.owner != input.owner || latest.revision != input.revision { return Err("Task ownership or revision is stale.".into()); }
+                if !matches!(latest.status, TaskStatus::Proposed | TaskStatus::NeedsClarification) {
+                    return Err("Only a proposed task can be dismissed; use Cancel for work that has started.".into());
+                }
+                let cancelled = self.assistant_tasks
+                    .transition(&latest.id, latest.revision, &input.owner, TaskStatus::Cancelled, Some("Dismissed by the project owner.".into()))
+                    .map_err(|e| e.to_string())?;
+                let mut data = cancelled.result_data.clone().unwrap_or_else(|| json!({}));
+                data["dismissedAtMs"] = json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64);
+                let dismissed = self.assistant_tasks
+                    .set_result_data(&cancelled.id, cancelled.revision, &input.owner, Some(data))
+                    .map_err(|e| e.to_string())?;
+                self.assistant_changed(&input.owner.workspace_id);
+                Ok(dismissed)
+            }
             "archive" => {
                 let _archive_lock = self.assistant_apply.lock().await;
                 let task = self
@@ -2642,6 +2662,22 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.root);
             let _ = std::fs::remove_dir_all(&self.data);
         }
+    }
+
+    #[test]
+    fn dismiss_cancels_a_proposal_without_dispatch_and_refuses_started_work() {
+        let f = fixture();
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"dismiss-child".into(), batch_id:"dismiss-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Help me finish unfinished work".into(), brief:"Finish work".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![] };
+        f.runtime.block_on(f.host.assistant_handoff_prepare(input)).unwrap();
+        let task = f.host.assistant_tasks.list(None).unwrap().pop().unwrap();
+        let dismiss = |revision| AssistantActionInput { task_id:task.id.clone(), revision, owner:f.owner.clone(), action:"dismiss".into(), mode:None, text:None, destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None };
+        let dismissed = f.runtime.block_on(f.host.assistant_task_action(dismiss(task.revision))).unwrap();
+        assert_eq!(dismissed.status, TaskStatus::Cancelled);
+        assert!(dismissed.result_data.as_ref().unwrap()["dismissedAtMs"].as_u64().is_some());
+        assert!(dismissed.execution_thread_id.is_none());
+        assert!(f.host.assistant_runs.lock().unwrap().is_empty());
+        let again = f.runtime.block_on(f.host.assistant_task_action(dismiss(dismissed.revision))).unwrap_err();
+        assert!(again.contains("Only a proposed task"), "{again}");
     }
 
     #[test]
