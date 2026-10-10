@@ -46,6 +46,10 @@ BACKUP_REMOTE="$BIN_REMOTE.bak-$STAMP"
 SSH_USER="${APEX_DAEMON_USER:-$(ssh -G "$HOST" 2>/dev/null | awk '$1 == "user" {print $2}')}"
 UNIT="${APEX_DAEMON_UNIT:-apex-daemon@$SSH_USER}"
 
+# Plain non-interactive ssh: ignore any RemoteCommand, forwards or shared
+# connection the host's ssh config sets up for interactive use.
+SSH_OPTS=(-o BatchMode=yes -o RemoteCommand=none -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none)
+
 FAILS=0
 fail() { echo "FAIL: $*" >&2; FAILS=$((FAILS + 1)); }
 
@@ -61,7 +65,7 @@ remote() {
     echo "+ ssh $HOST $(printf '%q ' "$@" | sed 's/ $//')"
   else
     echo "+ ssh $HOST $*"
-    ssh -o BatchMode=yes "$HOST" "$@"
+    ssh "${SSH_OPTS[@]}" "$HOST" "$@"
   fi
 }
 
@@ -71,7 +75,7 @@ remote_out() {
     echo "+ ssh $HOST $*" >&2
     return 0
   fi
-  ssh -o BatchMode=yes "$HOST" "$@"
+  ssh "${SSH_OPTS[@]}" "$HOST" "$@"
 }
 
 echo "Host: $HOST  user: ${SSH_USER:-unknown}  unit: $UNIT  arch: $ARCH"
@@ -102,7 +106,7 @@ if (( ! DRY_RUN )) && [[ ! -x "$BIN_LOCAL" ]]; then
 fi
 
 echo "Step 2: copy to $HOST:$TMP_REMOTE"
-run scp -o BatchMode=yes "$BIN_LOCAL" "$HOST:$TMP_REMOTE"
+run scp "${SSH_OPTS[@]}" "$BIN_LOCAL" "$HOST:$TMP_REMOTE"
 
 echo "Step 3: back up the current binary to $BACKUP_REMOTE"
 remote sudo cp -p "$BIN_REMOTE" "$BACKUP_REMOTE"

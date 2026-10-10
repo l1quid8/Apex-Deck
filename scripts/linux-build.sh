@@ -16,9 +16,11 @@ docker build -q --platform "linux/$arch" -t "$image" - >/dev/null <<'DOCKERFILE'
 FROM ubuntu:22.04
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl build-essential pkg-config \
+      ca-certificates curl build-essential pkg-config git \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+# The daemon's build.rs reads the commit from git; /src is owned by another uid.
+RUN git config --global --add safe.directory /src
 ENV PATH=/root/.cargo/bin:$PATH CARGO_TARGET_DIR=/target
 DOCKERFILE
 
