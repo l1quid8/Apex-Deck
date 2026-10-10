@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { HostConnectionStore } from "./hostConnections";
-import { helperNotice, reachNotice } from "./hostFacts.ts";
+import { buildNotice, helperNotice, reachNotice } from "./hostFacts.ts";
 import { Glyph } from "./SidebarIcons";
 
 // The cards that open beside the sidebar when the pointer rests on a
@@ -56,7 +56,7 @@ export function ProjectCard({ name, path, remote, hostName, tint, threads, pinne
   const state = useSyncExternalStore(source.subscribe, source.get);
   const count = `${threads} thread${threads === 1 ? "" : "s"}`;
   const reach = remote && state ? reachNotice(hostName, state.status, state.seenAt, time) : null;
-  const helper = remote && state?.status.kind === "connected" ? helperNotice(hostName, __APP_VERSION__, state.helper) : null;
+  const helper = remote && state?.status.kind === "connected" ? buildNotice(hostName, __APP_BUILD__, state.build) ?? helperNotice(hostName, __APP_VERSION__, state.helper) : null;
   return <>
     <div className="card-row title">{folder}<span className="grow">{name}</span>
       <span className="side"><button className="act" onClick={onPin} aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`} title={pinned ? "Unpin project" : "Pin project"}><Glyph name="pin" size={13} /></button></span>

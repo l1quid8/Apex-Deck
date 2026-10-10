@@ -91,6 +91,12 @@ export class DaemonClient {
   get helperVersion(): string | null | undefined {
     return this.helper;
   }
+  /** The apex-daemon build from the latest welcome: null for a helper too old to say, undefined before any welcome. */
+  get helperBuild(): { commit: string; dirty: boolean } | null | undefined {
+    if (this.helper === undefined) return undefined;
+    const commit = this.latest?.build_commit;
+    return typeof commit === "string" ? { commit, dirty: this.latest?.build_dirty === true } : null;
+  }
   private latest: Welcome | null = null;
   /** The latest welcome, null before the first. */
   get welcome(): Welcome | null {

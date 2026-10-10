@@ -1,11 +1,14 @@
 import type { AgentInfo } from "./types";
 import type { Status } from "./daemon/client";
+import type { Build } from "./hostFacts.ts";
 
 export interface HostConnection {
   hostId: string; name: string; status: Status | { kind: "idle" }; revision: number;
   agents: AgentInfo[]; discovery: "idle" | "loading" | "ready" | "failed";
   /** The helper's apex-daemon version: null when it is too old to say, missing until it answers. */
   helper?: string | null;
+  /** The helper's build: null when it is too old to say, missing until it answers. */
+  build?: Build | null;
   /** When it was last connected, in ms since the epoch; missing until it first connects. */
   seenAt?: number;
 }
@@ -38,7 +41,10 @@ export function hostConnectionStore(hostId: string, name: string) {
       });
     },
     setDiscovery(discovery: HostConnection["discovery"], agents = current.agents) { change({ ...current, discovery, agents }); },
-    setHelper(helper: string | null | undefined) { if (helper !== current.helper) change({ ...current, helper }); },
+    setHelper(helper: string | null | undefined, build?: Build | null) {
+      const same = current.build === build || (!!current.build && !!build && current.build.commit === build.commit && current.build.dirty === build.dirty);
+      if (helper !== current.helper || !same) change({ ...current, helper, build });
+    },
     rename(name: string) { if (name !== current.name) change({ ...current, name }); },
   };
 }

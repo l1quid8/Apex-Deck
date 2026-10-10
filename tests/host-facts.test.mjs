@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dotState, helperNotice, reachNotice, classifyIdentity } from "../src/hostFacts.ts";
+import { dotState, helperNotice, buildNotice, reachNotice, classifyIdentity } from "../src/hostFacts.ts";
 import { hostConnectionStore } from "../src/hostConnections.ts";
 
 test("a server's dot: green connected, amber on its way, gray offline, hollow before first use", () => {
@@ -14,6 +14,27 @@ test("the card names an old helper without offering a restart", () => {
   assert.match(helperNotice("AT", "0.5.1", "0.5.0"), /AT runs apex-daemon 0\.5\.0; this app is 0\.5\.1/);
   assert.match(helperNotice("AT", "0.5.1", null), /older than this app \(0\.5\.1\)/);
   assert.doesNotMatch(helperNotice("AT", "0.5.1", null), /Restart/);
+});
+
+test("a service on a different build than the app gets a warning; a matching one doesn't", () => {
+  const app = { commit: "fd13c103931e", dirty: false };
+  assert.equal(buildNotice("VPS", app, { commit: "fd13c103931e", dirty: false }), null);
+  assert.equal(buildNotice("VPS", app, undefined), null, "nothing before the service answers");
+  assert.match(buildNotice("VPS", app, { commit: "0754cb82d102", dirty: false }), /VPS's service is build 0754cb82d102; this app is build fd13c103931e/);
+  assert.match(buildNotice("VPS", app, { commit: "0754cb82d102", dirty: true }), /build 0754cb82d102-dirty/);
+  assert.match(buildNotice("VPS", app, null), /VPS's service is older than build IDs/);
+  assert.match(buildNotice("VPS", app, { commit: "unknown", dirty: false }), /doesn't know which build it is/);
+  // A dev app with no git can't compare, so it stays quiet rather than crying wolf.
+  assert.equal(buildNotice("VPS", { commit: "unknown", dirty: false }, { commit: "0754cb82d102", dirty: false }), null);
+});
+
+test("the store keeps the service's build next to its version", () => {
+  const store = hostConnectionStore("at", "AT");
+  assert.equal(store.get().build, undefined);
+  store.setHelper("0.5.1", { commit: "fd13c103931e", dirty: false });
+  assert.deepEqual(store.get().build, { commit: "fd13c103931e", dirty: false });
+  store.setHelper("0.5.1", null);
+  assert.equal(store.get().build, null);
 });
 
 test("an unreachable server says when it was last reached, and offers Retry", () => {

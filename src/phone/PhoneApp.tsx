@@ -16,7 +16,7 @@ import { withAttachments } from "../attachments";
 import { loadTldr, saveTldr, splitTldr, wiggle, withTldr } from "../tldr";
 import { appendToolToken } from "../composerMenu";
 import { chooseOutcome, pickerMatches, pickerRows, workInRows, type PickerRow } from "../destinations";
-import { dotState } from "../hostFacts";
+import { buildNotice, dotState, helperNotice } from "../hostFacts";
 import type { HostConnection } from "../hostConnections";
 import { workspaceFamily, workspaceHost } from "../hostSession";
 import { openPhoneHost, type PhoneHost } from "../phoneBackend";
@@ -358,10 +358,12 @@ export function PhoneApp() {
   })), [hosts]);
 
   const links: LinkView[] = hosts.map((host) => {
-    const status = host.connection.get().status;
+    const { status, helper, build } = host.connection.get();
+    const mismatch = status.kind === "connected" ? buildNotice(host.machine.name, __APP_BUILD__, build) ?? helperNotice(host.machine.name, __APP_VERSION__, helper) : null;
     return {
       id: host.machine.id, name: host.machine.name, kind: host.machine.kind, status: toLink(status),
       ...(status.kind === "failed" ? { problem: refusalLine(host.machine.name, status.reason) } : {}),
+      ...(mismatch ? { mismatch } : {}),
     };
   });
   const mac = links.find((link) => link.kind === "mac");
@@ -2050,6 +2052,12 @@ function ThreadView(props: {
       )}
       <main ref={chatRef} className="ph-content ph-chat" inert={props.covered} onScroll={(event) => { const box = event.currentTarget; props.onScrolled(box.scrollHeight - box.scrollTop - box.clientHeight < 80); }}>
         {props.fork && <p className="ph-banner">{forkLine(props.fork, props.messages.length, props.approvalStays)}</p>}
+        {!paused && props.link.mismatch && (
+          <div className="ph-banner warn" role="status">
+            <strong>Different builds</strong>
+            <p>{props.link.mismatch}</p>
+          </div>
+        )}
         {paused && (
           <div className={`ph-banner${props.link.problem ? " bad" : ""}`} role="status">
             <strong>{props.link.problem ? `${props.machine} can't connect` : `${props.machine} ${props.kind === "mac" && props.link.status === "offline" ? "is asleep" : props.link.status === "offline" ? "is offline" : "is connecting"}`}</strong>

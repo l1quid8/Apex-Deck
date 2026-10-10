@@ -74,6 +74,8 @@ export interface LinkView {
   status: LinkStatus;
   /** Why the machine turned this phone away, when it did. It won't retry on its own. */
   problem?: string;
+  /** Why its service may not match this app (a different build or version), while connected. */
+  mismatch?: string;
 }
 
 const MAC_ID = "local";

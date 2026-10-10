@@ -180,6 +180,8 @@
 .ph-banner p { font-size: 13px; color: var(--muted); margin-top: 4px; }
 .ph-banner.bad { border-color: color-mix(in srgb, var(--red) 60%, transparent); }
 .ph-banner.bad strong { color: var(--red); }
+.ph-banner.warn { border-color: color-mix(in srgb, var(--amber) 55%, transparent); }
+.ph-banner.warn strong { color: var(--amber); }
 .ph-banner-button.ph-banner-button { padding: 13px 14px; border-radius: 14px; }
 .ph-banner-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .ph-banner-actions button { flex: 1; font-size: 14px; }

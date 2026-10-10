@@ -28,7 +28,7 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
   connection.setRetry(() => client.retryNow());
   client.onStatus((status) => {
     if (status.kind === "connected") {
-      connection.setHelper(client.helperVersion);
+      connection.setHelper(client.helperVersion, client.helperBuild);
       if (client.welcome) onWelcome(client.welcome);
     }
     connection.setStatus(status);

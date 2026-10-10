@@ -23,6 +23,25 @@ export function helperNotice(name: string, app: string, helper: string | null | 
     : `${name} runs apex-daemon ${helper}; this app is ${app}. Update it there (docs/daemon-ubuntu.md).`;
 }
 
+/** The commit a build came from, as apex-daemon's welcome and vite.config.ts report it. */
+export interface Build { commit: string; dirty: boolean }
+
+const label = (build: Build) => `${build.commit}${build.dirty ? "-dirty" : ""}`;
+
+/**
+ * Words for a service built from a different commit than this app. Same
+ * version numbers can hide different builds, and a newer app on an older
+ * service fails in confusing ways, so say it plainly. Quiet when the app
+ * itself has no commit to compare (a dev build without git).
+ */
+export function buildNotice(name: string, app: Build, build: Build | null | undefined): string | null {
+  if (build === undefined || app.commit === "unknown") return null;
+  if (build === null) return `${name}'s service is older than build IDs, so Deck can't tell whether it matches this app (build ${label(app)}). Update the service there.`;
+  if (build.commit === "unknown") return `${name}'s service doesn't know which build it is, so Deck can't tell whether it matches this app (build ${label(app)}).`;
+  if (build.commit === app.commit) return null;
+  return `${name}'s service is build ${label(build)}; this app is build ${label(app)}. Features may fail until they match, so update one of them.`;
+}
+
 export interface ReachNotice { tone: "warn" | "bad"; text: string; action: "retry" | "connect" | null }
 
 /** The card's line when a machine isn't connected; null when it is. */
