@@ -4,13 +4,13 @@
 
 **Goal:** Add natural hands-free conversation that continues while Apex's Claude/Codex agents work.
 
-**Architecture:** GPT-Live carries the spoken conversation over client WebRTC; the authenticated Rust host creates the session, attaches a sideband, and owns client delegation into Apex. Durable conversations/tasks and voice transport have separate lifetimes. Release 1's exact-read speech stays available.
+**Architecture:** On desktop, GPT-Live carries the spoken conversation over client WebRTC; the authenticated Rust host creates the session, attaches a sideband, and owns client delegation into Apex. Durable conversations/tasks and voice transport have separate lifetimes. Release 1's exact-read speech stays available.
 
-**Tech Stack:** Electron/React, Rust reqwest/Tokio/tungstenite, WebRTC media/data channel, existing host storage, authority, agent adapters, and mobile audio-session adapter.
+**Tech Stack:** Electron/React, Rust reqwest/Tokio/tungstenite, WebRTC media/data channel, existing host storage, authority, agent adapters, with native iPhone PCM/background ownership defined in Release 3.
 
 **Spec:** [Natural voice design](../specs/2026-10-10-apex-natural-voice-design.md). **Dependency:** [Release 1](2026-10-10-apex-natural-speech.md) provides call UI/controller, audio lease, settings, key/policy boundary, and connection-local events. No separate Realtime adapter is required.
 
-Status: proposed implementation plan; no tasks completed. Source/protocol review completed 2026-10-10 against `486f5f7`. Revalidate official Live schemas during execution; do not mix Responses delegation, client delegation, or legacy Realtime events.
+Status: proposed implementation plan; no tasks completed. Revised 2026-10-10: [Release 3](2026-10-10-apex-ios-background-voice.md) is the required native iPhone background path; this plan owns desktop WebRTC and shared host delegation. Source/protocol review completed 2026-10-10 against `486f5f7`. Revalidate official Live schemas during execution; do not mix Responses delegation, client delegation, or legacy Realtime events.
 
 ## Global Constraints
 
@@ -20,10 +20,13 @@ Status: proposed implementation plan; no tasks completed. Source/protocol review
 - Keep raw audio, credentials, SDP, and live transport handles out of saved sessions, replay buffers, exports, and logs.
 - Keep audio events scoped to the initiating connection; do not broadcast or replay them.
 - Preserve participant identity, Thread routing, reasoning/access/persona settings, approvals, and task receipts.
-- Stop local output immediately on output mute, interruption, disconnect, unmount, or End call; discard late audio by generation. Microphone mute affects input independently.
+- Stop local output immediately on output mute, audio interruption, owner disconnect, or End call; discard late audio by generation. Web-owned calls also stop on unmount; native iPhone calls survive UI detachment. Microphone mute affects input independently.
 - Ending a call does not cancel existing agent work; cancellation remains a separate task action.
 - A cloud-provider error is visible; switching to device speech requires an explicit user choice.
 - Verify audio on a packaged native build; mocks and builds do not establish naturalness.
+- iPhone background Live calls require explicit opt-in and native audio/transport ownership; app switching, screen lock, and UI detachment do not end an opted-in active call.
+- Start or resume microphone capture only through explicit user action; interruptions, lost ownership, and app termination require a new foreground start/resume.
+- Background audio supports active voice use only; never use silent playback, background-task timers, or push notifications to keep an idle microphone alive.
 
 ## Review Focus
 
@@ -31,7 +34,7 @@ Status: proposed implementation plan; no tasks completed. Source/protocol review
 - Browser and sideband may observe the same request; only the host may execute it (Tasks 1, 3).
 - Barge-in and End may overlap an approved task; audio control must preserve work (Tasks 2–4).
 - A dropped transport or host restart must not duplicate a Thread post, side effect, or old audio (Tasks 3–4).
-- Changing privacy, permissions, output route, or phone background state must close capture without automatic restart (Tasks 2, 4–5).
+- Changing privacy, permissions, or an unsafe output route must close capture without automatic restart; phone background behavior follows the selected native capability/opt-in (Tasks 2, 4–5; Release 3).
 
 ## File and interface map
 
@@ -44,7 +47,8 @@ Status: proposed implementation plan; no tasks completed. Source/protocol review
 | `crates/apex-host/src/voice/delegation.rs`, `ledger.rs` | Durable dispatch decisions, correlation, recovery. |
 | `crates/apex-host/src/voice/usage.rs` | Cumulative duration, budget, closure confidence. |
 | Existing personal/room storage and command modules | Backward-compatible request/result linkage. |
-| `docs/voice-verification.md` | Native acoustic/provider/cancellation evidence for both releases. |
+| `docs/voice-verification.md` | Native acoustic/provider/cancellation evidence for desktop releases. |
+| Release 3 `primary.rs` and native call coordinator | iPhone background PCM path; shares transcript/delegation/usage rather than desktop WebRTC. |
 
 Define these contracts in Task 1; keep runtime/opaque handles out of AppSettings:
 
@@ -223,7 +227,7 @@ fn duration_updates_are_cumulative() {
 ```
 
 - [ ] Run `cargo test -p apex-host voice::usage` and lifecycle suites; establish the intended failures.
-- [ ] Add 10-minute maximum session, 30-second warning, 60-second mic+output-muted idle close, and shorter budget-derived caps where a dated rate is known. Keep task costs separate; unknown rates display duration/unknown cost. Muting is not reported as stopping billing.
+- [ ] Add a default 10-minute maximum session, 30-second warning, 60-second mic+output-muted idle close, and shorter budget-derived caps where a dated rate is known. Parameterize the host limit for Release 3's explicit 10/30/60-minute choice; always clamp to provider expiry and budget. No automatic session renewal. Keep task costs separate; unknown rates display duration/unknown cost. Muting is not reported as stopping billing.
 - [ ] Reserve the documented WebRTC initialization duration before creation, reconcile it against cumulative running usage, and avoid double-counting its credit. Test failed startup after HTTP creation, 15 seconds credited into a longer call, reordered cumulative usage, and two concurrent calls against a shared daily budget. An HTTP timeout is an uncertain billed outcome; do not silently retry it.
 - [ ] Register `session.closed` listeners before sending close, stop local media immediately, allow 12 seconds for final acknowledgment, and record unconfirmed outcome on timeout. Host-owner loss triggers upstream cleanup within 15 seconds. A sideband loss that prevents authoritative delegation ends the voice session; it cannot continue running untracked agent requests.
 - [ ] Implement explicit reconnect/new-call only. Never reopen the microphone after app restart, network recovery, or permission change. On restored ledger state, reconcile accepted requests with host records; preserve ambiguous outcome as uncertain. Permit durable work to finish while the call is closed, and show the stored result on reopen.
@@ -231,7 +235,7 @@ fn duration_updates_are_cumulative() {
 
 ## Task 5: Native live conversation and provider acceptance
 
-**Files:** Extend `desktop/run-voice-smoke.mjs`, `docs/voice-verification.md`; add `tests/e2e/voice-delegation.e2e.mjs`. Modify iPhone audio-session plugin/client only if physical-device WebRTC requires it. Update README voice modes and setup.
+**Files:** Extend `desktop/run-voice-smoke.mjs`, `docs/voice-verification.md`; add `tests/e2e/voice-delegation.e2e.mjs`. Keep phone WebRTC probes foreground-only. The required native iPhone background owner/media path is implemented in Release 3, rather than patched into a suspended WKWebView. Update README voice modes and setup.
 
 **Interfaces:** A live test scenario records build/host/model/voice, timestamps, selected scope, text/delegation IDs, audible observations, and confirmed/unknown usage. Fixture tests and actual upstream audio are labeled separately. No recording is persisted unless the human specifically requests one for evaluation.
 
@@ -242,12 +246,14 @@ fn duration_updates_are_cumulative() {
 - [ ] Test one request that needs an approval. The call directs the human to the existing card and remains conversational; a spoken “yes” alone executes nothing. Confirm normal visible approval works without a duplicate dispatch.
 - [ ] Test built-in speakers, headset, Bluetooth route changes, overlapping speech, silence, output mute, mic mute, network interruption, provider access rejection, cap warning, and reconnect. Listen for echo loops, clipped words, repeated clauses, stale audio, and unexpected agent switches.
 - [ ] Measure conversational acknowledgment latency on at least 20 turns separately from delegated-agent first/last result. Report p50/p95, interruption stop time, actual network/hardware, and sound quality. Missed targets are visible release findings.
-- [ ] For phone release, rebuild and install on the physical iPhone; test WKWebView media negotiation, foreground/background, lock/incoming calls, and headset/Bluetooth. Do not reuse Apple speech recognition simultaneously. Returning foreground must require a new call. If native media bridging is necessary, test the same contracts and mark phone pending until passing.
+- [ ] For a foreground phone probe, rebuild/install and test media negotiation, headset/Bluetooth, and exclusive audio ownership. A web-owned call ends on background/lock and requires a new foreground start. For the required persistent phone release, execute [Release 3](2026-10-10-apex-ios-background-voice.md): an opted-in native call survives app switch/lock and reattaches on return without starting a new session; genuine interruption/owner loss requires explicit Resume. Never run Apple speech recognition simultaneously.
 - [ ] Verify credentials/SDP/raw PCM are absent from logs, storage, replay, and exported chats; verify unauthorized/limited devices cannot use the session. Record final upstream closure confidence.
 - [ ] Commit `test(voice): verify live conversation with Claude Codex and native audio` only after evidence supports the report.
 
 ## Release decision and rollback
 
 Enable Live only after client-delegation correctness, packaged listening, actual Claude/Codex attribution, work continuity, and graceful-close evidence pass. The user chooses Device, Natural speech, or Live conversation explicitly. Model access errors remain provider errors, not Pro gates.
+
+Phone background conversation ships only after [Release 3](2026-10-10-apex-ios-background-voice.md) passes its independent gate. Desktop Live can ship first.
 
 Rollback disables new Live calls and closes active sessions while retaining Natural speech, all committed transcripts, and durable agent work. A voice call closing is not a task-cancel command.

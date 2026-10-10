@@ -6,11 +6,11 @@
 
 **Architecture:** The existing agent creates and commits the answer. Its host synthesizes that committed text; connection-local audio frames feed a client PCM player. Device recognition and device TTS remain available, and the personal worker's structured reply/task boundary is preserved.
 
-**Tech Stack:** React/TypeScript, Electron 44, Rust/Tokio daemon, existing reqwest/base64/key-store dependencies, Web Audio/AudioWorklet, optional Capacitor audio-session coordination.
+**Tech Stack:** React/TypeScript, Electron 44, Rust/Tokio daemon, existing reqwest/base64/key-store dependencies, Web Audio/AudioWorklet; native iPhone background ownership is a separate Release 3 deliverable.
 
 **Spec:** [Natural voice design](../specs/2026-10-10-apex-natural-voice-design.md).
 
-Status: proposed implementation plan; all checkboxes are intentionally unchecked. Initial baseline `22058d74693ecd451b393395b079ea514bb0d021`; source and contracts reviewed against `486f5f7` on 2026-10-10. Read the spec and recheck source before execution. Do not include unrelated mockups/planning files in a commit.
+Status: proposed implementation plan; all checkboxes are intentionally unchecked. Revised 2026-10-10 to separate foreground-only phone probes from the required [native background release](2026-10-10-apex-ios-background-voice.md). Initial baseline `22058d74693ecd451b393395b079ea514bb0d021`; source and contracts reviewed against `486f5f7` on 2026-10-10. Read the spec and recheck source before execution. Do not include unrelated mockups/planning files in a commit.
 
 ## Global Constraints
 
@@ -20,10 +20,13 @@ Status: proposed implementation plan; all checkboxes are intentionally unchecked
 - Keep raw audio, credentials, SDP, and live transport handles out of saved sessions, replay buffers, exports, and logs.
 - Keep audio events scoped to the initiating connection; do not broadcast or replay them.
 - Preserve participant identity, Thread routing, reasoning/access/persona settings, approvals, and task receipts.
-- Stop local output immediately on output mute, interruption, disconnect, unmount, or End call; discard late audio by generation. Microphone mute affects input independently.
+- Stop local output immediately on output mute, audio interruption, owner disconnect, or End call; discard late audio by generation. Web-owned calls also stop on unmount; native iPhone calls survive UI detachment. Microphone mute affects input independently.
 - Ending a call does not cancel existing agent work; cancellation remains a separate task action.
 - A cloud-provider error is visible; switching to device speech requires an explicit user choice.
 - Verify audio on a packaged native build; mocks and builds do not establish naturalness.
+- iPhone background Live calls require explicit opt-in and native audio/transport ownership; app switching, screen lock, and UI detachment do not end an opted-in active call.
+- Start or resume microphone capture only through explicit user action; interruptions, lost ownership, and app termination require a new foreground start/resume.
+- Background audio supports active voice use only; never use silent playback, background-task timers, or push notifications to keep an idle microphone alive.
 
 ## Review Focus
 
@@ -46,6 +49,7 @@ Status: proposed implementation plan; all checkboxes are intentionally unchecked
 | `crates/apex-daemon/src/voice.rs` | Connection-local audio queue, acknowledgment window, ownership. |
 | `tests/fixtures/voice-text.json` | One shared TS/Rust normalization oracle. |
 | Existing shell/backend/settings/command/authority files | Narrow integration; preserve existing pathways. |
+| Release 3 native coordinator/PCM adapter | Required for persistent iPhone Live conversation; browser playback is foreground-only. |
 
 Public TS contract, defined in Task 1:
 
@@ -206,9 +210,9 @@ The committed-reply filter compares the stored message's `eventId` to this recei
 
 ## Task 5: Native quality gate, regression, and platform delivery
 
-**Files:** Create `desktop/run-voice-smoke.mjs`, `docs/voice-verification.md`; update `electron-builder.yml`, `desktop/main.mjs` only where trusted UI media permissions are required, `README.md`, and `package.json` with a `desktop:smoke:voice` script. For phone delivery, create `iphone/App/App/VoiceAudioSessionPlugin.swift`, update `SpeechPlugin.swift` registration/audio release, and add a matching typed optional client adapter.
+**Files:** Create `desktop/run-voice-smoke.mjs`, `docs/voice-verification.md`; update `electron-builder.yml`, `desktop/main.mjs` only where trusted UI media permissions are required, `README.md`, and `package.json` with a `desktop:smoke:voice` script. For foreground phone probes, modify `iphone/App/App/{SceneDelegate,SpeechPlugin}.swift` to register the actual speech plugin and release audio consistently. The app-owned native audio service, background capability, and typed adapter are owned by [Release 3](2026-10-10-apex-ios-background-voice.md); do not create a competing audio owner/plugin here.
 
-**Interfaces:** Native smoke takes explicit execution-host/scope/test-profile parameters and an isolated data directory. It uses fixed prompts and an acoustic fixture. `VoiceAudioSession` exposes `activate({duplex:boolean})`, `deactivate()`, and `interrupted`/`routeChanged` events; it never contains provider credentials. Human listening evidence is recorded separately from automated fixture evidence.
+**Interfaces:** Native smoke takes explicit execution-host/scope/test-profile parameters and an isolated data directory. It uses fixed prompts and an acoustic fixture. Foreground phone probes release Apple recognition before playback and end capture on background. They never contain provider credentials. Release 3 defines the native `VoiceCallCoordinator` and audio lease contract for persistent Live calls. Human listening evidence is recorded separately from automated fixture evidence.
 
 - [ ] Add tests that microphone permissions apply only to the trusted Apex UI, browser panes remain denied, output mute releases buffers, and interruption closes the audio session. Add macOS `NSMicrophoneUsageDescription` through package configuration. Do not add camera permission for voice.
 - [ ] Run the focused tests, `npm test`, `cargo test --workspace`, `npm run build`, then `npm run desktop:package`. Record failures with their actual scope; do not claim live integration from these commands.
@@ -216,7 +220,7 @@ The committed-reply filter compares the stored message's `eventId` to this recei
 - [ ] Test a real Claude Thread and a real Codex Thread: first ask it to remember a harmless nonce; then ask it to recall it. Confirm text identity, correct speaker, audible reply once, clean Stop speaking, and unchanged conversation history after End/reopen. Use isolated workspaces and no tool actions for these checks.
 - [ ] Measure at least 20 speech starts on a recorded network and hardware setup: reply commit, request acceptance, first received sample, first audible sample, stop intent, last audible sample. Evaluate spec latency goals and report misses without hiding agent generation time.
 - [ ] Exercise missing/invalid key, quota limit fixture, slow provider, host restart, reconnect, revoked device, End during startup, and privacy changes. Verify no stale speech or credential/audio values in logs, persisted sessions, or replay.
-- [ ] If shipping phone support, rebuild/install on a physical iPhone. Test Apple recognition cleanup → Natural playback, speaker/Bluetooth/headset switching, incoming call/background interruptions, and typed fallback. Keep phone support labeled pending if that gate fails; desktop Release 1 may ship independently.
+- [ ] If shipping phone support, rebuild/install on a physical iPhone. Test Apple recognition cleanup → Natural playback, speaker/Bluetooth/headset switching, incoming call/background interruptions, and typed fallback. Device/Natural conversation remains foreground-only in this release; do not expose the background switch for it. Keep phone support labeled pending if that gate fails; desktop Release 1 may ship independently.
 - [ ] Record exact packaged build ID/path, test output, real provider evidence, latency table, human listening choice, and remaining limitations in `docs/voice-verification.md`. Commit `test(voice): verify packaged natural speech and document results`.
 
 Use these six fixed audition texts, in this order, in the smoke fixture and report:
@@ -236,4 +240,4 @@ The new smoke runner accepts `--host`, `--scope`, `--profile`, `--data-dir`, and
 
 ## Release decision
 
-Release 1 is ready only when the spec's Natural speech gates pass in the packaged app. Shipping TTS does not establish full-duplex conversation or streaming agent tokens. The next implementation handoff is [Release 2](2026-10-10-apex-live-voice.md).
+Release 1 is ready only when the spec's Natural speech gates pass in the packaged app. Shipping TTS does not establish full-duplex conversation or streaming agent tokens. The next implementation handoff is [Release 2](2026-10-10-apex-live-voice.md), followed by [Release 3: iPhone background conversation](2026-10-10-apex-ios-background-voice.md).
