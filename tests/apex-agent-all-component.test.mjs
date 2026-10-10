@@ -232,3 +232,74 @@ test('new message explicitly resets shared task routing without erasing its text
   find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} }); await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(h.replies, [['mobile', 'Separate message']]);
 });
+
+// The personal assistant: one more lane in the same conversation, owned by its host.
+const operation = { tool: 'host.command', host: 'vps', cwd: '/root/apex-assistant-slice', argv: ['df', '-h', '/'] };
+const personalTask = (status, decisionStatus = 'open', kind = 'approve') => ({ id: 'pt-1', goal: 'Report free disk space', completionCriteria: [], targetHost: 'vps', status, operation, decision: { id: 'pd-1', kind, paramsHash: 'sha256:abc', prompt: 'Run `df -h /`?', status: decisionStatus, openedAt: 2 }, receipts: [], updatedAt: 2 });
+const personalLane = (tasks = [], messages = [], extras = {}) => {
+  const calls = [];
+  return { calls, lane: { name: 'Assistant', hostName: 'apex-terminal', offline: false, assistant: { id: 'asst-1', name: 'Assistant', hostId: 'vps', allowedFolders: [operation.cwd], revision: 1, messages, tasks },
+    send: async (text) => { calls.push(['send', text]); }, decide: async (...args) => { calls.push(['decide', ...args]); }, cancel: async (id) => { calls.push(['cancel', id]); }, ...extras } };
+};
+const pm = (id, role, kind, at, text, taskId) => ({ id, role, kind, at, text, ...(taskId ? { taskId } : {}) });
+
+test('with no watched project, a message goes to the personal assistant', async () => {
+  const { calls, lane } = personalLane();
+  const h = harness({ workspaces: projects, monitors: [], personal: lane });
+  let tree = h.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'How much disk is free on the server?' } });
+  tree = h.render();
+  assert.match(textOf(tree), /To Assistant · apex-terminal/);
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [['send', 'How much disk is free on the server?']]);
+  assert.equal(h.replies.length, 0);
+});
+
+test('naming a project still sends to that project when the assistant is present', async () => {
+  const { calls, lane } = personalLane([], [pm('pm-1', 'assistant', 'chat', 50, 'Hi')]);
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile'), monitor('billing')], personal: lane });
+  let tree = h.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Is Billing API ready?' } });
+  tree = h.render();
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.replies[0][0], 'billing');
+  assert.equal(calls.length, 0);
+});
+
+test('an open approval shows the exact command, folder and machine, and Approve sends its hash', async () => {
+  const messages = [pm('pm-1', 'human', 'chat', 1, 'Disk?'), pm('pm-2', 'system', 'approval', 2, 'Approval needed: Run `df -h /`?', 'pt-1')];
+  const { calls, lane } = personalLane([personalTask('needsYou')], messages);
+  const h = harness({ workspaces: projects, monitors: [], personal: lane });
+  const tree = h.render();
+  const text = textOf(tree);
+  assert.match(text, /df -h \//);
+  assert.match(text, /\/root\/apex-assistant-slice/);
+  assert.match(text, /apex-terminal/);
+  assert.match(text, /Needs you/);
+  find(tree, node => node.type === 'button' && textOf(node) === 'Approve').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [['decide', 'pd-1', 'sha256:abc', true]]);
+});
+
+test('a settled or superseded approval has no buttons, and only the newest line asks', () => {
+  const messages = [pm('pm-2', 'system', 'approval', 2, 'Approval needed: old', 'pt-1'), pm('pm-3', 'system', 'approval', 3, 'Approval needed: new', 'pt-1')];
+  const asking = harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask('needsYou')], messages).lane }).render();
+  const buttons = [];
+  const collect = (node) => { if (node && typeof node === 'object') { if (node.type === 'button' && textOf(node) === 'Approve') buttons.push(node); node.children?.forEach(collect); } };
+  collect(asking);
+  assert.equal(buttons.length, 1);
+  for (const task of [personalTask('done', 'approved'), personalTask('needsYou', 'superseded'), personalTask('cancelled', 'denied')]) {
+    const tree = harness({ workspaces: projects, monitors: [], personal: personalLane([task], messages).lane }).render();
+    assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Approve'), null, task.status);
+  }
+});
+
+test('a result shows its status and output, and app notes are labelled App, not the assistant', () => {
+  const messages = [pm('pm-4', 'assistant', 'result', 4, '`df -h /` exited with 0.\n```\n/dev/sda1 75G 20G 55G\n```', 'pt-1'), pm('pm-5', 'system', 'update', 5, 'Approved.', 'pt-1')];
+  const tree = harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask('done', 'approved')], messages).lane }).render();
+  assert.match(textOf(find(tree, node => node.type === 'pre')), /\/dev\/sda1/);
+  assert.match(textOf(tree), /Done/);
+  assert.match(textOf(tree), /App · /);
+});

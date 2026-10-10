@@ -100,6 +100,8 @@ pub struct Host {
     pub(crate) assistant_tasks: crate::assistant_tasks::AssistantTasks,
     pub(crate) monitor_wake: Arc<tokio::sync::Notify>,
     pub(crate) monitor_clock: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) personal_wake: Arc<tokio::sync::Notify>,
+    pub(crate) personal_worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -159,6 +161,8 @@ impl Host {
             room_lifecycle: Mutex::default(),
             monitor_wake: Arc::new(tokio::sync::Notify::new()),
             monitor_clock: Mutex::new(None),
+            personal_wake: Arc::new(tokio::sync::Notify::new()),
+            personal_worker: Mutex::new(None),
         });
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
             if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
@@ -257,6 +261,15 @@ impl Host {
 
     fn emit(&self, event: HostEvent) {
         self.events.emit(event);
+    }
+
+    pub(crate) fn emit_personal_changed(&self, assistant_id: &str, revision: u64) {
+        self.emit(HostEvent::PersonalChanged { assistant_id: assistant_id.into(), revision });
+    }
+
+    /// The host's own data folder.
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.paths.data
     }
 
     pub(crate) fn room_event(&self, room: &str, event: RoomEvent) {

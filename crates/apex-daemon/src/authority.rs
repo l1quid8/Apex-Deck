@@ -54,6 +54,9 @@ pub fn command_needs(command: &Command) -> Need {
         SessionLoad {} => read(GlobalRead),
         MonitorList {} | MonitorGet { .. } => read(Global),
         AssistantTasksList { .. } => read(Global),
+        // D3: the personal assistant holds one conversation across everything,
+        // so even reading it needs a device allowed every thread at Full tier.
+        PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalDecide { .. } | PersonalCancel { .. } => full(Global),
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } => read(thread(id)),
@@ -134,6 +137,7 @@ pub fn command_needs(command: &Command) -> Need {
 pub fn event_needs(event: &HostEvent) -> Need {
     match event {
         HostEvent::AssistantTasksChanged { .. } => read(Scope::Global),
+        HostEvent::PersonalChanged { .. } => full(Scope::Global),
         HostEvent::Room { room, .. } => read(thread(room)),
         HostEvent::PtyData { .. } | HostEvent::PtyExit { .. } => full(Scope::Global),
         // Names other threads; limited devices reload with session_load instead.
@@ -244,6 +248,12 @@ mod tests {
             ("monitor_profile_update", Some((Full, "global")), json!({ "workspaceId": "w", "cwd": "/p", "hostId": "local", "conversationId": "c", "revision": 1, "profile": participant })),
             ("monitor_message", Some((Full, "global")), json!({ "workspaceId": "w", "text": "t" })),
             ("monitor_pause", Some((Full, "global")), json!({ "workspaceId": "w", "paused": true })),
+            ("personal_list", Some((Full, "global")), json!({})),
+            ("personal_get", Some((Full, "global")), json!({ "assistantId": "asst-1" })),
+            ("personal_create", Some((Full, "global")), json!({ "name": "A", "folder": "/tmp/a", "profile": participant })),
+            ("personal_send", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r1", "text": "hi" })),
+            ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
+            ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),
             ("monitor_check_now", Some((Full, "global")), json!({ "workspaceId": "w" })),
             ("monitor_resolve", Some((Full, "global")), json!({ "workspaceId": "w", "findingId": "f", "status": "resolved" })),
             ("room_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
@@ -374,6 +384,7 @@ mod tests {
         use apex_core::{ParticipantId, RoomEvent};
         vec![
             (HostEvent::AssistantTasksChanged { workspace_id: "w".into(), revision: 1 }, Some((Tier::ReadOnly, "global"))),
+            (HostEvent::PersonalChanged { assistant_id: "asst-1".into(), revision: 1 }, Some((Tier::Full, "global"))),
             (HostEvent::Room { room: "mine".into(), event: RoomEvent::TurnStarted { id: ParticipantId::new("null") }, recovery_seq: None }, Some((Tier::ReadOnly, "thread"))),
             (HostEvent::PtyData { id: "p".into(), data: "x".into() }, Some((Tier::Full, "global"))),
             (HostEvent::PtyExit { id: "p".into(), code: None }, Some((Tier::Full, "global"))),
@@ -389,7 +400,7 @@ mod tests {
         let events = events();
         let mut names: Vec<&str> = events.iter().map(|(e, _)| e.name()).collect();
         names.dedup();
-        assert_eq!(names.len(), 7, "one row per event kind");
+        assert_eq!(names.len(), 8, "one row per event kind");
         for (event, need) in events {
             for tier in [Tier::ReadOnly, Tier::Chat, Tier::Full] {
                 for limit in [false, true] {

@@ -75,7 +75,10 @@ impl Daemon {
         host.set_startup_folders(Vec::new());
         let devices = Arc::new(Devices::open(&paths.data));
         host.start_monitor_clock()?;
-        Ok(Arc::new(Daemon { host, host_id: crate::identity::host_id(&paths.data)?, boot_id: crate::identity::boot_id(), token, devices, data: paths.data.clone(),
+        // The worker stamps operations with this machine's id, so make it first.
+        let host_id = crate::identity::host_id(&paths.data)?;
+        host.start_personal_worker()?;
+        Ok(Arc::new(Daemon { host, host_id, boot_id: crate::identity::boot_id(), token, devices, data: paths.data.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] endpoint: Default::default(),
         }))
@@ -303,7 +306,7 @@ where
     let mut welcome = json!({ "id": hello.id, "ok": {
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
         // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
-        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3"],
+        "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "personal_assistant"],
         // The exact build, so a UI can tell two builds of the same version apart.
         "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
     } });
@@ -685,7 +688,7 @@ mod tests {
     async fn hello_names_the_host_and_this_boot() {
         let mut client = connect(Trust::Local);
         let reply = client.hello().await;
-        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3"], "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } }));
+        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "personal_assistant"], "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } }));
     }
 
     /// The fields a client reads from a welcome; the build ones may be missing from an older daemon.
@@ -733,7 +736,7 @@ mod tests {
 
         let mut back = connect_to(&daemon, Trust::Local);
         back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 1 } } })).await;
-        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3"], "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() }));
+        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3", "personal_assistant"], "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 2, "event": "session-changed", "payload": { "version": 2 } }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 3, "event": "session-changed", "payload": { "version": 3 } }));
         // Then live events, with nothing doubled.

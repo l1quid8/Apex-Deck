@@ -79,3 +79,16 @@
 .apex-agent-all .assistant-task-conversation .assistant-task-card { height: auto; }
 .apex-agent-all .assistant-task-conversation .assistant-task-detail-scroll { flex: none; max-height: 360px; }
 .apex-agent-all-evidence button { color: var(--accent); background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+
+/* Personal assistant lane: approval details, task status and command output. */
+.apex-agent-personal pre { margin: 6px 0 0; padding: 8px 10px; max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: rgba(0, 0, 0, .18); font-size: 11.5px; line-height: 1.45; white-space: pre; }
+.apex-agent-app-note > p { color: var(--muted); }
+.apex-agent-task-chip { margin-left: 6px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); font-size: 10.5px; color: var(--muted); }
+.apex-agent-task-chip[data-status="needsYou"] { border-color: #f0b44c; color: #f0b44c; }
+.apex-agent-task-chip[data-status="done"] { border-color: var(--accent, #71e6b5); color: var(--accent, #71e6b5); }
+.apex-agent-task-chip[data-status="failed"] { border-color: #ef6b6b; color: #ef6b6b; }
+.apex-agent-operation { display: grid; grid-template-columns: max-content 1fr; gap: 3px 10px; margin: 6px 0 2px; font-size: 12px; }
+.apex-agent-operation dt { color: var(--muted); }
+.apex-agent-operation dd { margin: 0; overflow-wrap: anywhere; }
+.apex-agent-all .apex-agent-more summary { list-style: none; }
+.apex-agent-all .apex-agent-more summary::-webkit-details-marker { display: none; }

@@ -90,6 +90,15 @@ impl Store {
         self.write(&self.root.join("monitor.json"), document)
     }
 
+    /// Personal assistants: their conversations, events, tasks and receipts.
+    pub fn personal(&self) -> Result<Option<crate::personal::PersonalDocument>, String> {
+        self.read(&self.root.join("personal-assistants.json"))
+    }
+
+    pub fn save_personal(&self, document: &crate::personal::PersonalDocument) -> Result<(), String> {
+        self.write(&self.root.join("personal-assistants.json"), document)
+    }
+
     /// The folder every saved file lives in.
     pub fn folder(&self) -> &Path {
         &self.root

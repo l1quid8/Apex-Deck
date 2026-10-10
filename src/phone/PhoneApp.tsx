@@ -4,6 +4,9 @@ import { botChangeGate, botSendGate } from "../phoneBots";
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ApexAgent } from "../ApexAgent";
+import { ApexAgentAll } from "../ApexAgentAll";
+import { usePersonalAssistant, type PersonalLane } from "../personalAssistant";
+import "../apex-agent-dock.css";
 import { assistantPaneForOwner, currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { latestSaveQueue } from "../settingsSave";
@@ -232,6 +235,7 @@ export function PhoneApp() {
   const [notice, setNotice] = useState("");
   const [ask, setAsk] = useState<Ask | null>(null);
   const [assistantWorkspaceId, setAssistantWorkspaceId] = useState<string | null>(null);
+  const [personalOpen, setPersonalOpen] = useState(false);
   const [assistantRegistry, setAssistantRegistry] = useState<AssistantRegistryState>(() => emptyAssistantRegistry());
   const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
   const [assistantRegistryErrors, setAssistantRegistryErrors] = useState<Record<string, string>>({});
@@ -483,6 +487,13 @@ export function PhoneApp() {
   const openPath = openPane?.executionPath ?? openWorkspace?.path ?? "";
   const openLink = linkOf(openHostId) ?? hostOf(openWorkspace);
   const assistantWorkspace = workspaces.find((workspace) => workspace.id === assistantWorkspaceId) ?? null;
+  // The personal assistant lives on one machine (the VPS); the phone only reads it and sends it events.
+  const personal = usePersonalAssistant({
+    hosts: hosts.map((host) => ({ id: host.machine.id, name: host.machine.name, remote: true })),
+    hostBackend: (id) => { const host = phoneHost(id); if (!host) throw new Error("That machine isn't paired with this phone."); return host.backend; },
+    offlineHost: (id) => linkOf(id)?.status !== "online",
+    open: tab === "agents" || personalOpen, device: "phone",
+  });
   const assistantWorkspaceHost = assistantWorkspace ? phoneHost(workspaceHost(assistantWorkspace)) : null;
 
   useEffect(() => {
@@ -1166,7 +1177,7 @@ export function PhoneApp() {
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
-  const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null;
+  const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -1313,6 +1324,7 @@ export function PhoneApp() {
           />
         ) : (
           <SideTab tab={tab} link={openLink ?? mac ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors}
+            personal={personal} onPersonal={() => setPersonalOpen(true)}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
             onAssistant={(workspaceId) => {
@@ -1348,6 +1360,9 @@ export function PhoneApp() {
             <button type="button" aria-label="Dismiss" onClick={() => setNotice("")}><X size={16} /></button>
           </div>
         )}
+        {personalOpen && personal?.assistant && <div className="apex-agent-backdrop">
+          <ApexAgentAll workspaces={[]} monitors={[]} personal={personal} onReply={async () => {}} onMutate={async () => {}} onSetUp={() => {}} onClose={() => setPersonalOpen(false)} />
+        </div>}
         {assistantWorkspace && assistantWorkspaceHost && (canSeeNewThread(assistantWorkspaceHost.access())
           ? <ApexAgent
             key={JSON.stringify([assistantWorkspace.id, workspaceHost(assistantWorkspace), assistantWorkspace.path])}
@@ -2416,7 +2431,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   );
 }
 
-function SideTab({ tab, link, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, onAssistant, onShow }: { tab: Tab; link: LinkView | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; onAssistant(workspaceId: string): void; onShow(): void }) {
+function SideTab({ tab, link, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, onAssistant, onShow, personal, onPersonal }: { tab: Tab; link: LinkView | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
   // The Library lists every paired machine itself, so it doesn't follow one machine or wait on the Mac.
   if (tab === "library") return <main className="ph-content" inert={covered}>{library}</main>;
@@ -2434,6 +2449,19 @@ function SideTab({ tab, link, agents, bots, covered, library, assistantProjects,
             <span className="ph-grow"><strong>{bot.display_name}</strong><small className={bot.working ? "ph-mint" : bot.cutOff ? "ph-amber" : undefined}>{bot.working ? `Working in ${bot.working}` : bot.cutOff ?? bot.tool}</small></span>
           </div>
         ))}</div>
+      </>}
+      {tab === "agents" && personal && <>
+        <div className="ph-section">Your assistant</div>
+        <div className="ph-group">{(() => {
+          const waiting = personal.assistant?.tasks.filter((task) => task.status === "needsYou" && task.decision?.status === "open").length ?? 0;
+          const usable = !!personal.assistant && !personal.offline;
+          const detail = personal.problem ?? (personal.offline ? `${personal.hostName} can't be reached` : !personal.assistant ? `Set it up on ${personal.hostName} from the Mac` : waiting ? `${personal.hostName} · ${waiting} need${waiting === 1 ? "s" : ""} you` : `${personal.hostName} · Open conversation`);
+          return <button type="button" className="ph-srow ph-project-assistant" disabled={!usable} onClick={onPersonal}>
+            <span className="ph-srow-icon ph-muted-icon"><MessageSquare size={18} /></span>
+            <span className="ph-grow"><strong>{personal.name}</strong><small className={waiting ? "ph-amber" : undefined}>{detail}</small></span>
+            {usable && <ChevronRight size={16} />}
+          </button>;
+        })()}</div>
       </>}
       {tab === "agents" && <>
         <div className="ph-section">Project assistants</div>

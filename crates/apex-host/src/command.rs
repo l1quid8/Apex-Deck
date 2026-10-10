@@ -35,6 +35,12 @@ pub enum Command {
     AssistantTasksList { owner: crate::assistant_tasks::TaskOwner },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
     MonitorSuggestSources { cwd: String },
+    PersonalList {},
+    PersonalGet { assistant_id: String },
+    PersonalCreate { #[serde(flatten)] input: crate::personal::CreateInput },
+    PersonalSend { assistant_id: String, request_id: String, text: String },
+    PersonalDecide { assistant_id: String, request_id: String, decision_id: String, params_hash: String, approve: bool },
+    PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     MonitorAssign { workspace_id: String, cwd: String, host_id: String, text: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, profile: apex_core::ParticipantConfig, #[serde(default)] only_if_absent: bool },
     MonitorSourcesUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, mode: String },
     MonitorProfileUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, revision: u64, profile: ParticipantConfig },
@@ -159,6 +165,15 @@ impl Host {
             AssistantMessage { input } => reply(self.assistant_message(input).await?),
             AssistantTasksList { owner } => reply(self.assistant_tasks_list(owner)?),
             AssistantTaskAction { input } => reply(self.assistant_task_action(input).await?),
+            PersonalList {} => reply(self.personal_list()?),
+            PersonalGet { assistant_id } => reply(self.personal_get(&assistant_id)?),
+            PersonalCreate { input } => {
+                let host = Arc::clone(self);
+                reply(blocking(move || host.personal_create(input)).await?)
+            }
+            PersonalSend { assistant_id, request_id, text } => reply(self.personal_send(&assistant_id, &request_id, &text)?),
+            PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
+            PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
             MonitorSuggestSources { cwd } => reply(serde_json::json!({ "files": self.monitor_suggest_sources(&cwd)? })),
             MonitorAssign { workspace_id, cwd, host_id, text, files, threads, profile, only_if_absent } => {
                 let host = Arc::clone(self);
@@ -325,7 +340,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 89);
+        assert_eq!(names.len(), 95);
+        assert!(names.contains(&"personal_send".to_string()));
         assert!(names.contains(&"assistant_overview".to_string()));
         assert!(names.contains(&"api_quote".to_string()));
         assert!(names.contains(&"room_answer".to_string()));

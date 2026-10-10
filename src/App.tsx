@@ -23,6 +23,7 @@ import { ApexAgent } from "./ApexAgent";
 import { ApexAgentTasks } from "./ApexAgentTasks";
 import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
+import { usePersonalAssistant } from "./personalAssistant";
 import { ApexAgentWidget } from "./ApexAgentWidget";
 import "./apex-agent-dock.css";
 import { widgetCoordinates, widgetSidePanelPosition, type AssistantSourceDrop, type WidgetPosition } from "./apexAgentWidgetModel.ts";
@@ -1378,6 +1379,8 @@ export function App() {
     if (hostId === "local" || !backend?.machines) return false;
     try { return dotState(backend.machines.connection(hostId).get().status) === "off"; } catch { return true; }
   };
+  // The personal assistant on its durable host; polled only while the conversation is open.
+  const personal = usePersonalAssistant({ hosts: hostList, hostBackend, offlineHost, open: apexAgentAllOpen });
   /** A thread's history and bots, read from where it runs now. */
   const snapshotOf = async (pane: Pane, workspace: Workspace) =>
     (await loadRoomState(hostBackend(workspaceHost(workspace)), pane.id, [], settings.newThread, workspace.path)).snapshot;
@@ -1947,7 +1950,7 @@ export function App() {
         </main>
         {!apexWorkspace && apexAgentAllOpen && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label="ApexAgent">
           <ApexAgentAll workspaces={workspaces.filter((workspace) => !workspace.hidden)} monitors={assistantMonitors} onReply={replyToAssistant} onMutate={mutateAssistant} onSetUp={openApexAgentProject} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)}
-            offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence} onOverview={replyAcrossProjects} overviewEntries={visibleOverviewEntries(overviewEntries, assistantMonitors)}
+            offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence} onOverview={replyAcrossProjects} overviewEntries={visibleOverviewEntries(overviewEntries, assistantMonitors)} personal={personal}
             taskContext={assistantTaskContext && assistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
             tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, assistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
               <small>Task plan · {batch.children.length} assignment{batch.children.length === 1 ? '' : 's'}</small><p>{batch.visibleChildren.length === batch.children.length ? batch.originalRequest : 'Saved proposals for available projects. Changed project assignments need a new plan.'}</p>
