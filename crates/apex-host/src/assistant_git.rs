@@ -1148,7 +1148,19 @@ mod tests {
         std::fs::write(root.join("old name.bin"), [0, 255, 1, 2]).unwrap();
         std::fs::write(root.join("remove.txt"), "remove\n").unwrap();
         git(&root, &["add", "old name.bin", "remove.txt"]).unwrap();
-        git(&root, &["commit", "-qm", "extra baseline"]).unwrap();
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@localhost",
+                "commit",
+                "-qm",
+                "extra baseline",
+            ],
+        )
+        .unwrap();
         let data = root.parent().unwrap().join(format!(
             "apex-assistant-data-{}-{}",
             std::time::SystemTime::now()

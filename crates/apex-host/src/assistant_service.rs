@@ -1410,6 +1410,19 @@ impl Host {
         Ok(json!({"workspaceId":owner.workspace_id,"revision":self.assistant_tasks.snapshot_revision(),"tasks":tasks,"executions":executions,"routingThreads":routing_threads,"namedOnlyWorkerIds":named_only_workers}))
     }
 
+    async fn wait_for_run_to_settle(&self, task_id: &str) -> Result<(), String> {
+        let Some(run) = self.assistant_runs.lock().unwrap().get(task_id).cloned() else { return Ok(()) };
+        let notified = run.done.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !run.finished.load(Ordering::SeqCst) {
+            tokio::time::timeout(std::time::Duration::from_secs(5), notified)
+                .await
+                .map_err(|_| "Wait for the active task operation to stop before retrying.".to_string())?;
+        }
+        Ok(())
+    }
+
     pub async fn assistant_task_action(
         self: &Arc<Self>,
         input: AssistantActionInput,
@@ -1849,6 +1862,9 @@ impl Host {
                     if task.owner != input.owner || task.revision != input.revision {
                         return Err("Task ownership or revision is stale.".into());
                     }
+                    // NeedsYou is saved just before the startup run marks itself
+                    // finished; let that run settle instead of refusing the retry.
+                    self.wait_for_run_to_settle(&task.id).await?;
                     self.recover_task_operations(&task.id)?;
                     let monitor = self
                         .monitor_get(&task.owner.workspace_id)?

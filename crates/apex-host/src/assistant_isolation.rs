@@ -651,8 +651,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn bounded_setup_runner_kills_the_owned_process_group_on_timeout() {
-        let root = std::env::temp_dir();
-        let registry_dir = root.join(format!("apex-isolation-timeout-{}", std::process::id()));
+        // The registry refuses shared parents such as Linux's /tmp, so give it
+        // a private namespace like production's data folder.
+        let root = std::env::temp_dir().join(format!("apex-isolation-timeout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let registry_dir = root.join("registry");
         let registry = OwnedProcessRegistry::new(Some(registry_dir.clone()));
         let (_stop_tx, mut stop_rx) = watch::channel(false);
         let started = std::time::Instant::now();
@@ -665,10 +669,11 @@ mod tests {
             &registry,
         )
         .await;
-        assert!(result.unwrap_err().contains("exceeded"));
+        let error = result.unwrap_err();
+        assert!(error.contains("exceeded"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(3));
         assert_eq!(std::fs::read_dir(&registry_dir).unwrap().count(), 0);
-        let _ = std::fs::remove_dir_all(registry_dir);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
