@@ -1,0 +1,266 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ApexAgent · one assistant · v4</title>
+<!-- v4: one floating avatar, one ongoing conversation across every project. No docked sidebar, no tabs,
+     no task cards, no AI picker. Things that need you arrive as messages with at most two buttons. -->
+<style>
+:root{--bg:#090d12;--panel:#0e141b;--panel-2:#151e28;--line:#24303d;--text:#e4eaf0;--muted:#91a0af;
+--accent:#71e6b5;--accent-ink:#04211d;--amber:#fbbf24;--radius:14px;color-scheme:dark}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:#05080b;color:var(--text);font:13px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+
+/* ---- stand-in Deck window (the app itself, unchanged and full width) ---- */
+.dk-win{position:absolute;inset:0 0 46px 0;display:grid;grid-template-rows:42px 1fr;background:var(--bg)}
+.dk-top{display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel);font-weight:600}
+.dk-top span{color:var(--muted);font-weight:400}
+.dk-body{display:grid;grid-template-columns:220px 1fr;min-height:0}
+.dk-list{border-right:1px solid var(--line);background:var(--panel);padding:12px 8px}
+.dk-list h4{margin:6px 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.dk-proj{padding:6px 8px;border-radius:7px;color:#c9d3dc}.dk-proj.dk-on{background:var(--panel-2);color:var(--text)}
+.dk-main{padding:24px 34px;max-width:780px}
+.dk-msg{display:grid;grid-template-columns:28px 1fr;gap:10px;margin:0 0 18px}
+.dk-ava{width:28px;height:28px;border-radius:7px;background:var(--panel-2);border:1px solid var(--line)}
+.dk-msg b{display:block}.dk-msg p{margin:2px 0 0;color:#b8c3cd}
+
+/* ---- avatar ---- */
+#ag-avatar{position:fixed;width:52px;height:52px;border-radius:50%;border:0;padding:0;z-index:40;touch-action:none;
+  background:radial-gradient(circle at 35% 30%,#c9fbe6,#71e6b5 45%,#1d8f73 100%);box-shadow:0 6px 20px rgba(0,0,0,.45);
+  transition:left .22s ease,top .22s ease,filter .3s,opacity .3s}
+#ag-avatar.ag-dragging{transition:none;cursor:grabbing}
+#ag-avatar:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+#ag-avatar::before{content:"";position:absolute;inset:-14px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(closest-side,rgba(113,230,181,.38),rgba(113,230,181,.08) 65%,transparent);animation:ag-breathe 4s ease-in-out infinite}
+#ag-avatar::after{content:"";position:absolute;inset:-6px;border-radius:50%;pointer-events:none;display:none;
+  background:conic-gradient(from 0deg,transparent 0 150deg,var(--accent) 300deg,transparent 360deg);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px))}
+#ag-avatar.ag-checking::after{display:block;animation:ag-spin 1.1s linear infinite}
+#ag-avatar.ag-needs{background:radial-gradient(circle at 35% 30%,#fff3c4,#fbbf24 45%,#a8690a 100%)}
+#ag-avatar.ag-needs::before{background:radial-gradient(closest-side,rgba(251,191,36,.45),rgba(251,191,36,.1) 65%,transparent);animation-duration:1.6s}
+#ag-avatar.ag-paused{filter:grayscale(.85) brightness(.6)}#ag-avatar.ag-paused::before{display:none}
+#ag-avatar.ag-hidden{opacity:0;pointer-events:none}
+.ag-face{position:absolute;inset:0;display:grid;place-items:center;font:700 18px/1 -apple-system,system-ui;color:#063326}
+.ag-count{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:#1a1204;
+  border:2px solid var(--amber);color:var(--amber);font:700 11px/16px -apple-system,system-ui;display:none}
+.ag-needs .ag-count{display:block}
+@keyframes ag-breathe{50%{transform:scale(1.12);opacity:.7}}@keyframes ag-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){#ag-avatar::before,#ag-avatar::after{animation:none}}
+
+/* ---- speech bubble next to the closed avatar ---- */
+#ag-bubble{position:fixed;z-index:39;max-width:280px;padding:10px 12px;border-radius:12px;background:var(--panel-2);
+  border:1px solid color-mix(in srgb,var(--amber) 55%,var(--line));box-shadow:0 10px 30px rgba(0,0,0,.5);display:none}
+#ag-bubble.ag-show{display:block}
+#ag-bubble small{display:block;color:var(--muted);font-size:11px;margin-bottom:2px}
+#ag-bubble .ag-acts{margin-top:8px}
+
+/* ---- the one conversation (floats; never docks or pushes the app) ---- */
+#ag-chat{position:fixed;z-index:41;width:400px;height:580px;max-height:calc(100vh - 120px);display:none;flex-direction:column;
+  background:color-mix(in srgb,var(--panel) 94%,transparent);backdrop-filter:blur(18px);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:0 24px 60px rgba(0,0,0,.6)}
+#ag-chat.ag-open{display:flex}
+.ag-head{display:flex;align-items:center;gap:10px;padding:12px 12px 10px 14px;border-bottom:1px solid var(--line)}
+.ag-mini{width:24px;height:24px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#c9fbe6,#71e6b5 45%,#1d8f73)}
+.ag-head-text{flex:1;min-width:0}.ag-head-text b{display:block}
+.ag-head-text span{color:var(--muted);font-size:12px}
+.ag-icon{width:28px;height:28px;border-radius:7px;border:0;background:none;color:var(--muted);font-size:16px}
+.ag-icon:hover{background:var(--panel-2);color:var(--text)}
+#ag-menu{position:absolute;top:46px;right:44px;width:190px;padding:5px;border-radius:10px;background:var(--panel-2);border:1px solid var(--line);
+  box-shadow:0 12px 30px rgba(0,0,0,.5);display:none;z-index:2}
+#ag-menu.ag-show{display:block}
+#ag-menu button{display:block;width:100%;text-align:left;padding:7px 9px;border:0;border-radius:6px;background:none}
+#ag-menu button:hover{background:var(--panel)}
+#ag-menu hr{border:0;border-top:1px solid var(--line);margin:4px 2px}
+
+#ag-log{flex:1;overflow:auto;padding:14px 14px 6px}
+.ag-day{text-align:center;color:var(--muted);font-size:11px;margin:4px 0 12px}
+.ag-say{margin:0 0 14px;color:#d6dee6}
+.ag-say p{margin:0 0 6px}
+.ag-proj{display:inline-block;font-size:11px;color:var(--muted);margin-bottom:3px}
+.ag-proj::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-right:6px;vertical-align:1px}
+.ag-proj.ag-warm::before{background:var(--amber)}
+.ag-me{margin:0 0 14px auto;max-width:82%;width:fit-content;padding:8px 12px;border-radius:14px 14px 4px 14px;background:#1d2a37}
+.ag-lines{margin:4px 0 0;padding:0;list-style:none}
+.ag-lines li{padding:3px 0}
+.ag-lines a{color:var(--text);text-decoration:none;border-bottom:1px dotted #5a6b7c}
+.ag-lines span{color:var(--muted)}
+.ag-need{border-left:3px solid var(--amber);padding:2px 0 2px 11px}
+.ag-need.ag-done{border-left-color:var(--line)}
+.ag-evid{display:block;font-size:12px;color:var(--muted);margin-top:2px}
+.ag-evid a{color:var(--muted)}
+.ag-acts{display:flex;gap:6px;margin-top:8px}
+.ag-btn{height:28px;padding:0 11px;border-radius:8px;border:1px solid var(--line);background:var(--panel-2)}
+.ag-btn:hover{border-color:#3c4c5c}
+.ag-btn-go{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.ag-settled{font-size:12px;color:var(--muted);margin-top:6px}
+.ag-draft{margin-top:6px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);padding:10px 12px;font-size:12px;color:#c9d3dc}
+.ag-draft b{color:var(--text)}
+.ag-draft ol{margin:6px 0 0;padding-left:18px}
+.ag-typing{color:var(--muted);font-size:12px;margin:0 0 12px}
+
+.ag-suggest{display:flex;gap:6px;flex-wrap:wrap;padding:0 14px 8px}
+.ag-suggest button{height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--line);background:none;color:#c9d3dc;font-size:12px}
+.ag-suggest button:hover{border-color:#3c4c5c;color:var(--text)}
+.ag-compose{display:flex;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--line)}
+.ag-compose input{flex:1;height:36px;padding:0 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit;outline:none}
+.ag-compose input:focus{border-color:#3c5a50}
+.ag-send{width:36px;height:36px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-ink);font-weight:700}
+
+/* ---- story bar (mockup only, not part of the design) ---- */
+.st-bar{position:fixed;left:0;right:0;bottom:0;height:46px;z-index:90;display:flex;align-items:center;gap:10px;padding:0 14px;background:#03060a;border-top:1px solid var(--line);font-size:12px}
+.st-bar b{color:var(--accent);white-space:nowrap}.st-note{flex:1;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-bar button{height:28px;padding:0 10px;border-radius:7px;border:1px solid var(--line);background:var(--panel-2)}
+</style></head><body>
+
+<div class="dk-win" aria-hidden="true">
+  <div class="dk-top">Apex Deck <span>· Mobile launch › Release plan</span></div>
+  <div class="dk-body">
+    <div class="dk-list"><h4>Projects</h4>
+      <div class="dk-proj dk-on">Mobile launch</div><div class="dk-proj">Apex Deck</div><div class="dk-proj">Website redesign</div><div class="dk-proj">Hetzner server</div></div>
+    <div class="dk-main">
+      <div class="dk-msg"><div class="dk-ava"></div><div><b>Human</b><p>Let's get the November 1 build list locked this week.</p></div></div>
+      <div class="dk-msg"><div class="dk-ava"></div><div><b>Gronk</b><p>Push notifications and offline mode are done. SSO is still open; I'll pick it up after the test fixes.</p></div></div>
+      <div class="dk-msg"><div class="dk-ava"></div><div><b>Null</b><p>Login tests are red on the latest build. Details in test-report.md.</p></div></div>
+    </div>
+  </div>
+</div>
+
+<button id="ag-avatar" aria-label="ApexAgent. Press Enter to open, arrow keys to move." aria-haspopup="dialog">
+  <span class="ag-face">✦</span><span class="ag-count" id="ag-count">1</span></button>
+
+<div id="ag-bubble" role="status"></div>
+
+<section id="ag-chat" role="dialog" aria-label="ApexAgent conversation">
+  <div class="ag-head">
+    <div class="ag-mini"></div>
+    <div class="ag-head-text"><b>ApexAgent</b><span id="ag-status">Keeping up with 4 projects</span></div>
+    <button class="ag-icon" id="ag-more" aria-label="More" aria-haspopup="menu">⋯</button>
+    <button class="ag-icon" id="ag-close" aria-label="Close (Esc)">×</button>
+    <div id="ag-menu" role="menu">
+      <button role="menuitem" data-act="pause">Pause for 1 hour</button>
+      <button role="menuitem" data-act="quiet">Quiet hours…</button>
+      <hr><button role="menuitem" data-act="hide">Hide avatar</button>
+    </div>
+  </div>
+  <div id="ag-log" aria-live="polite"></div>
+  <div class="ag-suggest" id="ag-suggest">
+    <button>What changed today?</button><button>What's blocked?</button><button>Keep an eye on Billing API</button></div>
+  <form class="ag-compose" id="ag-form">
+    <input id="ag-input" placeholder="Ask about any project, or tell me what to watch" autocomplete="off">
+    <button class="ag-send" aria-label="Send">↑</button></form>
+</section>
+
+<div class="st-bar"><b id="st-num">1 / 9</b><span class="st-note" id="st-note"></span>
+  <button id="st-prev">‹ Back</button><button id="st-next">Next ›</button></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const av=$('#ag-avatar'),chat=$('#ag-chat'),log=$('#ag-log'),bubble=$('#ag-bubble'),menu=$('#ag-menu');
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ---------- conversation model ---------- */
+let msgs=[],status='quiet',needs=0,watched=4;
+const NEED={id:'sso',proj:'Mobile launch',text:'SSO isn\'t built yet and the login tests are failing. The plan still promises it for November 1. Do you want to keep SSO in this launch?',
+  evid:'test-report.md, line 14 · Gronk\'s message today 9:12',go:'Move SSO later',done:null};
+const DIGEST={k:'say',html:`<p>Morning. Here's where your projects stand:</p><ul class="ag-lines">
+ <li><a href="#">Mobile launch</a> <span>— 1 thing needs you</span></li>
+ <li><a href="#">Apex Deck</a> <span>— Null's 5 review fixes are in; nothing blocked</span></li>
+ <li><a href="#">Website redesign</a> <span>— quiet since Tuesday</span></li>
+ <li><a href="#">Hetzner server</a> <span>— healthy</span></li></ul>`};
+
+function render(){
+  log.innerHTML=msgs.map(m=>{
+    if(m.k==='day')return `<div class="ag-day">${m.t}</div>`;
+    if(m.k==='me')return `<div class="ag-me">${esc(m.t)}</div>`;
+    if(m.k==='typing')return `<div class="ag-typing">ApexAgent is looking through your threads…</div>`;
+    if(m.k==='need'){const n=m.n;return `<div class="ag-say ag-need${n.done?' ag-done':''}"><span class="ag-proj ${n.done?'':'ag-warm'}">${n.proj}</span>
+      <p>${n.text}</p><span class="ag-evid">Seen in <a href="#">${n.evid}</a></span>
+      ${n.done?`<div class="ag-settled">✓ ${n.done}</div>`:`<div class="ag-acts"><button class="ag-btn ag-btn-go" data-need="go">${n.go}</button><button class="ag-btn" data-need="snooze">Remind me tomorrow</button></div>`}</div>`}
+    return `<div class="ag-say">${m.proj?`<span class="ag-proj">${m.proj}</span>`:''}${m.html}</div>`;
+  }).join('');
+  log.scrollTop=log.scrollHeight;
+  needs=!msgs.some(m=>m.k==='need')||/^Snoozed/.test(NEED.done||'')?0:1;
+  av.classList.toggle('ag-needs',needs>0&&status!=='paused');
+  av.classList.toggle('ag-checking',status==='checking');
+  av.classList.toggle('ag-paused',status==='paused');
+  $('#ag-count').textContent=needs;
+  $('#ag-status').textContent=status==='paused'?'Paused until 3:40 PM':status==='checking'?'Checking your projects…':needs?`Keeping up with ${watched} projects · ${needs} needs you`:`Keeping up with ${watched} projects · all clear`;
+  $('#ag-suggest').style.display=msgs.some(m=>m.k==='me')?'none':'flex';
+}
+
+/* ---------- canned replies (mockup) ---------- */
+function reply(text){
+  const t=text.toLowerCase();
+  if(/\b(move|defer|push|drop)\b.*sso|sso.*\b(later|next release)\b/.test(t)&&!/\?\s*$/.test(t)&&!NEED.done){
+    NEED.done='You moved SSO to the next release · '+now();
+    return {proj:'Mobile launch',html:`<p>Done. SSO moves to the next release and November 1 stays. Here's a revised plan for you to look over. I haven't changed any files. The login tests are still failing, so I'm keeping that open until they pass.</p>
+      <div class="ag-draft"><b>Revised plan · Mobile launch</b><ol><li>Oct 14: fix the failing login tests (Null)</li><li>Oct 21: freeze features; SSO moves to the 1.1 release</li><li>Oct 28: TestFlight build to testers</li><li>Nov 1: launch</li></ol></div>
+      <div class="ag-acts"><button class="ag-btn">Copy</button><button class="ag-btn">Post in Mobile launch</button></div>`}}
+  if(/block|stuck|needs/.test(t))return {html:`<p>${NEED.done?'One thing, in Mobile launch: the login tests are still failing (SSO is moved to 1.1).':'One thing, in Mobile launch: SSO and the failing login tests (above).'} Website redesign has had no activity since Tuesday. That might be fine, and I can't tell from the threads alone.</p>`};
+  if(/changed|today|new/.test(t))return {html:`<ul class="ag-lines"><li><a href="#">Apex Deck</a> <span>— 3 commits, Null's review fixes merged</span></li><li><a href="#">Mobile launch</a> <span>— login tests went red at 9:04</span></li><li><a href="#">Hetzner server</a> <span>— no changes</span></li></ul>`};
+  if(/watch|keep an eye|follow/.test(t)){watched=5;return {proj:'Billing API',html:`<p>I'm watching Billing API now. I'll read its threads and its Git history, and I'll only speak up if something needs you.</p>`}}
+  if(/sso/.test(t))return {proj:'Mobile launch',html:`<p>No. SSO isn't built and the login tests are failing (test-report.md, line 14). Nothing has changed; say "move SSO later" if you want me to draft that plan.</p>`};
+  return {html:`<p>(Mockup) I'd answer this from your threads and files across all 4 projects.</p>`};
+}
+const now=()=>new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+function send(text){if(!text.trim())return;msgs.push({k:'me',t:text});msgs.push({k:'typing'});render();
+  setTimeout(()=>{msgs=msgs.filter(m=>m.k!=='typing');msgs.push(Object.assign({k:'say'},reply(text)));render()},650)}
+$('#ag-form').onsubmit=e=>{e.preventDefault();send($('#ag-input').value);$('#ag-input').value=''};
+$('#ag-suggest').onclick=e=>{if(e.target.tagName==='BUTTON')send(e.target.textContent)};
+log.onclick=e=>{const b=e.target.closest('[data-need]');if(!b)return;
+  if(b.dataset.need==='go'){send('Move SSO to the next release, keep November 1, and draft the revised plan.')}
+  else{NEED.done='Snoozed until tomorrow 9:00 AM';render()}};
+
+/* ---------- avatar: position, drag, edge snap, keyboard ---------- */
+let pos=JSON.parse(localStorage.getItem('ag4-pos')||'null')||{edge:'right',y:.78};
+function place(){const W=innerWidth,H=innerHeight-46,s=52,m=18;
+  const x=pos.edge==='left'?m:W-s-m,y=Math.min(Math.max(60,pos.y*H),H-s-m);
+  av.style.left=x+'px';av.style.top=y+'px';
+  const cw=400,ch=Math.min(580,innerHeight-120);
+  chat.style.left=(pos.edge==='left'?x:x+s-cw)+'px';chat.style.top=Math.min(Math.max(50,y-ch-14),H-ch-10)+'px';
+  bubble.style.top=(y+6)+'px';bubble.style[pos.edge==='left'?'left':'right']=(s+m+12)+'px';bubble.style[pos.edge==='left'?'right':'left']='auto';
+  localStorage.setItem('ag4-pos',JSON.stringify(pos))}
+let drag=null;
+av.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,moved:false};av.setPointerCapture(e.pointerId)});
+av.addEventListener('pointermove',e=>{if(!drag)return;if(Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>5)drag.moved=true;if(!drag.moved)return;
+  av.classList.add('ag-dragging');av.style.left=(e.clientX-26)+'px';av.style.top=(e.clientY-26)+'px'});
+av.addEventListener('pointerup',e=>{if(!drag)return;const moved=drag.moved;drag=null;av.classList.remove('ag-dragging');
+  if(moved){pos={edge:e.clientX<innerWidth/2?'left':'right',y:e.clientY/(innerHeight-46)};place()}else toggle()});
+av.addEventListener('keydown',e=>{
+  if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle()}
+  else if(e.key==='ArrowLeft'||e.key==='ArrowRight'){pos.edge=e.key==='ArrowLeft'?'left':'right';place()}
+  else if(e.key==='ArrowUp'||e.key==='ArrowDown'){pos.y=Math.min(.95,Math.max(.08,pos.y+(e.key==='ArrowUp'?-.06:.06)));place()}});
+
+/* ---------- open / close / menu ---------- */
+function toggle(force){const open=force??!chat.classList.contains('ag-open');chat.classList.toggle('ag-open',open);
+  bubble.classList.remove('ag-show');menu.classList.remove('ag-show');if(open)$('#ag-input').focus();else av.focus()}
+$('#ag-close').onclick=()=>toggle(false);
+$('#ag-more').onclick=()=>menu.classList.toggle('ag-show');
+menu.onclick=e=>{const a=e.target.dataset.act;if(!a)return;menu.classList.remove('ag-show');
+  if(a==='pause'){status=status==='paused'?'quiet':'paused';e.target.textContent=status==='paused'?'Resume now':'Pause for 1 hour';render()}
+  if(a==='hide'){toggle(false);av.classList.add('ag-hidden')}
+  if(a==='quiet'){msgs.push({k:'say',html:'<p>Quiet hours are 10 PM to 8 AM. I hold anything that comes up then and tell you in the morning. Want different times? Just say so, e.g. "quiet after 9".</p>'});render()}};
+document.addEventListener('keydown',e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();av.classList.remove('ag-hidden');toggle()}
+  else if(e.key==='Escape'&&chat.classList.contains('ag-open')){menu.classList.contains('ag-show')?menu.classList.remove('ag-show'):toggle(false)}});
+bubble.onclick=e=>{if(e.target.dataset.b==='open')toggle(true);if(e.target.dataset.b==='later')bubble.classList.remove('ag-show')};
+
+/* ---------- story ---------- */
+const STEPS=[
+ ['Quiet. One calm glowing avatar, floating over the app. Drag it to any edge; it remembers where you put it.',()=>{}],
+ ['Checking. The ring swirls while it reads your projects in the background. Nothing changed, so it says nothing.',()=>{status='checking'}],
+ ['Something needs you. The avatar turns amber with a count, and a one-line bubble says what and where.',()=>{msgs=[{k:'day',t:'Today'},DIGEST,{k:'need',n:NEED}];
+   bubble.innerHTML=`<small>Mobile launch</small>SSO isn't built and login tests are failing. November 1 is at risk.<div class="ag-acts"><button class="ag-btn ag-btn-go" data-b="open">Look</button><button class="ag-btn" data-b="later">Later</button></div>`;bubble.classList.add('ag-show')}],
+ ['Open it (click, Enter, or ⌘K). One conversation for every project: a morning summary, then the thing that needs you, with its evidence.',()=>{step(2);bubble.classList.remove('ag-show');chat.classList.add('ag-open')}],
+ ['Redirect in plain words. Same conversation, no new task. It drafts the plan and changes no files.',()=>{step(3);msgs.push({k:'me',t:'Move SSO to the next release, keep November 1, and draft the revised plan.'});msgs.push(Object.assign({k:'say'},reply('sso')))}],
+ ['Settled. The amber is gone and the message keeps a record of what you decided. Closing the chat would not have cleared it.',()=>{step(4);chat.classList.remove('ag-open')}],
+ ['Ask across everything. "What\'s blocked?" gets one answer covering all projects, and it says when it can\'t tell.',()=>{step(4);chat.classList.add('ag-open');msgs.push({k:'me',t:"What's blocked?"});msgs.push(Object.assign({k:'say'},reply('blocked')))}],
+ ['Add a project by asking. No setup screen: "Keep an eye on Billing API."',()=>{step(6);msgs.push({k:'me',t:'Keep an eye on Billing API'});msgs.push(Object.assign({k:'say'},reply('watch')))}],
+ ['Everything else lives under ⋯: Pause, Quiet hours, Hide. Those are the only settings.',()=>{step(7);menu.classList.add('ag-show')}]];
+let cur=0;
+function reset(){watched=4;msgs=[{k:'day',t:'Today'},DIGEST];status='quiet';NEED.done=null;chat.classList.remove('ag-open');bubble.classList.remove('ag-show');menu.classList.remove('ag-show');av.classList.remove('ag-hidden')}
+function step(i){if(i<0)return;STEPS[i][1]()}
+window.go=i=>{cur=Math.max(0,Math.min(STEPS.length-1,i));reset();step(cur);render();place();
+  $('#st-num').textContent=`${cur+1} / ${STEPS.length}`;$('#st-note').textContent=STEPS[cur][0]};
+// steps 3+ build on earlier ones; step() re-runs the chain without resetting
+$('#st-prev').onclick=()=>go(cur-1);$('#st-next').onclick=()=>go(cur+1);
+addEventListener('resize',place);
+go(0);
+</script></body></html>

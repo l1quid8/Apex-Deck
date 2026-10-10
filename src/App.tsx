@@ -20,8 +20,8 @@ import { startHub } from "./hub";
 import { SectionNavigation } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { ApexAgent } from "./ApexAgent";
+import { ApexAgentAll } from "./ApexAgentAll";
 import { ApexAgentWidget } from "./ApexAgentWidget";
-import { APEX_AGENT_DOCK_DEFAULT, APEX_AGENT_DOCK_FOCUSED, APEX_AGENT_DOCK_STORAGE_KEY, clampApexAgentDockWidth, shouldUseCompactApexAgentShell, storedApexAgentDockWidth } from "./apexAgentDockModel.ts";
 import "./apex-agent-dock.css";
 import type { AssistantSourceDrop } from "./apexAgentWidgetModel.ts";
 import { LibraryView } from "./LibraryView";
@@ -180,28 +180,35 @@ export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
   const [apexAgentWorkspace, setApexAgentWorkspace] = useState<string | null>(null);
   const [apexAgentDockFocused, setApexAgentDockFocused] = useState(false);
-  const [apexAgentDockWidth, setApexAgentDockWidth] = useState(() => storedApexAgentDockWidth(typeof localStorage === "undefined" ? undefined : localStorage));
-  const dockResize = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   const [apexAgentAppearanceRequest, setApexAgentAppearanceRequest] = useState(0);
   const [apexAgentHideRequest, setApexAgentHideRequest] = useState(0);
   const [apexAgentSelection, setApexAgentSelection] = useState<string | null>(() => {
     try { return localStorage.getItem("apex-agent-selected-project"); } catch { return null; }
   });
+  /** ApexAgent opens on one conversation across every project; a single project opens only for its setup and sources. */
+  const [apexAgentAllOpen, setApexAgentAllOpen] = useState(false);
+  const [apexAgentFull, setApexAgentFull] = useState(() => { try { return localStorage.getItem("apex-agent-full-screen") === "1"; } catch { return false; } });
+  const toggleApexAgentFull = () => setApexAgentFull((full) => { try { localStorage.setItem("apex-agent-full-screen", full ? "0" : "1"); } catch { /* Lasts for this window. */ } return !full; });
+  /** Clearing hides earlier messages on this Mac only; each project's assistant keeps its memory and open findings. */
+  const [apexAgentClearedAt, setApexAgentClearedAt] = useState(() => { try { return Number(localStorage.getItem("apex-agent-cleared-at")) || 0; } catch { return 0; } });
+  const clearApexAgentConversation = () => { const at = Date.now(); setApexAgentClearedAt(at); try { localStorage.setItem("apex-agent-cleared-at", String(at)); } catch { /* Lasts for this window. */ } };
   const openApexAgent = (workspaceId: string) => {
     if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
     setApexAgentSelection(workspaceId);
-    setApexAgentWorkspace(workspaceId);
+    setApexAgentWorkspace(null);
+    setApexAgentAllOpen(true);
     try { localStorage.setItem("apex-agent-selected-project", workspaceId); } catch { /* Selection still lasts for this window. */ }
   };
-  const closeApexAgent = () => { setApexAgentWorkspace(null); setApexAgentDockFocused(false); };
+  const openApexAgentProject = (workspaceId: string) => {
+    if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
+    setApexAgentSelection(workspaceId);
+    setApexAgentWorkspace(workspaceId);
+    setApexAgentAllOpen(true);
+  };
+  const closeApexAgent = () => { setApexAgentWorkspace(null); setApexAgentAllOpen(false); setApexAgentDockFocused(false); };
   const closeApexAgentAndReturnFocus = () => {
     closeApexAgent();
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".apex-widget-hit")?.focus());
-  };
-  const saveApexAgentDockWidth = (width: number) => {
-    const next = clampApexAgentDockWidth(width, dockAvailableWidth, apexAgentDockFocused);
-    setApexAgentDockWidth(next);
-    try { localStorage.setItem(APEX_AGENT_DOCK_STORAGE_KEY, String(next)); } catch { /* Width still lasts for this window. */ }
   };
 
   /** Where you stopped reading each thread, saved with it for "New since you looked". */
@@ -267,14 +274,9 @@ export function App() {
   const bodyRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLElement>(null);
   const [availableWidth, setAvailableWidth] = useState(0);
-  const [bodyWidth, setBodyWidth] = useState(0);
-  const apexAgentDockHasWorkspace = !!apexAgentWorkspace && workspaces.some((workspace) => workspace.id === apexAgentWorkspace && !workspace.hidden);
-  const compactApexAgentDock = shouldUseCompactApexAgentShell(apexAgentDockHasWorkspace, bodyWidth);
+  const [, setBodyWidth] = useState(0);
+  const compactApexAgentDock = false; // The v4 pop-up floats over the app, so the sidebar never has to give way.
   const railVisible = railOpen && !compactApexAgentDock;
-  const dockAvailableWidth = bodyRef.current && canvasRef.current
-    ? Math.max(0, bodyRef.current.getBoundingClientRect().right - canvasRef.current.getBoundingClientRect().left)
-    : availableWidth;
-  const renderedApexAgentDockWidth = clampApexAgentDockWidth(apexAgentDockFocused ? Math.max(apexAgentDockWidth, APEX_AGENT_DOCK_FOCUSED) : apexAgentDockWidth, dockAvailableWidth, apexAgentDockFocused);
   /** Sidebar widths the user dragged to; null keeps the default. */
   const [sidebarWidths, setSidebarWidths] = useState<SidebarWidths>(loadWidths);
   const setSidebarWidth = (which: Sidebar) => (width: number | null) => setSidebarWidths((old) => ({ ...old, [which]: width }));
@@ -1187,7 +1189,7 @@ export function App() {
     const route = hostBackend(hostId);
     const version = monitorOwnerVersion(workspaceId);
     const saved = Object.values(monitorAttention).find((entry) => entry.workspaceId === workspaceId && entry.hostId === hostId && entry.monitor.cwd === workspace.path)?.monitor;
-    if (!saved) { openApexAgent(workspaceId); throw new Error("Give ApexAgent a responsibility before adding sources or replying."); }
+    if (!saved) { openApexAgentProject(workspaceId); throw new Error("Give ApexAgent a responsibility before adding sources or replying."); }
     const result = await route.call<ProjectMonitor>(command, {
       workspaceId, cwd: workspace.path, hostId, conversationId: saved.conversationId, ...args,
     });
@@ -1630,7 +1632,6 @@ export function App() {
             </button>
           </div>
         )}
-        {current && <button className="apex-agent-entry" onClick={() => openApexAgent(current.id)} title={`Open ApexAgent for ${current.name}`}>ApexAgent</button>}
         {section === "agents" && <button className="primary" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
         {section !== "agents" && creationBackend && <HostAgents backend={creationBackend} agents={agents}>{hostAgents => <NewMenu
           section={section}
@@ -1650,7 +1651,7 @@ export function App() {
         </div>
       </header>
 
-      <ApexAgentWidget workspaces={workspaces.filter((workspace) => !workspace.hidden)} workspaceId={selectedApexWorkspace?.id ?? null} open={!!apexWorkspace} monitors={assistantMonitors}
+      <ApexAgentWidget workspaces={workspaces.filter((workspace) => !workspace.hidden)} workspaceId={selectedApexWorkspace?.id ?? null} open={!!apexWorkspace || apexAgentAllOpen} monitors={assistantMonitors}
         panelMode="dock"
         taskCounts={Object.fromEntries(Object.entries(assistantTaskCounts).filter(([id]) => { const owner = assistantOwners[id]; return !!owner && workspaces.some((workspace) => workspace.id === id && !workspace.hidden && workspace.path === owner.cwd && workspaceHost(workspace) === owner.hostId); }))}
         appearanceRequest={apexAgentAppearanceRequest} hideRequest={apexAgentHideRequest}
@@ -1815,28 +1816,13 @@ export function App() {
             {paneDrag.preview && <div className="drop-preview" style={paneStyle(paneDrag.preview)} />}
           </div>
         </main>
-        {apexWorkspace && <aside className="apex-agent-dock" style={{ width: renderedApexAgentDockWidth }} aria-label={`ApexAgent dock for ${apexWorkspace.name}`}>
-          <div
-            className="apex-agent-dock-resizer"
-            role="separator"
-            aria-label="Resize ApexAgent dock"
-            aria-orientation="vertical"
-            aria-valuemin={clampApexAgentDockWidth(320, dockAvailableWidth, apexAgentDockFocused)}
-            aria-valuemax={clampApexAgentDockWidth(820, dockAvailableWidth, apexAgentDockFocused)}
-            aria-valuenow={renderedApexAgentDockWidth}
-            tabIndex={0}
-            onPointerDown={(event) => { if (event.button !== 0) return; dockResize.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: renderedApexAgentDockWidth }; event.currentTarget.setPointerCapture(event.pointerId); }}
-            onPointerMove={(event) => { const drag = dockResize.current; if (drag?.pointerId === event.pointerId) saveApexAgentDockWidth(drag.startWidth + drag.startX - event.clientX); }}
-            onPointerUp={(event) => { if (dockResize.current?.pointerId === event.pointerId) dockResize.current = null; }}
-            onPointerCancel={() => { dockResize.current = null; }}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); saveApexAgentDockWidth(renderedApexAgentDockWidth + (event.key === "ArrowLeft" ? 1 : -1) * (event.shiftKey ? 40 : 16)); }
-              else if (event.key === "Home") { event.preventDefault(); saveApexAgentDockWidth(APEX_AGENT_DOCK_DEFAULT); }
-              else if (event.key === "End") { event.preventDefault(); saveApexAgentDockWidth(820); }
-            }}
-          />
+        {!apexWorkspace && apexAgentAllOpen && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} data-apex-agent-overlay aria-label="ApexAgent">
+          <ApexAgentAll workspaces={workspaces.filter((workspace) => !workspace.hidden)} monitors={assistantMonitors} onReply={replyToAssistant} onMutate={mutateAssistant} onSetUp={openApexAgentProject} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)}
+            clearedAt={apexAgentClearedAt} onClear={clearApexAgentConversation} fullScreen={apexAgentFull} onFullScreen={toggleApexAgentFull} />
+        </aside>}
+        {apexWorkspace && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} data-apex-agent-overlay aria-label={`ApexAgent for ${apexWorkspace.name}`}>
           {apexAgentBackend
-            ? <ApexAgent key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} widgetMode workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={viewPanes} onMonitorChange={apexMonitorChange} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)} focused={apexAgentDockFocused} onToggleFocus={() => setApexAgentDockFocused((value) => !value)} projectSelector={<select aria-label="ApexAgent project" value={apexWorkspace.id} onChange={(event) => openApexAgent(event.target.value)}>{workspaces.filter((workspace) => !workspace.hidden).map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select>} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id); if (pane) focusPane(pane); setApexAgentDockFocused(false); if (compactApexAgentDock) closeApexAgent(); }} />
+            ? <ApexAgent key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} widgetMode workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={viewPanes} onMonitorChange={apexMonitorChange} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)} projectSelector={<button type="button" className="apex-agent-back" onClick={() => setApexAgentWorkspace(null)}>‹ All projects</button>} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id); if (pane) focusPane(pane); setApexAgentDockFocused(false); if (compactApexAgentDock) closeApexAgent(); }} />
             : <div className="apex-agent-dock-unavailable"><header><strong>ApexAgent</strong><button className="icon" onClick={closeApexAgentAndReturnFocus} aria-label="Close ApexAgent">×</button></header><p role="alert">The project machine is unavailable.</p><p>Reconnect the machine to use ApexAgent for {apexWorkspace.name}.</p></div>}
         </aside>}
         {section === "threads" && detailsOpen && detailsTarget && <>

@@ -216,7 +216,6 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     return <fieldset className="assistant-task-checks"><legend>Human review criteria</legend>{criteria.map((criterion) => <label key={criterion}><input type="checkbox" checked={selected.includes(criterion)} onChange={(event) => setChecks((current) => ({ ...current, [key]: event.target.checked ? [...selected, criterion] : selected.filter((item) => item !== criterion) }))} />I reviewed: {criterion}</label>)}</fieldset>;
   };
 
-  const needsYou = tasks.filter((task) => ['needs_you', 'needs_clarification', 'proposed', 'ready_for_review', 'failed', 'interrupted'].includes(task.status));
   const destinationTitle = (task: AssistantTask) => task.destination?.newThread ? 'New thread' : task.destination?.threadId ? chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId : 'Not assigned';
   const workerNames = (task: AssistantTask) => (task.workers ?? []).map((id) => workerProfiles.find((profile) => profile.id === id)?.display_name ?? id).join(', ') || 'Unassigned';
   const budgetValue = (task: AssistantTask) => {
@@ -340,7 +339,6 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
 
   return <section className="assistant-tasks" aria-label="Assistant workspace" data-focused={focused ? 'true' : 'false'}>
-    {view === 'chat' && <section className="assistant-needs-you" aria-label="Needs you"><header><strong>Needs you</strong><button type="button" onClick={() => onViewChange?.('tasks')}>View all ({needsYou.length})</button></header>{needsYou.slice(0, 3).map((task) => <button type="button" className="assistant-queue-row" key={task.id} onClick={() => { openTaskDetail(task); onViewChange?.('tasks'); }}>{taskStatusLabel(task.status)} · {task.originalRequest}</button>)}{needsYou.length === 0 && <p className="assistant-task-muted">No decisions are waiting.</p>}</section>}
     {view === 'chat' && <div className="assistant-chat-transcript" aria-live="polite">{messages.map((message) => <article className={`assistant-chat-message ${message.role}`} key={message.id}><small>{message.role === 'human' ? 'You' : 'ApexAgent'}</small><p>{message.text}</p>{message.evidence?.length ? <div className="assistant-chat-evidence">{message.evidence.map((item, index) => <button type="button" key={`${item.sourceId}:${index}`} title={item.excerpt} onClick={() => onOpenEvidence?.(item)}>{item.label}<small>{item.excerpt}</small></button>)}</div> : null}</article>)}{messages.length === 0 && <p className="assistant-task-muted">ApexAgent is ready to talk about this project.</p>}{children}{assistantReply && !messages.some((message) => message.text === assistantReply) && <article className="assistant-chat-message assistant"><small>ApexAgent</small><p>{assistantReply}</p></article>}</div>}
 
 

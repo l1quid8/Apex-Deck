@@ -42,3 +42,33 @@
 @media (max-width: 720px) {
   .apex-agent-dock-resizer { width: 14px; left: -7px; }
 }
+
+/* v4: one floating conversation over the app. Nothing underneath moves or resizes. */
+.apex-agent-dock.apex-agent-float {
+  position: fixed; z-index: 60; right: 112px; bottom: 96px;
+  width: min(400px, calc(100vw - 48px)); height: min(600px, calc(100vh - 140px));
+  border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .35);
+}
+.apex-agent-float .apex-agent-more { position: relative; }
+.apex-agent-float .apex-agent-more > summary { list-style: none; cursor: pointer; padding: 2px 8px; border-radius: 6px; }
+.apex-agent-float .apex-agent-more > summary::-webkit-details-marker { display: none; }
+.apex-agent-float .apex-agent-more > div { position: absolute; right: 0; top: 28px; z-index: 2; display: flex; flex-direction: column; min-width: 180px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel, var(--bg)); box-shadow: 0 8px 24px rgba(0, 0, 0, .3); }
+.apex-agent-float .apex-agent-more > div button { text-align: left; border: 0; background: none; padding: 6px 10px; }
+.apex-agent-float .apex-agent-brand .eyebrow { display: none; }
+@media (max-width: 600px) {
+  .apex-agent-dock.apex-agent-float { right: 12px; width: calc(100vw - 24px); }
+}
+.apex-agent-all { display: flex; flex-direction: column; height: 100%; }
+.apex-agent-all .apex-agent-tabpanel { flex: 1; overflow: auto; }
+.apex-agent-project-tag { border: 0; background: none; padding: 0; color: var(--accent, #7cc4ff); font: inherit; cursor: pointer; }
+.apex-agent-needs-you { border-left: 2px solid #f0b44c; }
+.apex-agent-all-composer { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.apex-agent-all-composer textarea { resize: none; width: 100%; box-sizing: border-box; }
+.apex-agent-all-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.apex-agent-back { border: 0; background: none; color: var(--accent, #7cc4ff); cursor: pointer; padding: 2px 6px; }
+.apex-agent-all-evidence { margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--muted, inherit); }
+.apex-agent-all-evidence li { margin: 2px 0; overflow-wrap: anywhere; }
+.apex-agent-check-failed { border-left: 2px solid #e06c6c; }
+/* Optional full screen: the conversation covers the window below the title bar, still above everything. */
+.apex-agent-dock.apex-agent-float.apex-agent-full { top: 48px; right: 16px; bottom: 16px; left: 16px; width: auto; height: auto; }

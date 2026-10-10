@@ -57,16 +57,13 @@ test('overview opens a detail with source request, brief, revision, unknown usag
   h.unmount();
 });
 
-test('Needs you sits above the transcript, counts review-ready work, and shows at most three rows', async () => {
-  const tasks = [task({ status: 'ready_for_review' }), ...['needs_you', 'proposed', 'needs_clarification', 'failed', 'interrupted'].map((status, index) => task({ id: `task-${index + 2}`, status }))];
+test('v4 chat is one transcript with the composer last and no separate Needs you panel', async () => {
+  const tasks = [task({ status: 'ready_for_review' }), task({ id: 'task-2', status: 'needs_you' })];
   const h = harness({ demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot(tasks) : null }, { view: 'chat' });
   let tree = h.render(); await tick(); tree = h.render();
-  const needs = find(tree, node => node.props.className === 'assistant-needs-you');
-  const transcript = find(tree, node => node.props.className === 'assistant-chat-transcript');
+  assert.ok(!find(tree, node => node.props.className === 'assistant-needs-you'));
+  assert.ok(find(tree, node => node.props.className === 'assistant-chat-transcript'));
   const composer = find(tree, node => node.type === 'form' && node.props.className === 'assistant-request');
-  assert.ok(tree.children.indexOf(needs) < tree.children.indexOf(transcript));
-  assert.ok(find(needs, node => node.type === 'button' && /View all.*6/.test(textOf(node))));
-  assert.equal(findAll(needs, node => node.props.className === 'assistant-queue-row').length, 3);
   assert.equal(findAll(tree, node => node.type === 'form' && node.props.className === 'assistant-request').at(-1), composer);
   h.unmount();
 });

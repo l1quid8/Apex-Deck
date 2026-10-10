@@ -60,8 +60,6 @@ test('accepted monitor load and mutation replies call back with owner host and s
   await tick();
   assert.deepEqual(changes, [['project', 'host-a', monitor('loaded')]]);
   tree = h.render(base(backend, (...args) => changes.push(args)));
-  find(tree, n => n.type === 'button' && n.children?.[0] === 'Activity')?.props.onClick();
-  tree = h.render(base(backend, (...args) => changes.push(args)));
   find(tree, n => n.type === 'button' && n.children?.[0] === 'Check now')?.props.onClick();
   await tick();
   assert.ok(calls.some(([command]) => command === 'monitor_check_now'));
@@ -115,7 +113,7 @@ test('an older poll cannot replace or callback over a newer mutation reply', asy
   let tree = h.render(base(backend, (...args) => changes.push(args))); await tick();
   const pollFn = [...h.intervals][0]; pollFn();
   tree = h.render(base(backend, (...args) => changes.push(args)));
-  find(tree, n => n.type === 'button' && n.children?.[0] === 'Settings')?.props.onClick();
+  find(tree, n => n.type === 'button' && n.children?.[0] === 'Sources and AI')?.props.onClick();
   tree = h.render(base(backend, (...args) => changes.push(args)));
   find(tree, n => n.type === 'button' && n.children?.[0] === 'Save sources')?.props.onClick();
   mutation.resolve(monitor('new mutation')); await tick();
@@ -287,7 +285,7 @@ test('unsaved source edits survive stale monitor polls and save the edited selec
   const backend = { host: { id: 'host-a' }, call: async (command, args) => { calls.push([command, args]); return loaded; } };
   const h = componentHarness(); const props = { ...base(backend, (...args) => changes.push(args)), profiles: [profile], panes: [pane('chat-1'), pane('chat-2')] };
   let tree = h.render(props); await tick(); tree = h.render(props);
-  find(tree, node => node.type === 'button' && node.children?.[0] === 'Settings')?.props.onClick();
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Sources and AI')?.props.onClick();
   tree = h.render(props);
   find(tree, node => node.type === 'button' && node.children?.[0] === 'README.md')?.props.onClick();
   tree = h.render(props);
@@ -330,7 +328,7 @@ test('settings source edits preserve the current conversation owner', async () =
   const h = componentHarness(); const props = { ...base(backend, (...args) => changes.push(args)), profiles: [profile], panes: [pane('chat-1'), pane('chat-2')], widgetMode: true, focused: false, onToggleFocus() {}, projectSelector: { type: 'select', props: { 'aria-label': 'ApexAgent project' }, children: [] }, onCustomize: () => { customized++; }, onHide: () => { hidden++; } };
   let tree = h.render(props); await tick(); tree = h.render(props);
   assert.ok(find(tree, node => node.props.className === 'apex-agent-head'), 'dock mode provides the interior header with Settings');
-  find(tree, n => n.type === 'button' && n.children?.[0] === 'Settings')?.props.onClick();
+  find(tree, n => n.type === 'button' && n.children?.[0] === 'Sources and AI')?.props.onClick();
   tree = h.render(props);
   find(tree, n => n.type === 'button' && n.children?.[0] === 'old.md')?.props.onClick();
   tree = h.render(props);
@@ -366,12 +364,7 @@ test('paused and resolved viewing does not mutate findings, and future snoozes s
   assert.match(visibleText(cards[0]), /Active work/);
   assert.doesNotMatch(visibleText(cards[0]), /Snoozed work|Resolved work/);
   assert.deepEqual(calls.map(([command]) => command), ['monitor_get']);
-  find(tree, node => node.type === 'button' && node.children?.[0] === 'Activity')?.props.onClick();
-  tree = h.render(props);
-  const lifecycle = findAll(tree, node => node.type === 'div' && node.props.className === 'apex-agent-activity-row').map(visibleText).join(' ');
-  assert.match(lifecycle, /Resolved work/);
-  assert.match(lifecycle, /Snoozed work/);
-  assert.match(lifecycle, /Active work/);
+  assert.ok(!find(tree, node => node.type === 'button' && node.children?.[0] === 'Activity'), 'v4 has no Activity tab');
   assert.deepEqual(calls.map(([command]) => command), ['monitor_get']);
   h.unmount();
 });
@@ -387,7 +380,7 @@ test('edits made while Save sources is pending stay dirty and are not overwritte
   } };
   const h = componentHarness(); const props = { ...base(backend), profiles: [profile], panes: [pane('chat-1'), pane('chat-2')] };
   let tree = h.render(props); await tick(); tree = h.render(props);
-  find(tree, node => node.type === 'button' && node.children?.[0] === 'Settings')?.props.onClick(); tree = h.render(props);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Sources and AI')?.props.onClick(); tree = h.render(props);
   find(tree, node => node.type === 'button' && node.children?.[0] === 'README.md')?.props.onClick(); tree = h.render(props);
   find(tree, node => node.type === 'button' && node.children?.[0] === 'Save sources')?.props.onClick();
   await tick(); tree = h.render(props);
@@ -407,7 +400,7 @@ test('an assigned profile can be updated with its current assignment revision', 
   const backend = { host: { id: 'host-a' }, call: async (command, args) => { calls.push([command, args]); return command === 'monitor_get' ? loaded : { ...loaded, profileId: 'claude', revision: 8 }; } };
   const h = componentHarness(); const props = { ...base(backend), profiles: [profile, claude] };
   let tree = h.render(props); await tick(); tree = h.render(props);
-  find(tree, node => node.type === 'button' && node.children?.[0] === 'Settings')?.props.onClick(); tree = h.render(props);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Sources and AI')?.props.onClick(); tree = h.render(props);
   const select = find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Saved profile');
   assert.ok(select, 'the saved profile remains editable');
   select.props.onChange({ target: { value: 'claude' } }); await tick();
@@ -423,7 +416,7 @@ test('a deleted assigned profile is identified rather than shown as an empty sav
   const backend = { host: { id: 'host-a' }, call: async () => loaded };
   const h = componentHarness(); const props = { ...base(backend), profiles: [profile] };
   let tree = h.render(props); await tick(); tree = h.render(props);
-  find(tree, node => node.type === 'button' && node.children?.[0] === 'Settings')?.props.onClick(); tree = h.render(props);
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Sources and AI')?.props.onClick(); tree = h.render(props);
   assert.ok(find(tree, node => node.type === 'option' && String(node.children?.[0]).includes('no longer in Agents')));
   h.unmount();
 });
@@ -435,7 +428,9 @@ test('compact header retains responsibility context and a missing saved profile 
   let tree = h.render(props); await tick(); tree = h.render(props);
   assert.equal(find(tree, node => node.type === 'h1')?.children?.[0], 'ApexAgent');
   assert.ok(find(tree, node => node.type === 'p' && node.props.title === 'Audit the api'));
-  const select = find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Thinking with profile');
-  assert.match(visibleText(select), /Missing profile\s+·\s+deleted-profile/);
+  assert.ok(!find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Thinking with profile'), 'v4 header has no AI picker');
+  find(tree, node => node.type === 'button' && node.children?.[0] === 'Sources and AI')?.props.onClick(); tree = h.render(props);
+  const select = find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Saved profile');
+  assert.match(visibleText(select), /no longer in Agents/);
   h.unmount();
 });
