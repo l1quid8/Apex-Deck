@@ -47,7 +47,7 @@ function importedNames() {
 
 function appHarness() {
   const states = [], refs = [], effects = [];
-  const stored = new Map();
+  const stored = new Map(); let requestSequence = 0;
   let cursor = 0, alive = true, props;
   const listeners = new Map();
   let sessionChanged;
@@ -135,7 +135,7 @@ function appHarness() {
   const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgent','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','AttentionMenu','ConfirmDialog','PathPrompt','SidebarHandle']);
   const globalValues = {
     localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
-    crypto: { randomUUID: () => `request-${stored.size + 1}` },
+    crypto: { randomUUID: () => `request-${++requestSequence}` },
     window: { addEventListener(name, fn) { listeners.set(name, fn); }, removeEventListener(name) { listeners.delete(name); }, setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {} },
     document: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, hasFocus: () => false, activeElement: null, body: {}, querySelector: () => null },
     navigator: { platform: 'Linux', userAgent: 'node' },
@@ -771,4 +771,48 @@ test('cross-project plans prepare on each owning backend and retry only the unce
   assert.deepEqual(preparations.filter(c => c.hostId === other.hostId).map(c => c.args), [firstPayload, firstPayload]);
   assert.deepEqual(JSON.parse(h.stored.get('apex-agent-handoff-batches'))[0].children.map(c => c.status), ['proposed', 'proposed']);
   assert.equal(receipts.size, 2); h.unmount();
+});
+
+
+test('failed project request recovers inline and explicit discard allows a new message', async () => {
+  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
+  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  let fail = true; const calls = [];
+  h.backend.call = async (command, args) => {
+    if (command === 'monitor_get') return blocker;
+    if (command === 'assistant_message') { calls.push(args); if (fail) throw new Error('temporary provider error'); return { monitor: blocker }; }
+    return { workspaceId: project.id, revision: 0, tasks: [], executions: [] };
+  };
+  await assert.rejects(child(tree, 'ApexAgentAll').props.onReply(project.id, 'Check parser'), /temporary provider/);
+  tree = h.render();
+  child(tree, 'HostMonitors').props.onMonitors(project.hostId, [blocker]); tree = h.render();
+  const recovery = () => child(tree, 'ApexAgentAll').props.tasks.find(node => (node?.type?.displayName ?? node?.type?.name) === 'ApexAgentTasks').props.requestRecovery;
+  assert.equal(recovery().pending.text, 'Check parser');
+  await assert.rejects(recovery().retry(), /temporary provider/); tree = h.render();
+  assert.deepEqual(calls[0], calls[1], 'retry keeps the original request identity and payload');
+  await assert.rejects(child(tree, 'ApexAgentAll').props.onReply(project.id, 'Another question'), /previous request/);
+  recovery().discard(); tree = h.render(); fail = false;
+  await child(tree, 'ApexAgentAll').props.onReply(project.id, 'Another question'); tree = h.render();
+  assert.notEqual(calls[2].requestId, calls[0].requestId);
+  assert.equal(recovery().pending, null); h.unmount();
+});
+
+
+test('saved retry refuses a reassigned conversation and leaves its original request intact', async () => {
+  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
+  child(tree, 'HostMonitors').props.onMonitors(project.hostId, [blocker]); tree = h.render();
+  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  let current = blocker; let sends = 0;
+  h.backend.call = async (command) => {
+    if (command === 'monitor_get') return current;
+    if (command === 'assistant_message') { sends++; throw new Error('lost response'); }
+    return { workspaceId: project.id, revision: 0, tasks: [], executions: [] };
+  };
+  await assert.rejects(child(tree, 'ApexAgentAll').props.onReply(project.id, 'Original request'), /lost response/); tree = h.render();
+  const recovery = child(tree, 'ApexAgentAll').props.tasks.find(node => node?.type?.displayName === 'ApexAgentTasks').props.requestRecovery;
+  current = { ...blocker, conversationId: 'replacement' };
+  await assert.rejects(recovery.retry(), /assignment changed/);
+  assert.equal(sends, 1);
+  assert.equal(JSON.parse(h.stored.get(assistantTaskModel.pendingRequestStorageKey(recovery.pending.owner))).requestId, recovery.pending.requestId);
+  h.unmount();
 });

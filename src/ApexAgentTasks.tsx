@@ -10,6 +10,7 @@ type Action = 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 
 type Props = {
   onSelectTask?: (task: AssistantTask, send: (text: string) => Promise<void>) => void;
   projectName?: string;
+  requestRecovery?: { pending: PendingAssistantRequest | null; retry: () => Promise<void>; discard: () => void };
   clearedAt?: number;
   backend: Backend;
   owner: AssistantTaskOwner;
@@ -37,7 +38,7 @@ const assistantMessageText = (message: unknown): string => {
   return message == null ? '' : objectText(message);
 };
 
-export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, view = 'tasks', messages = [], focused, onViewChange, children, onOpenEvidence, projectName, clearedAt = 0, onSelectTask }: Props) {
+export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, view = 'tasks', messages = [], focused, onViewChange, children, onOpenEvidence, projectName, clearedAt = 0, onSelectTask, requestRecovery }: Props) {
   const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
   const [routingThreads, setRoutingThreads] = useState<{ id: string; workers: ParticipantConfig[] }[] | undefined>(undefined);
@@ -176,6 +177,17 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     } finally {
       if (currentOwner(captured, version)) setBusy(false);
     }
+  };
+
+  const recoveryRequest = requestRecovery ? requestRecovery.pending : pendingRequest;
+  const retryRecovery = async () => {
+    if (busy) return;
+    if (!requestRecovery) { await sendRequest({ preventDefault() {} } as React.FormEvent); return; }
+    const captured = owner, version = generation.current;
+    setBusy(true); setError('');
+    try { await requestRecovery.retry(); }
+    catch (cause) { if (currentOwner(captured, version)) setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { if (currentOwner(captured, version)) setBusy(false); }
   };
 
   const discardPending = () => {
@@ -367,6 +379,13 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     {view === 'chat' && <div className="assistant-chat-transcript" aria-live="polite">{messages.map((message) => <article className={`assistant-chat-message ${message.role}`} key={message.id}><small>{message.role === 'human' ? 'You' : 'ApexAgent'}</small><p>{message.text}</p>{message.evidence?.length ? <div className="assistant-chat-evidence">{message.evidence.map((item, index) => <button type="button" key={`${item.sourceId}:${index}`} title={item.excerpt} onClick={() => onOpenEvidence?.(item)}>{item.label}<small>{item.excerpt}</small></button>)}</div> : null}</article>)}{messages.length === 0 && <p className="assistant-task-muted">ApexAgent is ready to talk about this project.</p>}{children}{assistantReply && !messages.some((message) => message.text === assistantReply) && <article className="assistant-chat-message assistant"><small>ApexAgent</small><p>{assistantReply}</p></article>}</div>}
 
 
+    {view === 'conversation' && recoveryRequest && <article className="assistant-chat-message assistant" role="status">
+      <small>Unconfirmed message{projectName ? ` · ${projectName}` : ''}</small><p>{recoveryRequest.text}</p>
+      <p>The last response was uncertain. Retry uses the saved request ID and original payload. Discard removes the local retry; it does not cancel work already received.</p>
+      {error && <p className="assistant-task-warning">{error}</p>}
+      <button type="button" disabled={busy} onClick={retryRecovery}>{busy ? 'Retrying…' : 'Retry request'}</button>
+      <button type="button" disabled={busy} onClick={() => requestRecovery ? requestRecovery.discard() : discardPending()}>Discard saved request and start over</button>
+    </article>}
     {view === 'conversation' && tasks.filter((task) => !taskFinal(task.status) || task.updatedAtMs > clearedAt).map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
       <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}</small><p>{task.originalRequest}</p><p className="assistant-task-muted">Scope: {task.brief}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
       <button type="button" onClick={() => openTaskDetail(task)}>{task.status === 'ready_for_review' ? 'Review result' : 'Open task'} · {task.originalRequest}</button>

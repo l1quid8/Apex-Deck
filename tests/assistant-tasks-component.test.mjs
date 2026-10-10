@@ -541,3 +541,44 @@ test('saved destination approval sends no local same-id worker configuration', a
   assert.deepEqual(actions[0].newWorkerProfiles, []);
   h.unmount();
 });
+
+
+test('restored failed project request exposes Retry and Discard in the single conversation', async () => {
+  const pending = { requestId: 'lost', owner, text: 'Check parser', destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [], threadLabels: [{ id: 'thread-a', label: 'Original title' }] };
+  const saved = new Map([[model.pendingRequestStorageKey(owner), JSON.stringify(pending)]]);
+  const calls = [];
+  const h = harness({ demo: false, call: async (command, args) => {
+    if (command === 'assistant_message') { calls.push(args); throw new Error('still offline'); }
+    return snapshot();
+  } }, { view: 'conversation', projectName: 'Parser project', clearedAt: Date.now() }, saved);
+  let tree = h.render(); await tick(); tree = h.render();
+  assert.match(textOf(tree), /Parser project/); assert.match(textOf(tree), /Check parser/);
+  const retry = () => find(tree, node => node.type === 'button' && textOf(node) === 'Retry request');
+  assert.ok(retry());
+  await retry().props.onClick(); tree = h.render();
+  await retry().props.onClick(); tree = h.render();
+  assert.equal(calls.length, 2); assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].requestId, 'lost'); assert.equal(calls[0].text, 'Check parser');
+  assert.deepEqual(calls[0].threadLabels, pending.threadLabels);
+  find(tree, node => node.type === 'button' && /Discard saved/.test(textOf(node))).props.onClick();
+  tree = h.render(); assert.equal(saved.has(model.pendingRequestStorageKey(owner)), false);
+  assert.equal(retry(), null); h.unmount();
+});
+
+
+test('single-conversation recovery survives reopen and successful retry removes the saved request', async () => {
+  const pending = { requestId: 'restart-request', owner, text: 'Keep this original message', destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [] };
+  const saved = new Map([[model.pendingRequestStorageKey(owner), JSON.stringify(pending)]]);
+  const calls = [];
+  const backend = { demo: false, call: async (command, args) => {
+    if (command === 'assistant_message') { calls.push(args); return { message: 'Confirmed', monitor: owner }; }
+    return snapshot();
+  } };
+  const first = harness(backend, { view: 'conversation' }, saved); first.render(); await tick(); first.unmount();
+  const reopened = harness(backend, { view: 'conversation' }, saved);
+  let tree = reopened.render(); await tick(); tree = reopened.render();
+  await find(tree, node => node.type === 'button' && textOf(node) === 'Retry request').props.onClick(); tree = reopened.render();
+  assert.equal(calls[0].requestId, 'restart-request'); assert.equal(calls[0].text, pending.text);
+  assert.equal(saved.has(model.pendingRequestStorageKey(owner)), false);
+  assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Retry request'), null); reopened.unmount();
+});

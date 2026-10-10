@@ -202,6 +202,7 @@ export function App() {
     return { ...widgetSidePanelPosition(apexAvatarPosition.edge, avatar.left, viewport.width, width, 56, 16, 12), top, bottom: "auto", width, height } as CSSProperties;
   })();
   const toggleApexAgentFull = () => setApexAgentFull((full) => { try { localStorage.setItem("apex-agent-full-screen", full ? "0" : "1"); } catch { /* Lasts for this window. */ } return !full; });
+  const [, refreshAssistantRequests] = useState(0);
   /** Clearing hides earlier messages on this Mac only; each project's assistant keeps its memory and open findings. */
   const [apexAgentClearedAt, setApexAgentClearedAt] = useState(() => { try { return Number(localStorage.getItem("apex-agent-cleared-at")) || 0; } catch { return 0; } });
   const [overviewEntries, setOverviewEntries] = useState<OverviewEntry[]>(() => loadOverviewEntries(localStorage));
@@ -1223,7 +1224,7 @@ export function App() {
     }
     guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, result);
   };
-  const replyToAssistant = async (workspaceId: string, text: string) => {
+  const replyToAssistant = async (workspaceId: string, text: string, expectedRequest?: PendingAssistantRequest) => {
     const workspace = latest.current.workspaces.find((item) => item.id === workspaceId && !item.hidden);
     if (!workspace) throw new Error("That project is no longer available.");
     const hostId = workspaceHost(workspace);
@@ -1238,20 +1239,24 @@ export function App() {
     if (!currentBinding() || !monitor || monitor.workspaceId !== workspaceId || monitor.hostId !== hostId || monitor.cwd !== workspace.path) throw new Error("Reopen ApexAgent to check its assignment.");
     const owner: AssistantTaskOwner = { workspaceId, hostId, cwd: workspace.path, conversationId: monitor.conversationId };
     const existing = loadPendingRequest(localStorage, owner);
+    if (expectedRequest && (!existing || existing.requestId !== expectedRequest.requestId
+      || overviewOwnerKey(owner) !== overviewOwnerKey(expectedRequest.owner))) throw new Error("The saved request or project assignment changed. Reopen ApexAgent before retrying.");
     if (existing && existing.text !== text) throw new Error("A previous request is awaiting confirmation. Reopen ApexAgent to retry or discard it first.");
     const threadLabels = latest.current.panes.filter((pane) => pane.workspaceId === workspaceId && pane.kind === 'chat').map((pane) => ({ id: pane.id, label: pane.title }));
     const pending: PendingAssistantRequest = existing ?? { requestId: crypto.randomUUID(), owner, text, destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [], threadLabels };
     savePendingRequest(localStorage, pending, owner);
-    const result = await route.call<{ monitor: ProjectMonitor }>("assistant_message", assistantMessageArgs(owner, pending, threadLabels));
-    const sameAssignment = (value: ProjectMonitor | null | undefined) => !!value && value.workspaceId === workspaceId
-      && value.cwd === owner.cwd && value.hostId === owner.hostId && value.conversationId === owner.conversationId;
-    if (!currentBinding() || !sameAssignment(result?.monitor)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
-    // A reply may complete after reassignment on another device. Confirm the
-    // live owner before acknowledging this durable request or painting its reply.
-    const confirmed = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
-    if (!currentBinding() || !sameAssignment(confirmed)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
-    guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, confirmed);
-    clearPendingRequest(localStorage, owner);
+    try {
+      const result = await route.call<{ monitor: ProjectMonitor }>("assistant_message", assistantMessageArgs(owner, pending, threadLabels));
+      const sameAssignment = (value: ProjectMonitor | null | undefined) => !!value && value.workspaceId === workspaceId
+        && value.cwd === owner.cwd && value.hostId === owner.hostId && value.conversationId === owner.conversationId;
+      if (!currentBinding() || !sameAssignment(result?.monitor)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
+      // A reply may complete after reassignment on another device. Confirm the
+      // live owner before acknowledging this durable request or painting its reply.
+      const confirmed = await route.call<ProjectMonitor | null>("monitor_get", { workspaceId });
+      if (!currentBinding() || !sameAssignment(confirmed)) throw new Error("The project assignment changed while sending. Reopen ApexAgent to confirm the reply.");
+      guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, confirmed);
+      if (loadPendingRequest(localStorage, owner)?.requestId === pending.requestId) clearPendingRequest(localStorage, owner);
+    } finally { refreshAssistantRequests((version) => version + 1); }
   };
   const openAssistantEvidence = async (workspaceId: string, evidence: MonitorEvidence) => {
     const workspace = latest.current.workspaces.find((item) => item.id === workspaceId && !item.hidden);
@@ -1951,7 +1956,26 @@ export function App() {
             </article>), ...assistantMonitors.map((monitor) => {
               if (offlineHost(monitor.hostId)) return <article className="assistant-chat-message assistant" key={monitor.workspaceId}><small>{workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} · Offline</small><p>Reconnect this machine to load and respond to delegated work.</p></article>;
               let route: Backend; try { route = hostBackend(monitor.hostId); } catch { return null; }
-              return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
+              const requestOwner = overviewOwner(monitor);
+              const pending = loadPendingRequest(localStorage, requestOwner);
+              const requestVersion = monitorOwnerVersion(monitor.workspaceId);
+              const requestRecovery = {
+                pending,
+                retry: async () => {
+                  if (!pending) return;
+                  if (monitorOwnerVersion(monitor.workspaceId) !== requestVersion || hostBackend(monitor.hostId) !== route) throw new Error('The project connection changed. Reopen ApexAgent before retrying.');
+                  await replyToAssistant(monitor.workspaceId, pending.text, pending);
+                },
+                discard: () => {
+                  const workspace = latest.current.workspaces.find((item) => item.id === monitor.workspaceId && !item.hidden);
+                  if (!workspace || workspace.path !== monitor.cwd || workspaceHost(workspace) !== monitor.hostId || monitorOwnerVersion(monitor.workspaceId) !== requestVersion || hostBackend(monitor.hostId) !== route) return;
+                  if (pending && loadPendingRequest(localStorage, requestOwner)?.requestId === pending.requestId) {
+                    clearPendingRequest(localStorage, requestOwner);
+                    refreshAssistantRequests((version) => version + 1);
+                  }
+                },
+              };
+              return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} requestRecovery={requestRecovery} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
             })]}
             clearedAt={apexAgentClearedAt} onClear={clearApexAgentConversation} fullScreen={apexAgentFull} onFullScreen={toggleApexAgentFull} />
         </aside>}
