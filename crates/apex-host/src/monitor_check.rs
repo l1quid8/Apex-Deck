@@ -1011,4 +1011,58 @@ mod tests {
             assert!(m.active_check.is_none());
         }
     }
+    fn reply_findings(findings: Vec<serde_json::Value>) -> String {
+        serde_json::json!({"message":"", "messageEvidence":[], "findings":findings, "nextStep":"Watch tests", "nextCheckInMinutes":1, "wakeReason":"Awaiting test changes"}).to_string()
+    }
+
+    fn finding(summary: &str, reason: &str, next_step: &str, evidence: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"summary":summary,"reason":reason,"confidence":"observed","nextStep":next_step,"evidence":evidence})
+    }
+
+    #[tokio::test]
+    async fn resolving_during_model_call_does_not_reopen_duplicate() {
+        let (h, _) = fixture();
+        let proposed = finding("SSO blocked", "Tests failed", "Review tests", evidence());
+        h.monitor_check_with("w", true, |_, _| {
+            let proposed = proposed.clone();
+            async move { Ok(reply_findings(vec![proposed])) }
+        }).await.unwrap();
+        let first = h.monitor_get("w").unwrap().unwrap().findings[0].clone();
+        h.monitor_check_with("w", true, |_, _| {
+            let proposed = proposed.clone();
+            async {
+                h.monitor_resolve("w", &first.id, "resolved", None).unwrap();
+                Ok(reply_findings(vec![proposed]))
+            }
+        }).await.unwrap();
+        let findings = h.monitor_get("w").unwrap().unwrap().findings;
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, first.id);
+        assert_eq!(findings[0].status, "resolved");
+    }
+
+    #[tokio::test]
+    async fn paraphrased_resolved_blocker_on_same_evidence_stays_settled() {
+        let (h, _) = fixture();
+        let original = finding("SSO blocked", "Tests failed", "Review tests", evidence());
+        h.monitor_check_with("w", true, |_, _| {
+            let original = original.clone();
+            async move { Ok(reply_findings(vec![original])) }
+        }).await.unwrap();
+        let first = h.monitor_get("w").unwrap().unwrap().findings[0].clone();
+        h.monitor_resolve("w", &first.id, "resolved", None).unwrap();
+        let paraphrase = finding(
+            "Single sign-on is blocked",
+            "The test suite did not pass",
+            "Investigate the failed tests",
+            evidence(),
+        );
+        h.monitor_check_with("w", true, |_, _| async move {
+            Ok(reply_findings(vec![paraphrase]))
+        }).await.unwrap();
+        let findings = h.monitor_get("w").unwrap().unwrap().findings;
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, first.id);
+        assert_eq!(findings[0].status, "resolved");
+    }
 }

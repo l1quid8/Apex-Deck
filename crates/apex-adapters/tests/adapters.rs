@@ -1666,3 +1666,88 @@ async fn a_custom_command_sits_out_while_planning() {
     let result = bot.respond_with_approvals(planning("hi"), &|_| {}, &Fixed::new(Decision::Approve)).await;
     assert_eq!(result.unwrap_err(), ParticipantError::Failed("This custom command can't be held to read-only, so it sits out while Plan is on.".into()));
 }
+
+#[cfg(unix)]
+const FAKE_ALL_TOOLS_CLAUDE: &str = r#"#!/bin/sh
+IFS= read -r prompt
+for tool in Read Bash WebSearch Agent mcp__probe__get_balance; do
+ echo "{\"type\":\"control_request\",\"request_id\":\"$tool\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"$tool\",\"input\":{}}}"
+ IFS= read -r answer
+ case "$answer" in *'"behavior":"deny"'*) denied=$((denied+1)) ;; *) echo "tool escaped policy: $tool $answer" >&2; exit 2 ;; esac
+done
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"denied=${denied:-0}\"}"
+"#;
+#[cfg(unix)]
+const FAKE_MONITOR_QUESTION: &str = r#"#!/bin/sh
+IFS= read -r prompt
+echo '{"type":"system","subtype":"init"}'
+echo '{"type":"control_request","request_id":"q1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Which colour?","header":"Colour","options":[{"label":"red"},{"label":"blue"}],"multiSelect":false},{"question":"Which fruit?","header":"Fruit","options":[{"label":"apple"},{"label":"pear"}],"multiSelect":true}]}}}'
+IFS= read -r answer
+case "$answer" in
+*'"behavior":"allow"'*'"Which colour?":"blue"'*'"Which fruit?":"apple, pear"'*) said="blue with apple, pear" ;;
+*'"behavior":"deny"'*) said="skipped" ;;
+*) echo "error: unexpected answer: $answer" >&2; exit 2 ;;
+esac
+echo "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"$said\"}},\"parent_tool_use_id\":null}"
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$said\"}"
+cat >/dev/null
+"#;
+#[cfg(unix)]
+#[tokio::test]
+async fn tools_disabled_denies_safe_mcp_calls_before_the_read_classifier() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("claude-monitor-tools-disabled", "claude", FAKE_MCP_CLAUDE);
+    let mut cfg = config("monitor", Backend::Agent { tool: AgentTool::ClaudeCode, model: None });
+    cfg.access = Access::Read;
+    let bot = CliParticipant::new(cfg).with_context(&context_in(&dir)).with_tools_disabled();
+    let (result, _) = ask(&bot, "inspect evidence").await;
+    assert_eq!(result.unwrap().text, "allowed=0 denied=3");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn tools_disabled_denies_reads_commands_network_helpers_and_mcp_at_the_protocol_boundary() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("claude-monitor-all-tools", "claude", FAKE_ALL_TOOLS_CLAUDE);
+    let bot = CliParticipant::new(config("monitor", Backend::Agent { tool: AgentTool::ClaudeCode, model: None }))
+        .with_context(&context_in(&dir)).with_tools_disabled();
+    let approver = Fixed::new(Decision::Approve);
+    let (result, _, _) = work_asking(&bot, &approver).await;
+    assert_eq!(result.unwrap().text, "denied=5");
+    assert!(approver.asked.lock().unwrap().is_empty(), "tool-free turns do not show approval cards");
+    assert!(approver.questions.lock().unwrap().is_empty(), "tool-free turns do not ask questions");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn tools_disabled_denies_ask_user_question_without_consulting_the_approver() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("claude-monitor-no-question", "claude", FAKE_MONITOR_QUESTION);
+    let bot = CliParticipant::new(config("monitor", Backend::Agent { tool: AgentTool::ClaudeCode, model: None }))
+        .with_context(&context_in(&dir)).with_tools_disabled();
+    let person = Fixed::new(Decision::Approve);
+    *person.said.lock().unwrap() = Some(apex_core::Answer::Answered(vec![vec!["blue".into()], vec!["apple".into()]]));
+    let (result, _, _) = work_asking(&bot, &person).await;
+    assert_eq!(result.unwrap().text, "skipped");
+    assert!(person.questions.lock().unwrap().is_empty());
+    assert!(person.asked.lock().unwrap().is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn tools_disabled_fails_closed_for_agents_without_a_verified_tool_gate() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("agent-tools-disabled-unsupported", "codex", "#!/bin/sh\necho ran > invoked\nexit 90\n");
+    for tool in [AgentTool::Codex, AgentTool::Grok] {
+        let bot = CliParticipant::new(config("monitor", Backend::Agent { tool, model: None }))
+            .with_context(&context_in(&dir)).with_tools_disabled();
+        let (result, _) = ask(&bot, "inspect evidence").await;
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("verified tool-free mode"), "{tool:?}: {error}");
+        assert!(!dir.join("invoked").exists(), "{tool:?} must fail before process launch");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

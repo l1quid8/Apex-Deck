@@ -438,17 +438,23 @@ mod tests {
         reopened.append_message("human", "continue", 5_000, Vec::new()).unwrap();
         assert_eq!(reopened.messages.last().unwrap().id, "message-202");
         assert_eq!(reopened.message_id_counter, 202);
+
+        let mut legacy = serde_json::to_value(&reopened).unwrap();
+        legacy.as_object_mut().unwrap().remove("messageIdCounter");
+        let mut legacy: ProjectMonitor = serde_json::from_value(legacy).unwrap();
+        legacy.messages.last_mut().unwrap().id = "message-5000".into();
+        legacy.append_message("assistant", "legacy restart", 5_001, Vec::new()).unwrap();
+        assert_eq!(legacy.messages.last().unwrap().id, "message-5001");
+        assert_eq!(legacy.message_id_counter, 5001);
     }
 
     #[test]
     fn message_id_exhaustion_does_not_partially_redirect() {
         let mut m = monitor();
         m.message_id_counter = u64::MAX;
-        let decisions = m.decisions.clone();
-        let messages = m.messages.clone();
+        let before = m.clone();
         assert!(m.redirect("new direction".into(), 2_000).is_err());
-        assert_eq!(m.decisions, decisions);
-        assert_eq!(m.messages, messages);
+        assert_eq!(m, before);
     }
 
     #[test]
@@ -756,5 +762,28 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["open"]
         );
+    }
+
+    #[test]
+    fn message_id_counter_does_not_change_finding_allocation() {
+        let mut m = monitor();
+        let before = m.finding_id_counter;
+        for i in 0..3 {
+            m.append_message("assistant", "message", i, vec![]).unwrap();
+        }
+        assert_eq!(m.finding_id_counter, before);
+        assert_eq!(m.allocate_finding_id().unwrap(), "finding-conversation-1-1");
+    }
+
+    #[test]
+    fn exhausted_message_counter_does_not_mutate_or_repeat_an_id() {
+        let mut m = monitor();
+        m.message_id_counter = u64::MAX;
+        let before = m.clone();
+        assert!(m
+            .append_message("assistant", "overflow", 1, vec![])
+            .unwrap_err()
+            .contains("exhausted"));
+        assert_eq!(m, before);
     }
 }
