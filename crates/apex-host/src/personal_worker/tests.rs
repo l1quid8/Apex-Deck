@@ -420,3 +420,53 @@ async fn the_real_command_tool_runs_argv_without_a_shell() {
     assert_eq!(run.output.trim(), "a;b $HOME");
     assert!(run_command(OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["/no/such/program".into()] }).await.is_err());
 }
+
+fn result_message(at: u64) -> PersonalMessage {
+    PersonalMessage {
+        id: "message-9".into(),
+        role: "assistant".into(),
+        kind: "result".into(),
+        text: "`df -h /` exited with 0.\n```\n/dev/sda1 210G 61G 140G\n```".into(),
+        at,
+        task_id: Some("task-1".into()),
+        event_id: None,
+    }
+}
+
+#[test]
+fn an_old_command_result_is_withheld_from_the_model() {
+    let now = 1_760_000_000_000;
+    let line = context_line(&result_message(now - 15 * 60_000), now);
+    assert!(!line.contains("140G"), "stale output reached the model: {line}");
+    assert!(line.contains("`df -h /` exited with 0."));
+    assert!(line.contains("no longer current"));
+    assert!(line.contains("15 min ago"));
+}
+
+#[test]
+fn a_fresh_command_result_is_shown_with_when_it_was_observed() {
+    let now = 1_760_000_000_000;
+    let line = context_line(&result_message(now - 30_000), now);
+    assert!(line.contains("140G"));
+    assert!(line.contains("observed at"));
+    assert!(line.contains("30s ago"));
+}
+
+#[tokio::test]
+async fn the_model_prompt_carries_the_current_time_and_no_stale_output() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "How much disk is free?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.decide("mac-1", true);
+    fixture.drain(&fake.tools()).await;
+    let mut assistant = fixture.get();
+    for message in &mut assistant.messages {
+        message.at = message.at.saturating_sub(15 * 60_000);
+    }
+    let text = prompt(&assistant, "How much drive space?", now());
+    assert!(!text.contains("55G"), "the 15-minute-old df output reached the model");
+    assert!(text.contains("no longer current"));
+    assert!(text.contains(&format!("It is now {}", clock(now()))));
+}
