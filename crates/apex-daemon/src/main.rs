@@ -20,7 +20,7 @@ fn main() {
     match cli.action {
         Action::Help => println!("{}", cli::USAGE),
         Action::PairHelp => println!("{}", pair_cli::USAGE),
-        Action::Version => println!("apex-daemon {}", env!("CARGO_PKG_VERSION")),
+        Action::Version => println!("{}", apex_daemon::build_info::version_line()),
         Action::DataDir => exit(apex_daemon::paths::host_paths(cli.data_dir).map(|paths| println!("{}", paths.data.display()))),
         Action::Stdio { attach } => exit(stdio::run(cli.data_dir, attach)),
         Action::Serve(options) => exit(serve::run(cli.data_dir, options)),

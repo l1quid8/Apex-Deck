@@ -512,7 +512,7 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\nsleep 30 &\necho $! > '{}'\nwait\n",
+                "#!/bin/sh\nsleep 30 &\necho $! > '{0}.tmp' && mv '{0}.tmp' '{0}'\nwait\n",
                 child_pid_file.display()
             ),
         )

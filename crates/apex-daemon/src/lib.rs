@@ -2,6 +2,7 @@
 //! app, a phone, an SSH session) drive it over one JSON protocol.
 
 pub mod authority;
+pub mod build_info;
 pub mod cli;
 pub mod devices;
 pub mod devices_cli;

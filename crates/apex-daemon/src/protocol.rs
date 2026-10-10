@@ -304,6 +304,8 @@ where
         "host_id": daemon.host_id, "boot_id": daemon.boot_id, "protocol": PROTOCOL, "last_seq": written, "resumed": resumed,
         // Which apex-daemon answered, so Deck can say when a server's helper is older than the app.
         "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3"],
+        // The exact build, so a UI can tell two builds of the same version apart.
+        "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
     } });
     // A device also learns what it may do now (so the phone can hide what
     // it can't use; the host still checks everything) and the addresses
@@ -683,7 +685,36 @@ mod tests {
     async fn hello_names_the_host_and_this_boot() {
         let mut client = connect(Trust::Local);
         let reply = client.hello().await;
-        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3"] } }));
+        assert_eq!(reply, json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3"], "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() } }));
+    }
+
+    /// The fields a client reads from a welcome; the build ones may be missing from an older daemon.
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    struct WelcomeOk {
+        host_id: String,
+        protocol: u64,
+        #[serde(default)]
+        version: Option<String>,
+        #[serde(default)]
+        build_commit: String,
+        #[serde(default)]
+        build_dirty: bool,
+    }
+
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    struct Welcome {
+        ok: WelcomeOk,
+    }
+
+    #[test]
+    fn a_welcome_carries_its_build_and_an_older_one_still_parses() {
+        let current = json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": "0.5.1", "build_commit": "0754cb82d102", "build_dirty": true, "capabilities": [] } });
+        let parsed: Welcome = serde_json::from_value(current.clone()).unwrap();
+        assert_eq!(parsed.ok, WelcomeOk { host_id: "host-1".into(), protocol: 1, version: Some("0.5.1".into()), build_commit: "0754cb82d102".into(), build_dirty: true });
+
+        let older = json!({ "id": 0, "ok": { "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 0, "resumed": false, "version": "0.5.1", "capabilities": [] } });
+        let parsed: Welcome = serde_json::from_value(older).unwrap();
+        assert_eq!(parsed.ok, WelcomeOk { host_id: "host-1".into(), protocol: 1, version: Some("0.5.1".into()), build_commit: String::new(), build_dirty: false });
     }
 
     async fn save_sessions(client: &mut Client, versions: std::ops::RangeInclusive<u64>) {
@@ -702,7 +733,7 @@ mod tests {
 
         let mut back = connect_to(&daemon, Trust::Local);
         back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 1 } } })).await;
-        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3"] }));
+        assert_eq!(back.next().await.unwrap()["ok"], json!({ "host_id": "host-1", "boot_id": "boot-1", "protocol": 1, "last_seq": 3, "resumed": true, "version": env!("CARGO_PKG_VERSION"), "capabilities": ["monitor", "monitor_profile_update", "assistant_delegation", "assistant_isolation", "assistant_workspace_v3"], "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty() }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 2, "event": "session-changed", "payload": { "version": 2 } }));
         assert_eq!(back.next().await.unwrap(), json!({ "seq": 3, "event": "session-changed", "payload": { "version": 3 } }));
         // Then live events, with nothing doubled.

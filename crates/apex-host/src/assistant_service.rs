@@ -3249,7 +3249,8 @@ mod tests {
              spend_limit_micros: None, }))
             .unwrap();
         let finished = restarted_runtime.block_on(async {
-            for _ in 0..300 {
+            // Same 15-second budget as wait_for; 3 seconds flaked under full-suite load.
+            for _ in 0..1500 {
                 let task = restarted.assistant_tasks.get(&retry.id).unwrap().unwrap();
                 if matches!(
                     task.status,
@@ -3259,7 +3260,7 @@ mod tests {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            panic!("explicit retry did not finish")
+            panic!("explicit retry did not finish within 15 seconds")
         });
         assert_eq!(
             finished.status,

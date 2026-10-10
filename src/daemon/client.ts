@@ -30,6 +30,10 @@ export interface Welcome {
   resumed: boolean;
   /** The apex-daemon version. Helpers older than 0.5.1 don't send it. */
   version?: string;
+  /** The short commit hash the apex-daemon was built from, or "unknown"; absent on helpers older than this field. */
+  build_commit?: string;
+  /** Whether that build had uncommitted changes to tracked files; absent on helpers older than this field. */
+  build_dirty?: boolean;
   /** Features implemented by this helper; absent on older protocol-v1 helpers. */
   capabilities?: string[];
   /** Over iroh only: what this phone may do there. */

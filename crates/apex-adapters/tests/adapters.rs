@@ -155,7 +155,7 @@ async fn cli_that_hangs_is_stopped_at_the_timeout() {
 async fn cli_timeout_terminates_the_process_tree_before_returning() {
     let dir = fake_tool("cli-tree-timeout", "unused", "");
     let pid_file = dir.join("descendant.pid");
-    let script = format!("sleep 30 & echo $! > '{}' ; wait", pid_file.display());
+    let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}' ; wait", pid_file.display());
     let bot = CliParticipant::new(config("cli", sh(&script)))
         .with_timeout(Duration::from_millis(300));
     let (result, _) = ask(&bot, "hi").await;
@@ -179,7 +179,7 @@ async fn timeout_reports_incomplete_cleanup_when_ownership_record_cannot_be_remo
     let registry = dir.join("registry");
     std::fs::create_dir_all(&registry).unwrap();
     let pid_file = dir.join("descendant.pid");
-    let script = format!("sleep 30 & echo $! > '{}' ; wait", pid_file.display());
+    let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}' ; wait", pid_file.display());
     let bot = CliParticipant::new(config("cli", sh(&script)))
         .with_context(&BuildContext { process_registry: Some(registry.clone()), ..context_in(&dir) })
         .with_timeout(Duration::from_millis(500));
@@ -215,7 +215,7 @@ async fn startup_recovery_kills_only_the_still_verified_owned_group() {
     let registry = dir.join("registry");
     std::fs::create_dir_all(&registry).unwrap();
     let pid_file = dir.join("descendant.pid");
-    let script = format!("sleep 30 & echo $! > '{}' ; wait", pid_file.display());
+    let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}' ; wait", pid_file.display());
     let bot = std::sync::Arc::new(CliParticipant::new(config("cli", sh(&script)))
         .with_context(&BuildContext { process_registry: Some(registry.clone()), ..context_in(&dir) }));
     let worker = bot.clone();
@@ -251,7 +251,7 @@ async fn startup_recovery_kills_only_the_still_verified_owned_group() {
 async fn stop_hook_terminates_and_reaps_the_process_tree_before_response_finishes() {
     let dir = fake_tool("cli-tree-stop", "unused", "");
     let pid_file = dir.join("descendant.pid");
-    let script = format!("sleep 30 & echo $! > '{}' ; wait", pid_file.display());
+    let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}' ; wait", pid_file.display());
     let bot = std::sync::Arc::new(CliParticipant::new(config("cli", sh(&script))).with_context(&context_in(&dir)));
     let participant = bot.clone();
     let response = tokio::spawn(async move { participant.respond(request("hi"), &|_| {}).await });
