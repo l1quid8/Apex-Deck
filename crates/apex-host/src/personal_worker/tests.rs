@@ -611,3 +611,77 @@ async fn read_only_commands_run_side_by_side() {
     fixture.until("both finish", |a| a.tasks.iter().all(|t| t.status == TaskStatus::Done)).await;
     assert_eq!(fake.runs(), 2, "each ran once");
 }
+
+#[tokio::test]
+async fn while_paused_a_message_is_answered_but_an_approved_task_waits_then_runs_once() {
+    let mut fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "How much disk is free?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.host.personal_pause(&fixture.id, "mac-1", true).unwrap();
+    fixture.decide("mac-2", true);
+    fixture.host.personal_send(&fixture.id, "phone-2", "Are you there?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert_eq!(fixture.lines("assistant", "chat"), 2, "a paused assistant still answers");
+    assert_eq!(fixture.task().status, TaskStatus::Queued, "approved, but nothing starts while paused");
+    assert_eq!(fake.runs(), 0);
+
+    fixture.restart();
+    fixture.drain(&fake.tools()).await;
+    assert!(fixture.get().paused, "pause survives a restart");
+    assert_eq!(fake.runs(), 0);
+
+    fixture.host.personal_pause(&fixture.id, "mac-3", false).unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.drain(&fake.tools()).await;
+    assert_eq!(fixture.task().status, TaskStatus::Done);
+    assert_eq!(fake.runs(), 1, "unpausing starts it exactly once");
+}
+
+#[tokio::test]
+async fn pausing_lets_the_running_command_finish_and_keeps_its_result() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "How much disk is free?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fake.tool_hangs.store(true, Ordering::SeqCst);
+    fixture.host.start_personal_worker_with(fake.tools()).unwrap();
+    fixture.decide("mac-1", true);
+    fixture.until("the command starts", |a| a.tasks[0].status == TaskStatus::Running).await;
+    fixture.host.personal_pause(&fixture.id, "mac-2", true).unwrap();
+    fake.tool_hangs.store(false, Ordering::SeqCst);
+    fixture.until("the result is recorded", |a| a.tasks[0].status == TaskStatus::Done).await;
+    assert_eq!(fake.runs(), 1);
+    assert!(fixture.get().paused);
+}
+
+#[tokio::test]
+async fn pause_is_not_cancel_and_cancel_is_not_pause() {
+    let fixture = Fixture::new();
+    let fake = Fake::new(true);
+    fake.say(DISK_TASK);
+    fixture.host.personal_send(&fixture.id, "phone-1", "How much disk is free?").unwrap();
+    fixture.drain(&fake.tools()).await;
+    fixture.host.personal_pause(&fixture.id, "mac-1", true).unwrap();
+    assert_eq!(fixture.task().status, TaskStatus::NeedsYou, "pausing leaves the task and its approval alone");
+    assert_eq!(fixture.task().decision.unwrap().status, DecisionStatus::Open);
+    fixture.host.personal_pause(&fixture.id, "mac-2", false).unwrap();
+    let task = fixture.task().id;
+    fixture.host.personal_cancel(&fixture.id, "mac-3", &task).unwrap();
+    fixture.drain(&fake.tools()).await;
+    assert!(!fixture.get().paused, "cancelling a task doesn't pause the assistant");
+}
+
+#[tokio::test]
+async fn a_repeated_pause_request_is_one_event_and_a_reused_id_is_refused() {
+    let fixture = Fixture::new();
+    let first = fixture.host.personal_pause(&fixture.id, "mac-1", true).unwrap();
+    let again = fixture.host.personal_pause(&fixture.id, "mac-1", true).unwrap();
+    assert!(!first.duplicate && again.duplicate);
+    assert_eq!(first.event_id, again.event_id);
+    assert_eq!(fixture.lines("system", "update"), 1, "one note, not two");
+    assert!(fixture.host.personal_pause(&fixture.id, "mac-1", false).is_err());
+    assert!(fixture.get().paused);
+}

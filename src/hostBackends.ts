@@ -26,7 +26,7 @@ const writes = new Set([
 ]);
 const rawWrites = new Set([...writes].map(key => key.replace(/[A-Z]/g, letter => "_" + letter.toLowerCase())));
 for (const command of ["monitor_assign", "monitor_message", "monitor_pause", "monitor_check_now", "monitor_resolve",
-  "personal_create", "personal_send", "personal_decide", "personal_cancel"]) rawWrites.add(command);
+  "personal_create", "personal_send", "personal_decide", "personal_cancel", "personal_pause"]) rawWrites.add(command);
 /** Reject unavailable execution; recovery reads and harmless PTY probes remain available. */
 export function guardHostWrites(backend: Backend, connection: HostConnectionStore): Backend {
   return new Proxy(backend, { get(target, key: string) {

@@ -56,7 +56,7 @@ pub fn command_needs(command: &Command) -> Need {
         AssistantTasksList { .. } => read(Global),
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
-        PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalDecide { .. } | PersonalCancel { .. } => full(Global),
+        PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalPause { .. } => full(Global),
         AssistantHandoffPrepare { .. } | AssistantOverview { .. } | AssistantMessage { .. } | AssistantTaskAction { .. } => full(Global),
         RoomState { id } => read(thread(id)),
         RoomDiff { id } => read(thread(id)),
@@ -254,6 +254,7 @@ mod tests {
             ("personal_send", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r1", "text": "hi" })),
             ("personal_decide", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r2", "decisionId": "pd-1", "paramsHash": "sha256:x", "approve": true })),
             ("personal_cancel", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r3", "taskId": "pt-1" })),
+            ("personal_pause", Some((Full, "global")), json!({ "assistantId": "asst-1", "requestId": "r4", "paused": true })),
             ("monitor_check_now", Some((Full, "global")), json!({ "workspaceId": "w" })),
             ("monitor_resolve", Some((Full, "global")), json!({ "workspaceId": "w", "findingId": "f", "status": "resolved" })),
             ("room_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),

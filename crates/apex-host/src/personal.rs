@@ -96,6 +96,9 @@ pub enum EventSource {
     /// The human's answer to one decision, bound to the operation it approves.
     Decision { decision_id: String, params_hash: String, approve: bool },
     Cancel { task_id: String },
+    /// Pause or resume the assistant. Applied as soon as it's saved: while
+    /// paused it still answers, but no task starts.
+    Pause { paused: bool },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -464,9 +467,25 @@ impl crate::Host {
             if let Some(text) = human_line {
                 assistant.post("human", "chat", text, None, Some(event_id.clone()), at);
             }
+            // Pausing is applied in this same save, so no task can start between
+            // the request and the pause. Nothing about it needs the worker.
+            let state = match source {
+                EventSource::Pause { paused } => {
+                    let note = match (assistant.paused, paused) {
+                        (false, true) => "Paused. I'll keep answering, but nothing new will start until you resume.",
+                        (true, false) => "Resumed. Approved tasks can start now.",
+                        (true, true) => "Already paused.",
+                        (false, false) => "Already running.",
+                    };
+                    assistant.paused = paused;
+                    assistant.post("system", "update", note.into(), None, Some(event_id.clone()), at);
+                    EventState::Done
+                }
+                _ => EventState::Received,
+            };
             assistant.events.push(PersonalEvent {
                 id: event_id.clone(), request_id: request, source, received_at: at,
-                state: EventState::Received, attempts: 0, error: None,
+                state, attempts: 0, error: None,
             });
             assistant.prune_events();
             Ok((event_id, false))
@@ -487,6 +506,10 @@ impl crate::Host {
 
     pub fn personal_cancel(&self, id: &str, request_id: &str, task_id: &str) -> Result<Accepted, String> {
         self.personal_accept(id, request_id, EventSource::Cancel { task_id: task_id.into() }, None)
+    }
+
+    pub fn personal_pause(&self, id: &str, request_id: &str, paused: bool) -> Result<Accepted, String> {
+        self.personal_accept(id, request_id, EventSource::Pause { paused }, None)
     }
 }
 

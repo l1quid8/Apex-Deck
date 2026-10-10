@@ -14,7 +14,7 @@ export type PersonalTask = {
   operation?: { tool: string; host: string; cwd: string; argv: string[] };
   decision?: PersonalDecision; receipts: PersonalReceipt[]; lastUpdate?: string; updatedAt: number;
 };
-export type PersonalAssistantRecord = { id: string; name: string; hostId: string; allowedFolders: string[]; revision: number; messages: PersonalMessage[]; tasks: PersonalTask[] };
+export type PersonalAssistantRecord = { id: string; name: string; hostId: string; allowedFolders: string[]; paused?: boolean; revision: number; messages: PersonalMessage[]; tasks: PersonalTask[] };
 
 /** What the ApexAgent conversation needs to show and talk to the personal assistant. */
 export type PersonalLane = {
@@ -28,6 +28,8 @@ export type PersonalLane = {
   send(text: string): Promise<void>;
   decide(decisionId: string, paramsHash: string, approve: boolean): Promise<void>;
   cancel(taskId: string): Promise<void>;
+  /** Pause stops new work starting; the assistant keeps answering. */
+  pause?(paused: boolean): Promise<void>;
 };
 
 export const TASK_STATUS: Record<PersonalTask["status"], string> = {
@@ -100,5 +102,6 @@ export function usePersonalAssistant({ hosts, hostBackend, offlineHost, open, de
     send: (text) => after(route().call("personal_send", { assistantId: need(), requestId: requestId(device), text })),
     decide: (decisionId, paramsHash, approve) => after(route().call("personal_decide", { assistantId: need(), requestId: requestId(device), decisionId, paramsHash, approve })),
     cancel: (taskId) => after(route().call("personal_cancel", { assistantId: need(), requestId: requestId(device), taskId })),
+    pause: (paused) => after(route().call("personal_pause", { assistantId: need(), requestId: requestId(device), paused })),
   };
 }

@@ -122,12 +122,15 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     findings.length ? `${findings.length} need${findings.length === 1 ? 's' : ''} you` : '',
   ].filter(Boolean).join(' · ');
   const personalWaiting = (assistant?.tasks ?? []).filter((task) => task.status === 'needsYou' && task.decision?.status === 'open').length;
-  const personalStatus = !personal ? '' : personal.offline ? `${personal.name} on ${personal.hostName} · Offline` : assistant ? `${personal.name} on ${personal.hostName}${personalWaiting ? ` · ${personalWaiting} need${personalWaiting === 1 ? 's' : ''} you` : ''}` : '';
+  const personalStatus = !personal ? '' : personal.offline ? `${personal.name} on ${personal.hostName} · Offline` : assistant ? `${personal.name} on ${personal.hostName}${assistant.paused ? ' · Paused' : ''}${personalWaiting ? ` · ${personalWaiting} need${personalWaiting === 1 ? 's' : ''} you` : ''}` : '';
   const headline = [monitors.length || !personalStatus ? status : '', personalStatus].filter(Boolean).join(' · ');
   const taskOf = (id?: string): PersonalTask | undefined => assistant?.tasks.find((task) => task.id === id);
   // Only the newest approval line for a task carries its buttons.
   const lastApproval = new Map<string, string>();
   for (const item of assistant?.messages ?? []) if (item.kind === 'approval' && item.taskId) lastApproval.set(item.taskId, item.id);
+  // A task that's approved or running can be stopped from its newest line.
+  const lastLine = new Map<string, string>();
+  for (const item of assistant?.messages ?? []) if (item.taskId) lastLine.set(item.taskId, item.id);
   const batch = async (items: ProjectMonitor[], command: string, args: Record<string, unknown>) => {
     const results = await Promise.allSettled(items.map((monitor) => onMutate(monitor.workspaceId, command, args)));
     const errors = results.flatMap((result, index) => result.status === 'rejected' ? [`${names[items[index].workspaceId]}: ${String(result.reason)}`] : []);
@@ -143,6 +146,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy} onClick={() => void run(async () => { await batch(active.filter((monitor) => monitor.paused === anyPaused), 'monitor_pause', { paused: !anyPaused }); })}>{anyPaused ? 'Resume watching' : 'Pause'}</button>}
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy || !active.some((monitor) => !monitor.paused)} onClick={() => void run(async () => { await batch(active.filter((monitor) => !monitor.paused), 'monitor_check_now', {}); })}>Check now</button>}
           {onClear && !!entries.length && <button type="button" role="menuitem" onClick={() => { if (window.confirm('Hide this conversation on this Mac? ApexAgent keeps its memory. Things that need you stay until you resolve them.')) onClear(); }}>Clear conversation</button>}
+          {assistant && personal?.pause && <button type="button" role="menuitem" disabled={busy || personal.offline} onClick={() => void run(() => personal.pause!(!assistant.paused))}>{assistant.paused ? 'Resume assistant' : 'Pause assistant'}</button>}
           {personal?.setUp && <button type="button" role="menuitem" disabled={busy || personal.offline} onClick={() => void run(personal.setUp!)}>Set up assistant on {personal.hostName}</button>}
           {onCustomize && <button type="button" role="menuitem" onClick={onCustomize}>Quiet hours</button>}
           {onHide && <button type="button" role="menuitem" onClick={onHide}>Hide</button>}
@@ -158,8 +162,9 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         if (item) {
           const task = taskOf(item.taskId);
           const asking = !!task && item.kind === 'approval' && lastApproval.get(task.id) === item.id && task.status === 'needsYou' && task.decision?.status === 'open';
+          const stoppable = !!task && lastLine.get(task.id) === item.id && (task.status === 'queued' || task.status === 'running');
           return <article className={`assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${asking ? ' apex-agent-needs-you' : ''}`} key={`${workspaceId}:${message.id}`}>
-            <small>{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button>{task && (item.kind === 'approval' || item.kind === 'result') && <span className="apex-agent-task-chip" data-status={task.status}>{PERSONAL_STATUS[task.status] ?? task.status}</span>}</small>
+            <small>{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button>{task && (item.kind === 'approval' || item.kind === 'result' || stoppable) && <span className="apex-agent-task-chip" data-status={task.status}>{PERSONAL_STATUS[task.status] ?? task.status}</span>}</small>
             {asking && task.operation ? <p>{task.decision!.kind === 'uncertain' ? task.decision!.prompt : 'Approval needed to run this:'}</p> : fenced(message.text)}
             {asking && task.operation && <dl className="apex-agent-operation">
               <dt>Command</dt><dd><code>{task.operation.argv.join(' ')}</code></dd>
@@ -169,6 +174,9 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
             {asking && <div className="apex-agent-buttons">
               <button className="primary" disabled={busy || personal!.offline} onClick={() => void run(() => personal!.decide(task.decision!.id, task.decision!.paramsHash, true))}>{task.decision!.kind === 'uncertain' ? 'Run again' : 'Approve'}</button>
               <button disabled={busy || personal!.offline} onClick={() => void run(() => personal!.decide(task.decision!.id, task.decision!.paramsHash, false))}>Decline</button>
+            </div>}
+            {stoppable && <div className="apex-agent-buttons">
+              <button disabled={busy || personal!.offline} onClick={() => void run(() => personal!.cancel(task.id))}>Stop task</button>
             </div>}
           </article>;
         }

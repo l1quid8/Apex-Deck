@@ -303,3 +303,37 @@ test('a result shows its status and output, and app notes are labelled App, not 
   assert.match(textOf(tree), /Done/);
   assert.match(textOf(tree), /App · /);
 });
+
+test('the menu pauses and resumes the personal assistant, and the header says when it is paused', async () => {
+  const { calls, lane } = personalLane([], [pm('pm-1', 'assistant', 'chat', 1, 'Hi')], { pause: async (paused) => { calls.push(['pause', paused]); } });
+  let tree = harness({ workspaces: projects, monitors: [], personal: lane }).render();
+  assert.doesNotMatch(textOf(tree), /Paused/);
+  find(tree, node => node.type === 'button' && textOf(node) === 'Pause assistant').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  const paused = personalLane([], [pm('pm-1', 'assistant', 'chat', 1, 'Hi')], { pause: async (value) => { calls.push(['pause', value]); } }).lane;
+  paused.assistant.paused = true;
+  tree = harness({ workspaces: projects, monitors: [], personal: paused }).render();
+  assert.match(textOf(find(tree, node => node.type === 'header')), /Paused/);
+  find(tree, node => node.type === 'button' && textOf(node) === 'Resume assistant').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [['pause', true], ['pause', false]]);
+});
+
+test('an approved or running task has one Stop task button on its newest line, and a finished one has none', async () => {
+  const messages = [pm('pm-2', 'system', 'approval', 2, 'Approval needed: Run `df -h /`?', 'pt-1'), pm('pm-3', 'system', 'update', 3, 'Approved.', 'pt-1')];
+  for (const status of ['queued', 'running']) {
+    const { calls, lane } = personalLane([personalTask(status, 'approved')], messages);
+    const tree = harness({ workspaces: projects, monitors: [], personal: lane }).render();
+    const stops = [];
+    const collect = (node) => { if (node && typeof node === 'object') { if (node.type === 'button' && textOf(node) === 'Stop task') stops.push(node); node.children?.forEach(collect); } };
+    collect(tree);
+    assert.equal(stops.length, 1, status);
+    stops[0].props.onClick();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, [['cancel', 'pt-1']], status);
+  }
+  for (const status of ['done', 'failed', 'cancelled']) {
+    const tree = harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask(status, 'approved')], messages).lane }).render();
+    assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Stop task'), null, status);
+  }
+});

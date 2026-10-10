@@ -175,6 +175,9 @@ fn prompt(assistant: &PersonalAssistant, text: &str, now: u64) -> String {
         style = if assistant.style.is_empty() { "brief, plain and friendly" } else { &assistant.style },
         now = clock(now),
     );
+    if assistant.paused {
+        out.push_str("The human has paused you: keep answering, but approved tasks won't start until they resume. Say so if it matters.\n\n");
+    }
     let open: Vec<_> = assistant.tasks.iter().filter(|t| !t.status.settled()).collect();
     if !open.is_empty() {
         out.push_str("Open tasks (facts from the app):\n");
@@ -285,7 +288,7 @@ impl Host {
             let mut taken = busy.clone();
             let mut out = Vec::new();
             let mut heavy = 0;
-            for assistant in assistants.iter_mut().filter(|a| !a.paused) {
+            for assistant in assistants.iter_mut() {
                 let id = assistant.id.clone();
                 let mut events = Vec::new();
                 for event in assistant.events.iter_mut().filter(|e| e.state == EventState::Received) {
@@ -304,7 +307,8 @@ impl Host {
                 for (key, event) in events {
                     out.push((vec![key], Work::Event(assistant.clone(), event)));
                 }
-                for task in assistant.tasks.iter().filter(|t| t.status == TaskStatus::Queued) {
+                // Paused: messages and controls above still go through, but no task starts.
+                for task in assistant.tasks.iter().filter(|t| t.status == TaskStatus::Queued && !assistant.paused) {
                     if out.len() >= max || heavy >= room { break; }
                     let mut keys = vec![format!("task:{id}:{}", task.id)];
                     // Unknown tools count as unsafe to repeat; the gateway then refuses them.
@@ -551,8 +555,9 @@ fn fail<T>(assistant: &mut PersonalAssistant, task_id: &str, why: &str, at: u64)
 /// Decisions and cancellations, in code, with no model call.
 fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) {
     let at = now();
+    let paused = assistant.paused;
     let outcome: Result<Option<(String, String)>, String> = match &event.source {
-        EventSource::Human { .. } => Ok(None),
+        EventSource::Human { .. } | EventSource::Pause { .. } => Ok(None),
         EventSource::Decision { decision_id, params_hash, approve } => (|| {
             let task = assistant.tasks.iter_mut()
                 .find(|t| t.decision.as_ref().is_some_and(|d| &d.id == decision_id))
@@ -571,8 +576,9 @@ fn apply_control(assistant: &mut PersonalAssistant, event: &PersonalEvent) {
             if *approve {
                 decision.status = DecisionStatus::Approved;
                 task.status = TaskStatus::Queued;
-                task.last_update = Some("Approved; starting.".into());
-                Ok(Some((task.id.clone(), "Approved.".to_owned())))
+                let (update, line) = if paused { ("Approved; starts when you resume.", "Approved. I'm paused, so it starts when you resume.") } else { ("Approved; starting.", "Approved.") };
+                task.last_update = Some(update.into());
+                Ok(Some((task.id.clone(), line.to_owned())))
             } else {
                 decision.status = DecisionStatus::Denied;
                 task.status = TaskStatus::Cancelled;
