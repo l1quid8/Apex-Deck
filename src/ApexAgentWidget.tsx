@@ -24,7 +24,7 @@ function readStored<T>(key: string, fallback: T): T {
 function saveStored(key: string, value: unknown) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage can be disabled */ } }
 function monitorFor(monitors: ProjectMonitor[], id: string | null) { return monitors.find((monitor) => monitor.workspaceId === id); }
 
-export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpen, onClose, onSelect, onAddSource, children, offlineWorkspaceIds = [], onReply, onRetry, appearanceRequest = 0, hideRequest = 0, taskCounts = {}, panelMode = 'floating' }: {
+export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpen, onClose, onSelect, onAddSource, children, offlineWorkspaceIds = [], onReply, onRetry, appearanceRequest = 0, hideRequest = 0, taskCounts = {}, panelMode = 'floating', onPositionChange }: {
   workspaces: Workspace[];
   workspaceId: string | null;
   open: boolean;
@@ -42,6 +42,8 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
   hideRequest?: number;
   /** Keep the avatar and its overlays while the app renders the panel in its body layout. */
   panelMode?: 'floating' | 'dock';
+  /** Lets the app place its own conversation pop-up beside the avatar. */
+  onPositionChange?: (position: WidgetPosition) => void;
 }) {
   const [retry, setRetry] = useState<{ workspaceId: string; state: 'sending' | 'failed'; message?: string } | null>(null);
   const [position, setPosition] = useState<WidgetPosition>(() => {
@@ -49,6 +51,7 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
     return { edge: saved.edge === 'left' ? 'left' : 'right', y: Number.isFinite(saved.y) ? saved.y! : 240 };
   });
   const positionRef = useRef(position);
+  useEffect(() => { onPositionChange?.(position); }, [position, onPositionChange]);
   const [look, setLook] = useState<Look>(() => {
     const saved = readStored<Partial<Look>>(LOOK_KEY, {});
     return { name: typeof saved.name === 'string' ? saved.name.slice(0, 20) || 'Apex' : 'Apex', color: colors.includes(saved.color as Look['color']) ? saved.color! : defaultLook.color, shape: shapes.includes(saved.shape as Look['shape']) ? saved.shape! : defaultLook.shape };
