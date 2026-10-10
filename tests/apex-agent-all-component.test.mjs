@@ -302,7 +302,10 @@ test('a settled or superseded approval has no buttons, and only the newest line 
 
 test('a result shows its status and output, and app notes are labelled App, not the assistant', () => {
   const messages = [pm('pm-4', 'assistant', 'result', 4, '`df -h /` exited with 0.\n```\n/dev/sda1 75G 20G 55G\n```', 'pt-1'), pm('pm-5', 'system', 'update', 5, 'Approved.', 'pt-1')];
-  const tree = harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask('done', 'approved')], messages).lane }).render();
+  const h = harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask('done', 'approved')], messages).lane });
+  assert.equal(find(h.render(), node => node.type === 'pre'), null, 'history starts folded');
+  find(h.render(), node => node.type === 'button' && /Details & history/.test(textOf(node))).props.onClick();
+  const tree = h.render();
   assert.match(textOf(find(tree, node => node.type === 'pre')), /\/dev\/sda1/);
   assert.match(textOf(tree), /Done/);
   assert.match(textOf(tree), /App · /);
@@ -380,4 +383,20 @@ test('the menu opens the Memory panel over the transcript', () => {
   const panel = find(tree, node => node.type === PersonalPanelsStub);
   assert.equal(panel.props.initial, 'memory');
   assert.equal(panel.props.lane, lane);
+});
+
+test('a task shows as one card where it started, with its lines in history and one status chip', () => {
+  const messages = [pm('pm-1', 'human', 'chat', 1, 'Disk?'), pm('pm-2', 'system', 'approval', 2, 'Approval needed', 'pt-1'), pm('pm-3', 'system', 'update', 3, 'Approved.', 'pt-1'), pm('pm-4', 'human', 'chat', 4, 'Thanks'), pm('pm-5', 'assistant', 'result', 5, '`df -h /` exited with 0.\n```\n55G free\n```', 'pt-1')];
+  const h = harness({ workspaces: projects, monitors: [], personal: personalLane([personalTask('done', 'approved')], messages).lane });
+  find(h.render(), node => node.type === 'button' && /Details & history/.test(textOf(node))).props.onClick();
+  const tree = h.render();
+  const cards = []; const chips = [];
+  const collect = (node) => { if (node && typeof node === 'object') { if (node.type === 'article' && /apex-agent-task-card/.test(node.props.className)) cards.push(node); if (node.type === 'span' && /apex-agent-task-chip/.test(node.props.className)) chips.push(node); node.children?.forEach(collect); } };
+  collect(tree);
+  assert.equal(cards.length, 1);
+  assert.equal(chips.length, 1);
+  const text = textOf(tree);
+  assert.ok(text.indexOf('Report free disk space') < text.indexOf('Thanks'), 'card sits where the task started');
+  assert.match(textOf(find(cards[0], node => node.type === 'h3')), /Report free disk space/);
+  assert.match(textOf(find(cards[0], node => node.type === 'div' && /apex-agent-task-history/.test(node.props.className ?? ''))), /Approved\.[\s\S]*55G free/);
 });

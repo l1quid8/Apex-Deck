@@ -103,3 +103,24 @@
 .apex-agent-panels-top { display: flex; justify-content: flex-end; padding: 4px 8px 0; }
 .apex-agent-panels-sheet .personal-panels-body { max-height: none; flex: 1; }
 .apex-agent-all { position: relative; }
+/* One updating card per personal-assistant task. */
+.apex-agent-task-card { align-self: stretch; margin: 6px 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255, 255, 255, 0.025); }
+.apex-agent-task-card.apex-agent-needs-you { border: 1px solid rgba(240, 180, 76, 0.65); }
+.apex-agent-task-card[data-status="done"] { border-color: rgba(113, 230, 181, 0.35); }
+.apex-agent-task-card[data-status="failed"] { border-color: rgba(239, 107, 107, 0.45); }
+.apex-agent-task-card-top { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+.apex-agent-task-card-top .apex-agent-task-chip { margin-left: auto; }
+.apex-agent-task-card h3 { margin: 6px 0 4px; font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.apex-agent-task-card > p { margin: 0 0 3px; overflow-wrap: anywhere; }
+.apex-agent-task-card .apex-agent-task-meta { color: var(--muted); font-size: 12px; }
+.apex-agent-task-card-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.apex-agent-task-card-foot > button:not(.apex-agent-task-toggle) { margin-left: auto; flex: none; }
+.apex-agent-task-toggle { background: none; border: 0; padding: 4px 0; color: var(--muted); font-size: 12px; cursor: pointer; }
+.apex-agent-task-decide { display: flex; gap: 8px; margin-top: 8px; }
+.apex-agent-task-decide > button { padding: 8px 14px; }
+.apex-agent-task-decide > button.primary { flex: 1; background: #f0b44c; border-color: #f0b44c; color: #1a1406; font-weight: 600; }
+.apex-agent-task-history { margin-top: 6px; font-size: 12px; }
+.apex-agent-task-history ol { list-style: none; margin: 6px 0 0; padding: 0 0 0 9px; border-left: 1px solid var(--line); display: grid; gap: 6px; }
+.apex-agent-task-history li p { margin: 2px 0 0; overflow-wrap: anywhere; }
+.apex-agent-task-history pre { margin: 4px 0 0; max-height: 180px; overflow: auto; white-space: pre-wrap; }
+.apex-agent-task-card-top .apex-agent-project-tag { background: none; border: 0; padding: 0; min-height: 0; }
