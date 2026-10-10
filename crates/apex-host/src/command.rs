@@ -29,6 +29,8 @@ pub enum Command {
     ArtifactsSave { room: String, artifacts: Value },
     MonitorList {},
     MonitorGet { workspace_id: String },
+    AssistantHandoffPrepare { #[serde(flatten)] input: crate::assistant_tasks::HandoffPreparation },
+    AssistantOverview { #[serde(flatten)] input: crate::assistant_overview::OverviewInput },
     AssistantMessage { #[serde(flatten)] input: crate::assistant_service::AssistantMessageInput },
     AssistantTasksList { owner: crate::assistant_tasks::TaskOwner },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
@@ -152,6 +154,8 @@ impl Host {
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
             MonitorList {} => reply(self.monitor_list()?),
             MonitorGet { workspace_id } => reply(self.monitor_get(&workspace_id)?),
+            AssistantHandoffPrepare { input } => reply(self.assistant_handoff_prepare(input).await?),
+            AssistantOverview { input } => reply(self.assistant_overview(input).await?),
             AssistantMessage { input } => reply(self.assistant_message(input).await?),
             AssistantTasksList { owner } => reply(self.assistant_tasks_list(owner)?),
             AssistantTaskAction { input } => reply(self.assistant_task_action(input).await?),
@@ -313,9 +317,16 @@ mod tests {
     }
 
     #[test]
+    fn handoff_preparation_command_deserializes_exact_payload() {
+        let command = Command::from_json(json!({"cmd":"assistant_handoff_prepare","args":{"requestId":"child","batchId":"batch","owner":{"workspaceId":"w","cwd":"/p","hostId":"h","conversationId":"c"},"revision":2,"originalRequest":"Ask Null to fix login","brief":"Fix login","destination":{"threadId":"t","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[]}})).unwrap();
+        assert!(matches!(command, Command::AssistantHandoffPrepare { input } if input.batch_id == "batch" && input.revision == 2));
+    }
+
+    #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 87);
+        assert_eq!(names.len(), 89);
+        assert!(names.contains(&"assistant_overview".to_string()));
         assert!(names.contains(&"api_quote".to_string()));
         assert!(names.contains(&"room_answer".to_string()));
         assert!(names.contains(&"room_import".to_string()));

@@ -183,3 +183,33 @@ export function shouldSuggestArchive(task: Pick<AssistantTask, 'mode' | 'status'
   return task.mode === 'isolated' && isTerminalTask(task.status) && typeof task.resultData?.archivedAtMs !== 'number'
     && nowMs - task.updatedAtMs >= 14 * 24 * 60 * 60 * 1000;
 }
+
+/** A tool-free planner proposes scope; only an explicit task approval starts work. */
+export interface HandoffPreparation {
+  requestId: string;
+  batchId: string;
+  owner: AssistantTaskOwner;
+  revision: number;
+  originalRequest: string;
+  brief: string;
+  destination: AssistantTaskDestination;
+  mode: 'isolated' | 'read_only';
+  reviewCriteria: string[];
+}
+export interface HandoffChild {
+  payload: HandoffPreparation;
+  project: string;
+  status: 'pending' | 'proposed' | 'offline' | 'uncertain' | 'failed';
+  taskId?: string;
+  error?: string;
+}
+export interface HandoffBatch {
+  id: string;
+  originalRequest: string;
+  createdAt: number;
+  children: HandoffChild[];
+}
+export function handoffPreparationArgs(child: HandoffChild, owner: AssistantTaskOwner): HandoffPreparation {
+  if (!isTaskOwnedBy({ owner: child.payload.owner }, owner)) throw new Error('The handoff assignment changed. Reconfirm the affected work.');
+  return child.payload;
+}

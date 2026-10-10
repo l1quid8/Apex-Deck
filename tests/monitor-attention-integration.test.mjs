@@ -10,6 +10,7 @@ import * as layout from '../src/layout.ts';
 import * as paneHost from '../src/paneHost.ts';
 import * as themes from '../src/themes.ts';
 import * as assistantRegistry from '../src/assistantRegistry.ts';
+import * as overviewModel from '../src/apexAgentOverview.ts';
 import * as assistantTaskModel from '../src/assistantTaskModel.ts';
 
 const appUrl = new URL('../src/App.tsx', import.meta.url);
@@ -124,13 +125,14 @@ function appHarness() {
     ...themes,
     ...assistantRegistry,
     ...assistantTaskModel,
+    ...overviewModel,
     selectCurrentAssistantRegistry: assistantRegistry.currentAssistantRegistry,
     hostTints: () => new Map(),
     usePaneDrag: () => ({ dragging: false }),
     layoutKey: () => '',
     pickerRows: () => [], workInRows: () => [],
   };
-  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgent','ApexAgentAll','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','AttentionMenu','ConfirmDialog','PathPrompt','SidebarHandle']);
+  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgent','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','AttentionMenu','ConfirmDialog','PathPrompt','SidebarHandle']);
   const globalValues = {
     localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
     crypto: { randomUUID: () => `request-${stored.size + 1}` },
@@ -682,4 +684,91 @@ test('the avatar opens one conversation for every project with no project dropdo
   all.props.onClose(); tree = h.render();
   assert.equal(child(tree, 'ApexAgentWidget').props.open, false);
   h.unmount();
+});
+
+test('combined chat synthesizes both projects and retains scoped global memory', async () => {
+  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
+  const other = { id: 'project-b', name: 'Billing API', hostId: project.hostId, path: '/work/billing' };
+  const second = { ...blocker, workspaceId: other.id, cwd: other.path, conversationId: 'monitor-b', responsibility: 'Ship billing', messages: [], findings: [] };
+  h.emitSession([project, other]); tree = h.render(); await tick(); tree = h.render();
+  child(tree, 'HostMonitors').props.onMonitors(project.hostId, [blocker, second]); tree = h.render();
+  const commands = [];
+  h.backend.call = async (command, args) => {
+    commands.push([command, args]);
+    if (command === 'monitor_get') return args.workspaceId === project.id ? blocker : second;
+    if (command === 'assistant_overview') return { message: 'Project A is blocked; Billing API has no observed blocker.', citations: [] };
+    return { workspaceId: args.owner?.workspaceId, tasks: [], executions: [], revision: 0 };
+  };
+  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  await child(tree, 'ApexAgentAll').props.onOverview("What's blocked everywhere?"); tree = h.render();
+  const request = commands.find(([command]) => command === 'assistant_overview')[1];
+  assert.deepEqual(request.projects.map(project => project.name), ['Project A', 'Billing API']);
+  assert.equal(commands.some(([command]) => command === 'assistant_message'), false);
+  assert.equal(child(tree, 'ApexAgentAll').props.overviewEntries.length, 2);
+  assert.ok(h.stored.has('apex-agent-overview-history'));
+  assert.ok(child(tree, 'ApexAgentAll').props.tasks.some(node => node.type.displayName === 'ApexAgentTasks'));
+  h.emitSession([project]); tree = h.render();
+  assert.equal(child(tree, 'ApexAgentAll').props.overviewEntries.length, 0, 'answers involving a removed project cannot leak into current context');
+  h.unmount();
+});
+
+
+test('combined evidence opens file, saved thread and Git on their owning host', async () => {
+  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
+  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  const opened = []; h.backend.openTarget = async (...args) => opened.push(args);
+  const open = child(tree, 'ApexAgentAll').props.onOpenEvidence;
+  await open(project.id, evidence);
+  await open(project.id, { ...evidence, sourceId: 'git:status' });
+  assert.deepEqual(opened, [['README.md', project.path, false], [project.path, project.path, false]]);
+  await assert.rejects(open(project.id, { ...evidence, sourceId: 'file:../secrets' }), /outside/);
+  await open(project.id, { ...evidence, sourceId: `thread:${pane.id}` }); tree = h.render();
+  assert.equal(opened.length, 2, 'saved threads navigate inside Deck');
+  await assert.rejects(open(project.id, { ...evidence, sourceId: 'thread:missing' }), /no longer available/);
+  h.unmount();
+});
+
+test('cross-project plans prepare on each owning backend and retry only the uncertain saved child', async () => {
+  const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
+  const other = { id: 'project-b', name: 'Billing API', hostId: 'host-b', path: '/work/billing' };
+  const second = { ...blocker, workspaceId: other.id, hostId: other.hostId, cwd: other.path, conversationId: 'monitor-b', messages: [], findings: [] };
+  h.emitSession([project, other]); tree = h.render(); await tick(); tree = h.render();
+  const collect = node => { if (!node || typeof node !== 'object') return; if (node.type?.displayName === 'HostMonitors') node.props.onMonitors(node.props.hostId, [node.props.hostId === project.hostId ? blocker : second]); for (const n of node.children ?? []) collect(n); };
+  collect(tree); tree = h.render();
+  const calls = [], receipts = new Map(); let lost = true;
+  const handle = (hostId, monitor) => async (command, args) => {
+    calls.push({ hostId, command, args });
+    if (command === 'monitor_get') return monitor;
+    if (command === 'assistant_tasks_list') return { workspaceId: monitor.workspaceId, revision: 1, tasks: [], executions: [], routingThreads: [{ id: `chat-${hostId}`, workers: [{ id: 'null', display_name: 'Null' }] }] };
+    if (command === 'assistant_overview') return { message: 'Two proposals awaiting approval.', citations: [], assignments: [blocker, second].map(m => ({ owner: overviewModel.overviewOwner(m), revision: m.revision, brief: `Fix ${m.workspaceId}`, destination: { threadId: `chat-${m.hostId}`, workers: ['null'], newThread: false }, mode: 'isolated', reviewCriteria: [] })) };
+    if (command === 'assistant_handoff_prepare') {
+      assert.ok(h.stored.has('apex-agent-handoff-batches'), 'payloads persist before mutation');
+      assert.equal(args.owner.hostId, hostId, 'coordinator must not prepare remote work locally');
+      const task = receipts.get(args.requestId) ?? { id: `task-${hostId}`, owner: args.owner }; receipts.set(args.requestId, task);
+      if (hostId === other.hostId && lost) { lost = false; throw new Error('reply lost'); }
+      return { task };
+    }
+    throw new Error(`Unexpected dispatch: ${command}`);
+  };
+  h.backend.call = handle(project.hostId, blocker);
+  h.backend.machines.get(other.hostId).call = handle(other.hostId, second);
+  child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
+  await child(tree, 'ApexAgentAll').props.onOverview('Ask Null to fix Project A and Billing API'); tree = h.render();
+  const batch = JSON.parse(h.stored.get('apex-agent-handoff-batches'))[0];
+  assert.deepEqual(batch.children.map(c => c.status), ['proposed', 'uncertain']);
+  const firstPayload = calls.find(c => c.command === 'assistant_handoff_prepare' && c.hostId === other.hostId).args;
+  h.emitSession([other]); tree = h.render();
+  assert.equal(child(tree, 'ApexAgentAll').props.tasks.filter(node => node.type === 'article').length, 1, 'an unaffected pending proposal remains visible after its sibling project is removed');
+  const retry = child(tree, 'ApexAgentAll').props.tasks.map(node => find(node, n => n.type === 'button' && n.children.includes('Retry saved proposals'))).find(Boolean);
+  h.setConnection({ kind: 'connecting' }, other.hostId); tree = h.render();
+  await retry.props.onClick(); await tick(); tree = h.render();
+  assert.equal(calls.filter(c => c.command === 'assistant_handoff_prepare').length, 2, 'a reconnecting target cannot prepare work yet');
+  assert.equal(JSON.parse(h.stored.get('apex-agent-handoff-batches'))[0].children[1].status, 'offline');
+  h.setConnection({ kind: 'connected' }, other.hostId); tree = h.render();
+  await retry.props.onClick(); await tick(); tree = h.render();
+  const preparations = calls.filter(c => c.command === 'assistant_handoff_prepare');
+  assert.equal(preparations.filter(c => c.hostId === project.hostId).length, 1);
+  assert.deepEqual(preparations.filter(c => c.hostId === other.hostId).map(c => c.args), [firstPayload, firstPayload]);
+  assert.deepEqual(JSON.parse(h.stored.get('apex-agent-handoff-batches'))[0].children.map(c => c.status), ['proposed', 'proposed']);
+  assert.equal(receipts.size, 2); h.unmount();
 });

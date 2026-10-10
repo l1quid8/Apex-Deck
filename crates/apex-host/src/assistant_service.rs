@@ -109,6 +109,37 @@ impl AssistantRun {
 }
 
 impl Host {
+    /// Preparation is a proposal receipt only; human approval owns all dispatch.
+    pub async fn assistant_handoff_prepare(self: &Arc<Self>, input: crate::assistant_tasks::HandoffPreparation) -> Result<Value, String> {
+        let response = self.change_monitors(|monitors| {
+            let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("ApexAgent assignment is unavailable.")?;
+            if monitor.cwd != input.owner.cwd || monitor.host_id != input.owner.host_id || monitor.conversation_id != input.owner.conversation_id {
+                return Err("Handoff belongs to a different project or ApexAgent assignment.".into());
+            }
+            // Lost-reply recovery survives ordinary monitor revision changes, but
+            // cannot move an existing receipt to a replacement owner.
+            if let Some(task) = self.assistant_tasks.prepared_handoff(&input).map_err(|e|e.to_string())? { return Ok(json!({"task":task})); }
+            if monitor.revision != input.revision { return Err("Handoff monitor revision is stale. Refresh the plan.".into()); }
+            if input.request_id.trim().is_empty() || input.request_id.len() > 200 || input.batch_id.trim().is_empty() || input.batch_id.len() > 200 || input.original_request.trim().is_empty() || input.original_request.len() > 16_000 || input.brief.trim().is_empty() || input.brief.len() > 16_000 || input.review_criteria.len() > 20 || input.review_criteria.iter().any(|s| s.trim().is_empty() || s.len() > 2000) || !matches!(input.mode, TaskMode::Isolated | TaskMode::ReadOnly) {
+                return Err("Invalid handoff preparation scope.".into());
+            }
+            let destination = &input.destination;
+            if destination.new_thread || destination.workers.is_empty() || destination.workers.len() > 10 || destination.workers.iter().collect::<std::collections::HashSet<_>>().len() != destination.workers.len() {
+                return Err("Choose an available saved chat and eligible workers.".into());
+            }
+            let id = destination.thread_id.as_deref().filter(|id| !id.trim().is_empty()).ok_or("Handoff requires a saved destination chat.")?;
+            let saved = self.store().room(id)?.ok_or("Handoff destination chat is unavailable.")?;
+            if saved.cwd.as_deref() != Some(input.owner.cwd.as_str()) { return Err("Handoff destination is outside the assigned project.".into()); }
+            let workers: Vec<_> = saved.snapshot.participants.iter().filter(|profile| destination.workers.contains(&profile.id.to_string())).cloned().collect();
+            if workers.len() != destination.workers.len() { return Err("Handoff contains an unknown destination worker.".into()); }
+            verify_task_workers(&workers)?;
+            let task = self.assistant_tasks.prepare_handoff(input.clone()).map_err(|e|e.to_string())?;
+            Ok(json!({"task":task}))
+        })?;
+        self.assistant_changed(&input.owner.workspace_id);
+        Ok(response)
+    }
+
     pub(crate) fn ensure_task_read_access(&self, id: &str, participant: &ParticipantConfig) -> Result<(), String> {
         if participant.access == apex_core::Access::Read { return Ok(()); }
         if let Some(entry) = self.assistant_tasks.execution(id).map_err(|e| e.to_string())? {
@@ -861,7 +892,7 @@ impl Host {
             .assistant_isolated_slots
             .acquire(Path::new(&owner.cwd).to_path_buf(), &mut stop)
             .await?;
-        let selected_profiles = if profiles.is_empty() {
+        let selected_profiles = if parent.is_some() || profiles.is_empty() {
             let snapshot = parent
                 .as_ref()
                 .ok_or("Choose explicit worker profiles for a new execution chat.")?
@@ -1993,7 +2024,13 @@ impl Host {
                 self.assistant_changed(&input.owner.workspace_id);
                 Ok(result)
             }
-            "approve" | "clarify" => {
+            "approve" | "clarify" => self.change_monitors(|monitors| {
+                if task.result_data.as_ref().is_some_and(|data| data["batchId"].is_string()) {
+                    let monitor = monitors.iter().find(|monitor| monitor.workspace_id == input.owner.workspace_id).ok_or("Handoff project assignment is unavailable.")?;
+                    if monitor.cwd != input.owner.cwd || monitor.host_id != input.owner.host_id || monitor.conversation_id != input.owner.conversation_id || task.result_data.as_ref().and_then(|data| data["monitorRevision"].as_u64()) != Some(monitor.revision) {
+                        return Err("Handoff context changed. Refresh the plan and reconfirm the affected proposal.".into());
+                    }
+                }
                 let destination = input
                     .destination
                     .clone()
@@ -2068,8 +2105,9 @@ impl Host {
                 data["executionPath"] = json!(input.owner.cwd);
                 data["leaseHeld"] = json!(false);
                 data["mode"] = json!(mode);
+                let worker_profiles = if destination.new_thread { input.new_worker_profiles.clone() } else { vec![] };
                 data["workerProfiles"] =
-                    serde_json::to_value(&input.new_worker_profiles).map_err(|e| e.to_string())?;
+                    serde_json::to_value(&worker_profiles).map_err(|e| e.to_string())?;
                 if input.action == "clarify" {
                     if let Some(text) = input.text.as_deref().filter(|text| !text.trim().is_empty()) {
                         data["routingClarification"] = json!(text);
@@ -2080,7 +2118,6 @@ impl Host {
                     .assistant_tasks
                     .set_result_data(&queued.id, queued.revision, &input.owner, Some(data))
                     .map_err(|e| e.to_string())?;
-                let worker_profiles = input.new_worker_profiles.clone();
                 let action_owner = input.owner.clone();
                 let input = AssistantMessageInput {
                     workspace_id: action_owner.workspace_id.clone(),
@@ -2108,7 +2145,7 @@ impl Host {
                     .get(&queued.id)
                     .map_err(|e| e.to_string())?
                     .ok_or("Task not found after approval.".to_string())
-            }
+            }),
             _ => Err("Unknown assistant task action.".into()),
         }
     }
@@ -2518,6 +2555,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn handoff_prepare_checks_scope_revision_and_routing_without_dispatch() {
+        let f = fixture();
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"cross-child".into(), batch_id:"cross-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Ask Null to fix login and Jigga to test billing".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec!["Login works".into()] };
+        let receipt = f.runtime.block_on(f.host.assistant_handoff_prepare(input.clone())).unwrap();
+        assert_eq!(receipt["task"]["status"], "proposed");
+        assert!(receipt["task"]["executionThreadId"].is_null());
+        assert!(f.host.assistant_runs.lock().unwrap().is_empty());
+        let monitor = f.host.monitor_get("workspace").unwrap().unwrap();
+        f.host.monitor_profile_update("workspace", crate::monitor_commands::MonitorOwner { cwd:f.owner.cwd.clone(), host_id:f.owner.host_id.clone(), conversation_id:f.owner.conversation_id.clone() }, monitor.revision, monitor.profile.clone().unwrap()).unwrap();
+        assert_eq!(f.runtime.block_on(f.host.assistant_handoff_prepare(input.clone())).unwrap(), receipt);
+        let task = f.host.assistant_tasks.list(None).unwrap().pop().unwrap();
+        for action in ["approve", "clarify"] {
+            let action = AssistantActionInput { task_id:task.id.clone(), revision:task.revision, owner:f.owner.clone(), action:action.into(), mode:None, text:None, destination:task.destination.clone(), new_worker_profiles:vec![], checks:None, spend_limit_micros:None };
+            assert!(f.runtime.block_on(f.host.assistant_task_action(action)).is_err());
+            assert_eq!(f.host.assistant_tasks.get(&task.id).unwrap().unwrap(), task, "Stale monitor must not transition the proposal");
+            assert!(f.host.assistant_runs.lock().unwrap().is_empty());
+        }
+        let mut stale = input.clone(); stale.request_id = "stale-child".into();
+        assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(stale)).is_err());
+        let mut owner_changed = input.clone(); owner_changed.owner.host_id = "other".into();
+        assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(owner_changed)).is_err());
+        for worker in ["missing"] {
+            let mut bad = input.clone(); bad.request_id = "bad-child".into(); bad.revision = f.host.monitor_get("workspace").unwrap().unwrap().revision; bad.destination.workers = vec![worker.into()];
+            assert!(f.runtime.block_on(f.host.assistant_handoff_prepare(bad)).is_err());
+        }
+        assert_eq!(f.host.assistant_tasks.list(None).unwrap().len(), 1);
+        f.host.change_monitor("workspace", |monitor, _| { monitor.conversation_id = "replacement".into(); Ok(()) }).unwrap();
+        let task = f.host.assistant_tasks.list(None).unwrap().pop().unwrap();
+        let action = AssistantActionInput { task_id:task.id, revision:task.revision, owner:f.owner.clone(), action:"approve".into(), mode:None, text:None, destination:task.destination, new_worker_profiles:vec![], checks:None, spend_limit_micros:None };
+        assert!(f.runtime.block_on(f.host.assistant_task_action(action)).is_err());
+        assert!(f.host.assistant_runs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn handoff_saved_destination_uses_host_worker_not_client_same_id_profile() {
+        let f = fixture();
+        let input = crate::assistant_tasks::HandoffPreparation { request_id:"worker-child".into(), batch_id:"worker-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Fix login".into(), brief:"Fix login".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![] };
+        let receipt = f.runtime.block_on(f.host.assistant_handoff_prepare(input)).unwrap();
+        let task: AssistantTask = serde_json::from_value(receipt["task"].clone()).unwrap();
+        let local_wrong = profile("null", Backend::Scripted { lines:vec!["Wrong client profile executed".into()] }, Access::Edits);
+        let approved = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput { task_id:task.id, revision:task.revision, owner:f.owner.clone(), action:"approve".into(), mode:None, text:None, destination:task.destination, new_worker_profiles:vec![local_wrong], checks:None, spend_limit_micros:None })).unwrap();
+        let finished = wait_for(&f, &approved.id);
+        assert_eq!(finished.status, TaskStatus::ReadyForReview);
+        assert_eq!(finished.result_data.as_ref().unwrap()["workerProfiles"], json!([]), "Saved destination must discard supplied client profiles before startup");
+        let execution = f.host.store().room(finished.execution_thread_id.as_deref().unwrap()).unwrap().unwrap();
+        let saved = f.host.store().room("parent").unwrap().unwrap();
+        assert_eq!(serde_json::to_value(&execution.snapshot.participants[0].backend).unwrap(), serde_json::to_value(&saved.snapshot.participants[0].backend).unwrap());
+        assert!(execution.snapshot.transcript.iter().all(|message| !message.text.contains("Wrong client profile executed")));
+    }
+
     fn profile(id: &str, backend: Backend, access: Access) -> ParticipantConfig {
         ParticipantConfig {
             id: ParticipantId::new(id),
@@ -2668,6 +2756,48 @@ mod tests {
             }
             panic!("The read worker did not complete while integration was reserved.");
         });
+    }
+
+    #[test]
+    fn overview_reasons_over_two_projects_without_mutating_the_assignment() {
+        let f = fixture();
+        let before = f.host.monitor_get(&f.owner.workspace_id).unwrap().unwrap();
+        let input = crate::assistant_overview::OverviewInput {
+            owner: f.owner.clone(), text: "Compare blockers everywhere".into(), history: vec![],
+            projects: vec![
+                json!({"workspaceId":"workspace","name":"Mobile","availability":"online","snapshot":{"findings":[{"evidence":[{"sourceId":"file:tests.md","label":"tests.md","excerpt":"Login fails","observedAt":1}]}]}}),
+                json!({"workspaceId":"billing","name":"Billing","availability":"offline","snapshot":{"responsibility":"Ship billing"}}),
+            ],
+        };
+        let result = f.runtime.block_on(f.host.assistant_overview_with(input, |_, request| {
+            assert_eq!(request.access, Some(Access::Read));
+            assert!(request.system.contains("Mobile") && request.system.contains("Billing"));
+            assert!(request.system.contains("offline"));
+            std::future::ready(Ok(json!({"message":"Mobile login is blocked; Billing is offline.","citations":[{"workspaceId":"workspace","sourceId":"file:tests.md","quote":"Login fails"}]}).to_string()))
+        })).unwrap();
+        assert_eq!(result["citations"][0]["evidence"]["excerpt"], "Login fails");
+        assert_eq!(serde_json::to_value(f.host.monitor_get(&f.owner.workspace_id).unwrap().unwrap()).unwrap(), serde_json::to_value(before).unwrap());
+    }
+
+    #[test]
+    fn overview_rejects_redirection_during_reasoning() {
+        let f = fixture();
+        let input = crate::assistant_overview::OverviewInput { owner: f.owner.clone(), text: "Overview".into(), history: vec![], projects: vec![json!({"workspaceId":"workspace"})] };
+        let host = f.host.clone();
+        let result = f.runtime.block_on(f.host.assistant_overview_with(input, move |_, _| {
+            host.monitor_message("workspace", "Defer SSO").unwrap();
+            std::future::ready(Ok(r#"{"message":"Old snapshot answer","citations":[]}"#.into()))
+        }));
+        assert!(result.unwrap_err().contains("redirected"));
+    }
+
+    #[test]
+    fn overview_rejects_stale_owner_before_reasoning() {
+        let f = fixture();
+        let mut owner = f.owner.clone(); owner.conversation_id = "obsolete".into();
+        let input = crate::assistant_overview::OverviewInput { owner, text: "Overview".into(), history: vec![], projects: vec![json!({"workspaceId":"workspace"})] };
+        let result = f.runtime.block_on(f.host.assistant_overview_with(input, |_, _| { panic!("stale owner cannot call model"); #[allow(unreachable_code)] std::future::ready(Ok(String::new())) }));
+        assert!(result.is_err());
     }
 
     #[test]

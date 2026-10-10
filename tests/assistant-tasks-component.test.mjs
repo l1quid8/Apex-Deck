@@ -440,3 +440,104 @@ test('reassigning the component clears an in-flight owner busy state and ignores
   assert.doesNotMatch(textOf(tree), /Old response/); assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.value, 'New owner request');
   h.unmount();
 });
+
+
+test('conversation task messages open approval and review controls without tabs', async () => {
+  const calls = [];
+  const h = harness({ demo: false, call: async (command, args) => { calls.push([command, args]); return snapshot([task()]); } }, { view: 'conversation' });
+  let tree = h.render(); await tick(); tree = h.render();
+  assert.equal(find(tree, node => node.type === 'h2' && textOf(node) === 'Task overview'), null);
+  const message = find(tree, node => node.type === 'button' && textOf(node).includes('Fix parser'));
+  assert.ok(message); message.props.onClick(); tree = h.render();
+  assert.match(textOf(tree), /diff --git a\/parser.ts/);
+  const accept = find(tree, node => node.type === 'button' && textOf(node) === 'Accept and mark done');
+  assert.ok(accept); assert.equal(accept.props.disabled, true);
+  h.setReviewVisible(); tree = h.render();
+  find(tree, node => node.type === 'input' && node.props.type === 'checkbox' && containsNode(find(tree, node => node.props.className === 'assistant-review-ack'), node)).props.onChange({ target: { checked: true } });
+  tree = h.render(); assert.match(textOf(tree), /Tests pass/); h.unmount();
+});
+
+
+test('worker approvals are reachable from conversation messages and keep the exact request ID', async () => {
+  const waiting = task({ status: 'needs_you', resultData: { pendingApprovals: [{ request: 'approval-v4', action: { title: 'Run tests', detail: 'npm test' } }] } });
+  const decisions = [];
+  const h = harness({ demo: false, call: async () => snapshot([waiting]), roomDecide: async (...args) => decisions.push(args) }, { view: 'conversation' });
+  let tree = h.render(); await tick(); tree = h.render();
+  find(tree, node => node.type === 'button' && /^Open task/.test(textOf(node))).props.onClick(); tree = h.render();
+  assert.match(textOf(tree), /npm test/);
+  find(tree, node => node.type === 'button' && textOf(node) === 'Approve').props.onClick(); await tick();
+  assert.deepEqual(decisions, [['thread-a', 'approval-v4', true, false]]); h.unmount();
+});
+
+test('conversation task selects a shared composer callback without another textarea', async () => {
+  const calls = [], selected = [];
+  const running = task({ status: 'running' });
+  const h = harness({ demo: false, call: async (command, args) => { if (command === 'assistant_task_action') { calls.push(args); return running; } return snapshot([running]); } }, { view: 'conversation', onSelectTask: (...args) => selected.push(args) });
+  let tree = h.render(); await tick(); tree = h.render();
+  find(tree, node => node.type === 'button' && /^Open task/.test(textOf(node))).props.onClick(); tree = h.render();
+  assert.equal(find(tree, node => node.type === 'textarea'), null);
+  assert.equal(selected[0][0].id, running.id);
+  await selected[0][1]('Continue on the selected task');
+  assert.equal(calls[0].action, 'note'); assert.equal(calls[0].revision, running.revision);
+  h.unmount();
+});
+
+test('shared task callback follows its current revision and rejects a changed owner', async () => {
+  const calls = []; let send; let current = task({ status: 'running' });
+  const h = harness({ demo: false, call: async (command, args) => {
+    if (command === 'assistant_task_action') { calls.push(args); current = { ...current, revision: current.revision + 1 }; return current; }
+    return { ...snapshot([current]), revision: current.revision };
+  } }, { view: 'conversation', onSelectTask: (_task, callback) => { send = callback; } });
+  let tree = h.render(); await tick(); tree = h.render();
+  find(tree, node => node.type === 'button' && /^Open task/.test(textOf(node))).props.onClick(); h.render();
+  await send('First note'); await tick(); h.render(); await send('Second note');
+  assert.deepEqual(calls.map(call => call.revision), [4, 5]);
+  h.setProps({ owner: { ...owner, hostId: 'changed-host' } }); h.render();
+  await assert.rejects(send('Stale owner note'), /assignment changed/);
+  assert.equal(calls.length, 2); h.unmount();
+});
+
+test('proposed handoff shows original scope and batch and initializes eligible routing', async () => {
+  const actions = []; const proposed = task({ status: 'proposed', mode: 'isolated', resultData: { batchId: 'batch-7', requestId: 'child-7' } });
+  const h = harness({ demo: false, call: async (command, args) => { if (command === 'assistant_task_action') { actions.push(args); return { ...proposed, status: 'queued' }; } return { ...snapshot([proposed]), routingThreads: [{ id: 'thread-a', workers: [{ id: 'claude', display_name: 'Claude' }] }] }; } }, { view: 'conversation' });
+  let tree = h.render(); await tick(); tree = h.render();
+  assert.match(textOf(tree), /From your cross-project plan/); assert.doesNotMatch(textOf(tree), /batch-7/); assert.match(textOf(tree), /Scope:.*Repair the parser/);
+  find(tree, node => node.type === 'button' && /^Open task/.test(textOf(node))).props.onClick(); tree = h.render();
+  assert.equal(find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Destination for task-1').props.value, 'thread-a');
+  const approve = find(tree, node => node.type === 'button' && textOf(node) === 'Approve task');
+  assert.equal(approve.props.disabled, false); approve.props.onClick(); await tick();
+  assert.equal(actions[0].mode, 'isolated'); assert.deepEqual(actions[0].destination.workers, ['claude']); h.unmount();
+});
+
+test('host saved routing remains preselected and approvable without a locally open pane', async () => {
+  const actions = [];
+  const proposed = task({ status: 'proposed', mode: 'isolated', destination: { threadId: 'saved-remote-chat', newThread: false, workers: ['claude'] } });
+  const h = harness({ demo: false, call: async (command, args) => {
+    if (command === 'assistant_task_action') { actions.push(args); return { ...proposed, status: 'queued' }; }
+    return { ...snapshot([proposed]), routingThreads: [{ id: 'saved-remote-chat', workers: [{ id: 'claude', display_name: 'Claude' }] }] };
+  } }, { view: 'conversation', panes: [] });
+  let tree = h.render(); await tick(); tree = h.render();
+  find(tree, node => node.type === 'button' && /^Open task/.test(textOf(node))).props.onClick(); tree = h.render();
+  const destination = find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Destination for task-1');
+  assert.equal(destination.props.value, 'saved-remote-chat');
+  assert.ok(find(destination, node => node.type === 'option' && node.props.value === 'saved-remote-chat'));
+  const approve = find(tree, node => node.type === 'button' && textOf(node) === 'Approve task');
+  assert.equal(approve.props.disabled, false); approve.props.onClick(); await tick();
+  assert.deepEqual(actions[0].destination, proposed.destination); assert.deepEqual(actions[0].owner, owner); h.unmount();
+});
+
+test('saved destination approval sends no local same-id worker configuration', async () => {
+  const actions = [];
+  const proposed = task({ status: 'proposed', mode: 'isolated', destination: { threadId: 'remote-chat', newThread: false, workers: ['claude'] } });
+  const h = harness({ demo: false, call: async (command, args) => {
+    if (command === 'assistant_task_action') { actions.push(args); return { ...proposed, status: 'queued' }; }
+    return { ...snapshot([proposed]), routingThreads: [{ id: 'remote-chat', workers: [{ id: 'claude', display_name: 'Remote worker', backend: { kind: 'agent', tool: 'codex' } }] }] };
+  } }, { view: 'conversation', profiles: [{ id: 'claude', display_name: 'Local worker', backend: { kind: 'agent', tool: 'claude_code' }, media: null }] });
+  let tree = h.render(); await tick(); tree = h.render();
+  find(tree, node => node.type === 'button' && /^Open task/.test(textOf(node))).props.onClick(); tree = h.render();
+  const approve = find(tree, node => node.type === 'button' && textOf(node) === 'Approve task');
+  approve.props.onClick(); await tick();
+  assert.deepEqual(actions[0].destination, proposed.destination);
+  assert.deepEqual(actions[0].newWorkerProfiles, []);
+  h.unmount();
+});

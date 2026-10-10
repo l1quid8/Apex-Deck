@@ -20,6 +20,8 @@ import { startHub } from "./hub";
 import { SectionNavigation } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { ApexAgent } from "./ApexAgent";
+import { ApexAgentTasks } from "./ApexAgentTasks";
+import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
 import { ApexAgentWidget } from "./ApexAgentWidget";
 import "./apex-agent-dock.css";
@@ -52,8 +54,8 @@ import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
-import { assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from "./assistantTaskModel.ts";
-import type { ProjectMonitor } from "./apexAgentModel.ts";
+import { assistantTasksForOwner, assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
+import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
@@ -202,6 +204,14 @@ export function App() {
   const toggleApexAgentFull = () => setApexAgentFull((full) => { try { localStorage.setItem("apex-agent-full-screen", full ? "0" : "1"); } catch { /* Lasts for this window. */ } return !full; });
   /** Clearing hides earlier messages on this Mac only; each project's assistant keeps its memory and open findings. */
   const [apexAgentClearedAt, setApexAgentClearedAt] = useState(() => { try { return Number(localStorage.getItem("apex-agent-cleared-at")) || 0; } catch { return 0; } });
+  const [overviewEntries, setOverviewEntries] = useState<OverviewEntry[]>(() => loadOverviewEntries(localStorage));
+  const overviewHistory = useRef(overviewEntries); overviewHistory.current = overviewEntries;
+  const [handoffBatches, setHandoffBatches] = useState<HandoffBatch[]>(() => loadHandoffBatches(localStorage));
+  const handoffHistory = useRef(handoffBatches);
+  const handoffBusy = useRef(new Set<string>());
+  const [handoffWorking, setHandoffWorking] = useState<string[]>([]);
+  const [assistantTaskContext, setAssistantTaskContext] = useState<{ id: string; project: string; label: string; owner: AssistantTaskOwner; send: (text: string) => Promise<void> } | null>(null);
+
   const clearApexAgentConversation = () => { const at = Date.now(); setApexAgentClearedAt(at); try { localStorage.setItem("apex-agent-cleared-at", String(at)); } catch { /* Lasts for this window. */ } };
   const openApexAgent = (workspaceId: string) => {
     if (!latest.current.workspaces.some((workspace) => workspace.id === workspaceId && !workspace.hidden)) return;
@@ -1243,6 +1253,107 @@ export function App() {
     guardedMonitorChange({ workspaceId, hostId, cwd: workspace.path, version })(workspaceId, hostId, confirmed);
     clearPendingRequest(localStorage, owner);
   };
+  const openAssistantEvidence = async (workspaceId: string, evidence: MonitorEvidence) => {
+    const workspace = latest.current.workspaces.find((item) => item.id === workspaceId && !item.hidden);
+    if (!workspace) throw new Error("That project is no longer available.");
+    const thread = latest.current.panes.find((pane) => pane.workspaceId === workspaceId && pane.kind === 'chat' && pane.id === evidence.sourceId.replace(/^thread:/, ''));
+    if (thread) { focusPane(thread); return; }
+    if (evidence.sourceId.startsWith('thread:')) throw new Error("That source thread is no longer available in this project.");
+    const source = evidence.sourceId.replace(/^file:/, '');
+    if (!evidence.sourceId.startsWith('git:') && (!source || source.startsWith('/') || source.split(/[\\/]/).some((part) => part === '..') || /^[a-zA-Z]:/.test(source))) throw new Error("That evidence path is outside the project.");
+    await hostBackend(workspaceHost(workspace)).openTarget(evidence.sourceId.startsWith('git:') ? workspace.path : source, workspace.path || null, false);
+  };
+  const updateHandoffBatches = (batches: HandoffBatch[]) => {
+    saveHandoffBatches(localStorage, batches);
+    handoffHistory.current = batches; setHandoffBatches(batches);
+  };
+  const prepareHandoffBatch = async (batchId: string) => {
+    if (handoffBusy.current.has(batchId)) return;
+    handoffBusy.current.add(batchId); setHandoffWorking([...handoffBusy.current]);
+    try {
+      const batch = handoffHistory.current.find((item) => item.id === batchId);
+      if (!batch) throw new Error('The handoff plan is unavailable.');
+      for (let index = 0; index < batch.children.length; index++) {
+        const child = handoffHistory.current.find((item) => item.id === batchId)!.children[index];
+        if (child.status === 'proposed' || child.status === 'failed') continue;
+        const owner = child.payload.owner;
+        let status: HandoffBatch['children'][number]['status'] = 'uncertain'; let error = ''; let taskId: string | undefined;
+        try {
+          const workspace = latest.current.workspaces.find((item) => item.id === owner.workspaceId && !item.hidden);
+          if (!workspace || workspace.path !== owner.cwd || workspaceHost(workspace) !== owner.hostId) { status = 'failed'; throw new Error('The project owner changed. Reconfirm this work.'); }
+          if (!reachable(owner.hostId)) { status = 'offline'; throw new Error('Project machine is offline. Reconnect, then retry this saved proposal.'); }
+          const route = hostBackend(owner.hostId), version = monitorOwnerVersion(owner.workspaceId);
+          const bound = () => {
+            const current = latest.current.workspaces.find((item) => item.id === owner.workspaceId && !item.hidden);
+            return current && current.path === owner.cwd && workspaceHost(current) === owner.hostId
+              && monitorOwnerVersion(owner.workspaceId) === version && reachable(owner.hostId) && hostBackend(owner.hostId) === route;
+          };
+          const monitor = await route.call<ProjectMonitor | null>('monitor_get', { workspaceId: owner.workspaceId });
+          if (!bound() || !monitor || overviewOwnerKey(overviewOwner(monitor)) !== overviewOwnerKey(owner)) { status = 'failed'; throw new Error('The assignment or connection changed. Reconfirm this work.'); }
+          // The destination host reconciles the request receipt before checking a stale revision.
+          const receipt = await route.call<{ task: AssistantTask }>('assistant_handoff_prepare', { ...handoffPreparationArgs(child, overviewOwner(monitor)) });
+          if (!bound() || !receipt.task || overviewOwnerKey(receipt.task.owner) !== overviewOwnerKey(owner)) throw new Error('The preparation reply is uncertain. Retry the saved proposal.');
+          status = 'proposed'; taskId = receipt.task.id;
+        } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
+        updateHandoffBatches(handoffHistory.current.map((item) => item.id !== batchId ? item : { ...item, children: item.children.map((saved, childIndex) => childIndex !== index ? saved : { ...saved, status, error, taskId }) }));
+      }
+    } finally { handoffBusy.current.delete(batchId); setHandoffWorking([...handoffBusy.current]); }
+  };
+  const replyAcrossProjects = async (text: string) => {
+    const startedAt = Date.now();
+    const captured = assistantMonitors.map((monitor) => {
+      const workspace = latest.current.workspaces.find((item) => item.id === monitor.workspaceId && !item.hidden)!;
+      const offline = !reachable(monitor.hostId);
+      return { monitor, workspace, offline, route: offline ? null : hostBackend(monitor.hostId), version: monitorOwnerVersion(workspace.id) };
+    });
+    const stillBound = () => captured.every(({ monitor, workspace, route, version }) => {
+      const current = latest.current.workspaces.find((item) => item.id === workspace.id && !item.hidden);
+      return !!current && current.path === monitor.cwd && workspaceHost(current) === monitor.hostId
+        && monitorOwnerVersion(workspace.id) === version && (!route || hostBackend(monitor.hostId) === route);
+    });
+    const snapshots = await Promise.all(captured.map(async (item) => {
+      if (!item.route) return item.monitor;
+      const current = await item.route.call<ProjectMonitor | null>('monitor_get', { workspaceId: item.workspace.id });
+      if (!current || overviewOwnerKey(overviewOwner(current)) !== overviewOwnerKey(overviewOwner(item.monitor))) throw new Error("A project assignment changed. Reopen ApexAgent.");
+      return current;
+    }));
+    if (!stillBound()) throw new Error("A project or connection changed. Reopen ApexAgent.");
+    const coordinatorIndex = captured.findIndex((item) => !!item.route);
+    if (coordinatorIndex < 0) throw new Error("All project machines are offline. Reconnect one to ask ApexAgent.");
+    const coordinator = captured[coordinatorIndex];
+    const taskSnapshots = await Promise.all(captured.map(async (item, index) => {
+      if (!item.route) return undefined;
+      try {
+        const owner = overviewOwner(snapshots[index]);
+        const snapshot = await item.route.call<AssistantTaskSnapshot>('assistant_tasks_list', { owner });
+        assistantTasksForOwner(snapshot, owner);
+        return snapshot;
+      } catch { return undefined; }
+    }));
+    if (!stillBound()) throw new Error("A project or connection changed. Reopen ApexAgent.");
+    const projects = snapshots.map((monitor, index) => ({ ...overviewProject(monitor, captured[index].workspace.name, captured[index].offline, taskSnapshots[index]?.tasks), routingThreads: overviewRouting(taskSnapshots[index]) }));
+    const history = visibleOverviewEntries(overviewHistory.current, snapshots).slice(-20).map((entry) => ({ role: entry.message.role, text: entry.message.text }));
+    const result = await coordinator.route!.call<{ message: string; citations: OverviewEntry['citations']; assignments?: HandoffAssignment[]; clarification?: string }>('assistant_overview', { owner: overviewOwner(snapshots[coordinatorIndex]), text, projects, history });
+    // Revalidate every live assignment after the tool-free synthesis, not just the coordinator.
+    await Promise.all(captured.map(async (item) => {
+      if (!item.route) return;
+      const current = await item.route.call<ProjectMonitor | null>('monitor_get', { workspaceId: item.workspace.id });
+      if (!current || current.revision !== snapshots[captured.indexOf(item)].revision || overviewOwnerKey(overviewOwner(current)) !== overviewOwnerKey(overviewOwner(item.monitor))) throw new Error("A project assignment changed while answering. Ask again.");
+    }));
+    if (!stillBound() || typeof result?.message !== 'string') throw new Error("The project context changed while answering. Ask again.");
+    const batch = handoffBatch(crypto.randomUUID(), text, result.assignments ?? [], projects);
+    if (batch.children.length) {
+      // Persist the exact IDs and payloads before any host mutation, including uncertain replies.
+      updateHandoffBatches([...handoffHistory.current, batch]);
+    }
+    const owners = snapshots.map(overviewOwner);
+    const added: OverviewEntry[] = [
+      { workspaceId: '*', project: 'All projects', owners, message: { id: crypto.randomUUID(), role: 'human', text, at: startedAt, evidence: [] } },
+      { workspaceId: '*', project: 'All projects', owners, citations: result.citations, message: { id: crypto.randomUUID(), role: 'assistant', text: result.clarification ? `${result.message}\n${result.clarification}` : result.message, at: Date.now(), evidence: [] } },
+    ];
+    setOverviewEntries((previous) => { const next = [...previous, ...added].slice(-100); try { localStorage.setItem('apex-agent-overview-history', JSON.stringify(next)); } catch { /* Keep this window's conversation when storage is unavailable. */ } return next; });
+    if (batch.children.length) await prepareHandoffBatch(batch.id);
+  };
   const addAssistantSource = async (payload: AssistantSourceDrop) => {
     const workspace = latest.current.workspaces.find((item) => item.id === payload.workspaceId && !item.hidden);
     if (!workspace || workspaceHost(workspace) !== payload.hostId || workspace.path !== payload.cwd) throw new Error("That source belongs to a different project folder or machine.");
@@ -1552,6 +1663,8 @@ export function App() {
   const apexWorkspace = apexAgentWorkspace ? workspaces.find((w) => w.id === apexAgentWorkspace) ?? null : null;
   const selectedApexWorkspace = workspaces.find((workspace) => workspace.id === apexAgentSelection && !workspace.hidden) ?? current ?? workspaces.find((workspace) => !workspace.hidden) ?? null;
   const assistantMonitors = Object.values(monitorAttention).flatMap((entry) => {
+
+
     const workspace = workspaces.find((item) => item.id === entry.workspaceId && !item.hidden);
     const monitor = entry.monitor;
     return workspace && workspaceHost(workspace) === entry.hostId && monitor.workspaceId === workspace.id && monitor.hostId === entry.hostId && monitor.cwd === workspace.path ? [monitor] : [];
@@ -1829,6 +1942,17 @@ export function App() {
         </main>
         {!apexWorkspace && apexAgentAllOpen && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label="ApexAgent">
           <ApexAgentAll workspaces={workspaces.filter((workspace) => !workspace.hidden)} monitors={assistantMonitors} onReply={replyToAssistant} onMutate={mutateAssistant} onSetUp={openApexAgentProject} onClose={closeApexAgentAndReturnFocus} onHide={() => { setApexAgentHideRequest((request) => request + 1); closeApexAgent(); }} onCustomize={() => setApexAgentAppearanceRequest((request) => request + 1)}
+            offlineWorkspaceIds={workspaces.filter((workspace) => offlineHost(workspaceHost(workspace))).map((workspace) => workspace.id)} onOpenEvidence={openAssistantEvidence} onOverview={replyAcrossProjects} overviewEntries={visibleOverviewEntries(overviewEntries, assistantMonitors)}
+            taskContext={assistantTaskContext && assistantMonitors.some((monitor) => overviewOwnerKey(overviewOwner(monitor)) === overviewOwnerKey(assistantTaskContext.owner)) ? assistantTaskContext : null} onClearTaskContext={() => setAssistantTaskContext(null)}
+            tasks={[...handoffBatches.map((batch) => ({ ...batch, visibleChildren: visibleHandoffChildren(batch, assistantMonitors) })).filter((batch) => batch.visibleChildren.length > 0).map((batch) => <article className="assistant-chat-message assistant" key={batch.id}>
+              <small>Task plan · {batch.children.length} assignment{batch.children.length === 1 ? '' : 's'}</small><p>{batch.visibleChildren.length === batch.children.length ? batch.originalRequest : 'Saved proposals for available projects. Changed project assignments need a new plan.'}</p>
+              {batch.visibleChildren.map((child) => <div key={child.payload.requestId}><strong>{child.project} · {child.payload.destination.workers.join(', ')}</strong><p>{child.payload.brief}</p><small>{child.status === 'proposed' ? 'Prepared · task progress and review below' : child.status} · {child.payload.mode === 'isolated' ? 'Separate worktree' : 'Read only'}</small>{child.error && <p role="status">{child.error}</p>}</div>)}
+              {batch.visibleChildren.some((child) => child.status !== 'proposed' && child.status !== 'failed') && <button type="button" disabled={handoffWorking.includes(batch.id)} onClick={() => void prepareHandoffBatch(batch.id)}>Retry saved proposals</button>}
+            </article>), ...assistantMonitors.map((monitor) => {
+              if (offlineHost(monitor.hostId)) return <article className="assistant-chat-message assistant" key={monitor.workspaceId}><small>{workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} · Offline</small><p>Reconnect this machine to load and respond to delegated work.</p></article>;
+              let route: Backend; try { route = hostBackend(monitor.hostId); } catch { return null; }
+              return <ApexAgentTasks key={JSON.stringify([monitor.workspaceId, monitor.hostId, monitor.cwd, monitor.conversationId, monitorOwnerVersion(monitor.workspaceId)])} backend={route} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? 'Project', label: task.originalRequest, owner: task.owner, send })} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
+            })]}
             clearedAt={apexAgentClearedAt} onClear={clearApexAgentConversation} fullScreen={apexAgentFull} onFullScreen={toggleApexAgentFull} />
         </aside>}
         {apexWorkspace && <aside className={`apex-agent-dock apex-agent-float${apexAgentFull ? " apex-agent-full" : ""}`} style={apexFloatStyle} data-apex-agent-overlay aria-label={`ApexAgent for ${apexWorkspace.name}`}>

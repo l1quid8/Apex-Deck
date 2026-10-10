@@ -181,6 +181,57 @@ export async function runSmoke(win, { browser }) {
     assert.equal((await monitor()).messages.length,saved,'Clearing hides messages on screen; the assistant keeps its memory');
     await shot('cleared');
   });
+  await step('one conversation reasons across two projects with clickable citations',async()=>{
+    await page(`const session=await __deck.backend.sessionLoad();const workspace=session.workspaces.find(w=>w.id==='other');const profile=session.profiles.find(p=>p.id==='widget-test');const m=await __deck.backend.call('monitor_assign',{workspaceId:'other',cwd:workspace.path,hostId:'local',text:'Track Other project readiness.',files:['README.md'],threads:[],profile});await __deck.backend.call('monitor_pause',{workspaceId:'other',paused:true});return true;`);
+    await clickLabel('.apex-agent [aria-label]','Close ApexAgent'); await click('.apex-widget-hit');
+    await until('two projects in combined chat',()=>page(`return document.querySelector('.apex-agent-all .apex-agent-head-context')?.textContent.includes('1 paused')`));
+    await type('.apex-agent-all-composer textarea',"What's blocked everywhere?"); await click('.apex-agent-all-composer .primary');
+    await until('cross-project answer',()=>page(`return [...document.querySelectorAll('.apex-agent-all .assistant-chat-message')].some(message=>message.textContent.includes('cross-project draft')&&message.querySelector('.apex-agent-all-evidence button'))`));
+    assert.equal(await page(`return Boolean(document.querySelector('.apex-agent-tabs')||document.querySelector('[aria-label="ApexAgent project"]'))`),false);
+    await shot('all-project-reasoning');
+  });
+  await step('two-project plan, approval, task note and review use one shared composer',async()=>{
+    await page(`const session=await __deck.backend.sessionLoad();const profile=session.profiles.find(p=>p.id==='widget-test');for(const workspace of session.workspaces){await __deck.backend.call('room_create',{id:'handoff-'+workspace.id,cwd:workspace.path,options:{policy:'mention',max_bot_hops:0},participants:[profile]});}await __deck.backend.sessionSave({...session,panes:[...session.panes,...session.workspaces.map(workspace=>({id:'handoff-'+workspace.id,kind:'chat',title:'Smoke '+workspace.name,workspaceId:workspace.id,participants:[profile]}))]});return true;`);
+    win.webContents.reload();await until('handoff fixture reload',()=>page(`return Boolean(window.__deck&&!document.querySelector('.loading')&&document.querySelector('.apex-widget-hit'))`));await click('.apex-widget-hit');await until('shared composer restored',()=>page(`return Boolean(document.querySelector('.apex-agent-all-composer textarea'))`));
+    await type('.apex-agent-all-composer textarea','Ask Widget test model to inspect Mobile launch and Other project in their saved chats. Cross-project handoff smoke.');
+    await click('.apex-agent-all-composer .primary');
+    const proposals=await until('two durable cross-project proposals',()=>page(`const result=[];for(const workspaceId of ['launch','other']){const m=await __deck.backend.call('monitor_get',{workspaceId});const owner={workspaceId,cwd:m.cwd,hostId:m.hostId,conversationId:m.conversationId};const s=await __deck.backend.call('assistant_tasks_list',{owner});const task=s.tasks.find(task=>task.originalRequest.includes('Cross-project handoff smoke.'));if(!task||task.status!=='proposed')return null;result.push({owner,task});}return result;`));
+    assert.equal(proposals.length,2);assert.ok(proposals.every(item=>item.task.attempts.length===0&&item.task.mode==='read_only'));
+    await until('two inline proposals',()=>page(`return [...document.querySelectorAll('.assistant-task-conversation button')].filter(button=>button.textContent.startsWith('Open task · ')&&button.textContent.includes('Cross-project handoff smoke.')).length===2`));
+    assert.equal(await page(`return document.querySelectorAll('.apex-agent-all-composer textarea').length`),1);
+    assert.equal(await page(`return Boolean(document.querySelector('.assistant-task-conversation .assistant-request textarea')||document.querySelector('.apex-agent-tabs')||document.querySelector('[aria-label="ApexAgent project"]'))`),false);
+    await shot('cross-project-proposals');
+    for(const proposal of proposals){
+      await page(`const section=[...document.querySelectorAll('.assistant-task-conversation')].find(section=>section.dataset.assistantWorkspaceId===${JSON.stringify(proposal.owner.workspaceId)});const task=[...section.querySelectorAll('[data-assistant-task-id]')].find(task=>task.dataset.assistantTaskId===${JSON.stringify(proposal.task.id)});const button=[...task.querySelectorAll('button')].find(button=>button.textContent.startsWith('Open task · '));if(!button)throw Error('Missing project-owned task control');button.click();return true;`);
+      await until('shared task context',()=>page(`return document.querySelector('.apex-agent-all-composer')?.textContent.includes('Reply to')`));
+      const note='Preserve the fixture files. Shared composer task note.';
+      await type('.apex-agent-all-composer textarea',note);await click('.apex-agent-all-composer .primary');
+      await until('project-owned task note',()=>page(`const s=await __deck.backend.call('assistant_tasks_list',{owner:${JSON.stringify(proposal.owner)}});const task=s.tasks.find(task=>task.id===${JSON.stringify(proposal.task.id)});return task?.resultData?.taskHistory?.some(entry=>entry.kind==='note'&&entry.text.includes(${JSON.stringify(note)}));`));
+      await until('approval control',()=>page(`return [...document.querySelectorAll('.assistant-task-status-actions button')].some(button=>button.textContent==='Approve task'&&!button.disabled)`));
+      await clickText('.assistant-task-status-actions button','Approve task');
+      await until('proposal approved',()=>page(`const s=await __deck.backend.call('assistant_tasks_list',{owner:${JSON.stringify(proposal.owner)}});return s.tasks.some(task=>task.id===${JSON.stringify(proposal.task.id)}&&task.status!=='proposed');`));
+      await until('cross-project result ready',()=>page(`const s=await __deck.backend.call('assistant_tasks_list',{owner:${JSON.stringify(proposal.owner)}});return s.tasks.some(task=>task.id===${JSON.stringify(proposal.task.id)}&&task.status==='ready_for_review');`));
+      await until('result acknowledgement enabled',()=>page(`const result=document.querySelector('.assistant-review-material');result?.scrollIntoView({block:'center'});return document.querySelector('.assistant-review-ack input')?.disabled===false;`));
+      await shot('cross-project-review-'+proposal.owner.workspaceId);await click('.assistant-review-ack input');await clickText('.assistant-task-decision-actions button','Mark reviewed');
+      await until('cross-project review persisted',()=>page(`const s=await __deck.backend.call('assistant_tasks_list',{owner:${JSON.stringify(proposal.owner)}});return s.tasks.some(task=>task.id===${JSON.stringify(proposal.task.id)}&&task.status==='done'&&task.attempts.length===1);`));
+      await clickText('.assistant-task-conversation > button','Close task details');
+    }
+    assert.equal(await page(`return document.querySelectorAll('.apex-agent-all-composer textarea').length`),1);
+    await shot('cross-project-reviewed');
+  });
+  await step('delegated result is reviewed inside the single conversation',async()=>{
+    const ready = await page(`const session=await __deck.backend.sessionLoad();const profile=session.profiles.find(p=>p.id==='widget-test');const m=await __deck.backend.call('monitor_get',{workspaceId:'launch'});const response=await __deck.backend.call('assistant_message',{workspaceId:'launch',cwd:m.cwd,hostId:m.hostId,conversationId:m.conversationId,requestId:'v4-inline-task',text:'Please ask Widget test model to inspect the fixture in a new chat. Read-only linked-chat smoke task.',destination:{threadId:null,workers:['widget-test'],newThread:true},newWorkerProfiles:[profile],mode:'read_only',checks:[],threadLabels:[]});return response.task;`);
+    await until('delegated task ready',()=>page(`const m=await __deck.backend.call('monitor_get',{workspaceId:'launch'});const s=await __deck.backend.call('assistant_tasks_list',{owner:{workspaceId:'launch',cwd:m.cwd,hostId:m.hostId,conversationId:m.conversationId}});return s.tasks.some(t=>t.id===${JSON.stringify(ready.id)}&&t.status==='ready_for_review');`));
+    await until('review message in conversation',()=>page(`return [...document.querySelectorAll('.assistant-task-conversation button')].some(button=>button.textContent.startsWith('Review result · '))`));
+    await page(`[...document.querySelectorAll('.assistant-task-conversation button')].find(button=>button.textContent.startsWith('Review result · ')).click();return true;`);
+    await until('current result visible',()=>page(`const result=document.querySelector('.assistant-review-material');result?.scrollIntoView({block:'center'});return !!result;`));
+    await until('revision acknowledgement enabled',()=>page(`return document.querySelector('.assistant-review-ack input')?.disabled===false`));
+    await shot('conversational-task-review');
+    await click('.assistant-review-ack input'); await reveal('.assistant-task-decision-actions button');
+    await clickText('.assistant-task-decision-actions button','Mark reviewed');
+    await until('review persisted',()=>page(`const m=await __deck.backend.call('monitor_get',{workspaceId:'launch'});const s=await __deck.backend.call('assistant_tasks_list',{owner:{workspaceId:'launch',cwd:m.cwd,hostId:m.hostId,conversationId:m.conversationId}});return s.tasks.some(t=>t.id===${JSON.stringify(ready.id)}&&t.status==='done');`));
+    await shot('conversational-task-reviewed');
+  });
   await step('native browser steps aside while the pop-up is open',async()=>{
     await clickLabel('.apex-agent [aria-label]','Close ApexAgent');
     await page(`const s=await __deck.backend.sessionLoad();await __deck.backend.sessionSave({...s,section:'code',activeWorkspace:'launch',focusedPane:'widget-browser',panes:[{id:'widget-browser',kind:'preview',title:'Browser',workspaceId:'launch',url:${JSON.stringify(process.env.APEX_WIDGET_SITE)}}]});return true;`);

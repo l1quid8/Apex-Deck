@@ -8,13 +8,16 @@ import './assistant-tasks.css';
 
 type Action = 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'archive' | 'reconcile' | 'note' | 'set_budget' | 'resume_budget';
 type Props = {
+  onSelectTask?: (task: AssistantTask, send: (text: string) => Promise<void>) => void;
+  projectName?: string;
+  clearedAt?: number;
   backend: Backend;
   owner: AssistantTaskOwner;
   panes: Pane[];
   profiles: ParticipantConfig[];
   onMonitorUpdate?: (monitor: ProjectMonitor) => void;
   onOpenThread?: (id: string) => void;
-  view?: 'chat' | 'tasks' | 'activity' | 'settings';
+  view?: 'chat' | 'tasks' | 'activity' | 'settings' | 'conversation';
   messages?: { id: string; role: string; text: string; at: number; evidence?: { sourceId: string; label: string; excerpt: string; observedAt: number }[] }[];
   focused?: boolean;
   onViewChange?: (view: 'chat' | 'tasks' | 'activity' | 'settings') => void;
@@ -34,7 +37,8 @@ const assistantMessageText = (message: unknown): string => {
   return message == null ? '' : objectText(message);
 };
 
-export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, view = 'tasks', messages = [], focused, onViewChange, children, onOpenEvidence }: Props) {
+export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, view = 'tasks', messages = [], focused, onViewChange, children, onOpenEvidence, projectName, clearedAt = 0, onSelectTask }: Props) {
+  const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
   const [routingThreads, setRoutingThreads] = useState<{ id: string; workers: ParticipantConfig[] }[] | undefined>(undefined);
   const [namedOnlyWorkerIds, setNamedOnlyWorkerIds] = useState<string[] | undefined>(undefined);
@@ -72,7 +76,12 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const snapshotRevision = useRef(-1);
   const requestRef = useRef<PendingAssistantRequest | null>(null);
   const workerProfiles = useMemo(() => taskWorkerChoices(profiles).filter((profile) => !namedOnlyWorkerIds?.includes(profile.id)), [profiles, namedOnlyWorkerIds]);
-  const chatThreads = useMemo(() => panes.filter((pane) => pane.kind === 'chat' && pane.workspaceId === owner.workspaceId && !pane.archived), [panes, owner.workspaceId]);
+  const chatThreads = useMemo(() => {
+    const visible = panes.filter((pane) => pane.kind === 'chat' && pane.workspaceId === owner.workspaceId && !pane.archived).map((pane) => ({ id: pane.id, title: pane.title }));
+    // The owning host also advertises saved chats that are closed or absent on this device.
+    const saved = (routingThreads ?? []).filter((thread) => !visible.some((pane) => pane.id === thread.id)).map((thread) => ({ id: thread.id, title: `Saved chat · ${thread.id}` }));
+    return [...visible, ...saved];
+  }, [panes, owner.workspaceId, routingThreads]);
   const ownerKey = `${owner.workspaceId}\u0000${owner.cwd}\u0000${owner.hostId}\u0000${owner.conversationId}`;
   const composerContextKey = `${ownerKey}\u0000${taskContextId ?? 'new'}`;
   const setContextDraft = (value: string) => { setDraft(value); setDraftsByContext((current) => ({ ...current, [composerContextKey]: value })); };
@@ -197,12 +206,15 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
 
   const taskDestination = (taskId: string): AssistantTaskDestination | null => {
-    const selected = destinations[taskId] ?? '';
+    const initialTask = tasks.find((task) => task.id === taskId);
+    const source = initialTask?.status === 'proposed' ? initialTask.destination : null;
+    const selected = destinations[taskId] ?? (source?.newThread ? 'new' : source?.threadId ?? '');
     if (!selected) return null;
     const newThread = selected === 'new';
-    const newWorkers = workerProfiles.filter((profile) => (newTaskWorkers[taskId] ?? []).includes(profile.id));
+    if (!newThread && !chatThreads.some((pane) => pane.id === selected)) return null;
+    const newWorkers = workerProfiles.filter((profile) => (newTaskWorkers[taskId] ?? source?.workers ?? []).includes(profile.id));
     const eligible = routingWorkers(selected).map((profile) => profile.id);
-    const chosen = (taskWorkers[taskId] ?? []).filter((id) => eligible.includes(id));
+    const chosen = (taskWorkers[taskId] ?? source?.workers ?? []).filter((id) => eligible.includes(id));
     return { threadId: newThread ? null : selected, newThread, workers: newThread ? newWorkers.map((profile) => profile.id) : chosen };
   };
   const routingWorkers = (threadId: string) => routingThreads === undefined ? workerProfiles : routingThreads.find((thread) => thread.id === threadId)?.workers ?? [];
@@ -225,6 +237,13 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   const openTaskDetail = (task: AssistantTask) => {
     if (taskContextId !== task.id) setDraftsByContext((current) => ({ ...current, [composerContextKey]: draft }));
     setTaskContextId(task.id); setDraft(draftsByContext[`${ownerKey}\u0000${task.id}`] ?? ''); setDetailId(task.id); setReviewedRevision((current) => ({ ...current, [task.id]: -1 }));
+    if (view === 'conversation' && onSelectTask && !taskFinal(task.status)) {
+      const captured = owner; const version = generation.current;
+      onSelectTask(task, async (text) => {
+        if (!currentOwner(captured, version)) throw new Error('This task assignment changed. Select the task again.');
+        await sharedSender.current(task.id, text);
+      });
+    }
     const limit = budgetValue(task); setSpendCap(limit == null ? '' : (limit / 1_000_000).toFixed(2));
   };
   const reviewed = (task: AssistantTask) => reviewedRevision[task.id] === task.revision;
@@ -240,7 +259,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
   useEffect(() => {
     const task = selectedTask;
-    if (view !== 'tasks' || !task || detailId !== task.id || task.status !== 'ready_for_review' || !hasReviewMaterial(task)) return;
+    if ((view !== 'tasks' && view !== 'conversation') || !task || detailId !== task.id || task.status !== 'ready_for_review' || !hasReviewMaterial(task)) return;
     const root = detailScrollRef.current;
     const target = reviewMaterialRef.current;
     if (!root || !target || typeof IntersectionObserver === 'undefined') return;
@@ -255,38 +274,44 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     observer.observe(target);
     return () => observer.disconnect();
   }, [view, detailId, selectedTask?.id, selectedTask?.revision, selectedTask?.status, tasks]);
+  useEffect(() => { if (view === 'conversation' && clearedAt) { setDetailId(null); setTaskContextId(null); } }, [view, clearedAt]);
   const composerWaits: unknown[] = (selectedTask?.resultData?.pendingQuestions as unknown[] | undefined) ?? [];
   const composerSingleQuestion = !!selectedTask && composerWaits.length === 1 && hasQuestionGroup(composerWaits[0]) && composerWaits[0].questions?.length === 1;
   const composerNeedsInlineAnswers = composerWaits.length > 0 && !composerSingleQuestion;
   const composerActionLabel = !selectedTask ? 'Send' : selectedTask.status === 'ready_for_review' ? 'Request changes' : selectedTask.status === 'needs_clarification' ? 'Send routing clarification' : composerSingleQuestion ? 'Send answer' : composerNeedsInlineAnswers ? 'Answer inline questions' : 'Add note';
-  const submitTaskContext = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!draft.trim() || !selectedTask || !isTaskOwnedBy(selectedTask, owner)) return;
-    const text = draft.trim();
-    if (selectedTask.status === 'needs_clarification') {
-      const destination = taskDestination(selectedTask.id);
-      if (!destination || !destination.workers.length) { setError('Choose a destination and at least one eligible worker before sending this routing clarification.'); return; }
-      const ok = await act(selectedTask, 'clarify', { text, destination, newWorkerProfiles: destination.newThread ? workerProfiles.filter((profile) => destination.workers.includes(profile.id)) : [], mode: selectedTask.mode });
-      if (ok) setContextDraft('');
-      return;
+  const sendTaskText = async (task: AssistantTask, text: string): Promise<boolean> => {
+    if (task.status === 'needs_clarification') {
+      const destination = taskDestination(task.id);
+      if (!destination || !destination.workers.length) { setError('Choose a destination and at least one eligible worker before sending this routing clarification.'); return false; }
+      const ok = await act(task, 'clarify', { text, destination, newWorkerProfiles: destination.newThread ? workerProfiles.filter((profile) => destination.workers.includes(profile.id)) : [], mode: task.mode });
+      return ok;
     }
-    if (selectedTask.status === 'ready_for_review') {
-      const ok = await act(selectedTask, 'request_changes', { text });
-      if (ok) setContextDraft('');
-      return;
+    if (task.status === 'ready_for_review') {
+      const ok = await act(task, 'request_changes', { text });
+      return ok;
     }
-    const waits: unknown[] = (selectedTask.resultData?.pendingQuestions as unknown[] | undefined) ?? [];
+    const waits: unknown[] = (task.resultData?.pendingQuestions as unknown[] | undefined) ?? [];
     const usable = waits.filter(hasQuestionGroup);
     if (waits.length) {
       if (waits.length !== 1 || usable.length !== 1 || usable[0].questions?.length !== 1) {
-        setError('Complete every question in the inline answer cards above; this message is still saved in the composer.'); return;
+        setError('Complete every question in the inline answer cards above; this message is still saved in the composer.'); return false;
       }
-      const ok = await answerQuestionText(selectedTask, usable[0], text);
-      if (ok) setContextDraft('');
-      return;
+      const ok = await answerQuestionText(task, usable[0], text);
+      return ok;
     }
-    const ok = await act(selectedTask, 'note', { text });
-    if (ok) setContextDraft('');
+    const ok = await act(task, 'note', { text });
+    return ok;
+  };
+  const submitTaskContext = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!draft.trim() || !selectedTask || !isTaskOwnedBy(selectedTask, owner)) return;
+    if (await sendTaskText(selectedTask, draft.trim())) setContextDraft('');
+  };
+  sharedSender.current = async (taskId, text) => {
+    const task = tasks.find((item) => item.id === taskId && isTaskOwnedBy(item, owner));
+    if (!task || taskFinal(task.status)) throw new Error('This task is no longer available for replies.');
+    if (!text.trim() || busy) throw new Error('Wait for the current task action to finish.');
+    if (!await sendTaskText(task, text.trim())) throw new Error('Task reply was not sent. Check the task controls and retry.');
   };
   const answerQuestionText = async (task: AssistantTask, wait: unknown, text: string): Promise<boolean> => {
     const item = wait && typeof wait === 'object' ? wait as { request?: unknown } : {};
@@ -338,10 +363,15 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     finally { if (currentOwner(captured, version)) setBusy(false); }
   };
 
-  return <section className="assistant-tasks" aria-label="Assistant workspace" data-focused={focused ? 'true' : 'false'}>
+  return <section className={`assistant-tasks${view === 'conversation' ? ' assistant-task-conversation' : ''}`} aria-label="Assistant workspace" data-assistant-workspace-id={owner.workspaceId} data-focused={focused ? 'true' : 'false'}>
     {view === 'chat' && <div className="assistant-chat-transcript" aria-live="polite">{messages.map((message) => <article className={`assistant-chat-message ${message.role}`} key={message.id}><small>{message.role === 'human' ? 'You' : 'ApexAgent'}</small><p>{message.text}</p>{message.evidence?.length ? <div className="assistant-chat-evidence">{message.evidence.map((item, index) => <button type="button" key={`${item.sourceId}:${index}`} title={item.excerpt} onClick={() => onOpenEvidence?.(item)}>{item.label}<small>{item.excerpt}</small></button>)}</div> : null}</article>)}{messages.length === 0 && <p className="assistant-task-muted">ApexAgent is ready to talk about this project.</p>}{children}{assistantReply && !messages.some((message) => message.text === assistantReply) && <article className="assistant-chat-message assistant"><small>ApexAgent</small><p>{assistantReply}</p></article>}</div>}
 
 
+    {view === 'conversation' && tasks.filter((task) => !taskFinal(task.status) || task.updatedAtMs > clearedAt).map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
+      <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}</small><p>{task.originalRequest}</p><p className="assistant-task-muted">Scope: {task.brief}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
+      <button type="button" onClick={() => openTaskDetail(task)}>{task.status === 'ready_for_review' ? 'Review result' : 'Open task'} · {task.originalRequest}</button>
+    </article>)}
+    {view === 'conversation' && detailId && <button type="button" onClick={() => { setDetailId(null); setTaskContextId(null); }}>Close task details</button>}
     {view === 'activity' && <section className="assistant-task-activity">{children}<h2>Delegated task activity</h2>{tasks.map((task) => { const history = ((task.resultData as { taskHistory?: { atMs: number; kind: string; text: string }[] } | null)?.taskHistory ?? []).map((entry) => ({ at: entry.atMs, kind: entry.kind, text: entry.text })); const attempts = task.attempts.map((attempt) => ({ at: attempt.finishedAtMs ?? attempt.startedAtMs, kind: `Attempt ${attempt.number}`, text: taskStatusLabel(attempt.status) })); const entries = [...history, ...attempts].sort((left, right) => right.at - left.at); return <article key={task.id}><header><strong>{task.originalRequest}</strong><span>{taskStatusLabel(task.status)}</span></header>{entries.length ? entries.map((entry, index) => <p key={`${entry.at}:${index}`}><time>{new Date(entry.at).toLocaleString()}</time><b>{entry.kind}</b>{entry.text}</p>) : <p className="assistant-task-muted">No recorded attempt history yet.</p>}<nav className="assistant-task-links">{taskThreadLinks(task).map((link) => <button type="button" key={link.id} onClick={() => onOpenThread?.(link.id)}>{link.label}</button>)}</nav></article>; })}{tasks.length === 0 && <p className="assistant-task-muted">No delegated task activity yet.</p>}</section>}
     {view === 'tasks' && <div className={`assistant-task-heading${detailId ? ' is-detail' : ''}`}><div>{detailId ? <button type="button" className="assistant-back" onClick={() => setDetailId(null)}>← All tasks</button> : <h2>Task overview</h2>}</div><button type="button" disabled={loading || busy} onClick={() => void loadTasks()}>Refresh</button></div>}
     {view === 'tasks' && tasks.some((task) => task.mode === 'isolated' && !archivedExecutions.has(task.id)) && <p className="assistant-task-muted">Isolated task folders: {formatBytes(tasks.filter((task) => task.mode === 'isolated' && !archivedExecutions.has(task.id)).reduce((bytes, task) => bytes + (task.resultData?.worktreeDiskBytes ?? 0), 0))}{tasks.some((task) => task.mode === 'isolated' && !archivedExecutions.has(task.id) && task.resultData?.worktreeDiskBytes == null) ? ' plus folders whose size is unavailable' : ''}</p>}
@@ -352,8 +382,8 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       const items = tasks.filter((task) => group === 'Needs you' ? ['proposed', 'needs_clarification', 'needs_you', 'ready_for_review', 'failed', 'interrupted'].includes(task.status) : group === 'In progress' ? ['queued', 'running', 'applying'].includes(task.status) : ['done', 'cancelled'].includes(task.status));
       return <section className="assistant-task-group" key={group}><h3>{group}<span>{items.length}</span></h3>{items.map((task) => <button type="button" className="assistant-task-overview-row" key={task.id} onClick={() => openTaskDetail(task)}><span><b>{taskStatusLabel(task.status)}</b>{task.originalRequest}</span><small>{workerNames(task)} · {destinationTitle(task)} · {task.origin === 'human_request' ? 'Human request' : 'ApexAgent proposal'}</small><small>{task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'} · {taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</small></button>)}</section>;
     })}</div>}
-    {view === 'tasks' && detailId && !selectedTask && <p className="assistant-task-muted">This task is no longer available in the current assignment.</p>}
-    {view === 'tasks' && detailId && <div className="assistant-task-list">{tasks.filter((task) => task.id === detailId).map((task) => {
+    {(view === 'tasks' || view === 'conversation') && detailId && !selectedTask && <p className="assistant-task-muted">This task is no longer available in the current assignment.</p>}
+    {(view === 'tasks' || view === 'conversation') && detailId && <div className="assistant-task-list">{tasks.filter((task) => task.id === detailId).map((task) => {
       const resultData = task.resultData ?? {};
       const pendingApprovals = resultData.pendingApprovals ?? [];
       const pendingQuestions = resultData.pendingQuestions ?? [];
@@ -365,6 +395,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       return <article className={`assistant-task-card status-${task.status}`} key={task.id}>
         <header><div><span className="assistant-task-status">{taskStatusLabel(task.status)}</span><span className="assistant-task-meta">Revision {task.revision} · {task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'}</span></div><span className="assistant-task-usage">{taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</span></header>
         <div className="assistant-task-detail-scroll" ref={detailScrollRef}>
+        {typeof (resultData as { batchId?: unknown }).batchId === 'string' && <p className="assistant-task-muted">From your cross-project plan</p>}
         <details><summary>Original request and brief</summary><p className="assistant-task-original"><strong>Original request</strong>{task.originalRequest}</p><p className="assistant-task-brief"><strong>Brief</strong>{task.brief}</p></details>
         {task.destination && <p className="assistant-task-muted">Destination: {task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId ?? 'Needs clarification'}{task.destination.workers.length ? ` · Workers: ${task.destination.workers.join(', ')}` : ''}</p>}
         {task.mode === 'in_place' && task.status === 'queued' && <p className="assistant-task-lease">Queued for checkout access; work starts when the current writer releases it.</p>}
@@ -379,13 +410,13 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         {task.status === 'needs_you' && resultData.startup != null && <p className="assistant-task-warning">Worker startup issue: {objectText(resultData.startup)}</p>}
         {task.result && (task.status === 'ready_for_review' ? null : <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>)}
         {Array.isArray((resultData as { taskHistory?: unknown }).taskHistory) && <details><summary>Task history</summary><ol className="assistant-task-history">{((resultData as { taskHistory?: { atMs: number; kind: string; text: string }[] }).taskHistory ?? []).map((entry, index) => <li key={`${entry.atMs}:${index}`}><time>{new Date(entry.atMs).toLocaleString()}</time><b>{entry.kind}</b><span>{entry.text}</span></li>)}</ol></details>}
-        <section className="assistant-task-budget"><h3>Spend limit</h3><p>{budgetValue(task) == null ? 'No spend limit set · cost may be unknown when the provider does not report it.' : `$${(budgetValue(task)! / 1_000_000).toFixed(2)} cap · enforced using the provider’s reported estimate.`}</p><form onSubmit={(event) => { event.preventDefault(); const micros = spendCap.trim() ? Math.round(Number(spendCap) * 1_000_000) : null; if (micros !== null && (!Number.isSafeInteger(micros) || micros <= 0)) { setError('Enter a positive spend cap, or leave blank to remove it.'); return; } void act(task, 'set_budget', { spendLimitMicros: micros }); }}><input aria-label="Spend cap in USD" inputMode="decimal" value={spendCap} onChange={(event) => setSpendCap(event.target.value)} placeholder="No cap" /><button type="submit" disabled={busy}>Set limit</button></form>{(resultData as { budgetPaused?: boolean }).budgetPaused && <><p className="assistant-task-warning">Paused at the provider-reported estimate limit. Raise or remove the cap, then resume. This keeps the task ID, edits, and history.</p><button type="button" disabled={busy} onClick={() => void act(task, 'resume_budget')}>Resume task</button></>}</section>
+        <details className="assistant-task-budget" open={view !== 'conversation'}><summary>Spend limit</summary><p>{budgetValue(task) == null ? 'No spend limit set · cost may be unknown when the provider does not report it.' : `$${(budgetValue(task)! / 1_000_000).toFixed(2)} cap · enforced using the provider’s reported estimate.`}</p><form onSubmit={(event) => { event.preventDefault(); const micros = spendCap.trim() ? Math.round(Number(spendCap) * 1_000_000) : null; if (micros !== null && (!Number.isSafeInteger(micros) || micros <= 0)) { setError('Enter a positive spend cap, or leave blank to remove it.'); return; } void act(task, 'set_budget', { spendLimitMicros: micros }); }}><input aria-label="Spend cap in USD" inputMode="decimal" value={spendCap} onChange={(event) => setSpendCap(event.target.value)} placeholder="No cap" /><button type="submit" disabled={busy}>Set limit</button></form>{(resultData as { budgetPaused?: boolean }).budgetPaused && <><p className="assistant-task-warning">Paused at the provider-reported estimate limit. Raise or remove the cap, then resume. This keeps the task ID, edits, and history.</p><button type="button" disabled={busy} onClick={() => void act(task, 'resume_budget')}>Resume task</button></>}</details>
         {hasCapturedDiff && task.status !== 'ready_for_review' && <details><summary>Review diff</summary><pre>{resultData.reviewDiff}</pre></details>}
         {Array.isArray(resultData.checks) && resultData.checks.length > 0 && <details><summary>Configured checks and results</summary><pre>{objectText({ commands: resultData.checks, results: resultData.checkResults ?? 'Awaiting verification' })}</pre></details>}
         {Array.isArray(resultData.exclusions) && resultData.exclusions.length > 0 && <p className="assistant-task-muted">Excluded: {resultData.exclusions.join(', ')}</p>}
         {(resultData.executionPath || resultData.baselineCommit || resultData.resultCommit) && <p className="assistant-task-muted">{[resultData.executionPath, resultData.baselineCommit && `Base ${resultData.baselineCommit}`, resultData.resultCommit && `Result ${resultData.resultCommit}`].filter(Boolean).join(' · ')}</p>}
         {task.mode === 'isolated' && !archivedExecutions.has(task.id) && typeof resultData.worktreeDiskBytes === 'number' && <p className="assistant-task-muted">Task folder: {formatBytes(resultData.worktreeDiskBytes)}</p>}
-        {task.status === 'proposed' && <details className="assistant-task-routing"><summary>Choose destination and worker</summary><label>Destination<select aria-label={`Destination for ${task.id}`} value={destinations[task.id] ?? ''} onChange={(event) => { setDestinations((current) => ({ ...current, [task.id]: event.target.value })); setTaskWorkers((current) => ({ ...current, [task.id]: [] })); setNewTaskWorkers((current) => ({ ...current, [task.id]: [] })); }}><option value="">Choose a thread</option>{chatThreads.map((pane) => <option key={pane.id} value={pane.id}>{pane.title}</option>)}<option value="new">Create new thread</option></select></label>{selectedDestination?.newThread ? <fieldset className="assistant-task-workers"><legend>New thread workers</legend>{workerProfiles.map((profile) => <label key={profile.id}><input type="checkbox" checked={(newTaskWorkers[task.id] ?? []).includes(profile.id)} onChange={(event) => setNewTaskWorkers((current) => ({ ...current, [task.id]: event.target.checked ? [...(current[task.id] ?? []), profile.id] : (current[task.id] ?? []).filter((id) => id !== profile.id) }))} />{profile.display_name} <small>{profile.id}</small></label>)}</fieldset> : selectedDestination && <fieldset className="assistant-task-workers"><legend>Workers for {chatThreads.find((pane) => pane.id === selectedDestination.threadId)?.title ?? selectedDestination.threadId}</legend>{routingWorkers(selectedDestination.threadId ?? '').map((profile) => <label key={profile.id}><input type="checkbox" checked={(taskWorkers[task.id] ?? []).includes(profile.id)} onChange={(event) => setTaskWorkers((current) => ({ ...current, [task.id]: event.target.checked ? [...(current[task.id] ?? []), profile.id] : (current[task.id] ?? []).filter((id) => id !== profile.id) }))} />{profile.display_name} <small>{profile.id}</small></label>)}{routingWorkersUnavailable(selectedDestination.threadId ?? '') && <p className="assistant-task-warning">Open or refresh the selected chat to load its worker list.</p>}{routingThreads === undefined && <p className="assistant-task-muted">Worker list unavailable; choices come from the saved non-media profile catalogue. The host validates this selection.</p>}</fieldset>}</details>}
+        {(task.status === 'proposed' || (view === 'conversation' && task.status === 'needs_clarification')) && <details className="assistant-task-routing"><summary>Choose destination and worker</summary><label>Destination<select aria-label={`Destination for ${task.id}`} value={destinations[task.id] ?? (task.status === 'proposed' ? task.destination?.newThread ? 'new' : task.destination?.threadId ?? '' : '')} onChange={(event) => { setDestinations((current) => ({ ...current, [task.id]: event.target.value })); setTaskWorkers((current) => ({ ...current, [task.id]: [] })); setNewTaskWorkers((current) => ({ ...current, [task.id]: [] })); }}><option value="">Choose a thread</option>{chatThreads.map((pane) => <option key={pane.id} value={pane.id}>{pane.title}</option>)}<option value="new">Create new thread</option></select></label>{selectedDestination?.newThread ? <fieldset className="assistant-task-workers"><legend>New thread workers</legend>{workerProfiles.map((profile) => <label key={profile.id}><input type="checkbox" checked={(newTaskWorkers[task.id] ?? task.destination?.workers ?? []).includes(profile.id)} onChange={(event) => setNewTaskWorkers((current) => ({ ...current, [task.id]: event.target.checked ? [...(current[task.id] ?? (task.status === 'proposed' ? task.destination?.workers ?? [] : [])), profile.id] : (current[task.id] ?? (task.status === 'proposed' ? task.destination?.workers ?? [] : [])).filter((id) => id !== profile.id) }))} />{profile.display_name} <small>{profile.id}</small></label>)}</fieldset> : selectedDestination && <fieldset className="assistant-task-workers"><legend>Workers for {chatThreads.find((pane) => pane.id === selectedDestination.threadId)?.title ?? selectedDestination.threadId}</legend>{routingWorkers(selectedDestination.threadId ?? '').map((profile) => <label key={profile.id}><input type="checkbox" checked={(taskWorkers[task.id] ?? task.destination?.workers ?? []).includes(profile.id)} onChange={(event) => setTaskWorkers((current) => ({ ...current, [task.id]: event.target.checked ? [...(current[task.id] ?? (task.status === 'proposed' ? task.destination?.workers ?? [] : [])), profile.id] : (current[task.id] ?? (task.status === 'proposed' ? task.destination?.workers ?? [] : [])).filter((id) => id !== profile.id) }))} />{profile.display_name} <small>{profile.id}</small></label>)}{routingWorkersUnavailable(selectedDestination.threadId ?? '') && <p className="assistant-task-warning">Open or refresh the selected chat to load its worker list.</p>}{routingThreads === undefined && <p className="assistant-task-muted">Worker list unavailable; choices come from the saved non-media profile catalogue. The host validates this selection.</p>}</fieldset>}</details>}
 
         {task.mode === 'isolated' && taskFinal(task.status) && !archivedExecutions.has(task.id) && <div className="assistant-task-actions">{shouldSuggestArchive(task) && <p className="assistant-task-warning">This terminal worktree is over 14 days old. Archive it to save disk space; the task result and history will remain available.</p>}<button type="button" disabled={busy} onClick={() => void act(task, 'archive')}>Archive isolated worktree</button><span className="assistant-task-muted">Removes the owned worktree and keeps this task’s result and history.</span></div>}
         {task.mode === 'isolated' && archivedExecutions.has(task.id) && <p className="assistant-task-muted">Isolated worktree archived{typeof resultData.worktreeDiskBytes === 'number' ? ` · saved worktree size ${formatBytes(resultData.worktreeDiskBytes)}` : ''}. Task result and history are retained.</p>}
@@ -396,7 +427,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
           {pendingApprovals.map((approval, index) => <span className="assistant-task-pinned-decision" key={`approval-${index}`}>{hasApprovalAction(approval) && <><button type="button" disabled={busy} onClick={() => void decideWait(task, approval, true)}>Approve</button><button type="button" disabled={busy} onClick={() => void decideWait(task, approval, false)}>Deny</button></>}<button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker chat</button></span>)}
           {pendingQuestions.map((questionGroup, index) => { const group = questionGroup && typeof questionGroup === 'object' ? questionGroup as { request?: string; questions?: Question[] } : {}; const requestKey = group.request ?? `legacy-${index}`; return hasQuestionGroup(questionGroup) ? <button key={`question-${index}`} type="button" disabled={busy || !(group.questions ?? []).every((_question, questionIndex) => ((inlineAnswer[`${task.id}:${requestKey}:${questionIndex}`] ?? []).length + (inlineOther[`${task.id}:${requestKey}:${questionIndex}`]?.trim() ? 1 : 0)) > 0)} onClick={() => void answerWait(task, questionGroup)}>Send answers</button> : null; })}
           {pendingQuestions.some((questionGroup) => !hasQuestionGroup(questionGroup)) && <button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker chat</button>}
-          {task.status === 'proposed' && <><button type="button" disabled={busy || !selectedDestination || selectedDestination.workers.length === 0} onClick={() => selectedDestination && void act(task, 'approve', { destination: selectedDestination, newWorkerProfiles: workerProfiles.filter((profile) => selectedDestination.workers.includes(profile.id)), mode: task.mode })}>Approve task</button><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>}
+          {task.status === 'proposed' && <><button type="button" disabled={busy || !selectedDestination || selectedDestination.workers.length === 0} onClick={() => selectedDestination && void act(task, 'approve', { destination: selectedDestination, newWorkerProfiles: selectedDestination.newThread ? workerProfiles.filter((profile) => selectedDestination.workers.includes(profile.id)) : [], mode: task.mode })}>Approve task</button><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>}
           {task.status === 'needs_you' && <><button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker thread</button>{task.mode === 'isolated' && task.attempts.length === 0 && <button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry worker startup</button>}<button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
           {(task.status === 'queued' || task.status === 'running' || task.status === 'applying') && !canReconcileTask(task) && <button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button>}
           {(task.status === 'failed' || task.status === 'interrupted') && !canReconcileTask(task) && <><button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry task</button><button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}

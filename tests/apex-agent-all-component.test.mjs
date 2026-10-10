@@ -165,3 +165,70 @@ test('failed send preserves text typed while waiting', async () => {
   tree = h.render();
   assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Next draft');
 });
+
+
+test('offline and completed projects are never counted as watching', () => {
+  const h = harness({ workspaces: projects, offlineWorkspaceIds: ['mobile'], monitors: [monitor('mobile'), monitor('billing', [], { completed: true })] });
+  const status = textOf(find(h.render(), node => node.props?.className === 'apex-agent-head-row apex-agent-head-context'));
+  assert.match(status, /offline/i); assert.match(status, /complete/i); assert.doesNotMatch(status, /Watching/);
+});
+
+test('evidence opens using its exact owning project and source', async () => {
+  const opened = [];
+  const h = harness({ workspaces: projects, monitors: [monitor('billing', [message('e', 'assistant', 1)])], onOpenEvidence: async (...args) => opened.push(args) });
+  const button = find(h.render(), node => node.type === 'button' && textOf(node).includes('test-report.md'));
+  assert.ok(button); button.props.onClick(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(opened, [['billing', evidence]]);
+});
+
+test('an all-project question reasons globally instead of mutating the last project', async () => {
+  const global = [];
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile'), monitor('billing')], onOverview: async text => global.push(text) });
+  let tree = h.render(); find(tree, node => node.type === 'textarea').props.onChange({ target: { value: "What's blocked everywhere?" } });
+  tree = h.render(); find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(global, ["What's blocked everywhere?"]); assert.equal(h.replies.length, 0);
+});
+
+
+test('mentioning two projects uses global reasoning, but overlapping names stay scoped', async () => {
+  for (const [text, globalExpected] of [['Compare Mobile launch and Billing API', true], ['How is Mobile launch?', false]]) {
+    const global = [];
+    const h = harness({ workspaces: [...projects, { id: 'short', name: 'Mobile' }], monitors: [monitor('mobile'), monitor('billing'), monitor('short')], onOverview: async text => global.push(text) });
+    let tree = h.render(); find(tree, node => node.type === 'textarea').props.onChange({ target: { value: text } });
+    tree = h.render(); find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(global.length, globalExpected ? 1 : 0); assert.equal(h.replies.length, globalExpected ? 0 : 1);
+    if (!globalExpected) assert.equal(h.replies[0][0], 'mobile');
+  }
+});
+
+test('Check now still checks connected active projects when another is paused or offline', async () => {
+  const h = harness({ workspaces: projects, offlineWorkspaceIds: ['short'], monitors: [monitor('mobile'), monitor('billing', [], { paused: true }), monitor('short')] });
+  const button = find(h.render(), node => node.type === 'button' && textOf(node) === 'Check now');
+  assert.equal(button.props.disabled, false); button.props.onClick(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.mutations, [['mobile', 'monitor_check_now', {}]]);
+});
+
+test('shared task reply locks its assignment while drafting and preserves a failed draft', async () => {
+  const sent = [];
+  const first = { id: 'task-1', project: 'Mobile launch', label: 'Parser fix', send: async text => { sent.push(text); throw new Error('Offline task host'); } };
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile')], taskContext: first });
+  let tree = h.render(); find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Keep this task note' } });
+  h.props.taskContext = { id: 'task-2', project: 'Billing API', label: 'Other task', send: async () => assert.fail('draft redirected') };
+  tree = h.render(); assert.match(textOf(tree), /Parser fix/);
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(sent, ['Keep this task note']);
+  assert.equal(find(h.render(), node => node.type === 'textarea').props.value, 'Keep this task note');
+});
+
+test('new message explicitly resets shared task routing without erasing its text', async () => {
+  let cleared = 0;
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile')], taskContext: { id: 'task-1', project: 'Mobile launch', label: 'Task note', send: async () => assert.fail('task context was reset') }, onClearTaskContext: () => { cleared++; h.props.taskContext = null; } });
+  let tree = h.render(); find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Separate message' } }); tree = h.render();
+  find(tree, node => node.type === 'button' && textOf(node) === 'New message').props.onClick(); tree = h.render();
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Separate message'); assert.equal(cleared, 1);
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} }); await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(h.replies, [['mobile', 'Separate message']]);
+});

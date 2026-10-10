@@ -127,3 +127,11 @@ test('old terminal isolated worktrees get an archive suggestion after fourteen d
   assert.equal(shouldSuggestArchive({ mode: 'isolated', status: 'done', updatedAtMs: now - 13 * 24 * 60 * 60 * 1000, resultData: {} }, now), false);
   assert.equal(shouldSuggestArchive({ mode: 'isolated', status: 'done', updatedAtMs: 0, resultData: { archivedAtMs: 1 } }, now), false);
 });
+
+test('handoff retries retain the exact payload and reject another assignment', async () => {
+  const { handoffPreparationArgs } = await import('../src/assistantTaskModel.ts');
+  const owner = { workspaceId: 'a', hostId: 'local', cwd: '/a', conversationId: 'one' };
+  const child = { payload: { requestId: 'batch:0', batchId: 'batch', owner, revision: 3, originalRequest: 'Ask Null', brief: 'Fix login', destination: { threadId: 'chat', workers: ['null'], newThread: false }, mode: 'isolated', reviewCriteria: [] } };
+  assert.equal(handoffPreparationArgs(child, owner), child.payload);
+  for (const changed of [{ workspaceId: 'b' }, { cwd: '/b' }, { hostId: 'remote' }, { conversationId: 'two' }]) assert.throws(() => handoffPreparationArgs(child, { ...owner, ...changed }), /assignment changed/);
+});

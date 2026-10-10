@@ -72,3 +72,10 @@
 .apex-agent-check-failed { border-left: 2px solid #e06c6c; }
 /* Optional full screen: the conversation covers the window below the title bar, still above everything. */
 .apex-agent-dock.apex-agent-float.apex-agent-full { top: 48px; right: 16px; bottom: 16px; left: 16px; width: auto; height: auto; }
+
+/* Task replies expand in the conversation's scroll area, without a second pane. */
+.apex-agent-all .assistant-task-conversation { flex: none; overflow: visible; gap: 10px; }
+.apex-agent-all .assistant-task-conversation .assistant-task-list { flex: none; overflow: visible; padding: 0; }
+.apex-agent-all .assistant-task-conversation .assistant-task-card { height: auto; }
+.apex-agent-all .assistant-task-conversation .assistant-task-detail-scroll { flex: none; max-height: 360px; }
+.apex-agent-all-evidence button { color: var(--accent); background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
