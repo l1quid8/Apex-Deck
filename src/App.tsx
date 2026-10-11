@@ -1901,13 +1901,13 @@ export function App() {
       <header className="titlebar">
         {/* Three groups: the two sides take equal room, so the section tabs sit at the centre. */}
         <div className="titlebar-start">
-        <button className="icon" onClick={() => setRailOpen((open) => !open)} disabled={compactApexAgentDock} aria-label={compactApexAgentDock ? "Workspaces hidden while ApexAgent is open" : railOpen ? "Hide workspaces" : "Show workspaces"} title={compactApexAgentDock ? "Workspaces return when ApexAgent closes" : railOpen ? "Hide workspaces" : "Show workspaces"}>
-          <DeckIcon name="sidebar" />
-        </button>
         <span className="brand">
           <img className="brand-mark" src="/branding/mark.svg" alt="" width="28" height="28" />
           Apex Deck
         </span>
+        <button className="icon" onClick={() => setRailOpen((open) => !open)} disabled={compactApexAgentDock} aria-label={compactApexAgentDock ? "Workspaces hidden while ApexAgent is open" : railOpen ? "Hide workspaces" : "Show workspaces"} title={compactApexAgentDock ? "Workspaces return when ApexAgent closes" : railOpen ? "Hide workspaces" : "Show workspaces"}>
+          <DeckIcon name="sidebar" />
+        </button>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
         {/* Just left of the tabs: it grows away from them, so neither the tabs nor the right-hand controls move. */}
         <AttentionMenu
