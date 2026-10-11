@@ -14,6 +14,7 @@ import { PersonalCall } from './PersonalCall.tsx';
 import './personal-call.css';
 import { ApexAgentMessageActions, ApexAgentReplyQuote } from './ApexAgentMessageActions.tsx';
 import type { MessageQuote, MessageReaction } from './apexAgentModel.ts';
+import { messageStateKey, retryMessageText } from './apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from './apexAgentQuote.ts';
 import { ApexAgentComposerTools, type ApexAgentComposerToolsHandle } from './ApexAgentComposerTools.tsx';
 import { findTrigger } from './composerMenu.ts';
@@ -485,6 +486,16 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       </article>;
     })}
   </div>;
+  const restoreMessage = (lane: string, value: string) => {
+    if (attachmentLane && attachmentLane !== lane) {
+      setError('Remove the current attachments before reverting a message from another destination.');
+      return;
+    }
+    if (text.trim() && text !== value && !window.confirm('Replace the current draft with this message?')) return;
+    setError('');
+    setText(value); setReplyQuote(null); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(lane); setDraftFallback(lane);
+    requestAnimationFrame(() => composerInput.current?.focus());
+  };
   const composerLane = attachmentLane ?? replyQuote?.laneId ?? target ?? PERSONAL;
 
   return <TaskViewContext.Provider value={taskContextValue}><section className="apex-agent widget apex-agent-all" role="region" aria-label="ApexAgent" onKeyDown={onEscape}>
@@ -492,7 +503,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       <div className="apex-agent-head-row">
         <div className="apex-agent-brand"><h1>ApexAgent</h1></div>
         <div className="apex-agent-head-actions">{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label="More ApexAgent options">⋯</summary><div role="menu">
-          {!!monitors.length && <button type="button" role="menuitem" disabled={busy} onClick={() => void run(async () => { await batch(active.filter((monitor) => monitor.paused === anyPaused), 'monitor_pause', { paused: !anyPaused }); })}>{anyPaused ? 'Resume project watching' : 'Pause project watching'}<small>{anyPaused ? 'Start checking your project folders again.' : 'Stops checks of your project folders. The assistant keeps working.'}</small></button>}
+          {!!monitors.length && <button type="button" role="menuitem" disabled={busy} onClick={() => void run(async () => { await batch(active.filter((monitor) => monitor.paused === anyPaused), 'monitor_pause', { paused: !anyPaused }); })}>{anyPaused ? 'Resume project watching' : 'Pause project watching'}{anyPaused && <small>Start checking your project folders again.</small>}</button>}
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy || !active.some((monitor) => !monitor.paused)} onClick={() => void run(async () => { await batch(active.filter((monitor) => !monitor.paused), 'monitor_check_now', {}); })}>Check now</button>}
           {onClear && !!entries.length && <button type="button" role="menuitem" onClick={() => { if (window.confirm('Hide this conversation on this Mac? Tasks and notifications stay available.')) onClear(); }}>Clear conversation</button>}
           {assistant && (['activity', 'scheduled', 'memory', 'rules', 'settings', 'costs', 'connections'] as const).map((name) => <button type="button" role="menuitem" key={name} onClick={(event) => openPanel(name, event)}>{{ activity: 'Activity', scheduled: 'Scheduled', memory: 'Memory', rules: 'Rules', settings: 'Assistant settings', costs: 'Costs', connections: 'Connections' }[name]}</button>)}
@@ -520,25 +531,33 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           const task = taskOf(item.taskId);
           if (task && collapsesToLink(item)) return linkLine.get(task.id) === item.id ? <p className="apex-agent-task-line" key={`${workspaceId}:${message.id}`}><button type="button" className="apex-agent-task-link" data-status={task.status} onClick={() => openTask(personalTaskKey(assistant!.hostId, task.id))}>{taskLinkText(task)}</button></p> : null;
           const kindClass = item.kind === 'helper' ? ' apex-agent-helper' : item.kind === 'notice' ? ' apex-agent-notice' : '';
-          return <article className={`assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`} key={`${workspaceId}:${message.id}`}>
+          const personalBubble = `assistant-chat-message ${message.role} apex-agent-personal${item.role === 'system' ? ' apex-agent-app-note' : ''}${kindClass}`;
+          const personalBody = <>
             <small className="apex-agent-message-meta">{item.role === 'human' ? 'You' : item.role === 'system' ? 'App' : personal!.name}{lanes.length > 1 && <> · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(PERSONAL); setDraftFallback(PERSONAL); }} title={`Reply to ${personal!.name}`}>{personal!.hostName}</button></>}{item.kind === 'helper' && <span className="apex-agent-helper-label">Helper</span>}</small>
             {item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
-            {(item.role === 'human' || item.role === 'assistant') && <ApexAgentMessageActions reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
-              const quote = { messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL };
-              setReplyQuote(quote); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(PERSONAL); setDraftFallback(PERSONAL); requestAnimationFrame(() => composerInput.current?.focus());
-            } : undefined} onToggleReaction={onReact ? (emoji, enabled) => run(() => onReact(PERSONAL, item.id, emoji, enabled)) : undefined} />}
-          </article>;
+          </>;
+          const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
+            const quote = { messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL };
+            setReplyQuote(quote); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(PERSONAL); setDraftFallback(PERSONAL); requestAnimationFrame(() => composerInput.current?.focus());
+          } : undefined} onToggleReaction={onReact ? (emoji, enabled) => run(() => onReact(PERSONAL, item.id, emoji, enabled)) : undefined} /> : null;
+          return personalActions
+            ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={personalBubble}>{personalBody}</div>{personalActions}</article>
+            : <article className={personalBubble} key={`${workspaceId}:${message.id}`}>{personalBody}</article>;
         }
-        return <article className={`assistant-chat-message ${message.role}`} key={`${workspaceId}:${message.id}`}>
-        <small className="apex-agent-message-meta">{message.role === 'human' ? 'You' : 'ApexAgent'} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(workspaceId); setDraftFallback(workspaceId); }} title={`Reply about ${project}`}>{project}</button>{'kind' in message && message.kind === 'update' && <span className="apex-agent-helper-label">Project update</span>}</small>
-        {message.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
-        {'citations' in entry && (entry.citations as { workspaceId: string; evidence: MonitorEvidence }[] | undefined)?.map((cite, index) => <div key={index}>{evidenceList([cite.evidence], onOpenEvidence && ((item) => void run(() => onOpenEvidence(cite.workspaceId, item))))}</div>)}
-        {evidenceList(message.evidence ?? [], onOpenEvidence && ((item) => void run(() => onOpenEvidence(workspaceId, item))))}
-        {(message.role === 'human' || message.role === 'assistant') && <ApexAgentMessageActions reactions={message.reactions} disabled={busy || offlineWorkspaceIds.includes(workspaceId)} onReply={!attachmentLane || attachmentLane === workspaceId ? () => {
+        const projectBubble = `assistant-chat-message ${message.role}`;
+        const projectBody = <>
+          <small className="apex-agent-message-meta">{message.role === 'human' ? 'You' : 'ApexAgent'} · <button type="button" className="apex-agent-project-tag" onClick={() => { setFocus(workspaceId); setDraftFallback(workspaceId); }} title={`Reply about ${project}`}>{project}</button>{'kind' in message && message.kind === 'update' && <span className="apex-agent-helper-label">Project update</span>}</small>
+          {message.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
+          {'citations' in entry && (entry.citations as { workspaceId: string; evidence: MonitorEvidence }[] | undefined)?.map((cite, index) => <div key={index}>{evidenceList([cite.evidence], onOpenEvidence && ((item) => void run(() => onOpenEvidence(cite.workspaceId, item))))}</div>)}
+          {evidenceList(message.evidence ?? [], onOpenEvidence && ((item) => void run(() => onOpenEvidence(workspaceId, item))))}
+        </>;
+        const projectActions = (message.role === 'human' || message.role === 'assistant') ? <ApexAgentMessageActions mine={message.role === 'human'} text={message.text} at={message.at} stateKey={messageStateKey(workspaces.find((w) => w.id === workspaceId)?.hostId ?? '', workspaceId, message.id)} onRetry={message.role === 'assistant' ? () => workspaceId === '*' ? onOverview!(retryMessageText(message.text)) : onReply(workspaceId, retryMessageText(message.text)) : undefined} onRevert={message.role === 'human' ? () => restoreMessage(workspaceId, message.text) : undefined} reactions={message.reactions} disabled={busy || offlineWorkspaceIds.includes(workspaceId)} onReply={!attachmentLane || attachmentLane === workspaceId ? () => {
           const quote = { messageId: message.id, author: message.role === 'human' ? 'You' : project, text: message.text, laneId: workspaceId };
           setReplyQuote(quote); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(workspaceId); setDraftFallback(workspaceId); requestAnimationFrame(() => composerInput.current?.focus());
-        } : undefined} onToggleReaction={onReact && monitors.some((monitor) => monitor.workspaceId === workspaceId) ? (emoji, enabled) => run(() => onReact(workspaceId, message.id, emoji, enabled)) : undefined} />}
-      </article>;
+        } : undefined} onToggleReaction={onReact && monitors.some((monitor) => monitor.workspaceId === workspaceId) ? (emoji, enabled) => run(() => onReact(workspaceId, message.id, emoji, enabled)) : undefined} /> : null;
+        return projectActions
+          ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={projectBubble}>{projectBody}</div>{projectActions}</article>
+          : <article className={projectBubble} key={`${workspaceId}:${message.id}`}>{projectBody}</article>;
       })}
       {!filterWorkspaceId && personal?.problem && <article className="assistant-chat-message assistant"><small>{personal.name} · {personal.hostName}</small><p>{personal.problem}</p></article>}
       {!filterWorkspaceId && personal?.setUp && !monitors.length && <div className="apex-agent-intro"><strong>Your assistant can live on {personal.hostName}.</strong><p>It keeps one conversation that stays there when this Mac is closed. Choose “Set up assistant on {personal.hostName}” from ⋯.</p></div>}

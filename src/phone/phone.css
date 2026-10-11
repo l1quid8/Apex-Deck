@@ -976,6 +976,8 @@
 }
 .ph-app .apex-agent-all .assistant-chat-message.human { align-self: flex-end; }
 .ph-app .apex-agent-all .assistant-chat-message.assistant { align-self: flex-start; }
+.ph-app .apex-agent-all .apex-agent-message-row { max-width: 94%; }
+.ph-app .apex-agent-all .apex-agent-message-row > .assistant-chat-message { max-width: 100%; align-self: auto; }
 .ph-app .apex-agent-all .assistant-chat-message > small { display: block; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 .ph-app .apex-agent-all .assistant-chat-message > p,
 .ph-app .apex-agent-all .assistant-chat-message .apex-agent-message-body {

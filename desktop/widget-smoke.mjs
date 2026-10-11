@@ -19,6 +19,62 @@ export async function runSmoke(win, { browser }) {
   const openProject=async()=>{await click('.apex-widget-hit');await until('dock open',()=>page(`return Boolean(document.querySelector('.apex-agent-dock'))`));await page(`if(document.querySelector('.apex-agent-all')){const item=[...document.querySelectorAll('.apex-agent-more [role="menuitem"]')].find(e=>/^(Sources for|Watch) Mobile launch/.test(e.textContent.trim()));if(!item)throw Error('Missing Mobile launch menu item');item.click();}return true;`);};
   await until('connected UI',()=>page(`return Boolean(window.__deck&&!document.querySelector('.loading')&&document.querySelector('.apex-widget-hit'))`));
   await until('saved projects loaded',()=>page(`return Boolean(document.querySelector('[data-workspace="launch"]'))`)).catch(async error=>{console.error('startup diagnostics',await page('return {text:document.body.innerText,session:await __deck.backend.sessionLoad()}'));throw error;});
+  if (process.env.APEX_AGENT_ACTIONS_SMOKE === '1') {
+    win.setSize(1200,850); win.show(); win.focus();
+    await page(`const session=await __deck.backend.sessionLoad();const workspace=session.workspaces.find(w=>w.id==='launch');const profile=session.profiles.find(p=>p.id==='widget-test');await __deck.backend.call('monitor_assign',{workspaceId:'launch',cwd:workspace.path,hostId:'local',text:'Track launch readiness.',files:['test-report.md'],threads:[],profile});return true;`);
+    await until('first check',async()=>{const m=await monitor();return m&&!m.activeCheck;});
+    win.webContents.reload();
+    await until('ready',()=>page(`return Boolean(window.__deck&&document.querySelector('.apex-widget-hit'))`));
+    await click('.apex-widget-hit');
+    await until('combined composer',()=>page(`return Boolean(document.querySelector('.apex-agent-all-composer textarea'))`));
+    await type('.apex-agent-all-composer textarea','Why is SSO blocking launch?'); await click('.apex-agent-all-composer .primary');
+    await until('answer controls',()=>page(`return Boolean(document.querySelector('[aria-label="Retry answer"]'))`));
+    await step('pause helper text absent',async()=>{
+      await click('[aria-label="More ApexAgent options"]');
+      assert.equal(await page(`const b=[...document.querySelectorAll('.apex-agent-more button')].find(b=>b.textContent==='Pause project watching');return Boolean(b&&!b.querySelector('small'));`),true);
+      await click('[aria-label="More ApexAgent options"]');
+    });
+    await step('copy writes exact message to native clipboard',async()=>{
+      const copied=await page(`const b=document.querySelector('[aria-label="Copy message"]');window.__copiedText=b.closest('article').querySelector('p,.apex-agent-message-body').textContent;b.click();return __copiedText;`);
+      await until('clipboard',async()=> { const { clipboard } = await import('electron'); const actual=await clipboard.readText(); return actual===copied; });
+    });
+    await step('pin persists through reload',async()=>{
+      await click('[aria-label="Pin message"]');
+      await until('selected pin',()=>page(`return Boolean(document.querySelector('[aria-label="Unpin message"][aria-pressed="true"]'))`));
+      win.webContents.reload();await until('reloaded avatar',()=>page(`return Boolean(document.querySelector('.apex-widget-hit'))`));await click('.apex-widget-hit');
+      await until('persisted pin',()=>page(`return Boolean(document.querySelector('.apex-agent-message-pinned [aria-label="Unpin message"]'))`));
+      await click('[aria-label="Unpin message"]');
+    });
+    await step('collapse and expand change message visibility',async()=>{
+      await click('[aria-label="Collapse message"]');
+      assert.equal(await page(`const a=document.querySelector('.apex-agent-message-collapsed');return a&&getComputedStyle(a.querySelector('p,.apex-agent-message-body')).display==='none';`),true);
+      await click('[aria-label="Expand message"]');
+      assert.equal(await page(`return document.querySelector('.apex-agent-message-collapsed')===null;`),true);
+    });
+    await step('revert restores human text to composer',async()=>{
+      await page(`const buttons=[...document.querySelectorAll('[aria-label="Revert to composer"]')];buttons.at(-1).click();return true;`);await sleep(80);assert.equal(await page(`return document.querySelector('.apex-agent-all-composer textarea').value;`),'Why is SSO blocking launch?');await type('.apex-agent-all-composer textarea','');
+    });
+    await step('reply carries selected quote',async()=>{
+      await click('[aria-label="Reply to this message"]');assert.equal(await page(`return Boolean(document.querySelector('[aria-label="Quoted message"]'));`),true);await click('[aria-label="Remove quoted message"]');
+    });
+    await step('emoji reaction saves and removes on host',async()=>{
+      await click('[aria-label="Add reaction"]');await click('[aria-label="React 👍"]');await until('saved reaction',()=>page(`return Boolean(document.querySelector('[aria-label="Remove reaction 👍"]'))`));
+      assert.ok((await monitor()).messages.some(m=>m.reactions?.includes('👍')));
+      await click('[aria-label="Remove reaction 👍"]');await until('removed reaction',async()=>!(await monitor()).messages.some(m=>m.reactions?.includes('👍')));
+    });
+    await step('retry requests another answer in same durable conversation',async()=>{
+      const before=await monitor();await click('[aria-label="Retry answer"]');
+      const after=await until('retry saved',async()=>{const m=await monitor();return m.messages.some(msg=>msg.role==='human'&&msg.text.includes('Please give another answer'))&&!m.activeCheck&&m;});
+      assert.equal(after.conversationId,before.conversationId);assert.ok(after.messages.length>before.messages.length);
+    });
+    await step('timestamp and no fork',async()=>{
+      assert.ok(await page(`return document.querySelector('.apex-agent-message-actions time')?.dateTime;`));assert.equal(await page(`return Boolean(document.querySelector('.apex-agent-all [aria-label*="Fork"]'));`),false);
+    });
+    await step('actions sit under the bubble',async()=>{
+      assert.equal(await page(`const row=document.querySelector('.apex-agent-message-row.assistant');const bubble=row?.querySelector(':scope > .assistant-chat-message');const actions=row?.querySelector(':scope > .apex-agent-message-actions');const inside=!!bubble?.querySelector('.apex-agent-message-actions');const bordered=actions&&getComputedStyle(actions.querySelector('.msg-action')).borderTopWidth==='0px';return Boolean(bubble&&actions&&!inside&&(actions.compareDocumentPosition(bubble)&Node.DOCUMENT_POSITION_PRECEDING)&&bordered&&!document.querySelector('.apex-agent-all-composer .apex-agent-message-actions'));`),true);
+    });
+    await shot('message-actions-installed'); console.log(`message actions smoke: ${passed} passed, 0 failed`);return 0;
+  }
   win.setSize(1200,850); win.show(); win.focus(); await sleep(150);
   await step('keyboard opens the persistent assistant',async()=>{
     await page(`window.__widgetKeys=[];window.addEventListener('keydown',e=>__widgetKeys.push({key:e.key,code:e.code,defaultPrevented:e.defaultPrevented}));document.querySelector('.apex-widget-hit').focus();return true;`);

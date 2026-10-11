@@ -1,15 +1,73 @@
-.apex-agent-message-actions { display: flex; align-items: center; gap: 5px; margin-top: 3px; opacity: .72; }
-.apex-agent-message-actions button { min-width: 28px; min-height: 26px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); background: transparent; cursor: pointer; }
-.apex-agent-message-actions button:hover, .apex-agent-message-actions button[aria-pressed="true"] { background: var(--surface-raised, rgba(127,127,127,.18)); }
-.apex-agent-message-actions button[aria-pressed="true"] { border-color: var(--accent); }
-.apex-agent-message-actions button:disabled { opacity: .45; cursor: default; }
-.apex-agent-reactions { position: relative; display: flex; gap: 3px; }
-.apex-agent-reaction-options { position: absolute; z-index: 5; left: 0; bottom: 30px; display: flex; gap: 3px; padding: 4px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel, var(--background)); box-shadow: 0 4px 16px rgba(0,0,0,.18); }
-.apex-agent-reaction-selected { min-width: 25px !important; min-height: 24px !important; }
-.apex-agent-reply-quote { border-left: 2px solid var(--accent); margin: 0 0 7px; padding: 5px 9px; background: rgba(127,127,127,.08); border-radius: 0 7px 7px 0; }
+/* The action row sits under the bubble, outside its border, like a thread message. */
+.apex-agent-all .assistant-chat-transcript > .apex-agent-message-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 88%;
+  align-self: flex-start;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.apex-agent-all .assistant-chat-transcript > .apex-agent-message-row.human {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.apex-agent-all .apex-agent-message-row > .assistant-chat-message {
+  max-width: 100%;
+  align-self: auto;
+}
+.apex-agent-message-row.human > .apex-agent-message-actions { justify-content: flex-end; }
+.apex-agent-message-row.human .msg-action.quote svg { transform: scaleX(-1); }
+
+.apex-agent-message-actions { flex: none; }
+.apex-agent-message-actions .msg-action,
+.apex-agent-message-actions .message-time { opacity: 1; }
+.apex-agent-reactions { position: relative; display: flex; gap: 2px; align-items: center; }
+.apex-agent-reaction-options {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  bottom: calc(100% + 4px);
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel, var(--background));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+}
+.apex-agent-message-row.human .apex-agent-reaction-options { left: auto; right: 0; }
+.apex-agent-message-actions [role="alert"] { color: var(--danger, #f87171); font-size: 11px; padding: 0 6px; }
+.apex-agent-reply-quote { border-left: 2px solid var(--accent); margin: 0 0 7px; padding: 5px 9px; background: rgba(127, 127, 127, .08); border-radius: 0 7px 7px 0; }
 .apex-agent-reply-quote > div { display: flex; justify-content: space-between; align-items: center; color: var(--muted); }
 .apex-agent-reply-quote button { border: 0; background: none; color: inherit; cursor: pointer; }
 .apex-agent-reply-quote blockquote { margin: 4px 0 0; max-height: 4.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9em; }
+.apex-agent-message-pinned > .apex-agent-message-bubble,
+.apex-agent-message-pinned > .assistant-chat-message { box-shadow: inset 3px 0 0 var(--accent); }
+.apex-agent-message-collapsed .apex-agent-message-body,
+.apex-agent-message-collapsed > .apex-agent-message-bubble > p,
+.apex-agent-message-collapsed > .assistant-chat-message > p,
+.apex-agent-message-collapsed .apex-agent-all-evidence { display: none; }
+
+@media (hover: hover) {
+  .apex-agent-message-actions .msg-action,
+  .apex-agent-message-actions .message-time { opacity: 0; }
+  .apex-agent-message-row:hover > .apex-agent-message-actions .msg-action,
+  .apex-agent-message-row:hover > .apex-agent-message-actions .message-time,
+  .apex-agent-message-actions:focus-within .msg-action,
+  .apex-agent-message-actions:focus-within .message-time,
+  .apex-agent-message-actions.held .msg-action,
+  .apex-agent-message-actions.held .message-time,
+  .apex-agent-message-actions .msg-action.pin-action[aria-pressed="true"],
+  .apex-agent-message-actions .apex-agent-reaction-selected { opacity: 1; }
+}
 @media (max-width: 700px) {
-  .apex-agent-message-actions button { min-width: 36px; min-height: 36px; }
+  .apex-agent-message-actions { flex-wrap: wrap; }
+  .apex-agent-message-actions .msg-action { min-width: 36px; height: 36px; }
+}
+@media (max-width: 380px) {
+  .apex-agent-all .assistant-chat-transcript > .apex-agent-message-row { max-width: 100%; }
 }

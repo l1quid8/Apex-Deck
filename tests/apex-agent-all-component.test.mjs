@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
 import { TaskViewContext, personalTaskGroup, personalTaskKey } from '../src/apexAgentTaskView.ts';
+import { messageStateKey, retryMessageText } from '../src/apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from '../src/apexAgentQuote.ts';
 import { findTrigger } from '../src/composerMenu.ts';
 import { parseComposer } from '../src/commands.ts';
@@ -39,7 +40,7 @@ function harness(props) {
     useEffect() { cursor++; },
     useCallback(fn) { cursor++; return fn; },
   };
-  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'parseComposer', 'formatApexAgentQuote', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, parseComposer, formatApexAgentQuote);
+  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
@@ -680,4 +681,68 @@ test('the ⋯ menu names a watched project as Sources · name and offers Watch f
   assert.match(text, /Sources · Mobile launch/);
   assert.match(text, /Watch Billing API…/);
   assert.doesNotMatch(text, /Sources for/);
+});
+
+test('Revert rejects a different project while attachments lock the draft destination', async () => {
+  for (const attachmentState of [
+    { paths: ['/billing/report.md'], pending: false, hasErrors: false },
+    { paths: [], pending: true, hasErrors: false },
+    { paths: [], pending: false, hasErrors: true },
+  ]) {
+    const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('mobile-human', 'human', 10)]), monitor('billing', [message('billing-human', 'human', 20)])] });
+    let tree = h.render();
+    find(tree, node => node.type === ApexAgentComposerToolsStub).props.onAttachmentState(attachmentState);
+    tree = h.render();
+    find(tree, node => node.type === ApexAgentMessageActionsStub && node.props.text === 'Message mobile-human').props.onRevert();
+    tree = h.render();
+    assert.equal(find(tree, node => node.type === 'textarea').props.value, '', 'The conflicting message must not enter the Billing draft');
+    assert.match(textOf(find(tree, node => node.props?.role === 'alert')), /Remove.*attachments.*reverting/i);
+    assert.match(textOf(tree), /About Billing API.*fixed for this reply/);
+    find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.replies.length, 0);
+
+    find(tree, node => node.type === ApexAgentComposerToolsStub).props.onAttachmentState({ paths: [], pending: false, hasErrors: false });
+    tree = h.render();
+    find(tree, node => node.type === ApexAgentMessageActionsStub && node.props.text === 'Message mobile-human').props.onRevert();
+    tree = h.render();
+    assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Message mobile-human');
+    find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.replies[0][0], 'mobile');
+  }
+});
+
+test('a rejected Revert preserves the current draft and same-project Revert keeps attachments', () => {
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('mobile-human', 'human', 10)]), monitor('billing', [message('billing-human', 'human', 20)])] });
+  let tree = h.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Message billing-human' } });
+  tree = h.render();
+  find(tree, node => node.type === ApexAgentComposerToolsStub).props.onAttachmentState({ paths: ['/billing/report.md'], pending: false, hasErrors: false });
+  tree = h.render();
+  find(tree, node => node.type === ApexAgentMessageActionsStub && node.props.text === 'Message mobile-human').props.onRevert();
+  tree = h.render();
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Message billing-human');
+  find(tree, node => node.type === ApexAgentMessageActionsStub && node.props.text === 'Message billing-human').props.onRevert();
+  tree = h.render();
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Message billing-human');
+  assert.match(textOf(tree), /About Billing API.*fixed for this reply.*1 attachment/);
+  assert.equal(find(tree, node => node.props?.role === 'alert'), null);
+});
+
+test('personal Retry uses personal host lane and Revert restores its draft', async () => {
+  const { lane, calls } = personalLane([], [pm('h1', 'human', 'chat', 10, 'Personal question'), pm('a1', 'assistant', 'chat', 11, 'Personal answer')]);
+  const h = harness({ workspaces: projects, monitors: [], personal: lane });
+  let tree = h.render();
+  await find(tree, node => node.type === ApexAgentMessageActionsStub && node.props.onRetry).props.onRetry();
+  assert.equal(calls[0][0], 'send'); assert.ok(calls[0][1].includes('Personal answer'));
+  find(tree, node => node.type === ApexAgentMessageActionsStub && node.props.onRevert).props.onRevert();
+  tree = h.render(); assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Personal question');
+});
+
+test('Retry on a cross-project answer uses the overview route', async () => {
+  const calls = [];
+  const h = harness({ workspaces: projects, monitors: [], onOverview: async text => calls.push(text), overviewEntries: [{ workspaceId: '*', project: 'All projects', message: message('overview', 'assistant', 10) }] });
+  await find(h.render(), node => node.type === ApexAgentMessageActionsStub && node.props.onRetry).props.onRetry();
+  assert.equal(calls.length, 1); assert.equal(h.replies.length, 0);
 });
