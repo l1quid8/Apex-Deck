@@ -78,13 +78,34 @@ function listenWeb(Recognition: new () => WebRecognizer, onPartial: (text: strin
   });
 }
 
+type VoiceInfo = { name: string; lang: string; localService?: boolean; default?: boolean; voiceURI?: string };
+
+/** Picks the most natural English voice: iOS "Premium"/"Enhanced" downloads first, then the neural-sounding "Siri"/"Ava"/"Zoe"/"Evan" family, never the novelty or compact robotic ones. */
+export function bestVoice<T extends VoiceInfo>(voices: T[], lang = "en-US"): T | undefined {
+  const base = lang.split("-")[0].toLowerCase();
+  const same = voices.filter((voice) => voice.lang.toLowerCase().replace("_", "-").startsWith(base));
+  const score = (voice: T) => {
+    const id = `${voice.name} ${voice.voiceURI ?? ""}`.toLowerCase();
+    let points = 0;
+    if (/premium/.test(id)) points += 100;
+    else if (/enhanced/.test(id)) points += 80;
+    if (/siri|\bava\b|\bzoe\b|\bevan\b|\bnicky\b|\bsamantha\b|\ballison\b|\bsusan\b/.test(id)) points += 30;
+    if (/compact/.test(id)) points -= 40;
+    if (/novelty|bad news|bubbles|cellos|whisper|zarvox|trinoids|albert|fred|junior|ralph|organ|boing|jester|superstar|wobble|good news|bells/.test(id)) points -= 200;
+    if (voice.lang.toLowerCase().replace("_", "-") === lang.toLowerCase()) points += 10;
+    if (voice.localService) points += 2;
+    return points;
+  };
+  return [...same].sort((a, b) => score(b) - score(a))[0];
+}
+
 /** Picks the best speech support this runtime has, or reports that listening is unavailable. */
 export function getSpeech(): Speech {
   const win = globalThis as unknown as Record<string, unknown>;
   const plugin = (win.Capacitor as { Plugins?: { SpeechRecognition?: CapacitorSpeech } } | undefined)?.Plugins?.SpeechRecognition;
   const Recognition = (win.SpeechRecognition ?? win.webkitSpeechRecognition) as (new () => WebRecognizer) | undefined;
-  const synth = win.speechSynthesis as { speak(u: unknown): void; cancel(): void } | undefined;
-  const Utterance = win.SpeechSynthesisUtterance as (new (text: string) => { onend: (() => void) | null; onerror: (() => void) | null }) | undefined;
+  const synth = win.speechSynthesis as { speak(u: unknown): void; cancel(): void; getVoices?(): VoiceInfo[] } | undefined;
+  const Utterance = win.SpeechSynthesisUtterance as (new (text: string) => { onend: (() => void) | null; onerror: (() => void) | null; voice?: unknown; rate?: number; pitch?: number; lang?: string }) | undefined;
 
   let recognizer: WebRecognizer | null = null;
   let resolveSpeak: (() => void) | null = null;
@@ -107,6 +128,10 @@ export function getSpeech(): Speech {
         const done = () => { if (resolveSpeak === done) resolveSpeak = null; resolve(); };
         resolveSpeak = done;
         const utterance = new Utterance(spoken);
+        utterance.lang = "en-US";
+        const voice = bestVoice(synth.getVoices?.() ?? []);
+        if (voice) utterance.voice = voice;
+        utterance.rate = 0.97;
         utterance.onend = done;
         utterance.onerror = done;
         try { synth.speak(utterance); } catch { done(); }
