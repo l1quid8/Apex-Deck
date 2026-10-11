@@ -90,11 +90,9 @@
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .12), 0 14px 38px -28px rgb(0 0 0 / .7);
 }
 :root[data-deck-theme="glass"] .thread-details { border-left-color: var(--deck-edge); }
-/* One frame for every surface: the sidebar, the panes and the docked details
-   panel float at the same distance from the title bar, the window edges and
-   each other, on every skin including Classic. 14px matches the gap between
-   panes (GAP in PaneLayout.tsx). */
-:root { --deck-gap: 14px; }
+/* One frame for every surface: the sidebar, panes and docked details share
+   the same compact gap on every skin, including Classic. */
+:root { --deck-gap: 8px; }
 :root .canvas { padding: var(--deck-gap); }
 :root :is(.rail, .thread-details.docked) {
   margin-block: var(--deck-gap);
