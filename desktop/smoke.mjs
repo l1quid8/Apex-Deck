@@ -348,27 +348,49 @@ export async function runSmoke(win, { sidecar, browser }) {
     await page(`document.querySelector('button[aria-label="Close thread details"]').click(); return true;`);
   });
 
-  await step('Add bot stays on screen and a choice remains clickable in a short window', async () => {
+  await step('Add bot escapes pane clipping in classic and glass at short and tall sizes', async () => {
     const [width, height] = win.getContentSize();
+    const theme = await page(`return document.documentElement.dataset.deckTheme ?? null`);
     try {
-      win.setContentSize(900, 600);
-      await sleep(300);
-      await page(`document.querySelector('.composer .chip-add').click(); return true;`);
-      await until('the add-bot choices', () => page(`return document.querySelectorAll('.roster-pop .quick-add-tools [role="radio"]').length > 0`));
-      const problem = await page(`
-        const form = document.querySelector('.roster-pop .quick-add');
-        const rect = form.getBoundingClientRect();
-        if (rect.top < 8 || rect.bottom > innerHeight - 8) return 'form outside viewport: ' + JSON.stringify({ top: rect.top, bottom: rect.bottom, height: innerHeight });
-        const first = form.querySelector('.quick-add-tools [role="radio"]');
-        first.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        const r = first.getBoundingClientRect();
-        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-        if (!first.contains(hit)) return 'first add-bot choice is not clickable: ' + JSON.stringify({ target: first.outerHTML, hit: hit?.outerHTML, rect: { left:r.left,top:r.top,right:r.right,bottom:r.bottom }, viewport:{ width:innerWidth,height:innerHeight } });
-        first.click();
-        return '';`);
-      if (problem) throw new Error(problem);
-      await until('the chosen add-bot tool', () => page(`return Boolean(document.querySelector('.roster-pop .quick-add-tools [role="radio"][aria-checked="true"]'))`));
+      for (const appearance of ['classic', 'glass']) {
+        await page(`document.documentElement.dataset.deckTheme = ${JSON.stringify(appearance)}; return true;`);
+        for (const [w, h] of [[900, 600], [1200, 800]]) {
+          win.setContentSize(w, h);
+          await sleep(300);
+          await page(`document.querySelector('.composer .chip-add').click(); return true;`);
+          await until('the add-bot choices', () => page(`return document.querySelectorAll('.roster-pop .quick-add-tools [role="radio"]').length > 0`));
+          const problem = await page(`
+            const form = document.querySelector('.roster-pop .quick-add');
+            if (form.closest('.pane')) return 'add-bot menu is trapped inside the clipping thread pane';
+            const rect = form.getBoundingClientRect();
+            if (rect.top < 8 || rect.bottom > innerHeight - 8 || rect.left < 0 || rect.right > innerWidth) return 'form outside viewport';
+            const pane = document.querySelector('.composer .chip-add').closest('.pane').getBoundingClientRect();
+            const points = [
+              [rect.left + rect.width / 2, rect.top + 4],
+              [rect.left + 4, rect.top + rect.height / 2],
+              [rect.right - 4, rect.top + rect.height / 2],
+            ].filter(([x, y]) => x < pane.left || x > pane.right || y < pane.top || y > pane.bottom);
+            if (!points.length) return 'fixture does not extend the menu beyond the pane boundary';
+            for (const [x, y] of points) {
+              const hit = document.elementFromPoint(x, y);
+              if (!form.contains(hit)) return 'menu clipped outside pane: ' + JSON.stringify({ x, y, hit: hit?.outerHTML });
+            }
+            const first = form.querySelector('.quick-add-tools [role="radio"]');
+            first.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            const r = first.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            if (!first.contains(hit)) return 'first add-bot choice is not clickable: ' + JSON.stringify({ hit: hit?.outerHTML });
+            first.click();
+            return '';`);
+          if (problem) throw new Error(appearance + ' at ' + w + 'x' + h + ': ' + problem);
+          await until('the chosen add-bot tool', () => page(`return Boolean(document.querySelector('.roster-pop .quick-add-tools [role="radio"][aria-checked="true"]'))`));
+          if (appearance === 'glass' && w === 900) fs.writeFileSync('/tmp/apex-add-bot-smoke.png', (await contents.capturePage()).toPNG());
+          await page(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`);
+          await until('the add-bot menu to close', () => page(`return !document.querySelector('.roster-pop')`));
+        }
+      }
     } finally {
+      await page(`const theme = ${JSON.stringify(theme)}; if (theme === null) delete document.documentElement.dataset.deckTheme; else document.documentElement.dataset.deckTheme = theme; return true;`);
       win.setContentSize(width, height);
     }
   });

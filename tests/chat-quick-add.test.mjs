@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+
+const { transform } = createRequire(import.meta.url)('sucrase');
+const source = fs.readFileSync(new URL('../src/ChatPane.tsx', import.meta.url), 'utf8');
+
+test('the roster Add bot dialog escapes the thread pane into the document body', () => {
+  const expression = source.split('\n').find(line => line.includes('{quickAdd === "roster" && rosterAnchor &&'))?.trim().slice(1, -1);
+  assert.ok(expression, 'roster dialog render exists');
+  const compiled = transform(`return (${expression});`, { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
+  const React = { createElement: (type, props, ...children) => ({ type, props, children }) };
+  const body = {};
+  const menu = {};
+  const render = new Function('React', 'quickAdd', 'rosterAnchor', 'quickAddMenu', 'window', 'document', 'createPortal', compiled);
+  const result = render(React, 'roster', { left: 20, bottom: 100 }, menu, { innerHeight: 600 }, { body }, (child, target) => ({ child, target }));
+  assert.equal(result.target, body, 'fixed dialog must escape clipping and backdrop-filter ancestors');
+  assert.equal(result.child.props.role, 'dialog');
+  assert.equal(result.child.props.style.left, 20);
+  assert.equal(result.child.props.style.bottom, 100);
+  assert.equal(result.child.children[0], menu);
+});
