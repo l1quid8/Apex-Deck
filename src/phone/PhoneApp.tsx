@@ -3,11 +3,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { botChangeGate, botSendGate } from "../phoneBots";
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
-import { ApexAgent } from "../ApexAgent";
+import { ApexAgentSources } from "../ApexAgentSources";
 import { ApexAgentAll } from "../ApexAgentAll";
 import { usePersonalAssistant, type PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
-import { assistantPaneForOwner, currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "../assistantRegistry";
+import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
 import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
@@ -1361,37 +1361,21 @@ export function PhoneApp() {
           </div>
         )}
         {personalOpen && personal?.assistant && <div className="apex-agent-backdrop">
-          <ApexAgentAll workspaces={[]} monitors={[]} personal={personal} onReply={async () => {}} onMutate={async () => {}} onSetUp={() => {}} onClose={() => setPersonalOpen(false)} />
+          <ApexAgentAll workspaces={[]} monitors={[]} personal={personal} serverStatusByLane={{ personal: 'Use Connections for integrations; direct tool commands are unavailable here.' }} onReply={async () => {}} onMutate={async () => {}} onReact={(laneId, messageId, emoji, enabled) => laneId === 'personal' && personal ? personal.react(messageId, emoji, enabled) : Promise.reject(new Error('That ApexAgent lane is unavailable.'))} saveAttachment={async (laneId, name, bytes) => {
+            if (laneId !== 'personal' || !personal?.assistant || personal.offline) throw new Error('The personal assistant host is unavailable.');
+            return personal.saveAttachment(name, bytes);
+          }} pickFolderUnavailableReason="Folder selection is unavailable on this phone." onSetUp={() => {}} onClose={() => setPersonalOpen(false)} />
         </div>}
         {assistantWorkspace && assistantWorkspaceHost && (canSeeNewThread(assistantWorkspaceHost.access())
-          ? <ApexAgent
+          ? <div className="apex-agent-backdrop"><ApexAgentSources
             key={JSON.stringify([assistantWorkspace.id, workspaceHost(assistantWorkspace), assistantWorkspace.path])}
             workspace={assistantWorkspace}
             backend={assistantWorkspaceHost.backend}
             profiles={session?.profiles ?? []}
             panes={panes}
+            onBack={() => setAssistantWorkspaceId(null)}
             onClose={() => setAssistantWorkspaceId(null)}
-            onOpenThread={(id) => {
-              const pane = panes.find((item) => item.id === id);
-              if (!pane) { setNotice("That thread isn't available in this phone's project registry."); return; }
-              const ownerWorkspace = workspaces.find((item) => item.id === pane.workspaceId);
-              if (!ownerWorkspace || !assistantWorkspace || (pane.hostId ?? workspaceHost(ownerWorkspace)) !== workspaceHost(assistantWorkspace)) {
-                setNotice(`That thread is not on ${assistantWorkspaceHost.machine.name}.`); return;
-              }
-              if (pane.assistantTaskId) {
-                const currentOwner = assistantOwners[pane.workspaceId];
-                const currentDescriptor = assistantPaneForOwner(visibleAssistantRegistry, pane.id, currentOwner);
-                const current = currentDescriptor && currentOwner
-                  && currentOwner.workspaceId === ownerWorkspace.id
-                  && currentOwner.cwd === ownerWorkspace.path
-                  && currentOwner.hostId === workspaceHost(ownerWorkspace)
-                  && currentDescriptor.executionPath === pane.executionPath;
-                if (!current) { setNotice("That worker thread belongs to an older project assistant assignment."); return; }
-              }
-              setAssistantWorkspaceId(null);
-              openThread(pane.id);
-            }}
-          />
+          /></div>
           : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.</p></section></div>)}
         {pairing && plugin && (
           <Sheet title={`Pair ${pairing.name}`} onClose={() => setPairing(null)}>

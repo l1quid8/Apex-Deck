@@ -16,6 +16,7 @@ const MAX_FILES: usize = 32;
 const MAX_SUGGESTED_FILES: usize = 32;
 const MAX_DIRECTORY_ENTRIES: usize = 512;
 const MAX_INSPECTED_ENTRIES: usize = 2_048;
+const REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "👀", "🙏"];
 
 /// One change to `monitor.json` at a time. Never held across a model call or
 /// a git command.
@@ -64,6 +65,23 @@ impl MonitorOwner {
 }
 
 impl Host {
+    /// Toggle one supported reaction on a retained message. The command is
+    /// authorized as a human device by the daemon; all such devices share one
+    /// human reaction identity so Mac and phone stay in sync.
+    pub(crate) fn monitor_react_owned(&self, workspace_id: &str, owner: MonitorOwner, message_id: &str, emoji: &str, enabled: bool) -> Result<ProjectMonitor, String> {
+        if !REACTIONS.contains(&emoji) { return Err("That reaction isn't supported.".into()); }
+        self.change_monitor_owned(workspace_id, Some(owner), |monitor, _| {
+            let message = monitor.messages.iter_mut().find(|m| m.id == message_id)
+                .ok_or_else(|| "That ApexAgent message is no longer available.".to_string())?;
+            if !matches!(message.role.as_str(), "human" | "assistant") { return Err("That message can't be reacted to.".into()); }
+            let present = message.reactions.iter().any(|current| current == emoji);
+            if enabled && !present { message.reactions.push(emoji.to_owned()); }
+            if !enabled && present { message.reactions.retain(|current| current != emoji); }
+            monitor.snapshot_version = monitor.snapshot_version.saturating_add(1);
+            Ok(())
+        })
+    }
+
     /// Read, change and save the monitors under the one lock. `change` gets
     /// the whole list so it can add a monitor as well as edit one.
     pub(crate) fn change_monitors<T>(&self, change: impl FnOnce(&mut Vec<ProjectMonitor>) -> Result<T, String>) -> Result<T, String> {
@@ -158,6 +176,21 @@ impl Host {
         threads: Vec<String>,
         mode: &str,
     ) -> Result<ProjectMonitor, String> {
+        self.monitor_sources_update_report(workspace_id, cwd, host_id, conversation_id, files, threads, mode).map(|(monitor, _)| monitor)
+    }
+
+    /// As `monitor_sources_update`, also naming the saved chats that were
+    /// dropped because they no longer exist on this machine.
+    pub(crate) fn monitor_sources_update_report(
+        &self,
+        workspace_id: &str,
+        cwd: &str,
+        host_id: &str,
+        conversation_id: &str,
+        files: Vec<String>,
+        threads: Vec<String>,
+        mode: &str,
+    ) -> Result<(ProjectMonitor, Vec<String>), String> {
         if !matches!(mode, "add" | "replace") {
             return Err("Source update mode must be 'add' or 'replace'.".into());
         }
@@ -179,19 +212,36 @@ impl Host {
                     && monitor.conversation_id == conversation_id
             }).ok_or_else(|| "ApexAgent's saved project or conversation has changed. Refresh and try again.".to_string())?;
 
+            // Chats deleted from this machine are dropped, not fatal. A chat
+            // that exists in another folder is still refused.
+            let mut removed = Vec::new();
+            let mut found = Vec::new();
             for id in &threads {
-                let room = self.store().room(id)?.ok_or_else(|| format!("Chat '{id}' isn't saved on this machine."))?;
+                let Some(room) = self.store().room(id)? else {
+                    removed.push(id.clone());
+                    continue;
+                };
                 if room.cwd.as_deref() != Some(cwd) {
                     return Err(format!("Chat '{id}' belongs to a different project folder."));
                 }
+                found.push(id.clone());
             }
 
             let mut next_files = if mode == "replace" { Vec::new() } else { monitor.files.clone() };
-            let mut next_threads = if mode == "replace" { Vec::new() } else { monitor.threads.clone() };
+            let mut next_threads = Vec::new();
+            if mode != "replace" {
+                for id in &monitor.threads {
+                    if self.store().room(id)?.is_some() {
+                        next_threads.push(id.clone());
+                    } else if !removed.contains(id) {
+                        removed.push(id.clone());
+                    }
+                }
+            }
             for file in files {
                 if !next_files.contains(&file) { next_files.push(file); }
             }
-            for thread in threads {
+            for thread in found {
                 if !next_threads.contains(&thread) { next_threads.push(thread); }
             }
             if next_threads.len() > MAX_THREADS {
@@ -201,7 +251,7 @@ impl Host {
                 return Err(format!("ApexAgent can monitor at most {MAX_FILES} files."));
             }
             if next_files == monitor.files && next_threads == monitor.threads {
-                return Ok(monitor.clone());
+                return Ok((monitor.clone(), removed));
             }
 
             monitor.files = next_files;
@@ -213,7 +263,7 @@ impl Host {
             monitor.wake_reason = "sources_updated".into();
             monitor.next_check_at = if monitor.paused { None } else { Some(at) };
             monitor.record_activity(at, "sources_updated", "ApexAgent's selected sources were updated.");
-            Ok(monitor.clone())
+            Ok((monitor.clone(), removed))
         })
     }
 
@@ -477,6 +527,24 @@ mod tests {
         assert_eq!(updated.active_check,before.active_check);
         assert!(updated.snapshot_version > before.snapshot_version);
         assert_eq!(updated.messages.last().unwrap().text,"What's next?");
+    }
+
+    #[test]
+    fn human_reaction_is_owner_guarded_idempotent_and_survives_restart() {
+        let f = fixture("reaction");
+        let initial = f.host.monitor_assign(assignment(&f)).unwrap();
+        let owner = MonitorOwner { cwd: initial.cwd.clone(), host_id: initial.host_id.clone(), conversation_id: initial.conversation_id.clone() };
+        let message_id = initial.messages[0].id.clone();
+        let saved = f.host.monitor_react_owned("w", owner.clone(), &message_id, "👍", true).unwrap();
+        assert_eq!(saved.messages[0].reactions, vec!["👍"]);
+        let retried = f.host.monitor_react_owned("w", owner.clone(), &message_id, "👍", true).unwrap();
+        assert_eq!(retried.messages[0].reactions, vec!["👍"]);
+        assert!(f.host.monitor_react_owned("w", owner.clone(), &message_id, "👎", true).is_err());
+        let wrong_owner = MonitorOwner { cwd: owner.cwd.clone(), host_id: owner.host_id.clone(), conversation_id: "stale".into() };
+        assert!(f.host.monitor_react_owned("w", wrong_owner, &message_id, "👍", false).is_err());
+        assert_eq!(reopen(&f).monitor_get("w").unwrap().unwrap().messages[0].reactions, vec!["👍"]);
+        let removed = f.host.monitor_react_owned("w", owner, &message_id, "👍", false).unwrap();
+        assert!(removed.messages[0].reactions.is_empty());
     }
 
     #[test]
@@ -811,6 +879,53 @@ mod tests {
         f.host.store().save_room("foreign", &SavedRoom { cwd: Some("/elsewhere".into()), snapshot: empty_snapshot() }).unwrap();
         assert!(f.host.monitor_sources_update("w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id, vec![], vec!["foreign".into()], "add").unwrap_err().contains("different project"));
         assert!(f.host.monitor_sources_update("w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id, vec![], vec![], "append").is_err());
+    }
+
+    #[test]
+    fn save_sources_drops_a_chat_deleted_before_saving() {
+        let f = fixture("sources-gone");
+        let assigned = f.host.monitor_assign(assignment(&f)).unwrap();
+        f.host.store().save_room("live", &SavedRoom { cwd: Some(assigned.cwd.clone()), snapshot: empty_snapshot() }).unwrap();
+        let (saved, removed) = f.host.monitor_sources_update_report(
+            "w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id,
+            vec![], vec!["gone".into(), "live".into()], "add",
+        ).unwrap();
+        assert_eq!(removed, vec!["gone".to_string()]);
+        assert_eq!(saved.threads, vec!["live".to_string()]);
+        assert_eq!(f.host.monitor_get("w").unwrap(), Some(saved));
+    }
+
+    #[test]
+    fn save_sources_drops_a_saved_chat_deleted_since() {
+        let f = fixture("sources-stale");
+        let assigned = f.host.monitor_assign(assignment(&f)).unwrap();
+        f.host.store().save_room("live", &SavedRoom { cwd: Some(assigned.cwd.clone()), snapshot: empty_snapshot() }).unwrap();
+        f.host.monitor_sources_update(
+            "w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id,
+            vec![], vec!["live".into()], "add",
+        ).unwrap();
+        f.host.store().delete_room("live").unwrap();
+        let (saved, removed) = f.host.monitor_sources_update_report(
+            "w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id,
+            vec!["README.md".into()], vec![], "add",
+        ).unwrap();
+        assert_eq!(removed, vec!["live".to_string()]);
+        assert!(saved.threads.is_empty());
+        assert_eq!(saved.files, vec!["docs/plan.md".to_string(), "README.md".to_string()]);
+        assert_eq!(reopen(&f).monitor_get("w").unwrap(), Some(saved));
+    }
+
+    #[test]
+    fn save_sources_still_refuses_a_chat_from_another_folder() {
+        let f = fixture("sources-foreign");
+        let assigned = f.host.monitor_assign(assignment(&f)).unwrap();
+        f.host.store().save_room("foreign", &SavedRoom { cwd: Some("/elsewhere".into()), snapshot: empty_snapshot() }).unwrap();
+        let err = f.host.monitor_sources_update_report(
+            "w", &assigned.cwd, &assigned.host_id, &assigned.conversation_id,
+            vec![], vec!["gone".into(), "foreign".into()], "add",
+        ).unwrap_err();
+        assert!(err.contains("different project"));
+        assert_eq!(f.host.monitor_get("w").unwrap(), Some(assigned));
     }
 
     #[test]

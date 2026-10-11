@@ -1,0 +1,42 @@
+/* The per-project Sources sheet in the ApexAgent dock. Reuses the dock's theme variables. */
+.apex-agent-sources {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--panel, var(--bg));
+  color: var(--text);
+}
+.apex-agent-sources-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px 0; }
+.apex-agent-sources-back { border: 0; background: none; color: var(--accent, #7cc4ff); cursor: pointer; padding: 2px 0; font: inherit; }
+.apex-agent-sources-title { margin: 0; padding: 6px 16px 10px; font-size: 15px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apex-agent-sources-body { flex: 1; min-height: 0; overflow: auto; padding: 0 16px 16px; display: grid; align-content: start; gap: 16px; }
+.apex-agent-sources-watched { display: grid; gap: 16px; }
+.apex-agent-sources-profile { margin: 0; color: var(--muted); font-size: 13px; }
+.apex-agent-sources-section h3 { margin: 0 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.apex-agent-sources-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.apex-agent-sources-row span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.apex-agent-sources-remove { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 2px 6px; }
+.apex-agent-sources-remove:hover { color: var(--text); }
+.apex-agent-sources-add { display: flex; gap: 6px; margin-top: 8px; }
+.apex-agent-sources-add input,
+.apex-agent-sources-field select,
+.apex-agent-sources-field textarea {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.apex-agent-sources-field textarea { resize: vertical; }
+.apex-agent-sources-start { display: grid; gap: 12px; }
+.apex-agent-sources-field { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.apex-agent-sources-actions { display: flex; justify-content: flex-end; }
+.apex-agent-sources-notice { margin: 0; color: var(--muted); font-size: 12px; }
+.apex-agent-sources-save { flex: none; align-items: center; gap: 10px; padding: 10px 16px; }
+.apex-agent-sources-done { border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--text); padding: 6px 12px; font: inherit; cursor: pointer; }

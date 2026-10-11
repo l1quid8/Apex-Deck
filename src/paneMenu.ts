@@ -5,7 +5,7 @@
 import type { PaneKind } from "./types";
 import { threadKeys } from "./shortcuts.ts";
 
-export type PaneMenuAction = "rename" | "pin" | "mark_unread" | "project" | "share_pdf" | "copy" | "start" | "copy_path" | "copy_address" | "close" | "fork" | "export" | "archive" | "delete";
+export type PaneMenuAction = "rename" | "pin" | "mark_unread" | "project" | "share_pdf" | "copy" | "start" | "copy_path" | "copy_address" | "close" | "fork" | "export" | "archive" | "delete" | "open";
 
 export interface PaneMenuItem {
   action: PaneMenuAction;

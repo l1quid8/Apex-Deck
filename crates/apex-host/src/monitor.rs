@@ -60,6 +60,12 @@ pub struct MonitorMessage {
     pub text: String,
     pub at: u64,
     pub evidence: Vec<EvidenceRef>,
+    /// "update" for messages a background check posted; empty for chat.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// Reactions from the authenticated human account, shared by its devices.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -176,6 +182,8 @@ impl ProjectMonitor {
             text: truncate_utf8(&monitor.responsibility, MAX_MESSAGE_BYTES),
             at: now,
             evidence: Vec::new(),
+            kind: String::new(),
+            reactions: Vec::new(),
         });
         monitor
     }
@@ -328,10 +336,20 @@ impl ProjectMonitor {
             text: truncate_utf8(text, MAX_MESSAGE_BYTES),
             at,
             evidence: evidence.into_iter().map(bound_evidence).collect(),
+            kind: String::new(),
+            reactions: Vec::new(),
         });
         if self.messages.len() > MAX_MESSAGES {
             self.messages.drain(..self.messages.len() - MAX_MESSAGES);
         }
+        Ok(())
+    }
+
+    /// A background check's message, kept apart from chat replies so later
+    /// checks see their own earlier updates and never the human's questions.
+    pub fn append_update(&mut self, text: &str, at: u64, evidence: Vec<EvidenceRef>) -> Result<(), String> {
+        self.append_message("assistant", text, at, evidence)?;
+        if let Some(last) = self.messages.last_mut() { last.kind = "update".into(); }
         Ok(())
     }
 
@@ -520,6 +538,8 @@ mod tests {
             text: "Already replied".into(),
             at: 1_000,
             evidence: vec![],
+            kind: String::new(),
+            reactions: Vec::new(),
         });
         let interrupted = m.claim(1_000, false).unwrap();
         m.recover(10_000);

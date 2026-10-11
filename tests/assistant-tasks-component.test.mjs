@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { transform } from 'sucrase';
 import * as model from '../src/assistantTaskModel.ts';
+import * as taskViewModule from '../src/apexAgentTaskView.ts';
+
+// Exports the component imports from the shared Tasks contract. Only these names are passed in, so nothing collides with assistantTaskModel.
+const taskViewExports = { TaskViewContext: taskViewModule.TaskViewContext, projectTaskKey: taskViewModule.projectTaskKey, projectTaskGroup: taskViewModule.projectTaskGroup };
 
 const source = await fs.readFile(new URL('../src/ApexAgentTasks.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace('export function ApexAgentTasks', 'function ApexAgentTasks'), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
@@ -20,8 +24,10 @@ const find = (node, predicate) => { if (!node || typeof node !== 'object') retur
 const textOf = node => { if (node == null || typeof node === 'boolean') return ''; if (typeof node === 'string' || typeof node === 'number') return String(node); if (Array.isArray(node)) return node.map(textOf).join(' '); return textOf(node.children ?? []); };
 const findAll = (node, predicate, out = []) => { if (!node || typeof node !== 'object') return out; if (Array.isArray(node)) { node.forEach(item => findAll(item, predicate, out)); return out; } if (predicate(node)) out.push(node); (node.children ?? []).forEach(item => findAll(item, predicate, out)); return out; };
 const containsNode = (node, target) => node === target || !!(node && typeof node === 'object' && (Array.isArray(node) ? node.some(child => containsNode(child, target)) : (node.children ?? []).some(child => containsNode(child, target))));
-const openDetail = (tree, id = 'task-1') => find(tree, node => node.type === 'button' && node.props.className === 'assistant-task-overview-row' && textOf(node).includes(id) || node.type === 'button' && node.props.className === 'assistant-task-overview-row')?.props.onClick();
-const openAdvanced = tree => find(tree, node => node.type === 'button' && node.children[0] === 'Advanced options')?.props.onClick();
+// Opens the first task card's details from the conversation.
+const openDetail = tree => find(tree, node => node.type === 'button' && /^(Open task|Review result)$/.test(textOf(node)))?.props.onClick();
+const button = (tree, label) => find(tree, node => node.type === 'button' && textOf(node) === label);
+const NO_CHAT_NOTE = "ApexAgent didn't pick a chat for this. Reply to it with which chat to use.";
 function harness(backend, initial = {}, saved = new Map()) {
   const states = [], refs = [], effects = [], observers = []; let cursor = 0, mounted = true, props;
   const previousObserver = globalThis.IntersectionObserver;
@@ -32,14 +38,16 @@ function harness(backend, initial = {}, saved = new Map()) {
     useRef(value) { const index = cursor++; return refs[index] ??= { current: value }; },
     useMemo(fn) { cursor++; return fn(); },
     useEffect(fn, deps) { const index = cursor++, old = effects[index]; if (!old || !deps || deps.some((value, i) => !Object.is(value, old.deps[i]))) effects[index] = { fn, deps, changed: true }; },
+    // Stands in for <TaskViewContext.Provider value={initial.taskView}>; the Provider needs react-dom, which these tests do not load.
+    useContext(context) { return context === taskViewExports.TaskViewContext ? (props.taskView ?? null) : null; },
   };
-  const component = new Function('React', ...Object.keys(hooks), ...Object.keys(model), 'window', `${compiled}; return ApexAgentTasks;`)(React, ...Object.values(hooks), ...Object.values(model), { crypto: { randomUUID: () => 'request-fixed' }, localStorage: { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) } });
+  const component = new Function('React', ...Object.keys(hooks), ...Object.keys(model), ...Object.keys(taskViewExports), 'window', `${compiled}; return ApexAgentTasks;`)(React, ...Object.values(hooks), ...Object.values(model), ...Object.values(taskViewExports), { crypto: { randomUUID: () => 'request-fixed' }, localStorage: { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) } });
   props = { backend, owner, panes: [{ id: 'thread-a', title: 'Build room', kind: 'chat', workspaceId: owner.workspaceId }], profiles: [{ id: 'claude', display_name: 'Claude', backend: { kind: 'agent', tool: 'claude_code' }, media: null }], ...initial };
   const render = () => { cursor = 0; const tree = component(props); for (const effect of effects) if (effect?.changed) { effect.changed = false; effect.cleanup?.(); effect.cleanup = effect.fn(); } return tree; };
   return { render, storage: saved, setReviewVisible(visible = true) { observers.at(-1)?.trigger(visible); }, setProps(next) { props = { ...props, ...next }; }, unmount() { mounted = false; effects.forEach(effect => effect?.cleanup?.()); if (previousObserver) globalThis.IntersectionObserver = previousObserver; else delete globalThis.IntersectionObserver; } };
 }
 
-test('overview opens a detail with source request, brief, revision, unknown usage, checks and thread links', async () => {
+test('opening a task shows source request, brief, revision, unknown usage, checks and thread links', async () => {
   const orderedTask = task({ resultData: { ...task().resultData, taskHistory: [] } });
   const backend = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([orderedTask]) : null };
   const h = harness(backend); let tree = h.render(); await tick(); tree = h.render();
@@ -52,61 +60,45 @@ test('overview opens a detail with source request, brief, revision, unknown usag
   const resultIndex = detailScroll.children.findIndex(node => node?.props?.className === 'assistant-review-material');
   const historyIndex = detailScroll.children.findIndex(node => node?.type === 'details' && textOf(node.children?.[0]) === 'Task history');
   const budgetIndex = detailScroll.children.findIndex(node => node?.props?.className === 'assistant-task-budget');
-  assert.ok(resultIndex >= 0 && resultIndex < historyIndex && resultIndex < budgetIndex, 'current review material is prioritized before history and spend controls');
+  assert.ok(resultIndex >= 0 && resultIndex < historyIndex && (budgetIndex === -1 || resultIndex < budgetIndex), 'current review material is prioritized before history and spend controls');
   assert.ok(find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done'));
   h.unmount();
 });
 
-test('v4 chat is one transcript with the composer last and no separate Needs you panel', async () => {
-  const tasks = [task({ status: 'ready_for_review' }), task({ id: 'task-2', status: 'needs_you' })];
-  const h = harness({ demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot(tasks) : null }, { view: 'chat' });
-  let tree = h.render(); await tick(); tree = h.render();
-  assert.ok(!find(tree, node => node.props.className === 'assistant-needs-you'));
-  assert.ok(find(tree, node => node.props.className === 'assistant-chat-transcript'));
-  const composer = find(tree, node => node.type === 'form' && node.props.className === 'assistant-request');
-  assert.equal(findAll(tree, node => node.type === 'form' && node.props.className === 'assistant-request').at(-1), composer);
-  h.unmount();
-});
-
-test('task overview groups review, retry, and recovery work under Needs you and settled tasks under Done and stopped', async () => {
-  const tasks = [task({ status: 'ready_for_review' }), task({ id: 'failed-task', status: 'failed' }), task({ id: 'interrupted-task', status: 'interrupted' }), task({ id: 'done-task', status: 'done' }), task({ id: 'stopped-task', status: 'cancelled' })];
+test('the conversation renders no request composer, advanced options, routing, or per-task spend form', async () => {
+  const tasks = [task({ status: 'proposed' }), task({ id: 'task-2', status: 'needs_clarification', destination: null }), task({ id: 'task-3', status: 'running' })];
   const h = harness({ demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot(tasks) : null });
   let tree = h.render(); await tick(); tree = h.render();
-  const groups = findAll(tree, node => node.props.className === 'assistant-task-group');
-  assert.equal(groups[0].children[0].children[0], 'Needs you');
-  assert.equal(groups[0].children[0].children[1].children[0], 3);
-  assert.equal(groups[2].children[0].children[0], 'Done and stopped');
-  assert.equal(groups[2].children[0].children[1].children[0], 2);
-  assert.equal(find(tree, node => node.type === 'h3' && node.children[0] === 'Ready for review'), null);
+  openDetail(tree); tree = h.render();
+  assert.equal(find(tree, node => node.type === 'form' && node.props.className === 'assistant-request'), null);
+  assert.equal(find(tree, node => node.type === 'textarea'), null);
+  assert.equal(find(tree, node => node.type === 'select'), null);
+  assert.doesNotMatch(textOf(tree), /Advanced options|Choose destination|Execution mode|Spend limit|Set limit|Exact checks/);
   h.unmount();
 });
 
-test('task draft and selected context survive Activity and Settings view changes', async () => {
-  const h = harness({ demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([task({ status: 'running' })]) : null });
-  let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.onChange({ target: { value: 'Keep me across tabs.' } });
-  h.setProps({ view: 'activity', children: { type: 'aside', props: {}, children: ['activity child'] } }); tree = h.render();
-  assert.match(textOf(tree), /activity child/);
-  h.setProps({ view: 'settings', children: { type: 'aside', props: {}, children: ['settings child'] } }); tree = h.render();
-  assert.match(textOf(tree), /settings child/);
-  h.setProps({ view: 'tasks' }); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.value, 'Keep me across tabs.');
-  assert.match(textOf(tree), /Task note/);
-  h.unmount();
-});
-
-test('proposed approval uses snapshot-eligible existing worker IDs and disables empty routing', async () => {
-  const proposed = task({ status: 'proposed', destination: null, workers: [] }); const actions = [];
-  const savedWorker = { id: 'gronk-saved', display_name: 'Gronk Saved', backend: { kind: 'agent', tool: 'claude_code' }, media: null };
-  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return { ...snapshot([proposed]), routingThreads: [{ id: 'thread-a', workers: [savedWorker] }] }; if (command === 'assistant_task_action') { actions.push(args); return task({ status: 'queued' }); } } };
+test('a proposal is approved with its own destination, workers and mode, and no routing form is needed', async () => {
+  const proposed = task({ status: 'proposed', mode: 'isolated', destination: { threadId: 'thread-a', newThread: false, workers: ['claude'] } }); const actions = [];
+  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return { ...snapshot([proposed]), routingThreads: [{ id: 'thread-a', workers: [{ id: 'claude', display_name: 'Claude', backend: { kind: 'agent', tool: 'claude_code' }, media: null }] }] }; if (command === 'assistant_task_action') { actions.push(args); return task({ status: 'queued' }); } } };
   const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  const approve = find(tree, node => node.type === 'button' && node.children[0] === 'Approve task');
-  assert.equal(approve.props.disabled, true);
-  find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Destination for task-1').props.onChange({ target: { value: 'thread-a' } }); tree = h.render();
-  const worker = find(tree, node => node.type === 'input' && node.props.type === 'checkbox' && node.props.checked === false); worker.props.onChange({ target: { checked: true } }); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'button' && node.children[0] === 'Approve task').props.disabled, false);
-  await find(tree, node => node.type === 'button' && node.children[0] === 'Approve task').props.onClick(); await tick();
-  assert.deepEqual(actions[0].destination.workers, ['gronk-saved']); h.unmount();
+  assert.equal(find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Destination for task-1'), null);
+  await button(tree, 'Approve task').props.onClick(); await tick();
+  assert.deepEqual(actions[0].destination, { threadId: 'thread-a', newThread: false, workers: ['claude'] });
+  assert.deepEqual(actions[0].newWorkerProfiles, []);
+  assert.equal(actions[0].mode, 'isolated'); assert.equal(actions[0].action, 'approve'); assert.equal(actions[0].taskId, 'task-1');
+  h.unmount();
+});
+
+test('a proposal with no usable chat shows the note, hides Approve, and keeps Dismiss working', async () => {
+  const actions = [];
+  const proposed = task({ status: 'proposed', destination: null, workers: [] });
+  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([proposed]); if (command === 'assistant_task_action') { actions.push(args); return task({ status: 'done' }); } } };
+  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
+  assert.match(textOf(tree), /didn't pick a chat for this/);
+  assert.equal(button(tree, 'Approve task'), null);
+  await button(tree, 'Dismiss').props.onClick(); await tick();
+  assert.equal(actions[0].action, 'dismiss'); assert.equal(actions[0].taskId, 'task-1');
+  h.unmount();
 });
 
 test('accept is available only in detail and requires current revision acknowledgement and review criteria', async () => {
@@ -128,16 +120,15 @@ test('accept is available only in detail and requires current revision acknowled
 });
 
 test('a new task revision invalidates the prior review acknowledgement', async () => {
-  const revised = task({ revision: 5, brief: 'Updated after requested changes.' }); let actionDone = false;
+  const revised = task({ revision: 5, brief: 'Updated after requested changes.' }); let actionDone = false; let sendTask;
   const backend = { demo: false, call: async (command) => { if (command === 'assistant_tasks_list') return snapshot([actionDone ? revised : task()]); if (command === 'assistant_task_action') { actionDone = true; return revised; } return null; } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render(); h.setReviewVisible(); tree = h.render();
+  const h = harness(backend, { onSelectTask: (_task, send) => { sendTask = send; } });
+  let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render(); h.setReviewVisible(); tree = h.render();
   let checks = findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox');
   checks[0].props.onChange({ target: { checked: true } }); tree = h.render();
   checks = findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox');
   checks[1].props.onChange({ target: { checked: true } }); tree = h.render();
-  const changeArea = find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message');
-  changeArea.props.onChange({ target: { value: 'Update the output format.' } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick(); tree = h.render();
+  await sendTask('Update the output format.'); await tick(); tree = h.render();
   const accept = find(tree, node => node.type === 'button' && node.children[0] === 'Accept and mark done');
   assert.match(textOf(tree), /Revision\s+5/); assert.equal(accept.props.disabled, true);
   h.unmount();
@@ -168,92 +159,69 @@ test('captured empty diff is reviewed as a no-change result and read-only result
   assert.equal(readCalls[0].action, 'review'); read.unmount();
 });
 
-test('task-context composer adds a note to the selected task and New message exits context', async () => {
-  const calls = [];
-  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([task({ status: 'running' })]); if (command === 'assistant_task_action') { calls.push([command, args]); return task({ status: 'running', revision: 5 }); } } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.onChange({ target: { value: 'Please also include the failing fixture.' } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick();
+test('the task reply callback adds a note to the selected task and never reroutes it', async () => {
+  const calls = []; let sendTask;
+  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([task({ status: 'running' })]); if (command === 'assistant_task_action') { calls.push([command, args]); return task({ status: 'running', revision: 5 }); } if (command === 'assistant_message') throw new Error('must not reroute task text'); } };
+  const h = harness(backend, { onSelectTask: (_task, send) => { sendTask = send; } }); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
+  await sendTask('Please also include the failing fixture.'); await tick();
   assert.equal(calls[0][1].action, 'note'); assert.equal(calls[0][1].text, 'Please also include the failing fixture.');
   assert.equal(calls.some(([command]) => command === 'assistant_message'), false);
   h.unmount();
 });
 
-test('back to All tasks preserves task routing and only New message exits the draft context', async () => {
-  const calls = [];
-  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([task({ status: 'running' })]); if (command === 'assistant_task_action') { calls.push(args); return task({ status: 'running', revision: 5 }); } if (command === 'assistant_message') throw new Error('must not reroute task text'); } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  const box = find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message'); box.props.onChange({ target: { value: 'Keep this on task-1.' } }); tree = h.render();
-  find(tree, node => node.type === 'button' && node.children[0] === '← All tasks').props.onClick(); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.value, 'Keep this on task-1.');
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick();
-  assert.equal(calls[0].action, 'note'); assert.equal(calls[0].text, 'Keep this on task-1.'); h.unmount();
-});
-
-test('New message explicitly switches route while keeping the task draft recoverable', async () => {
-  const messages = [];
-  const monitor = { workspaceId: owner.workspaceId, cwd: owner.cwd, hostId: owner.hostId, conversationId: owner.conversationId };
-  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([task({ status: 'running' })]); if (command === 'assistant_message') { messages.push(args); return { message: 'Sent as a new message.', monitor }; } } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.onChange({ target: { value: 'Keep for task-1.' } }); tree = h.render();
-  find(tree, node => node.type === 'button' && node.children[0] === 'New message').props.onClick(); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.value, '');
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.onChange({ target: { value: 'Ask a separate question.' } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick();
-  assert.equal(messages[0].text, 'Ask a separate question.'); tree = h.render(); openDetail(tree); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.value, 'Keep for task-1.'); h.unmount();
-});
-
-test('task composer keeps draft after caught backend failure and clears only after success', async () => {
-  let fail = true; const calls = [];
+test('a failed task reply reports its error and a later reply sends normally', async () => {
+  let fail = true; const calls = []; let sendTask;
   const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([task({ status: 'running' })]); if (command === 'assistant_task_action') { calls.push(args); if (fail) throw new Error('offline'); return task({ status: 'running', revision: 5 }); } } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.onChange({ target: { value: 'Continue with this note.' } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick(); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.value, 'Continue with this note.'); assert.match(textOf(tree), /offline/);
-  fail = false; await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick(); tree = h.render();
-  assert.equal(calls.length, 2); assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.value, ''); h.unmount();
+  const h = harness(backend, { onSelectTask: (_task, send) => { sendTask = send; } }); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
+  await assert.rejects(sendTask('Continue with this note.'), /was not sent/); tree = h.render();
+  assert.match(textOf(tree), /offline/);
+  fail = false; await sendTask('Continue with this note.'); await tick();
+  assert.equal(calls.length, 2); assert.equal(calls[1].text, 'Continue with this note.'); h.unmount();
 });
 
-test('review context sends request_changes and one actual pending question sends a direct answer', async () => {
-  const calls = [], answers = [];
+test('a review reply requests changes, and a single pending question takes the reply as its answer', async () => {
+  const calls = [], answers = []; let sendTask;
   const waiting = task({ status: 'needs_you', resultData: { pendingQuestions: [{ request: 'q-1', questions: [{ header: 'Target', question: 'Which target?', options: [], multi_select: false }] }] } });
   let current = task({ status: 'ready_for_review' });
   const backend = { demo: false, roomAnswer: async (...args) => answers.push(args), call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([current]); if (command === 'assistant_task_action') { calls.push(args); current = task({ ...current, revision: 5 }); return current; } } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'button' && node.props.className === 'primary').children[0], 'Request changes');
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.onChange({ target: { value: 'Please adjust the output.' } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick();
+  const h = harness(backend, { onSelectTask: (_task, send) => { sendTask = send; } }); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
+  await sendTask('Please adjust the output.'); await tick();
   assert.equal(calls[0].action, 'request_changes'); assert.equal(calls[0].text, 'Please adjust the output.');
   h.unmount();
+
+  let answerTask;
   const questionBackend = { demo: false, roomAnswer: async (...args) => answers.push(args), call: async command => command === 'assistant_tasks_list' ? snapshot([waiting]) : null };
-  const questionHarness = harness(questionBackend); tree = questionHarness.render(); await tick(); tree = questionHarness.render(); openDetail(tree); tree = questionHarness.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.onChange({ target: { value: 'Use the parser target.' } }); tree = questionHarness.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick();
+  const questionHarness = harness(questionBackend, { onSelectTask: (_task, send) => { answerTask = send; } });
+  tree = questionHarness.render(); await tick(); tree = questionHarness.render(); openDetail(tree); questionHarness.render();
+  await answerTask('Use the parser target.'); await tick();
   assert.deepEqual(answers[0], ['thread-a', 'q-1', [['Use the parser target.']]]); questionHarness.unmount();
 });
 
-test('multi-question composer guides inline answers and preserves its text', async () => {
+test('multi-question waits refuse a single reply and say which answers are missing', async () => {
   const waiting = task({ status: 'needs_you', resultData: { pendingQuestions: [{ request: 'q-1', questions: [{ header: 'One', question: 'One?', options: [], multi_select: false }, { header: 'Two', question: 'Two?', options: [], multi_select: false }] }] } });
   const backend = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([waiting]) : null };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.onChange({ target: { value: 'Do not lose this.' } }); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'button' && node.props.className === 'primary').props.disabled, true);
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.value, 'Do not lose this.'); assert.match(textOf(tree), /Complete every question/); h.unmount();
+  let sendTask;
+  const h = harness(backend, { onSelectTask: (_task, send) => { sendTask = send; } }); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
+  await assert.rejects(sendTask('Do not lose this.'), /was not sent/); tree = h.render();
+  assert.match(textOf(tree), /Complete every question/); h.unmount();
 });
 
-test('routing clarification requires explicit eligible destination worker ID', async () => {
-  const calls = []; const clarifying = task({ status: 'needs_clarification' });
-  const panes = [{ id: 'thread-a', title: 'Build room', kind: 'chat', workspaceId: owner.workspaceId, participants: [{ id: 'claude' }] }];
-  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([clarifying]); if (command === 'assistant_task_action') { calls.push(args); return task({ status: 'queued', revision: 5 }); } } };
-  const h = harness(backend, { panes }); let tree = h.render(); await tick(); tree = h.render(); openDetail(tree); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Task context message').props.onChange({ target: { value: 'Route to the parser worker.' } }); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'button' && node.props.className === 'primary').props.disabled, true);
-  find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Destination for task-1').props.onChange({ target: { value: 'thread-a' } }); tree = h.render();
-  find(tree, node => node.type === 'input' && node.props.type === 'checkbox' && node.props.checked === false).props.onChange({ target: { checked: true } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); await tick();
-  assert.deepEqual(calls[0].destination, { threadId: 'thread-a', newThread: false, workers: ['claude'] }); h.unmount();
+test('a routing clarification replies with the task destination, and says so when ApexAgent named no chat', async () => {
+  const calls = [];
+  const noChat = task({ status: 'needs_clarification', destination: null });
+  const withChat = task({ status: 'needs_clarification', destination: { threadId: 'thread-a', newThread: false, workers: ['claude'] } });
+  const backendFor = (clarifying) => ({ demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([clarifying]); if (command === 'assistant_task_action') { calls.push(args); return task({ status: 'queued', revision: 5 }); } } });
+
+  let sendTask;
+  const none = harness(backendFor(noChat), { onSelectTask: (_task, send) => { sendTask = send; } });
+  let tree = none.render(); await tick(); tree = none.render(); openDetail(tree); tree = none.render();
+  await assert.rejects(sendTask('Route to the parser worker.'), /was not sent/); tree = none.render();
+  assert.match(textOf(tree), /didn't pick a chat for this/); assert.equal(calls.length, 0); none.unmount();
+
+  const some = harness(backendFor(withChat), { onSelectTask: (_task, send) => { sendTask = send; } });
+  tree = some.render(); await tick(); tree = some.render(); openDetail(tree); some.render();
+  await sendTask('Route to the parser worker.'); await tick();
+  assert.equal(calls[0].action, 'clarify'); assert.deepEqual(calls[0].destination, { threadId: 'thread-a', newThread: false, workers: ['claude'] }); some.unmount();
 });
 
 test('multi-question waits preserve every prompt and option when answered inline', async () => {
@@ -310,7 +278,7 @@ test('old monitor tasks are hidden and malformed current project owners are reje
   const oldTask = task({ owner: { ...owner, conversationId: 'monitor-old' } });
   const backend = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([oldTask]) : null };
   const h = harness(backend); let tree = h.render(); await tick(); tree = h.render();
-  assert.match(textOf(tree), /No tasks for this assignment yet/); assert.doesNotMatch(textOf(tree), /Fix parser/);
+  assert.doesNotMatch(textOf(tree), /Fix parser/);
   h.unmount();
   const wrongHost = task({ owner: { ...owner, hostId: 'wrong-host' } });
   const bad = harness({ demo: false, call: async () => snapshot([wrongHost]) }); tree = bad.render(); await tick(); tree = bad.render();
@@ -318,57 +286,34 @@ test('old monitor tasks are hidden and malformed current project owners are reje
   bad.unmount();
 });
 
-test('uncertain assistant requests retry with the same id, original text and chosen destination', async () => {
+test('an uncertain request keeps its saved ID and text, and Retry sends that same request', async () => {
   const calls = []; let attempts = 0;
+  const pending = { requestId: 'req-1', owner, text: 'Please repair the parser.', destination: { threadId: 'thread-a', newThread: false, workers: [] }, newWorkerProfiles: [], mode: 'in_place', checks: [] };
+  const saved = new Map([[model.pendingRequestStorageKey(owner), JSON.stringify(pending)]]);
   const returnedMonitor = { workspaceId: owner.workspaceId, hostId: owner.hostId, cwd: owner.cwd, conversationId: owner.conversationId };
   const backend = { demo: false, call: async (command, args) => {
     if (command === 'assistant_tasks_list') return snapshot([]);
     if (command === 'assistant_message') { calls.push(args); if (!attempts++) throw new Error('connection lost'); return { message: 'Saved', monitor: returnedMonitor }; }
   } };
-  const h = harness(backend, { view: 'chat', onMonitorUpdate() {} }); let tree = h.render(); await tick(); tree = h.render();
-  openAdvanced(tree); tree = h.render(); find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Task destination').props.onChange({ target: { value: 'thread-a' } });
-  tree = h.render(); find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.onChange({ target: { value: 'Please repair the parser.' } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} });
-  tree = h.render(); assert.match(textOf(tree), /Retry uses the saved request ID/);
-  const renamedPanes = [{ id: 'thread-a', title: 'Renamed or archived chat', kind: 'chat', workspaceId: owner.workspaceId, archived: true }];
-  h.setProps({ panes: renamedPanes }); tree = h.render();
-  const recoveredHarness = harness(backend, { view: 'chat', onMonitorUpdate() {}, panes: renamedPanes }, h.storage); let recoveredTree = recoveredHarness.render(); await tick(); recoveredTree = recoveredHarness.render();
-  assert.match(textOf(recoveredTree), /Retry uses the saved request ID/);
-  assert.equal(find(recoveredTree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.value, 'Please repair the parser.');
-  await find(recoveredTree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} });
-  assert.equal(calls.length, 2); assert.equal(calls[0].requestId, calls[1].requestId); assert.deepEqual(calls[0].threadLabels, [{ id: 'thread-a', label: 'Build room' }]); assert.deepEqual(calls[1].threadLabels, calls[0].threadLabels);
-  recoveredTree = recoveredHarness.render(); assert.match(textOf(recoveredTree), /Saved/);
-  recoveredHarness.unmount();
-  assert.ok(calls[0].requestId);
-  assert.equal(calls[0].text, 'Please repair the parser.'); assert.deepEqual(calls[0].destination, calls[1].destination);
-  assert.equal(calls[0].destination.threadId, 'thread-a'); assert.deepEqual(calls[0].destination.workers, []); assert.equal(calls[0].mode, 'in_place');
+  const h = harness(backend, { onMonitorUpdate() {} }, saved); let tree = h.render(); await tick(); tree = h.render();
+  await button(tree, 'Retry request').props.onClick(); tree = h.render();
+  assert.match(textOf(tree), /connection lost/); assert.match(textOf(tree), /Please repair the parser\./);
+  await button(tree, 'Retry request').props.onClick(); tree = h.render();
+  assert.equal(calls.length, 2); assert.equal(calls[0].requestId, 'req-1'); assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].text, 'Please repair the parser.'); assert.equal(calls[0].destination.threadId, 'thread-a');
+  assert.deepEqual(calls[0].threadLabels, [{ id: 'thread-a', label: 'Build room' }]);
+  assert.equal(saved.has(model.pendingRequestStorageKey(owner)), false);
   h.unmount();
 });
 
-test('ordinary conversation uses natural routing and isolated mode is retained in the durable payload', async () => {
+test('new destination in a retried request is not treated as an implicit worker choice', async () => {
   const calls = [];
-  const returnedMonitor = { workspaceId: owner.workspaceId, hostId: owner.hostId, cwd: owner.cwd, conversationId: owner.conversationId };
-  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([]); if (command === 'assistant_message') { calls.push(args); return { message: 'Routed', monitor: returnedMonitor }; } } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.onChange({ target: { value: 'Find the right place for this.' } });
-  openAdvanced(tree); tree = h.render(); find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Execution mode').props.onChange({ target: { value: 'isolated' } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} });
-  assert.equal(calls[0].destination, null); assert.equal(calls[0].mode, 'isolated'); assert.deepEqual(calls[0].checks, []);
-  h.unmount();
-});
-
-test('new destination starts without an implicit worker and requires an explicit worker choice', async () => {
-  const calls = [];
+  const pending = { requestId: 'new-thread', owner, text: 'Start a worker.', destination: { threadId: null, newThread: true, workers: ['claude'] }, newWorkerProfiles: [{ id: 'claude', display_name: 'Claude', backend: { kind: 'agent', tool: 'claude_code' }, media: null }], mode: 'in_place', checks: [] };
+  const saved = new Map([[model.pendingRequestStorageKey(owner), JSON.stringify(pending)]]);
   const returnedMonitor = { workspaceId: owner.workspaceId, hostId: owner.hostId, cwd: owner.cwd, conversationId: owner.conversationId };
   const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([]); if (command === 'assistant_message') { calls.push(args); return { message: 'Queued', monitor: returnedMonitor }; } } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render(); openAdvanced(tree); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.onChange({ target: { value: 'Start a worker.' } });
-  tree = h.render(); find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Task destination').props.onChange({ target: { value: 'new' } }); tree = h.render();
-  const send = () => find(tree, node => node.type === 'button' && node.props.className === 'primary');
-  assert.equal(send().props.disabled, true);
-  find(tree, node => node.type === 'input' && node.props.type === 'checkbox').props.onChange({ target: { checked: true } }); tree = h.render();
-  assert.equal(send().props.disabled, false);
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} });
+  const h = harness(backend, { onMonitorUpdate() {} }, saved); let tree = h.render(); await tick(); tree = h.render();
+  await button(tree, 'Retry request').props.onClick();
   assert.deepEqual(calls[0].destination.workers, ['claude']); assert.deepEqual(calls[0].newWorkerProfiles.map(profile => profile.id), ['claude']);
   h.unmount();
 });
@@ -411,43 +356,42 @@ test('isolated NeedsYou startup failure can be retried without pretending the wo
   h.unmount();
 });
 
-test('wrong-owner task in a successful-looking message reply is rejected and retry state remains', async () => {
+test('a task from another assignment in a retried reply is rejected and the request stays retryable', async () => {
   const monitor = { workspaceId: owner.workspaceId, cwd: owner.cwd, hostId: owner.hostId, conversationId: owner.conversationId };
+  const pending = { requestId: 'wrong-owner-request', owner, text: 'Keep retryable', destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [] };
+  const saved = new Map([[model.pendingRequestStorageKey(owner), JSON.stringify(pending)]]);
   const backend = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot([]) : ({ message: 'Looks done', monitor, task: task({ owner: { ...owner, conversationId: 'other' } }) }) };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.onChange({ target: { value: 'Keep retryable' } }); tree = h.render();
-  await find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} }); tree = h.render();
-  assert.match(textOf(tree), /task for a different assignment/); assert.match(textOf(tree), /Retry uses the saved request ID/);
-  assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.value, 'Keep retryable');
+  const h = harness(backend, { onMonitorUpdate() {} }, saved); let tree = h.render(); await tick(); tree = h.render();
+  await button(tree, 'Retry request').props.onClick(); tree = h.render();
+  assert.match(textOf(tree), /task for a different assignment/); assert.match(textOf(tree), /Keep retryable/);
+  assert.ok(button(tree, 'Retry request'));
   h.unmount();
 });
 
-test('reassigning the component clears an in-flight owner busy state and ignores its late response', async () => {
+test('reassigning the component ignores a late response from the previous owner', async () => {
   let finishSend; const ownerB = { workspaceId: 'project-b', cwd: '/work/b', hostId: 'host-b', conversationId: 'monitor-b' };
+  const pending = { requestId: 'old-request', owner, text: 'Old owner request', destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [] };
+  const saved = new Map([[model.pendingRequestStorageKey(owner), JSON.stringify(pending)]]);
   const backend = { demo: false, call: async (command) => {
     if (command === 'assistant_tasks_list') return { workspaceId: ownerB.workspaceId, revision: 1, tasks: [], executions: [] };
     if (command === 'assistant_message') return new Promise(resolve => { finishSend = resolve; });
   } };
-  const h = harness(backend); let tree = h.render(); await tick(); tree = h.render();
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.onChange({ target: { value: 'Old owner request' } }); tree = h.render();
-  const oldSend = find(tree, node => node.type === 'form' && node.props.className === 'assistant-request').props.onSubmit({ preventDefault() {} });
-  tree = h.render(); assert.equal(find(tree, node => node.type === 'button' && node.props.className === 'primary').props.disabled, true);
+  const h = harness(backend, { onMonitorUpdate() {} }, saved); let tree = h.render(); await tick(); tree = h.render();
+  const pendingRetry = button(tree, 'Retry request').props.onClick(); tree = h.render();
   h.setProps({ owner: ownerB }); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'button' && node.props.className === 'primary').props.disabled, true, 'empty new-owner draft remains disabled');
-  find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.onChange({ target: { value: 'New owner request' } }); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'button' && node.props.className === 'primary').props.disabled, false, 'new owner can send while old call remains unresolved');
-  finishSend({ message: 'Old response', monitor: { workspaceId: owner.workspaceId, cwd: owner.cwd, hostId: owner.hostId, conversationId: owner.conversationId } }); await oldSend; tree = h.render();
-  assert.doesNotMatch(textOf(tree), /Old response/); assert.equal(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'Message for ApexAgent').props.value, 'New owner request');
+  assert.equal(button(tree, 'Retry request'), null, 'the previous owner’s saved request is not offered to the new owner');
+  finishSend({ message: 'Old response', monitor: { workspaceId: owner.workspaceId, cwd: owner.cwd, hostId: owner.hostId, conversationId: owner.conversationId } }); await pendingRetry; tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Old response/);
   h.unmount();
 });
-
 
 test('conversation task messages open approval and review controls without tabs', async () => {
   const calls = [];
   const h = harness({ demo: false, call: async (command, args) => { calls.push([command, args]); return snapshot([task()]); } }, { view: 'conversation' });
   let tree = h.render(); await tick(); tree = h.render();
   assert.equal(find(tree, node => node.type === 'h2' && textOf(node) === 'Task overview'), null);
-  const message = find(tree, node => node.type === 'button' && textOf(node).includes('Fix parser'));
+  const card = find(tree, node => node.type === 'article' && textOf(node).includes('Fix parser'));
+  const message = card && find(card, node => node.type === 'button' && ['Open task', 'Review result'].includes(textOf(node)));
   assert.ok(message); message.props.onClick(); tree = h.render();
   assert.match(textOf(tree), /diff --git a\/parser.ts/);
   const accept = find(tree, node => node.type === 'button' && textOf(node) === 'Accept and mark done');
@@ -456,7 +400,6 @@ test('conversation task messages open approval and review controls without tabs'
   find(tree, node => node.type === 'input' && node.props.type === 'checkbox' && containsNode(find(tree, node => node.props.className === 'assistant-review-ack'), node)).props.onChange({ target: { checked: true } });
   tree = h.render(); assert.match(textOf(tree), /Tests pass/); h.unmount();
 });
-
 
 test('worker approvals are reachable from conversation messages and keep the exact request ID', async () => {
   const waiting = task({ status: 'needs_you', resultData: { pendingApprovals: [{ request: 'approval-v4', action: { title: 'Run tests', detail: 'npm test' } }] } });
@@ -497,19 +440,19 @@ test('shared task callback follows its current revision and rejects a changed ow
   assert.equal(calls.length, 2); h.unmount();
 });
 
-test('proposed handoff shows original scope and batch and initializes eligible routing', async () => {
+test('proposed handoff shows original scope and batch, and approves with the proposed workers', async () => {
   const actions = []; const proposed = task({ status: 'proposed', mode: 'isolated', resultData: { batchId: 'batch-7', requestId: 'child-7' } });
   const h = harness({ demo: false, call: async (command, args) => { if (command === 'assistant_task_action') { actions.push(args); return { ...proposed, status: 'queued' }; } return { ...snapshot([proposed]), routingThreads: [{ id: 'thread-a', workers: [{ id: 'claude', display_name: 'Claude' }] }] }; } }, { view: 'conversation' });
   let tree = h.render(); await tick(); tree = h.render();
   assert.match(textOf(tree), /From your cross-project plan/); assert.doesNotMatch(textOf(tree), /batch-7/); assert.match(textOf(tree), /Scope:.*Repair the parser/);
   find(tree, node => node.type === 'button' && /^Open task/.test(textOf(node))).props.onClick(); tree = h.render();
-  assert.equal(find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Destination for task-1').props.value, 'thread-a');
+  assert.equal(find(tree, node => node.type === 'select'), null);
   const approve = find(tree, node => node.type === 'button' && textOf(node) === 'Approve task');
   assert.equal(approve.props.disabled, false); approve.props.onClick(); await tick();
-  assert.equal(actions[0].mode, 'isolated'); assert.deepEqual(actions[0].destination.workers, ['claude']); h.unmount();
+  assert.equal(actions[0].mode, 'isolated'); assert.deepEqual(actions[0].destination, { threadId: 'thread-a', newThread: false, workers: ['claude'] }); h.unmount();
 });
 
-test('host saved routing remains preselected and approvable without a locally open pane', async () => {
+test('host saved routing is approvable without a locally open pane', async () => {
   const actions = [];
   const proposed = task({ status: 'proposed', mode: 'isolated', destination: { threadId: 'saved-remote-chat', newThread: false, workers: ['claude'] } });
   const h = harness({ demo: false, call: async (command, args) => {
@@ -518,9 +461,6 @@ test('host saved routing remains preselected and approvable without a locally op
   } }, { view: 'conversation', panes: [] });
   let tree = h.render(); await tick(); tree = h.render();
   find(tree, node => node.type === 'button' && /^Open task/.test(textOf(node))).props.onClick(); tree = h.render();
-  const destination = find(tree, node => node.type === 'select' && node.props['aria-label'] === 'Destination for task-1');
-  assert.equal(destination.props.value, 'saved-remote-chat');
-  assert.ok(find(destination, node => node.type === 'option' && node.props.value === 'saved-remote-chat'));
   const approve = find(tree, node => node.type === 'button' && textOf(node) === 'Approve task');
   assert.equal(approve.props.disabled, false); approve.props.onClick(); await tick();
   assert.deepEqual(actions[0].destination, proposed.destination); assert.deepEqual(actions[0].owner, owner); h.unmount();
@@ -541,7 +481,6 @@ test('saved destination approval sends no local same-id worker configuration', a
   assert.deepEqual(actions[0].newWorkerProfiles, []);
   h.unmount();
 });
-
 
 test('restored failed project request exposes Retry and Discard in the single conversation', async () => {
   const pending = { requestId: 'lost', owner, text: 'Check parser', destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [], threadLabels: [{ id: 'thread-a', label: 'Original title' }] };
@@ -565,7 +504,6 @@ test('restored failed project request exposes Retry and Discard in the single co
   assert.equal(retry(), null); h.unmount();
 });
 
-
 test('single-conversation recovery survives reopen and successful retry removes the saved request', async () => {
   const pending = { requestId: 'restart-request', owner, text: 'Keep this original message', destination: null, newWorkerProfiles: [], mode: 'in_place', checks: [] };
   const saved = new Map([[model.pendingRequestStorageKey(owner), JSON.stringify(pending)]]);
@@ -581,4 +519,115 @@ test('single-conversation recovery survives reopen and successful retry removes 
   assert.equal(calls[0].requestId, 'restart-request'); assert.equal(calls[0].text, pending.text);
   assert.equal(saved.has(model.pendingRequestStorageKey(owner)), false);
   assert.equal(find(tree, node => node.type === 'button' && textOf(node) === 'Retry request'), null); reopened.unmount();
+});
+
+const projectKey = id => `project:${owner.hostId}:${owner.workspaceId}:${id}`;
+
+test('links view: one short line per task, no cards or detail, and opening makes no backend call', async () => {
+  const calls = []; const opened = []; const selected = [];
+  const tasks = [
+    task({ id: 'task-1', status: 'running', originalRequest: 'Fix parser' }),
+    task({ id: 'task-2', status: 'ready_for_review', originalRequest: 'Review docs' }),
+    task({ id: 'task-3', status: 'done', originalRequest: 'Ship notes', result: 'Notes shipped.' }),
+  ];
+  const view = { display: 'links', selectedKey: null, openTask: key => opened.push(key), report() {} };
+  const backend = { demo: false, call: async command => { calls.push(command); return command === 'assistant_tasks_list' ? snapshot(tasks) : null; } };
+  const h = harness(backend, { taskView: view, onSelectTask: (...args) => selected.push(args) });
+  let tree = h.render(); await tick(); tree = h.render();
+  const links = findAll(tree, node => node.type === 'button' && node.props.className === 'assistant-task-link');
+  assert.equal(links.length, 3);
+  assert.equal(textOf(links[0]), 'Task · Running · Fix parser ›');
+  assert.equal(textOf(links[1]), 'Review result · Review docs ›');
+  assert.equal(textOf(links[2]), 'Result ready · Ship notes ›');
+  assert.equal(findAll(tree, node => node.type === 'article' && node.props.className?.startsWith?.('assistant-task-card')).length, 0);
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
+  assert.equal(find(tree, node => node.type === 'button' && /^(Open task|Review result)$/.test(textOf(node))), null);
+  const before = calls.length;
+  links[0].props.onClick(); await tick(); tree = h.render();
+  assert.deepEqual(opened, [projectKey('task-1')]);
+  assert.equal(calls.length, before, 'opening a task from the conversation makes no backend call');
+  assert.equal(selected.length, 0, 'opening a task never binds the composer');
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-detail-scroll'), null);
+  h.unmount();
+});
+
+test('report() receives composite keys, groups, and cleaned results, and empties on unmount', async () => {
+  const reports = [];
+  const tasks = [
+    task({ id: 'task-1', status: 'proposed', originalRequest: 'Plan the release', result: null, destination: { threadId: 'thread-a', newThread: false, workers: ['claude'] } }),
+    task({ id: 'task-2', status: 'running', originalRequest: 'Fix   the\nparser', result: null, destination: null, workers: [] }),
+    task({ id: 'task-3', status: 'done', originalRequest: 'Ship notes', result: '```\n<result>Shipped the fix.</result>\n```', updatedAtMs: 9 }),
+    task({ id: 'task-4', status: 'done', originalRequest: 'Old work', resultData: { dismissedAtMs: 5 } }),
+  ];
+  const view = { display: 'links', selectedKey: null, openTask() {}, report: (storeKey, rows) => reports.push({ storeKey, rows }) };
+  const backend = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot(tasks) : null };
+  const h = harness(backend, { taskView: view, projectName: 'apex-deck' });
+  let tree = h.render(); await tick(); tree = h.render();
+  const latest = reports.filter(report => report.storeKey === 'project:host-a:project').at(-1);
+  assert.ok(latest, 'the store reports under its project key');
+  const rows = latest.rows;
+  assert.deepEqual(rows.map(row => row.key), [projectKey('task-1'), projectKey('task-2'), projectKey('task-3')], 'dismissed tasks are not reported');
+  assert.deepEqual(rows.map(row => row.group), ['needsYou', 'active', 'finished']);
+  assert.deepEqual(rows.map(row => row.worker), ['Claude', 'Not chosen yet', 'Claude'], 'worker shows the profile display name');
+  assert.deepEqual(rows.map(row => row.result), ['', '', 'Shipped the fix.']);
+  assert.equal(rows[1].title, 'Fix the parser');
+  assert.equal(rows[0].statusLabel, 'Proposed');
+  assert.deepEqual({ source: rows[0].source, hostId: rows[0].hostId, workspaceId: rows[0].workspaceId, id: rows[0].id, place: rows[0].place, updatedAt: rows[2].updatedAt }, { source: 'project', hostId: 'host-a', workspaceId: 'project', id: 'task-1', place: 'apex-deck', updatedAt: 9 });
+  h.unmount();
+  assert.deepEqual(reports.at(-1), { storeKey: 'project:host-a:project', rows: [] }, 'unmounting reports an empty list for this store');
+});
+
+test('tasks view renders only the selected task detail, result first, and never binds the composer', async () => {
+  const selected = [];
+  const tasks = [task({ id: 'task-1', status: 'ready_for_review' }), task({ id: 'task-2', status: 'running', originalRequest: 'Other work' })];
+  const view = { display: 'tasks', selectedKey: projectKey('task-1'), openTask() {}, report() {} };
+  const backend = { demo: false, call: async command => command === 'assistant_tasks_list' ? snapshot(tasks) : null };
+  const h = harness(backend, { taskView: view, onSelectTask: (...args) => selected.push(args) });
+  let tree = h.render(); await tick(); tree = h.render();
+  assert.equal(findAll(tree, node => node.type === 'article' && node.props.className?.startsWith?.('assistant-task-card')).length, 1);
+  assert.match(textOf(tree), /Repair the parser/); assert.doesNotMatch(textOf(tree), /Other work/);
+  assert.equal(find(tree, node => node.props.className === 'assistant-task-link'), null);
+  assert.equal(button(tree, 'Close task details'), null, 'the parent provides Back, so no close button here');
+  const title = find(tree, node => node.props.className === 'assistant-task-title');
+  assert.equal(title.props.id, 'assistant-task-title-task-1'); assert.equal(title.props.tabIndex, -1);
+  const scroll = find(tree, node => node.props.className === 'assistant-task-detail-scroll');
+  const resultIndex = scroll.children.findIndex(node => node?.props?.className === 'assistant-task-result-block');
+  const originalIndex = scroll.children.findIndex(node => node?.type === 'details');
+  assert.ok(resultIndex === 0 && resultIndex < originalIndex, 'the result block is the first thing in the detail');
+  const resultBlock = find(tree, node => node.props.className === 'assistant-task-result-block');
+  assert.match(textOf(resultBlock), /Parser repaired\./); assert.match(textOf(resultBlock), /Not verified/); assert.match(textOf(resultBlock), /Finished|Updated/);
+  assert.ok(button(tree, 'Open worker chat'));
+  assert.equal(find(tree, node => node.type === 'textarea'), null, 'no composer textarea appears in the detail for a ready task until Request changes is opened');
+  assert.equal(selected.length, 0, 'selecting a task never retargets the message box');
+  h.unmount();
+});
+
+test('request changes is sent only from the explicit button after its text is entered', async () => {
+  const calls = [];
+  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([task()]); if (command === 'assistant_task_action') { calls.push(args); return task({ status: 'queued', revision: 5 }); } return null; } };
+  const view = { display: 'tasks', selectedKey: projectKey('task-1'), openTask() {}, report() {} };
+  const h = harness(backend, { taskView: view }); let tree = h.render(); await tick(); tree = h.render();
+  assert.equal(calls.length, 0);
+  button(tree, 'Request changes…').props.onClick(); tree = h.render();
+  assert.equal(calls.length, 0, 'revealing the box is not a request');
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Use the sharper wording.' } }); tree = h.render();
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Use the sharper wording.', 'typed text survives re-renders');
+  assert.equal(calls.length, 0, 'typing is not a request');
+  await button(tree, 'Send change request to Claude').props.onClick(); await tick(); tree = h.render();
+  assert.equal(calls.length, 1); assert.equal(calls[0].action, 'request_changes'); assert.equal(calls[0].taskId, 'task-1');
+  assert.equal(calls[0].text, 'Use the sharper wording.');
+  h.unmount();
+});
+
+test('a running task note goes to the explicit note box as a note action', async () => {
+  const calls = [];
+  const backend = { demo: false, call: async (command, args) => { if (command === 'assistant_tasks_list') return snapshot([task({ status: 'running' })]); if (command === 'assistant_task_action') { calls.push(args); return task({ status: 'running', revision: 5 }); } return null; } };
+  const view = { display: 'tasks', selectedKey: projectKey('task-1'), openTask() {}, report() {} };
+  const h = harness(backend, { taskView: view }); let tree = h.render(); await tick(); tree = h.render();
+  assert.match(textOf(tree), /Add a note for the worker/);
+  assert.equal(button(tree, 'Request changes…'), null);
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Include the fixture.' } }); tree = h.render();
+  await button(tree, 'Send note').props.onClick(); await tick();
+  assert.equal(calls[0].action, 'note'); assert.equal(calls[0].text, 'Include the fixture.');
+  h.unmount();
 });

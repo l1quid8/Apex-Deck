@@ -30,6 +30,7 @@ pub const MAX_FACTS: usize = 400;
 const MAX_REQUEST_ID_BYTES: usize = 128;
 const MAX_ARGV: usize = 32;
 const MAX_ARG_BYTES: usize = 1024;
+const MESSAGE_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "👀", "🙏"];
 
 /// One change to `personal-assistants.json` at a time. Never held across a
 /// model call or a command run.
@@ -382,6 +383,9 @@ pub struct PersonalMessage {
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
+    /// Reactions from the authenticated human account, shared by its devices.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -739,7 +743,7 @@ impl PersonalAssistant {
 
     pub(crate) fn post(&mut self, role: &str, kind: &str, text: String, task_id: Option<String>, event_id: Option<String>, at: u64) {
         let id = self.next_message_id();
-        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id });
+        self.messages.push(PersonalMessage { id, role: role.into(), kind: kind.into(), text, at, task_id, event_id, reactions: Vec::new() });
         if self.messages.len() > MAX_MESSAGES {
             let extra = self.messages.len() - MAX_MESSAGES;
             self.messages.drain(..extra);
@@ -860,6 +864,22 @@ pub struct CreateInput {
 }
 
 impl crate::Host {
+    /// Toggle a reaction from the authenticated human account. Every paired
+    /// device uses the same actor identity and reads this saved record back.
+    pub(crate) fn personal_react(&self, id: &str, message_id: &str, emoji: &str, enabled: bool) -> Result<PersonalAssistant, String> {
+        if !MESSAGE_REACTIONS.contains(&emoji) { return Err("That reaction isn't supported.".into()); }
+        self.change_assistant(id, |assistant| {
+            let message = assistant.messages.iter_mut().find(|message| message.id == message_id)
+                .ok_or_else(|| "That ApexAgent message is no longer available.".to_string())?;
+            if !matches!(message.role.as_str(), "human" | "assistant") { return Err("That message can't be reacted to.".into()); }
+            let present = message.reactions.iter().any(|current| current == emoji);
+            if enabled && !present { message.reactions.push(emoji.to_owned()); }
+            if !enabled && present { message.reactions.retain(|current| current != emoji); }
+            Ok(())
+        })?;
+        self.personal_get(id)
+    }
+
     pub(crate) fn change_personal<T>(&self, change: impl FnOnce(&mut Vec<PersonalAssistant>) -> Result<T, String>) -> Result<T, String> {
         let _held = PERSONAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut document = self.store().personal()?.unwrap_or_default();

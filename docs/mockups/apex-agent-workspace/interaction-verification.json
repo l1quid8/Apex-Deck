@@ -1,0 +1,107 @@
+{
+  "kind": "design-only UI walkthrough",
+  "capturedAt": "2026-10-10T21:47:08.307Z",
+  "records": [
+    {
+      "device": "mac",
+      "name": "Tasks is separate; composer stays hidden",
+      "pass": true,
+      "destination": "Personal assistant · Apex-Terminal"
+    },
+    {
+      "device": "mac",
+      "name": "Task opens in its own view with focus",
+      "pass": true,
+      "active": "Task details"
+    },
+    {
+      "device": "mac",
+      "name": "Result opens directly",
+      "pass": true,
+      "headings": [
+        "threads-comparison.html",
+        "Threads, with a clear place for every kind of work"
+      ]
+    },
+    {
+      "device": "mac",
+      "name": "Artifact returns to the task",
+      "pass": true
+    },
+    {
+      "device": "mac",
+      "name": "Request changes names worker and host separately from chat",
+      "pass": true,
+      "copy": "×REQUEST CHANGESDraft Threads comparisonThis sends a revision request to Null on This Mac, within the existing mockup scope.What should change?CancelSend revision requestSample interaction · no worker will run."
+    },
+    {
+      "device": "mac",
+      "name": "Task inspection preserves the chat draft and send destination",
+      "pass": true,
+      "draft": "Keep this chat draft"
+    },
+    {
+      "device": "mac",
+      "name": "Dismiss settles the proposal and updates attention",
+      "pass": true,
+      "status": "DismissedThis MacSave mockup review notesCreate a new review-notes file in the mockup folder.Project · apex-deckWorker · JiggaExact proposed actionCREATE mockups/review-notes.md · if absentWrite scope: mockups/review-notes.md onlyTask details"
+    },
+    {
+      "device": "mac",
+      "name": "Sources selection marks unsaved changes",
+      "pass": true,
+      "text": true
+    },
+    {
+      "device": "phone",
+      "name": "Tasks is separate; composer stays hidden",
+      "pass": true,
+      "destination": "Personal assistant · Apex-Terminal"
+    },
+    {
+      "device": "phone",
+      "name": "Task opens in its own view with focus",
+      "pass": true,
+      "active": "Draft Threads comparison"
+    },
+    {
+      "device": "phone",
+      "name": "Result opens directly",
+      "pass": true,
+      "headings": [
+        "Option A · One shared conversation",
+        "Option B · Conversation + Tasks",
+        "Preview note"
+      ]
+    },
+    {
+      "device": "phone",
+      "name": "Artifact returns to the task",
+      "pass": true
+    },
+    {
+      "device": "phone",
+      "name": "Request changes names worker and host separately from chat",
+      "pass": true,
+      "copy": "Request changesSend a revision request for Draft Threads comparison to Null on This Mac. This sample will not start real work.What should change?CancelSend request"
+    },
+    {
+      "device": "phone",
+      "name": "Task inspection preserves the chat draft and send destination",
+      "pass": true,
+      "draft": "Keep this chat draft"
+    },
+    {
+      "device": "phone",
+      "name": "Dismiss settles the proposal and updates attention",
+      "pass": true,
+      "status": "apex-deck · This MacDismissedSave mockup review notesDismissed · no files changedJigga · This Mac ownerDetails"
+    },
+    {
+      "device": "phone",
+      "name": "Sources selection marks unsaved changes",
+      "pass": true,
+      "text": true
+    }
+  ]
+}

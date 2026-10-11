@@ -4,8 +4,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Backend, HostEntry } from "./backend";
+import { unsupported as isUnsupportedCommand } from "./threadMove.ts";
 
-export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string };
+export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[] };
 export type ToolClass = "read" | "write" | "send" | "spend";
 /** Dot's four rule choices: do it without asking, only when I say so, ask first, hand it to me. */
 export type ActionMode = "auto" | "onRequest" | "ask" | "handOff";
@@ -63,6 +64,9 @@ export type PersonalLane = {
   problem?: string;
   setUp?: () => Promise<void>;
   send(text: string): Promise<void>;
+  react(messageId: string, emoji: string, enabled: boolean): Promise<void>;
+  saveAttachment(name: string, bytes: Uint8Array): Promise<string>;
+  pickFolder(): Promise<string | null>;
   decide(decisionId: string, paramsHash: string, approve: boolean): Promise<void>;
   cancel(taskId: string): Promise<void>;
   /** Pause stops new work starting; the assistant keeps answering. */
@@ -299,6 +303,30 @@ export function usePersonalAssistant({ hosts, hostBackend, offlineHost, open, de
       setFound({ hostId: host.id, assistant });
     },
     send: (text) => after(route().call("personal_send", { assistantId: need(), requestId: requestId(device), text })),
+    react: async (messageId, emoji, enabled) => {
+      let result: { assistant: PersonalAssistantRecord };
+      try { result = await route().call("personal_react", { assistantId: need(), messageId, emoji, enabled }); }
+      catch (error) {
+        if (isUnsupportedCommand(error, "personal_react")) throw new Error("This host does not support saved ApexAgent reactions. Update its service to use reactions here.");
+        throw error;
+      }
+      if (!result?.assistant || result.assistant.id !== id) throw new Error("The assistant did not confirm that reaction was saved.");
+      setFound({ hostId: host.id, assistant: result.assistant });
+    },
+    saveAttachment: async (name, bytes) => {
+      const assistantId = need();
+      const saved = await route().saveAttachment(assistantId, name, bytes);
+      if (latestFound.current?.hostId !== host.id || latestFound.current.assistant?.id !== assistantId) throw new Error("The personal assistant changed while saving the attachment.");
+      return saved;
+    },
+    pickFolder: async () => {
+      const assistantId = need();
+      const path = await route().pickFolder();
+      if (!path) return null;
+      const saved = await route().copyAttachment(assistantId, path);
+      if (latestFound.current?.hostId !== host.id || latestFound.current.assistant?.id !== assistantId) throw new Error("The personal assistant changed while copying the folder.");
+      return saved;
+    },
     decide: (decisionId, paramsHash, approve) => after(route().call("personal_decide", { assistantId: need(), requestId: requestId(device), decisionId, paramsHash, approve })),
     cancel: (taskId) => after(route().call("personal_cancel", { assistantId: need(), requestId: requestId(device), taskId })),
     pause: (paused) => after(route().call("personal_pause", { assistantId: need(), requestId: requestId(device), paused })),

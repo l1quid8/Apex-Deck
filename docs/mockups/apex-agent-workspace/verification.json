@@ -1,0 +1,1197 @@
+{
+  "kind": "design-only",
+  "capturedAt": "2026-10-10T21:47:12.570Z",
+  "records": [
+    {
+      "device": "mac",
+      "name": "conversation",
+      "file": "mac-conversation.png",
+      "query": {
+        "view": "chat"
+      },
+      "metrics": {
+        "width": 1360,
+        "height": 920,
+        "horizontalOverflow": false,
+        "headings": [],
+        "controls": [
+          {
+            "label": "Open menu",
+            "width": 52,
+            "height": 44
+          },
+          {
+            "label": "Conversation",
+            "width": 89,
+            "height": 48
+          },
+          {
+            "label": "Tasks 2 needs you",
+            "width": 107,
+            "height": 48
+          },
+          {
+            "label": "Sources · apex-deck",
+            "width": 114,
+            "height": 36
+          },
+          {
+            "label": "Review task · Draft Threads comparison",
+            "width": 225,
+            "height": 38
+          },
+          {
+            "label": "Open threads-comparison.html",
+            "width": 177,
+            "height": 38
+          },
+          {
+            "label": "View task",
+            "width": 54,
+            "height": 38
+          },
+          {
+            "label": "Review Sources",
+            "width": 89,
+            "height": 38
+          },
+          {
+            "label": "Message destination",
+            "width": 750,
+            "height": 36
+          },
+          {
+            "label": "Message ApexAgent",
+            "width": 687,
+            "height": 35
+          },
+          {
+            "label": "Send sample message",
+            "width": 36,
+            "height": 35
+          },
+          {
+            "label": "ApexAgent avatar, expanded",
+            "width": 58,
+            "height": 58
+          }
+        ],
+        "state": {
+          "view": "chat",
+          "filter": "all",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "mac",
+      "name": "tasks",
+      "file": "mac-tasks.png",
+      "query": {
+        "view": "tasks"
+      },
+      "metrics": {
+        "width": 1360,
+        "height": 920,
+        "horizontalOverflow": false,
+        "headings": [
+          "Tasks",
+          "Draft Threads comparison",
+          "Save mockup review notes",
+          "Watch for test.txt",
+          "Check server uptime"
+        ],
+        "controls": [
+          {
+            "label": "Open menu",
+            "width": 52,
+            "height": 44
+          },
+          {
+            "label": "Conversation",
+            "width": 84,
+            "height": 48
+          },
+          {
+            "label": "Tasks 2 needs you",
+            "width": 109,
+            "height": 48
+          },
+          {
+            "label": "Sources · apex-deck",
+            "width": 114,
+            "height": 36
+          },
+          {
+            "label": "All",
+            "width": 36,
+            "height": 33
+          },
+          {
+            "label": "Needs you 2",
+            "width": 96,
+            "height": 33
+          },
+          {
+            "label": "Active",
+            "width": 57,
+            "height": 33
+          },
+          {
+            "label": "Finished",
+            "width": 69,
+            "height": 33
+          },
+          {
+            "label": "Open mockup",
+            "width": 79,
+            "height": 32
+          },
+          {
+            "label": "Accept result",
+            "width": 104,
+            "height": 44
+          },
+          {
+            "label": "Request changes",
+            "width": 122,
+            "height": 44
+          },
+          {
+            "label": "Task details",
+            "width": 67,
+            "height": 38
+          },
+          {
+            "label": "Approve exact action",
+            "width": 151,
+            "height": 44
+          },
+          {
+            "label": "Dismiss",
+            "width": 68,
+            "height": 44
+          },
+          {
+            "label": "Task details",
+            "width": 67,
+            "height": 38
+          },
+          {
+            "label": "Stop task",
+            "width": 77,
+            "height": 44
+          },
+          {
+            "label": "Task details",
+            "width": 67,
+            "height": 38
+          },
+          {
+            "label": "View result and receipt",
+            "width": 130,
+            "height": 38
+          },
+          {
+            "label": "ApexAgent avatar, expanded",
+            "width": 58,
+            "height": 58
+          }
+        ],
+        "state": {
+          "view": "tasks",
+          "filter": "all",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "mac",
+      "name": "review-result",
+      "file": "mac-review-result.png",
+      "query": {
+        "view": "task",
+        "task": "mockup"
+      },
+      "metrics": {
+        "width": 1360,
+        "height": 920,
+        "horizontalOverflow": false,
+        "headings": [
+          "Task details",
+          "Draft Threads comparison",
+          "Request",
+          "Result"
+        ],
+        "controls": [
+          {
+            "label": "Open menu",
+            "width": 52,
+            "height": 44
+          },
+          {
+            "label": "Conversation",
+            "width": 84,
+            "height": 48
+          },
+          {
+            "label": "Tasks 2 needs you",
+            "width": 107,
+            "height": 48
+          },
+          {
+            "label": "Sources · apex-deck",
+            "width": 114,
+            "height": 36
+          },
+          {
+            "label": "Back to Tasks",
+            "width": 44,
+            "height": 46
+          },
+          {
+            "label": "Open mockup ↗",
+            "width": 91,
+            "height": 38
+          },
+          {
+            "label": "Accept result",
+            "width": 104,
+            "height": 44
+          },
+          {
+            "label": "Request changes",
+            "width": 122,
+            "height": 44
+          },
+          {
+            "label": "Worker log and receipt",
+            "width": 716,
+            "height": 36
+          },
+          {
+            "label": "ApexAgent avatar, expanded",
+            "width": 58,
+            "height": 58
+          }
+        ],
+        "state": {
+          "view": "task",
+          "filter": "all",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "mac",
+      "name": "approval",
+      "file": "mac-approval.png",
+      "query": {
+        "view": "task",
+        "task": "cleanup"
+      },
+      "metrics": {
+        "width": 1360,
+        "height": 920,
+        "horizontalOverflow": false,
+        "headings": [
+          "Task details",
+          "Save mockup review notes",
+          "Request",
+          "Proposed operation"
+        ],
+        "controls": [
+          {
+            "label": "Open menu",
+            "width": 52,
+            "height": 44
+          },
+          {
+            "label": "Conversation",
+            "width": 84,
+            "height": 48
+          },
+          {
+            "label": "Tasks 2 needs you",
+            "width": 107,
+            "height": 48
+          },
+          {
+            "label": "Sources · apex-deck",
+            "width": 114,
+            "height": 36
+          },
+          {
+            "label": "Back to Tasks",
+            "width": 44,
+            "height": 46
+          },
+          {
+            "label": "Approve exact action",
+            "width": 151,
+            "height": 44
+          },
+          {
+            "label": "Dismiss",
+            "width": 68,
+            "height": 44
+          },
+          {
+            "label": "Worker log and receipt",
+            "width": 716,
+            "height": 36
+          },
+          {
+            "label": "ApexAgent avatar, expanded",
+            "width": 58,
+            "height": 58
+          }
+        ],
+        "state": {
+          "view": "task",
+          "filter": "all",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "mac",
+      "name": "finished",
+      "file": "mac-finished.png",
+      "query": {
+        "view": "tasks",
+        "filter": "finished"
+      },
+      "metrics": {
+        "width": 1360,
+        "height": 920,
+        "horizontalOverflow": false,
+        "headings": [
+          "Tasks",
+          "Check server uptime"
+        ],
+        "controls": [
+          {
+            "label": "Open menu",
+            "width": 52,
+            "height": 44
+          },
+          {
+            "label": "Conversation",
+            "width": 84,
+            "height": 48
+          },
+          {
+            "label": "Tasks 2 needs you",
+            "width": 109,
+            "height": 48
+          },
+          {
+            "label": "Sources · apex-deck",
+            "width": 114,
+            "height": 36
+          },
+          {
+            "label": "All",
+            "width": 36,
+            "height": 33
+          },
+          {
+            "label": "Needs you 2",
+            "width": 96,
+            "height": 33
+          },
+          {
+            "label": "Active",
+            "width": 57,
+            "height": 33
+          },
+          {
+            "label": "Finished",
+            "width": 69,
+            "height": 33
+          },
+          {
+            "label": "View result and receipt",
+            "width": 130,
+            "height": 38
+          },
+          {
+            "label": "ApexAgent avatar, expanded",
+            "width": 58,
+            "height": 58
+          }
+        ],
+        "state": {
+          "view": "tasks",
+          "filter": "finished",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "mac",
+      "name": "sources",
+      "file": "mac-sources.png",
+      "query": {
+        "view": "sources"
+      },
+      "metrics": {
+        "width": 1360,
+        "height": 920,
+        "horizontalOverflow": false,
+        "headings": [
+          "Sources · apex-deck",
+          "Chats",
+          "Selected files"
+        ],
+        "controls": [
+          {
+            "label": "Open menu",
+            "width": 52,
+            "height": 44
+          },
+          {
+            "label": "Conversation",
+            "width": 84,
+            "height": 48
+          },
+          {
+            "label": "Tasks 2 needs you",
+            "width": 107,
+            "height": 48
+          },
+          {
+            "label": "Sources · apex-deck",
+            "width": 114,
+            "height": 36
+          },
+          {
+            "label": "Back",
+            "width": 44,
+            "height": 46
+          },
+          {
+            "label": null,
+            "width": 22,
+            "height": 22
+          },
+          {
+            "label": null,
+            "width": 22,
+            "height": 22
+          },
+          {
+            "label": "Remove README.md",
+            "width": 44,
+            "height": 52
+          },
+          {
+            "label": "Save source selection",
+            "width": 139,
+            "height": 38
+          },
+          {
+            "label": "ApexAgent avatar, expanded",
+            "width": 58,
+            "height": 58
+          }
+        ],
+        "state": {
+          "view": "sources",
+          "filter": "all",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "mac",
+      "name": "artifact",
+      "file": "mac-artifact.png",
+      "query": {
+        "view": "artifact"
+      },
+      "metrics": {
+        "width": 1360,
+        "height": 920,
+        "horizontalOverflow": false,
+        "headings": [
+          "threads-comparison.html",
+          "Threads, with a clear place for every kind of work",
+          "Conversation first",
+          "Task handoff"
+        ],
+        "controls": [
+          {
+            "label": "Open menu",
+            "width": 52,
+            "height": 44
+          },
+          {
+            "label": "Conversation",
+            "width": 84,
+            "height": 48
+          },
+          {
+            "label": "Tasks 2 needs you",
+            "width": 107,
+            "height": 48
+          },
+          {
+            "label": "Sources · apex-deck",
+            "width": 114,
+            "height": 36
+          },
+          {
+            "label": "‹",
+            "width": 44,
+            "height": 46
+          },
+          {
+            "label": "ApexAgent avatar, expanded",
+            "width": 58,
+            "height": 58
+          }
+        ],
+        "state": {
+          "view": "artifact",
+          "filter": "all",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "phone",
+      "name": "conversation",
+      "file": "phone-conversation.png",
+      "query": {
+        "view": "chat"
+      },
+      "metrics": {
+        "width": 393,
+        "height": 852,
+        "horizontalOverflow": false,
+        "headings": [],
+        "controls": [
+          {
+            "label": "Back to Agents",
+            "width": 62,
+            "height": 44
+          },
+          {
+            "label": "Open menu",
+            "width": 42,
+            "height": 42
+          },
+          {
+            "label": "Conversation",
+            "width": 111,
+            "height": 42
+          },
+          {
+            "label": "Tasks 2",
+            "width": 92,
+            "height": 42
+          },
+          {
+            "label": "Review task · Draft Threads comparison",
+            "width": 261,
+            "height": 40
+          },
+          {
+            "label": "Open threads-comparison.html",
+            "width": 211,
+            "height": 40
+          },
+          {
+            "label": "View task",
+            "width": 83,
+            "height": 40
+          },
+          {
+            "label": "Review Sources",
+            "width": 119,
+            "height": 40
+          },
+          {
+            "label": "Send to Personal assistant · Apex-Terminal⌄",
+            "width": 363,
+            "height": 28
+          },
+          {
+            "label": "Add attachment",
+            "width": 38,
+            "height": 38
+          },
+          {
+            "label": "Message ApexAgent…",
+            "width": 269,
+            "height": 16
+          },
+          {
+            "label": "Send sample message",
+            "width": 38,
+            "height": 38
+          }
+        ],
+        "state": {
+          "view": "chat",
+          "filter": "All",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "phone",
+      "name": "tasks",
+      "file": "phone-tasks.png",
+      "query": {
+        "view": "tasks"
+      },
+      "metrics": {
+        "width": 393,
+        "height": 852,
+        "horizontalOverflow": false,
+        "headings": [
+          "Tasks",
+          "Draft Threads comparison",
+          "Save mockup review notes",
+          "Watch for test.txt",
+          "Check server uptime"
+        ],
+        "controls": [
+          {
+            "label": "Back to Agents",
+            "width": 62,
+            "height": 44
+          },
+          {
+            "label": "Open menu",
+            "width": 42,
+            "height": 42
+          },
+          {
+            "label": "Conversation",
+            "width": 111,
+            "height": 42
+          },
+          {
+            "label": "Tasks 2",
+            "width": 92,
+            "height": 42
+          },
+          {
+            "label": "All",
+            "width": 39,
+            "height": 38
+          },
+          {
+            "label": "Needs you2",
+            "width": 92,
+            "height": 38
+          },
+          {
+            "label": "Active",
+            "width": 58,
+            "height": 38
+          },
+          {
+            "label": "Finished",
+            "width": 70,
+            "height": 38
+          },
+          {
+            "label": "Open mockup",
+            "width": 95,
+            "height": 34
+          },
+          {
+            "label": "Accept result",
+            "width": 92,
+            "height": 34
+          },
+          {
+            "label": "Request changes",
+            "width": 113,
+            "height": 34
+          },
+          {
+            "label": "Details",
+            "width": 58,
+            "height": 34
+          },
+          {
+            "label": "Approve",
+            "width": 65,
+            "height": 34
+          },
+          {
+            "label": "Dismiss",
+            "width": 62,
+            "height": 34
+          },
+          {
+            "label": "Details",
+            "width": 58,
+            "height": 34
+          },
+          {
+            "label": "Stop task",
+            "width": 71,
+            "height": 34
+          },
+          {
+            "label": "Details",
+            "width": 58,
+            "height": 34
+          },
+          {
+            "label": "Details",
+            "width": 58,
+            "height": 34
+          }
+        ],
+        "state": {
+          "view": "tasks",
+          "filter": "All",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "phone",
+      "name": "review-result",
+      "file": "phone-review-result.png",
+      "query": {
+        "view": "task",
+        "task": "mockup"
+      },
+      "metrics": {
+        "width": 393,
+        "height": 852,
+        "horizontalOverflow": false,
+        "headings": [
+          "Draft Threads comparison",
+          "Result",
+          "Task details",
+          "Task history"
+        ],
+        "controls": [
+          {
+            "label": "Back to Agents",
+            "width": 62,
+            "height": 44
+          },
+          {
+            "label": "Open menu",
+            "width": 42,
+            "height": 42
+          },
+          {
+            "label": "Conversation",
+            "width": 111,
+            "height": 42
+          },
+          {
+            "label": "Tasks 2",
+            "width": 92,
+            "height": 42
+          },
+          {
+            "label": "‹  Back to Tasks",
+            "width": 106,
+            "height": 38
+          },
+          {
+            "label": "▧Open threads-comparison.htmlPreview checked · Implementation not started›",
+            "width": 331,
+            "height": 62
+          },
+          {
+            "label": "Accept result",
+            "width": 94,
+            "height": 38
+          },
+          {
+            "label": "Request changes",
+            "width": 115,
+            "height": 38
+          },
+          {
+            "label": "Show activity and worker log⌄",
+            "width": 331,
+            "height": 44
+          }
+        ],
+        "state": {
+          "view": "task",
+          "filter": "All",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "phone",
+      "name": "approval",
+      "file": "phone-approval.png",
+      "query": {
+        "view": "task",
+        "task": "cleanup"
+      },
+      "metrics": {
+        "width": 393,
+        "height": 852,
+        "horizontalOverflow": false,
+        "headings": [
+          "Save mockup review notes",
+          "Proposed operation",
+          "Task details",
+          "Task history"
+        ],
+        "controls": [
+          {
+            "label": "Back to Agents",
+            "width": 62,
+            "height": 44
+          },
+          {
+            "label": "Open menu",
+            "width": 42,
+            "height": 42
+          },
+          {
+            "label": "Conversation",
+            "width": 111,
+            "height": 42
+          },
+          {
+            "label": "Tasks 2",
+            "width": 92,
+            "height": 42
+          },
+          {
+            "label": "‹  Back to Tasks",
+            "width": 106,
+            "height": 38
+          },
+          {
+            "label": "Approve",
+            "width": 67,
+            "height": 38
+          },
+          {
+            "label": "Dismiss",
+            "width": 64,
+            "height": 38
+          },
+          {
+            "label": "Show activity and worker log⌄",
+            "width": 331,
+            "height": 44
+          }
+        ],
+        "state": {
+          "view": "task",
+          "filter": "All",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "phone",
+      "name": "finished",
+      "file": "phone-finished.png",
+      "query": {
+        "view": "tasks",
+        "filter": "finished"
+      },
+      "metrics": {
+        "width": 393,
+        "height": 852,
+        "horizontalOverflow": false,
+        "headings": [
+          "Tasks",
+          "Check server uptime"
+        ],
+        "controls": [
+          {
+            "label": "Back to Agents",
+            "width": 62,
+            "height": 44
+          },
+          {
+            "label": "Open menu",
+            "width": 42,
+            "height": 42
+          },
+          {
+            "label": "Conversation",
+            "width": 111,
+            "height": 42
+          },
+          {
+            "label": "Tasks 2",
+            "width": 92,
+            "height": 42
+          },
+          {
+            "label": "All",
+            "width": 39,
+            "height": 38
+          },
+          {
+            "label": "Needs you2",
+            "width": 92,
+            "height": 38
+          },
+          {
+            "label": "Active",
+            "width": 58,
+            "height": 38
+          },
+          {
+            "label": "Finished",
+            "width": 70,
+            "height": 38
+          },
+          {
+            "label": "Details",
+            "width": 58,
+            "height": 34
+          }
+        ],
+        "state": {
+          "view": "tasks",
+          "filter": "Finished",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "phone",
+      "name": "sources",
+      "file": "phone-sources.png",
+      "query": {
+        "view": "sources"
+      },
+      "metrics": {
+        "width": 393,
+        "height": 852,
+        "horizontalOverflow": false,
+        "headings": [
+          "Sources",
+          "Project context"
+        ],
+        "controls": [
+          {
+            "label": "Back to Agents",
+            "width": 62,
+            "height": 44
+          },
+          {
+            "label": "Open menu",
+            "width": 42,
+            "height": 42
+          },
+          {
+            "label": "Conversation",
+            "width": 111,
+            "height": 42
+          },
+          {
+            "label": "Tasks 2",
+            "width": 92,
+            "height": 42
+          },
+          {
+            "label": null,
+            "width": 21,
+            "height": 21
+          },
+          {
+            "label": null,
+            "width": 21,
+            "height": 21
+          },
+          {
+            "label": "Remove README.md",
+            "width": 38,
+            "height": 38
+          },
+          {
+            "label": "Save source selection",
+            "width": 140,
+            "height": 38
+          }
+        ],
+        "state": {
+          "view": "sources",
+          "filter": "All",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "phone",
+      "name": "artifact",
+      "file": "phone-artifact.png",
+      "query": {
+        "view": "artifact"
+      },
+      "metrics": {
+        "width": 393,
+        "height": 852,
+        "horizontalOverflow": false,
+        "headings": [
+          "Option A · One shared conversation",
+          "Option B · Conversation + Tasks",
+          "Preview note"
+        ],
+        "controls": [
+          {
+            "label": "Back to Agents",
+            "width": 62,
+            "height": 44
+          },
+          {
+            "label": "Open menu",
+            "width": 42,
+            "height": 42
+          },
+          {
+            "label": "Conversation",
+            "width": 111,
+            "height": 42
+          },
+          {
+            "label": "Tasks 2",
+            "width": 92,
+            "height": 42
+          },
+          {
+            "label": "‹  Back to task",
+            "width": 100,
+            "height": 40
+          }
+        ],
+        "state": {
+          "view": "artifact",
+          "filter": "All",
+          "composerDestination": "Personal assistant · Apex-Terminal",
+          "taskIds": [
+            "mockup",
+            "cleanup",
+            "watch",
+            "uptime"
+          ]
+        }
+      },
+      "errors": []
+    },
+    {
+      "device": "phone",
+      "name": "narrow-tasks",
+      "file": "phone-narrow-tasks.png",
+      "query": {
+        "view": "tasks"
+      },
+      "metrics": {
+        "width": 375,
+        "height": 812,
+        "horizontalOverflow": false
+      },
+      "errors": []
+    }
+  ]
+}

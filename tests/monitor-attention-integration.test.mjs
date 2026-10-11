@@ -132,7 +132,7 @@ function appHarness() {
     layoutKey: () => '',
     pickerRows: () => [], workInRows: () => [],
   };
-  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgent','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','AttentionMenu','ConfirmDialog','PathPrompt','SidebarHandle']);
+  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','AttentionMenu','ConfirmDialog','PathPrompt','SidebarHandle']);
   const globalValues = {
     localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
     crypto: { randomUUID: () => `request-${++requestSequence}` },
@@ -187,8 +187,8 @@ const hasMonitorAttention = tree => Boolean(attentionMenuOf(tree)?.props.items.s
 // The avatar opens one conversation for every project; project setup opens from it.
 const agentOf = (h, tree) => {
   const all = child(tree, 'ApexAgentAll');
-  if (all && !child(tree, 'ApexAgent')) { all.props.onSetUp(child(tree, 'ApexAgentWidget').props.workspaceId); tree = h.render(); }
-  return child(tree, 'ApexAgent');
+  if (all && !child(tree, 'ApexAgentSources')) { all.props.onSetUp(child(tree, 'ApexAgentWidget').props.workspaceId); tree = h.render(); }
+  return child(tree, 'ApexAgentSources');
 };
 const monitorAttentionItem = tree => attentionMenuOf(tree)?.props.items.find(item => item.monitor?.findings?.some(finding => finding.id === 'finding-a'));
 
@@ -679,7 +679,7 @@ test('the avatar opens one conversation for every project with no project dropdo
   child(tree, 'ApexAgentWidget').props.onOpen(project.id); tree = h.render();
   const all = child(tree, 'ApexAgentAll');
   assert.ok(all, 'combined conversation opens');
-  assert.ok(!child(tree, 'ApexAgent'), 'no single-project panel');
+  assert.ok(!child(tree, 'ApexAgentSources'), 'no single-project panel');
   assert.ok(!find(tree, node => node.props?.['aria-label'] === 'ApexAgent project'), 'no project dropdown');
   all.props.onClose(); tree = h.render();
   assert.equal(child(tree, 'ApexAgentWidget').props.open, false);

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ApexAgent · Mac workspace concept</title>
+  <link rel="stylesheet" href="mac.css">
+</head>
+<body>
+  <div class="sample-ribbon">DESIGN PREVIEW · SAMPLE DATA · NO LIVE ACTIONS</div>
+  <main class="desktop" aria-label="ApexAgent Mac interface concept">
+    <div class="window"><div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><span>Apex Deck</span><span class="host-pill">This Mac · apex-deck</span></div>
+      <div class="behind"><div class="behind-title">Apex Deck <span>Development</span></div><p>Workspace content stays underneath the assistant.</p></div>
+    </div>
+    <section class="agent" aria-label="ApexAgent">
+      <header class="topbar"><div class="avatar-mini">A</div><div class="identity"><strong tabindex="-1">ApexAgent</strong><span>Personal assistant · Apex-Terminal</span></div><button class="icon-button" id="menuButton" aria-label="Open menu" aria-expanded="false">•••</button></header>
+      <nav class="destinations" aria-label="Assistant destinations"><button data-view="chat" class="destination">Conversation</button><button data-view="tasks" class="destination">Tasks <b class="needs-count">2 needs you</b></button></nav>
+      <div class="contextline"><span class="context-dot"></span><span>View <b>All projects + personal</b></span><button class="quiet-link" id="sourcesButton">Sources · apex-deck</button></div>
+
+      <section class="view" id="chatView" aria-label="Conversation">
+        <div class="chat-scroll">
+          <div class="date-label">Today</div>
+          <div class="message user"><p>Can you compare the two Threads layouts? I want one conversation and a separate place to track the work.</p><time>11:12 AM · apex-deck · This Mac</time></div>
+          <div class="message assistant"><div class="sender">ApexAgent <span>· apex-deck · This Mac · 11:12 AM</span></div><p>I’ll put together a small comparison that keeps the conversation together and gives tasks their own home. You can review the mockup before anything is accepted.</p><button class="text-action" data-open-task="mockup">Review task · Draft Threads comparison</button></div>
+          <div class="message user"><p>Thanks. Keep the result easy to open.</p><time>11:13 AM · apex-deck · This Mac</time></div>
+          <div class="message assistant"><div class="sender">ApexAgent <span>· apex-deck · This Mac · 11:26 AM</span></div><p>Mockup ready. The preview is checked; implementation has not started.</p><div class="event-actions"><button class="text-action" data-artifact>Open threads-comparison.html</button><button class="text-action" data-open-task="mockup">View task</button></div></div>
+          <div class="message user"><p>Hi! What can you help me with?</p><time>11:35 AM · Personal assistant · Apex-Terminal</time></div>
+          <div class="message assistant"><div class="sender">ApexAgent <span>· Personal assistant · Apex-Terminal · 11:35 AM</span></div><p>I can answer questions here, and I’ll keep work with a result or approval in Tasks so it’s easy to find.</p></div>
+          <div class="project-event"><span class="event-mark">↗</span><div><b>Project update · apex-deck · This Mac · 11:42 AM</b><p>One selected source is no longer available. It was removed from the saved selection.</p><button class="text-action" data-menu-view="sources">Review Sources</button></div></div>
+        </div>
+        <footer class="composer"><label for="destination">Send to</label><select id="destination" aria-label="Message destination"><option>Personal assistant · Apex-Terminal</option><option>Project · apex-deck · This Mac</option></select><div class="composebox"><input id="chatInput" placeholder="Message ApexAgent…" aria-label="Message ApexAgent"><button id="sendButton" aria-label="Send sample message">↑</button></div><small>Conversation stays here. Task work appears in Tasks.</small></footer>
+      </section>
+
+      <section class="view hidden" id="tasksView" aria-label="Tasks">
+        <div class="task-heading"><div><h1 tabindex="-1">Tasks</h1><p>Requests and results across your assistants.</p></div><span class="count-badge">4</span></div>
+        <div class="filters" role="group" aria-label="Filter tasks"><button class="filter selected" data-filter="all">All</button><button class="filter" data-filter="needs">Needs you <b>2</b></button><button class="filter" data-filter="active">Active</button><button class="filter" data-filter="finished">Finished</button></div>
+        <div class="task-list" id="taskList">
+          <article class="task-card" data-task="mockup" data-category="needs"><div class="card-top"><span class="status review">Ready for review</span><span class="owner">This Mac</span></div><h2>Draft Threads comparison</h2><p class="task-desc">Compare two conversation layouts for review.</p><div class="chips"><span>Project · apex-deck</span><span>Worker · Null</span></div><div class="result-callout"><b>Mockup ready</b><span>Preview checked · Implementation not started</span><button data-artifact>Open mockup</button></div><div class="card-actions"><button class="primary" data-accept>Accept result</button><button data-changes>Request changes</button></div><button class="details-link" data-detail="mockup">Task details</button></article>
+          <article class="task-card approval-card" data-task="cleanup" data-category="needs"><div class="card-top"><span class="status approval-status">Needs approval</span><span class="owner">This Mac</span></div><h2>Save mockup review notes</h2><p class="task-desc">Create a new review-notes file in the mockup folder.</p><div class="chips"><span>Project · apex-deck</span><span>Worker · Jigga</span></div><div class="scope-box"><small>Exact proposed action</small><code>CREATE mockups/review-notes.md · if absent</code><span>Write scope: <b>mockups/review-notes.md only</b></span></div><div class="card-actions"><button class="approve" data-approve>Approve exact action</button><button data-dismiss>Dismiss</button></div><button class="details-link" data-detail="cleanup">Task details</button></article>
+          <article class="task-card" data-task="watch" data-category="active"><div class="card-top"><span class="status waiting">Waiting</span><span class="owner">Apex-Terminal</span></div><h2>Watch for test.txt</h2><p class="task-desc">Check every minute; stop when the file exists.</p><div class="chips"><span>Personal assistant</span><span>3 checks · last absent 11:42 AM</span></div><div class="result-callout compact"><span>Next check 11:43 AM · Maximum 500 checks</span></div><div class="card-actions"><button data-stop>Stop task</button></div><button class="details-link" data-detail="watch">Task details</button></article>
+          <article class="task-card" data-task="uptime" data-category="finished"><div class="card-top"><span class="status done-status">Done</span><span class="owner">Apex-Terminal</span></div><h2>Check server uptime</h2><p class="task-desc">Personal assistant · Worker assistant</p><div class="result-callout compact"><b>Up 34 days</b><span>Observed 11:38 AM · One run</span></div><button class="details-link" data-detail="uptime">View result and receipt</button></article>
+        </div>
+        <div class="empty-state hidden" id="emptyState"><span class="empty-icon">✓</span><h2>No tasks in this filter</h2><p>Completed work stays here with its result and receipt.</p><button class="text-action" data-filter-reset>Show all tasks</button></div>
+      </section>
+
+      <section class="view hidden" id="detailView" aria-label="Task details"></section>
+      <section class="view hidden" id="sourcesView" aria-label="Sources">
+        <div class="subhead"><button class="back" data-back aria-label="Back">‹</button><div><h1 tabindex="-1">Sources · apex-deck</h1><p>Information available to the assistant, not permission to act</p></div></div>
+        <div class="source-sheet">
+          <div class="source-summary"><div class="source-icon">⌂</div><div><b>apex-deck · This Mac</b><span>~/Downloads/apex-deck</span></div><span class="saved" id="sourceSaveState">Saved</span></div>
+          <h2>Chats</h2>
+          <label class="source-option"><input type="checkbox" checked data-source-check><span><b>Intelligent UI</b><small>Last read 11:20 AM · recent excerpt, partial coverage</small></span></label>
+          <label class="source-option"><input type="checkbox" checked data-source-check><span><b>Release checks</b><small>Last read 10:54 AM · recent excerpt, partial coverage</small></span></label>
+          <p class="removed-note">1 deleted chat was removed from the saved selection.</p>
+          <h2>Selected files</h2><div class="source-file" id="readmeSource"><div><b>README.md</b><small>Last read 11:20 AM · bounded excerpt</small></div><button id="removeReadme" aria-label="Remove README.md">×</button></div>
+          <button id="addReadme" class="hidden">Add README.md</button>
+          <p class="source-note">Generated worker logs are excluded. Selected chats provide recent, bounded excerpts; the full conversation is not automatically read.</p>
+          <p class="source-note">Save keeps this selection. Reading coverage updates when the next project check runs.</p>
+          <button class="save-sources primary" id="saveSources">Save source selection</button>
+        </div>
+      </section>
+      <section class="view hidden" id="artifactView" aria-label="Sample artifact"><div class="subhead"><button class="back" data-back>‹</button><div><h1 tabindex="-1">threads-comparison.html</h1><p>Design preview · sample artifact</p></div></div><div class="artifact-scroll"><div class="artifact-banner">DESIGN PREVIEW · SAMPLE ARTIFACT</div><h2>Threads, with a clear place for every kind of work</h2><p class="artifact-lede">Two conversation layouts for Apex Deck. This visual is a sample review artifact.</p><div class="layout-compare"><article><span>OPTION A</span><h3>Conversation first</h3><div class="sample-bubble">Can you compare two Threads layouts?</div><div class="sample-reply">A focused comparison is ready. <u>Review task ↗</u></div><div class="sample-tasks">Tasks <b>2 needs you</b></div><p>Chat remains readable while work has a dedicated home.</p></article><article><span>OPTION B</span><h3>Task handoff</h3><div class="sample-bubble">Can you compare two Threads layouts?</div><div class="sample-reply">I’ll prepare a visual comparison for review.</div><div class="sample-result"><b>Mockup ready</b><u>Open result ↗</u></div><p>Task results return as concise links in the conversation.</p></article></div><div class="artifact-footer">Preview checked · Implementation not started</div></div></section>
+
+      <div class="menu-pop hidden" id="menuPop"><button data-menu-view="tasks">Tasks <span>All requests and results</span></button><button data-menu-view="sources">Sources <span>Project context and coverage</span></button><div class="menu-footer">Helpers <b>Null · Jigga · Assistant</b></div></div>
+    </section>
+    <button class="orb" id="orb" aria-label="ApexAgent avatar, expanded"></button>
+    <div class="notice hidden" id="notice" role="status"></div>
+    <dialog id="changeDialog"><form method="dialog"><button class="dialog-close" aria-label="Close">×</button><span class="eyebrow">REQUEST CHANGES</span><h2>Draft Threads comparison</h2><p>This sends a revision request to <b>Null</b> on <b>This Mac</b>, within the existing mockup scope.</p><label for="changeNote">What should change?</label><textarea id="changeNote" placeholder="Describe the specific change…"></textarea><div class="dialog-actions"><button value="cancel">Cancel</button><button class="primary" id="submitChanges" value="submit">Send revision request</button></div><small>Sample interaction · no worker will run.</small></form></dialog>
+  </main>
+  <script src="mac.js"></script>
+</body></html>

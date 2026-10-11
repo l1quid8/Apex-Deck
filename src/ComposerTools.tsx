@@ -1,6 +1,6 @@
 import type { ToolServer } from "./types";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { boxKeyGoesToMenu, clickCloses, menuItems, type MenuItem, type Trigger } from "./composerMenu";
+import { availableMenuItems, boxKeyGoesToMenu, clickCloses, menuItems, type MenuItem, type Trigger } from "./composerMenu";
 
 export type ComposerMenuHandle = { key: (event: React.KeyboardEvent) => boolean };
 export const ComposerMenu = forwardRef<ComposerMenuHandle, {
@@ -13,7 +13,18 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   choose: (item: MenuItem, trigger: Trigger | null) => void;
   /** The thread's Plan switch, so the menu offers Plan or Stop planning. */
   planOn?: boolean;
-}>(({ participants, servers, serverStatus, mods = [], trigger, choose, planOn = false }, ref) => {
+  /** Hide attachment choices when this destination has no verified file route. */
+  canAttach?: boolean;
+  canAttachFolder?: boolean;
+  canUseTools?: boolean;
+  includeAll?: boolean;
+  allMentionDetail?: string;
+  folderUnavailableReason?: string;
+  filesUnavailableReason?: string;
+  /** Command key to reason when this surface cannot run it. */
+  disabledCommands?: Record<string, string>;
+  disabled?: boolean;
+}>(({ participants, servers, serverStatus, mods = [], trigger, choose, planOn = false, canAttach = true, canAttachFolder = true, canUseTools = true, includeAll = true, allMentionDetail, folderUnavailableReason, filesUnavailableReason, disabledCommands = {}, disabled = false }, ref) => {
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -23,9 +34,14 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   const signature = trigger ? `${trigger.kind}:${trigger.start}:${trigger.end}:${trigger.query}` : null;
   const typing = !!trigger && signature !== dismissed && !open;
   const visible = open || typing;
-  const entries = menuItems(open ? null : trigger, participants, servers, mods, planOn).filter(item => !open || `${item.label} ${item.detail}`.toLowerCase().includes(query.toLowerCase()));
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  const entries = availableMenuItems(menuItems(open ? null : trigger, participants, servers, mods, planOn, includeAll, allMentionDetail), { attach: canAttach || !!filesUnavailableReason, folder: canAttachFolder || !!folderUnavailableReason, tools: canUseTools })
+    .filter(item => !open || `${item.label} ${item.detail}`.toLowerCase().includes(query.toLowerCase()));
   const close = () => { setOpen(false); setDismissed(signature); };
-  const pick = (item: MenuItem) => { close(); choose(item, open ? null : trigger); };
+  const pick = (item: MenuItem) => {
+    if (disabled || (item.kind === 'command' && disabledCommands[item.key])) return;
+    close(); choose(item, open ? null : trigger);
+  };
   useEffect(() => { setSelected(0); }, [signature, query]);
   useEffect(() => {
     if (open) search.current?.focus();
@@ -50,6 +66,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   /** Keys from the message box. Typing there closes a menu opened with "+",
    *  and the key does what it would anyway: Enter sends. */
   const boxKey = (event: React.KeyboardEvent) => {
+    if (disabled) return false;
     if (boxKeyGoesToMenu(open)) return key(event);
     if (!visible) return false;
     close();
@@ -58,15 +75,20 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, {
   };
   useImperativeHandle(ref, () => ({ key: boxKey }));
   return <div className="composer-tools" ref={root}>
-    <button type="button" className="icon composer-plus" aria-label="Files, tools, commands and mentions" aria-expanded={visible} aria-haspopup="dialog"
+    <button type="button" className="icon composer-plus" disabled={disabled} aria-label="Files, tools, commands and mentions" aria-expanded={visible} aria-haspopup="dialog"
       onClick={() => { if (visible) close(); else { setOpen(true); setQuery(""); setSelected(0); } }}>+</button>
     {visible && <div className="composer-menu" role="dialog" aria-label="Commands and mentions" onKeyDown={key}>
-      {open && <input ref={search} aria-label="Find command or participant" placeholder="Find a tool, command or @name…" value={query} onChange={e => setQuery(e.target.value)} />}
+      {open && <input ref={search} disabled={disabled} aria-label="Find command or participant" placeholder="Find a tool, command or @name…" value={query} onChange={e => setQuery(e.target.value)} />}
       <div role="listbox" aria-label="Available commands and mentions">
-        {entries.map((item, index) => <button type="button" role="option" aria-selected={index === selected} key={item.kind === "server" ? `${item.agent}:${item.label}` : item.label}
+        {entries.map((item, index) => {
+          const disabledReason = item.kind === 'command' ? disabledCommands[item.key]
+            : item.kind === 'attach' && !canAttach ? filesUnavailableReason
+              : item.kind === 'attach-folder' && !canAttachFolder ? folderUnavailableReason : undefined;
+          return <button type="button" role="option" aria-selected={index === selected} aria-disabled={!!disabledReason || disabled} disabled={!!disabledReason || disabled} key={item.kind === "server" ? `${item.agent}:${item.label}` : item.label}
           onPointerDown={e => e.preventDefault()} onPointerMove={() => setSelected(index)} onClick={() => pick(item)}>
-          <span>{item.label}</span><small>{item.detail}</small>
-        </button>)}
+          <span>{item.label}</span><small>{disabledReason ?? item.detail}</small>
+        </button>;
+        })}
         {!entries.length && <div className="muted">{trigger?.kind === "server" ? serverStatus || "No matching servers, apps or plugins" : "No matches"}</div>}
       </div>
     </div>}

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111119">
+  <title>ApexAgent · iPhone design preview</title>
+  <link rel="stylesheet" href="phone.css">
+</head>
+<body>
+  <main class="phone-shell" id="app">
+    <div class="statusbar" aria-hidden="true"><span>9:41</span><span class="island"></span><span class="status-icons">● ▰ ▰</span></div>
+    <header class="topbar">
+      <button class="back-button" data-action="agents" aria-label="Back to Agents"><span>‹</span><small>Agents</small></button>
+      <div class="identity"><span class="avatar" aria-hidden="true"><i></i></span><div><strong>ApexAgent</strong><small>Personal assistant · Apex-Terminal</small></div></div>
+      <button class="icon-button menu-button" data-action="menu" aria-label="Open menu">•••</button>
+    </header>
+    <nav class="destinations" aria-label="ApexAgent destinations">
+      <button data-view="chat" class="destination">Conversation</button>
+      <button data-view="tasks" class="destination">Tasks <span class="needs-count">2</span></button>
+    </nav>
+    <div class="preview-note"><span class="preview-dot"></span>Design preview · sample data</div>
+    <section class="view" id="view" aria-live="polite"></section>
+    <footer class="composer" id="composer">
+      <button class="send-label" data-action="destination" aria-haspopup="dialog" aria-expanded="false">Send to <b id="destination-label">Personal assistant · Apex-Terminal</b><span class="chevron">⌄</span></button>
+      <div class="compose-row"><button class="add-button" aria-label="Add attachment">＋</button><input id="message" placeholder="Message ApexAgent…" autocomplete="off"><button class="send-button" data-action="send" aria-label="Send sample message">↑</button></div>
+    </footer>
+    <div class="home-indicator" aria-hidden="true"><i></i></div>
+    <div id="overlay" class="overlay" hidden></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </main>
+  <script src="phone.js"></script>
+</body>
+</html>

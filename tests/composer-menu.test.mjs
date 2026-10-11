@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boxKeyGoesToMenu, clickCloses, findTrigger, insertAt, menuItems } from '../src/composerMenu.ts';
+import { availableMenuItems, boxKeyGoesToMenu, clickCloses, findTrigger, insertAt, menuItems } from '../src/composerMenu.ts';
 
 const people = [{ id: 'null', display_name: 'Null' }, { id: 'jigga', display_name: 'Jigga' }];
 
@@ -26,6 +26,25 @@ test('items filter by kind and prefix', () => {
   assert.deepEqual(menuItems(findTrigger('@a', 2), people).map(i => i.label), ['@all']);
   const all = menuItems(null, people).map(i => i.label);
   assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', 'Plan', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan']);
+});
+
+test('@all can be removed when the host cannot address every lane', () => {
+  assert.equal(menuItems(findTrigger('@a', 2), people, [], [], false, false).some(i => i.id === 'all'), false);
+  assert.deepEqual(menuItems(null, people, [], [], false, false).filter(i => i.kind === 'mention').map(i => i.label), ['@null', '@jigga']);
+});
+
+test('@all description can explain cross-project routing without changing thread defaults', () => {
+  assert.equal(menuItems(null, people).find(i => i.id === 'all').detail, 'Everyone answers');
+  assert.equal(menuItems(null, people, [], [], false, true, 'Ask across projects').find(i => i.id === 'all').detail, 'Ask across projects');
+});
+
+test('composer hides attachment items when the selected destination has no route', () => {
+  const full = menuItems(null, people);
+  const unavailable = availableMenuItems(full, { attach: false, folder: false });
+  assert.equal(unavailable.some(i => i.kind === 'attach' || i.kind === 'attach-folder'), false);
+  assert.deepEqual(unavailable.map(i => i.label), full.filter(i => i.kind !== 'attach' && i.kind !== 'attach-folder').map(i => i.label));
+  assert.ok(availableMenuItems(full, { attach: true, folder: false }).some(i => i.kind === 'attach'));
+  assert.equal(availableMenuItems(full, { attach: true, folder: false }).some(i => i.kind === 'attach-folder'), false);
 });
 
 test('Plan sits in the + menu next to Tools and turns into Stop planning while on', () => {

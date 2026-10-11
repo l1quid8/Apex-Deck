@@ -47,14 +47,14 @@ export function findTrigger(text: string, caret: number): Trigger | null {
 
 /** Items for a trigger, or everything when the menu was opened with "+".
  *  Mod commands are inserted, not run, so you can add arguments first. */
-export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: (ToolServer & {agent: string})[] = [], mods: { mod: string; name: string; description: string }[] = [], planOn = false): MenuItem[] {
+export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: (ToolServer & {agent: string})[] = [], mods: { mod: string; name: string; description: string }[] = [], planOn = false, includeAll = true, allMentionDetail = "Everyone answers"): MenuItem[] {
   const commands: Extract<MenuItem, { kind: "command" }>[] = [
     ...COMMANDS,
     ...mods.filter((m) => !COMMANDS.some((c) => c.key === m.name.toLowerCase()))
       .map((m) => ({ kind: "command" as const, key: m.name.toLowerCase(), label: `/${m.name}`, detail: m.description || `From ${m.mod}`, command: null })),
   ];
   const mentions: MenuItem[] = [
-    { kind: "mention", id: "all", label: "@all", detail: "Everyone answers" },
+    ...(includeAll ? [{ kind: "mention" as const, id: "all", label: "@all", detail: allMentionDetail }] : []),
     ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
   ];
   // Plan switches every bot in the thread to planning, or back.
@@ -67,6 +67,13 @@ export function menuItems(trigger: Trigger | null, people: { id: string; display
   if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
   if (trigger.kind === "command") return commands.filter((c) => c.key.startsWith(q));
   return mentions.filter((m) => m.kind === "mention" && (m.id.toLowerCase().startsWith(q) || m.detail.toLowerCase().startsWith(q)));
+}
+
+/** Remove choices the caller cannot actually perform for this destination. */
+export function availableMenuItems(items: MenuItem[], capabilities: { attach?: boolean; folder?: boolean; tools?: boolean }): MenuItem[] {
+  return items.filter(item => item.kind !== 'attach' || capabilities.attach !== false)
+    .filter(item => item.kind !== 'attach-folder' || capabilities.folder !== false)
+    .filter(item => item.kind !== 'tools' || capabilities.tools !== false);
 }
 
 /** Whether a click closes the menu. One you opened by typing / @ or ! stays

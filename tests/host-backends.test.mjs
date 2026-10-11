@@ -7,6 +7,8 @@ test('source edits reject offline rather than saving after reconnection', async 
   const c = store.hostConnectionStore('at', 'AT'); let calls = 0;
   const guarded = mod.guardHostWrites({ call: async () => calls++ }, c);
   await assert.rejects(guarded.call('monitor_sources_update', { workspaceId: 'p' }), /queued/);
+  await assert.rejects(guarded.call('personal_react', { assistantId: 'a', messageId: 'm', emoji: '👍', enabled: true }), /queued/);
+  await assert.rejects(guarded.call('monitor_react', { workspaceId: 'p', messageId: 'm', emoji: '👍', enabled: true }), /queued/);
   assert.equal(calls, 0);
   c.setStatus({ kind: 'connected', hostId: 'a' });
   await guarded.call('monitor_sources_update', { workspaceId: 'p' });
@@ -59,6 +61,8 @@ test('both local and remote raw mutations reject throughout resync without repla
   c.setStatus({kind:'resync'});
   await assert.rejects(guarded.roomPost('r','blocked'),/queued/);
   await assert.rejects(guarded.call('room_post',{id:'r',text:'blocked'}),/queued/);
+  await assert.rejects(guarded.call('personal_react',{assistantId:'a',messageId:'m',emoji:'👍',enabled:true}),/queued/);
+  await assert.rejects(guarded.call('monitor_react',{workspaceId:'w',messageId:'m',emoji:'👍',enabled:true,cwd:'/p',hostId:'local',conversationId:'c'}),/queued/);
   assert.deepEqual(await guarded.roomState('r'),{});assert.equal(calls,1);
   c.setStatus({kind:'connected',hostId:'mac'});assert.equal(calls,1);
 });

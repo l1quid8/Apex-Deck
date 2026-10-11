@@ -85,6 +85,24 @@ struct Fixture {
     id: String,
 }
 
+#[tokio::test]
+async fn personal_reactions_are_idempotent_saved_and_restored_after_restart() {
+    let mut f = Fixture::new();
+    f.host.change_assistant(&f.id, |assistant| {
+        assistant.post("assistant", "chat", "Saved reply".into(), None, None, 1);
+        Ok(())
+    }).unwrap();
+    let message_id = f.get().messages[0].id.clone();
+    let first = f.host.personal_react(&f.id, &message_id, "❤️", true).unwrap();
+    assert_eq!(first.messages[0].reactions, vec!["❤️"]);
+    let retry = f.host.personal_react(&f.id, &message_id, "❤️", true).unwrap();
+    assert_eq!(retry.messages[0].reactions, vec!["❤️"]);
+    assert!(f.host.personal_react(&f.id, &message_id, "👎", true).is_err());
+    f.restart();
+    assert_eq!(f.get().messages[0].reactions, vec!["❤️"]);
+    assert!(f.host.personal_react(&f.id, &message_id, "❤️", false).unwrap().messages[0].reactions.is_empty());
+}
+
 impl Fixture {
     fn new() -> Fixture {
         let root = std::env::temp_dir().join(format!("apex-personal-{}-{}-{}", std::process::id(), FIXTURE.fetch_add(1, Ordering::SeqCst),
@@ -449,6 +467,7 @@ fn result_message(at: u64) -> PersonalMessage {
         at,
         task_id: Some("task-1".into()),
         event_id: None,
+        reactions: Vec::new(),
     }
 }
 

@@ -1,0 +1,15 @@
+.apex-agent-message-actions { display: flex; align-items: center; gap: 5px; margin-top: 3px; opacity: .72; }
+.apex-agent-message-actions button { min-width: 28px; min-height: 26px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); background: transparent; cursor: pointer; }
+.apex-agent-message-actions button:hover, .apex-agent-message-actions button[aria-pressed="true"] { background: var(--surface-raised, rgba(127,127,127,.18)); }
+.apex-agent-message-actions button[aria-pressed="true"] { border-color: var(--accent); }
+.apex-agent-message-actions button:disabled { opacity: .45; cursor: default; }
+.apex-agent-reactions { position: relative; display: flex; gap: 3px; }
+.apex-agent-reaction-options { position: absolute; z-index: 5; left: 0; bottom: 30px; display: flex; gap: 3px; padding: 4px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel, var(--background)); box-shadow: 0 4px 16px rgba(0,0,0,.18); }
+.apex-agent-reaction-selected { min-width: 25px !important; min-height: 24px !important; }
+.apex-agent-reply-quote { border-left: 2px solid var(--accent); margin: 0 0 7px; padding: 5px 9px; background: rgba(127,127,127,.08); border-radius: 0 7px 7px 0; }
+.apex-agent-reply-quote > div { display: flex; justify-content: space-between; align-items: center; color: var(--muted); }
+.apex-agent-reply-quote button { border: 0; background: none; color: inherit; cursor: pointer; }
+.apex-agent-reply-quote blockquote { margin: 4px 0 0; max-height: 4.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9em; }
+@media (max-width: 700px) {
+  .apex-agent-message-actions button { min-width: 36px; min-height: 36px; }
+}

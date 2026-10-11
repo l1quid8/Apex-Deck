@@ -32,13 +32,14 @@ pub enum Command {
     AssistantHandoffPrepare { #[serde(flatten)] input: crate::assistant_tasks::HandoffPreparation },
     AssistantOverview { #[serde(flatten)] input: crate::assistant_overview::OverviewInput },
     AssistantMessage { #[serde(flatten)] input: crate::assistant_service::AssistantMessageInput },
-    AssistantTasksList { owner: crate::assistant_tasks::TaskOwner },
+    AssistantTasksList { owner: crate::assistant_tasks::TaskOwner, #[serde(default)] request_id: Option<String> },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
     MonitorSuggestSources { cwd: String },
     PersonalList {},
     PersonalGet { assistant_id: String },
     PersonalCreate { #[serde(flatten)] input: crate::personal::CreateInput },
     PersonalSend { assistant_id: String, request_id: String, text: String },
+    PersonalReact { assistant_id: String, message_id: String, emoji: String, enabled: bool },
     PersonalDecide { assistant_id: String, request_id: String, decision_id: String, params_hash: String, approve: bool },
     PersonalCancel { assistant_id: String, request_id: String, task_id: String },
     PersonalPause { assistant_id: String, request_id: String, paused: bool },
@@ -66,6 +67,7 @@ pub enum Command {
     MonitorSourcesUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, mode: String },
     MonitorProfileUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, revision: u64, profile: ParticipantConfig },
     MonitorMessage { workspace_id: String, text: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
+    MonitorReact { workspace_id: String, message_id: String, emoji: String, enabled: bool, cwd: String, host_id: String, conversation_id: String },
     MonitorPause { workspace_id: String, paused: bool, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorCheckNow { workspace_id: String, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
     MonitorResolve { workspace_id: String, finding_id: String, status: String, #[serde(default)] snoozed_until: Option<u64>, #[serde(default)] cwd: Option<String>, #[serde(default)] host_id: Option<String>, #[serde(default)] conversation_id: Option<String> },
@@ -184,7 +186,11 @@ impl Host {
             AssistantHandoffPrepare { input } => reply(self.assistant_handoff_prepare(input).await?),
             AssistantOverview { input } => reply(self.assistant_overview(input).await?),
             AssistantMessage { input } => reply(self.assistant_message(input).await?),
-            AssistantTasksList { owner } => reply(self.assistant_tasks_list(owner)?),
+            AssistantTasksList { owner, request_id } => {
+                let mut snapshot = self.assistant_tasks_list(owner.clone())?;
+                if let Some(request_id) = request_id { snapshot["request"] = self.assistant_request_receipt(&owner, &request_id)?; }
+                reply(snapshot)
+            }
             AssistantTaskAction { input } => reply(self.assistant_task_action(input).await?),
             PersonalList {} => reply(self.personal_list()?),
             PersonalGet { assistant_id } => reply(self.personal_get(&assistant_id)?),
@@ -193,6 +199,7 @@ impl Host {
                 reply(blocking(move || host.personal_create(input)).await?)
             }
             PersonalSend { assistant_id, request_id, text } => reply(self.personal_send(&assistant_id, &request_id, &text)?),
+            PersonalReact { assistant_id, message_id, emoji, enabled } => reply(serde_json::json!({"assistant": self.personal_react(&assistant_id, &message_id, &emoji, enabled)?})),
             PersonalDecide { assistant_id, request_id, decision_id, params_hash, approve } => reply(self.personal_decide(&assistant_id, &request_id, &decision_id, &params_hash, approve)?),
             PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
             PersonalPause { assistant_id, request_id, paused } => reply(self.personal_pause(&assistant_id, &request_id, paused)?),
@@ -227,7 +234,11 @@ impl Host {
             }
             MonitorSourcesUpdate { workspace_id, cwd, host_id, conversation_id, files, threads, mode } => {
                 let host = Arc::clone(self);
-                reply(blocking(move || host.monitor_sources_update(&workspace_id, &cwd, &host_id, &conversation_id, files, threads, &mode)).await?)
+                // Chats deleted since they were picked are dropped, and listed once so the app can say so.
+                let (monitor, removed) = blocking(move || host.monitor_sources_update_report(&workspace_id, &cwd, &host_id, &conversation_id, files, threads, &mode)).await?;
+                let mut value = serde_json::to_value(&monitor).map_err(|e| e.to_string())?;
+                value["removedThreads"] = serde_json::json!(removed);
+                reply(value)
             }
             MonitorProfileUpdate { workspace_id, cwd, host_id, conversation_id, revision, profile } => {
                 reply(self.monitor_profile_update(&workspace_id, crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id }, revision, profile)?)
@@ -235,6 +246,10 @@ impl Host {
             MonitorMessage { workspace_id, text, cwd, host_id, conversation_id } => {
                 let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
                 reply(self.monitor_message_owned(&workspace_id, owner, &text)?)
+            }
+            MonitorReact { workspace_id, message_id, emoji, enabled, cwd, host_id, conversation_id } => {
+                let owner = crate::monitor_commands::MonitorOwner { cwd, host_id, conversation_id };
+                reply(self.monitor_react_owned(&workspace_id, owner, &message_id, &emoji, enabled)?)
             }
             MonitorPause { workspace_id, paused, cwd, host_id, conversation_id } => {
                 let owner = crate::monitor_commands::MonitorOwner::optional(cwd, host_id, conversation_id)?;
@@ -385,8 +400,10 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 116);
+        assert_eq!(names.len(), 118);
         assert!(names.contains(&"personal_send".to_string()));
+        assert!(names.contains(&"personal_react".to_string()));
+        assert!(names.contains(&"monitor_react".to_string()));
         assert!(names.contains(&"assistant_overview".to_string()));
         assert!(names.contains(&"api_quote".to_string()));
         assert!(names.contains(&"room_answer".to_string()));

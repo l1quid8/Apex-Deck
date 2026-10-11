@@ -1,0 +1,24 @@
+/* The shared global attachment rule positions every button over the card's
+   top-right corner. Keep retry in the content flow and reserve that corner
+   only for the remove control so failed uploads remain actionable. */
+.apex-agent-all-composer .attachment .attachment-retry {
+  position: static;
+  background: transparent;
+  border-radius: 0;
+  padding: 0 2px;
+}
+
+.apex-agent-all-composer .attachment .attachment-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 1;
+  background: #000a;
+  border-radius: 4px;
+}
+
+.apex-agent-all-composer .attachment small[role="alert"] {
+  padding: 0 28px 0 8px;
+  position: relative;
+  z-index: 0;
+}

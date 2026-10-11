@@ -1,0 +1,40 @@
+const {app,BrowserWindow}=require('electron');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=__dirname;
+app.setPath('userData',path.join(app.getPath('temp'),'null-apex-workspace-walkthrough'));
+app.on('window-all-closed',()=>{});
+app.whenReady().then(async()=>{
+  const records=[];
+  const devices=process.argv.includes('--phone')?['phone']:['mac','phone'];
+  for(const device of devices){
+    const win=new BrowserWindow({width:device==='mac'?1360:393,height:device==='mac'?920:852,useContentSize:true,show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    const run=source=>win.webContents.executeJavaScript(source);
+    const load=query=>win.loadFile(path.join(root,`${device}.html`),{query});
+    const observe=async(name,source)=>records.push({device,name,...await run(source)});
+    await load({view:'chat'});
+    await run(`document.querySelector('${device==='mac'?'#chatInput':'#message'}').value='Keep this chat draft';document.querySelector('${device==='mac'?'#chatInput':'#message'}').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('[data-view="tasks"]').click();`);
+    await observe('Tasks is separate; composer stays hidden',`({pass:window.mockupInspect().view==='tasks'&&!document.querySelector('${device==='mac'?'.composer':'#composer'}').checkVisibility(),destination:window.mockupInspect().composerDestination})`);
+    await run(`document.querySelector('${device==='mac'?'[data-detail="mockup"]':'[data-task="mockup"]'}').click()`);
+    await observe('Task opens in its own view with focus',`({pass:window.mockupInspect().view==='task'&&document.activeElement.matches('h1,h2'),active:document.activeElement.textContent.trim()})`);
+    await run(`document.querySelector('${device==='mac'?'#detailView [data-artifact]':'[data-open-artifact="mockup"]'}').click()`);
+    await observe('Result opens directly',`({pass:window.mockupInspect().view==='artifact',headings:[...document.querySelectorAll('h1,h2')].filter(el=>el.checkVisibility()).map(el=>el.textContent.trim())})`);
+    await run(`document.querySelector('${device==='mac'?'#artifactView [data-back]':'[data-action="back-artifact"]'}').click()`);
+    await observe('Artifact returns to the task',`({pass:window.mockupInspect().view==='task'})`);
+    await run(`document.querySelector('${device==='mac'?'[data-changes]':'[data-task-action="Request changes"]'}').click()`);
+    await observe('Request changes names worker and host separately from chat',`(()=>{const d=document.querySelector('${device==='mac'?'#changeDialog':'#overlay'}');return {pass:d.checkVisibility()&&d.textContent.includes('Null')&&d.textContent.includes('This Mac'),copy:d.textContent.trim()}})()`);
+    await run(`document.querySelector('${device==='mac'?'#changeDialog button[value="cancel"]':'[data-action="cancel-sheet"]'}').click();document.querySelector('[data-view="chat"]').click()`);
+    await observe('Task inspection preserves the chat draft and send destination',`({pass:document.querySelector('${device==='mac'?'#chatInput':'#message'}').value==='Keep this chat draft'&&window.mockupInspect().composerDestination==='Personal assistant · Apex-Terminal',draft:document.querySelector('${device==='mac'?'#chatInput':'#message'}').value})`);
+    await load({view:'task',task:'cleanup'});
+    await run(`document.querySelector('${device==='mac'?'[data-dismiss]':'[data-task-action="Dismiss"]'}').click();document.querySelector('[data-view="tasks"]').click()`);
+    await observe('Dismiss settles the proposal and updates attention',`(()=>{const c=document.querySelector('${device==='mac'?'[data-task="cleanup"]':'[data-card="cleanup"]'}');return {pass:c.textContent.includes('Dismissed')&&document.querySelector('.needs-count').textContent.includes('1'),status:c.textContent.trim()}})()`);
+    await load({view:'sources'});
+    await run(`const c=document.querySelector('input[type="checkbox"]');c.click()`);
+    await observe('Sources selection marks unsaved changes',`({pass:document.body.textContent.toLowerCase().includes('unsaved'),text:document.body.textContent.includes('Unsaved changes')})`);
+    win.destroy();
+  }
+  const result={kind:'design-only UI walkthrough',capturedAt:new Date().toISOString(),records};
+  fs.writeFileSync(path.join(root,'interaction-verification.json'),JSON.stringify(result,null,2)+'\n');
+  for(const r of records)console.log(`${r.device}: ${r.pass?'PASS':'FAIL'} — ${r.name}`);
+  app.exit(records.every(r=>r.pass)?0:1);
+}).catch(error=>{console.error(error);app.exit(1)});

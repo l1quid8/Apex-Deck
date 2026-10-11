@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Assistant test checklist</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --muted: #888; --amber: #d89614; --ok: #2f9e5b; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; max-width: 860px; margin: 32px auto; padding: 0 20px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 32px 0 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  h2 small { font-weight: 400; color: var(--muted); }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  .note { border-left: 3px solid var(--amber); padding: 6px 12px; margin: 12px 0; }
+  .step { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .step input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--ok); }
+  .step.done .what { opacity: .5; text-decoration: line-through; }
+  .what { font-weight: 600; }
+  .where { color: var(--muted); font-size: 13px; font-weight: 400; margin-left: 6px; }
+  .say { font-family: ui-monospace, Menlo, monospace; font-size: 13px; background: #8881; padding: 2px 6px; border-radius: 4px; }
+  .expect { margin-top: 4px; }
+  .expect b { color: var(--ok); }
+  .setup b { color: var(--amber); }
+  #progress { font-weight: 600; }
+  button { font: inherit; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>Assistant test checklist</h1>
+<p class="sub">Build <span class="say">486f5f7</span> on Mac, VPS and iPhone · conversation cleared 2026-10-10 · <span id="progress"></span> · <button type="button" id="reset">Reset ticks</button></p>
+
+<div class="note">Do each step, tick it, and tell Jigga the step number. Jigga checks the VPS record after each one for duplicates. If something looks wrong, screenshot it and stop there.</div>
+
+<h2>A · Basics on a clean conversation <small>~5 min</small></h2>
+<div class="step"><input type="checkbox"><div><div class="what">A1. Empty conversation<span class="where">iPhone + Mac</span></div>
+  <div>Open "Your assistant" on the phone and press ⌘K on the Mac.</div>
+  <div class="expect"><b>Expect:</b> no old messages or task cards on either.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">A2. Plain question<span class="where">iPhone</span></div>
+  <div>Send <span class="say">What time is it where I am?</span></div>
+  <div class="expect"><b>Expect:</b> a quick reply, no task card, and the same reply shows on the Mac.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">A3. Read command runs without asking<span class="where">iPhone</span></div>
+  <div>Send <span class="say">How much disk space is free on the server?</span></div>
+  <div class="expect"><b>Expect:</b> one task card, runs <span class="say">df</span> with no approval, shows the result once.</div></div></div>
+
+<h2>B · Pause, Resume and Stop <small>~5 min</small></h2>
+<div class="step"><input type="checkbox"><div><div class="what">B1. Pause<span class="where">Mac</span></div>
+  <div>⋯ → Pause assistant. Then from the iPhone send <span class="say">Delete ~/apex-assistant-slice/test.txt</span> and press Approve.</div>
+  <div class="expect"><b>Expect:</b> header says "Paused", it asks for approval (delete is a change), and after Approve it says it will start when you resume. Nothing runs yet.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">B2. Still answers while paused<span class="where">iPhone</span></div>
+  <div>Send <span class="say">What's 2 + 2?</span></div>
+  <div class="expect"><b>Expect:</b> it answers within a few seconds.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">B3. Resume<span class="where">Mac</span></div>
+  <div>⋯ → Resume assistant.</div>
+  <div class="expect"><b>Expect:</b> the delete runs exactly once and the card shows Done.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">B4. Stop a long command<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Run sleep 60 on the server</span>, approve it, then press Stop task while it's running.</div>
+  <div class="expect"><b>Expect:</b> card turns Cancelled straight away and says the command was stopped. Nothing re-runs.</div></div></div>
+
+<h2>C · Waiting tasks and schedules <small>~10 min, mostly waiting</small></h2>
+<div class="step"><input type="checkbox"><div><div class="what">C1. "Check again later"<span class="where">iPhone</span></div>
+  <div>Send <span class="say">In 5 minutes, check how long the server has been up</span>, then close both apps.</div>
+  <div class="expect"><b>Expect:</b> after 5 minutes, reopen: one result, posted around the 5-minute mark.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">C2. "After that finishes"<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Run sleep 20, and after it finishes run uptime</span></div>
+  <div class="expect"><b>Expect:</b> uptime starts only after sleep ends; each runs once.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">C3. Schedule, then cancel it<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Every day at 9am, tell me the free disk space</span>, confirm it, then ⋯ → Scheduled → Cancel schedule.</div>
+  <div class="expect"><b>Expect:</b> it shows under Scheduled after you confirm, and disappears after cancelling.</div></div></div>
+
+<h2>D · Memory through chat <small>~3 min</small></h2>
+<div class="step"><input type="checkbox"><div><div class="what">D1. Remember<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Remember that my favourite editor is Zed</span></div>
+  <div class="expect"><b>Expect:</b> ⋯ → Memory shows it once.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">D2. Correct it<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Actually my favourite editor is VS Code</span>, then ask <span class="say">What's my favourite editor?</span></div>
+  <div class="expect"><b>Expect:</b> answers VS Code; Memory shows only the new one.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">D3. Forget it<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Forget my favourite editor</span></div>
+  <div class="expect"><b>Expect:</b> Memory is empty.</div></div></div>
+
+<h2>E · Rules and spending <small>~5 min</small></h2>
+<div class="step"><input type="checkbox"><div><div class="what">E1. Standing rule<span class="where">Mac</span></div>
+  <div>⋯ → Rules → add <span class="say">Always ask before running any command</span>. Then send <span class="say">Run uptime</span>.</div>
+  <div class="expect"><b>Expect:</b> it asks first even though uptime only reads. Remove the rule afterwards.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">E2. Spending limit<span class="where">Mac</span></div>
+  <div>⋯ → Settings → set "Daily spend limit" to 0.01, then send any question.</div>
+  <div class="expect"><b>Expect:</b> it asks before spending more. Set the limit back afterwards.</div></div></div>
+
+<h2>F · Helpers, privacy and Take over <small>~5 min</small></h2>
+<div class="step"><input type="checkbox"><div><div class="what">F1. Helpers<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Use helpers: compare Zed and VS Code for speed, plugins and price</span></div>
+  <div class="expect"><b>Expect:</b> one combined answer, not three separate ones.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">F2. Local-only mode<span class="where">Mac</span></div>
+  <div>⋯ → Settings → tick "Local only", send a question, then turn it off.</div>
+  <div class="expect"><b>Expect:</b> it refuses to send the question to a cloud model and says why.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">F3. Browser Take over<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Open example.com in your browser</span>, then tap Take over and tap a link.</div>
+  <div class="expect"><b>Expect:</b> you see the page and your tap works.</div></div></div>
+
+<h2>G · Notices <small>runs alongside the rest</small></h2>
+<div class="step"><input type="checkbox"><div><div class="what">G1. No repeats<span class="where">iPhone</span></div>
+  <div>Send <span class="say">Every minute, check if test.txt exists in your folder and stop when it does</span>. Tell Jigga, who creates the file.</div>
+  <div class="expect"><b>Expect:</b> exactly one "Condition met" notice.</div></div></div>
+<div class="step"><input type="checkbox"><div><div class="what">G2. Quiet hours<span class="where">Mac</span></div>
+  <div>⋯ → Settings → set quiet hours to cover right now, then repeat G1.</div>
+  <div class="expect"><b>Expect:</b> the notice waits until quiet hours end (or shows in-app only). Reset quiet hours afterwards.</div></div></div>
+
+<h2>H · Needs setup from you first <small>do these when ready</small></h2>
+<div class="step setup"><input type="checkbox"><div><div class="what">H1. Run tasks on your Mac<span class="where">Mac</span></div>
+  <div><b>Setup:</b> ⋯ → Connections → "Let assistant use this Mac", pick a folder. Then quit Deck, send <span class="say">List the files in my Mac folder</span> from the iPhone, and reopen Deck.</div>
+  <div class="expect"><b>Expect:</b> it waits while Deck is closed, then runs once on the Mac, never on the server.</div></div></div>
+<div class="step setup"><input type="checkbox"><div><div class="what">H2. GitHub<span class="where">Mac</span></div>
+  <div><b>Setup:</b> paste a read-only GitHub token under ⋯ → Connections. Then send <span class="say">What are my 3 most recent GitHub repos?</span></div>
+  <div class="expect"><b>Expect:</b> the right three repos.</div></div></div>
+<div class="step setup"><input type="checkbox"><div><div class="what">H3. Gmail and Drive<span class="where">Mac</span></div>
+  <div><b>Setup:</b> create a Google OAuth client ("Desktop app"), enter its ID and secret under ⋯ → Connections → Sign in with Google. Then send <span class="say">What's my newest email about?</span></div>
+  <div class="expect"><b>Expect:</b> it reads it; it never offers to send or delete.</div></div></div>
+<div class="step setup"><input type="checkbox"><div><div class="what">H4. Push notifications<span class="where">iPhone</span></div>
+  <div><b>Setup:</b> create an APNs key (.p8) in your Apple developer account and give it to Jigga. Then lock the phone and repeat G1.</div>
+  <div class="expect"><b>Expect:</b> the notice arrives on the lock screen.</div></div></div>
+
+<script>
+  const boxes = [...document.querySelectorAll('.step input')];
+  const key = 'assistant-test-checklist-486f5f7';
+  const saved = JSON.parse(localStorage.getItem(key) || '[]');
+  const update = () => {
+    boxes.forEach((b) => b.closest('.step').classList.toggle('done', b.checked));
+    document.getElementById('progress').textContent = `${boxes.filter((b) => b.checked).length} of ${boxes.length} done`;
+    localStorage.setItem(key, JSON.stringify(boxes.map((b) => b.checked)));
+  };
+  boxes.forEach((b, i) => { b.checked = !!saved[i]; b.addEventListener('change', update); });
+  document.getElementById('reset').onclick = () => { boxes.forEach((b) => { b.checked = false; }); update(); };
+  update();
+</script>
+</body>
+</html>

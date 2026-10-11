@@ -238,6 +238,15 @@ impl Host {
                 text: m.text.clone(),
             })
             .collect();
+        // Recent messages of the monitor's selected chats, read like monitor checks do.
+        // A missing or unreadable chat is skipped so the reply still goes out.
+        let mut source_rooms = Vec::new();
+        for id in &monitor.threads {
+            let Ok(Some(saved)) = self.store().room(id) else { continue };
+            let label = input.thread_labels.iter().find(|l| &l.id == id).map(|l| l.label.clone()).unwrap_or_else(|| id.clone());
+            source_rooms.push((id.clone(), label, saved));
+        }
+        let source_chats = assistant_conversation::source_chat_excerpts(&owner.cwd, &source_rooms);
         let request = ConversationRequest {
             request_id: input.request_id.clone(),
             owner: owner.clone(),
@@ -247,6 +256,7 @@ impl Host {
             worker_profiles: input.worker_profiles.iter().filter(|profile| task_worker_eligible(profile)).cloned().collect(),
             threads,
             evidence,
+            source_chats,
         };
         // A request recovered from a restart is answered once on a retry with the same ID. A completed one returns its saved response.
         let begin = self
@@ -341,6 +351,8 @@ impl Host {
             }
             assistant_conversation::BeginOutcome::Started(rec) => rec,
         };
+        // Any early return below leaves the request retryable instead of "already being processed" until a restart.
+        let _settle = assistant_conversation::InterruptIfUnfinished::new(&self.assistant_conversations, &input.request_id, &owner, record.revision);
         // A retry of a request that already created its task answers with that task. It never creates a second one.
         if let Some(task_id) = record.task_id.clone() {
             if self.assistant_tasks.get(&task_id).map_err(|e| e.to_string())?.is_some() {
@@ -391,7 +403,7 @@ impl Host {
                         &input.request_id,
                         &owner,
                         record.revision,
-                        serde_json::to_string(&response).map_err(|e| e.to_string())?,
+                        saved_response(&response)?,
                     )
                     .map_err(|e| e.to_string())?;
                 return Ok(response);
@@ -427,7 +439,7 @@ impl Host {
                         &input.request_id,
                         &owner,
                         record.revision,
-                        serde_json::to_string(&response).map_err(|e| e.to_string())?,
+                        saved_response(&response)?,
                     )
                     .map_err(|e| e.to_string())?;
                 return Ok(response);
@@ -436,6 +448,10 @@ impl Host {
         let decision = assistant_conversation::authorize(&request, intent);
         let mut output = match decision {
             assistant_conversation::ConversationDecision::Answer { message } => {
+                json!({"message":message,"task":Value::Null,"taskMonitor":Value::Null})
+            }
+            // A question back with no work behind it is ordinary chat, not a task.
+            assistant_conversation::ConversationDecision::Clarify { message, brief } if brief.as_deref().is_none_or(|brief| brief.trim().is_empty()) => {
                 json!({"message":message,"task":Value::Null,"taskMonitor":Value::Null})
             }
             assistant_conversation::ConversationDecision::Clarify { message, brief } => {
@@ -581,7 +597,7 @@ impl Host {
                 .ok_or("ApexAgent assignment disappeared.")?,
         )
         .map_err(|e| e.to_string())?;
-        let saved_response = serde_json::to_string(&output).map_err(|e| e.to_string())?;
+        let saved_response = saved_response(&output)?;
         self.assistant_conversations
             .finish(&input.request_id, &owner, record.revision, saved_response)
             .map_err(|e| e.to_string())?;
@@ -773,7 +789,7 @@ impl Host {
             return Err("The saved execution chat for this task is missing.".into());
         } else if let Some(parent) = &parent {
             let parent_snapshot = parent.checkpoint.lock().unwrap().snapshot.clone();
-            let mut child_snapshot = parent_snapshot.fork(parent_snapshot.transcript.len());
+            let mut child_snapshot = brief_only_fork(&parent_snapshot);
             child_snapshot
                 .participants
                 .retain(|p| workers.contains(&p.id.to_string()));
@@ -781,7 +797,7 @@ impl Host {
             if child_snapshot.participants.is_empty() {
                 return Err("No selected worker is available in the saved thread.".into());
             }
-            if !already_bound {
+            if self.store().room(&child_id)?.is_none() {
                 self.room_import(
                     child_id.clone(),
                     child_snapshot.clone(),
@@ -807,6 +823,13 @@ impl Host {
             options.max_bot_hops = 0;
             (None, Some((profiles, options)))
         };
+        // The source thread gets one short line, only on the task's first start.
+        let post_source_line = !parent_id.is_empty()
+            && !already_bound
+            && baseline_data["sourceLinkPosted"] != json!(true);
+        if post_source_line {
+            baseline_data["sourceLinkPosted"] = json!(true);
+        }
         task = self
             .assistant_tasks
             .bind_execution(
@@ -838,15 +861,9 @@ impl Host {
             .begin_attempt(&task.id, task.revision, owner)
             .map_err(|e| e.to_string())?;
         *self.handle(&child_id)?.task_run_id.lock().unwrap() = Some(run_id.clone());
-        if !parent_id.is_empty() {
-            self.append_assistant_note(
-                &parent_id,
-                format!(
-                    "Assistant task {} started in linked chat {}. Request: {}\nBrief: {}",
-                    task.id, child_id, task.original_request, task.brief
-                ),
-            )
-            .await?;
+        if post_source_line {
+            self.append_assistant_note(&parent_id, task_started_line(&task.original_request, &workers))
+                .await?;
         }
         // Keep the durable reservation, but let the child room acquire the
         // active lease for each run segment. Holding this guard here deadlocks
@@ -983,7 +1000,7 @@ impl Host {
             .as_ref()
             .map(|room| room.checkpoint.lock().unwrap().snapshot.clone());
         let (participants, options) = if let Some(snapshot) = parent_thread {
-            let mut fork = snapshot.fork(snapshot.transcript.len());
+            let mut fork = brief_only_fork(&snapshot);
             fork.participants
                 .retain(|profile| workers.contains(&profile.id.to_string()));
             if fork.participants.is_empty() {
@@ -1009,6 +1026,13 @@ impl Host {
             options.max_bot_hops = 0;
             (selected_profiles, options)
         };
+        // The source thread gets one short line, only on the task's first start.
+        let post_source_line = !parent_id.is_empty()
+            && task.execution_thread_id.is_none()
+            && result_data["sourceLinkPosted"] != json!(true);
+        if post_source_line {
+            result_data["sourceLinkPosted"] = json!(true);
+        }
         task = self
             .assistant_tasks
             .bind_execution(
@@ -1027,15 +1051,9 @@ impl Host {
             .begin_attempt(&task.id, task.revision, owner)
             .map_err(|e| e.to_string())?;
         *self.handle(&child_id)?.task_run_id.lock().unwrap() = Some(run_id.clone());
-        if !parent_id.is_empty() {
-            self.append_assistant_note(
-                &parent_id,
-                format!(
-                    "Assistant task {} started in an isolated chat {}. Request: {}\nBrief: {}",
-                    task.id, child_id, task.original_request, task.brief
-                ),
-            )
-            .await?;
+        if post_source_line {
+            self.append_assistant_note(&parent_id, task_started_line(&task.original_request, &workers))
+                .await?;
         }
         let handle = self.handle(&child_id)?;
         let targets = workers.iter().map(ParticipantId::new).collect();
@@ -1339,15 +1357,6 @@ impl Host {
             .lock()
             .unwrap()
             .insert(task.id.clone(), run.clone());
-        self.append_assistant_note(
-            task.parent_thread_id.as_deref().unwrap_or(id),
-            format!(
-                "Assistant task {} started attempt {} from a human continuation.",
-                task.id,
-                next.attempts.len()
-            ),
-        )
-        .await?;
         drop(lease);
         let mut content = text
             .filter(|s| !s.trim().is_empty())
@@ -1394,6 +1403,13 @@ impl Host {
             isolated_permit,
         );
         Ok(true)
+    }
+
+    /// What the service did with a message the app is unsure about: null when it never arrived.
+    pub fn assistant_request_receipt(&self, owner: &TaskOwner, request_id: &str) -> Result<Value, String> {
+        // Another project's request ID reads as unknown here.
+        let Some(record) = self.assistant_conversations.get(request_id, owner).unwrap_or(None) else { return Ok(Value::Null) };
+        Ok(json!({"requestId":request_id,"status":record.status,"taskId":record.task_id}))
     }
 
     pub fn assistant_tasks_list(&self, owner: TaskOwner) -> Result<Value, String> {
@@ -2285,6 +2301,24 @@ fn verify_task_workers(profiles: &[ParticipantConfig]) -> Result<(), String> {
     Ok(())
 }
 
+/// The one line a source thread gets when a task starts in its worker room.
+fn task_started_line(request: &str, workers: &[String]) -> String {
+    let flat = request.split_whitespace().collect::<Vec<_>>().join(" ");
+    let short = if flat.chars().count() > 80 {
+        format!("{}…", flat.chars().take(80).collect::<String>())
+    } else {
+        flat
+    };
+    format!("Task started: {short} → {}", workers.join(", "))
+}
+
+/// A new worker room keeps the parent's participants and options, never its history.
+fn brief_only_fork(snapshot: &apex_core::RoomSnapshot) -> apex_core::RoomSnapshot {
+    let mut fork = snapshot.fork(0);
+    fork.pins.clear();
+    fork
+}
+
 fn task_start_prompt(task: &AssistantTask) -> String {
     let mut content = if task.origin == crate::assistant_tasks::TaskOrigin::Proposal {
         format!("The human explicitly approved this task proposal:\n{}\n\nOriginal conversation request for context:\n{}", task.brief, task.original_request)
@@ -2306,6 +2340,15 @@ fn verify_read_only_workers(mode: TaskMode, profiles: &[ParticipantConfig]) -> R
 
 fn budget_exceeded(task: &AssistantTask) -> bool {
     crate::assistant_tasks::budget_hit(task.result_data.as_ref(), task.usage.as_ref())
+}
+
+/// The saved copy of a reply leaves out the monitor: a replay attaches the
+/// current one, and a long project conversation would push the record past
+/// its size limit and lose the reply.
+fn saved_response(response: &Value) -> Result<String, String> {
+    let mut saved = response.clone();
+    if let Some(object) = saved.as_object_mut() { object.remove("monitor"); }
+    serde_json::to_string(&saved).map_err(|e| e.to_string())
 }
 
 fn append_history(data: &mut Value, kind: &str, text: &str) {
@@ -2665,6 +2708,22 @@ mod tests {
     }
 
     #[test]
+    fn request_receipt_tells_the_app_what_happened_to_an_unconfirmed_message() {
+        let f = fixture();
+        assert!(f.host.assistant_request_receipt(&f.owner, "never-sent").unwrap().is_null());
+        let request = crate::assistant_conversation::ConversationRequest { request_id:"unsure".into(), owner:f.owner.clone(), text:"Propose a cleanup".into(), destination:None, new_worker_profiles:vec![], worker_profiles:vec![], threads:vec![], evidence:vec![], source_chats:vec![] };
+        let crate::assistant_conversation::BeginOutcome::Started(record) = f.host.assistant_conversations.begin(request, false).unwrap() else { panic!("not started") };
+        assert_eq!(f.host.assistant_request_receipt(&f.owner, "unsure").unwrap()["status"], "pending");
+        f.host.assistant_conversations.attach_task("unsure", &f.owner, "task-1").unwrap();
+        f.host.assistant_conversations.finish("unsure", &f.owner, record.revision, "{}".into()).unwrap();
+        let receipt = f.host.assistant_request_receipt(&f.owner, "unsure").unwrap();
+        assert_eq!(receipt["status"], "completed");
+        assert_eq!(receipt["taskId"], "task-1");
+        let mut stranger = f.owner.clone(); stranger.workspace_id = "someone-else".into();
+        assert!(f.host.assistant_request_receipt(&stranger, "unsure").unwrap().is_null(), "another project must not learn about this request");
+    }
+
+    #[test]
     fn dismiss_cancels_a_proposal_without_dispatch_and_refuses_started_work() {
         let f = fixture();
         let input = crate::assistant_tasks::HandoffPreparation { request_id:"dismiss-child".into(), batch_id:"dismiss-batch".into(), owner:f.owner.clone(), revision:f.host.monitor_get("workspace").unwrap().unwrap().revision, original_request:"Help me finish unfinished work".into(), brief:"Finish work".into(), destination:TaskDestination { thread_id:Some("parent".into()), workers:vec!["null".into()], new_thread:false }, mode:TaskMode::Isolated, review_criteria:vec![] };
@@ -2974,6 +3033,50 @@ mod tests {
     }
 
     #[test]
+    fn reply_in_a_long_project_conversation_still_saves() {
+        let f = fixture();
+        let owner = crate::monitor_commands::MonitorOwner { cwd:f.owner.cwd.clone(), host_id:f.owner.host_id.clone(), conversation_id:f.owner.conversation_id.clone() };
+        for _ in 0..40 { f.host.monitor_chat_message_owned("workspace", owner.clone(), "assistant", &"x".repeat(3000)).unwrap(); }
+        assert!(serde_json::to_string(&f.host.monitor_get("workspace").unwrap().unwrap()).unwrap().len() > 64 * 1024);
+        let response = f.runtime.block_on(f.host.assistant_message_with(input(&f, "long-chat"), |_, _| {
+            std::future::ready(Ok(json!({"kind":"answer","message":"All good."}).to_string()))
+        })).unwrap();
+        assert_eq!(response["message"], "All good.");
+        assert!(response["monitor"].is_object());
+        let replay = f.runtime.block_on(f.host.assistant_message_with(input(&f, "long-chat"), |_, _| -> std::future::Ready<Result<String, String>> { panic!("a saved reply must not call the model again") })).unwrap();
+        assert_eq!(replay["message"], "All good.");
+        assert!(replay["monitor"].is_object());
+    }
+
+    #[test]
+    fn an_answer_that_stops_early_can_be_retried_instead_of_staying_already_processing() {
+        let f = fixture();
+        let request = |id: &str| crate::assistant_conversation::ConversationRequest { request_id:id.into(), owner:f.owner.clone(), text:"hi".into(), destination:None, new_worker_profiles:vec![], worker_profiles:vec![], threads:vec![], evidence:vec![], source_chats:vec![] };
+        let store = &f.host.assistant_conversations;
+        let crate::assistant_conversation::BeginOutcome::Started(stopped) = store.begin(request("stopped"), false).unwrap() else { panic!() };
+        drop(crate::assistant_conversation::InterruptIfUnfinished::new(store, "stopped", &f.owner, stopped.revision));
+        assert_eq!(f.host.assistant_request_receipt(&f.owner, "stopped").unwrap()["status"], "interrupted");
+        let crate::assistant_conversation::BeginOutcome::Started(done) = store.begin(request("done"), false).unwrap() else { panic!() };
+        let guard = crate::assistant_conversation::InterruptIfUnfinished::new(store, "done", &f.owner, done.revision);
+        store.finish("done", &f.owner, done.revision, "{}".into()).unwrap();
+        drop(guard);
+        assert_eq!(f.host.assistant_request_receipt(&f.owner, "done").unwrap()["status"], "completed", "a finished answer stays finished");
+    }
+
+    #[test]
+    fn clarification_without_work_stays_chat_and_creates_no_task() {
+        let f = fixture();
+        for (id, brief) in [("hello", json!(null)), ("hello-blank", json!("  "))] {
+            let response = f.runtime.block_on(f.host.assistant_message_with(input(&f, id), |_, _| {
+                std::future::ready(Ok(json!({"kind":"clarify","message":"Which project do you mean?","brief":brief}).to_string()))
+            })).unwrap();
+            assert_eq!(response["message"], "Which project do you mean?");
+            assert!(response["task"].is_null(), "{response}");
+        }
+        assert!(f.host.assistant_tasks.list(None).unwrap().is_empty());
+    }
+
+    #[test]
     fn clarification_validation_keeps_task_pending_and_delivers_human_scope() {
         let f = fixture();
         let response = f.runtime.block_on(f.host.assistant_message_with(input(&f, "clarify-scope"), |_, _| {
@@ -3170,6 +3273,130 @@ mod tests {
         let done = f.runtime.block_on(f.host.assistant_task_action(AssistantActionInput { task_id:task.id, revision:task.revision, owner:f.owner.clone(), action:"review".into(), mode:None, text:None, destination:None, new_worker_profiles:vec![], checks:None, spend_limit_micros:None })).unwrap();
         assert_eq!(done.status, TaskStatus::Done);
         assert!(!f.root.join(".git").exists());
+    }
+
+    const PARENT_HISTORY_MARKER: &str = "PARENT-HISTORY-MUST-NOT-COPY";
+
+    fn room_texts(f: &Fixture, id: &str) -> Vec<String> {
+        f.host.room_state(id.to_string()).unwrap()["snapshot"]["transcript"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["text"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    fn task_started_lines(f: &Fixture) -> Vec<String> {
+        room_texts(f, "parent")
+            .into_iter()
+            .filter(|text| text.starts_with("Task started:"))
+            .collect()
+    }
+
+    /// Puts history in the parent thread, then approves a proposal into it.
+    fn approve_into_parent(f: &Fixture, request_id: &str, mode: TaskMode) -> AssistantTask {
+        f.runtime
+            .block_on(f.host.append_assistant_note("parent", PARENT_HISTORY_MARKER.into()))
+            .unwrap();
+        let mut request = input(f, request_id);
+        request.mode = mode;
+        let response = f
+            .runtime
+            .block_on(f.host.assistant_message_with(request, |_, _| {
+                std::future::ready(Ok(json!({"kind":"proposal","message":"I can prepare this.","brief":"Make the requested change."}).to_string()))
+            }))
+            .unwrap();
+        let task: AssistantTask = serde_json::from_value(response["task"].clone()).unwrap();
+        assert_eq!(task.status, TaskStatus::Proposed);
+        let approved = f
+            .runtime
+            .block_on(f.host.assistant_task_action(AssistantActionInput {
+                task_id: task.id.clone(),
+                revision: task.revision,
+                owner: f.owner.clone(),
+                action: "approve".into(),
+                mode: None,
+                text: None,
+                destination: Some(TaskDestination {
+                    thread_id: Some("parent".into()),
+                    workers: vec!["null".into()],
+                    new_thread: false,
+                }),
+                new_worker_profiles: vec![],
+                checks: None,
+                spend_limit_micros: None,
+            }))
+            .unwrap();
+        wait_for(f, &approved.id)
+    }
+
+    fn assert_brief_only_worker_room(f: &Fixture, task: &AssistantTask) {
+        let child = task.execution_thread_id.clone().unwrap();
+        let texts = room_texts(f, &child);
+        assert!(
+            texts.iter().all(|text| !text.contains(PARENT_HISTORY_MARKER)),
+            "The worker room copied the parent history: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|text| text.contains("Please fix this in the Build Room")),
+            "The worker room must still receive the request through the start prompt: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn new_worker_room_gets_brief_only_and_parent_gets_one_source_line() {
+        let f = fixture();
+        let task = approve_into_parent(&f, "brief-ordinary", TaskMode::InPlace);
+        assert_eq!(task.status, TaskStatus::ReadyForReview);
+        assert_brief_only_worker_room(&f, &task);
+        let lines = task_started_lines(&f);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].ends_with("→ null"), "{lines:?}");
+        assert!(room_texts(&f, "parent")
+            .iter()
+            .all(|text| !text.contains("started in linked chat") && !text.contains("Brief:")));
+    }
+
+    #[test]
+    fn isolated_worker_room_gets_brief_only_and_parent_gets_one_source_line() {
+        let f = fixture();
+        let task = approve_into_parent(&f, "brief-isolated", TaskMode::Isolated);
+        assert_eq!(task.status, TaskStatus::ReadyForReview);
+        assert_brief_only_worker_room(&f, &task);
+        let lines = task_started_lines(&f);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(room_texts(&f, "parent")
+            .iter()
+            .all(|text| !text.contains("started in an isolated chat") && !text.contains("Brief:")));
+    }
+
+    #[test]
+    fn second_attempt_adds_no_source_line_and_no_copied_history() {
+        let f = fixture();
+        let task = approve_into_parent(&f, "brief-second-attempt", TaskMode::ReadOnly);
+        let child = task.execution_thread_id.clone().unwrap();
+        let again = f
+            .runtime
+            .block_on(f.host.assistant_task_action(AssistantActionInput {
+                task_id: task.id.clone(),
+                revision: task.revision,
+                owner: f.owner.clone(),
+                action: "request_changes".into(),
+                mode: None,
+                text: Some("Keep it short.".into()),
+                destination: None,
+                new_worker_profiles: vec![],
+                checks: None,
+                spend_limit_micros: None,
+            }))
+            .unwrap();
+        let second = wait_for(&f, &again.id);
+        assert_eq!(second.attempts.len(), 2);
+        assert_eq!(second.execution_thread_id.as_deref(), Some(child.as_str()));
+        assert_eq!(task_started_lines(&f).len(), 1);
+        assert!(room_texts(&f, &child)
+            .iter()
+            .all(|text| !text.contains(PARENT_HISTORY_MARKER)));
     }
 
     #[test]

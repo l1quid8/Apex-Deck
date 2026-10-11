@@ -55,6 +55,12 @@
 .apex-agent-float .apex-agent-more > summary::-webkit-details-marker { display: none; }
 .apex-agent-float .apex-agent-more > div { position: absolute; left: 0; top: 28px; z-index: 2; display: flex; flex-direction: column; min-width: 180px; max-width: 280px; max-height: min(360px, 55vh); overflow-y: auto; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel, var(--bg)); box-shadow: 0 8px 24px rgba(0, 0, 0, .3); }
 .apex-agent-float .apex-agent-more > div button { text-align: left; border: 0; background: none; padding: 6px 10px; white-space: normal; overflow-wrap: anywhere; flex-shrink: 0; }
+.apex-agent-float .apex-agent-more > div button small { display: block; margin-top: 2px; font-size: 11px; opacity: .65; }
+.apex-agent-float .assistant-task-card-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+.apex-agent-float .assistant-task-request { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.apex-agent-float .assistant-task-scope { font-size: 12px; opacity: .8; }
+.apex-agent-float .assistant-task-scope > summary { cursor: pointer; }
+.apex-agent-float .assistant-task-scope > p { white-space: pre-wrap; }
 .apex-agent-float .apex-agent-brand .eyebrow { display: none; }
 @media (max-width: 600px) {
   .apex-agent-dock.apex-agent-float { right: 12px; width: calc(100vw - 24px); }
@@ -66,12 +72,40 @@
 .apex-agent-all-composer { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
 .apex-agent-all-composer textarea { resize: none; width: 100%; box-sizing: border-box; }
 .apex-agent-all-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.apex-agent-all-composer { position: relative; z-index: 2; }
+.apex-agent-all-composer[hidden] { display: none !important; }
+.apex-agent-all-compose-box { position: relative; display: flex; align-items: flex-end; justify-content: flex-start; gap: 8px; min-width: 0; }
+.apex-agent-all-compose-box > div:first-child { flex: none; }
+.apex-agent-all-compose-box textarea { flex: 1; min-width: 0; }
+.apex-agent-all-compose-box .composer-menu { left: 0; bottom: calc(100% + 7px); max-height: min(360px, 55vh); overflow: auto; }
 .apex-agent-back { border: 0; background: none; color: var(--accent, #7cc4ff); cursor: pointer; padding: 2px 6px; }
+/* Shown under the header while the conversation is limited to one project. */
+.apex-agent-filter-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted, inherit); }
+.apex-agent-filter-bar button { border: 0; background: none; color: var(--accent, #7cc4ff); font: inherit; cursor: pointer; padding: 2px 6px; }
 .apex-agent-all-evidence { margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--muted, inherit); }
 .apex-agent-all-evidence li { margin: 2px 0; overflow-wrap: anywhere; }
 .apex-agent-check-failed { border-left: 2px solid #e06c6c; }
-/* Optional full screen: the conversation covers the window below the title bar, still above everything. */
-.apex-agent-dock.apex-agent-float.apex-agent-full { top: 48px; right: 16px; bottom: 16px; left: 16px; width: auto; height: auto; }
+/* Expanded mode is a workspace pane beside the project sidebar. The canvas
+   remains mounted, so terminal/thread sessions and their layout survive. */
+.body.apex-agent-dock-expanded > .canvas { display: none; }
+.body.apex-agent-dock-expanded > .apex-agent-dock.apex-agent-full {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  flex: 1 1 0;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+.body.apex-agent-dock-expanded > .thread-details,
+.body.apex-agent-dock-expanded > .details-edge,
+.body.apex-agent-dock-expanded > .details-backdrop { display: none !important; }
+.apex-agent-project-expand { position: absolute; z-index: 3; top: 8px; right: 44px; }
 
 /* Task replies expand in the conversation's scroll area, without a second pane. */
 .apex-agent-all .assistant-task-conversation { flex: none; overflow: visible; gap: 10px; }
@@ -124,3 +158,59 @@
 .apex-agent-task-history li p { margin: 2px 0 0; overflow-wrap: anywhere; }
 .apex-agent-task-history pre { margin: 4px 0 0; max-height: 180px; overflow: auto; white-space: pre-wrap; }
 .apex-agent-task-card-top .apex-agent-project-tag { background: none; border: 0; padding: 0; min-height: 0; }
+
+/* Conversation and Tasks: two views in one window, switched by a tab row in the header. */
+.apex-agent-views { gap: 2px; padding: 0 10px; border-top: 1px solid var(--line); flex-wrap: nowrap; min-width: 0; overflow-x: auto; }
+.apex-agent-view-tab { border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font: inherit; font-size: 13px; padding: 8px 8px 7px; cursor: pointer; white-space: nowrap; }
+.apex-agent-view-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent, #71e6b5); font-weight: 600; }
+.apex-agent-tabs-count { font-size: 12px; font-weight: 600; color: #f0b44c; }
+
+/* A task in the conversation: one short line where its first message was, opening the record in Tasks. */
+.apex-agent-task-line { margin: 2px 0 6px; min-width: 0; }
+.apex-agent-task-link, .apex-agent-all .assistant-task-link { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-width: 0; padding: 3px 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12.5px; line-height: 1.35; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.apex-agent-task-link::before, .apex-agent-all .assistant-task-link::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.apex-agent-task-link[data-status="needsYou"]::before, .apex-agent-all .assistant-task-link[data-status="needsYou"]::before { background: #f0b44c; }
+.apex-agent-task-link[data-status="done"]::before, .apex-agent-all .assistant-task-link[data-status="done"]::before { background: var(--accent, #71e6b5); }
+.apex-agent-task-link[data-status="failed"]::before, .apex-agent-all .assistant-task-link[data-status="failed"]::before { background: #ef6b6b; }
+.apex-agent-task-link[data-status="waiting"]::before, .apex-agent-all .assistant-task-link[data-status="waiting"]::before { background: #7aa7ff; }
+.apex-agent-task-link[data-status="blocked"]::before, .apex-agent-all .assistant-task-link[data-status="blocked"]::before { background: #e8953a; }
+.apex-agent-task-link:hover, .apex-agent-all .assistant-task-link:hover { color: var(--text); text-decoration: underline; }
+.apex-agent-task-link:focus-visible, .apex-agent-all .assistant-task-link:focus-visible { outline: 2px solid var(--accent, #71e6b5); outline-offset: 2px; border-radius: 4px; }
+
+/* Tasks list: place filter, then Needs you / Active / Finished. */
+.apex-agent-tasks-home { display: grid; gap: 14px; padding: 10px; min-width: 0; box-sizing: border-box; }
+.apex-agent-place-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.apex-agent-place-filter > .apex-agent-muted { font-size: 11px; margin-right: 2px; }
+.apex-agent-chip-filter { max-width: 100%; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: none; color: var(--text); font: inherit; font-size: 12px; overflow-wrap: anywhere; cursor: pointer; }
+.apex-agent-chip-filter[aria-pressed="true"] { border-color: var(--accent, #71e6b5); background: color-mix(in srgb, var(--accent, #71e6b5) 14%, transparent); }
+.apex-agent-task-group { min-width: 0; }
+.apex-agent-task-group h2 { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.apex-agent-task-group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.apex-agent-task-row { display: grid; gap: 4px; width: 100%; box-sizing: border-box; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.02); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.apex-agent-task-row[data-group="needsYou"] { border-color: rgba(240, 180, 76, 0.65); }
+.apex-agent-task-row:focus-visible { outline: 2px solid var(--accent, #71e6b5); outline-offset: 2px; }
+.apex-agent-task-row strong { font-size: 13.5px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.apex-agent-task-row small, .apex-agent-task-row-result { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.apex-agent-task-row-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; min-width: 0; }
+.apex-agent-task-row-when { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.apex-agent-task-row-tag { justify-self: start; font-size: 11px; color: var(--accent, #71e6b5); }
+.apex-agent-tasks-empty, .apex-agent-task-missing { margin: 0; padding: 16px 4px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* Back bar and detail page for one task. */
+.apex-agent-task-bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel, var(--bg)); font-size: 12px; color: var(--muted); }
+.apex-agent-task-bar > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apex-agent-task-bar > .apex-agent-back { flex: none; }
+.apex-agent-all .apex-agent-task-card { margin: 10px; box-sizing: border-box; max-width: calc(100% - 20px); overflow-wrap: anywhere; }
+.apex-agent-all .apex-agent-task-card-foot { flex-wrap: wrap; }
+.apex-agent-notifications-home { display: grid; gap: 10px; padding: 10px; min-width: 0; }
+.apex-agent-notifications-home > .assistant-chat-message { margin: 0; }
+.apex-agent-notifications-controls { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel, var(--bg)); font-size: 12px; color: var(--muted); }
+.apex-agent-notifications-controls button { padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: none; color: var(--text); font: inherit; cursor: pointer; }
+.apex-agent-notifications-controls button:disabled { opacity: .55; cursor: default; }
+.apex-agent-personal-notice { border-color: color-mix(in srgb, var(--accent, #71e6b5) 45%, var(--line)); }
+.apex-agent-personal-notice.is-unseen { box-shadow: inset 3px 0 #f0b44c; }
+.apex-agent-personal-notice.is-seen { opacity: .84; }
+/* Header rows stack (title, status, view tabs) everywhere, including the phone where styles.css lays the header out in a row. */
+.apex-agent-all .apex-agent-head { display: grid; gap: 4px; align-items: stretch; }
+.apex-agent-all .apex-agent-views { justify-content: flex-start; overflow-x: hidden; }
+.apex-agent-all .apex-agent-view-tab { border-radius: 0; background: none; box-shadow: none; min-height: 0; width: auto; flex: none; }

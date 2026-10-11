@@ -13,7 +13,14 @@ export interface MonitorMessage {
   text: string;
   at: number;
   evidence: MonitorEvidence[];
+  /** 'update' when a background check posted it rather than a chat reply. */
+  kind?: string;
+  /** Reactions saved on the owning host and shared with paired devices. */
+  reactions?: string[];
 }
+
+export type MessageReaction = '👍' | '❤️' | '😂' | '🎉' | '👀' | '🙏';
+export interface MessageQuote { messageId: string; author: string; text: string }
 export interface MonitorFinding {
   id: string;
   summary: string;

@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Backend } from './backend.ts';
+import { TaskViewContext, projectTaskGroup, projectTaskKey, type TaskSummary } from './apexAgentTaskView.ts';
 import type { Pane, ParticipantConfig, Question } from './types.ts';
-import type { ReactNode } from 'react';
 import type { ProjectMonitor } from './apexAgentModel.ts';
-import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, retainRequestForRetry, savePendingRequest, shouldSuggestArchive, taskStatusLabel, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
+import { archivedTaskIds, assistantMessageArgs, assistantTaskActionArgs, assistantTasksForOwner, canReconcileTask, clearPendingRequest, isTaskOwnedBy, isTerminalTask, loadPendingRequest, shouldSuggestArchive, taskStatusLabel, taskThreadLinks, taskUsageLabel, taskWorkerChoices, type AssistantTask, type AssistantTaskDestination, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest } from './assistantTaskModel.ts';
 import './assistant-tasks.css';
 
-type Action = 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'archive' | 'reconcile' | 'note' | 'set_budget' | 'resume_budget';
+type Action = 'clarify' | 'approve' | 'dismiss' | 'retry' | 'request_changes' | 'cancel' | 'accept' | 'review' | 'archive' | 'reconcile' | 'note' | 'resume_budget';
 type Props = {
   onSelectTask?: (task: AssistantTask, send: (text: string) => Promise<void>) => void;
   /** A task left the conversation (dismissed), so any reply context pointing at it should close. */
@@ -20,56 +20,80 @@ type Props = {
   profiles: ParticipantConfig[];
   onMonitorUpdate?: (monitor: ProjectMonitor) => void;
   onOpenThread?: (id: string) => void;
-  view?: 'chat' | 'tasks' | 'activity' | 'settings' | 'conversation';
-  messages?: { id: string; role: string; text: string; at: number; evidence?: { sourceId: string; label: string; excerpt: string; observedAt: number }[] }[];
+  /** The conversation is the only view. Accepted so existing callers still type-check. */
+  view?: 'conversation';
   focused?: boolean;
-  onViewChange?: (view: 'chat' | 'tasks' | 'activity' | 'settings') => void;
-  children?: ReactNode;
-  onOpenEvidence?: (evidence: { sourceId: string; label: string; excerpt: string; observedAt: number }) => void;
 };
 
+/** Shown when ApexAgent proposed no chat that can run this task. The human answers in the main conversation. */
+const NO_CHAT_NOTE = "ApexAgent didn't pick a chat for this. Reply to it with which chat to use.";
 const objectText = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 const taskFinal = (status: string) => isTerminalTask(status);
 const formatBytes = (bytes: number): string => bytes < 1024 * 1024 ? `${Math.max(0, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-const assistantMessageText = (message: unknown): string => {
-  if (typeof message === 'string') return message;
-  if (message && typeof message === 'object') {
-    const value = message as { text?: unknown; response?: unknown; content?: unknown };
-    for (const candidate of [value.text, value.response, value.content]) if (typeof candidate === 'string') return candidate;
-  }
-  return message == null ? '' : objectText(message);
+/** The chat and workers ApexAgent proposed for a task, or null when it named none that can run. */
+const proposedDestination = (task: AssistantTask): AssistantTaskDestination | null => {
+  const destination = task.destination;
+  if (!destination || !destination.workers.length || (!destination.newThread && !destination.threadId)) return null;
+  return { threadId: destination.newThread ? null : destination.threadId, newThread: destination.newThread, workers: [...destination.workers] };
 };
 
-export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, view = 'tasks', messages = [], focused, onViewChange, children, onOpenEvidence, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery }: Props) {
+/** First sentence of a long scope, cut to fit one line, so the card's buttons stay near the top. */
+function scopeSummary(brief: string): string {
+  const flat = brief.replace(/\s+/g, ' ').trim();
+  const sentence = flat.match(/^.+?[.!?](?=\s|$)/)?.[0] ?? flat;
+  return sentence.length > 140 ? `${sentence.slice(0, 137).trimEnd()}…` : sentence;
+}
+
+/** One line of text, cut with an ellipsis when it is longer than `max`. */
+const oneLine = (text: string, max = 120): string => {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
+};
+/** The first readable line of a result: no code-fence markers and no protocol-looking <tags>. */
+function readableResult(text: string | null | undefined): string {
+  const cleaned = (text ?? '').replace(/^\s*```.*$/gm, '').replace(/<\/?[A-Za-z][\w:-]*(?:\s[^<>\n]*)?\/?>/g, '');
+  const first = cleaned.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
+  return oneLine(first, 160);
+}
+/** Worker display names for the task's destination (or its recorded workers); ids are shown only when no profile matches. */
+const workerLabel = (task: AssistantTask, profiles: ParticipantConfig[]): string => {
+  const ids = task.destination?.workers?.length ? task.destination.workers : task.workers ?? [];
+  return ids.length ? ids.map((id) => profiles.find((profile) => profile.id === id)?.display_name ?? id).join(', ') : 'Not chosen yet';
+};
+/** Verification from saved check results; each entry records whether it succeeded. */
+function verificationLabel(task: AssistantTask): string {
+  const results = task.resultData?.checkResults;
+  if (!Array.isArray(results) || !results.length) return 'Not verified';
+  return results.every((item) => (item as { success?: unknown } | null)?.success === true) ? 'Checks passed' : 'Checks failed';
+}
+const modeLabel = (mode: AssistantTask['mode']): string => mode === 'read_only' ? 'Read only' : mode === 'in_place' ? 'In place' : 'Separate copy';
+
+export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdate, onOpenThread, focused, projectName, clearedAt = 0, onSelectTask, onTaskClosed, requestRecovery }: Props) {
   const sharedSender = useRef<(taskId: string, text: string) => Promise<void>>(async () => { throw new Error('Task context is unavailable.'); });
   const [tasks, setTasks] = useState<AssistantTask[]>([]);
+  const [receipt, setReceipt] = useState<{ requestId: string; status: 'pending' | 'completed' | 'interrupted' | 'unknown' | 'unchecked'; taskId?: string | null } | null>(null);
   const [routingThreads, setRoutingThreads] = useState<{ id: string; workers: ParticipantConfig[] }[] | undefined>(undefined);
   const [namedOnlyWorkerIds, setNamedOnlyWorkerIds] = useState<string[] | undefined>(undefined);
   const [archivedExecutions, setArchivedExecutions] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [assistantReply, setAssistantReply] = useState('');
-  const [draft, setDraft] = useState('');
-  const [draftsByContext, setDraftsByContext] = useState<Record<string, string>>({});
-  const [destinationId, setDestinationId] = useState('');
-  const [mode, setMode] = useState<'in_place' | 'isolated' | 'read_only'>('in_place');
-  const [checkCommands, setCheckCommands] = useState('');
-  const [selectedWorkers, setSelectedWorkers] = useState<string[]>([]);
-  const [destinations, setDestinations] = useState<Record<string, string>>({});
-  const [newTaskWorkers, setNewTaskWorkers] = useState<Record<string, string[]>>({});
   const [checks, setChecks] = useState<Record<string, string[]>>({});
   const [pendingRequest, setPendingRequest] = useState<PendingAssistantRequest | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [taskContextId, setTaskContextId] = useState<string | null>(null);
-  const [taskWorkers, setTaskWorkers] = useState<Record<string, string[]>>({});
   const [reviewedRevision, setReviewedRevision] = useState<Record<string, number>>({});
   const [visibleReviewRevision, setVisibleReviewRevision] = useState<Record<string, number>>({});
+  // Unified Tasks view (see apexAgentTaskView.ts). Null means the old single-conversation layout.
+  const taskView = useContext(TaskViewContext);
+  const contextMode = taskView !== null;
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [changeOpen, setChangeOpen] = useState<Record<string, boolean>>({});
+  const titleRef = useRef<HTMLHeadingElement | null>(null);
+  const storeKey = `project:${owner.hostId}:${owner.workspaceId}`;
+  const keyFor = (id: string) => projectTaskKey(owner.hostId, owner.workspaceId, id);
   const detailScrollRef = useRef<HTMLDivElement | null>(null);
   const reviewMaterialRef = useRef<HTMLDivElement | null>(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [spendCap, setSpendCap] = useState('');
-  const [requestSpendCap, setRequestSpendCap] = useState('');
   const [inlineAnswer, setInlineAnswer] = useState<Record<string, string[]>>({});
   const [inlineOther, setInlineOther] = useState<Record<string, string>>({});
   const activeOwner = useRef(owner);
@@ -86,8 +110,6 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     return [...visible, ...saved];
   }, [panes, owner.workspaceId, routingThreads]);
   const ownerKey = `${owner.workspaceId}\u0000${owner.cwd}\u0000${owner.hostId}\u0000${owner.conversationId}`;
-  const composerContextKey = `${ownerKey}\u0000${taskContextId ?? 'new'}`;
-  const setContextDraft = (value: string) => { setDraft(value); setDraftsByContext((current) => ({ ...current, [composerContextKey]: value })); };
 
   const currentOwner = (captured: AssistantTaskOwner, version: number) => generation.current === version
     && activeOwner.current.workspaceId === captured.workspaceId && activeOwner.current.cwd === captured.cwd
@@ -97,8 +119,18 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     if (backend.demo) { if (currentOwner(captured, version)) { setTasks([]); setLoading(false); } return; }
     const listVersion = ++listRequestVersion.current;
     try {
-      const snapshot = await backend.call<AssistantTaskSnapshot>('assistant_tasks_list', { owner: captured });
+      const unsure = loadPendingRequest(window.localStorage, captured);
+      const snapshot = await backend.call<AssistantTaskSnapshot & { request?: { requestId: string; status: 'pending' | 'completed' | 'interrupted'; taskId?: string | null } | null }>('assistant_tasks_list', unsure ? { owner: captured, requestId: unsure.requestId } : { owner: captured });
       const visible = assistantTasksForOwner(snapshot, captured);
+      // Reconcile an unconfirmed message with what the service actually did, so Retry never stands beside work it already received.
+      if (unsure && currentOwner(captured, version) && listRequestVersion.current === listVersion) {
+        const found = snapshot.request && snapshot.request.requestId === unsure.requestId ? snapshot.request : null;
+        if (found?.status === 'completed' && loadPendingRequest(window.localStorage, captured)?.requestId === unsure.requestId) {
+          if (requestRecovery) requestRecovery.discard();
+          else { clearPendingRequest(window.localStorage, captured); if (requestRef.current?.requestId === unsure.requestId) requestRef.current = null; setPendingRequest((current) => current?.requestId === unsure.requestId ? null : current); }
+          setReceipt(null);
+        } else setReceipt(found ? { requestId: unsure.requestId, status: found.status, taskId: found.taskId } : { requestId: unsure.requestId, status: snapshot.request === null ? 'unknown' : 'unchecked' });
+      }
       if (currentOwner(captured, version) && listRequestVersion.current === listVersion && snapshot.revision >= snapshotRevision.current) { snapshotRevision.current = snapshot.revision; setTasks(visible); const routing = snapshot as AssistantTaskSnapshot & { routingThreads?: { id: string; workers: ParticipantConfig[] }[]; namedOnlyWorkerIds?: string[] }; setRoutingThreads(routing.routingThreads); setNamedOnlyWorkerIds(routing.namedOnlyWorkerIds); setArchivedExecutions(archivedTaskIds(snapshot)); setError(''); }
     } catch (cause) {
       if (currentOwner(captured, version) && listRequestVersion.current === listVersion) setError(cause instanceof Error ? cause.message : String(cause));
@@ -112,8 +144,8 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     const captured = owner;
     listRequestVersion.current++; snapshotRevision.current = -1;
     const recovered = loadPendingRequest(window.localStorage, captured);
-    setTasks([]); setRoutingThreads(undefined); setNamedOnlyWorkerIds(undefined); setArchivedExecutions(new Set()); setBusy(false); setError(''); setAssistantReply(''); setLoading(true); setPendingRequest(recovered); requestRef.current = recovered;
-    setDraft(recovered?.text ?? ''); setDraftsByContext(recovered?.text ? { [`${ownerKey}\u0000new`]: recovered.text } : {}); setTaskContextId(null); setDestinationId(recovered?.destination?.newThread ? 'new' : recovered?.destination?.threadId ?? ''); setSelectedWorkers(recovered?.newWorkerProfiles.map((profile) => profile.id) ?? []); setMode(recovered?.mode ?? 'in_place'); setCheckCommands((recovered?.checks ?? []).map((argv) => JSON.stringify(argv)).join('\n')); setRequestSpendCap(recovered?.spendLimitMicros == null ? '' : (recovered.spendLimitMicros / 1_000_000).toFixed(2)); setDestinations({}); setNewTaskWorkers({}); setTaskWorkers({}); setChecks({}); setDetailId(null); setReviewedRevision({});
+    setTasks([]); setRoutingThreads(undefined); setNamedOnlyWorkerIds(undefined); setArchivedExecutions(new Set()); setBusy(false); setError(''); setLoading(true); setPendingRequest(recovered); requestRef.current = recovered;
+    setTaskContextId(null); setChecks({}); setDetailId(null); setReviewedRevision({});
     void loadTasks(captured, version);
     if (!backend.onAssistantTasksChanged) return () => { generation.current++; };
     let unlisten: (() => void) | undefined;
@@ -131,36 +163,11 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     setVisibleReviewRevision((current) => Object.fromEntries(Object.entries(current).filter(([id, revision]) => tasks.some((task) => task.id === id && task.revision === revision))));
   }, [tasks]);
 
+  // Sends only a saved request (Retry). New messages are written in the main conversation.
   const sendRequest = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy) return;
-    let pending = requestRef.current;
-    if (!pending) {
-      if (!draft.trim()) { setError('Write a request before sending.'); return; }
-      const newThread = destinationId === 'new';
-      const newWorkers = newThread ? workerProfiles.filter((profile) => selectedWorkers.includes(profile.id)) : [];
-      if (newThread && newWorkers.length === 0) { setError('Choose at least one worker profile for a new thread.'); return; }
-      let parsedChecks: string[][];
-      try {
-        parsedChecks = checkCommands.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line));
-        if (parsedChecks.some((argv) => !Array.isArray(argv) || argv.length === 0 || argv.some((arg) => typeof arg !== 'string' || !arg.trim()))) throw new Error('Each check must be a JSON argv array of non-empty strings, such as ["npm","test"].');
-      } catch (cause) { setError(cause instanceof Error ? cause.message : 'Checks must be JSON argv arrays.'); return; }
-      const threadId = newThread ? null : destinationId;
-      const workerIds = newThread ? newWorkers.map((profile) => profile.id) : selectedWorkers;
-      const destination: AssistantTaskDestination | null = destinationId ? { threadId, newThread, workers: workerIds } : null;
-      const spendLimitMicros = requestSpendCap.trim() ? Math.round(Number(requestSpendCap) * 1_000_000) : null;
-      if (spendLimitMicros !== null && (!Number.isSafeInteger(spendLimitMicros) || spendLimitMicros <= 0)) { setError('Enter a positive spend cap, or leave blank to remove it.'); return; }
-      if (mode === 'read_only' && parsedChecks.length > 0) { setError('Checks are not supported in Read only mode. Switch mode or remove the configured checks.'); return; }
-      pending = {
-        requestId: globalThis.crypto?.randomUUID?.() ?? `assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        text: draft.trim(), owner, destination, newWorkerProfiles: newWorkers, mode, checks: parsedChecks,
-        threadLabels: chatThreads.map((pane) => ({ id: pane.id, label: pane.title })),
-        // Profiles are trusted catalog data for routing, not authorization to execute a task.
-        workerProfiles, spendLimitMicros,
-      };
-      savePendingRequest(window.localStorage, pending, owner);
-      requestRef.current = retainRequestForRetry(pending); setPendingRequest(pending);
-    }
+    const pending = requestRef.current;
+    if (busy || !pending) return;
     const captured = owner;
     const version = generation.current;
     setBusy(true); setError('');
@@ -170,9 +177,8 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
       if (!result.monitor || result.monitor.workspaceId !== captured.workspaceId || result.monitor.cwd !== captured.cwd || result.monitor.hostId !== captured.hostId || result.monitor.conversationId !== captured.conversationId) throw new Error('ApexAgent returned a different project assignment.');
       if (result.task && !isTaskOwnedBy(result.task, captured)) throw new Error('ApexAgent returned a task for a different assignment.');
       onMonitorUpdate?.(result.monitor);
-      setAssistantReply(assistantMessageText(result.message));
       if (result.task) { listRequestVersion.current++; setTasks((current) => [result.task!, ...current.filter((task) => task.id !== result.task!.id)]); }
-      requestRef.current = null; setPendingRequest(null); setContextDraft(''); setError(''); clearPendingRequest(window.localStorage, captured);
+      requestRef.current = null; setPendingRequest(null); setError(''); clearPendingRequest(window.localStorage, captured);
       void loadTasks(captured, version);
     } catch (cause) {
       if (currentOwner(captured, version)) setError(cause instanceof Error ? cause.message : String(cause));
@@ -182,6 +188,18 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
 
   const recoveryRequest = requestRecovery ? requestRecovery.pending : pendingRequest;
+  useEffect(() => {
+    if (!recoveryRequest) { setReceipt(null); return; }
+    const captured = owner, version = generation.current;
+    void loadTasks(captured, version);
+  }, [recoveryRequest?.requestId]);
+  useEffect(() => {
+    // A received message still being answered: look again shortly instead of offering Retry.
+    if (receipt?.status !== 'pending') return;
+    const captured = owner, version = generation.current;
+    const timer = window.setTimeout(() => void loadTasks(captured, version), 5000);
+    return () => window.clearTimeout(timer);
+  }, [receipt]);
   const retryRecovery = async () => {
     if (busy) return;
     if (!requestRecovery) { await sendRequest({ preventDefault() {} } as React.FormEvent); return; }
@@ -193,11 +211,10 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
 
   const discardPending = () => {
-    clearPendingRequest(window.localStorage, owner); requestRef.current = null; setPendingRequest(null);
-    setContextDraft(''); setDestinationId(''); setSelectedWorkers([]); setError('');
+    clearPendingRequest(window.localStorage, owner); requestRef.current = null; setPendingRequest(null); setError('');
   };
 
-  const act = async (task: AssistantTask, action: Action, payload: { text?: string; destination?: AssistantTaskDestination; newWorkerProfiles?: ParticipantConfig[]; checks?: string[][]; mode?: 'in_place' | 'isolated' | 'read_only'; spendLimitMicros?: number | null } = {}): Promise<boolean> => {
+  const act = async (task: AssistantTask, action: Action, payload: { text?: string; destination?: AssistantTaskDestination; newWorkerProfiles?: ParticipantConfig[]; mode?: 'in_place' | 'isolated' | 'read_only' } = {}): Promise<boolean> => {
     if (busy || !isTaskOwnedBy(task, owner)) return false;
     const captured = owner;
     const version = generation.current;
@@ -220,20 +237,10 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     }
   };
 
-  const taskDestination = (taskId: string): AssistantTaskDestination | null => {
-    const initialTask = tasks.find((task) => task.id === taskId);
-    const source = initialTask?.status === 'proposed' ? initialTask.destination : null;
-    const selected = destinations[taskId] ?? (source?.newThread ? 'new' : source?.threadId ?? '');
-    if (!selected) return null;
-    const newThread = selected === 'new';
-    if (!newThread && !chatThreads.some((pane) => pane.id === selected)) return null;
-    const newWorkers = workerProfiles.filter((profile) => (newTaskWorkers[taskId] ?? source?.workers ?? []).includes(profile.id));
-    const eligible = routingWorkers(selected).map((profile) => profile.id);
-    const chosen = (taskWorkers[taskId] ?? source?.workers ?? []).filter((id) => eligible.includes(id));
-    return { threadId: newThread ? null : selected, newThread, workers: newThread ? newWorkers.map((profile) => profile.id) : chosen };
-  };
-  const routingWorkers = (threadId: string) => routingThreads === undefined ? workerProfiles : routingThreads.find((thread) => thread.id === threadId)?.workers ?? [];
-  const routingWorkersUnavailable = (threadId: string) => routingThreads !== undefined && !routingThreads.some((thread) => thread.id === threadId);
+  // Approve uses the chat and workers ApexAgent proposed, and the task's own mode.
+  const approveProposal = (task: AssistantTask, destination: AssistantTaskDestination) => act(task, 'approve', {
+    destination, newWorkerProfiles: destination.newThread ? workerProfiles.filter((profile) => destination.workers.includes(profile.id)) : [], mode: task.mode,
+  });
 
   const renderChecks = (task: AssistantTask) => {
     const criteria = task.reviewCriteria ?? [];
@@ -243,29 +250,24 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     return <fieldset className="assistant-task-checks"><legend>Human review criteria</legend>{criteria.map((criterion) => <label key={criterion}><input type="checkbox" checked={selected.includes(criterion)} onChange={(event) => setChecks((current) => ({ ...current, [key]: event.target.checked ? [...selected, criterion] : selected.filter((item) => item !== criterion) }))} />I reviewed: {criterion}</label>)}</fieldset>;
   };
 
-  const destinationTitle = (task: AssistantTask) => task.destination?.newThread ? 'New thread' : task.destination?.threadId ? chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId : 'Not assigned';
-  const workerNames = (task: AssistantTask) => (task.workers ?? []).map((id) => workerProfiles.find((profile) => profile.id === id)?.display_name ?? id).join(', ') || 'Unassigned';
-  const budgetValue = (task: AssistantTask) => {
-    const data = task.resultData as (AssistantTask['resultData'] & { spendLimitMicros?: number | null; budgetPaused?: boolean }) | null | undefined;
-    return data?.spendLimitMicros;
-  };
   const openTaskDetail = (task: AssistantTask) => {
-    if (taskContextId !== task.id) setDraftsByContext((current) => ({ ...current, [composerContextKey]: draft }));
-    setTaskContextId(task.id); setDraft(draftsByContext[`${ownerKey}\u0000${task.id}`] ?? ''); setDetailId(task.id); setReviewedRevision((current) => ({ ...current, [task.id]: -1 }));
-    if (view === 'conversation' && onSelectTask && !taskFinal(task.status)) {
+    setTaskContextId(task.id); setDetailId(task.id); setReviewedRevision((current) => ({ ...current, [task.id]: -1 }));
+    if (onSelectTask && !taskFinal(task.status)) {
       const captured = owner; const version = generation.current;
       onSelectTask(task, async (text) => {
         if (!currentOwner(captured, version)) throw new Error('This task assignment changed. Select the task again.');
         await sharedSender.current(task.id, text);
       });
     }
-    const limit = budgetValue(task); setSpendCap(limit == null ? '' : (limit / 1_000_000).toFixed(2));
   };
   const reviewed = (task: AssistantTask) => reviewedRevision[task.id] === task.revision;
   const hasCurrentRequest = (wait: unknown) => !!wait && typeof wait === 'object' && typeof (wait as { request?: unknown }).request === 'string' && !!(wait as { request: string }).request;
   const hasQuestionGroup = (wait: unknown): wait is { request: string; questions: Question[] } => hasCurrentRequest(wait) && !!wait && typeof wait === 'object' && Array.isArray((wait as { questions?: unknown }).questions) && (wait as { questions: unknown[] }).questions.length > 0 && (wait as { questions: unknown[] }).questions.every((question) => !!question && typeof question === 'object' && typeof (question as Question).question === 'string' && Array.isArray((question as Question).options));
   const hasApprovalAction = (wait: unknown) => hasCurrentRequest(wait) && !!wait && typeof wait === 'object' && !!(wait as { action?: unknown }).action && typeof (wait as { action: { title?: unknown; detail?: unknown } }).action.title === 'string' && typeof (wait as { action: { title?: unknown; detail?: unknown } }).action.detail === 'string';
-  const selectedTask = tasks.find((task) => task.id === taskContextId && isTaskOwnedBy(task, owner));
+  // In context mode the Tasks view's selection drives the detail; otherwise the local card selection does.
+  const contextTask = taskView && taskView.selectedKey ? tasks.find((task) => isTaskOwnedBy(task, owner) && keyFor(task.id) === taskView.selectedKey) ?? null : null;
+  const activeTaskId = contextMode ? (contextTask?.id ?? null) : detailId;
+  const selectedTask = tasks.find((task) => task.id === (contextMode ? activeTaskId : taskContextId) && isTaskOwnedBy(task, owner));
   const hasReviewMaterial = (task: AssistantTask) => {
     const data = task.resultData ?? {};
     return task.mode === 'read_only'
@@ -274,7 +276,7 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
   };
   useEffect(() => {
     const task = selectedTask;
-    if ((view !== 'tasks' && view !== 'conversation') || !task || detailId !== task.id || task.status !== 'ready_for_review' || !hasReviewMaterial(task)) return;
+    if (!task || activeTaskId !== task.id || task.status !== 'ready_for_review' || !hasReviewMaterial(task)) return;
     const root = detailScrollRef.current;
     const target = reviewMaterialRef.current;
     if (!root || !target || typeof IntersectionObserver === 'undefined') return;
@@ -283,23 +285,30 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.target === target && entry.isIntersecting && entry.intersectionRatio > 0)) return;
       const current = tasks.find((candidate) => candidate.id === task.id);
-      if (!currentOwner(captured, version) || detailId !== task.id || !current || current.revision !== task.revision || !isTaskOwnedBy(current, captured)) return;
+      if (!currentOwner(captured, version) || activeTaskId !== task.id || !current || current.revision !== task.revision || !isTaskOwnedBy(current, captured)) return;
       setVisibleReviewRevision((previous) => ({ ...previous, [task.id]: task.revision }));
     }, { root, threshold: 0.01 });
     observer.observe(target);
     return () => observer.disconnect();
-  }, [view, detailId, selectedTask?.id, selectedTask?.revision, selectedTask?.status, tasks]);
-  useEffect(() => { if (view === 'conversation' && clearedAt) { setDetailId(null); setTaskContextId(null); } }, [view, clearedAt]);
-  const composerWaits: unknown[] = (selectedTask?.resultData?.pendingQuestions as unknown[] | undefined) ?? [];
-  const composerSingleQuestion = !!selectedTask && composerWaits.length === 1 && hasQuestionGroup(composerWaits[0]) && composerWaits[0].questions?.length === 1;
-  const composerNeedsInlineAnswers = composerWaits.length > 0 && !composerSingleQuestion;
-  const composerActionLabel = !selectedTask ? 'Send' : selectedTask.status === 'ready_for_review' ? 'Request changes' : selectedTask.status === 'needs_clarification' ? 'Send routing clarification' : composerSingleQuestion ? 'Send answer' : composerNeedsInlineAnswers ? 'Answer inline questions' : 'Add note';
+  }, [activeTaskId, selectedTask?.id, selectedTask?.revision, selectedTask?.status, tasks]);
+  useEffect(() => { if (clearedAt) { setDetailId(null); setTaskContextId(null); } }, [clearedAt]);
+
+  // Report this store's rows to the unified Tasks list. Finished tasks stay (Clear only hides chat); dismissed ones do not.
+  const summaryRows = useMemo<TaskSummary[]>(() => tasks.filter((task) => isTaskOwnedBy(task, owner) && !task.resultData?.dismissedAtMs).map((task) => ({
+    key: keyFor(task.id), source: 'project', hostId: owner.hostId, workspaceId: owner.workspaceId, id: task.id,
+    title: oneLine(task.originalRequest), place: projectName ?? 'Project', worker: workerLabel(task, profiles), status: task.status, statusLabel: taskStatusLabel(task.status),
+    group: projectTaskGroup(task), result: readableResult(task.result), updatedAt: task.updatedAtMs,
+  })), [tasks, ownerKey, projectName, profiles]);
+  // The report function is deliberately left out of the deps: a changing identity must not re-report and loop.
+  useEffect(() => { taskView?.report(storeKey, summaryRows); }, [summaryRows, storeKey, contextMode]);
+  useEffect(() => () => { taskView?.report(storeKey, []); }, [storeKey]);
+  // Moving to a selected task moves focus to its title.
+  useEffect(() => { if (contextMode && taskView?.selectedKey && contextTask) titleRef.current?.focus?.(); }, [taskView?.selectedKey, contextTask?.id]);
   const sendTaskText = async (task: AssistantTask, text: string): Promise<boolean> => {
     if (task.status === 'needs_clarification') {
-      const destination = taskDestination(task.id);
-      if (!destination || !destination.workers.length) { setError('Choose a destination and at least one eligible worker before sending this routing clarification.'); return false; }
-      const ok = await act(task, 'clarify', { text, destination, newWorkerProfiles: destination.newThread ? workerProfiles.filter((profile) => destination.workers.includes(profile.id)) : [], mode: task.mode });
-      return ok;
+      const destination = proposedDestination(task);
+      if (!destination) { setError(NO_CHAT_NOTE); return false; }
+      return act(task, 'clarify', { text, destination, newWorkerProfiles: destination.newThread ? workerProfiles.filter((profile) => destination.workers.includes(profile.id)) : [], mode: task.mode });
     }
     if (task.status === 'ready_for_review') {
       const ok = await act(task, 'request_changes', { text });
@@ -316,11 +325,6 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     }
     const ok = await act(task, 'note', { text });
     return ok;
-  };
-  const submitTaskContext = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!draft.trim() || !selectedTask || !isTaskOwnedBy(selectedTask, owner)) return;
-    if (await sendTaskText(selectedTask, draft.trim())) setContextDraft('');
   };
   sharedSender.current = async (taskId, text) => {
     const task = tasks.find((item) => item.id === taskId && isTaskOwnedBy(item, owner));
@@ -378,78 +382,123 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
     finally { if (currentOwner(captured, version)) setBusy(false); }
   };
 
-  return <section className={`assistant-tasks${view === 'conversation' ? ' assistant-task-conversation' : ''}`} aria-label="Assistant workspace" data-assistant-workspace-id={owner.workspaceId} data-focused={focused ? 'true' : 'false'}>
-    {view === 'chat' && <div className="assistant-chat-transcript" aria-live="polite">{messages.map((message) => <article className={`assistant-chat-message ${message.role}`} key={message.id}><small>{message.role === 'human' ? 'You' : 'ApexAgent'}</small><p>{message.text}</p>{message.evidence?.length ? <div className="assistant-chat-evidence">{message.evidence.map((item, index) => <button type="button" key={`${item.sourceId}:${index}`} title={item.excerpt} onClick={() => onOpenEvidence?.(item)}>{item.label}<small>{item.excerpt}</small></button>)}</div> : null}</article>)}{messages.length === 0 && <p className="assistant-task-muted">ApexAgent is ready to talk about this project.</p>}{children}{assistantReply && !messages.some((message) => message.text === assistantReply) && <article className="assistant-chat-message assistant"><small>ApexAgent</small><p>{assistantReply}</p></article>}</div>}
+  // Conversation rows (legacy cards, or one link line each in context mode) and the detail. Links never act or bind the composer.
+  const visibleCards = tasks.filter((task) => !task.resultData?.dismissedAtMs && (!taskFinal(task.status) || task.updatedAtMs > clearedAt));
+  const tasksOnly = taskView?.display === 'tasks';
+  const detailVisible = contextMode ? tasksOnly && !!contextTask : !!detailId;
+  // Reply text is kept per task and per kind, so it survives re-renders until it is sent.
+  const draftKey = (taskId: string, kind: string) => `${taskId}\u0000${kind}`;
+  const draftText = (taskId: string, kind: string) => drafts[draftKey(taskId, kind)] ?? '';
+  const setDraft = (taskId: string, kind: string, value: string) => setDrafts((current) => ({ ...current, [draftKey(taskId, kind)]: value }));
+  const sendDraft = async (task: AssistantTask, kind: string) => {
+    const text = draftText(task.id, kind).trim();
+    if (!text) return;
+    if (await sendTaskText(task, text)) setDraft(task.id, kind, '');
+  };
+  const taskLink = (task: AssistantTask) => {
+    const key = keyFor(task.id);
+    const title = oneLine(task.originalRequest, 60);
+    const label = task.status === 'ready_for_review' ? `Review result · ${title}` : task.status === 'done' && task.result?.trim() ? `Result ready · ${title}` : `Task · ${taskStatusLabel(task.status)} · ${title}`;
+    return <button type="button" className="assistant-task-link" key={key} onClick={() => taskView?.openTask(key)}>{`${label} ›`}</button>;
+  };
 
-
-    {view === 'conversation' && recoveryRequest && <article className="assistant-chat-message assistant" role="status">
+  return <section className="assistant-tasks assistant-task-conversation" aria-label="Assistant workspace" data-assistant-workspace-id={owner.workspaceId} data-focused={focused ? 'true' : 'false'}>
+    {!tasksOnly && recoveryRequest && <article className="assistant-chat-message assistant" role="status">
       <small>Unconfirmed message{projectName ? ` · ${projectName}` : ''}</small><p>{recoveryRequest.text}</p>
-      <p>The last response was uncertain. Retry uses the saved request ID and original payload. Discard removes the local retry; it does not cancel work already received.</p>
-      {error && <p className="assistant-task-warning">{error}</p>}
-      <button type="button" disabled={busy} onClick={retryRecovery}>{busy ? 'Retrying…' : 'Retry request'}</button>
+      {(() => { const known = receipt?.requestId === recoveryRequest.requestId ? receipt : null; return <>
+        <p>{known?.status === 'pending' ? 'The service received this and is still answering it. Retry is off so it can’t run twice.' : known?.status === 'interrupted' ? `The service received this but restarted before answering${known.taskId ? '. It had already created its task, so Retry shows that task instead of making a second one' : ''}.` : known?.status === 'unknown' ? 'The service never received this message. Retry sends it once.' : known?.status === 'unchecked' ? 'The last response was uncertain. Retry reuses the saved request ID, so the service won’t do it twice.' : 'Checking whether the service received this…'}</p>
+        {error && <p className="assistant-task-warning">{error}</p>}
+        {known?.status !== 'pending' && <button type="button" disabled={busy || !known} onClick={retryRecovery}>{busy ? 'Retrying…' : 'Retry request'}</button>}
+      </>; })()}
       <button type="button" disabled={busy} onClick={() => requestRecovery ? requestRecovery.discard() : discardPending()}>Discard saved request and start over</button>
     </article>}
-    {view === 'conversation' && tasks.filter((task) => !task.resultData?.dismissedAtMs && (!taskFinal(task.status) || task.updatedAtMs > clearedAt)).map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
-      <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}</small><p>{task.originalRequest}</p><p className="assistant-task-muted">Scope: {task.brief}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
-      <button type="button" onClick={() => openTaskDetail(task)}>{task.status === 'ready_for_review' ? 'Review result' : 'Open task'} · {task.originalRequest}</button>
+    {taskView?.display === 'links' && visibleCards.map(taskLink)}
+    {!contextMode && visibleCards.map((task) => <article className="assistant-chat-message assistant" data-assistant-task-id={task.id} key={task.id}>
+      <small>Delegated work{projectName ? ` · ${projectName}` : ''} · {taskStatusLabel(task.status)}</small><p className="assistant-task-request" title={task.originalRequest}>{task.originalRequest}</p>{typeof (task.resultData as { batchId?: unknown } | null)?.batchId === 'string' && <small>From your cross-project plan</small>}
+      <div className="assistant-task-card-actions"><button type="button" onClick={() => openTaskDetail(task)}>{task.status === 'ready_for_review' ? 'Review result' : 'Open task'}</button>
+      {(task.status === 'proposed' || task.status === 'needs_clarification') && <button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button>}</div>
+      {task.brief.length > 160 ? <details className="assistant-task-scope"><summary>Scope: {scopeSummary(task.brief)}</summary><p>{task.brief}</p></details> : <p className="assistant-task-muted">Scope: {task.brief}</p>}
     </article>)}
-    {view === 'conversation' && detailId && <button type="button" onClick={() => { setDetailId(null); setTaskContextId(null); }}>Close task details</button>}
-    {view === 'activity' && <section className="assistant-task-activity">{children}<h2>Delegated task activity</h2>{tasks.map((task) => { const history = ((task.resultData as { taskHistory?: { atMs: number; kind: string; text: string }[] } | null)?.taskHistory ?? []).map((entry) => ({ at: entry.atMs, kind: entry.kind, text: entry.text })); const attempts = task.attempts.map((attempt) => ({ at: attempt.finishedAtMs ?? attempt.startedAtMs, kind: `Attempt ${attempt.number}`, text: taskStatusLabel(attempt.status) })); const entries = [...history, ...attempts].sort((left, right) => right.at - left.at); return <article key={task.id}><header><strong>{task.originalRequest}</strong><span>{taskStatusLabel(task.status)}</span></header>{entries.length ? entries.map((entry, index) => <p key={`${entry.at}:${index}`}><time>{new Date(entry.at).toLocaleString()}</time><b>{entry.kind}</b>{entry.text}</p>) : <p className="assistant-task-muted">No recorded attempt history yet.</p>}<nav className="assistant-task-links">{taskThreadLinks(task).map((link) => <button type="button" key={link.id} onClick={() => onOpenThread?.(link.id)}>{link.label}</button>)}</nav></article>; })}{tasks.length === 0 && <p className="assistant-task-muted">No delegated task activity yet.</p>}</section>}
-    {view === 'tasks' && <div className={`assistant-task-heading${detailId ? ' is-detail' : ''}`}><div>{detailId ? <button type="button" className="assistant-back" onClick={() => setDetailId(null)}>← All tasks</button> : <h2>Task overview</h2>}</div><button type="button" disabled={loading || busy} onClick={() => void loadTasks()}>Refresh</button></div>}
-    {view === 'tasks' && tasks.some((task) => task.mode === 'isolated' && !archivedExecutions.has(task.id)) && <p className="assistant-task-muted">Isolated task folders: {formatBytes(tasks.filter((task) => task.mode === 'isolated' && !archivedExecutions.has(task.id)).reduce((bytes, task) => bytes + (task.resultData?.worktreeDiskBytes ?? 0), 0))}{tasks.some((task) => task.mode === 'isolated' && !archivedExecutions.has(task.id) && task.resultData?.worktreeDiskBytes == null) ? ' plus folders whose size is unavailable' : ''}</p>}
-    {error && <p className="assistant-task-error" role="alert">{error}</p>}
-    {loading && <p className="assistant-task-muted" role="status">Loading tasks…</p>}
-    {view === 'tasks' && !loading && tasks.length === 0 && <p className="assistant-task-muted">No tasks for this assignment yet.</p>}
-    {view === 'tasks' && !detailId && <div className="assistant-task-groups">{['Needs you', 'In progress', 'Done and stopped'].map((group) => {
-      const items = tasks.filter((task) => group === 'Needs you' ? ['proposed', 'needs_clarification', 'needs_you', 'ready_for_review', 'failed', 'interrupted'].includes(task.status) : group === 'In progress' ? ['queued', 'running', 'applying'].includes(task.status) : ['done', 'cancelled'].includes(task.status));
-      return <section className="assistant-task-group" key={group}><h3>{group}<span>{items.length}</span></h3>{items.map((task) => <button type="button" className="assistant-task-overview-row" key={task.id} onClick={() => openTaskDetail(task)}><span><b>{taskStatusLabel(task.status)}</b>{task.originalRequest}</span><small>{workerNames(task)} · {destinationTitle(task)} · {task.origin === 'human_request' ? 'Human request' : 'ApexAgent proposal'}</small><small>{task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'} · {taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</small></button>)}</section>;
-    })}</div>}
-    {(view === 'tasks' || view === 'conversation') && detailId && !selectedTask && <p className="assistant-task-muted">This task is no longer available in the current assignment.</p>}
-    {(view === 'tasks' || view === 'conversation') && detailId && <div className="assistant-task-list">{tasks.filter((task) => task.id === detailId).map((task) => {
+    {!contextMode && detailId && <button type="button" onClick={() => { setDetailId(null); setTaskContextId(null); }}>Close task details</button>}
+    {(!tasksOnly || contextTask) && error && <p className="assistant-task-error" role="alert">{error}</p>}
+    {(!tasksOnly || contextTask) && loading && <p className="assistant-task-muted" role="status">Loading tasks…</p>}
+    {!contextMode && detailId && !selectedTask && <p className="assistant-task-muted">This task is no longer available in the current assignment.</p>}
+    {detailVisible && <div className="assistant-task-list">{tasks.filter((task) => task.id === activeTaskId).map((task) => {
       const resultData = task.resultData ?? {};
       const pendingApprovals = resultData.pendingApprovals ?? [];
       const pendingQuestions = resultData.pendingQuestions ?? [];
-      const selectedDestination = taskDestination(task.id);
+      const proposal = proposedDestination(task);
       const reviewChecks = checks[`${task.id}:${task.revision}`] ?? [];
       const hasCapturedDiff = typeof resultData.reviewDiff === 'string';
       const hasReviewData = hasReviewMaterial(task);
       const currentReviewVisible = hasReviewData && visibleReviewRevision[task.id] === task.revision;
       return <article className={`assistant-task-card status-${task.status}`} key={task.id}>
+        {contextMode && <h2 className="assistant-task-title" id={`assistant-task-title-${task.id}`} tabIndex={-1} ref={titleRef}>{oneLine(task.originalRequest)}</h2>}
         <header><div><span className="assistant-task-status">{taskStatusLabel(task.status)}</span><span className="assistant-task-meta">Revision {task.revision} · {task.mode === 'read_only' ? 'Read only' : task.mode === 'in_place' ? 'In place' : 'Separate copy'}</span></div><span className="assistant-task-usage">{taskUsageLabel(task.usage ?? task.attempts.at(-1)?.usage)}</span></header>
         <div className="assistant-task-detail-scroll" ref={detailScrollRef}>
+        {contextMode && task.result?.trim() && <section className="assistant-task-result-block" aria-label="Result">
+          <h3>Result</h3>
+          <p className="assistant-task-result-text">{task.result}</p>
+          <p className="assistant-task-muted">{`Worker: ${workerLabel(task, profiles)} · Project: ${projectName ?? owner.workspaceId} · Machine: ${owner.hostId} · ${taskFinal(task.status) ? 'Finished' : 'Updated'} ${new Date(task.updatedAtMs).toLocaleString()} · ${verificationLabel(task)}`}</p>
+          {task.executionThreadId ? <button type="button" onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker chat</button> : <p className="assistant-task-muted">No result file to open — the result is the text above.</p>}
+        </section>}
         {typeof (resultData as { batchId?: unknown }).batchId === 'string' && <p className="assistant-task-muted">From your cross-project plan</p>}
         <details><summary>Original request and brief</summary><p className="assistant-task-original"><strong>Original request</strong>{task.originalRequest}</p><p className="assistant-task-brief"><strong>Brief</strong>{task.brief}</p></details>
-        {task.destination && <p className="assistant-task-muted">Destination: {task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId ?? 'Needs clarification'}{task.destination.workers.length ? ` · Workers: ${task.destination.workers.join(', ')}` : ''}</p>}
+        {contextMode && (task.status === 'proposed' || task.status === 'needs_clarification') && <p className="assistant-task-plan"><strong>Plan</strong> {task.brief}</p>}
+        {contextMode && task.status === 'needs_clarification' && <p className="assistant-task-warning">{proposedDestination(task) ? 'ApexAgent has a question before it starts. Its question is in the conversation; answer it below.' : "ApexAgent didn't pick a chat for this. Say which chat to use below, or Dismiss it."}</p>}
+        {task.status === 'proposed' && <dl className="assistant-task-proposal" aria-label="Proposed destination">
+          <div><dt>Worker</dt><dd>{workerLabel(task, profiles)}</dd></div>
+          <div><dt>Destination chat</dt><dd>{task.destination ? (task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId ?? 'Needs clarification') : 'Needs clarification'}</dd></div>
+          <div><dt>Machine</dt><dd>{owner.hostId}</dd></div>
+          <div><dt>Mode</dt><dd>{modeLabel(task.mode)}</dd></div>
+        </dl>}
+        {task.destination && task.status !== 'proposed' && <p className="assistant-task-muted">Destination: {task.destination.newThread ? 'New thread' : chatThreads.find((pane) => pane.id === task.destination?.threadId)?.title ?? task.destination.threadId ?? 'Needs clarification'}{task.destination.workers.length ? ` · Workers: ${task.destination.workers.join(', ')}` : ''}</p>}
         {task.mode === 'in_place' && task.status === 'queued' && <p className="assistant-task-lease">Queued for checkout access; work starts when the current writer releases it.</p>}
         {task.mode === 'in_place' && ['running', 'needs_you', 'ready_for_review', 'applying'].includes(task.status) && <p className="assistant-task-lease">Edits are already in the checkout. This task holds the writer lease through review; other Deck writers wait. Accept releases the lease, and Request changes keeps it.</p>}
         <nav className="assistant-task-links" aria-label="Related threads">{taskThreadLinks(task).map((link) => <button type="button" key={link.id} onClick={() => onOpenThread?.(link.id)}>{link.label}</button>)}</nav>
-        {task.status === 'ready_for_review' && hasReviewData && <div className="assistant-review-material" ref={reviewMaterialRef}>{task.result && <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>}{hasCapturedDiff && <section className="assistant-review-diff"><h3>{resultData.reviewDiff ? 'Review diff' : 'Review result'}</h3>{resultData.reviewDiff ? <pre>{resultData.reviewDiff}</pre> : <p>No file changes in this result.</p>}</section>}{task.evidence.length > 0 && <section className="assistant-task-evidence"><h3>Findings and evidence</h3>{task.evidence.map((item, index) => <p key={index}>{item}</p>)}</section>}</div>}
+        {task.status === 'ready_for_review' && hasReviewData && <div className="assistant-review-material" ref={reviewMaterialRef}>{!contextMode && task.result && <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>}{hasCapturedDiff && <section className="assistant-review-diff"><h3>{resultData.reviewDiff ? 'Review diff' : 'Review result'}</h3>{resultData.reviewDiff ? <pre>{resultData.reviewDiff}</pre> : <p>No file changes in this result.</p>}</section>}{task.evidence.length > 0 && <section className="assistant-task-evidence"><h3>Findings and evidence</h3>{task.evidence.map((item, index) => <p key={index}>{item}</p>)}</section>}</div>}
         {task.status === 'ready_for_review' && <div className="assistant-review-criteria">{renderChecks(task)}</div>}
         {task.status === 'ready_for_review' && !hasReviewData && <p className="assistant-task-warning">The current result has no review diff or captured findings. Open the worker chat and refresh after its result is available.</p>}
         {task.status === 'ready_for_review' && hasReviewData && !currentReviewVisible && <p className="assistant-task-muted">Scroll the current result, diff, or findings into view to enable acknowledgement.</p>}
         {pendingApprovals.length > 0 && <div className="assistant-task-waits"><strong>Waiting for approval</strong>{pendingApprovals.map((approval, index) => { const action = approval && typeof approval === 'object' ? (approval as { action?: { title?: string; detail?: string } }).action : undefined; return <div key={index}><p><b>{action?.title ?? 'Worker approval'}</b>{action?.detail ? `\n${action.detail}` : `\n${objectText(approval)}`}</p></div>; })}</div>}
         {pendingQuestions.length > 0 && <div className="assistant-task-waits"><strong>Waiting for your answer</strong>{pendingQuestions.map((questionGroup, groupIndex) => { const group = questionGroup && typeof questionGroup === 'object' ? questionGroup as { request?: string; questions?: Question[] } : {}; const requestKey = group.request ?? `legacy-${groupIndex}`; return <div key={groupIndex}>{hasQuestionGroup(questionGroup) && (group.questions ?? []).map((question, questionIndex) => { const key = `${task.id}:${requestKey}:${questionIndex}`; const selected = inlineAnswer[key] ?? []; return <fieldset className="assistant-inline-question" key={key}><legend>{question.header || `Question ${questionIndex + 1}`}</legend><p>{question.question}</p>{question.options.map((option) => <label className="assistant-inline-option" key={option.label}><input type={question.multi_select ? 'checkbox' : 'radio'} name={key} checked={selected.includes(option.label)} onChange={(event) => setInlineAnswer((current) => ({ ...current, [key]: question.multi_select ? event.target.checked ? [...selected, option.label] : selected.filter((item) => item !== option.label) : [option.label] }))} /><span>{option.label}{option.description && <small>{option.description}</small>}</span></label>)}<label className="assistant-inline-other">{question.options.length ? 'Other answer' : 'Your answer'}<input value={inlineOther[key] ?? ''} onChange={(event) => setInlineOther((current) => ({ ...current, [key]: event.target.value }))} /></label></fieldset>; })}{!hasQuestionGroup(questionGroup) && <p className="assistant-task-warning">This question uses older metadata. Continue in the worker chat.</p>}</div>; })}</div>}
         {task.status === 'needs_you' && resultData.startup != null && <p className="assistant-task-warning">Worker startup issue: {objectText(resultData.startup)}</p>}
-        {task.result && (task.status === 'ready_for_review' ? null : <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>)}
+        {!contextMode && task.result && (task.status === 'ready_for_review' ? null : <p className="assistant-task-result"><strong>Result</strong>{task.result}</p>)}
         {Array.isArray((resultData as { taskHistory?: unknown }).taskHistory) && <details><summary>Task history</summary><ol className="assistant-task-history">{((resultData as { taskHistory?: { atMs: number; kind: string; text: string }[] }).taskHistory ?? []).map((entry, index) => <li key={`${entry.atMs}:${index}`}><time>{new Date(entry.atMs).toLocaleString()}</time><b>{entry.kind}</b><span>{entry.text}</span></li>)}</ol></details>}
-        <details className="assistant-task-budget" open={view !== 'conversation'}><summary>Spend limit</summary><p>{budgetValue(task) == null ? 'No spend limit set · cost may be unknown when the provider does not report it.' : `$${(budgetValue(task)! / 1_000_000).toFixed(2)} cap · enforced using the provider’s reported estimate.`}</p><form onSubmit={(event) => { event.preventDefault(); const micros = spendCap.trim() ? Math.round(Number(spendCap) * 1_000_000) : null; if (micros !== null && (!Number.isSafeInteger(micros) || micros <= 0)) { setError('Enter a positive spend cap, or leave blank to remove it.'); return; } void act(task, 'set_budget', { spendLimitMicros: micros }); }}><input aria-label="Spend cap in USD" inputMode="decimal" value={spendCap} onChange={(event) => setSpendCap(event.target.value)} placeholder="No cap" /><button type="submit" disabled={busy}>Set limit</button></form>{(resultData as { budgetPaused?: boolean }).budgetPaused && <><p className="assistant-task-warning">Paused at the provider-reported estimate limit. Raise or remove the cap, then resume. This keeps the task ID, edits, and history.</p><button type="button" disabled={busy} onClick={() => void act(task, 'resume_budget')}>Resume task</button></>}</details>
+        {(resultData as { budgetPaused?: boolean }).budgetPaused && <div className="assistant-task-budget"><p className="assistant-task-warning">Paused at its spend limit. Raise the daily limit in Rules, then resume. This keeps the task ID, edits, and history.</p><button type="button" disabled={busy} onClick={() => void act(task, 'resume_budget')}>Resume task</button></div>}
         {hasCapturedDiff && task.status !== 'ready_for_review' && <details><summary>Review diff</summary><pre>{resultData.reviewDiff}</pre></details>}
         {Array.isArray(resultData.checks) && resultData.checks.length > 0 && <details><summary>Configured checks and results</summary><pre>{objectText({ commands: resultData.checks, results: resultData.checkResults ?? 'Awaiting verification' })}</pre></details>}
         {Array.isArray(resultData.exclusions) && resultData.exclusions.length > 0 && <p className="assistant-task-muted">Excluded: {resultData.exclusions.join(', ')}</p>}
         {(resultData.executionPath || resultData.baselineCommit || resultData.resultCommit) && <p className="assistant-task-muted">{[resultData.executionPath, resultData.baselineCommit && `Base ${resultData.baselineCommit}`, resultData.resultCommit && `Result ${resultData.resultCommit}`].filter(Boolean).join(' · ')}</p>}
         {task.mode === 'isolated' && !archivedExecutions.has(task.id) && typeof resultData.worktreeDiskBytes === 'number' && <p className="assistant-task-muted">Task folder: {formatBytes(resultData.worktreeDiskBytes)}</p>}
-        {(task.status === 'proposed' || (view === 'conversation' && task.status === 'needs_clarification')) && <details className="assistant-task-routing"><summary>Choose destination and worker</summary><label>Destination<select aria-label={`Destination for ${task.id}`} value={destinations[task.id] ?? (task.status === 'proposed' ? task.destination?.newThread ? 'new' : task.destination?.threadId ?? '' : '')} onChange={(event) => { setDestinations((current) => ({ ...current, [task.id]: event.target.value })); setTaskWorkers((current) => ({ ...current, [task.id]: [] })); setNewTaskWorkers((current) => ({ ...current, [task.id]: [] })); }}><option value="">Choose a thread</option>{chatThreads.map((pane) => <option key={pane.id} value={pane.id}>{pane.title}</option>)}<option value="new">Create new thread</option></select></label>{selectedDestination?.newThread ? <fieldset className="assistant-task-workers"><legend>New thread workers</legend>{workerProfiles.map((profile) => <label key={profile.id}><input type="checkbox" checked={(newTaskWorkers[task.id] ?? task.destination?.workers ?? []).includes(profile.id)} onChange={(event) => setNewTaskWorkers((current) => ({ ...current, [task.id]: event.target.checked ? [...(current[task.id] ?? (task.status === 'proposed' ? task.destination?.workers ?? [] : [])), profile.id] : (current[task.id] ?? (task.status === 'proposed' ? task.destination?.workers ?? [] : [])).filter((id) => id !== profile.id) }))} />{profile.display_name} <small>{profile.id}</small></label>)}</fieldset> : selectedDestination && <fieldset className="assistant-task-workers"><legend>Workers for {chatThreads.find((pane) => pane.id === selectedDestination.threadId)?.title ?? selectedDestination.threadId}</legend>{routingWorkers(selectedDestination.threadId ?? '').map((profile) => <label key={profile.id}><input type="checkbox" checked={(taskWorkers[task.id] ?? task.destination?.workers ?? []).includes(profile.id)} onChange={(event) => setTaskWorkers((current) => ({ ...current, [task.id]: event.target.checked ? [...(current[task.id] ?? (task.status === 'proposed' ? task.destination?.workers ?? [] : [])), profile.id] : (current[task.id] ?? (task.status === 'proposed' ? task.destination?.workers ?? [] : [])).filter((id) => id !== profile.id) }))} />{profile.display_name} <small>{profile.id}</small></label>)}{routingWorkersUnavailable(selectedDestination.threadId ?? '') && <p className="assistant-task-warning">Open or refresh the selected chat to load its worker list.</p>}{routingThreads === undefined && <p className="assistant-task-muted">Worker list unavailable; choices come from the saved non-media profile catalogue. The host validates this selection.</p>}</fieldset>}</details>}
 
         {task.mode === 'isolated' && taskFinal(task.status) && !archivedExecutions.has(task.id) && <div className="assistant-task-actions">{shouldSuggestArchive(task) && <p className="assistant-task-warning">This terminal worktree is over 14 days old. Archive it to save disk space; the task result and history will remain available.</p>}<button type="button" disabled={busy} onClick={() => void act(task, 'archive')}>Archive isolated worktree</button><span className="assistant-task-muted">Removes the owned worktree and keeps this task’s result and history.</span></div>}
         {task.mode === 'isolated' && archivedExecutions.has(task.id) && <p className="assistant-task-muted">Isolated worktree archived{typeof resultData.worktreeDiskBytes === 'number' ? ` · saved worktree size ${formatBytes(resultData.worktreeDiskBytes)}` : ''}. Task result and history are retained.</p>}
+        {contextMode && task.status === 'needs_clarification' && <div className="assistant-task-reply">
+          <label><span>{"Answer ApexAgent's question"}</span><textarea rows={2} value={draftText(task.id, 'answer')} onChange={(event) => setDraft(task.id, 'answer', event.target.value)} /></label>
+          <button type="button" disabled={busy || !draftText(task.id, 'answer').trim()} onClick={() => void sendDraft(task, 'answer')}>Send answer</button>
+        </div>}
+        {contextMode && task.status === 'ready_for_review' && <div className="assistant-task-reply">
+          {changeOpen[task.id] ? <>
+            <label><span>What should change</span><textarea rows={3} value={draftText(task.id, 'changes')} onChange={(event) => setDraft(task.id, 'changes', event.target.value)} /></label>
+            <button type="button" disabled={busy || !draftText(task.id, 'changes').trim()} onClick={() => void sendDraft(task, 'changes')}>{`Send change request to ${workerLabel(task, profiles)}`}</button>
+          </> : <button type="button" disabled={busy} onClick={() => setChangeOpen((current) => ({ ...current, [task.id]: true }))}>Request changes…</button>}
+        </div>}
+        {contextMode && ['queued', 'running', 'applying', 'needs_you'].includes(task.status) && pendingQuestions.length === 0 && <div className="assistant-task-reply">
+          <label><span>Add a note for the worker</span><textarea rows={2} value={draftText(task.id, 'note')} onChange={(event) => setDraft(task.id, 'note', event.target.value)} /></label>
+          <button type="button" disabled={busy || !draftText(task.id, 'note').trim()} onClick={() => void sendDraft(task, 'note')}>Send note</button>
+        </div>}
         {taskFinal(task.status) && <p className="assistant-task-muted">{task.resultData?.dismissedAtMs ? 'You dismissed this proposal, so nothing ran.' : <>This task is {task.status}{task.status === 'cancelled' && task.mode === 'in_place' ? '; existing checkout edits remain.' : '.'}</>}</p>}
         </div>
-        {task.status === 'ready_for_review' && <div className="assistant-task-actions assistant-task-decision-actions"><label className="assistant-review-ack"><input type="checkbox" checked={reviewed(task)} disabled={!currentReviewVisible} onChange={(event) => setReviewedRevision((current) => ({ ...current, [task.id]: event.target.checked ? task.revision : -1 }))} />I opened and reviewed revision {task.revision}</label><button type="button" disabled={busy || !currentReviewVisible || !reviewed(task) || (task.reviewCriteria.length > 0 && reviewChecks.length !== task.reviewCriteria.length)} onClick={() => void act(task, task.mode === 'read_only' ? 'review' as Action : 'accept')}>{task.mode === 'read_only' ? 'Mark reviewed' : task.mode === 'isolated' ? 'Accept changes' : 'Accept and mark done'}</button></div>}
+        {task.status === 'ready_for_review' && <div className="assistant-task-actions assistant-task-decision-actions"><label className="assistant-review-ack"><input type="checkbox" checked={reviewed(task)} disabled={!currentReviewVisible} onChange={(event) => setReviewedRevision((current) => ({ ...current, [task.id]: event.target.checked ? task.revision : -1 }))} />I opened and reviewed revision {task.revision}</label><button type="button" disabled={busy || !currentReviewVisible || !reviewed(task) || (task.reviewCriteria.length > 0 && reviewChecks.length !== task.reviewCriteria.length)} onClick={() => void act(task, task.mode === 'read_only' ? 'review' : 'accept')}>{task.mode === 'read_only' ? 'Mark reviewed' : task.mode === 'isolated' ? 'Accept changes' : 'Accept and mark done'}</button></div>}
         {task.status !== 'ready_for_review' && <div className="assistant-task-actions assistant-task-status-actions">
           {pendingApprovals.map((approval, index) => <span className="assistant-task-pinned-decision" key={`approval-${index}`}>{hasApprovalAction(approval) && <><button type="button" disabled={busy} onClick={() => void decideWait(task, approval, true)}>Approve</button><button type="button" disabled={busy} onClick={() => void decideWait(task, approval, false)}>Deny</button></>}<button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker chat</button></span>)}
           {pendingQuestions.map((questionGroup, index) => { const group = questionGroup && typeof questionGroup === 'object' ? questionGroup as { request?: string; questions?: Question[] } : {}; const requestKey = group.request ?? `legacy-${index}`; return hasQuestionGroup(questionGroup) ? <button key={`question-${index}`} type="button" disabled={busy || !(group.questions ?? []).every((_question, questionIndex) => ((inlineAnswer[`${task.id}:${requestKey}:${questionIndex}`] ?? []).length + (inlineOther[`${task.id}:${requestKey}:${questionIndex}`]?.trim() ? 1 : 0)) > 0)} onClick={() => void answerWait(task, questionGroup)}>Send answers</button> : null; })}
           {pendingQuestions.some((questionGroup) => !hasQuestionGroup(questionGroup)) && <button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker chat</button>}
-          {task.status === 'proposed' && <><button type="button" disabled={busy || !selectedDestination || selectedDestination.workers.length === 0} onClick={() => selectedDestination && void act(task, 'approve', { destination: selectedDestination, newWorkerProfiles: selectedDestination.newThread ? workerProfiles.filter((profile) => selectedDestination.workers.includes(profile.id)) : [], mode: task.mode })}>Approve task</button><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>}
+          {task.status === 'needs_clarification' && <button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button>}
+          {task.status === 'proposed' && (proposal
+            ? <><button type="button" disabled={busy} onClick={() => void approveProposal(task, proposal)}>Approve task</button><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>
+            : <><p className="assistant-task-warning">{NO_CHAT_NOTE}</p><button type="button" disabled={busy} onClick={() => void act(task, 'dismiss')}>Dismiss</button></>)}
           {task.status === 'needs_you' && <><button type="button" disabled={!task.executionThreadId} onClick={() => task.executionThreadId && onOpenThread?.(task.executionThreadId)}>Open worker thread</button>{task.mode === 'isolated' && task.attempts.length === 0 && <button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry worker startup</button>}<button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
           {(task.status === 'queued' || task.status === 'running' || task.status === 'applying') && !canReconcileTask(task) && <button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button>}
           {(task.status === 'failed' || task.status === 'interrupted') && !canReconcileTask(task) && <><button type="button" disabled={busy} onClick={() => void act(task, 'retry')}>Retry task</button><button type="button" disabled={busy} onClick={() => void act(task, 'cancel')}>Cancel task</button></>}
@@ -457,21 +506,5 @@ export function ApexAgentTasks({ backend, owner, panes, profiles, onMonitorUpdat
         </div>}
       </article>;
     })}</div>}
-    {(view === 'chat' || view === 'tasks') && <form className="assistant-request" onSubmit={selectedTask ? submitTaskContext : sendRequest}>
-      <div className="assistant-composer-heading"><strong>{selectedTask ? `${selectedTask.status === 'ready_for_review' ? 'Request changes' : selectedTask.status === 'needs_clarification' ? 'Routing clarification' : composerSingleQuestion ? 'Answer worker question' : composerNeedsInlineAnswers ? 'Answer questions inline' : 'Task note'} · ${selectedTask.originalRequest.slice(0, 42)}` : 'New message'}</strong>{selectedTask && <button type="button" onClick={() => { setDraftsByContext((current) => ({ ...current, [composerContextKey]: draft })); setTaskContextId(null); setDraft(draftsByContext[`${ownerKey}\u0000new`] ?? ''); setDetailId(null); onViewChange?.('chat'); }}>New message</button>}</div>
-      {selectedTask?.status === 'running' || selectedTask?.status === 'queued' || selectedTask?.status === 'applying' ? <p className="assistant-task-muted">This note is queued for the worker’s next continuation; it will not interrupt the current turn.</p> : null}
-      {composerNeedsInlineAnswers && <p className="assistant-task-warning">Answer every question in its inline card above. This composer text is kept as a draft and will not be sent.</p>}
-      {selectedTask?.status === 'needs_clarification' && <details className="assistant-task-routing"><summary>Choose destination and worker</summary><label>Destination<select aria-label={`Destination for ${selectedTask.id}`} value={destinations[selectedTask.id] ?? ''} onChange={(event) => { setDestinations((current) => ({ ...current, [selectedTask.id]: event.target.value })); setTaskWorkers((current) => ({ ...current, [selectedTask.id]: [] })); setNewTaskWorkers((current) => ({ ...current, [selectedTask.id]: [] })); }}><option value="">Choose a destination</option>{chatThreads.map((pane) => <option key={pane.id} value={pane.id}>{pane.title}</option>)}<option value="new">Create new thread</option></select></label>{(destinations[selectedTask.id] ?? '') === 'new' ? <fieldset className="assistant-task-workers"><legend>New thread workers</legend>{workerProfiles.map((profile) => <label key={profile.id}><input type="checkbox" checked={(newTaskWorkers[selectedTask.id] ?? []).includes(profile.id)} onChange={(event) => setNewTaskWorkers((current) => ({ ...current, [selectedTask.id]: event.target.checked ? [...(current[selectedTask.id] ?? []), profile.id] : (current[selectedTask.id] ?? []).filter((id) => id !== profile.id) }))} />{profile.display_name} <small>{profile.id}</small></label>)}</fieldset> : (() => { const pane = chatThreads.find((item) => item.id === destinations[selectedTask.id]); return pane ? <fieldset className="assistant-task-workers"><legend>Choose worker for {pane.title}</legend>{routingWorkers(pane.id).map((profile) => <label key={profile.id}><input type="checkbox" checked={(taskWorkers[selectedTask.id] ?? []).includes(profile.id)} onChange={(event) => setTaskWorkers((current) => ({ ...current, [selectedTask.id]: event.target.checked ? [...(current[selectedTask.id] ?? []), profile.id] : (current[selectedTask.id] ?? []).filter((id) => id !== profile.id) }))} />{profile.display_name} <small>{profile.id}</small></label>)}{routingWorkers(pane.id).length === 0 && <p className="assistant-task-warning">{routingWorkersUnavailable(pane.id) ? 'Open or refresh the selected chat to load its worker list.' : 'No eligible worker profile is available in this chat.'}</p>}{routingThreads === undefined && <p className="assistant-task-muted">Worker list unavailable; choices come from the saved non-media profile catalogue. The host validates this selection.</p>}</fieldset> : null; })()}{(!(taskDestination(selectedTask.id)?.workers.length)) && <p className="assistant-task-warning">Choose a destination and explicit worker ID before sending; the draft will remain saved until both are selected.</p>}</details>}
-      {pendingRequest && <p className="assistant-task-warning" role="status">The last response was uncertain. Retry uses the saved request ID, scope, text, destination, and mode.</p>}
-      {showAdvanced && !selectedTask && <><label>Destination<select aria-label="Task destination" value={destinationId} disabled={busy || !!pendingRequest} onChange={(event) => { const value = event.target.value; setDestinationId(value); setSelectedWorkers([]); }}><option value="">Let ApexAgent route this message</option>{chatThreads.map((pane) => <option key={pane.id} value={pane.id}>{pane.title}</option>)}<option value="new">Create a new thread</option></select></label>
-      {(destinationId === 'new' || pendingRequest?.destination?.newThread) && <fieldset className="assistant-task-workers"><legend>Worker profiles</legend>{workerProfiles.map((profile) => <label key={profile.id}><input type="checkbox" checked={selectedWorkers.includes(profile.id) || !!pendingRequest?.newWorkerProfiles.some((item) => item.id === profile.id)} disabled={busy || !!pendingRequest} onChange={(event) => setSelectedWorkers((current) => event.target.checked ? [...current, profile.id] : current.filter((id) => id !== profile.id))} />{profile.display_name}</label>)}</fieldset>}</>}
-      <textarea aria-label={selectedTask ? 'Task context message' : 'Message for ApexAgent'} rows={2} value={pendingRequest?.text ?? draft} disabled={busy || !!pendingRequest || composerNeedsInlineAnswers} onChange={(event) => setContextDraft(event.target.value)} placeholder={selectedTask ? 'Add a note, answer, or revision for this task…' : 'Ask about the project or describe work to delegate…'} />
-      {destinationId === 'new' && selectedWorkers.length === 0 && <p className="assistant-task-warning">Select at least one worker profile to create a new thread.</p>}
-      {showAdvanced && !selectedTask && <><label>Execution mode<select aria-label="Execution mode" value={mode} disabled={busy || !!pendingRequest} onChange={(event) => setMode(event.target.value as 'in_place' | 'isolated' | 'read_only')}><option value="in_place">In place · hold checkout through review</option><option value="isolated">Isolated · separate worktree</option><option value="read_only">Read only · no checkout edits</option></select></label><label>Exact checks (one JSON argv array per line)<textarea aria-label="Exact checks" rows={2} value={checkCommands} disabled={busy || !!pendingRequest} onChange={(event) => setCheckCommands(event.target.value)} placeholder={'["npm","test"]'} /></label>{mode === 'read_only' && <p className="assistant-task-warning">Read only mode does not run checks. Remove configured checks before sending.</p>}<label>Spend cap (optional, USD)<input aria-label="Spend cap" inputMode="decimal" value={requestSpendCap} onChange={(event) => setRequestSpendCap(event.target.value)} placeholder="No cap" /></label></>}
-      {!selectedTask && <button type="button" className="assistant-advanced-toggle" onClick={() => setShowAdvanced((visible) => !visible)}>{showAdvanced ? 'Hide advanced' : 'Advanced options'}</button>}
-      <button className="primary" disabled={busy || (!pendingRequest && (!draft.trim() || composerNeedsInlineAnswers || (destinationId === 'new' && selectedWorkers.length === 0) || (selectedTask?.status === 'needs_clarification' && !taskDestination(selectedTask.id)?.workers.length)))}>{busy ? 'Sending…' : pendingRequest ? 'Retry request' : composerActionLabel}</button>
-      {pendingRequest && error && !busy && <button type="button" onClick={discardPending}>Discard saved request and start over</button>}
-    </form>}
-    {view === 'settings' && <div className="assistant-task-settings">{children}</div>}
   </section>;
 }
