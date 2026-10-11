@@ -1703,6 +1703,47 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_chat_writers_do_not_wait_for_the_checkout_gate() {
+        use apex_core::{Access, Backend, Participant, TurnPolicy};
+        let path = std::env::temp_dir().join(format!("apex-host-chat-ungated-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let cwd = path.join("checkout");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let host = Host::new(HostPaths { data: path.join("data"), downloads: None }, runtime.handle().clone());
+        let configs = [("writer", Access::Edits), ("writer2", Access::Full)]
+            .into_iter().map(|(id, access)| {
+                let mut config = apex_core::testing::ScriptedParticipant::new(id, &["finished"]).config().clone();
+                config.access = access;
+                config.backend = Backend::Scripted { lines: vec!["finished".into()] };
+                config
+            }).collect();
+        host.room_create("chat".into(), configs, RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: 0 }, Some(cwd.to_string_lossy().into_owned())).unwrap();
+        // An ApexAgent task owns the checkout; a gated writer would wait on it forever.
+        let gate = host.checkout_gate(&cwd);
+        gate.restore_hold("task-reservation").unwrap();
+        let handle = host.handle("chat").unwrap();
+        let events = Mutex::new(Vec::new());
+        let sink = |event| events.lock().unwrap().push(event);
+        runtime.block_on(async {
+            let batch = handle.runtime.begin_post("work", None, &sink).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), handle.runtime.run(batch, &sink)).await
+                .expect("ordinary chat writers must not wait for the checkout gate");
+        });
+        let started: Vec<_> = events.lock().unwrap().iter().filter_map(|event| match event {
+            RoomEvent::TurnStarted { id } => Some(id.as_str().to_owned()),
+            _ => None,
+        }).collect();
+        assert_eq!(started, vec!["writer", "writer2"], "both writers run while the task holds the checkout");
+        assert_eq!(gate.queued(), 0, "ordinary chat never queues on the checkout gate");
+        assert_eq!(gate.owner().as_deref(), Some("task-reservation"), "the task keeps its hold");
+        host.shutdown();
+        drop(host);
+        // The open-thread snapshot runs on its own thread and may still be writing.
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
     fn export_names_keep_only_safe_characters() {
         assert_eq!(safe_name("welcome-email-v3.html").unwrap(), "welcome-email-v3.html");
         assert_eq!(safe_name("../../etc/passwd").unwrap(), "etcpasswd");
