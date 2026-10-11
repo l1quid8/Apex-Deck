@@ -699,3 +699,45 @@ fn stop_during_auto_wait_never_starts_the_old_reply() {
         assert!(!room.busy());
     });
 }
+
+#[test]
+fn a_task_room_runs_readers_while_its_writers_wait_for_the_checkout() {
+    use futures::FutureExt;
+    block_on(async {
+        let gate = apex_core::CheckoutWriteGate::new();
+        let participant = |id: &str, access| {
+            let mut config = ScriptedParticipant::new(id, &["finished"]).config().clone();
+            config.access = access;
+            Arc::new(ScriptedParticipant::from_config(config)) as Arc<dyn Participant>
+        };
+        let roster = vec![
+            participant("writer", apex_core::Access::Edits),
+            participant("reader", apex_core::Access::Read),
+            participant("writer2", apex_core::Access::Full),
+        ];
+        let options = RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: 0 };
+        let runtime = ConcurrentRoom::new(Room::new(roster, options)).with_write_gate(gate.clone(), Some("task-42".into()));
+        gate.restore_hold("other-task").unwrap();
+        let events = Mutex::new(Vec::new());
+        let sink = |event| events.lock().unwrap().push(event);
+        let batch = runtime.begin_post("work", None, &sink).await.unwrap();
+        let run = runtime.run(batch, &sink);
+        futures::pin_mut!(run);
+        assert!(run.as_mut().now_or_never().is_none(), "task writers must wait for another task's hold");
+        assert_eq!(gate.queued(), 1);
+        let started: Vec<_> = events.lock().unwrap().iter().filter_map(|event| match event {
+            RoomEvent::TurnStarted { id } => Some(id.as_str().to_owned()),
+            _ => None,
+        }).collect();
+        assert_eq!(started, vec!["reader"], "the reader finishes while writers wait, even behind a writer in the roster");
+        assert!(runtime.room().lock().await.transcript().iter().any(|m| m.speaker == Speaker::Bot(ParticipantId::new("reader"))));
+        assert!(gate.release("other-task"));
+        run.await;
+        let editors: Vec<_> = events.lock().unwrap().iter().filter_map(|event| match event {
+            RoomEvent::EditorChanged { id: Some(id) } => Some(id.as_str().to_owned()),
+            _ => None,
+        }).collect();
+        assert_eq!(editors, vec!["writer", "writer2"], "both writers keep edit access and run in roster order");
+        assert_eq!(gate.owner().as_deref(), Some("task-42"), "the task keeps the checkout after its batch");
+    });
+}
