@@ -583,9 +583,12 @@ impl Host {
         let plan = room.plan_handle();
         let approvals = room.approvals_handle();
         let mut runtime = ConcurrentRoom::new(room);
+        // Only ApexAgent task threads share the checkout gate; ordinary chat
+        // threads in the same folder run their turns concurrently.
         if let Some(cwd) = &context.cwd {
-            let owner = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.map(|entry| entry.task_id);
-            runtime = runtime.with_write_gate(self.checkout_gate(cwd), owner);
+            if let Some(owner) = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.map(|entry| entry.task_id) {
+                runtime = runtime.with_write_gate(self.checkout_gate(cwd), Some(owner));
+            }
         }
         let checkpoint = Arc::new(Mutex::new(SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
         self.rooms
