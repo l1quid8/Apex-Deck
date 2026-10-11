@@ -22,3 +22,13 @@ test("title bar paints nothing in the glass theme", () => {
   assert.match(b, /box-shadow:\s*none/);
   assert.doesNotMatch(b, /backdrop-filter:\s*blur/);
 });
+
+test("title bar buttons scale to 0.75 without affecting other controls", () => {
+  assert.match(plain, /\.titlebar\s*{[^}]*--tb-scale:\s*0\.75/);
+  assert.match(plain, /\.titlebar button\s*{[^}]*padding:\s*calc\(7px \* var\(--tb-scale\)\)/);
+  assert.match(plain, /\.titlebar button\.icon\s*{[^}]*font-size:\s*calc\(15px \* var\(--tb-scale\)\)/);
+  assert.match(plain, /\.titlebar svg\s*{[^}]*width:\s*calc\(16px \* var\(--tb-scale\)\)/);
+  assert.doesNotMatch(glass, /\.titlebar button\.icon\s*{[^}]*min-width:\s*34px/);
+  assert.match(glass, /min-width:\s*calc\(34px \* var\(--tb-scale\)\)/);
+  assert.match(glass, /min-height:\s*calc\(34px \* var\(--tb-scale\)\)/);
+});

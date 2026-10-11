@@ -139,6 +139,23 @@ textarea {
   gap: 10px;
   padding: 12px 16px;
   background: transparent;
+  --tb-scale: 0.75;
+}
+.titlebar button {
+  padding: calc(7px * var(--tb-scale)) calc(12px * var(--tb-scale));
+  font-size: calc(1em * var(--tb-scale));
+}
+.titlebar button.icon {
+  padding: calc(2px * var(--tb-scale)) calc(7px * var(--tb-scale));
+  font-size: calc(15px * var(--tb-scale));
+}
+.titlebar .section-button {
+  gap: calc(8px * var(--tb-scale));
+  padding: calc(7px * var(--tb-scale)) calc(16px * var(--tb-scale));
+}
+.titlebar svg {
+  width: calc(16px * var(--tb-scale));
+  height: calc(16px * var(--tb-scale));
 }
 .section-navigation {
   display: flex;
