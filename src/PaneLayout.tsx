@@ -6,7 +6,7 @@ import { dividers, dropArea, edgeAt, moveLeaf, rects, resize, type Divider, type
 // and every rule about what a change does, is in layout.ts.
 
 /** Space between neighbouring panes, in pixels. */
-export const GAP = 14;
+export const GAP = 8;
 
 /**
  * Where a pane sits. Panes are placed by position rather than nested inside
