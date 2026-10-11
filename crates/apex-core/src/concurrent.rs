@@ -257,8 +257,6 @@ impl ConcurrentRoom {
         }
     }
     pub async fn run(&self, mut batch: TurnBatch, sink: Sink<'_>) {
-        // Serialize a room's roster while it shares an owner on a checkout gate.
-        if self.write_gate.is_some() { batch.sequential = true; }
         let mut write_lease: Option<crate::WriteLease> = None;
         let mut hops = 0;
         loop {
@@ -283,15 +281,45 @@ impl ConcurrentRoom {
                         })
                         .collect()
                 };
-                for ids in futures::future::join_all(
-                    tickets
-                        .into_iter()
-                        .zip(prepared)
-                        .map(|(t, p)| self.run_one(t, p, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner)),
-                )
-                .await
-                {
-                    next.extend(ids);
+                if self.write_gate.is_some() {
+                    // Readers must not wait behind checkout admission. Writers
+                    // keep roster order and share this batch's lease, without
+                    // competing for the room-local editor reservation.
+                    let (writers, readers): (Vec<_>, Vec<_>) = tickets.into_iter().zip(prepared).enumerate()
+                        .partition(|(_, (_, prepared))| prepared.as_ref().is_some_and(|(participant, request, _, _)| {
+                            request.access != Some(Access::Read)
+                                || (request.plan && participant.config().access != Access::Read)
+                        }));
+                    let write_turns = async {
+                        let mut ids = Vec::new();
+                        for (index, (ticket, prepared)) in writers {
+                            self.admit_writer(&ticket, &batch, &mut write_lease).await;
+                            ids.push((index, self.run_one(ticket, prepared, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner).await));
+                        }
+                        ids
+                    };
+                    let read_turns = futures::future::join_all(readers.into_iter().map(|(index, (ticket, prepared))| {
+                        let batch = &batch;
+                        async move {
+                            (index, self.run_one(ticket, prepared, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner).await)
+                        }
+                    }));
+                    let (mut results, readers) = futures::join!(write_turns, read_turns);
+                    results.extend(readers);
+                    // Preserve roster order when scheduling subsequent bot hops.
+                    results.sort_by_key(|(index, _)| *index);
+                    for (_, ids) in results { next.extend(ids); }
+                } else {
+                    for ids in futures::future::join_all(
+                        tickets
+                            .into_iter()
+                            .zip(prepared)
+                            .map(|(t, p)| self.run_one(t, p, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner)),
+                    )
+                    .await
+                    {
+                        next.extend(ids);
+                    }
                 }
             }
             let mut unique = Vec::new();
