@@ -2803,8 +2803,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               {messageActions(entry.message)}
               <div className="bubble human">
                 <RichText text={splitTldr(entry.message.text).text} onOpen={openTarget} />
-                <AttachedImages paths={attachedImages(entry.message.text)} read={backend.readAttachment} onOpen={(path) => openTarget(path, true)} />
-                <AttachedVideos paths={attachedVideos(entry.message.text)} read={backend.readAttachment} onOpen={(path) => openTarget(path, true)} />
+                <AttachedImages paths={attachedImages(entry.message.text)} read={backend.readAttachment} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
+                <AttachedVideos paths={attachedVideos(entry.message.text)} read={backend.readAttachment} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
               </div>
             </div>
           ) : (
@@ -2819,8 +2819,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
                 <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} />
-                <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} />
-                <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} />
+                <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
+                <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
               </div>
               {messageActions(entry.message)}
             </div>
