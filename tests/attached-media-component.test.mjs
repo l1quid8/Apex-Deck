@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { transform } from 'sucrase';
 import { videoType } from '../src/attachments.ts';
+import { guardHostWrites } from '../src/hostBackends.ts';
+import { hostConnectionStore } from '../src/hostConnections.ts';
 
 const source = fs.readFileSync(new URL('../src/AttachedImages.tsx', import.meta.url), 'utf8');
 const compiled = transform(source.replace(/^import .*;\n/gm, '').replace(/^export /gm, ''), {
@@ -13,17 +15,42 @@ const React = { createElement: (type, props, ...children) => ({ type, props: pro
 function mount(kind, props) {
   let state = null;
   let cleanup;
-  let started = false;
+  let previousDeps;
   const component = new Function('React', 'useState', 'useEffect', 'videoType', `${compiled}\nreturn ${kind};`)(
     React,
     () => [state, value => { state = value; }],
-    effect => { if (!started) { started = true; cleanup = effect(); } },
+    (effect, deps) => {
+      if (!previousDeps || deps.some((value, i) => !Object.is(value, previousDeps[i]))) {
+        cleanup?.();
+        previousDeps = deps;
+        cleanup = effect();
+      }
+    },
     videoType,
   );
-  return { render: () => component(props), unmount: () => cleanup?.() };
+  return { render: (updates = {}) => { Object.assign(props, updates); return component(props); }, unmount: () => cleanup?.() };
 }
 
 for (const [kind, extension, event] of [['Picture', 'png', 'onLoad'], ['Video', 'mp4', 'onLoadedMetadata']]) {
+  test(`${kind} keeps its displayed media URL usable through chat rerenders`, async () => {
+    let reads = 0;
+    const backend = guardHostWrites({ readAttachment: async () => { reads++; return new Uint8Array([1, 2, 3]).buffer; } }, hostConnectionStore('local', 'Mac'));
+    const h = mount(kind, { path: `/attachments/shot.${extension}`, read: backend.readAttachment, onOpen() {} });
+    let url;
+    try {
+      h.render();
+      await new Promise(resolve => setImmediate(resolve));
+      url = h.render().children[0].props.src;
+      for (let i = 0; i < 10; i++) {
+        const media = h.render({ read: backend.readAttachment }).children[0];
+        assert.equal(media.props.src, url);
+        assert.deepEqual([...new Uint8Array(await (await fetch(media.props.src)).arrayBuffer())], [1, 2, 3]);
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      assert.equal(reads, 1, 'chat updates must not reread the attachment');
+    } finally { h.unmount(); }
+    await assert.rejects(fetch(url), 'unmount still releases the media URL');
+  });
   test(`${kind} settles the transcript after its displayed size becomes known`, async () => {
     // Sending settles before the file read finishes. Loading media later grows
     // scrollHeight without changing the transcript's observed clientHeight.

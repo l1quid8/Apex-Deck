@@ -570,13 +570,26 @@ async fn answers(
 
 /// Run one turn. `child` must have been started with `ARGS` and all three
 /// standard streams piped.
+#[cfg(test)]
 pub(crate) async fn run(
+    child: OwnedChild,
+    turn: Turn<'_>,
+    prompt: &str,
+    on_progress: ProgressSink<'_>,
+    approver: &dyn Approver,
+    hook: Option<&Hook>,
+) -> Result<Reply, TurnError> {
+    run_with_images(child, turn, prompt, on_progress, approver, hook, &[]).await
+}
+
+pub(crate) async fn run_with_images(
     mut child: OwnedChild,
     turn: Turn<'_>,
     prompt: &str,
     on_progress: ProgressSink<'_>,
     approver: &dyn Approver,
     hook: Option<&Hook>,
+    images: &[crate::attachments::Image],
 ) -> Result<Reply, TurnError> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -647,10 +660,9 @@ pub(crate) async fn run(
     } else {
         None
     };
-    send(
-        &mut stdin,
-        &turn_start_with(thread, prompt, turn.effort, plan_model),
-    )
+    let mut message = turn_start_with(thread, prompt, turn.effort, plan_model);
+    message["params"]["input"] = crate::attachments::codex_input(prompt, images);
+    send(&mut stdin, &message)
     .await
     .map_err(|e| TurnError::Failed(format!("could not send the message: {e}")))?;
 

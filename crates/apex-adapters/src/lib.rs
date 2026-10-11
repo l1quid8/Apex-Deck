@@ -8,6 +8,7 @@
 //! [`installed_models`] reads the model list a tool keeps for its account.
 
 mod ansi;
+mod attachments;
 mod api_info;
 mod catalog;
 mod claude_session;

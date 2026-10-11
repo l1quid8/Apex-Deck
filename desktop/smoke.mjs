@@ -82,6 +82,31 @@ export async function runSmoke(win, { sidecar, browser }) {
     await until('the reply', () => said('smoke-chat', 'hello from bot'));
   });
 
+  await step('attached images stay loaded through transcript updates', async () => {
+    const png = [...Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64')];
+    await page(`
+      await __deck.backend.roomCreate('smoke-image', [], ${JSON.stringify(OPTIONS)}, '');
+      const path = await __deck.backend.saveAttachment('smoke-image', 'pixel.png', new Uint8Array(${JSON.stringify(png)}));
+      await __deck.backend.roomPost('smoke-image', 'Attached image: ' + path);
+      await __deck.backend.sessionSave({ version: 1,
+        workspaces: [{ id: 'ws-smoke', name: 'smoke', path: ${JSON.stringify(smokeProject)} }],
+        panes: [{ id: 'smoke-image', workspaceId: 'ws-smoke', kind: 'chat', title: 'Image' }],
+        profiles: [], activeWorkspace: 'ws-smoke', focusedPane: 'smoke-image', section: 'threads', layout: 'top' });
+      return true;`);
+    contents.reload();
+    await ready();
+    const selector = '.pane[data-pane-id="smoke-image"] .attached-image img';
+    const original = await until('the attached image to decode', () => page(`const img = document.querySelector(${JSON.stringify(selector)}); return img?.complete && img.naturalWidth > 0 && img.src;`));
+    for (let i = 0; i < 10; i++) {
+      await page(`await __deck.backend.roomPost('smoke-image', 'Update ${i}'); return true;`);
+      await until('transcript update', () => page(`return document.querySelector('.transcript')?.innerText.includes('Update ${i}');`));
+      await sleep(100);
+      const ok = await page(`const img = document.querySelector(${JSON.stringify(selector)}); return img?.src === ${JSON.stringify(original)} && img.complete && img.naturalWidth > 0 && (await fetch(img.src)).ok;`);
+      if (!ok) throw new Error('chat update revoked or replaced the displayed attachment URL');
+    }
+    await listen();
+  });
+
   await step('a reload mid-turn leaves the host working', async () => {
     await page(`
       await __deck.backend.roomCreate('smoke-slow', [${JSON.stringify(shell('slow', 'sleep 3; echo late reply'))}], ${JSON.stringify(OPTIONS)}, '');

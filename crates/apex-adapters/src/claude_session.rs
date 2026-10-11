@@ -187,7 +187,20 @@ pub(crate) async fn run(
     run_with_policy(child, prompt, cwd, on_progress, approver, after_plan, false).await
 }
 
+#[cfg(test)]
 pub(crate) async fn run_with_policy(
+    child: OwnedChild,
+    prompt: &str,
+    cwd: Option<String>,
+    on_progress: ProgressSink<'_>,
+    approver: &dyn Approver,
+    after_plan: Option<Access>,
+    tools_disabled: bool,
+) -> std::io::Result<Finished> {
+    run_with_images(child, prompt, cwd, on_progress, approver, after_plan, tools_disabled, &[]).await
+}
+
+pub(crate) async fn run_with_images(
     mut child: OwnedChild,
     prompt: &str,
     cwd: Option<String>,
@@ -195,6 +208,7 @@ pub(crate) async fn run_with_policy(
     approver: &dyn Approver,
     after_plan: Option<Access>,
     tools_disabled: bool,
+    images: &[crate::attachments::Image],
 ) -> std::io::Result<Finished> {
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -207,7 +221,9 @@ pub(crate) async fn run_with_policy(
 
     // A prompt larger than the pipe can hold would block here if the
     // program printed before reading it all; it reads its input first.
-    send(&mut stdin, &user_message(prompt)).await?;
+    let mut message = user_message(prompt);
+    message["message"]["content"] = crate::attachments::claude_content(prompt, images);
+    send(&mut stdin, &message).await?;
 
     let mut reader = EventReader::new(OutputFormat::ClaudeStream, cwd);
     let mut lines = BufReader::new(stdout).lines();

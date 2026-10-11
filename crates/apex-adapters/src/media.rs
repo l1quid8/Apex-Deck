@@ -244,15 +244,8 @@ fn after_queue(error: ParticipantError, queue_id: &str) -> ParticipantError {
 }
 
 fn data_url(path: &Path) -> Result<(String, String), ParticipantError> {
-    let bytes = std::fs::read(path).map_err(|e| failed(format!("couldn't read the attached picture {}: {e}", path.display())))?;
-    let mime = match bytes.as_slice() {
-        [0xFF, 0xD8, ..] => "image/jpeg",
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
-        [b'G', b'I', b'F', ..] => "image/gif",
-        _ => "image/png",
-    };
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok((format!("data:{mime};base64,{b64}"), b64))
+    let image = crate::attachments::load(path)?;
+    Ok((image.url(), image.data))
 }
 
 fn extension(bytes: &[u8], video: bool) -> &'static str {

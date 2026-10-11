@@ -170,6 +170,7 @@ impl CliParticipant {
         &self,
         model: Option<&str>,
         prompt: &str,
+        images: &[crate::attachments::Image],
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
@@ -194,7 +195,7 @@ impl CliParticipant {
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
             plan: self.plan.is_some(),
         };
-        match codex_server::run(child, turn, prompt, on_progress, approver, hook.as_ref()).await {
+        match codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await {
             Ok(reply) => Ok(reply),
             Err(TurnError::Unavailable(why)) => {
                 Err(ParticipantError::Failed(format!("Codex app server unavailable ({why}); this turn did not run because MCP approvals require it.")))
@@ -315,12 +316,13 @@ impl CliParticipant {
         program: &str,
         args: &[String],
         prompt: &str,
+        images: &[crate::attachments::Image],
         on_progress: ProgressSink<'_>,
         approver: &dyn Approver,
     ) -> Result<Reply, ParticipantError> {
         let child = self.start(program, args)?;
         let cwd = self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned());
-        let finished = claude_session::run_with_policy(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled)
+        let finished = claude_session::run_with_images(child, prompt, cwd, on_progress, approver, self.plan, self.tools_disabled, images)
             .await
             .map_err(|e| ParticipantError::Failed(format!("talking to `{program}` failed: {e}")))?;
         if let Some(error) = finished.cleanup_error { return Err(ParticipantError::CleanupIncomplete(error)); }
@@ -548,9 +550,40 @@ impl Participant for CliParticipant {
             let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
-        let (program, args, format) = self.command_line()?;
+        let (program, mut args, format) = self.command_line()?;
         let program = program.as_str();
-        let prompt = render_prompt(&request.system, &request.turns);
+        let images = crate::attachments::for_request(&request)?;
+        let mut prompt = render_prompt(&request.system, &request.turns);
+        let mut staged = None;
+        if !images.is_empty() {
+            match &self.config.backend {
+                Backend::Agent { tool: AgentTool::Grok, .. } => {
+                    let files = crate::attachments::Staged::new()?;
+                    let path = files.grok(&prompt, &images)?;
+                    // Replace /dev/stdin with a .json file so Grok parses ACP blocks.
+                    if let Some(index) = args.iter().position(|arg| arg == "--prompt-file") {
+                        args[index + 1] = path.to_string_lossy().into_owned();
+                    }
+                    staged = Some(files);
+                }
+                Backend::Agent { tool: AgentTool::Gemini, .. } => {
+                    let files = crate::attachments::Staged::new()?;
+                    prompt = files.gemini(&prompt, &images)?;
+                    let directory = files.dir.to_string_lossy().into_owned();
+                    if let Some(index) = args.iter().position(|arg| arg == "--include-directories") {
+                        args[index + 1].push(',');
+                        args[index + 1].push_str(&directory);
+                    } else {
+                        args.extend(["--include-directories".into(), directory]);
+                    }
+                    staged = Some(files);
+                }
+                Backend::Cli { .. } => return Err(ParticipantError::Failed("This custom command has no image input protocol. Use Claude, Codex, Gemini, Grok or a vision-capable API bot for attached images.".into())),
+                _ => {}
+            }
+        }
+        // This guard owns staged inputs through completion and cancellation.
+        let _staged = staged;
         let last_heard = Mutex::new(Instant::now());
         let asking = AtomicBool::new(false);
         let approver = Timed { inner: approver, last_heard: &last_heard, asking: &asking };
@@ -562,10 +595,10 @@ impl Participant for CliParticipant {
         let turn = async {
             // Codex writes its reply live only through its app server.
             if let Backend::Agent { tool: AgentTool::Codex, model } = &self.config.backend {
-                return self.run_codex_server(model.as_deref(), &prompt, on_progress, &approver).await;
+                return self.run_codex_server(model.as_deref(), &prompt, &images, on_progress, &approver).await;
             }
             if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
-                return self.run_claude_asking(program, &args, &prompt, on_progress, &approver).await;
+                return self.run_claude_asking(program, &args, &prompt, &images, on_progress, &approver).await;
             }
             // Grok's pictures are saved to disk, so the ones this turn made
             // are found by comparing the folder before and after.

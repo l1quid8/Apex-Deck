@@ -3,6 +3,33 @@ import assert from 'node:assert/strict';
 const mod=await import('../src/hostBackends.ts').catch(()=>({}));
 const store=await import('../src/hostConnections.ts').catch(()=>({}));
 
+test('local attachment readers stay stable across renders and check current connection state', async () => {
+  const connection = store.hostConnectionStore('local', 'Mac');
+  const target = { readAttachment: async () => new ArrayBuffer(3), roomPost: async () => 'sent' };
+  const backend = mod.guardHostWrites(target, connection);
+  const read = backend.readAttachment;
+  const post = backend.roomPost;
+  assert.equal(backend.readAttachment, read, 'rerender must not restart the thumbnail effect');
+  assert.equal(backend.roomPost, post);
+  connection.setStatus({ kind: 'connected', hostId: 'mac' });
+  assert.equal(await post('r', 'hello'), 'sent');
+  connection.setStatus({ kind: 'reconnecting', attempt: 1 });
+  await assert.rejects(post('r', 'hello'), /queued/);
+  assert.equal((await read('/shot.png')).byteLength, 3);
+});
+
+test('remote attachment readers stay stable across renders and reject removed hosts', async () => {
+  const registry = mod.createHostBackends({ local: {}, hosts: [{ id: 'remote', name: 'Server' }],
+    make: () => ({ backend: { readAttachment: async () => new ArrayBuffer(3) },
+      connection: { get: () => ({ status: { kind: 'connected' } }) }, start: async () => {}, close() {} }) });
+  const backend = registry.get('remote');
+  const read = backend.readAttachment;
+  assert.equal(backend.readAttachment, read, 'rerender must not restart the thumbnail effect');
+  assert.equal((await read('/shot.png')).byteLength, 3);
+  registry.dispose('remote');
+  await assert.rejects(read('/shot.png'), /removed/);
+});
+
 test('source edits reject offline rather than saving after reconnection', async () => {
   const c = store.hostConnectionStore('at', 'AT'); let calls = 0;
   const guarded = mod.guardHostWrites({ call: async () => calls++ }, c);

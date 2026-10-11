@@ -1751,3 +1751,130 @@ async fn tools_disabled_fails_closed_for_agents_without_a_verified_tool_gate() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn api_uploads_attached_image_bytes_with_the_message() {
+    let (address, server) = serve_once("200 OK", vec![b"data: {\"choices\":[{\"delta\":{\"content\":\"seen\"}}]}\n\ndata: [DONE]\n\n"]).await;
+    let path = std::env::temp_dir().join(format!("apex-api-upload-{}.png", std::process::id()));
+    let png = b"\x89PNG\r\n\x1a\nfixture";
+    std::fs::write(&path, png).unwrap();
+    let bot = OpenAiCompatParticipant::new(config("api", api(address, None)));
+    let (result, _) = ask(&bot, &format!("Describe it without tools.\nAttached image: {}", path.display())).await;
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(result.unwrap().text, "seen");
+    let sent = server.await.unwrap();
+    let body: serde_json::Value = serde_json::from_str(sent.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let parts = &body["messages"][1]["content"];
+    assert_eq!(parts[0]["type"], "text");
+    use base64::Engine;
+    let url = parts[1]["image_url"]["url"].as_str().unwrap();
+    assert_eq!(base64::engine::general_purpose::STANDARD.decode(url.strip_prefix("data:image/png;base64,").unwrap()).unwrap(), png);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn grok_receives_images_through_a_json_prompt_file_and_cleans_it_up() {
+    let dir = fake_tool("grok-native-image", "grok", r#"#!/usr/bin/python3
+import sys,json,os,base64
+args=sys.argv[1:]
+p=args[args.index('--prompt-file')+1]
+assert p.endswith('.json'), p
+parts=json.load(open(p))
+assert parts[0]['type']=='text'
+assert parts[1]['type']=='image'
+assert parts[1]['mimeType']=='image/png'
+assert base64.b64decode(parts[1]['data']).startswith(b'\x89PNG')
+open('staged-path','w').write(p)
+print(json.dumps({'type':'result','subtype':'success','result':'image received'}))
+"#);
+    let path = dir.join("image with spaces.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+    let bot = CliParticipant::new(config("grok", Backend::Agent { tool: apex_core::AgentTool::Grok, model: None })).with_context(&context_in(&dir));
+    let (result, _) = ask(&bot, &format!("Describe without tools.\nAttached image: {}", path.display())).await;
+    assert_eq!(result.unwrap().text, "image received");
+    let staged = std::fs::read_to_string(dir.join("staged-path")).unwrap();
+    assert!(!std::path::Path::new(&staged).exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn gemini_receives_an_image_reference_inside_its_included_directory() {
+    let dir = fake_tool("gemini-native-image", "gemini", r#"#!/usr/bin/python3
+import sys,os,re
+args=sys.argv[1:]
+allowed=args[args.index('--include-directories')+1].split(',')
+prompt=sys.stdin.read()
+refs=prompt.split('Images submitted with this turn:\n')[1].strip().splitlines()
+p=re.sub(r'\\(.)',r'\1',refs[0][1:])
+assert os.path.dirname(p) in allowed, (p,allowed)
+assert open(p,'rb').read().startswith(b'\x89PNG')
+open('staged-path','w').write(p)
+print('image received')
+"#);
+    let path = dir.join("photo.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+    let bot = CliParticipant::new(config("gemini", Backend::Agent { tool: apex_core::AgentTool::Gemini, model: None })).with_context(&context_in(&dir));
+    let (result, _) = ask(&bot, &format!("Describe without tools.\nAttached image: {}", path.display())).await;
+    assert_eq!(result.unwrap().text.trim(), "image received");
+    let staged = std::fs::read_to_string(dir.join("staged-path")).unwrap();
+    assert!(!std::path::Path::new(&staged).exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_receives_base64_image_content_in_its_user_message() {
+    let dir = fake_tool("claude-native-image", "claude", r#"#!/usr/bin/python3
+import sys,json,base64
+message=json.loads(sys.stdin.readline())
+parts=message['message']['content']
+assert parts[0]['type']=='text'
+assert parts[1]['type']=='image'
+assert parts[1]['source']['media_type']=='image/png'
+assert base64.b64decode(parts[1]['source']['data']).startswith(b'\x89PNG')
+print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':'image received'}))
+"#);
+    let path = dir.join("photo.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+    let bot = CliParticipant::new(config("claude", Backend::Agent { tool: apex_core::AgentTool::ClaudeCode, model: None })).with_context(&context_in(&dir));
+    let (result, _) = ask(&bot, &format!("Describe without tools.\nAttached image: {}", path.display())).await;
+    assert_eq!(result.unwrap().text, "image received");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_receives_an_image_data_url_in_turn_start() {
+    let dir = fake_tool("codex-native-image", "codex", r#"#!/usr/bin/python3
+import sys,json,base64
+for line in sys.stdin:
+    message=json.loads(line)
+    method=message.get('method')
+    if method=='initialize':
+        print(json.dumps({'id':message['id'],'result':{}}),flush=True)
+    elif method=='mcpServerStatus/list':
+        print(json.dumps({'id':message['id'],'result':{'data':[],'nextCursor':None}}),flush=True)
+    elif method=='plugin/list':
+        print(json.dumps({'id':message['id'],'result':{'data':[]}}),flush=True)
+    elif method=='account/rateLimits/read':
+        print(json.dumps({'id':message['id'],'error':{'code':-1,'message':'no limits'}}),flush=True)
+    elif method=='thread/start':
+        print(json.dumps({'id':message['id'],'result':{'thread':{'id':'native-image'}}}),flush=True)
+    elif method=='turn/start':
+        parts=message['params']['input']
+        assert parts[0]['type']=='text'
+        assert parts[1]['type']=='image'
+        assert base64.b64decode(parts[1]['url'].split(',',1)[1]).startswith(b'\x89PNG')
+        print(json.dumps({'id':message['id'],'result':{'turn':{'id':'turn-image'}}}),flush=True)
+        print(json.dumps({'method':'item/agentMessage/delta','params':{'delta':'image received'}}),flush=True)
+        print(json.dumps({'method':'turn/completed','params':{'turn':{'id':'turn-image','status':'completed'}}}),flush=True)
+        break
+"#);
+    let path = dir.join("photo.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+    let bot = CliParticipant::new(config("codex", Backend::Agent { tool: apex_core::AgentTool::Codex, model: None })).with_context(&context_in(&dir));
+    let (result, _) = ask(&bot, &format!("Describe without tools.\nAttached image: {}", path.display())).await;
+    assert_eq!(result.unwrap().text, "image received");
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -39,14 +39,23 @@ impl OpenAiCompatParticipant {
 }
 
 /// The JSON body for one turn.
-pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequest) -> Value {
+pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequest) -> Result<Value, ParticipantError> {
+    let images = crate::attachments::for_request(request)?;
     let mut messages = vec![json!({ "role": "system", "content": request.system })];
-    for turn in &request.turns {
+    for (index, turn) in request.turns.iter().enumerate() {
         let role = match turn.role {
             Role::User => "user",
             Role::Assistant => "assistant",
         };
-        messages.push(json!({ "role": role, "content": turn.content }));
+        let attached = crate::attachments::paths(&turn.content);
+        let current: Vec<_> = images.iter().filter(|image| turn.role == Role::User && attached.contains(&image.path)
+            && !request.turns[index + 1..].iter().any(|later| later.role == Role::User && crate::attachments::paths(&later.content).contains(&image.path))).collect();
+        let content = if current.is_empty() { json!(turn.content) } else {
+            let mut parts = vec![json!({ "type": "text", "text": turn.content })];
+            parts.extend(current.iter().map(|image| json!({ "type": "image_url", "image_url": { "url": image.url() } })));
+            json!(parts)
+        };
+        messages.push(json!({ "role": role, "content": content }));
     }
     // Without include_usage, OpenAI and some others send no token counts
     // when streaming. Servers that send them anyway ignore it.
@@ -56,7 +65,7 @@ pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequ
     if let Some(effort) = effort.map(str::trim).filter(|e| !e.is_empty()) {
         body["reasoning_effort"] = json!(effort);
     }
-    body
+    Ok(body)
 }
 
 /// What one line of the event stream contributed.
@@ -197,7 +206,7 @@ impl Participant for OpenAiCompatParticipant {
 
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         let effort = request.effort_override.as_deref().or(self.config.effort.as_deref());
-        let mut call = self.client.post(&url).json(&request_body(model, effort, &request));
+        let mut call = self.client.post(&url).json(&request_body(model, effort, &request)?);
         if let Some(name) = api_key_env.as_deref().filter(|n| !n.is_empty()) {
             let key = crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?;
             call = call.bearer_auth(key);
@@ -291,9 +300,9 @@ mod tests {
     #[test]
     fn effort_is_only_in_the_request_when_set() {
         let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false };
-        assert!(request_body("m", None, &request).get("reasoning_effort").is_none());
-        assert!(request_body("m", Some("  "), &request).get("reasoning_effort").is_none());
-        assert_eq!(request_body("m", Some("high"), &request)["reasoning_effort"], "high");
+        assert!(request_body("m", None, &request).unwrap().get("reasoning_effort").is_none());
+        assert!(request_body("m", Some("  "), &request).unwrap().get("reasoning_effort").is_none());
+        assert_eq!(request_body("m", Some("high"), &request).unwrap()["reasoning_effort"], "high");
     }
 
     #[test]
@@ -331,4 +340,32 @@ mod tests {
         assert_eq!(parse_sse_line(""), vec![SseLine::Ignored]);
         assert_eq!(parse_sse_line(r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#), vec![SseLine::Ignored]);
     }
+    #[test]
+    fn attached_images_are_native_content_not_just_path_text() {
+        let path = std::env::temp_dir().join(format!("apex-vision-{}.png", std::process::id()));
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let text = format!("Describe this\nAttached image: {}", path.display());
+        let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
+            turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false };
+        let body = request_body("vision", None, &request).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(body["messages"][1]["content"][0]["type"], "text");
+        assert!(body["messages"][1]["content"][1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn a_later_assistant_path_reference_does_not_take_the_users_image() {
+        let path = std::env::temp_dir().join(format!("apex-user-image-{}.png", std::process::id()));
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let text = format!("Attached image: {}", path.display());
+        let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
+            turns: vec![apex_core::ViewTurn { role: Role::User, content: text.clone() },
+                apex_core::ViewTurn { role: Role::Assistant, content: text.clone() }],
+            unseen: vec![apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false };
+        let body = request_body("vision", None, &request).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");
+        assert!(body["messages"][2]["content"].is_string());
+    }
+
 }

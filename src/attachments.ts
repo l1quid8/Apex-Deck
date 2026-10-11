@@ -1,6 +1,6 @@
 /** Photos and files attached in the composer. They are saved with the app
- *  and sent as paths, so every agent opens them with its own tools and
- *  later turns do not resend the bytes. */
+ *  and stored as paths in the transcript. Adapters load new image attachments
+ *  into each provider's image input; later turns keep the path as context. */
 
 export interface Attachment {
   id: string;
