@@ -141,21 +141,33 @@ textarea {
   background: transparent;
   --tb-scale: 0.75;
 }
-.titlebar button {
+.titlebar > .titlebar-start > button,
+.titlebar > .titlebar-start > .attention > .attention-button,
+.titlebar > .section-navigation > .section-button,
+.titlebar > .titlebar-end > .layout-presets > button,
+.titlebar > .titlebar-end > .new-menu > button,
+.titlebar > .titlebar-end > button {
   padding: calc(7px * var(--tb-scale)) calc(12px * var(--tb-scale));
   font-size: calc(1em * var(--tb-scale));
 }
-.titlebar button.icon {
+.titlebar > .section-navigation > .section-button {
+  gap: calc(8px * var(--tb-scale));
+  padding: calc(7px * var(--tb-scale)) calc(16px * var(--tb-scale));
+}
+.titlebar > .titlebar-end > .layout-presets > button {
+  padding: calc(8px * var(--tb-scale)) calc(10px * var(--tb-scale));
+}
+.titlebar > .titlebar-start > button.icon,
+.titlebar > .titlebar-end > button.icon {
   padding: calc(2px * var(--tb-scale)) calc(7px * var(--tb-scale));
   font-size: calc(15px * var(--tb-scale));
   min-width: max(24px, calc(28px * var(--tb-scale)));
   min-height: max(24px, calc(28px * var(--tb-scale)));
 }
-.titlebar .section-button {
-  gap: calc(8px * var(--tb-scale));
-  padding: calc(7px * var(--tb-scale)) calc(16px * var(--tb-scale));
-}
-.titlebar svg {
+.titlebar > .titlebar-start > button.icon svg,
+.titlebar > .section-navigation > .section-button svg,
+.titlebar > .titlebar-end > .layout-presets > button svg,
+.titlebar > .titlebar-end > button.icon svg {
   width: calc(16px * var(--tb-scale));
   height: calc(16px * var(--tb-scale));
 }

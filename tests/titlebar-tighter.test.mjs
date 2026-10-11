@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 const plain = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const glass = readFileSync(new URL("../src/glass-theme.css", import.meta.url), "utf8");
 const paneLayout = readFileSync(new URL("../src/PaneLayout.tsx", import.meta.url), "utf8");
+const attentionMenu = readFileSync(new URL("../src/AttentionMenu.tsx", import.meta.url), "utf8");
 const block = (css, selector) => {
   const start = css.indexOf(`${selector} {`);
   assert.notEqual(start, -1, `${selector} block missing`);
@@ -26,12 +27,12 @@ test("title bar paints nothing in the glass theme", () => {
 
 test("title bar buttons scale to 0.75 without affecting other controls", () => {
   assert.match(plain, /\.titlebar\s*{[^}]*--tb-scale:\s*0\.75/);
-  assert.match(plain, /\.titlebar button\s*{[^}]*padding:\s*calc\(7px \* var\(--tb-scale\)\)/);
-  assert.match(plain, /\.titlebar button\.icon\s*{[^}]*font-size:\s*calc\(15px \* var\(--tb-scale\)\)/);
-  assert.match(plain, /\.titlebar button\.icon\s*{[^}]*min-width:\s*max\(24px, calc\(28px \* var\(--tb-scale\)\)\)/);
-  assert.match(plain, /\.titlebar button\.icon\s*{[^}]*min-height:\s*max\(24px, calc\(28px \* var\(--tb-scale\)\)\)/);
-  assert.match(plain, /\.titlebar svg\s*{[^}]*width:\s*calc\(16px \* var\(--tb-scale\)\)/);
-  assert.doesNotMatch(glass, /\.titlebar button\.icon\s*{[^}]*min-width:\s*34px/);
+  assert.match(plain, /\.titlebar > \.titlebar-end > \.new-menu > button,\s*\.titlebar > \.titlebar-end > button\s*{[^}]*padding:\s*calc\(7px \* var\(--tb-scale\)\)/);
+  assert.match(plain, /\.titlebar > \.titlebar-start > button\.icon,\s*\.titlebar > \.titlebar-end > button\.icon\s*{[^}]*font-size:\s*calc\(15px \* var\(--tb-scale\)\)/);
+  assert.match(plain, /\.titlebar > \.titlebar-start > button\.icon,\s*\.titlebar > \.titlebar-end > button\.icon\s*{[^}]*min-width:\s*max\(24px, calc\(28px \* var\(--tb-scale\)\)\)/);
+  assert.match(plain, /\.titlebar > \.titlebar-start > button\.icon,\s*\.titlebar > \.titlebar-end > button\.icon\s*{[^}]*min-height:\s*max\(24px, calc\(28px \* var\(--tb-scale\)\)\)/);
+  assert.match(plain, /\.titlebar > \.titlebar-end > \.layout-presets > button svg,\s*\.titlebar > \.titlebar-end > button\.icon svg\s*{[^}]*width:\s*calc\(16px \* var\(--tb-scale\)\)/);
+  assert.doesNotMatch(glass, /\.titlebar > \.titlebar-start > button\.icon\s*{[^}]*min-width:\s*34px/);
   assert.match(glass, /min-width:\s*calc\(34px \* var\(--tb-scale\)\)/);
   assert.match(glass, /min-height:\s*calc\(34px \* var\(--tb-scale\)\)/);
 });
@@ -42,4 +43,12 @@ test("panes sit closer to the window edge and to each other", () => {
   assert.match(plain, /\.grid\s*{[^}]*margin:\s*-4px/);
   assert.match(plain, /\.titlebar\s*{[^}]*padding:\s*8px 16px/);
   assert.match(plain, /\.titlebar\s*\{ min-height: 50px; flex-shrink: 0; \}/);
+});
+
+test("scaled title bar controls exclude nested menus and include pane presets", () => {
+  assert.doesNotMatch(plain, /\.titlebar\s+button\s*\{/);
+  assert.match(plain, /\.titlebar > \.titlebar-end > \.layout-presets > button\s*\{[^}]*padding:\s*calc\(8px \* var\(--tb-scale\)\)/);
+  assert.match(plain, /\.titlebar > \.titlebar-start > \.attention > \.attention-button/);
+  assert.doesNotMatch(plain, /\.titlebar svg\s*\{/);
+  assert.match(attentionMenu, /className="attention-list" role="dialog"/);
 });

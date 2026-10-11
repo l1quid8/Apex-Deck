@@ -134,7 +134,8 @@
 :root[data-deck-theme="glass"] .titlebar button.primary:disabled { box-shadow: inset 0 1px 0 rgb(255 255 255 / .1); }
 /* The title bar's icon buttons (workspaces, Settings, thread details) sit on
    the same light glass as the tab group, and brighten when hovered or open. */
-:root[data-deck-theme="glass"] .titlebar button.icon {
+:root[data-deck-theme="glass"] .titlebar > .titlebar-start > button.icon,
+:root[data-deck-theme="glass"] .titlebar > .titlebar-end > button.icon {
   background: rgb(var(--deck-panel) / calc(var(--deck-opacity, .44) * .6));
   border-color: var(--deck-edge);
   border-radius: max(8px, calc(var(--deck-radius, 12px) * .75));
@@ -144,8 +145,10 @@
   min-width: calc(34px * var(--tb-scale));
   min-height: calc(34px * var(--tb-scale));
 }
-:root[data-deck-theme="glass"] .titlebar button.icon:hover:not(:disabled),
-:root[data-deck-theme="glass"] .titlebar button.icon:is(.active, [aria-expanded="true"]) {
+:root[data-deck-theme="glass"] .titlebar > .titlebar-start > button.icon:hover:not(:disabled),
+:root[data-deck-theme="glass"] .titlebar > .titlebar-end > button.icon:hover:not(:disabled),
+:root[data-deck-theme="glass"] .titlebar > .titlebar-start > button.icon:is(.active, [aria-expanded="true"]),
+:root[data-deck-theme="glass"] .titlebar > .titlebar-end > button.icon:is(.active, [aria-expanded="true"]) {
   background: var(--deck-well-fill);
   color: var(--text);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .2);
