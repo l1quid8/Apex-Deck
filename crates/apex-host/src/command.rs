@@ -83,8 +83,9 @@ pub enum Command {
     StartupFolders {},
     AgentsDetect {},
     ListToolServers { room: String, agent: String },
-    PtySpawn { id: String, agent: Option<String>, cwd: Option<String>, cols: u16, rows: u16 },
-    PtyList {},
+    PtySpawn { id: String, agent: Option<String>, cwd: Option<String>, #[serde(default)] name: Option<String>, cols: u16, rows: u16 },
+    PtyList { #[serde(default)] query: Option<String> },
+    PtyRename { id: String, name: String },
     PtyAttach { id: String },
     PtyWrite { id: String, data: String },
     PtyResize { id: String, cols: u16, rows: u16 },
@@ -289,8 +290,9 @@ impl Host {
             StartupFolders {} => reply(self.startup_folders()),
             AgentsDetect {} => reply(self.agents_detect()),
             ListToolServers { room, agent } => reply(self.list_tool_servers(room, agent).await?),
-            PtySpawn { id, agent, cwd, cols, rows } => reply(self.pty_spawn(id, agent, cwd, cols, rows)?),
-            PtyList {} => reply(self.pty_list()),
+            PtySpawn { id, agent, cwd, name, cols, rows } => reply(self.pty_spawn(id, agent, cwd, name, cols, rows)?),
+            PtyList { query } => reply(self.pty_list(query)),
+            PtyRename { id, name } => reply(self.pty_rename(id, name)?),
             PtyAttach { id } => reply(self.pty_attach(id)?),
             PtyWrite { id, data } => reply(self.pty_write(id, data)?),
             PtyResize { id, cols, rows } => reply(self.pty_resize(id, cols, rows)?),
@@ -421,7 +423,7 @@ mod tests {
 
     #[test]
     fn terminal_list_and_attach_commands_deserialize() {
-        assert!(matches!(Command::from_json(json!({ "cmd": "pty_list" })).unwrap(), Command::PtyList {}));
+        assert!(matches!(Command::from_json(json!({ "cmd": "pty_list" })).unwrap(), Command::PtyList { query: None }));
         assert!(matches!(Command::from_json(json!({ "cmd": "pty_attach", "args": { "id": "pane-1" } })).unwrap(), Command::PtyAttach { id } if id == "pane-1"));
     }
 

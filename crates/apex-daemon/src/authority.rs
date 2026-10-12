@@ -102,7 +102,7 @@ pub fn command_needs(command: &Command) -> Need {
 
         // Full, and only for devices allowed every thread: terminals,
         // folders and files, new threads, and whole-session or settings writes.
-        PtySpawn { .. } | PtyList {} | PtyAttach { .. } | PtyWrite { .. } | PtyResize { .. } | PtyKill { .. } => full(Global),
+        PtySpawn { .. } | PtyList { .. } | PtyRename { .. } | PtyAttach { .. } | PtyWrite { .. } | PtyResize { .. } | PtyKill { .. } => full(Global),
         FolderList { .. } | FileRead { .. } | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. } | WorktreeList { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreePrune { .. } => full(Global),
         WorkspaceRead { .. } => full(Global),
         PathsExist { .. } => full(Global),
@@ -144,7 +144,7 @@ pub fn event_needs(event: &HostEvent) -> Need {
         HostEvent::AssistantTasksChanged { .. } => read(Scope::Global),
         HostEvent::PersonalChanged { .. } => full(Scope::Global),
         HostEvent::Room { room, .. } => read(thread(room)),
-        HostEvent::PtyData { .. } | HostEvent::PtyExit { .. } => full(Scope::Global),
+        HostEvent::PtyData { .. } | HostEvent::PtyExit { .. } | HostEvent::PtyRenamed { .. } => full(Scope::Global),
         // Names other threads; limited devices reload with session_load instead.
         HostEvent::SessionChanged(_) => read(Scope::Global),
         HostEvent::SettingsChanged(_) => full(Scope::Global),
@@ -317,6 +317,7 @@ mod tests {
             ("generate_image", Some((Full, "thread")), json!({ "room": "mine", "provider": "p", "prompt": "x" })),
             ("pty_spawn", Some((Full, "global")), json!({ "id": "p", "cols": 80, "rows": 24 })),
             ("pty_list", Some((Full, "global")), json!({})),
+            ("pty_rename", Some((Full, "global")), json!({ "id": "p", "name": "dev server" })),
             ("pty_attach", Some((Full, "global")), json!({ "id": "p" })),
             ("pty_write", Some((Full, "global")), json!({ "id": "p", "data": "x" })),
             ("pty_resize", Some((Full, "global")), json!({ "id": "p", "cols": 80, "rows": 24 })),
@@ -430,6 +431,7 @@ mod tests {
             (HostEvent::Room { room: "mine".into(), event: RoomEvent::TurnStarted { id: ParticipantId::new("null") }, recovery_seq: None }, Some((Tier::ReadOnly, "thread"))),
             (HostEvent::PtyData { id: "p".into(), data: "x".into(), cursor: 1 }, Some((Tier::Full, "global"))),
             (HostEvent::PtyExit { id: "p".into(), code: None }, Some((Tier::Full, "global"))),
+            (HostEvent::PtyRenamed { id: "p".into(), name: "dev server".into() }, Some((Tier::Full, "global"))),
             (HostEvent::SessionChanged(json!({})), Some((Tier::ReadOnly, "global"))),
             (HostEvent::SettingsChanged(json!({})), Some((Tier::Full, "global"))),
             (HostEvent::QuitRequested(1), None),
@@ -442,7 +444,7 @@ mod tests {
         let events = events();
         let mut names: Vec<&str> = events.iter().map(|(e, _)| e.name()).collect();
         names.dedup();
-        assert_eq!(names.len(), 8, "one row per event kind");
+        assert_eq!(names.len(), 9, "one row per event kind");
         for (event, need) in events {
             for tier in [Tier::ReadOnly, Tier::Chat, Tier::Full] {
                 for limit in [false, true] {

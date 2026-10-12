@@ -32,13 +32,35 @@ const EXIT_RETENTION_MS: u64 = 5 * 60 * 1000;
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PtySummary { pub id: String, pub name: String, pub project: Option<String>, pub state: String, pub exit_code: Option<u32>, pub last_activity: u64, pub cursor: u64 }
+pub struct PtySummary { pub id: String, pub name: String, pub project: Option<String>, pub cwd: Option<String>, pub tail: String, #[serde(skip_serializing_if = "Option::is_none")] pub matched: Option<String>, pub state: String, pub exit_code: Option<u32>, pub last_activity: u64, pub cursor: u64 }
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtySnapshot { pub id: String, pub output: String, pub cursor: u64, pub state: String, pub exit_code: Option<u32> }
 
-struct PtyRecord { generation: u64, name: String, project: Option<String>, state: String, exit_code: Option<u32>, last_activity: u64, cursor: u64, history: VecDeque<u8>, exited_at: Option<u64> }
+struct PtyRecord { generation: u64, name: String, project: Option<String>, cwd: Option<String>, state: String, exit_code: Option<u32>, last_activity: u64, cursor: u64, history: VecDeque<u8>, exited_at: Option<u64> }
+
+const TAIL_LIMIT: usize = 4096;
+
+pub fn strip_ansi(input: &str) -> String {
+    let bytes = input.as_bytes(); let mut out = Vec::with_capacity(bytes.len()); let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1b { out.push(bytes[i]); i += 1; continue; }
+        i += 1; if i >= bytes.len() { break; }
+        match bytes[i] {
+            b'[' => { i += 1; while i < bytes.len() { let b = bytes[i]; i += 1; if (0x40..=0x7e).contains(&b) { break; } } }
+            b']' => { i += 1; while i < bytes.len() { if bytes[i] == 0x07 { i += 1; break; } if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') { i += 2; break; } i += 1; } }
+            _ => i += 1,
+        }
+    }
+    String::from_utf8_lossy(&out).lines().map(|line| line.rsplit('\r').next().unwrap_or("")).collect::<Vec<_>>().join("\n")
+}
+
+fn history_text(history: &VecDeque<u8>, limit: usize) -> String {
+    let start = history.len().saturating_sub(limit);
+    let bytes: Vec<_> = history.iter().skip(start).copied().skip_while(|byte| byte & 0xC0 == 0x80).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
 
 fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
 
@@ -58,6 +80,11 @@ pub struct SpawnOptions {
 
 fn size(cols: u16, rows: u16) -> PtySize {
     PtySize { rows: rows.max(1), cols: cols.max(1), pixel_width: 0, pixel_height: 0 }
+}
+
+fn clean_name(name: &str) -> String {
+    let cleaned: String = name.trim().chars().filter(|c| !c.is_control()).take(60).collect();
+    if cleaned.is_empty() { "shell".into() } else { cleaned }
 }
 
 /// Holds back the bytes of a character that has only partly arrived.
@@ -140,7 +167,7 @@ impl PtyManager {
             // phone already attached to it doesn't drop the new output as old.
             let cursor = records.get(id).map_or(0, |old| old.cursor);
             records.insert(id.to_string(), PtyRecord {
-                generation, name: options.name.clone().unwrap_or_else(|| "shell".into()), project, state: "running".into(), exit_code: None,
+                generation, name: clean_name(options.name.as_deref().unwrap_or("shell")), project, cwd: options.cwd.clone(), state: "running".into(), exit_code: None,
                 last_activity: now, cursor, history: VecDeque::new(), exited_at: None,
             });
         }
@@ -224,16 +251,33 @@ impl PtyManager {
         }
     }
 
-    pub fn list(&self) -> Vec<PtySummary> {
+    pub fn list(&self, query: Option<&str>) -> Vec<PtySummary> {
         let now = now_ms();
-        let mut records = self.records.lock().unwrap();
-        prune(&mut records, now);
-        let mut items: Vec<_> = records.iter().map(|(id, r)| PtySummary {
-            id: id.clone(), name: r.name.clone(), project: r.project.clone(), state: r.state.clone(),
-            exit_code: r.exit_code, last_activity: r.last_activity, cursor: r.cursor,
+        let mut records_guard = self.records.lock().unwrap();
+        prune(&mut records_guard, now);
+        let records: Vec<_> = records_guard.iter().map(|(id, r)| (id.clone(), r.name.clone(), r.project.clone(), r.cwd.clone(), r.state.clone(), r.exit_code, r.last_activity, r.cursor, r.history.clone())).collect();
+        drop(records_guard);
+        let query = query.map(str::trim).filter(|q| !q.is_empty()).map(|q| q.chars().take(100).collect::<String>());
+        let mut items: Vec<_> = records.into_iter().filter_map(|(id, name, project, cwd, state, exit_code, last_activity, cursor, history)| {
+            let tail = history_text(&history, TAIL_LIMIT);
+            let matched = query.as_ref().and_then(|q| {
+                if name.to_lowercase().contains(&q.to_lowercase()) { return Some(name.clone()); }
+                let clean = strip_ansi(&history_text(&history, HISTORY_LIMIT));
+                clean.lines().rev().find(|line| line.to_lowercase().contains(&q.to_lowercase())).map(|line| line.trim().chars().take(160).collect())
+            });
+            if query.is_some() && matched.is_none() { return None; }
+            Some(PtySummary { id, name, project, cwd, tail, matched, state, exit_code, last_activity, cursor })
         }).collect();
         items.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
         items
+    }
+
+    pub fn rename(&self, id: &str, name: &str) -> Result<String, String> {
+        let name = clean_name(name);
+        let mut records = self.records.lock().unwrap();
+        let record = records.get_mut(id).ok_or_else(|| format!("no retained terminal with id {id}"))?;
+        record.name = name.clone();
+        Ok(name)
     }
 
     pub fn snapshot(&self, id: &str) -> Result<PtySnapshot, String> {
@@ -316,7 +360,48 @@ mod tests {
         assert_eq!(snapshot.state, "exited");
         assert_eq!(snapshot.exit_code, Some(7));
         assert!(snapshot.cursor > 0);
-        assert_eq!(manager.list()[0].id, "a");
+        assert_eq!(manager.list(None)[0].id, "a");
+    }
+
+    #[test]
+    fn list_has_folder_tail_and_searches_ansi_stripped_old_output() {
+        assert_eq!(strip_ansi("\x1b[31mfoo\x1b[0mbar\rprogress\rDone\n"), "Done");
+        let manager = PtyManager::default();
+        let (_out, exit) = spawn_sh(&manager, "findme", "printf '\\033[31mfoo\\033[0mbar\\n'; sleep 0.1; printf 'latest\\n'");
+        exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        let all = manager.list(None);
+        assert!(all[0].tail.trim_end().ends_with("latest"));
+        assert_eq!(all[0].cwd, None);
+        let found = manager.list(Some("FOOBAR"));
+        assert_eq!(found.len(), 1);
+        assert!(found[0].matched.as_deref().unwrap().contains("foobar"));
+    }
+
+    #[test]
+    fn rename_changes_name_and_missing_terminal_errors() {
+        let manager = PtyManager::default();
+        let (_out, exit) = spawn_sh(&manager, "rename", "true");
+        exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(manager.rename("rename", " new\nname ").unwrap(), "newname");
+        assert_eq!(manager.list(None)[0].name, "newname");
+        assert!(manager.rename("missing", "x").unwrap_err().contains("no retained terminal"));
+    }
+
+    #[test]
+    fn listed_tail_is_byte_bounded_and_starts_on_a_utf8_boundary() {
+        let manager = PtyManager::default();
+        let (_out, exit) = spawn_sh(&manager, "tail-cut", "true");
+        exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut records = manager.records.lock().unwrap();
+        let history = &mut records.get_mut("tail-cut").unwrap().history;
+        history.clear();
+        history.extend("💥".as_bytes());
+        history.extend(std::iter::repeat(b'x').take(TAIL_LIMIT - 3));
+        drop(records);
+        let record = manager.list(None).remove(0);
+        assert!(record.tail.len() <= TAIL_LIMIT);
+        assert!(!record.tail.contains('\u{FFFD}'));
+        assert!(record.tail.is_char_boundary(0));
     }
 
     #[test]

@@ -468,7 +468,7 @@ impl Host {
 
     /// Open a terminal for pane `id`. `agent` is a key from `agents_detect`, or
     /// nothing for a plain shell.
-    pub fn pty_spawn(self: &Arc<Self>, id: String, agent: Option<String>, cwd: Option<String>, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn pty_spawn(self: &Arc<Self>, id: String, agent: Option<String>, cwd: Option<String>, name: Option<String>, cols: u16, rows: u16) -> Result<(), String> {
         let program = match agent.as_deref() {
             None => None,
             Some(key) => Some(
@@ -480,7 +480,7 @@ impl Host {
             ),
         };
         let (program, args) = agents::launch_command(program);
-        let name = agent.as_deref().and_then(|key| agents::KNOWN_AGENTS.iter().find(|a| a.key == key).map(|a| a.label.to_string()));
+        let name = name.or_else(|| agent.as_deref().and_then(|key| agents::KNOWN_AGENTS.iter().find(|a| a.key == key).map(|a| a.label.to_string())));
 
         let out_host = Arc::clone(self);
         let out_id = id.clone();
@@ -510,7 +510,13 @@ impl Host {
         self.ptys.kill(&id);
     }
 
-    pub fn pty_list(&self) -> Vec<crate::pty::PtySummary> { self.ptys.list() }
+    pub fn pty_list(&self, query: Option<String>) -> Vec<crate::pty::PtySummary> { self.ptys.list(query.as_deref()) }
+
+    pub fn pty_rename(&self, id: String, name: String) -> Result<(), String> {
+        let name = self.ptys.rename(&id, &name)?;
+        self.emit(HostEvent::PtyRenamed { id, name });
+        Ok(())
+    }
 
     pub fn pty_attach(&self, id: String) -> Result<crate::pty::PtySnapshot, String> { self.ptys.snapshot(&id) }
 

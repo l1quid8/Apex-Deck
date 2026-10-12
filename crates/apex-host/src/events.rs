@@ -35,6 +35,9 @@ pub enum HostEvent {
     /// The program in a terminal ended.
     #[serde(rename = "pty-exit")]
     PtyExit { id: String, code: Option<u32> },
+    /// A terminal's display name changed.
+    #[serde(rename = "pty-renamed")]
+    PtyRenamed { id: String, name: String },
     /// The app was asked to close; the request number is answered with `quit_heard`.
     #[serde(rename = "quit-requested")]
     QuitRequested(u64),
@@ -55,6 +58,7 @@ impl HostEvent {
             HostEvent::Room { .. } => "room-event",
             HostEvent::PtyData { .. } => "pty-data",
             HostEvent::PtyExit { .. } => "pty-exit",
+            HostEvent::PtyRenamed { .. } => "pty-renamed",
             HostEvent::QuitRequested(_) => "quit-requested",
             HostEvent::SessionChanged(_) => "session-changed",
             HostEvent::SettingsChanged(_) => "settings-changed",
