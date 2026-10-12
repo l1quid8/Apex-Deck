@@ -276,9 +276,11 @@ textarea {
 .section-agents .chat-bar { border: 0; padding: 14px 22px 0; flex: none; }
 .section-agents .chat-bar:not(:has(button)) { display: none; }
 .section-agents .agent-library { overflow-y: auto; flex: 1; min-height: 0; padding: 16px 22px 24px; }
-.section-agents .add-form { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; margin: 0; padding: 20px 22px; flex: 0 1 auto; min-height: 0; max-height: none; overflow-y: auto; background: transparent; }
-/* With saved agents below it, the form leaves room for the list. */
-.section-agents .chat:has(.agent-card) .add-form { max-height: 55vh; }
+.section-agents .add-form { border: 0; border-radius: 0; margin: 0; padding: 20px 22px; flex: 1; min-height: 0; max-height: none; overflow-y: auto; background: transparent; align-content: start; }
+/* Effort and Access share one row in the wide pane instead of stacking.
+   Solo Access (e.g. Custom command, which has no effort levels) stays full width. */
+.section-agents .add-form .effort-field:has(+ .access-field),
+.section-agents .add-form .effort-field:has(+ .access-field) + .access-field { grid-column: auto; }
 .agent-library { overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 0 12px 24px; flex: 1; min-height: 0; }
 .agent-card { display: flex; align-items: flex-start; gap: 18px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .agent-card-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }

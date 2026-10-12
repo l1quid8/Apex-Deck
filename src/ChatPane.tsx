@@ -2476,24 +2476,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <span className="hint">{accessNote}</span>
             </div>
           )}
-          {editing ? (
-            <label className="wide">
-              Persona (optional)
-              <textarea name="persona" value={draft.persona} onChange={(e) => set("persona", e.target.value)} rows={2} placeholder="e.g. You are the reviewer. Look for bugs and be brief." />
-            </label>
-          ) : (
-            <PersonaDraft
-              writers={personaWriters(
-                PRESETS.flatMap((p) => p.agent ? [{ key: p.key, label: p.label.replace(/ \(.*\)$/, ""), tool: p.agent.tool, installed: installed(p) }] : []),
-                profiles, disabledProviders)}
-              preset={draft.preset}
-              taken={[...new Set([...profiles, ...participants].map((p) => p.display_name))]}
-              form={{ name: draft.name, persona: draft.persona }}
-              onApply={(next) => setDraft((d) => ({ ...d, name: next.name, persona: next.persona }))}
-              onIdea={(persona) => setDraft((d) => ({ ...d, persona }))}
-              write={(writer, idea, taken) => backend.personaDraft(writer, idea, taken)}
-            />
-          )}
+          <PersonaDraft
+            key={`persona:${editing ?? "new"}`}
+            writers={personaWriters(
+              PRESETS.flatMap((p) => p.agent ? [{ key: p.key, label: p.label.replace(/ \(.*\)$/, ""), tool: p.agent.tool, installed: installed(p) }] : []),
+              profiles, disabledProviders)}
+            preset={draft.preset}
+            taken={[...new Set([...profiles, ...participants].filter((p) => p.id !== editing).map((p) => p.display_name))]}
+            form={{ name: draft.name, persona: draft.persona }}
+            onApply={(next) => setDraft((d) => ({ ...d, name: next.name, persona: next.persona }))}
+            onIdea={(persona) => setDraft((d) => ({ ...d, persona }))}
+            write={(writer, idea, taken) => backend.personaDraft(writer, idea, taken)}
+          />
           {formError && <p className="form-error">{formError}</p>}
           <div className="form-foot">
             <button className="primary" type="submit">
@@ -2772,10 +2766,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
       {!profileMode && pins.length > 0 && pinControls}
 
-      {profileMode && modelForm}
+      {profileMode && adding && modelForm}
 
-      {profileMode && <div className="agent-library">
-        {participants.length === 0 && !adding && <div className="empty agents-empty">
+      {profileMode && !adding && <div className="agent-library">
+        {participants.length === 0 && <div className="empty agents-empty">
           <h3>No agents yet</h3>
           <p>Build one from scratch — give it a name, a model, and a brief.</p>
           <div className="starters-foot">
