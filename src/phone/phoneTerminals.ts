@@ -36,11 +36,20 @@ export function lastLine(tail: string): string {
   return [...line].slice(-120).join("");
 }
 
+/** How long a terminal counts as running after its last output. */
+const RUN_MS = 5000;
+
 export function dotState(t: Pick<PtySummary, "state" | "exitCode" | "lastActivity" | "tail">, now = Date.now()): TerminalDot {
   if (t.state === "exited") return t.exitCode === 0 || t.exitCode === null ? "ended" : "fail";
   const quietFor = now - t.lastActivity;
   if (quietFor >= QUIET_MS && waitingFor(stripAnsi(t.tail))) return "ask";
-  return quietFor < 5000 ? "run" : "idle";
+  return quietFor < RUN_MS ? "run" : "idle";
+}
+
+/** When a running terminal's dot next changes with no new output (quiet long enough to ask, then idle); null if none will. */
+export function nextDotChange(terminals: Pick<PtySummary, "state" | "lastActivity">[], now = Date.now()): number | null {
+  const due = terminals.filter((t) => t.state === "running").flatMap((t) => [t.lastActivity + QUIET_MS, t.lastActivity + RUN_MS]).filter((at) => at > now);
+  return due.length > 0 ? Math.min(...due) : null;
 }
 
 export function askLine(tail: string): string {

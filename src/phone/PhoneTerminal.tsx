@@ -8,7 +8,7 @@ import type { PhoneHost } from "../phoneBackend";
 import { canSeeNewThread } from "../phoneRules";
 import { nextTitle } from "../terminalTitle";
 import { writeClipboard } from "../threadCopy";
-import { age, appendTail, askLine, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, readTerminalCache, stripAnsi, stripOrder, swipeIntent, writeTerminalCache, type PhoneTerminal as PhoneTerminalInfo } from "./phoneTerminals";
+import { age, appendTail, askLine, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, nextDotChange, readTerminalCache, stripAnsi, stripOrder, swipeIntent, writeTerminalCache, type PhoneTerminal as PhoneTerminalInfo } from "./phoneTerminals";
 import { copyLastOutput, endTerminal, renameTerminal, resizePhoneTerminal } from "./terminalActions";
 
 type View = { kind: "home" } | { kind: "terminal"; machineId: string; id: string };
@@ -38,6 +38,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
   const [input, setInput] = useState("");
   const [ctrl, setCtrl] = useState(false);
   const [dragX, setDragX] = useState(0);
+  const [, setClock] = useState(0);
   const termRoot = useRef<HTMLDivElement>(null);
   const sheetDialog = useRef<HTMLDivElement>(null);
   const [sheetPortal, setSheetPortal] = useState<HTMLElement | null>(null);
@@ -74,7 +75,15 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
   useEffect(() => { setSheetPortal(termRoot.current?.closest(".phone-frame") ?? null); }, []);
   useEffect(() => { sheetDialog.current?.focus(); }, [sheet, sheetPortal]);
   useEffect(() => { if (resumeSignal && view.kind === "home" && lastTerminal) setView(lastTerminal); }, [resumeSignal]);
-  useEffect(() => { onWaitingChange?.(visible.some((item) => dotState(item) === "ask")); }, [summaries]);
+  const waiting = visible.some((item) => dotState(item) === "ask");
+  useEffect(() => { onWaitingChange?.(waiting); }, [waiting]);
+  // A terminal that goes quiet sends nothing to redraw its dot, so redraw when the next dot is due to change.
+  const dotDue = nextDotChange(visible);
+  useEffect(() => {
+    if (dotDue === null) return;
+    const timer = setTimeout(() => setClock((n) => n + 1), Math.max(0, dotDue - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [dotDue]);
   useEffect(() => { selectedStrip.current?.scrollIntoView({ block: "nearest", inline: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); }, [terminal?.id]);
 
   function readClosed(machineId: string): Set<string> {
@@ -98,7 +107,8 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     try {
       const items = await info.host.backend.ptyList(search);
       const prior = new Map((readTerminalCache()[info.id] ?? []).map((item) => [item.id, item.firstSeen]));
-      const enriched = items.map((item: PtySummary) => ({ ...item, machineId: info.id, machineName: info.name, firstSeen: prior.get(item.id) ?? Date.now() }));
+      // A Mac from before terminal names sends no recent output.
+      const enriched = items.map((item: PtySummary) => ({ ...item, tail: item.tail ?? "", machineId: info.id, machineName: info.name, firstSeen: prior.get(item.id) ?? Date.now() }));
       if (search) setSearchResults((current) => [...(current ?? []).filter((item) => item.machineId !== info.id), ...enriched]);
       else setSummaries((current) => ({ ...current, [info.id]: enriched }));
       for (const item of items) { const key = `${info.id}:${item.id}`; const pending = discoveryTimers.current.get(key); if (pending) clearTimeout(pending); discoveryTimers.current.delete(key); }
@@ -148,6 +158,8 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
       xterm.current = term; fit.current = fitAddon;
     }
     let live = true; let ready = false; buffered.current = [];
+    // Every terminal fits the box; only a shell this phone started is resized to match. A Mac pane keeps its own size.
+    const fitBox = () => { fitAddon.fit(); void resizePhoneTerminal(machine.host.backend, terminal.id, term.cols, term.rows).catch(() => {}); };
     const offPromise = machine.host.backend.onPtyData((id, data, eventCursor) => {
       if (!live || id !== terminal.id) return;
       if (!ready) buffered.current.push({ cursor: eventCursor, data });
@@ -158,18 +170,17 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
       try {
         const snapshot = await machine.host.backend.ptyAttach(terminal.id);
         if (!live) { off(); return; }
-        term.reset(); term.write(snapshot.output);
+        term.reset(); fitBox(); term.write(snapshot.output);
         for (const event of buffered.current) if (event.cursor > snapshot.cursor) term.write(event.data);
         cursor.current = Math.max(snapshot.cursor, ...buffered.current.map((event) => event.cursor), 0);
         buffered.current = []; ready = true;
-        if (fromPhone(terminal.id)) { fitAddon.fit(); void resizePhoneTerminal(machine.host.backend, terminal.id, term.cols, term.rows).catch(() => {}); }
       } catch (error) { if (live) setNotice(String(error)); }
       if (!live) off();
       return off;
     };
     let off: (() => void) | undefined;
     void attach().then((fn) => { off = fn; });
-    const observer = new ResizeObserver(() => { if (fromPhone(terminal.id)) { fitAddon.fit(); void resizePhoneTerminal(machine.host.backend, terminal.id, term.cols, term.rows).catch(() => {}); } });
+    const observer = new ResizeObserver(fitBox);
     observer.observe(xtermHost.current);
     return () => { live = false; off?.(); observer.disconnect(); };
   }, [view.kind, view.kind === "terminal" ? view.machineId : "", view.kind === "terminal" ? view.id : "", !!terminal, machine?.online]);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { age, appendTail, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, stripAnsi, stripOrder, swipeIntent } from '../src/phone/phoneTerminals.ts';
+import { age, appendTail, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, nextDotChange, stripAnsi, stripOrder, swipeIntent } from '../src/phone/phoneTerminals.ts';
 
 const terminal = (id, machineId = 'm1', project = 'apex-deck', extra = {}) => ({
   id, name: id, machineId, machineName: machineId, project, cwd: null, tail: '', matched: undefined,
@@ -12,6 +12,13 @@ test('terminal output helpers strip ANSI and recognize status prompts', () => {
   assert.equal(lastLine('old\rnew\n'), 'new');
   assert.equal(isYesNo('Delete local test data? (y/N)'), true);
   assert.equal(dotState(terminal('t', 'm1', 'p', { tail: 'Delete local test data? (y/N)', lastActivity: 0 }), 2000), 'ask');
+});
+
+test('a quiet running terminal is due a redraw when it may be asking, then when it goes idle', () => {
+  const items = [terminal('a', 'm1', 'p', { lastActivity: 10_000 }), terminal('done', 'm1', 'p', { state: 'exited', exitCode: 0, lastActivity: 9_000 })];
+  assert.equal(nextDotChange(items, 10_000), 11_500);
+  assert.equal(nextDotChange(items, 11_500), 15_000);
+  assert.equal(nextDotChange(items, 15_000), null);
 });
 
 test('status and source helpers classify completed and phone terminals', () => {
