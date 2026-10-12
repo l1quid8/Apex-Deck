@@ -234,7 +234,7 @@ export const PRESETS: Preset[] = [
     key: "muse",
     label: "Muse Code (Meta)",
     efforts: AGENT_EFFORTS.muse,
-    agent: { tool: "muse", detectKey: "muse", modelNote: "Runs on your Muse Code subscription, never a Meta API key. The list follows the models Muse offers your account.", enforcesAccess: true, asksFirst: false },
+    agent: { tool: "muse", detectKey: "muse", modelNote: "Runs on your Muse Code subscription, never a Meta API key. Each message also sends about 24k tokens of Muse's built-in instructions, so an Everyday plan's 5-hour allowance can run out after a few busy chats. The list follows the models Muse offers your account.", enforcesAccess: true, asksFirst: false },
   },
   { key: "ollama", label: "Ollama (local models)", efforts: API_EFFORTS, api: { baseUrl: "http://localhost:11434/v1", autoLoad: true } },
   { key: "api", label: "Other API (OpenAI-compatible)", efforts: API_EFFORTS, api: { baseUrl: "", autoLoad: false } },
