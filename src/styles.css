@@ -263,25 +263,22 @@ textarea {
 .host-actions { display: flex; gap: 8px; }
 .host-add { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; }
 .host-add label { display: flex; flex-direction: column; gap: 4px; }
-.canvas.section-agents { overflow: hidden; padding: 0; min-height: 0; }
-.agents-section {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  width: min(100%, 960px);
-  margin: 0 auto;
-  overflow: hidden;
-}
+/* Agents: one full panel, framed like Library and the Code panes. */
+.canvas.section-agents { overflow: hidden; padding: 16px; min-height: 0; }
+.agents-section { box-sizing: border-box; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.agents-section > .section-intro { flex: none; padding: 18px 22px 14px; border-bottom: 1px solid var(--line); }
+.agents-section > .section-intro h1 { font-size: 22px; }
+.agents-section > .section-intro p { font-size: 13px; }
 .agents-section .chat { flex: 1; min-height: 0; overflow: hidden; }
 .section-intro { padding: 28px 12px 18px; flex: none; }
 .section-intro h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.025em; }
 .section-intro p { color: var(--muted); margin: 0; }
-.section-agents { overflow: hidden; padding: 12px 24px; }
-.section-agents .chat { min-height: 0; }
-.section-agents .chat-bar { border: 0; padding: 0 12px 16px; flex: none; }
-.section-agents .agent-library { overflow-y: auto; flex: 1; min-height: 0; }
-.section-agents .add-form { border: 1px solid var(--line); border-radius: 10px; margin: 0 12px 16px; flex: none; overflow-y: auto; max-height: 55vh; }
+.section-agents .chat-bar { border: 0; padding: 14px 22px 0; flex: none; }
+.section-agents .chat-bar:not(:has(button)) { display: none; }
+.section-agents .agent-library { overflow-y: auto; flex: 1; min-height: 0; padding: 16px 22px 24px; }
+.section-agents .add-form { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; margin: 0; padding: 20px 22px; flex: 0 1 auto; min-height: 0; max-height: none; overflow-y: auto; background: transparent; }
+/* With saved agents below it, the form leaves room for the list. */
+.section-agents .chat:has(.agent-card) .add-form { max-height: 55vh; }
 .agent-library { overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 0 12px 24px; flex: 1; min-height: 0; }
 .agent-card { display: flex; align-items: flex-start; gap: 18px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .agent-card-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -567,6 +564,18 @@ textarea {
   margin: 0;
   font-weight: 600;
 }
+.add-form .form-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.add-form .form-head .form-title {
+  grid-column: auto;
+}
+.add-form .form-back {
+  flex: none;
+  padding: 2px 8px;
+}
 .chat-options {
   display: flex;
   flex-wrap: wrap;
@@ -603,11 +612,17 @@ textarea {
 }
 .add-form .wide,
 .add-form .form-error,
-.add-form > button {
+.add-form > button,
+.add-form .form-foot {
   grid-column: 1 / -1;
 }
 .add-form > button {
   justify-self: start;
+}
+.add-form .form-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .add-form input,
 .add-form select,
@@ -1215,7 +1230,7 @@ textarea {
   .section-navigation { margin-left: 0; }
   .section-button { padding: 5px 10px; }
   .agent-card { flex-wrap: wrap; }
-  .section-agents { padding: 8px; }
+  .canvas.section-agents { padding: 8px; }
   .rail {
     width: 160px;
   }
@@ -3485,3 +3500,5 @@ button.mod-status:hover { color: var(--text); }
   .apex-agent-transcript { padding-left: 14px; padding-right: 14px; }
   .apex-agent-controls { flex-direction: column; }
 }
+.agents-section .agent-card { background: var(--panel-2); }
+.agents-section .agent-library .empty { margin: 0; }

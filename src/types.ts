@@ -50,6 +50,12 @@ export interface ParticipantConfig {
   media?: MediaSettings | null;
 }
 
+/** A name and persona an AI wrote for a new agent from a short description (persona_draft). Nothing is saved until the person saves the form. */
+export interface PersonaDraftResult {
+  name: string;
+  persona: string;
+}
+
 /** What an image or video bot makes. Unset choices use the defaults in media.ts. */
 export interface MediaSettings {
   aspect_ratio?: string | null;

@@ -11,7 +11,7 @@ import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChang
 
 type Unlisten = () => void;
 
-export type PtySummary = { id: string; name: string; project: string | null; state: "running" | "exited"; exitCode: number | null; lastActivity: number; cursor: number };
+export type PtySummary = { id: string; name: string; project: string | null; cwd: string | null; tail: string; matched?: string; state: "running" | "exited"; exitCode: number | null; lastActivity: number; cursor: number };
 export type PtySnapshot = { id: string; output: string; cursor: number; state: "running" | "exited"; exitCode: number | null };
 
 /** Where an API key comes from: saved by Deck, set in the environment, or missing. */
@@ -64,14 +64,16 @@ export interface Backend {
   /** Look at a web address before the Preview pane loads it: does anything answer, and may it be framed. */
   previewProbe(address: string): Promise<PreviewProbe>;
 
-  ptySpawn(o: { id: string; agent?: string; cwd?: string; cols: number; rows: number }): Promise<void>;
-  ptyList(): Promise<PtySummary[]>;
+  ptySpawn(o: { id: string; agent?: string; cwd?: string; name?: string; cols: number; rows: number }): Promise<void>;
+  ptyList(query?: string): Promise<PtySummary[]>;
+  ptyRename(id: string, name: string): Promise<void>;
   ptyAttach(id: string): Promise<PtySnapshot>;
   ptyWrite(id: string, data: string): Promise<void>;
   ptyResize(id: string, cols: number, rows: number): Promise<void>;
   ptyKill(id: string): Promise<void>;
   onPtyData(cb: (id: string, data: string, cursor: number) => void): Promise<Unlisten>;
   onPtyExit(cb: (id: string, code: number | null) => void): Promise<Unlisten>;
+  onPtyRenamed(cb: (id: string, name: string) => void): Promise<Unlisten>;
 
   /** `cwd` is the workspace folder; command-line participants run there. */
   roomCreate(id: string, participants: ParticipantConfig[], options: RoomOptions, cwd: string): Promise<RoomSnapshot>;
@@ -631,6 +633,7 @@ function demoBackend(): Backend {
       setTimeout(() => emitData(id, `${title}\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, title, serve, exit or fail.\x1b[0m\r\n$ `), 30);
     },
     ptyList: async () => [],
+    ptyRename: async () => {},
     ptyAttach: async (id) => ({ id, output: "", cursor: 0, state: "exited", exitCode: null }),
     ptyWrite: async (id, data) => {
       if (endedPtys.has(id)) throw new Error(`no terminal with id ${id}`);
@@ -675,6 +678,7 @@ function demoBackend(): Backend {
       exitListeners.add(cb);
       return () => exitListeners.delete(cb);
     },
+    onPtyRenamed: async () => () => {},
 
     roomCreate: async (id, participants, options) => {
       const saved = JSON.parse(localStorage.getItem(`apex-deck.demo.room.${id}`) ?? "null");
