@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { MessageQuote, MessageReaction } from './apexAgentModel.ts';
 import { DeckIcon } from './DeckIcon.tsx';
 import { messageTime } from './messageActions.ts';
+import { ReadAloudAction } from './ReadAloudAction.tsx';
 import './apex-agent-message-actions.css';
 
 const REACTIONS: MessageReaction[] = ['👍', '❤️', '😂', '🎉', '👀', '🙏'];
@@ -29,25 +30,27 @@ export function ApexAgentMessageActions({ reactions = [], onToggleReaction, onRe
   const [copied, setCopied] = useState(false);
   const [failure, setFailure] = useState('');
   const [pending, setPending] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   useEffect(() => { root.current?.closest('article')?.classList.toggle('apex-agent-message-pinned', pinned); }, [pinned]);
   const reply = onReply && <button type="button" className="msg-action quote" onClick={onReply} disabled={disabled} aria-label="Reply to this message" title="Reply"><DeckIcon name="reply" size={18} /></button>;
   const copy = text !== undefined && <button type="button" className="msg-action copy" aria-label={copied ? 'Copied' : 'Copy message'} title={copied ? 'Copied' : 'Copy'} onClick={async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setFailure(''); setTimeout(() => setCopied(false), 1600); } catch { setFailure('Could not copy message.'); } }}>{copied ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}</button>;
   const pin = stateKey && <button type="button" className="msg-action pin-action" aria-label={pinned ? 'Unpin message' : 'Pin message'} aria-pressed={pinned} title={pinned ? 'Unpin (this device)' : 'Pin (this device)'} onClick={(event) => { try { localStorage.setItem(`apex-agent-pin:${stateKey}`, String(!pinned)); setPinned(!pinned); event.currentTarget.closest('article')?.classList.toggle('apex-agent-message-pinned', !pinned); } catch { setFailure('Could not save pin.'); } }}><svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={pinned ? 'currentColor' : 'none'}/><path d="M12 16v6" /></svg></button>;
   const retry = onRetry && <button type="button" className="msg-action retry" disabled={disabled || pending} aria-label="Retry answer" title="Request another answer; history and files are preserved" onClick={async () => { setPending(true); try { await onRetry(); setFailure(''); } catch (error) { setFailure(String(error)); } finally { setPending(false); } }}>{retryIcon}</button>;
   const revert = onRevert && <button type="button" className="msg-action revert" disabled={disabled} aria-label="Revert to composer" title="Restore message to composer; history and files are preserved" onClick={onRevert}>{revertIcon}</button>;
-  const pointsLeft = mine === collapsed;
-  const disclosure = <button type="button" className="msg-action action-disclosure" aria-label={collapsed ? 'Expand message' : 'Collapse message'} aria-expanded={!collapsed} title={collapsed ? 'Expand' : 'Collapse'} onClick={(event) => { setCollapsed(!collapsed); event.currentTarget.closest('article')?.classList.toggle('apex-agent-message-collapsed', !collapsed); }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={pointsLeft ? 'M15 6 9 12l6 6' : 'm9 6 6 6-6 6'} /></svg></button>;
+  // Like a thread's row: the chevron reveals or hides the extra actions, never the message text.
+  const pointsLeft = mine === expanded;
+  const disclosure = <button type="button" className="msg-action action-disclosure" aria-label={expanded ? 'Hide message actions' : 'Show message actions'} aria-expanded={expanded} title={expanded ? 'Hide message actions' : 'Show message actions'} onClick={() => setExpanded(!expanded)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={pointsLeft ? 'M15 6 9 12l6 6' : 'm9 6 6 6-6 6'} /></svg></button>;
+  const readAloud = text !== undefined && text.trim() !== '' && <ReadAloudAction key="read-aloud" text={text} />;
   const stamp = at !== undefined && <time className="message-time" dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()}>{messageTime(at)}</time>;
-  const primary = [reply, copy, pin].filter(Boolean) as ReactNode[];
+  const primary = [reply, copy, readAloud, pin].filter(Boolean) as ReactNode[];
   const extra = [retry, revert].filter(Boolean) as ReactNode[];
   const ordered = (items: ReactNode[]) => mine ? [...items].reverse() : items;
   return <div ref={root} className={`apex-agent-message-actions message-actions collapsed-actions${open ? ' held' : ''}`} aria-label="Message actions">
     {mine && stamp}
     {mine && disclosure}
-    {mine && <span className="message-action-items">{ordered(extra)}</span>}
+    {mine && expanded && <span className="message-action-items">{ordered(extra)}</span>}
     <span className="message-primary-actions">{ordered(primary)}</span>
-    {!mine && <span className="message-action-items">{extra}</span>}
+    {!mine && expanded && <span className="message-action-items">{extra}</span>}
     {!mine && disclosure}
     {!mine && stamp}
     {onToggleReaction && <div className="apex-agent-reactions" aria-label="Reactions">

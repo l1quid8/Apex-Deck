@@ -47,10 +47,6 @@
 .apex-agent-reply-quote blockquote { margin: 4px 0 0; max-height: 4.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9em; }
 .apex-agent-message-pinned > .apex-agent-message-bubble,
 .apex-agent-message-pinned > .assistant-chat-message { box-shadow: inset 3px 0 0 var(--accent); }
-.apex-agent-message-collapsed .apex-agent-message-body,
-.apex-agent-message-collapsed > .apex-agent-message-bubble > p,
-.apex-agent-message-collapsed > .assistant-chat-message > p,
-.apex-agent-message-collapsed .apex-agent-all-evidence { display: none; }
 
 @media (hover: hover) {
   .apex-agent-message-actions .msg-action,

@@ -625,6 +625,7 @@ function createWindow(host, beside) {
     minWidth: 900,
     minHeight: 600,
     title: 'Apex Deck',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     show: !smoke,
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),

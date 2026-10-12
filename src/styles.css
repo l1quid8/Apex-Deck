@@ -137,9 +137,18 @@ textarea {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 16px;
+  padding: 8px 16px 8px 88px;
   background: transparent;
   --tb-scale: 0.75;
+  -webkit-app-region: drag;
+}
+.titlebar button,
+.titlebar a,
+.titlebar input,
+.titlebar select,
+.titlebar textarea,
+.titlebar [role="button"] {
+  -webkit-app-region: no-drag;
 }
 .titlebar > .titlebar-start > button,
 .titlebar > .titlebar-start > .attention > .attention-button,

@@ -36,6 +36,7 @@ import { rememberModel, rememberedModels } from "./modelMemory";
 import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, apiModelGroups, defaultEffortFor, effortLabel, effortsFor, findModel, modelGroups } from "./models";
 import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
+import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
 import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, percent, planLevel, planLine, spendLine, tokenLine, windowLabel, type Levels } from "./battery";
 import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
@@ -1518,6 +1519,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       <button key="copy" type="button" className="msg-action copy" title="Copy" aria-label={copiedHere ? "Copied" : "Copy message"} onClick={copy}>
         {copiedHere ? <span className="copied">Copied</span> : <DeckIcon name="copy" size={16} />}
       </button>,
+      message.speaker.kind === "bot" && <ReadAloudAction key="read-aloud" text={message.text} />,
       canPin && <button key="pin" type="button" className="msg-action pin-action" title={pinLabel} aria-label={pinLabel} aria-pressed={pinned} disabled={unpinning} onClick={togglePin}>
         <svg width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4Z" fill={pinned ? "currentColor" : "none"}/><path d="M12 16v6" /></svg>
       </button>,
