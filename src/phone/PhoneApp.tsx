@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 import { botChangeGate, botSendGate } from "../phoneBots";
 import { ApprovalCard } from "../ApprovalCard";
@@ -1323,7 +1323,7 @@ export function PhoneApp() {
             onError={setNotice}
           />
         ) : (
-          <SideTab tab={tab} link={openLink ?? mac ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors}
+          <SideTab tab={tab} link={openLink ?? mac ?? null} host={openLink ? phoneHost(openLink.id) : null} terminalCwd={openWorkspace?.path ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors}
             personal={personal} onPersonal={() => setPersonalOpen(true)}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
@@ -2415,7 +2415,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   );
 }
 
-function SideTab({ tab, link, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, onAssistant, onShow, personal, onPersonal }: { tab: Tab; link: LinkView | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void }) {
+function SideTab({ tab, link, host, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, onAssistant, onShow, personal, onPersonal }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
   // The Library lists every paired machine itself, so it doesn't follow one machine or wait on the Mac.
   if (tab === "library") return <main className="ph-content" inert={covered}>{library}</main>;
@@ -2471,7 +2471,106 @@ function SideTab({ tab, link, agents, bots, covered, library, assistantProjects,
       {link && !offline && tab === "agents" && (agents.length === 0
         ? <div className="ph-empty"><h3>No coding agents found</h3><p>Nothing installed on {link.name} yet.</p></div>
         : <><div className="ph-section">Installed on {link.name}</div><div className="ph-group">{agents.map((agent) => <div key={agent} className="ph-srow ph-inset"><span className="ph-srow-icon ph-muted-icon"><Terminal size={18} /></span><span className="ph-grow"><strong>{agent}</strong><small>Ready</small></span></div>)}</div></>)}
-      {link && !offline && tab === "code" && <div className="ph-empty"><Terminal size={30} /><h3>Terminals aren't on the phone yet</h3><p>Terminals and the browser run on {link.name}. Open them from the Mac for now.</p></div>}
+      {link && !offline && tab === "code" && <PhoneTerminals host={host} name={link.name} cwd={terminalCwd} />}
     </main>
   );
+}
+
+function PhoneTerminals({ host, name, cwd }: { host: PhoneHost | null; name: string; cwd: string | null }) {
+  const [terminals, setTerminals] = useState<import("../backend").PtySummary[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [output, setOutput] = useState("");
+  const [input, setInput] = useState("");
+  const [error, setError] = useState("");
+  const cursor = useRef(0);
+  const buffered = useRef<{ cursor: number; data: string }[]>([]);
+
+  const refresh = async (selectId?: string) => {
+    if (!host) return;
+    const items = await host.backend.ptyList();
+    setTerminals(items);
+    setSelected((current) => selectId ?? (current && items.some((item) => item.id === current) ? current : items[0]?.id ?? null));
+    setError("");
+  };
+
+  useEffect(() => {
+    if (!host) return;
+    let live = true;
+    let stop: (() => void) | undefined;
+    host.backend.onPtyExit((id, code) => {
+      if (!live) return;
+      setTerminals((items) => items.map((item) => item.id === id ? { ...item, state: "exited", exitCode: code, lastActivity: Date.now() } : item));
+    }).then((off) => { if (live) stop = off; else off(); }).catch(() => {});
+    refresh().catch((reason) => { if (live) setError(words(reason)); });
+    return () => { live = false; stop?.(); };
+  }, [host]);
+
+  useEffect(() => {
+    if (!host || !selected) { setOutput(""); return; }
+    let live = true;
+    let ready = false;
+    buffered.current = [];
+    setOutput("");
+    const attach = async () => {
+      const off = await host.backend.onPtyData((id, data, eventCursor) => {
+        if (!live || id !== selected) return;
+        if (!ready) buffered.current.push({ cursor: eventCursor, data });
+        else if (eventCursor > cursor.current) {
+          cursor.current = eventCursor;
+          setOutput((current) => (current + data).slice(-256 * 1024));
+        }
+      });
+      try {
+        const snapshot = await host.backend.ptyAttach(selected);
+        if (!live) { off(); return; }
+        cursor.current = snapshot.cursor;
+        let text = snapshot.output;
+        for (const event of buffered.current) if (event.cursor > snapshot.cursor) text += event.data;
+        buffered.current = [];
+        setOutput(text);
+        ready = true;
+        setError("");
+      } catch (reason) { if (live) setError(words(reason)); }
+      if (!live) off();
+      return off;
+    };
+    let stop: (() => void) | undefined;
+    void attach().then((off) => { if (live) stop = off; else off?.(); });
+    return () => { live = false; stop?.(); };
+  }, [host, selected]);
+
+  const terminal = terminals.find((item) => item.id === selected) ?? null;
+  const newShell = async () => {
+    if (!host) return;
+    const id = `phone-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    try {
+      await host.backend.ptySpawn({ id, cwd: cwd ?? undefined, cols: 80, rows: 24 });
+      await refresh(id);
+    } catch (reason) { setError(words(reason)); }
+  };
+  const endTerminal = async () => {
+    if (!host || !terminal) return;
+    try { await host.backend.ptyKill(terminal.id); await refresh(terminal.id); }
+    catch (reason) { setError(words(reason)); }
+  };
+  const send = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!host || !terminal || terminal.state !== "running" || !input) return;
+    try { await host.backend.ptyWrite(terminal.id, `${input}\r`); setInput(""); }
+    catch (reason) { setError(words(reason)); }
+  };
+
+  return <>
+    <div className="ph-section">Terminals · {name}</div>
+    {error && <div className="ph-empty"><h3>{/limited to some threads/i.test(error) ? "Needs access to all threads" : /access|permission|full/i.test(error) ? "Needs Full access" : "Couldn't load terminals"}</h3><p>{/limited to some threads/i.test(error) ? `Terminal access is machine-wide. Allow this phone every thread on ${name}.` : /access|permission|full/i.test(error) ? `Set this phone to Full access on ${name}.` : error}</p></div>}
+    {!error && <><button type="button" className="ph-srow" onClick={() => void newShell()}><span className="ph-grow"><strong>＋ New shell</strong><small>Start a shell on {cwd?.split(/[\\/]/).filter(Boolean).pop() ?? name}</small></span></button><button type="button" className="ph-srow" onClick={() => void refresh().catch((reason) => setError(words(reason)))}><span className="ph-grow"><strong>Refresh terminals</strong></span></button></>}
+    {!error && terminals.length === 0 && <div className="ph-empty"><Terminal size={30} /><h3>No Apex Deck terminals</h3><p>Open a terminal in Apex Deck on {name} to see it here.</p></div>}
+    {terminals.length > 0 && <div className="ph-group">{terminals.map((item) => <button key={item.id} type="button" className="ph-srow" onClick={() => setSelected(item.id)}>
+      <span className="ph-grow"><strong>{item.name}</strong><small>{item.project ?? name} · {item.state === "running" ? "Running" : item.exitCode === 0 ? "Finished" : `Exited ${item.exitCode ?? ""}`}</small></span>
+      {item.id === selected && <ChevronRight size={16} />}
+    </button>)}</div>}
+    {terminal && <><pre className="ph-terminal-output">{output || "Waiting for terminal output…"}</pre>
+      {terminal.state === "running" && <form className="ph-terminal-input" onSubmit={(event) => void send(event)}><input value={input} onChange={(event) => setInput(event.target.value)} placeholder="Send input to terminal" /><button type="submit">Send</button><button type="button" onClick={() => void endTerminal()}>End</button></form>}
+    </>}
+  </>;
 }

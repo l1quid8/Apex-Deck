@@ -1,17 +1,19 @@
 //! Terminal sessions. Each pane in the UI owns one pseudo-terminal here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 /// Called with terminal output as it arrives.
-pub type OutputSink = Box<dyn Fn(&str) + Send>;
+pub type OutputSink = Box<dyn Fn(u64, &str) + Send>;
 /// Called once when the program in the terminal exits.
 pub type ExitSink = Box<dyn FnOnce(Option<u32>) + Send>;
 
 struct Session {
+    generation: u64,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -21,9 +23,27 @@ struct Session {
 #[derive(Default, Clone)]
 pub struct PtyManager {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
+    records: Arc<Mutex<HashMap<String, PtyRecord>>>,
+    generation: Arc<AtomicU64>,
 }
 
+const HISTORY_LIMIT: usize = 256 * 1024;
+const EXIT_RETENTION_MS: u64 = 5 * 60 * 1000;
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySummary { pub id: String, pub name: String, pub project: Option<String>, pub state: String, pub exit_code: Option<u32>, pub last_activity: u64, pub cursor: u64 }
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySnapshot { pub id: String, pub output: String, pub cursor: u64, pub state: String, pub exit_code: Option<u32> }
+
+struct PtyRecord { generation: u64, name: String, project: Option<String>, state: String, exit_code: Option<u32>, last_activity: u64, cursor: u64, history: VecDeque<u8>, exited_at: Option<u64> }
+
+fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
+
 pub struct SpawnOptions {
+    pub name: Option<String>,
     pub program: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
@@ -72,6 +92,9 @@ impl PtyManager {
     ) -> Result<(), String> {
         self.kill(id);
 
+        let project = options.cwd.as_deref().filter(|c| !c.is_empty()).and_then(|c| {
+            std::path::Path::new(c).file_name().map(|name| name.to_string_lossy().into_owned())
+        });
         let pair = native_pty_system()
             .openpty(size(options.cols, options.rows))
             .map_err(|e| format!("could not open a terminal: {e}"))?;
@@ -98,11 +121,20 @@ impl PtyManager {
             pair.master.take_writer().map_err(|e| format!("could not write to the terminal: {e}"))?;
         let killer = child.clone_killer();
 
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         self.sessions
             .lock()
             .unwrap()
-            .insert(id.to_string(), Session { writer, master: pair.master, killer });
+            .insert(id.to_string(), Session { generation, writer, master: pair.master, killer });
 
+        self.records.lock().unwrap().insert(id.to_string(), PtyRecord {
+            generation, name: options.name.clone().unwrap_or_else(|| "shell".into()), project, state: "running".into(), exit_code: None,
+            last_activity: now_ms(), cursor: 0, history: VecDeque::new(), exited_at: None,
+        });
+
+        let records = Arc::clone(&self.records);
+        let output_id = id.to_string();
+        let output_generation = generation;
         std::thread::spawn(move || {
             let mut decoder = Utf8Stream::default();
             let mut buffer = [0u8; 8192];
@@ -112,7 +144,16 @@ impl PtyManager {
                     Ok(read) => {
                         let text = decoder.push(&buffer[..read]);
                         if !text.is_empty() {
-                            on_output(&text);
+                            let cursor = {
+                                let mut records = records.lock().unwrap();
+                                let Some(record) = records.get_mut(&output_id).filter(|r| r.generation == output_generation) else { continue };
+                                record.cursor = record.cursor.saturating_add(1);
+                                record.last_activity = now_ms();
+                                record.history.extend(text.as_bytes());
+                                while record.history.len() > HISTORY_LIMIT { record.history.pop_front(); }
+                                record.cursor
+                            };
+                            on_output(cursor, &text);
                         }
                     }
                 }
@@ -120,10 +161,22 @@ impl PtyManager {
         });
 
         let sessions = Arc::clone(&self.sessions);
+        let records = Arc::clone(&self.records);
         let id = id.to_string();
+        let exit_generation = generation;
         std::thread::spawn(move || {
             let code = child.wait().ok().map(|status| status.exit_code());
-            sessions.lock().unwrap().remove(&id);
+            let mut sessions = sessions.lock().unwrap();
+            if sessions.get(&id).is_some_and(|session| session.generation == exit_generation) {
+                sessions.remove(&id);
+            }
+            drop(sessions);
+            if let Some(record) = records.lock().unwrap().get_mut(&id).filter(|r| r.generation == exit_generation) {
+                record.state = "exited".into();
+                record.exit_code = code;
+                record.last_activity = now_ms();
+                record.exited_at = Some(record.last_activity);
+            }
             on_exit(code);
         });
 
@@ -158,6 +211,32 @@ impl PtyManager {
         }
     }
 
+    pub fn list(&self) -> Vec<PtySummary> {
+        let now = now_ms();
+        let mut records = self.records.lock().unwrap();
+        records.retain(|_, record| record.exited_at.is_none_or(|at| now.saturating_sub(at) <= EXIT_RETENTION_MS));
+        let mut items: Vec<_> = records.iter().map(|(id, r)| PtySummary {
+            id: id.clone(), name: r.name.clone(), project: r.project.clone(), state: r.state.clone(),
+            exit_code: r.exit_code, last_activity: r.last_activity, cursor: r.cursor,
+        }).collect();
+        items.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+        items
+    }
+
+    pub fn snapshot(&self, id: &str) -> Result<PtySnapshot, String> {
+        let now = now_ms();
+        let mut records = self.records.lock().unwrap();
+        records.retain(|_, record| record.exited_at.is_none_or(|at| now.saturating_sub(at) <= EXIT_RETENTION_MS));
+        let record = records.get(id).ok_or_else(|| format!("no retained terminal with id {id}"))?;
+        let cursor = record.cursor;
+        let state = record.state.clone();
+        let exit_code = record.exit_code;
+        let history: Vec<_> = record.history.iter().copied().collect();
+        drop(records);
+        let output = String::from_utf8_lossy(&history).into_owned();
+        Ok(PtySnapshot { id: id.into(), output, cursor, state, exit_code })
+    }
+
     #[cfg(test)]
     pub fn is_open(&self, id: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(id)
@@ -181,13 +260,14 @@ mod tests {
             .spawn(
                 id,
                 SpawnOptions {
+                    name: Some("shell".into()),
                     program: "/bin/sh".into(),
                     args: vec!["-c".into(), script.into()],
                     cwd: None,
                     cols: 80,
                     rows: 24,
                 },
-                Box::new(move |text| {
+                Box::new(move |_, text| {
                     let _ = out_tx.send(text.to_string());
                 }),
                 Box::new(move |code| {
@@ -217,6 +297,23 @@ mod tests {
         assert!(read_until(&out, "hello-from-pty").contains("hello-from-pty"));
         assert_eq!(exit.recv_timeout(Duration::from_secs(5)).unwrap(), Some(7));
         assert!(!manager.is_open("a"));
+        let snapshot = manager.snapshot("a").unwrap();
+        assert!(snapshot.output.contains("hello-from-pty"));
+        assert_eq!(snapshot.state, "exited");
+        assert_eq!(snapshot.exit_code, Some(7));
+        assert!(snapshot.cursor > 0);
+        assert_eq!(manager.list()[0].id, "a");
+    }
+
+    #[test]
+    fn history_is_bounded_and_snapshot_remains_valid_utf8() {
+        let manager = PtyManager::default();
+        let (_out, exit) = spawn_sh(&manager, "bounded", "head -c 300000 /dev/zero | tr '\\000' x");
+        exit.recv_timeout(Duration::from_secs(10)).unwrap();
+        let snapshot = manager.snapshot("bounded").unwrap();
+        assert!(snapshot.output.len() <= HISTORY_LIMIT);
+        assert!(snapshot.output.len() >= HISTORY_LIMIT - 4);
+        assert!(snapshot.output.chars().all(|ch| ch == 'x' || ch == '\n' || ch == '\r'));
     }
 
     #[test]
@@ -257,13 +354,14 @@ mod tests {
             .spawn(
                 "e",
                 SpawnOptions {
+                    name: Some("shell".into()),
                     program: "/bin/sh".into(),
                     args: vec!["-c".into(), "pwd".into()],
                     cwd: Some("/tmp".into()),
                     cols: 80,
                     rows: 24,
                 },
-                Box::new(move |text| {
+                Box::new(move |_, text| {
                     let _ = out_tx.send(text.to_string());
                 }),
                 Box::new(|_| {}),

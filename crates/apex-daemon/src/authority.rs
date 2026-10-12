@@ -102,7 +102,7 @@ pub fn command_needs(command: &Command) -> Need {
 
         // Full, and only for devices allowed every thread: terminals,
         // folders and files, new threads, and whole-session or settings writes.
-        PtySpawn { .. } | PtyWrite { .. } | PtyResize { .. } | PtyKill { .. } => full(Global),
+        PtySpawn { .. } | PtyList {} | PtyAttach { .. } | PtyWrite { .. } | PtyResize { .. } | PtyKill { .. } => full(Global),
         FolderList { .. } | FileRead { .. } | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. } | WorktreeList { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreePrune { .. } => full(Global),
         WorkspaceRead { .. } => full(Global),
         PathsExist { .. } => full(Global),
@@ -316,6 +316,8 @@ mod tests {
             ("list_tool_servers", Some((Full, "thread")), json!({ "room": "mine", "agent": "null" })),
             ("generate_image", Some((Full, "thread")), json!({ "room": "mine", "provider": "p", "prompt": "x" })),
             ("pty_spawn", Some((Full, "global")), json!({ "id": "p", "cols": 80, "rows": 24 })),
+            ("pty_list", Some((Full, "global")), json!({})),
+            ("pty_attach", Some((Full, "global")), json!({ "id": "p" })),
             ("pty_write", Some((Full, "global")), json!({ "id": "p", "data": "x" })),
             ("pty_resize", Some((Full, "global")), json!({ "id": "p", "cols": 80, "rows": 24 })),
             ("pty_kill", Some((Full, "global")), json!({ "id": "p" })),
@@ -426,7 +428,7 @@ mod tests {
             (HostEvent::AssistantTasksChanged { workspace_id: "w".into(), revision: 1 }, Some((Tier::ReadOnly, "global"))),
             (HostEvent::PersonalChanged { assistant_id: "asst-1".into(), revision: 1 }, Some((Tier::Full, "global"))),
             (HostEvent::Room { room: "mine".into(), event: RoomEvent::TurnStarted { id: ParticipantId::new("null") }, recovery_seq: None }, Some((Tier::ReadOnly, "thread"))),
-            (HostEvent::PtyData { id: "p".into(), data: "x".into() }, Some((Tier::Full, "global"))),
+            (HostEvent::PtyData { id: "p".into(), data: "x".into(), cursor: 1 }, Some((Tier::Full, "global"))),
             (HostEvent::PtyExit { id: "p".into(), code: None }, Some((Tier::Full, "global"))),
             (HostEvent::SessionChanged(json!({})), Some((Tier::ReadOnly, "global"))),
             (HostEvent::SettingsChanged(json!({})), Some((Tier::Full, "global"))),

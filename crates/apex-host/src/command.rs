@@ -84,6 +84,8 @@ pub enum Command {
     AgentsDetect {},
     ListToolServers { room: String, agent: String },
     PtySpawn { id: String, agent: Option<String>, cwd: Option<String>, cols: u16, rows: u16 },
+    PtyList {},
+    PtyAttach { id: String },
     PtyWrite { id: String, data: String },
     PtyResize { id: String, cols: u16, rows: u16 },
     PtyKill { id: String },
@@ -288,6 +290,8 @@ impl Host {
             AgentsDetect {} => reply(self.agents_detect()),
             ListToolServers { room, agent } => reply(self.list_tool_servers(room, agent).await?),
             PtySpawn { id, agent, cwd, cols, rows } => reply(self.pty_spawn(id, agent, cwd, cols, rows)?),
+            PtyList {} => reply(self.pty_list()),
+            PtyAttach { id } => reply(self.pty_attach(id)?),
             PtyWrite { id, data } => reply(self.pty_write(id, data)?),
             PtyResize { id, cols, rows } => reply(self.pty_resize(id, cols, rows)?),
             PtyKill { id } => { self.pty_kill(id); reply(()) },
@@ -416,6 +420,12 @@ mod tests {
     }
 
     #[test]
+    fn terminal_list_and_attach_commands_deserialize() {
+        assert!(matches!(Command::from_json(json!({ "cmd": "pty_list" })).unwrap(), Command::PtyList {}));
+        assert!(matches!(Command::from_json(json!({ "cmd": "pty_attach", "args": { "id": "pane-1" } })).unwrap(), Command::PtyAttach { id } if id == "pane-1"));
+    }
+
+    #[test]
     fn handoff_preparation_command_deserializes_exact_payload() {
         let command = Command::from_json(json!({"cmd":"assistant_handoff_prepare","args":{"requestId":"child","batchId":"batch","owner":{"workspaceId":"w","cwd":"/p","hostId":"h","conversationId":"c"},"revision":2,"originalRequest":"Ask Null to fix login","brief":"Fix login","destination":{"threadId":"t","workers":["null"],"newThread":false},"mode":"isolated","reviewCriteria":[]}})).unwrap();
         assert!(matches!(command, Command::AssistantHandoffPrepare { input } if input.batch_id == "batch" && input.revision == 2));
@@ -424,7 +434,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 118);
+        assert_eq!(names.len(), 132);
         assert!(names.contains(&"personal_send".to_string()));
         assert!(names.contains(&"personal_react".to_string()));
         assert!(names.contains(&"monitor_react".to_string()));

@@ -31,7 +31,7 @@ pub enum HostEvent {
     Room { room: String, event: RoomEvent, #[serde(skip_serializing_if = "Option::is_none")] recovery_seq: Option<u64> },
     /// Terminal output.
     #[serde(rename = "pty-data")]
-    PtyData { id: String, data: String },
+    PtyData { id: String, data: String, cursor: u64 },
     /// The program in a terminal ended.
     #[serde(rename = "pty-exit")]
     PtyExit { id: String, code: Option<u32> },
@@ -207,8 +207,8 @@ mod tests {
         let room = HostEvent::Room { room: "r1".into(), event: RoomEvent::TurnStarted { id: ParticipantId::new("null") }, recovery_seq: None };
         assert_eq!(room.name(), "room-event");
         assert_eq!(room.payload(), json!({ "room": "r1", "event": { "type": "turn_started", "id": "null" } }));
-        let data = HostEvent::PtyData { id: "p".into(), data: "hi".into() };
-        assert_eq!((data.name(), data.payload()), ("pty-data", json!({ "id": "p", "data": "hi" })));
+        let data = HostEvent::PtyData { id: "p".into(), data: "hi".into(), cursor: 1 };
+        assert_eq!((data.name(), data.payload()), ("pty-data", json!({ "id": "p", "data": "hi", "cursor": 1 })));
         let exit = HostEvent::PtyExit { id: "p".into(), code: None };
         assert_eq!((exit.name(), exit.payload()), ("pty-exit", json!({ "id": "p", "code": null })));
         let quit = HostEvent::QuitRequested(3);
@@ -239,7 +239,7 @@ mod tests {
     }
 
     fn data(n: u64) -> HostEvent {
-        HostEvent::PtyData { id: "p".into(), data: n.to_string() }
+        HostEvent::PtyData { id: "p".into(), data: n.to_string(), cursor: n }
     }
 
     fn seqs(envelopes: Option<Vec<Envelope>>) -> Option<Vec<u64>> {
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn the_buffer_keeps_a_bounded_number_of_bytes() {
-        let big = |n: u64| HostEvent::PtyData { id: "p".into(), data: format!("{n}{}", "x".repeat(1000)) };
+        let big = |n: u64| HostEvent::PtyData { id: "p".into(), data: format!("{n}{}", "x".repeat(1000)), cursor: n };
         let bus = Bus::with_replay(usize::MAX, 2500);
         (1..=4).for_each(|n| { bus.emit(big(n)); });
         assert_eq!(seqs(bus.since(2)), Some(vec![3, 4]));
@@ -300,7 +300,7 @@ mod tests {
                 let bus = Arc::clone(&bus);
                 std::thread::spawn(move || {
                     for i in 0..50 {
-                        bus.emit(HostEvent::PtyData { id: format!("{t}"), data: format!("{i}") });
+                        bus.emit(HostEvent::PtyData { id: format!("{t}"), data: format!("{i}"), cursor: i });
                     }
                 })
             })

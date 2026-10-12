@@ -756,7 +756,7 @@ mod tests {
             let (daemon, emitting) = (Arc::clone(&daemon), Arc::clone(&emitting));
             std::thread::spawn(move || {
                 while emitting.load(std::sync::atomic::Ordering::SeqCst) {
-                    daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: "x".into() });
+                    daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: "x".into(), cursor: 1 });
                     let pause = std::time::Instant::now();
                     while pause.elapsed() < Duration::from_micros(50) {
                         std::hint::spin_loop();
@@ -799,7 +799,7 @@ mod tests {
     async fn a_seq_that_fell_out_of_the_buffer_is_not_resumed() {
         let (daemon, _data) = daemon();
         for n in 0..=apex_host::events::REPLAY_EVENTS {
-            daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: n.to_string() });
+            daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: n.to_string(), cursor: n as u64 });
         }
         let mut back = connect_to(&daemon, Trust::Local);
         back.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "since": { "boot_id": "boot-1", "seq": 0 } } })).await;
@@ -815,7 +815,7 @@ mod tests {
         // The client reads nothing while far more events than a subscriber
         // may fall behind are sent.
         for n in 0..apex_host::events::BUS_CAPACITY * 2 {
-            daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: n.to_string() });
+            daemon.host.events().emit(apex_host::events::HostEvent::PtyData { id: "p".into(), data: n.to_string(), cursor: n as u64 });
         }
         let mut last = Value::Null;
         while let Some(frame) = slow.next().await {
@@ -973,7 +973,7 @@ mod tests {
     }
 
     fn pty(data: &str) -> HostEvent {
-        HostEvent::PtyData { id: "p".into(), data: data.into() }
+        HostEvent::PtyData { id: "p".into(), data: data.into(), cursor: 0 }
     }
 
     /// Every frame that arrives within `wait`, until the connection closes.

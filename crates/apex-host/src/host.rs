@@ -480,6 +480,7 @@ impl Host {
             ),
         };
         let (program, args) = agents::launch_command(program);
+        let name = agent.as_deref().and_then(|key| agents::KNOWN_AGENTS.iter().find(|a| a.key == key).map(|a| a.label.to_string()));
 
         let out_host = Arc::clone(self);
         let out_id = id.clone();
@@ -487,9 +488,9 @@ impl Host {
         let exit_id = id.clone();
         self.ptys.spawn(
             &id,
-            SpawnOptions { program, args, cwd, cols, rows },
-            Box::new(move |data| {
-                out_host.emit(HostEvent::PtyData { id: out_id.clone(), data: data.to_string() });
+            SpawnOptions { name, program, args, cwd, cols, rows },
+            Box::new(move |cursor, data| {
+                out_host.emit(HostEvent::PtyData { id: out_id.clone(), data: data.to_string(), cursor });
             }),
             Box::new(move |code| {
                 exit_host.emit(HostEvent::PtyExit { id: exit_id, code });
@@ -508,6 +509,10 @@ impl Host {
     pub fn pty_kill(&self, id: String) {
         self.ptys.kill(&id);
     }
+
+    pub fn pty_list(&self) -> Vec<crate::pty::PtySummary> { self.ptys.list() }
+
+    pub fn pty_attach(&self, id: String) -> Result<crate::pty::PtySnapshot, String> { self.ptys.snapshot(&id) }
 
     // ------------------------------------------------------------ group chats
 

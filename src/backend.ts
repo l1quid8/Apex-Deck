@@ -11,6 +11,9 @@ import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChang
 
 type Unlisten = () => void;
 
+export type PtySummary = { id: string; name: string; project: string | null; state: "running" | "exited"; exitCode: number | null; lastActivity: number; cursor: number };
+export type PtySnapshot = { id: string; output: string; cursor: number; state: "running" | "exited"; exitCode: number | null };
+
 /** Where an API key comes from: saved by Deck, set in the environment, or missing. */
 export type KeyState = "saved" | "environment" | "missing";
 const demoKeys = new Set<string>();
@@ -62,10 +65,12 @@ export interface Backend {
   previewProbe(address: string): Promise<PreviewProbe>;
 
   ptySpawn(o: { id: string; agent?: string; cwd?: string; cols: number; rows: number }): Promise<void>;
+  ptyList(): Promise<PtySummary[]>;
+  ptyAttach(id: string): Promise<PtySnapshot>;
   ptyWrite(id: string, data: string): Promise<void>;
   ptyResize(id: string, cols: number, rows: number): Promise<void>;
   ptyKill(id: string): Promise<void>;
-  onPtyData(cb: (id: string, data: string) => void): Promise<Unlisten>;
+  onPtyData(cb: (id: string, data: string, cursor: number) => void): Promise<Unlisten>;
   onPtyExit(cb: (id: string, code: number | null) => void): Promise<Unlisten>;
 
   /** `cwd` is the workspace folder; command-line participants run there. */
@@ -266,7 +271,7 @@ export type HostUpdateResult =
 /** A stand-in for the desktop shell. Terminals echo what you type and chat
  *  participants answer with a canned line. Nothing here talks to a model. */
 function demoBackend(): Backend {
-  const dataListeners = new Set<(id: string, data: string) => void>();
+  const dataListeners = new Set<(id: string, data: string, cursor: number) => void>();
   const exitListeners = new Set<(id: string, code: number | null) => void>();
   /** Preview terminals whose pretend program has ended or been killed. */
   const endedPtys = new Set<string>();
@@ -277,7 +282,12 @@ function demoBackend(): Backend {
   const roomListeners = new Set<(room: string, event: RoomEvent) => void>();
   const rooms = new Map<string, { participants: ParticipantConfig[]; options: RoomOptions; transcript: RoomSnapshot["transcript"]; compaction?: RoomSnapshot["compaction"]; pins?: string[]; allowed?: AllowedRule[]; usage?: Record<string, TokenTotals>; plan?: boolean; seq: number; stopped: boolean; last: string[] }>();
   const cancellations = new Map<string, () => void>();
-  const emitData = (id: string, data: string) => dataListeners.forEach((cb) => cb(id, data));
+  const demoCursors = new Map<string, number>();
+  const emitData = (id: string, data: string) => {
+    const cursor = (demoCursors.get(id) ?? 0) + 1;
+    demoCursors.set(id, cursor);
+    dataListeners.forEach((cb) => cb(id, data, cursor));
+  };
   const saveRoom = (id: string) => {
     const room = rooms.get(id);
     if (room) localStorage.setItem(`apex-deck.demo.room.${id}`, JSON.stringify(room));
@@ -614,6 +624,8 @@ function demoBackend(): Backend {
       const title = agent ? "\x1b]0;\u2733 Reading the project\x07" : "";
       setTimeout(() => emitData(id, `${title}\x1b[2m${what}: keys are echoed, nothing runs. Try ask, work, long, title, serve, exit or fail.\x1b[0m\r\n$ `), 30);
     },
+    ptyList: async () => [],
+    ptyAttach: async (id) => ({ id, output: "", cursor: 0, state: "exited", exitCode: null }),
     ptyWrite: async (id, data) => {
       if (endedPtys.has(id)) throw new Error(`no terminal with id ${id}`);
       emitData(id, data.replace(/\r/g, "\r\n$ ").replace(/\x7f/g, "\b \b"));

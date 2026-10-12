@@ -1126,3 +1126,18 @@
   background: transparent;
   padding: 12px;
 }
+.ph-terminal-output {
+  margin: 12px 0;
+  padding: 14px;
+  max-height: 42vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #111318;
+  color: #d9e0e8;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ph-terminal-input { display: flex; gap: 8px; padding: 0 2px; }
+.ph-terminal-input input { min-width: 0; flex: 1; }

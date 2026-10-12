@@ -193,7 +193,7 @@ fn a_chat_a_terminal_an_approval_and_a_restart() {
     first.call(json!({ "cmd": "pty_spawn", "args": { "id": "term", "agent": null, "cwd": null, "cols": 80, "rows": 24 } })).unwrap();
     first.call(json!({ "cmd": "pty_write", "args": { "id": "term", "data": "echo apex-$((40+2))\n" } })).unwrap();
     assert!(
-        first.wait_for(Duration::from_secs(20), |e| matches!(e, HostEvent::PtyData { id, data } if id == "term" && data.contains("apex-42"))),
+        first.wait_for(Duration::from_secs(20), |e| matches!(e, HostEvent::PtyData { id, data, .. } if id == "term" && data.contains("apex-42"))),
         "the terminal's output arrives"
     );
     first.call(json!({ "cmd": "pty_kill", "args": { "id": "term" } })).unwrap();
