@@ -2238,7 +2238,7 @@ export function App() {
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
                 let route: Backend | null = null;
                 try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
-                return <RightFilesTab root={workspace?.path || null} backend={route} threadId={pane?.kind === "chat" ? pane.id : null} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
+                return <RightFilesTab root={workspace?.path || null} backend={route} threadId={pane?.kind === "chat" ? pane.id : null} paneId={pane?.kind === "chat" ? pane.id : null} local={workspace ? workspaceHost(workspace) === "local" : false} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
               },
               worktrees: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);

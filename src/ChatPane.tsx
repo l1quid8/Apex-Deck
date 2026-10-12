@@ -26,6 +26,8 @@ import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, u
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
 import { appendToolToken, findTrigger, insertAt } from "./composerMenu";
+
+export const INSERT_COMPOSER_EVENT = "deck:insert-composer";
 import { createPortal } from "react-dom";
 import { ThreadDetails, type DetailsHost } from "./ThreadDetails";
 import type { Backend, KeyState } from "./backend";
@@ -590,6 +592,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const noticeKey = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const insert = (event: Event) => {
+      const detail = (event as CustomEvent<{ paneId: string; text: string }>).detail;
+      if (detail?.paneId !== pane.id || !detail.text) return;
+      const field = input.current;
+      const caret = field?.selectionStart ?? text.length;
+      const next = insertAt(text, null, caret, detail.text);
+      setText(next.text); setCaret(next.caret);
+      requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
+    };
+    window.addEventListener(INSERT_COMPOSER_EVENT, insert);
+    return () => window.removeEventListener(INSERT_COMPOSER_EVENT, insert);
+  }, [pane.id, text]);
   const composer = useRef<HTMLDivElement>(null);
   // Grow the message box with its text, up to the CSS max-height.
   useLayoutEffect(() => {
