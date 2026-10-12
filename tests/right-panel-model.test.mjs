@@ -1,7 +1,7 @@
 // tests/right-panel-model.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultPanel, openTab, closeTab, activate, moveTab, parsePanel, BROWSER_CAP } from '../src/rightPanel.ts';
+import { defaultPanel, openTab, closeTab, activate, moveTab, parsePanel, BROWSER_CAP } from '../src/rightPanelModel.ts';
 
 const kinds = (s) => s.tabs.map((t) => t.kind);
 

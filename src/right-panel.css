@@ -1,0 +1,13 @@
+/* src/right-panel.css */
+.right-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.right-panel-tabs { display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); overflow-x: auto; }
+.right-panel-tab { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; border-radius: 6px; }
+.right-panel-tab > button[role="tab"] { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: none; border: 0; padding: 4px 8px; color: var(--muted, inherit); }
+.right-panel-tab.active { background: var(--hover, rgba(127,127,127,.14)); }
+.right-panel-tab.active > button[role="tab"] { color: inherit; }
+.right-panel-close { margin-left: auto; }
+.right-panel-add { display: flex; flex-direction: column; padding: 4px; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); }
+.right-panel-add button { text-align: left; background: none; border: 0; padding: 6px 8px; border-radius: 6px; }
+.right-panel-add button:hover { background: var(--hover, rgba(127,127,127,.14)); }
+.right-panel-body { flex: 1; min-height: 0; overflow: auto; }
+.right-panel-empty { padding: 16px; }

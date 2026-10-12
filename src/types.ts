@@ -220,6 +220,7 @@ export interface AppSession {
    *  when it is read; panes that didn't load are taken out. */
   layouts?: Record<string, unknown>;
   threadDetailsOpen?: boolean;
+  rightPanel?: import("./rightPanelModel").RightPanelState;
   threadDetailsCollapsed?: Partial<Record<import("./detailsLayout").DetailsSection, boolean>>;
   /** Which client saved this copy: the Mac app's "<tag>:<count>", or "phone". */
   savedBy?: string;

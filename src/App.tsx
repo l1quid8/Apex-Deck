@@ -66,6 +66,8 @@ import { approvalSnapshot, dueEscalations, escalationKey, openCards, subscribeAp
 import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, quitQuestion, removeCounts, removeProjectQuestion, removeQuestion, restoredLayouts, savedLayouts, savedPanes, stillRunning } from "./closing";
 import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
+import { RightPanel } from "./RightPanel";
+import { defaultPanel, loadPanel, openTab, parsePanel, savePanel, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -323,9 +325,14 @@ export function App() {
   const [threadRequests, setThreadRequests] = useState<Record<string, { id: string; action: ThreadMenuRequest } | undefined>>({});
   const menuSeq = useRef(0);
   const [railOpen, setRailOpen] = useState(true);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [panel, setPanel] = useState<RightPanelState>(loadPanel);
+  useEffect(() => savePanel(panel), [panel]);
+  const detailsOpen = panel.open;
+  const setDetailsOpen = (open: boolean) => setPanel((p) => ({ ...p, open }));
+  const asideRef = useRef<HTMLElement | null>(null);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
   const [detailsSlot, setDetailsSlot] = useState<HTMLElement | null>(null);
+  const detailsTabActive = panel.tabs.find((t) => t.id === panel.active)?.kind === "details";
   const bodyRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLElement>(null);
   const [availableWidth, setAvailableWidth] = useState(0);
@@ -348,9 +355,9 @@ export function App() {
     pendingSection.current = target;
     focusDetails.current = true;
     if (target) setDetailsCollapsed(old => ({ ...old, [target]: false }));
-    setDetailsOpen(true);
+    setPanel((p) => openTab({ ...p, open: true }, "details", Date.now()));
   };
-  const detailsHostBase = { slot: detailsSlot, open: detailsOpen && section === "threads", overlay: overlayDetails, collapsed: detailsCollapsed,
+  const detailsHostBase = { slot: detailsSlot, open: panel.open && detailsTabActive && section === "threads", overlay: overlayDetails, collapsed: detailsCollapsed,
     toggle: (target: DetailsSection) => setDetailsCollapsed(old => ({ ...old, [target]: !old[target] })), show: showDetails, close: closeDetails };
   useEffect(() => {
     const body = bodyRef.current;
@@ -436,7 +443,7 @@ export function App() {
       setProfiles(saved?.profiles ?? []);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
-      setDetailsOpen(saved?.threadDetailsOpen ?? false);
+      setPanel(saved?.rightPanel ? parsePanel(JSON.stringify(saved.rightPanel)) : saved?.threadDetailsOpen ? { ...defaultPanel(), open: true, active: "details" } : loadPanel());
       setDetailsCollapsed(saved?.threadDetailsCollapsed ?? {});
       // A layout that cannot be read is dropped and rebuilt from the panes,
       // and panes that didn't load are taken out of the rest.
@@ -461,7 +468,7 @@ export function App() {
     };
   }, []);
 
-  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map(w => w.id)), threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
+  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map(w => w.id)), rightPanel: panel, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
   sessionRef.current = currentSession;
   useEffect(() => {
     if (!backend?.machines || !backend.hosts) return;
@@ -492,7 +499,7 @@ export function App() {
     // Keep writes in order so a slow old save cannot overwrite newer state.
     saveQueue.current = saveQueue.current.catch(() => {}).then(() => backend.sessionSave(session));
     saveQueue.current.then(() => setStorageError(""), (error) => setStorageError(`Could not save changes: ${String(error)}`));
-  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, detailsOpen, detailsCollapsed, importedHostSessions]);
+  }, [backend, workspaces, panes, profiles, activeWorkspace, focusedPane, section, layout, layouts, panel, detailsOpen, detailsCollapsed, importedHostSessions]);
 
   // The phone saves threads straight to the Mac's session. Take its edits in
   // before the next save here writes over them.
@@ -1957,7 +1964,7 @@ export function App() {
           where={current ? `${current.name} on ${hostNameFor(workspaceHost(current))}` : ""}
         />}</HostAgents>}
         <button className={settingsOpen ? "icon active" : "icon"} onClick={() => setSettingsOpen((open) => (open ? null : "general"))} aria-label="Settings" title="Settings (⌘,)" aria-pressed={!!settingsOpen}><DeckIcon name="settings" /></button>
-        {section === "threads" && <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : showDetails()} aria-label={detailsOpen ? "Hide thread details" : "Show thread details"} title={detailsOpen ? "Hide thread details" : "Show thread details"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>}
+        <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : setDetailsOpen(true)} aria-label={detailsOpen ? "Hide side panel" : "Show side panel"} title={detailsOpen ? "Hide side panel" : "Show side panel"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>
         </div>
       </header>
 
@@ -2167,18 +2174,23 @@ export function App() {
             ? <ApexAgentSources key={JSON.stringify([apexWorkspace.id, workspaceHost(apexWorkspace), apexWorkspace.path])} workspace={apexWorkspace} backend={apexAgentBackend} profiles={profiles} panes={viewPanes} onMonitorChange={apexMonitorChange} onClose={closeApexAgentAndReturnFocus} onBack={() => setApexAgentWorkspace(null)} />
             : <div className="apex-agent-dock-unavailable"><header><strong>ApexAgent</strong><button className="icon" onClick={closeApexAgentAndReturnFocus} aria-label="Close ApexAgent">×</button></header><p role="alert">The project machine is unavailable.</p><p>Reconnect the machine to use ApexAgent for {apexWorkspace.name}.</p></div>}
         </aside>}
-        {section === "threads" && detailsOpen && detailsTarget && <>
-          {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close thread details overlay" onClick={closeDetails} />}
+        {detailsOpen && <>
+          {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close side panel overlay" onClick={closeDetails} />}
           <SidebarHandle
             which="details"
             width={sidebarWidths.details}
-            measure={() => detailsSlot?.getBoundingClientRect().width ?? detailsWidth}
+            measure={() => asideRef.current?.getBoundingClientRect().width ?? detailsWidth}
             onChange={setSidebarWidth("details")}
             onActive={setResizing}
             className={overlayDetails ? "overlay" : ""}
             style={overlayDetails ? { right: `calc(min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px)) + var(--deck-gap, 0px))` } : undefined}
           />
-          <aside id="thread-details" tabIndex={-1} ref={setDetailsSlot} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Thread details">
+          <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
+            <RightPanel state={panel} onChange={setPanel} onClose={closeDetails} bodies={{
+              details: (_tab, visible) => detailsTarget
+                ? <div ref={setDetailsSlot} tabIndex={-1} className="right-details-slot" hidden={!visible} />
+                : <p className="muted right-panel-empty">Open a thread to see its details.</p>,
+            }} />
           </aside>
         </>}
         {/* Over the deck, not instead of it: terminals and threads keep running underneath. */}
