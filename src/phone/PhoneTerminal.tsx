@@ -251,7 +251,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
   </>;
 
   return <>
-  <div className="ph-term-root" hidden={hidden} ref={termRoot}>
+  <div className={view.kind === "terminal" ? "ph-term-root viewing" : "ph-term-root"} hidden={hidden} ref={termRoot}>
     {view.kind === "home" ? <>
       <p className="ph-intro"><i className="ph-dot on" />{name}</p><h1 className="ph-term-title">Code</h1><p className="ph-term-project">{project}</p>
       <div className="ph-group">

@@ -1145,6 +1145,12 @@
 
 .ph-term-root { display: flex; min-height: 100%; flex-direction: column; gap: 10px; color: var(--text); }
 .ph-term-root[hidden] { display: none; }
+/* An open terminal fills the page, so the keys sit on the tabs and the box gets every row left over. */
+.ph-content:has(> .ph-term-root.viewing:not([hidden])) { display: flex; flex-direction: column; }
+.ph-content:has(> .ph-term-root.viewing:not([hidden])) > .ph-intro { display: none; }
+.ph-term-root.viewing { flex: 1 1 0; min-height: 0; }
+/* While typing, the title rows step aside so the keyboard leaves the terminal some rows. */
+:root[data-keyboard] .ph-term-root.viewing > :is(.ph-term-back, .ph-term-title-row, .ph-term-project-button) { display: none; }
 .ph-term-title { margin: 0; font-size: 29px; line-height: 1.15; font-weight: 700; letter-spacing: -.035em; }
 .ph-term-title-row { display: flex; align-items: center; justify-content: space-between; }
 .ph-term-title-row button, .ph-term-home-head button, .ph-term-back { border: 0; background: transparent; color: var(--mint); font: inherit; }
@@ -1182,14 +1188,17 @@
 .ph-term-status.ask { color: #e9ac48; }
 .ph-term-status > span:last-child { display: flex; gap: 8px; }
 .ph-term-status button { padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 11px; }
-.ph-term-swipe { position: relative; width: 100%; min-height: 160px; max-height: 34vh; flex: 1; overflow: hidden; touch-action: pan-y; transition: transform 200ms ease-out; }
+.ph-term-swipe { position: relative; width: 100%; min-height: 96px; flex: 1 1 0; overflow: hidden; touch-action: pan-y; transition: transform 200ms ease-out; }
 .ph-term-swipe.dragging { transition: none; }
 .ph-term-preview { position: absolute; top: 0; bottom: 0; width: 100%; overflow: hidden; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); color: var(--text); pointer-events: none; }
 .ph-term-preview.next { left: 100%; }
 .ph-term-preview.previous { right: 100%; }
 .ph-term-preview b { color: var(--mint); font-size: 12px; }
 .ph-term-preview pre { margin: 8px 0 0; color: var(--text); font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
-.ph-term-xterm { height: 100%; min-height: 160px; overflow: hidden; padding: 9px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); }
+/* xterm's fit reads this element's height and width, so it is pinned to the box and its padding
+   stays outside them. A percentage height here never resolved and the padding counted as room,
+   so every fit added a row and terminals grew far past the box. */
+.ph-term-xterm { position: absolute; inset: 0; box-sizing: content-box; overflow: hidden; padding: 9px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); }
 .ph-term-xterm .xterm { height: 100%; }
 .ph-term-keys { display: flex; justify-content: space-between; gap: 4px; padding: 0 1px; }
 .ph-term-keys button { min-width: 38px; height: 44px; padding: 0 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); font-size: 12px; }
