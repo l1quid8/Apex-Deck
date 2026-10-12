@@ -4,7 +4,7 @@
 
 import type { Backend, KeyState, LibraryItem } from "./backend";
 import { apiModelList } from "./models.ts";
-import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListing, ModelChoice, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
+import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListing, ModelChoice, PersonaDraftResult, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
@@ -67,6 +67,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
       return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
     },
     agentModels: (tool) => call<ModelChoice[]>("agent_models", { tool }),
+    personaDraft: (writer, idea, taken) => call<PersonaDraftResult>("persona_draft", { writer, idea, taken }),
     workspaceRead: (target, cwd) => call<string | null>("workspace_read", { target, cwd }),
     pathsExist: (targets, cwd) => call<boolean[]>("paths_exist", { targets, cwd }),
     listFolder: (path) => call<FolderListing>("folder_list", { path }),

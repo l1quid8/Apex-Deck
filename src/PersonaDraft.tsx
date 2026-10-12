@@ -6,15 +6,15 @@ import "./persona-draft.css";
 
 type Form = { name: string; persona: string };
 
-export function PersonaDraft({ writers, preset, taken, form, onApply, write }: {
+export function PersonaDraft({ writers, preset, taken, form, onApply, onIdea, write }: {
   writers: PersonaWriter[];
   preset: string;
   taken: string[];
   form: Form;
   onApply: (next: Form) => void;
+  onIdea: (persona: string) => void;
   write: (writer: ParticipantConfig, idea: string, taken: string[]) => Promise<PersonaDraftResult>;
 }) {
-  const [idea, setIdea] = useState("");
   const [writerKey, setWriterKey] = useState(() => defaultWriter(writers, preset));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -28,13 +28,15 @@ export function PersonaDraft({ writers, preset, taken, form, onApply, write }: {
   }, [writers, preset, writerKey]);
 
   const writer = writers.find((w) => w.key === writerKey);
-  const go = async () => {
-    if (!writer || !idea.trim() || busy) return;
+  const idea = form.persona;
+  // Try again starts from the person's own words, not the last answer.
+  const go = async (source = idea) => {
+    if (!writer || !source.trim() || busy) return;
     const token = run.current.start();
     setBusy(true);
     setError("");
     try {
-      const result = await write(writer.config, idea.trim(), taken);
+      const result = await write(writer.config, source.trim(), taken);
       if (!run.current.current(token)) return;
       onApply(applyPersona(form, result, done?.name ?? null));
       setDone((previous) => ({ by: writer.label, before: previous?.before ?? form, name: result.name }));
@@ -66,14 +68,15 @@ export function PersonaDraft({ writers, preset, taken, form, onApply, write }: {
 
   return (
     <section className="persona-draft wide" aria-label="Write an agent persona">
-      <label className="persona-draft-title" htmlFor="persona-idea">Describe the agent you want</label>
+      <label className="persona-draft-title" htmlFor="persona-idea">Persona — describe the agent you want</label>
       <textarea
         id="persona-idea"
-        value={idea}
-        rows={2}
+        name="persona"
+        value={form.persona}
+        rows={4}
         disabled={busy}
-        placeholder="e.g. a blunt reviewer who hunts security bugs in TypeScript"
-        onChange={(e) => setIdea(e.target.value)}
+        placeholder="e.g. a blunt reviewer who hunts security bugs — Write it expands this into a full prompt you can edit, then Save."
+        onChange={(e) => onIdea(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -90,19 +93,18 @@ export function PersonaDraft({ writers, preset, taken, form, onApply, write }: {
           {writers.map((w) => <option key={w.key} value={w.key}>{w.label}</option>)}
         </select>
         {busy && <button type="button" className="persona-draft-link" onClick={cancel}>Cancel</button>}
-        <button type="button" className="persona-draft-go" disabled={busy || !idea.trim()} onClick={() => void go()}>
+        <button type="button" className="persona-draft-go" aria-live="polite" disabled={busy || !idea.trim()} onClick={() => void go()}>
           {busy ? "Writing…" : "Write it"}
         </button>
       </div>
-      {busy && <p className="persona-draft-status" role="status">Writing…</p>}
       {error && <p className="persona-draft-error" role="alert">{error}</p>}
       {done && !busy && !error && (
         <p className="persona-draft-done" role="status">
-          Written by {done.by}. Check it below.
+          Written by {done.by}. Tweak it above, then Save.
           <span className="persona-draft-actions">
             <button type="button" className="persona-draft-link" onClick={undo}>Undo</button>
             <span aria-hidden="true">·</span>
-            <button type="button" className="persona-draft-link" onClick={() => void go()}>Try again</button>
+            <button type="button" className="persona-draft-link" onClick={() => void go(done.before.persona)}>Try again</button>
           </span>
         </p>
       )}

@@ -7,7 +7,7 @@ import type { ToolServer } from "./types";
 import { mergeParticipant } from "./participantSettings";
 import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
-import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
 
 type Unlisten = () => void;
 
@@ -86,6 +86,8 @@ export interface Backend {
   apiQuote(baseUrl: string, apiKeyEnv: string | null, model: string, media: import("./types").MediaSettings | null): Promise<number | null>;
   /** Models a coding agent lists for the account it is signed in to. Empty if it keeps no list. */
   agentModels(tool: AgentTool): Promise<ModelChoice[]>;
+  /** Have `writer` write a name and persona for a new agent from `idea`. `taken` are names already in use. Nothing is saved. */
+  personaDraft(writer: ParticipantConfig, idea: string, taken: string[]): Promise<PersonaDraftResult>;
   /** Open a file, folder or web address in its default app. Relative paths are
    *  taken from `cwd`. With `reveal`, show the file in its folder instead. */
   openTarget(target: string, cwd: string | null, reveal: boolean): Promise<void>;
@@ -696,6 +698,10 @@ function demoBackend(): Backend {
     apiBalance: async () => null,
     apiQuote: async () => null,
     agentModels: async () => [],
+    personaDraft: async (_writer, idea) => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return { name: "Sketch", persona: `You are Sketch, a stand-in written by the browser demo for: ${idea.trim().slice(0, 80)}` };
+    },
     flagAttention: async (count) => {
       document.title = count > 0 ? `(${count}) Apex Deck` : "Apex Deck";
     },

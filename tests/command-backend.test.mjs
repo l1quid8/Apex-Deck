@@ -59,6 +59,7 @@ const COMMANDS = [
   ['roomCreate', ['t', [participant], options, ''], 'room_create', { id: 't', participants: [participant], options, cwd: null }],
   ['roomCreate', ['t', [], options, '/w'], 'room_create', { id: 't', participants: [], options, cwd: '/w' }],
   ['agentModels', ['codex'], 'agent_models', { tool: 'codex' }],
+  ['personaDraft', [participant, 'a reviewer', ['Ada']], 'persona_draft', { writer: participant, idea: 'a reviewer', taken: ['Ada'] }],
   ['workspaceRead', ['a.txt', '/w'], 'workspace_read', { target: 'a.txt', cwd: '/w' }],
   ['pathsExist', [['a'], null], 'paths_exist', { targets: ['a'], cwd: null }],
   ['listFolder', ['/srv'], 'folder_list', { path: '/srv' }],

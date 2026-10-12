@@ -38,6 +38,8 @@ import { rememberModel, rememberedModels } from "./modelMemory";
 import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, apiModelGroups, defaultEffortFor, effortLabel, effortsFor, findModel, modelGroups } from "./models";
 import type { PickerGroup } from "./Picker";
 import { ModelSearchList, ProviderGrid, Segmented, versionBadge } from "./AgentPicker";
+import { PersonaDraft } from "./PersonaDraft.tsx";
+import { personaWriters } from "./personaDraft";
 import { ProviderLogo } from "./providerLogos";
 import { DeckIcon } from "./DeckIcon";
 import { ReadAloudAction } from "./ReadAloudAction.tsx";
@@ -2474,10 +2476,24 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               <span className="hint">{accessNote}</span>
             </div>
           )}
-          <label className="wide">
-            Persona (optional)
-            <textarea name="persona" value={draft.persona} onChange={(e) => set("persona", e.target.value)} rows={2} placeholder="e.g. You are the reviewer. Look for bugs and be brief." />
-          </label>
+          {editing ? (
+            <label className="wide">
+              Persona (optional)
+              <textarea name="persona" value={draft.persona} onChange={(e) => set("persona", e.target.value)} rows={2} placeholder="e.g. You are the reviewer. Look for bugs and be brief." />
+            </label>
+          ) : (
+            <PersonaDraft
+              writers={personaWriters(
+                PRESETS.flatMap((p) => p.agent ? [{ key: p.key, label: p.label.replace(/ \(.*\)$/, ""), tool: p.agent.tool, installed: installed(p) }] : []),
+                profiles, disabledProviders)}
+              preset={draft.preset}
+              taken={[...new Set([...profiles, ...participants].map((p) => p.display_name))]}
+              form={{ name: draft.name, persona: draft.persona }}
+              onApply={(next) => setDraft((d) => ({ ...d, name: next.name, persona: next.persona }))}
+              onIdea={(persona) => setDraft((d) => ({ ...d, persona }))}
+              write={(writer, idea, taken) => backend.personaDraft(writer, idea, taken)}
+            />
+          )}
           {formError && <p className="form-error">{formError}</p>}
           <div className="form-foot">
             <button className="primary" type="submit">
