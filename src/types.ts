@@ -322,6 +322,9 @@ export type FilePreview =
   | { kind: "binary"; size: number }
   | { kind: "too_large"; size: number };
 
+export interface FileSearchHit { path: string; line: number; text: string }
+export interface FileSearchResult { hits: FileSearchHit[]; truncated: boolean }
+
 export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean }
 export interface WorktreeList { root: string; items: Worktree[] }
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }

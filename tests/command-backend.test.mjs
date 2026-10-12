@@ -60,6 +60,8 @@ const COMMANDS = [
   ['listFolder', ['/srv'], 'folder_list', { path: '/srv' }],
   ['listFolder', [null], 'folder_list', { path: null }],
   ['fileRead', ['/srv/app', '/srv/app/README.md'], 'file_read', { root: '/srv/app', path: '/srv/app/README.md' }],
+  ['fileFind', ['/srv/app', 'readme'], 'file_find', { root: '/srv/app', query: 'readme' }],
+  ['fileSearch', ['/srv/app', 'TODO', false, '/srv/app/src'], 'file_search', { root: '/srv/app', query: 'TODO', case_sensitive: false, folder: '/srv/app/src' }],
   ['worktreeList', ['/repo'], 'worktree_list', { path: '/repo' }],
   ['worktreeAdd', ['/repo', { branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }], 'worktree_add', { path: '/repo', branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }],
   ['worktreeRemove', ['/repo', '/repo-wt', true], 'worktree_remove', { path: '/repo', worktree: '/repo-wt', force: true }],

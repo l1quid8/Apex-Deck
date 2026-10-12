@@ -7,7 +7,7 @@ import type { ToolServer } from "./types";
 import { mergeParticipant } from "./participantSettings";
 import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
-import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
 
 type Unlisten = () => void;
 
@@ -89,6 +89,8 @@ export interface Backend {
   /** What is in a folder on the host, for picking one there. Null is the home folder. */
   listFolder(path: string | null): Promise<FolderListing>;
   fileRead(root: string, path: string): Promise<FilePreview>;
+  fileFind(root: string, query: string): Promise<string[]>;
+  fileSearch(root: string, query: string, caseSensitive: boolean, folder: string | null): Promise<FileSearchResult>;
   worktreeList(path: string): Promise<WorktreeList>;
   worktreeAdd(path: string, request: WorktreeAdd): Promise<import("./types").Worktree>;
   worktreeRemove(path: string, worktree: string, force: boolean): Promise<void>;
@@ -683,6 +685,8 @@ function demoBackend(): Backend {
     pathsExist: async (targets) => targets.map(() => false),
     listFolder: async () => { throw new Error("folders cannot be listed in the browser demo"); },
     fileRead: async () => { throw new Error("Files can't be read in the browser demo"); },
+    fileFind: async () => { throw new Error("Find isn't available in the browser demo"); },
+    fileSearch: async () => { throw new Error("Search isn't available in the browser demo"); },
     worktreeList: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreeAdd: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreeRemove: async () => { throw new Error("Worktrees aren't available in the browser demo"); },

@@ -2,13 +2,30 @@ use crate::host::MAX_WORKSPACE_READ;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use std::{
-    fs::File,
-    io::Read,
+    fs::{self, File},
+    io::{BufRead, BufReader, Read},
     path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 const MAX_IMAGE: u64 = 5 * 1024 * 1024;
 const TEXT_PROBE: usize = 8 * 1024;
+const MAX_FIND_FILES: usize = 50_000;
+const MAX_SEARCH_HITS: usize = 500;
+const MAX_SEARCH_FILE: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Hit {
+    pub path: String,
+    pub line: u32,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SearchResult {
+    pub hits: Vec<Hit>,
+    pub truncated: bool,
+}
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -145,6 +162,363 @@ pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
     Ok(FilePreview::Binary { size })
 }
 
+fn is_git_repo(root: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn git(root: &Path, args: &[&std::ffi::OsStr]) -> Result<std::process::Output, String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|error| format!("Could not run Git: {error}"))
+}
+
+fn project_files(root: &Path) -> Result<Vec<String>, String> {
+    if is_git_repo(root) {
+        let output = git(
+            root,
+            &[
+                "ls-files".as_ref(),
+                "-co".as_ref(),
+                "--exclude-standard".as_ref(),
+                "-z".as_ref(),
+            ],
+        )?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        return Ok(String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty() && !has_git_component(Path::new(path)))
+            .map(str::to_string)
+            .take(MAX_FIND_FILES)
+            .collect());
+    }
+    let mut files = Vec::new();
+    walk_files(root, root, &mut files)?;
+    Ok(files)
+}
+
+fn skipped_dir(name: &std::ffi::OsStr) -> bool {
+    [
+        ".git",
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        ".venv",
+        "__pycache__",
+    ]
+    .iter()
+    .any(|skip| name == std::ffi::OsStr::new(skip))
+}
+
+fn walk_files(root: &Path, folder: &Path, files: &mut Vec<String>) -> Result<(), String> {
+    if files.len() >= MAX_FIND_FILES {
+        return Ok(());
+    }
+    let entries =
+        fs::read_dir(folder).map_err(|error| format!("Could not list project files: {error}"))?;
+    for item in entries {
+        if files.len() >= MAX_FIND_FILES {
+            break;
+        }
+        let item = item.map_err(|error| format!("Could not list project files: {error}"))?;
+        let ty = item
+            .file_type()
+            .map_err(|error| format!("Could not inspect project file: {error}"))?;
+        if ty.is_symlink() {
+            continue;
+        }
+        let name = item.file_name();
+        let path = item.path();
+        if ty.is_dir() {
+            if !skipped_dir(&name) {
+                walk_files(root, &path, files)?;
+            }
+        } else if ty.is_file() {
+            if name != ".DS_Store" {
+                if let Ok(path) = path.strip_prefix(root) {
+                    files.push(path.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn match_score(path: &str, query: &str) -> Option<i32> {
+    let path_lower = path.to_lowercase();
+    let query_lower = query.to_lowercase();
+    let chars: Vec<char> = path_lower.chars().collect();
+    let needle: Vec<char> = query_lower.chars().collect();
+    let mut positions = Vec::with_capacity(needle.len());
+    let mut cursor = 0;
+    for ch in needle {
+        let found = chars[cursor..]
+            .iter()
+            .position(|candidate| *candidate == ch)?
+            + cursor;
+        positions.push(found);
+        cursor = found + 1;
+    }
+    let name_start = path_lower.rfind('/').map_or(0, |index| index + 1);
+    let mut score = if positions.iter().all(|index| *index >= name_start) {
+        100
+    } else {
+        0
+    };
+    for (i, position) in positions.iter().enumerate() {
+        if i > 0 && *position == positions[i - 1] + 1 {
+            score += 10;
+        }
+        if *position == 0 || !chars[*position - 1].is_alphanumeric() {
+            score += 6;
+        }
+    }
+    Some(score)
+}
+
+pub fn find(root: &Path, query: &str, limit: usize) -> Result<Vec<String>, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("Could not open project folder: {error}"))?;
+    if !root.is_dir() {
+        return Err("The project folder is not a directory.".into());
+    }
+    if query.trim().is_empty() {
+        return Err("Enter a file name to find.".into());
+    }
+    let query = query.trim();
+    let mut matches: Vec<(i32, String)> = project_files(&root)?
+        .into_iter()
+        .filter_map(|path| match_score(&path, query).map(|score| (score, path)))
+        .collect();
+    matches.sort_by(|(score_a, path_a), (score_b, path_b)| {
+        score_b
+            .cmp(score_a)
+            .then_with(|| path_a.len().cmp(&path_b.len()))
+            .then_with(|| path_a.cmp(path_b))
+    });
+    Ok(matches
+        .into_iter()
+        .take(limit.min(100))
+        .map(|(_, path)| path)
+        .collect())
+}
+
+fn hit_text(line: &str, query: &str, case_sensitive: bool) -> String {
+    if line.chars().count() <= 240 {
+        return line.trim().to_string();
+    }
+    let haystack = if case_sensitive {
+        line.to_string()
+    } else {
+        line.to_lowercase()
+    };
+    let needle = if case_sensitive {
+        query.to_string()
+    } else {
+        query.to_lowercase()
+    };
+    let start = haystack.find(&needle).unwrap_or(0);
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let char_start = chars
+        .iter()
+        .position(|(offset, _)| *offset >= start)
+        .unwrap_or(0);
+    let from = char_start.saturating_sub(100);
+    let to = (from + 240).min(chars.len());
+    let byte_start = chars.get(from).map_or(0, |(offset, _)| *offset);
+    let byte_end = chars.get(to).map_or(line.len(), |(offset, _)| *offset);
+    let part = line[byte_start..byte_end].trim();
+    if from > 0 {
+        format!("…{part}")
+    } else {
+        part.to_string()
+    }
+}
+
+fn valid_query(query: &str) -> Result<&str, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        Err("Enter text to search for.".into())
+    } else {
+        Ok(query)
+    }
+}
+
+pub fn search(
+    root: &Path,
+    query: &str,
+    case_sensitive: bool,
+    folder: Option<&Path>,
+) -> Result<SearchResult, String> {
+    let query = valid_query(query)?;
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("Could not open project folder: {error}"))?;
+    if !root.is_dir() {
+        return Err("The project folder is not a directory.".into());
+    }
+    let scoped = if let Some(folder) = folder {
+        let folder = inside(&root, folder)?;
+        if !folder.is_dir() {
+            return Err("Search scope must be a folder.".into());
+        }
+        Some(folder)
+    } else {
+        None
+    };
+    if is_git_repo(&root) {
+        return search_git(&root, query, case_sensitive, scoped.as_deref());
+    }
+    search_walk(
+        &root,
+        scoped.as_deref().unwrap_or(&root),
+        query,
+        case_sensitive,
+    )
+}
+
+fn search_git(
+    root: &Path,
+    query: &str,
+    case_sensitive: bool,
+    folder: Option<&Path>,
+) -> Result<SearchResult, String> {
+    let mut args: Vec<std::ffi::OsString> = [
+        "grep",
+        "-n",
+        "-I",
+        "--no-color",
+        "--untracked",
+        "--exclude-standard",
+        "-F",
+    ]
+    .iter()
+    .map(std::ffi::OsString::from)
+    .collect();
+    if !case_sensitive {
+        args.push("-i".into());
+    }
+    args.push("-e".into());
+    args.push(query.into());
+    args.push("--".into());
+    if let Some(folder) = folder {
+        let relative = folder
+            .strip_prefix(root)
+            .map_err(|_| "Search folder is outside the project.".to_string())?;
+        args.push(if relative.as_os_str().is_empty() {
+            ".".into()
+        } else {
+            relative.as_os_str().to_owned()
+        });
+    }
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(&args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not run Git search: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Could not read Git search results.")?;
+    let mut hits = Vec::new();
+    let mut truncated = false;
+    for line in BufReader::new(stdout).lines() {
+        let line = line.map_err(|error| format!("Could not read Git search results: {error}"))?;
+        if hits.len() >= MAX_SEARCH_HITS {
+            truncated = true;
+            let _ = child.kill();
+            break;
+        }
+        if let Some(hit) = parse_git_hit(&line, query, case_sensitive) {
+            hits.push(hit);
+        }
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() && output.status.code() != Some(1) && !truncated {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(SearchResult { hits, truncated })
+}
+
+fn parse_git_hit(line: &str, query: &str, case_sensitive: bool) -> Option<Hit> {
+    let (path, rest) = line.split_once(':')?;
+    let (line_number, text) = rest.split_once(':')?;
+    let line_number = line_number.parse().ok()?;
+    Some(Hit {
+        path: path.to_string(),
+        line: line_number,
+        text: hit_text(text, query, case_sensitive),
+    })
+}
+
+fn search_walk(
+    root: &Path,
+    folder: &Path,
+    query: &str,
+    case_sensitive: bool,
+) -> Result<SearchResult, String> {
+    let mut paths = Vec::new();
+    walk_files(root, folder, &mut paths)?;
+    let mut hits = Vec::new();
+    let mut truncated = false;
+    'files: for path in paths {
+        let absolute = root.join(&path);
+        let metadata = match fs::metadata(&absolute) {
+            Ok(meta) if meta.len() <= MAX_SEARCH_FILE => meta,
+            _ => continue,
+        };
+        let _ = metadata;
+        let bytes = match fs::read(&absolute) {
+            Ok(bytes) if bytes.len() as u64 <= MAX_SEARCH_FILE => bytes,
+            _ => continue,
+        };
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        for (index, line) in text.lines().enumerate() {
+            let matches = if case_sensitive {
+                line.contains(query)
+            } else {
+                line.to_lowercase().contains(&query.to_lowercase())
+            };
+            if matches {
+                if hits.len() >= MAX_SEARCH_HITS {
+                    truncated = true;
+                    break 'files;
+                }
+                hits.push(Hit {
+                    path: path.clone(),
+                    line: index.saturating_add(1).min(u32::MAX as usize) as u32,
+                    text: hit_text(line, query, case_sensitive),
+                });
+            }
+        }
+    }
+    Ok(SearchResult { hits, truncated })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +610,87 @@ mod tests {
         fs::create_dir(temp.0.join("folder")).unwrap();
         assert!(read(&temp.0, Path::new(".git/config")).is_err());
         assert!(read(&temp.0, Path::new("folder")).is_err());
+    }
+
+    #[test]
+    fn fuzzy_find_ranks_file_names_and_word_boundaries() {
+        let temp = Temp::new();
+        fs::create_dir_all(temp.0.join("src/components")).unwrap();
+        fs::write(temp.0.join("src/components/btn.tsx"), "").unwrap();
+        fs::write(temp.0.join("else_b_t_n.txt"), "").unwrap();
+        fs::write(temp.0.join("notes.txt"), "").unwrap();
+        let result = find(&temp.0, "btn", 10).unwrap();
+        assert_eq!(result[0], "src/components/btn.tsx");
+        assert!(find(&temp.0, "", 10).is_err());
+    }
+
+    #[test]
+    fn text_search_is_plain_utf8_scoped_and_bounded() {
+        let temp = Temp::new();
+        fs::create_dir_all(temp.0.join("docs")).unwrap();
+        fs::write(
+            temp.0.join("docs/readme.md"),
+            "Needle one\nother\nneedle two",
+        )
+        .unwrap();
+        fs::write(temp.0.join("outside.txt"), "needle out").unwrap();
+        fs::write(temp.0.join("binary.txt"), [0, b'n', b'e', b'e']).unwrap();
+        fs::create_dir_all(temp.0.join("target")).unwrap();
+        fs::write(temp.0.join("target/ignored.txt"), "needle ignored").unwrap();
+        let result = search(&temp.0, "needle", false, Some(Path::new("docs"))).unwrap();
+        assert_eq!(
+            result
+                .hits
+                .iter()
+                .map(|hit| (hit.path.as_str(), hit.line))
+                .collect::<Vec<_>>(),
+            vec![("docs/readme.md", 1), ("docs/readme.md", 3)]
+        );
+        assert!(!result.truncated);
+        assert!(search(&temp.0, "  ", false, None).is_err());
+        let lines = (0..=MAX_SEARCH_HITS)
+            .map(|_| "needle")
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(temp.0.join("many.txt"), lines).unwrap();
+        let capped = search(&temp.0, "needle", true, None).unwrap();
+        assert_eq!(capped.hits.len(), MAX_SEARCH_HITS);
+        assert!(capped.truncated);
+    }
+
+    #[test]
+    fn git_search_respects_ignore_rules_and_reports_relative_paths() {
+        let temp = Temp::new();
+        fs::write(temp.0.join("tracked.txt"), "Needle here\n").unwrap();
+        fs::write(temp.0.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(temp.0.join("ignored.txt"), "Needle hidden\n").unwrap();
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&temp.0)
+            .args(["init", "-q"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        Command::new("git")
+            .arg("-C")
+            .arg(&temp.0)
+            .args(["add", ".gitignore", "tracked.txt"])
+            .status()
+            .unwrap();
+        fs::write(temp.0.join("untracked.txt"), "Needle untracked\n").unwrap();
+        let result = search(&temp.0, "needle", false, None).unwrap();
+        assert_eq!(
+            result
+                .hits
+                .iter()
+                .map(|hit| hit.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tracked.txt", "untracked.txt"]
+        );
+        assert!(
+            find(&temp.0, "untracked", 10)
+                .unwrap()
+                .contains(&"untracked.txt".to_string())
+        );
     }
 }

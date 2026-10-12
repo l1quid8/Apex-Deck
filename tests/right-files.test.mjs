@@ -20,15 +20,15 @@ function setup({ local = true, withContext = false } = {}) {
       value = model.createTree(root);
       value.entries.set(root, { state: 'ready', listing: { path: root, parent: null, folders: ['src'], files: ['README.md', '.hidden'], truncated: false } });
     }
-    if (index === 7 && withContext) value = { row, x: 12, y: 18 };
+    if (index === 17 && withContext) value = { row, x: 12, y: 18 };
     return [value, () => {}];
   };
-  const RightFiles = new Function('React', 'useState', 'useEffect', 'useRef', 'useMemo', 'useCallback', 'changeMarks', 'collapseAll', 'createTree', 'moveSelection', 'parseFilesPrefs', 'toggle', 'visibleRows', 'writeClipboard', 'FilePreviewPanel', `${code}; return RightFiles;`)(
+  const components = new Function('React', 'useState', 'useEffect', 'useRef', 'useMemo', 'useCallback', 'changeMarks', 'collapseAll', 'createTree', 'moveSelection', 'parseFilesPrefs', 'modelRevealPath', 'toggle', 'visibleRows', 'writeClipboard', 'FilePreviewPanel', `${code}; return { RightFiles, TextSearchResults };`)(
     React, useState, () => {}, (current) => ({ current }), (fn) => fn(), (fn) => fn,
-    model.changeMarks, model.collapseAll, model.createTree, model.moveSelection, model.parseFilesPrefs, model.toggle, model.visibleRows,
+    model.changeMarks, model.collapseAll, model.createTree, model.moveSelection, model.parseFilesPrefs, model.revealPath, model.toggle, model.visibleRows,
     async () => false, () => null,
   );
-  return { React, RightFiles, props: { root, list: async () => ({}), diff: changed, onOpen() {}, local, paneId: 'chat-1', backend: { openTarget: async () => {} } } };
+  return { React, ...components, props: { root, list: async () => ({}), diff: changed, onOpen() {}, local, paneId: 'chat-1', backend: { openTarget: async () => {} } } };
 }
 
 function textOf(node) {
@@ -131,4 +131,19 @@ test('Changes view renders added and removed lines from the thread diff', () => 
   assert.match(textOf(element), /new/);
   assert.ok(find(element, (node) => node.props?.className?.includes('removed')));
   assert.ok(find(element, (node) => node.props?.className?.includes('added')));
+});
+
+test('text search results group by file, highlight matches and open at the result line', () => {
+  const { React, TextSearchResults } = setup();
+  const opened = [];
+  const tree = TextSearchResults({ result: { hits: [
+    { path: 'src/main.ts', line: 7, text: 'export const value = 1;' },
+    { path: 'src/main.ts', line: 9, text: 'return value;' },
+  ], truncated: true }, query: 'value', onOpen: (...args) => opened.push(args) });
+  assert.match(textOf(tree), /src\/main\.ts · 2/);
+  assert.match(textOf(tree), /Showing the first 500 matches/);
+  assert.ok(find(tree, (node) => node.type === 'mark' && textOf(node) === 'value'));
+  const hit = find(tree, (node) => node.props?.className === 'right-files-search-hit');
+  hit.props.onClick();
+  assert.deepEqual(opened, [['src/main.ts', 7]]);
 });

@@ -1057,6 +1057,16 @@ impl Host {
             .await.map_err(|error| error.to_string())?
     }
 
+    pub async fn file_find(&self, root: String, query: String) -> Result<Vec<String>, String> {
+        tokio::task::spawn_blocking(move || crate::project_files::find(Path::new(&root), &query, 100))
+            .await.map_err(|error| error.to_string())?
+    }
+
+    pub async fn file_search(&self, root: String, query: String, case_sensitive: bool, folder: Option<String>) -> Result<crate::project_files::SearchResult, String> {
+        tokio::task::spawn_blocking(move || crate::project_files::search(Path::new(&root), &query, case_sensitive, folder.as_deref().map(Path::new)))
+            .await.map_err(|error| error.to_string())?
+    }
+
     pub async fn worktree_list(&self, path: String) -> Result<worktrees::WorktreeList, String> {
         let task_dir = self.paths.data.join("apex-agent").join("tasks");
         tokio::task::spawn_blocking(move || worktrees::list(Path::new(&path), &task_dir)).await.map_err(|e| e.to_string())?

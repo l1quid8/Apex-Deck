@@ -4,7 +4,7 @@
 
 import type { Backend, KeyState, LibraryItem } from "./backend";
 import { apiModelList } from "./models.ts";
-import type { AgentInfo, AppSession, FilePreview, FolderListing, ModelChoice, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
+import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListing, ModelChoice, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
@@ -67,6 +67,8 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     pathsExist: (targets, cwd) => call<boolean[]>("paths_exist", { targets, cwd }),
     listFolder: (path) => call<FolderListing>("folder_list", { path }),
     fileRead: (root, path) => call<FilePreview>("file_read", { root, path }),
+    fileFind: (root, query) => call<string[]>("file_find", { root, query }),
+    fileSearch: (root, query, caseSensitive, folder) => call<FileSearchResult>("file_search", { root, query, case_sensitive: caseSensitive, folder }),
     worktreeList: (path) => call<WorktreeList>("worktree_list", { path }),
     worktreeAdd: (path, request) => call<Worktree>("worktree_add", { path, ...request }),
     worktreeRemove: (path, worktree, force) => call("worktree_remove", { path, worktree, force }),
