@@ -1329,7 +1329,7 @@ export function PhoneApp() {
             onError={setNotice}
           />
         ) : (
-          <SideTab tab={tab} link={openLink ?? mac ?? null} host={openLink ? phoneHost(openLink.id) : macHost} hosts={hosts} terminalCwd={openWorkspace?.path ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors} terminalSwitcherOpen={terminalSwitcherOpen} onTerminalSwitcherOpened={() => setTerminalSwitcherOpen(false)} terminalResumeSignal={terminalResumeSignal} onTerminalWaiting={setTerminalNeedsAnswer}
+          <SideTab tab={tab} link={openLink ?? mac ?? null} host={openLink ? phoneHost(openLink.id) : macHost} hosts={hosts} terminalCwd={openWorkspace?.path ?? workspaces.find((workspace) => workspaceHost(workspace) === (openLink ?? mac)?.id)?.path ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors} terminalSwitcherOpen={terminalSwitcherOpen} onTerminalSwitcherOpened={() => setTerminalSwitcherOpen(false)} terminalResumeSignal={terminalResumeSignal} onTerminalWaiting={setTerminalNeedsAnswer}
             personal={personal} onPersonal={() => setPersonalOpen(true)}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}

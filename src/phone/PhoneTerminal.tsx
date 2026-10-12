@@ -126,7 +126,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     let fitAddon = fit.current;
     if (!term || !fitAddon) {
       const phoneColors = getComputedStyle(xtermHost.current);
-      term = new XTerminal({ fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace', fontSize: 12, scrollback: 5000, disableStdin: true, cursorBlink: true, theme: { background: phoneColors.getPropertyValue("--panel2").trim() || "#111318", foreground: phoneColors.getPropertyValue("--text").trim() || "#d9e0e8", cursor: phoneColors.getPropertyValue("--mint").trim() || "#51d7c5" } });
+      term = new XTerminal({ fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace', fontSize: 12, scrollback: 5000, disableStdin: true, cursorBlink: true, theme: { background: phoneColors.getPropertyValue("--panel-2").trim() || "#111318", foreground: phoneColors.getPropertyValue("--text").trim() || "#d9e0e8", cursor: phoneColors.getPropertyValue("--mint").trim() || "#51d7c5" } });
       fitAddon = new FitAddon(); term.loadAddon(fitAddon); term.open(xtermHost.current); term.write("\x1b[?25l");
       xterm.current = term; fit.current = fitAddon;
     }
