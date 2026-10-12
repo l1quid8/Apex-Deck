@@ -425,6 +425,7 @@ mod tests {
     fn terminal_list_and_attach_commands_deserialize() {
         assert!(matches!(Command::from_json(json!({ "cmd": "pty_list" })).unwrap(), Command::PtyList { query: None }));
         assert!(matches!(Command::from_json(json!({ "cmd": "pty_attach", "args": { "id": "pane-1" } })).unwrap(), Command::PtyAttach { id } if id == "pane-1"));
+        assert!(matches!(Command::from_json(json!({ "cmd": "pty_rename", "args": { "id": "pane-1", "name": "dev server" } })).unwrap(), Command::PtyRename { id, name } if id == "pane-1" && name == "dev server"));
     }
 
     #[test]
@@ -436,7 +437,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 132);
+        assert_eq!(names.len(), 133);
         assert!(names.contains(&"personal_send".to_string()));
         assert!(names.contains(&"personal_react".to_string()));
         assert!(names.contains(&"monitor_react".to_string()));
