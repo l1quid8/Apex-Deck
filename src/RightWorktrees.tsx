@@ -4,6 +4,15 @@ import type { Worktree, WorktreeAdd, WorktreeList } from "./types";
 
 const shorten = (path: string) => path.length > 48 ? `…${path.slice(-47)}` : path;
 const initialRequest = (branch = ""): WorktreeAdd => ({ branch, newBranch: true, base: "HEAD", folder: null });
+const OLD_SERVICE = "This machine's Deck service is out of date. Update Deck to manage worktrees.";
+const GENERIC_ERROR = "Couldn't manage worktrees. Check the service and try again.";
+
+export function worktreeErrorMessage(reason: unknown): string {
+  const message = String((reason as Error)?.message ?? reason);
+  return /unknown variant [`'\"]?worktree_(?:list|add|remove|prune)|unknown command.*worktree_(?:list|add|remove|prune)|unsupported.*worktree_(?:list|add|remove|prune)/i.test(message)
+    ? OLD_SERVICE
+    : GENERIC_ERROR;
+}
 
 export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: string | null; backend: Backend | null; visible: boolean; onOpen: (path: string) => void }) {
   const [listing, setListing] = useState<WorktreeList | null>(null);
@@ -17,7 +26,7 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
     if (!root || !backend) return;
     const id = ++loadId.current; setError("");
     try { const result = await backend.worktreeList(root); if (id === loadId.current) setListing(result); }
-    catch (reason) { if (id === loadId.current) { setError(reason instanceof Error ? reason.message : String(reason)); setListing(null); } }
+    catch (reason) { if (id === loadId.current) { setError(worktreeErrorMessage(reason)); setListing(null); } }
   };
   useEffect(() => { if (visible) void load(); return () => { loadId.current++; }; }, [visible, root, backend]);
   useEffect(() => { setListing(null); setRequest(initialRequest()); setAdding(false); setConfirm(null); setError(""); }, [root]);
@@ -25,21 +34,21 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
     if (!root || !backend) return;
     setBusy("add"); setError("");
     try { await backend.worktreeAdd(root, request); setAdding(false); setRequest(initialRequest()); await load(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { const message = worktreeErrorMessage(reason); setError(message); if (message === OLD_SERVICE) setAdding(false); }
     finally { setBusy(""); }
   };
   const doRemove = async (path: string, force = false) => {
     if (!root || !backend) return;
     setBusy(path); setError(""); setConfirm(null);
     try { await backend.worktreeRemove(root, path, force); await load(); }
-    catch (reason) { const message = reason instanceof Error ? reason.message : String(reason); if (message.startsWith("has-changes:")) setConfirm(path); else setError(message); }
+    catch (reason) { const message = String((reason as Error)?.message ?? reason); if (message.startsWith("has-changes:")) setConfirm(path); else { const safe = worktreeErrorMessage(reason); setError(safe); if (safe === OLD_SERVICE) setAdding(false); } }
     finally { setBusy(""); }
   };
   const doPrune = async () => {
     if (!root || !backend) return;
     setBusy("prune"); setError("");
     try { await backend.worktreePrune(root); await load(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { const message = worktreeErrorMessage(reason); setError(message); if (message === OLD_SERVICE) setAdding(false); }
     finally { setBusy(""); }
   };
   const branchChanged = (branch: string) => {
@@ -52,10 +61,10 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
   if (!backend) return <p className="muted right-panel-empty">This project machine is unavailable.</p>;
   return <section className="right-worktrees" aria-label="Git worktrees">
     <header className="right-worktrees-toolbar">
-      <button type="button" onClick={() => { setAdding((value) => !value); setError(""); }} disabled={!!busy}>{adding ? "Cancel" : "New worktree"}</button>
+      {error !== OLD_SERVICE && <button type="button" onClick={() => { setAdding((value) => !value); setError(""); }} disabled={!!busy}>{adding ? "Cancel" : "New worktree"}</button>}
       <button type="button" aria-label="Refresh worktrees" title="Refresh" onClick={() => void load()} disabled={!!busy}>↻</button>
     </header>
-    {adding && <form className="right-worktrees-form" onSubmit={(event) => { event.preventDefault(); void doAdd(); }}>
+    {adding && error !== OLD_SERVICE && <form className="right-worktrees-form" onSubmit={(event) => { event.preventDefault(); void doAdd(); }}>
       <label>Branch<input autoFocus value={request.branch} onChange={(event) => branchChanged(event.target.value)} required /></label>
       <div className="right-worktrees-switch" role="group" aria-label="Branch source">
         <button type="button" aria-pressed={request.newBranch} onClick={() => setRequest((value) => ({ ...value, newBranch: true }))}>New branch</button>

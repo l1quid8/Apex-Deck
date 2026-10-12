@@ -7,7 +7,7 @@ import { transform } from 'sucrase';
 
 const source = await fs.readFile(new URL('../src/RightWorktrees.tsx', import.meta.url), 'utf8');
 const code = transform(source.replace(/^import .*;\n/gm, '').replace(/export function/g, 'function'), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-const { RightWorktreesTab, WorktreeRow } = new Function('React', 'useEffect', 'useRef', 'useState', code + '; return { RightWorktreesTab, WorktreeRow };')(React, React.useEffect, React.useRef, React.useState);
+const { RightWorktreesTab, WorktreeRow, worktreeErrorMessage } = new Function('React', 'useEffect', 'useRef', 'useState', code + '; return { RightWorktreesTab, WorktreeRow, worktreeErrorMessage };')(React, React.useEffect, React.useRef, React.useState);
 const render = (node) => renderToStaticMarkup(node);
 const row = (overrides = {}) => ({ path: '/repo', head: '12345678abcdef', branch: 'main', main: false, locked: false, prunable: false, changes: 0, task: false, ...overrides });
 
@@ -38,4 +38,9 @@ test('empty root and offline states are visible', () => {
   const offline = render(React.createElement(RightWorktreesTab, { root: '/repo', backend: null, visible: true, onOpen() {} }));
   assert.match(noRoot, /This project has no folder/);
   assert.match(offline, /This project machine is unavailable/);
+});
+
+test('old service errors get a plain update message and other errors never expose service text', () => {
+  assert.equal(worktreeErrorMessage(new Error("unknown variant `worktree_list`, expected one of `session_load`")), "This machine's Deck service is out of date. Update Deck to manage worktrees.");
+  assert.equal(worktreeErrorMessage(new Error('git path /private/repo: permission denied')), "Couldn't manage worktrees. Check the service and try again.");
 });
