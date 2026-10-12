@@ -100,6 +100,8 @@ pub enum Command {
     SaveAttachment { room: String, name: String, data: String },
     CopyAttachment { room: String, path: String },
     GenerateImage { room: String, provider: String, prompt: String },
+    /// One of the person's AIs writes a name and persona for a new agent. Nothing is saved.
+    PersonaDraft { writer: ParticipantConfig, idea: String, #[serde(default)] taken: Vec<String> },
     /// Answers with the file's bytes as base64.
     ReadAttachment { path: String },
     /// `by` is the bot that made it, for the Library.
@@ -307,6 +309,7 @@ impl Host {
             }
             CopyAttachment { room, path } => reply(self.copy_attachment(room, path)?),
             GenerateImage { room, provider, prompt } => reply(self.generate_image(room, provider, prompt).await?),
+            PersonaDraft { writer, idea, taken } => reply(crate::persona_draft::write(writer, idea, taken).await?),
             ReadAttachment { path } => reply(base64::engine::general_purpose::STANDARD.encode(self.read_attachment(path)?)),
             ImportReplyImage { room, path, by } => reply(self.import_reply_image(room, path, by)?),
             LibraryList {} => reply(self.library_list()),

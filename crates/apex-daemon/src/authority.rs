@@ -108,6 +108,8 @@ pub fn command_needs(command: &Command) -> Need {
         PathsExist { .. } => full(Global),
         StartupFolders {} => full(Global),
         RoomCreate { .. } => full(Global),
+        // Runs a model on the person's account, outside any thread.
+        PersonaDraft { .. } => full(Global),
         RoomImport { .. } => full(Global),
         RoomFork { .. } => full(Global),
         SessionSave { .. } => full(Global),
@@ -338,6 +340,7 @@ mod tests {
             ("paths_exist", Some((Full, "global")), json!({ "targets": [] })),
             ("startup_folders", Some((Full, "global")), json!({})),
             ("room_create", Some((Full, "global")), json!({ "id": "mine", "participants": [], "options": options })),
+            ("persona_draft", Some((Full, "global")), json!({ "writer": { "id": "w", "display_name": "W", "backend": { "kind": "scripted", "lines": [] } }, "idea": "x" })),
             ("room_import", Some((Full, "global")), json!({ "id": "mine", "snapshot": { "participants": [], "transcript": [], "options": options } })),
             ("room_fork", Some((Full, "global")), json!({ "source": "mine", "target": "mine2" })),
             ("session_save", Some((Full, "global")), json!({ "session": {} })),
