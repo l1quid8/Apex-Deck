@@ -67,6 +67,9 @@ import { UNDO_MS, closeNeedsConfirm, closeQuestion, loadedPanes, paneSection, qu
 import { remoteSessionEdit } from "./sessionSync";
 import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolder, removeWorkspacePanes, renameWorkspace, reopenThreads, setHidden, shownWorkspaces } from "./workspaces";
 import { RightPanel } from "./RightPanel";
+import { RightDashboard } from "./RightDashboard";
+import { RightBrowser } from "./RightBrowser";
+import { RightFilesTab } from "./RightFiles";
 import { defaultPanel, loadPanel, openTab, parsePanel, savePanel, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
@@ -2187,6 +2190,24 @@ export function App() {
           />
           <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
             <RightPanel state={panel} onChange={setPanel} onClose={closeDetails} bodies={{
+              dashboard: () => <RightDashboard rows={listed.filter((pane) => pane.kind === "chat" || pane.kind === "terminal").map((pane) => ({ id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "" }))} onOpen={(id) => { const pane = listed.find((item) => item.id === id); if (pane) focusPane(pane); }} />,
+              tasks: () => {
+                const selected = listed.find((pane) => pane.id === focusedPane);
+                const workspaceId = selected?.workspaceId ?? activeWorkspace;
+                const monitor = assistantMonitors.find((item) => item.workspaceId === workspaceId);
+                if (!monitor) return <p className="muted right-panel-empty">Pick a project with ApexAgent tasks.</p>;
+                let route: Backend;
+                try { route = hostBackend(monitor.hostId); } catch { return <p className="muted right-panel-empty">This project machine is unavailable.</p>; }
+                return <ApexAgentTasks key={`side:${monitor.workspaceId}:${monitor.hostId}:${monitor.cwd}:${monitor.conversationId}`} backend={route} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? "Project", label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
+              },
+              browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
+              files: (_tab, visible) => {
+                const pane = listed.find((item) => item.id === focusedPane);
+                const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
+                let route: Backend | null = null;
+                try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
+                return <RightFilesTab root={workspace?.path || null} backend={route} threadId={pane?.kind === "chat" ? pane.id : null} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
+              },
               details: (_tab, visible) => detailsTarget
                 ? <div ref={setDetailsSlot} tabIndex={-1} className="right-details-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its details.</p>,
