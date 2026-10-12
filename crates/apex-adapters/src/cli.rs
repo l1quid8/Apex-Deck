@@ -18,6 +18,7 @@ use crate::ansi::AnsiStripper;
 use crate::events::{self, EventReader, OutputFormat};
 use crate::grok_images;
 use crate::codex_server::{self, TurnError};
+use crate::muse_server;
 use crate::presets::{agent_command_with, clean_effort, clean_model, output_format};
 use crate::codex_hook;
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
@@ -128,6 +129,11 @@ impl CliParticipant {
         let mut command = Command::new(program);
         command.args(args);
         command.envs(env.iter().map(|(name, value)| (*name, value)));
+        // An API key overrides Muse's subscription sign-in and bills per
+        // use, so a Muse bot never sees one.
+        if program == "muse" {
+            command.env_remove(muse_server::API_KEY_ENV);
+        }
 
         // Keep colour codes and progress animations out of the reply.
         command.env("NO_COLOR", "1").env("TERM", "dumb");
@@ -207,6 +213,37 @@ impl CliParticipant {
                 Err(ParticipantError::Failed(format!("`{program}` reported an error: {summary}{hint}")))
             }
             Err(TurnError::CleanupIncomplete(why)) => Err(ParticipantError::CleanupIncomplete(why)),
+        }
+    }
+
+    /// A Muse Code turn through its session host. See muse_server.rs.
+    async fn run_muse_server(
+        &self,
+        program: &str,
+        args: &[String],
+        model: Option<&str>,
+        prompt: &str,
+        images: &[crate::attachments::Image],
+        on_progress: ProgressSink<'_>,
+        approver: &dyn Approver,
+    ) -> Result<Reply, ParticipantError> {
+        let child = self.start(program, args)?;
+        let effort = clean_effort(self.config.effort.as_deref());
+        let turn = muse_server::Turn {
+            model: clean_model(model),
+            effort: effort.as_deref(),
+            access: self.config.access,
+            cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
+        };
+        match muse_server::run(child, turn, prompt, images, on_progress, approver).await {
+            Ok(reply) => Ok(reply),
+            Err(muse_server::TurnError::Unavailable(why) | muse_server::TurnError::Failed(why)) => {
+                eprintln!("[apex-deck] `{program}` turn failed: {why}");
+                let summary = last_lines(&why).unwrap_or(why);
+                let hint = sign_in_hint(program, &summary).map(|h| format!(" {h}")).unwrap_or_default();
+                Err(ParticipantError::Failed(format!("`{program}` reported an error: {summary}{hint}")))
+            }
+            Err(muse_server::TurnError::CleanupIncomplete(why)) => Err(ParticipantError::CleanupIncomplete(why)),
         }
     }
 
@@ -427,6 +464,8 @@ pub(crate) fn sign_in_hint(program: &str, summary: &str) -> Option<&'static str>
         "oauth token has expired",
         "401 unauthorized",
         "missing bearer",
+        "muse login",
+        "no credentials",
     ]
         .iter()
         .any(|needle| lower.contains(needle));
@@ -439,7 +478,7 @@ pub(crate) fn sign_in_hint(program: &str, summary: &str) -> Option<&'static str>
         "codex" => "To fix: run `codex login` in a terminal pane, then send your message again.",
         "gemini" => "To fix: run `gemini` in a terminal pane, sign in when asked, then send your message again.",
         "grok" => "To fix: run `grok login` in a terminal pane, then send your message again.",
-        "muse" => "To fix: run `muse login` in a terminal pane, then send your message again.",
+        "muse" => "To fix: run `muse login` in a terminal pane and choose browser sign-in, then send your message again.",
         _ => "To fix: sign in to this tool in a terminal pane, then send your message again.",
     })
 }
@@ -579,21 +618,9 @@ impl Participant for CliParticipant {
                     }
                     staged = Some(files);
                 }
-                Backend::Cli { .. } => return Err(ParticipantError::Failed("This custom command has no image input protocol. Use Claude, Codex, Gemini, Grok, Muse or a vision-capable API bot for attached images.".into())),
+                Backend::Cli { .. } => return Err(ParticipantError::Failed("This custom command has no image input protocol. Use Claude, Codex, Gemini, Grok or a vision-capable API bot for attached images.".into())),
                 _ => {}
             }
-        }
-        // Muse reads the prompt from a regular file, never from standard
-        // input, so every Muse turn stages one. Attached images ride along
-        // as `--image` files from the same folder.
-        if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::Muse, .. }) {
-            let files = crate::attachments::Staged::new()?;
-            let path = files.prompt_file(&prompt)?;
-            args.extend(["--prompt-file".into(), path.to_string_lossy().into_owned()]);
-            for image in files.muse_images(&images)? {
-                args.extend(["--image".into(), image.to_string_lossy().into_owned()]);
-            }
-            staged = Some(files);
         }
         // This guard owns staged inputs through completion and cancellation.
         let _staged = staged;
@@ -609,6 +636,9 @@ impl Participant for CliParticipant {
             // Codex writes its reply live only through its app server.
             if let Backend::Agent { tool: AgentTool::Codex, model } = &self.config.backend {
                 return self.run_codex_server(model.as_deref(), &prompt, &images, on_progress, &approver).await;
+            }
+            if let Backend::Agent { tool: AgentTool::Muse, model } = &self.config.backend {
+                return self.run_muse_server(program, &args, model.as_deref(), &prompt, &images, on_progress, &approver).await;
             }
             if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
                 return self.run_claude_asking(program, &args, &prompt, &images, on_progress, &approver).await;

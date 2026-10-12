@@ -33,8 +33,6 @@ export function effortLabel(level: string): string {
 
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
-// From `muse exec --help`: --reasoning-effort none|minimal|low|medium|high|xhigh|max|ultra.
-const MUSE_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /** Every effort level a tool understands, used when the model is not known. */
 export const AGENT_EFFORTS: Record<AgentTool, string[]> = {
@@ -43,7 +41,7 @@ export const AGENT_EFFORTS: Record<AgentTool, string[]> = {
   // Gemini CLI has no effort setting on the command line.
   gemini: [],
   grok: ["low", "medium", "high", "xhigh"],
-  muse: MUSE_EFFORTS,
+  muse: ["minimal", "low", "medium", "high", "xhigh", "max"],
 };
 
 const FABLE_NOTE = "Fable can bill usage credits on top of a subscription, and a chat turn cannot ask you first.";
@@ -155,17 +153,12 @@ export const AGENT_MODELS: Record<AgentTool, ModelGroup[]> = {
       ],
     },
   ],
-  // Visible rows from the on-disk provider catalog
-  // (~/.local/share/muse/model-catalog, October 2026). Hidden
-  // `-contributor` variants and `muse-image-1.0` are left out; the picker
-  // also accepts any model id you type.
   muse: [
     {
       label: "Muse",
       models: [
-        { id: "muse-wonder-1.0", label: "Muse Wonder 1.0 (default)", efforts: ["minimal", "low", "medium", "high", "xhigh", "max"] },
-        { id: "muse-wonder-full-1.0", label: "Muse Wonder Full 1.0", efforts: ["minimal", "low", "medium", "high", "xhigh", "max"] },
-        { id: "muse-spark-1.3", label: "Muse Spark 1.3 (current)", efforts: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+        { id: "muse-wonder-1.0", label: "Muse Wonder 1.0" },
+        { id: "muse-spark-1.3", label: "Muse Spark 1.3" },
         { id: "muse-spark-1.2", label: "Muse Spark 1.2", efforts: ["minimal", "low", "medium", "high", "xhigh"] },
       ],
     },

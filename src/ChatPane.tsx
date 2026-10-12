@@ -36,9 +36,7 @@ import { providerEnabled, providerForConfig } from "./providers";
 import { registerRoom, startHub } from "./hub";
 import { rememberModel, rememberedModels } from "./modelMemory";
 import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, apiModelGroups, defaultEffortFor, effortLabel, effortsFor, findModel, modelGroups } from "./models";
-import type { PickerGroup } from "./Picker";
-import { ModelSearchList, ProviderGrid, Segmented, versionBadge } from "./AgentPicker";
-import { ProviderLogo } from "./providerLogos";
+import { Picker, type PickerGroup } from "./Picker";
 import { DeckIcon } from "./DeckIcon";
 import { ReadAloudAction } from "./ReadAloudAction.tsx";
 import { Avatar, type Refills } from "./Avatar";
@@ -234,9 +232,9 @@ export const PRESETS: Preset[] = [
   },
   {
     key: "muse",
-    label: "Muse",
+    label: "Muse Code (Meta)",
     efforts: AGENT_EFFORTS.muse,
-    agent: { tool: "muse", detectKey: "muse", modelNote: "Models from your installed Muse catalog; any model id you type is passed to `muse exec` as is.", enforcesAccess: true, asksFirst: false },
+    agent: { tool: "muse", detectKey: "muse", modelNote: "Runs on your Muse Code subscription, never a Meta API key. Each message also sends about 24k tokens of Muse's built-in instructions, so an Everyday plan's 5-hour allowance can run out after a few busy chats. The list follows the models Muse offers your account.", enforcesAccess: true, asksFirst: false },
   },
   { key: "ollama", label: "Ollama (local models)", efforts: API_EFFORTS, api: { baseUrl: "http://localhost:11434/v1", autoLoad: true } },
   { key: "api", label: "Other API (OpenAI-compatible)", efforts: API_EFFORTS, api: { baseUrl: "", autoLoad: false } },
@@ -393,7 +391,12 @@ const SAMPLE_BOTS: ParticipantConfig[] = [
     backend: { kind: "scripted", lines: ["I'm Ben. I answer when you @ben me. Try @all to hear from both of us.", "Add a real model with + Add bot when you're ready.", "[pass]"] } },
 ];
 
-
+/** Starter roles offered in an empty Agents section. */
+const STARTERS = [
+  { name: "Reviewer", note: "Reads the change and flags bugs.", persona: "You are the reviewer. Read the change, look for bugs and risky edge cases, and be brief.", access: "read" as Access },
+  { name: "Planner", note: "Breaks the work into steps.", persona: "You are the planner. Break the request into small, ordered steps and name the files each one touches.", access: "read" as Access },
+  { name: "Implementer", note: "Makes the edits.", persona: "You are the implementer. Make the change in small steps and say what you changed.", access: "ask" as Access },
+];
 
 /** Below this width the artifacts panel covers the conversation instead of sitting beside it. */
 const NARROW_PX = 760;
@@ -2325,6 +2328,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     setEditing(null);
     setAdding(true);
   }
+  /** Save a starter role as an agent, on the first coding agent that is installed. */
+  const addStarter = (starter: typeof STARTERS[number]) => {
+    const start = PRESETS.find((p) => p.key === firstPreset)!;
+    const name = uniqueName(starter.name, participants.map((p) => p.id), slug);
+    const built = draftToConfig({ ...emptyDraft(firstPreset), name, persona: starter.persona, access: starter.access === "ask" && !start.agent?.asksFirst ? "read" : starter.access });
+    if (typeof built === "string") return notify(built, "error");
+    const config = { ...built, appearance: createAppearance(participants.map((p) => appearance(p.id))) };
+    const next = [...participants, config];
+    setParticipants(next);
+    onProfilesChange(next);
+  };
   const addButton = (<button
             className="ghost"
             onClick={() => {
@@ -2356,32 +2370,35 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             </select></label>
             <button type="button" className="ghost" onClick={() => set("appearance", { ...createAppearance([...identities.current.values()]), color: (draft.appearance ?? appearance(editing)).color })}>New pattern</button>
           </div>}
-          <div className="wide provider-field">
-            <span className="field-title" id={`provider-title-${pane.id}`}>Connect through</span>
-            <ProviderGrid
-              value={draft.preset}
-              onPick={(key) => choosePreset(key as PresetKey)}
-              options={PRESETS.filter((p) => providerEnabled(p.key, disabledProviders) || (editing && p.key === draft.preset)).map((p) => ({
-                key: p.key,
-                label: p.label.replace(/ \(.*\)$/, ""),
-                hint: p.agent ? { claude_code: "Anthropic", codex: "OpenAI", gemini: "Google" }[p.agent.tool as "claude_code" | "codex" | "gemini"] ?? "xAI" : p.key === "ollama" ? "Runs on this machine" : p.key === "api" ? "Any OpenAI-style server" : p.key === "command" ? "Your own script" : "Canned replies for testing",
-                installed: installed(p),
-                enabled: true,
-              }))}
-            />
-          </div>
+          <label>
+            Connect through
+            <select name="preset" value={draft.preset} onChange={(e) => choosePreset(e.target.value as PresetKey)}>
+              {PRESETS.filter((p) => providerEnabled(p.key, disabledProviders) || (editing && p.key === draft.preset)).map((p) => (
+                <option key={p.key} value={p.key} disabled={!installed(p)}>
+                  {p.label}
+                  {installed(p) ? "" : " (not installed)"}
+                </option>
+              ))}
+            </select>
+          </label>
           {preset.agent && (
-            <div className="wide model-field">
-              <span className="field-title">Model</span>
-              <ModelSearchList
+            <label>
+              Model
+              <Picker
                 key={`model:${draft.preset}:${editing ?? "new"}`}
+                name="agent-model"
                 value={draft.model}
                 onChange={setAgentModel}
                 groups={modelChoices}
                 emptyLabel={`Default (whatever ${preset.label} is set to)`}
-                modelNote={`${preset.agent.modelNote}${chosenModel?.note ? ` ${chosenModel.note}` : ""}`}
+                customLabel="Type another model name…"
+                customPlaceholder="Exact model name"
               />
-            </div>
+              <span className="hint">
+                {preset.agent.modelNote}
+                {chosenModel?.note ? ` ${chosenModel.note}` : ""}
+              </span>
+            </label>
           )}
           {preset.api && (
             <>
@@ -2431,18 +2448,23 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           )}
           {(tool === "codex" || tool === "claude_code") && <label className="check-label wide"><input type="checkbox" checked={draft.auto_effort ?? false} disabled={!efforts.length || (!draft.auto_effort && !autoAvailable)} onChange={event => set("auto_effort", event.target.checked)} /> Auto — trial logs picks; replies use the backup level.</label>}
           {preset.efforts.length > 0 && (
-            <div className="wide effort-field">
-              <span className="field-title">{draft.auto_effort ? "Auto backup level" : "Reasoning effort"}</span>
+            <label>
+              {draft.auto_effort ? "Auto backup level" : "Reasoning effort"}
               {efforts.length > 0 ? (
-                <Segmented
-                  label={draft.auto_effort ? "Auto backup level" : "Reasoning effort"}
+                <Picker
+                  key={`effort:${draft.preset}:${editing ?? "new"}`}
                   name="effort"
                   value={draft.effort}
                   onChange={(level) => set("effort", level.trim().toLowerCase())}
-                  options={[{ value: "", text: chosenApiModel?.default_effort ? `Default (${effortLabel(chosenApiModel.default_effort)})` : "Default" }, ...efforts.map((level) => ({ value: level, text: effortLabel(level) }))]}
+                  groups={[{ label: "", options: efforts.map((level) => ({ value: level, text: effortLabel(level) })) }]}
+                  emptyLabel={chosenApiModel?.default_effort ? `Default (${effortLabel(chosenApiModel.default_effort)})` : "Default"}
+                  customLabel="Type another level…"
+                  customPlaceholder="e.g. high"
                 />
               ) : (
-                <span className="hint">Not available for this model — the provider picks its own effort.</span>
+                <select name="effort" disabled>
+                  <option>Not available for this model</option>
+                </select>
               )}
               <span className="hint">
                 {efforts.length > 0
@@ -2451,25 +2473,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                     : "Higher levels think longer and cost more. Not every model accepts every level."
                   : "This model has no effort setting."}
               </span>
-            </div>
+            </label>
           )}
           {draft.preset !== "scripted" && (
-            <div className="wide access-field">
-              <span className="field-title">Access</span>
-              <Segmented
-                label="Access"
-                name="access"
-                value={draft.access}
-                onChange={(v) => set("access", v as Access)}
-                options={[
-                  { value: "read", text: "Read only" },
-                  ...(preset.agent?.asksFirst ? [{ value: "ask", text: "Ask first" } as const] : []),
-                  { value: "edits", text: "Can edit files" },
-                  { value: "full", text: "Full access" },
-                ]}
-              />
+            <label>
+              Access
+              <select name="access" value={draft.access} onChange={(e) => set("access", e.target.value as Access)}>
+                <option value="read">Read only</option>
+                {preset.agent?.asksFirst && <option value="ask">Ask first (you approve each edit and command)</option>}
+                <option value="edits">Can edit files</option>
+                <option value="full">Full access (edits and runs commands without asking)</option>
+              </select>
               <span className="hint">{accessNote}</span>
-            </div>
+            </label>
           )}
           <label className="wide">
             Persona (optional)
@@ -2514,30 +2530,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <span className="quick-add-label">Or a new bot</span>
       </>}
       <div className="quick-add-tools" role="radiogroup" aria-label="Tool">
-        {quickTools.map((p) => (
-          <button type="button" role="radio" aria-checked={draft.preset === p.key} key={p.key} className={draft.preset === p.key ? "qa-tool on" : "qa-tool"} title={p.label} onClick={() => choosePreset(p.key)}>
-            <ProviderLogo preset={p.key} label={`${p.label} logo`} />
-            <span>{p.label.replace(/\s*\(.*\)$/, "")}</span>
-          </button>
-        ))}
-        <button type="button" className="qa-more" title="Open the full new-agent form" onClick={() => { setQuickAdd(null); details?.show("form"); setAdding(true); }}>More…</button>
+        {quickTools.map((p) => <button type="button" role="radio" aria-checked={draft.preset === p.key} key={p.key} className={draft.preset === p.key ? "on" : undefined} onClick={() => choosePreset(p.key)}>{p.label.replace(/\s*\(.*\)$/, "")}</button>)}
+        <button type="button" onClick={() => { setQuickAdd(null); details?.show("form"); setAdding(true); }}>More…</button>
       </div>
       <div className="quick-add-grid">
         <label>Model
           {preset.agent ? (
-            <select name="quick-model" value={modelChoices.some((g) => g.options.some((o) => o.value === draft.model)) || draft.model === "" ? draft.model : "__custom__"} onChange={(e) => setAgentModel(e.target.value === "__custom__" ? draft.model : e.target.value)} title={draft.model || "Default"}>
-              <option value="">Default</option>
-              {draft.model !== "" && !modelChoices.some((g) => g.options.some((o) => o.value === draft.model)) && (
-                <option value="__custom__">{draft.model} · typed</option>
-              )}
-              {modelChoices.filter((g) => g.options.length > 0).map((g) => (
-                <optgroup key={g.label || "ungrouped"} label={g.label || undefined}>
-                  {g.options.map((o) => (
-                    <option key={o.value} value={o.value}>{o.text} · {versionBadge(o.value) === "pins version" ? "pins" : "live"}</option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+            <Picker key={`quick-model:${draft.preset}`} name="quick-model" value={draft.model} onChange={setAgentModel} groups={modelChoices} emptyLabel="Default" customLabel="Type another model name…" customPlaceholder="Exact model name" />
           ) : (
             <><input name="quick-model" list={`quick-models-${pane.id}`} value={draft.model} onChange={(e) => setApiModel(e.target.value)} placeholder="e.g. llama3" />
               <datalist id={`quick-models-${pane.id}`}>{apiGroups.flatMap((g) => g.models).map((m) => <option key={m.id} value={m.id}>{m.label ?? undefined}</option>)}</datalist></>
@@ -2752,8 +2751,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
       {profileMode && <div className="agent-library">
         {participants.length === 0 && !adding && <div className="empty agents-empty">
-          <h3>No agents yet</h3>
-          <p>Build one from scratch — give it a name, a model, and a brief.</p>
+          <h3>Create your first agent</h3>
+          <p>Start from a role and change anything later, or build one from scratch.</p>
+          <div className="starters">
+            {STARTERS.map((starter) => <button key={starter.name} disabled={availablePresets.length === 0} onClick={() => addStarter(starter)}>
+              <strong>{starter.name}</strong><span>{starter.note} {starter.access === "ask" ? "Asks first." : "Read only."}</span>
+            </button>)}
+          </div>
           <div className="starters-foot">
             <span className="muted">Or save a bot from a thread with Save to Agents.</span>
             <button className="primary" onClick={openNewForm} disabled={availablePresets.length === 0}>+ New agent</button>
@@ -2766,8 +2770,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </article>)}
       </div>}
 
-      {!profileMode && <div className="chat-body" ref={chatBody}>
-      <div className="transcript" ref={scroller} onScroll={() => { setPicked(null); onTranscriptScroll(); }}
+      <div className="chat-body" ref={chatBody}>
+      {!profileMode && <div className="transcript" ref={scroller} onScroll={() => { setPicked(null); onTranscriptScroll(); }}
         onMouseUp={() => requestAnimationFrame(pickSelection)} onKeyUp={(e) => e.shiftKey && pickSelection()}
         onMouseDown={(e) => { if (!(e.target as Element).closest(".selection-actions")) setPicked(null); }}>
         {picked && <span className="selection-actions" role="toolbar" aria-label="Selected text" style={{ left: picked.x, top: picked.y }}>
@@ -2943,7 +2947,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             </div>
           </div>;
         })}
-      </div></div>}
+      </div>}
       {!profileMode && (unread > 0 || cardsAway.length > 0) && <div className="transcript-pills">
         {cardsAway.length > 0 && <button type="button" className="transcript-pill" onClick={() => showCard(cardsAway[0].request)}>
           <span className="pill-dot" aria-hidden="true" />
@@ -2967,6 +2971,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         />
       )}
       {!profileMode && !panel && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
+      </div>
 
       {!profileMode && <div className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}
         onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}

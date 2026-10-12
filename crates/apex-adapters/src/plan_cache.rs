@@ -148,6 +148,12 @@ where
     }
 }
 
+/// The last plan `tool` reported, without reading. Muse only says where
+/// the plan stands while a turn runs, so this is all there is to give.
+pub(crate) fn last(tool: AgentTool) -> Option<PlanUsage> {
+    provider(tool).and_then(|provider| provider.slot().last.clone())
+}
+
 /// Note a plan a turn reported, so a chat opened just after doesn't get an
 /// older answer than the one already on screen.
 pub(crate) fn remember(plan: &PlanUsage) {

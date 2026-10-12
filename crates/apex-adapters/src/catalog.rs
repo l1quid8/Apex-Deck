@@ -24,10 +24,85 @@ pub fn installed_models(tool: AgentTool) -> Vec<ModelChoice> {
             .and_then(|home| std::fs::read_to_string(home.join("models_cache.json")).ok())
             .map(|text| grok_models_from_cache(&text))
             .unwrap_or_default(),
-        // Claude Code, Gemini CLI and Muse keep no list of models on disk
-        // that Deck reads.
-        AgentTool::ClaudeCode | AgentTool::Gemini | AgentTool::Muse => Vec::new(),
+        AgentTool::Muse => muse_catalogs().iter().flat_map(|text| muse_models_from_catalog(text)).fold(Vec::new(), |mut all, model| {
+            if !all.iter().any(|m: &ModelChoice| m.id == model.id) {
+                all.push(model);
+            }
+            all
+        }),
+        // Claude Code and Gemini CLI keep no list of models on disk.
+        AgentTool::ClaudeCode | AgentTool::Gemini => Vec::new(),
     }
+}
+
+/// Where Muse keeps its data: `$MUSE_HOME`, else `muse` in the XDG data
+/// folder, which defaults to `~/.local/share`.
+fn muse_home() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("MUSE_HOME").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir).join("muse"));
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".local/share/muse"))
+}
+
+/// The model lists Muse saved, one per provider it has asked.
+fn muse_catalogs() -> Vec<String> {
+    let Some(dir) = muse_home().map(|home| home.join("model-catalog")) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    files.sort();
+    files.into_iter().filter_map(|path| std::fs::read_to_string(path).ok()).collect()
+}
+
+/// Read a model list Muse saves after asking Meta what the signed-in
+/// account may use: `rows` with a `model_id`, a `visibility`, whether it is
+/// the default, and the effort tiers it accepts. Hidden rows, such as the
+/// `-contributor` twins, are left out. The default comes first, then the
+/// newest by release date.
+pub fn muse_models_from_catalog(json: &str) -> Vec<ModelChoice> {
+    let Ok(root) = serde_json::from_str::<Value>(json) else { return Vec::new() };
+    let Some(rows) = root.get("rows").and_then(Value::as_array) else { return Vec::new() };
+    let mut found: Vec<(bool, String, ModelChoice)> = Vec::new();
+    for row in rows {
+        let id = row.get("model_id").and_then(Value::as_str).unwrap_or("").trim();
+        if id.is_empty() || row.get("visibility").and_then(Value::as_str) != Some("visible") || found.iter().any(|(_, _, m)| m.id == id) {
+            continue;
+        }
+        let label = row
+            .get("display_label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && *name != id)
+            .map(str::to_string);
+        let efforts = row.get("reasoning_effort_variants").and_then(Value::as_array).map(|tiers| {
+            tiers.iter().filter_map(|tier| tier.get("tier").and_then(Value::as_str)).map(str::to_string).collect()
+        });
+        let default = row.get("is_default").and_then(Value::as_bool).unwrap_or(false);
+        let released = row.get("release_date").and_then(Value::as_str).unwrap_or("").to_string();
+        found.push((default, released, ModelChoice { id: id.to_string(), label, efforts }));
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    found.into_iter().map(|(_, _, model)| model).collect()
+}
+
+/// How many tokens `model` can take, from Muse's saved list.
+pub(crate) fn muse_context_limit(model: &str) -> Option<u64> {
+    muse_catalogs().iter().find_map(|text| {
+        let root = serde_json::from_str::<Value>(text).ok()?;
+        root.get("rows")?
+            .as_array()?
+            .iter()
+            .find(|row| row.get("model_id").and_then(Value::as_str) == Some(model))?
+            .get("context_limit")?
+            .as_u64()
+    })
 }
 
 /// Where Codex keeps its settings: `$CODEX_HOME`, or `.codex` in the home
@@ -228,5 +303,21 @@ mod tests {
     fn tools_without_a_list_on_disk_report_nothing() {
         assert!(installed_models(AgentTool::ClaudeCode).is_empty());
         assert!(installed_models(AgentTool::Gemini).is_empty());
+    }
+
+    #[test]
+    fn muse_lists_visible_models_default_first_then_newest() {
+        let json = r#"{"schema_version":2,"rows":[
+            {"model_id":"muse-spark-1.2","visibility":"visible","is_default":false,"release_date":"2026-08-05","reasoning_effort_variants":[{"tier":"low"},{"tier":"xhigh"}]},
+            {"model_id":"muse-wonder-1.0-contributor","visibility":"hidden","is_default":false,"release_date":"2026-10-12"},
+            {"model_id":"muse-spark-1.3","display_label":"muse-spark-1.3","visibility":"visible","is_default":false,"release_date":"2026-09-02"},
+            {"model_id":"muse-wonder-1.0","visibility":"visible","is_default":true,"release_date":"2026-10-12","reasoning_effort_variants":[{"tier":"minimal"},{"tier":"max"}]}
+        ]}"#;
+        let models = muse_models_from_catalog(json);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["muse-wonder-1.0", "muse-spark-1.3", "muse-spark-1.2"]);
+        assert_eq!(models[0].efforts.as_deref(), Some(&["minimal".to_string(), "max".to_string()][..]));
+        assert_eq!(models[1].label, None, "a label that only repeats the id is dropped");
+        assert!(muse_models_from_catalog("not json").is_empty());
     }
 }

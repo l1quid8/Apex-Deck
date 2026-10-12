@@ -24,7 +24,8 @@ pub(crate) fn output_format(tool: AgentTool) -> OutputFormat {
         AgentTool::Codex => OutputFormat::CodexJson,
         AgentTool::Gemini => OutputFormat::Text,
         AgentTool::Grok => OutputFormat::ClaudeStream,
-        AgentTool::Muse => OutputFormat::MuseJson,
+        // Muse runs only through its session host (`muse_server.rs`).
+        AgentTool::Muse => OutputFormat::Text,
     }
 }
 
@@ -152,29 +153,6 @@ pub fn agent_command_with(
             push(&["-p", STDIN_INSTRUCTION]);
             "gemini"
         }
-        AgentTool::Muse => {
-            // `exec --json` prints one MSP event per line: `run_output_delta`
-            // pieces while writing, then a `run_terminal` with the reply.
-            // The prompt travels in a staged file (see cli.rs): muse's
-            // `--prompt-file` refuses anything that is not a regular file,
-            // so `/dev/stdin` does not work.
-            push(&["exec", "--json"]);
-            if let Some(model) = model {
-                push(&["--model", model]);
-            }
-            if let Some(effort) = effort {
-                push(&["--reasoning-effort", effort]);
-            }
-            match access {
-                // Nobody to ask in a headless run, so asking first is read
-                // as doing nothing; the tool's own prompt is left alone.
-                _ if plan => push(&["--disable-write", "--disable-shell"]),
-                Access::Read | Access::Ask => push(&["--disable-write", "--disable-shell"]),
-                Access::Edits => push(&["--disable-shell"]),
-                Access::Full => push(&["--disable-approval"]),
-            }
-            "muse"
-        }
         AgentTool::Grok => {
             // Grok does not read piped input in its one-shot mode, but it
             // reads a prompt file, and standard input is one.
@@ -196,6 +174,12 @@ pub fn agent_command_with(
                 Access::Full => push(&["--always-approve"]),
             }
             "grok"
+        }
+        AgentTool::Muse => {
+            // A session host per turn; access is enforced by its flags and
+            // the session's approval mode. See muse_server.rs.
+            args = crate::muse_server::args(access, model);
+            "muse"
         }
     };
     (program.to_string(), args)
@@ -313,23 +297,6 @@ mod tests {
         assert_eq!(&args[stream.len()..], ["--allow", "Edit", "--allow", "Write", "--deny", "Bash"]);
         let (_, args) = agent_command(AgentTool::Grok, None, None, Access::Full);
         assert_eq!(&args[stream.len()..], ["--always-approve"]);
-    }
-
-    #[test]
-    fn muse_commands() {
-        // The prompt file is staged per turn in cli.rs, so only the fixed
-        // flags are asserted here.
-        let (program, args) = agent_command(AgentTool::Muse, Some("muse-spark-1.3"), Some("high"), Access::Read);
-        assert_eq!(program, "muse");
-        assert_eq!(args, ["exec", "--json", "--model", "muse-spark-1.3", "--reasoning-effort", "high", "--disable-write", "--disable-shell"]);
-        let (_, args) = agent_command(AgentTool::Muse, None, None, Access::Ask);
-        assert_eq!(args, ["exec", "--json", "--disable-write", "--disable-shell"]);
-        let (_, args) = agent_command(AgentTool::Muse, None, None, Access::Edits);
-        assert_eq!(args, ["exec", "--json", "--disable-shell"]);
-        let (_, args) = agent_command(AgentTool::Muse, None, None, Access::Full);
-        assert_eq!(args, ["exec", "--json", "--disable-approval"]);
-        let (_, planning) = agent_command_with(AgentTool::Muse, None, None, Access::Full, true);
-        assert_eq!(planning, ["exec", "--json", "--disable-write", "--disable-shell"]);
     }
 
     #[test]
