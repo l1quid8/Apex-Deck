@@ -23,6 +23,7 @@ mod grok_usage;
 pub mod keys;
 mod mcp;
 pub mod media;
+mod muse_server;
 mod openai;
 mod owned_process;
 mod plan_cache;
@@ -112,6 +113,9 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
         AgentTool::Codex => "Codex",
         AgentTool::Grok => "Grok",
         AgentTool::Gemini => "Gemini",
+        // Muse reports its plan only during a turn (`usage/changed`), and
+        // `muse_server` keeps the latest. Until the first turn there is none.
+        AgentTool::Muse => return plan_cache::last(tool),
     };
     let read = || async {
         match tool {
@@ -119,6 +123,7 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
             AgentTool::Codex => read_codex_plan(context).await.map_err(|why| plan_cache::Failure::new(why, plan_cache::Failure::SHORT)),
             AgentTool::Grok => grok_usage::read_plan().await,
             AgentTool::Gemini => gemini_usage::read_plan().await,
+            AgentTool::Muse => unreachable!("answered from the last turn above"),
         }
     };
     plan_cache::get(tool, read)

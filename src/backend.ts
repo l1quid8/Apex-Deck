@@ -321,9 +321,9 @@ function demoBackend(): Backend {
   // agents with plenty; each reply fills a little more.
   const WINDOWS: Partial<Record<AgentTool, number>> = { claude_code: 200_000, codex: 272_000 };
   const contextUsed = new Map<string, number>();
-  const PLAN_TOOLS = ["claude_code", "codex", "grok", "gemini"] as const;
+  const PLAN_TOOLS = ["claude_code", "codex", "grok", "gemini", "muse"] as const;
   type PlanTool = (typeof PLAN_TOOLS)[number];
-  const planUsed: Record<PlanTool, number> = { claude_code: 36, codex: 58, grok: 22, gemini: 41 };
+  const planUsed: Record<PlanTool, number> = { claude_code: 36, codex: 58, grok: 22, gemini: 41, muse: 12 };
   const isPlanTool = (tool: AgentTool): tool is PlanTool => (PLAN_TOOLS as readonly string[]).includes(tool);
   const hours = (n: number) => Math.floor(Date.now() / 1000 + n * 3600);
   const reportContext = (room: string, p: ParticipantConfig, grow: number) => {
@@ -352,6 +352,11 @@ function demoBackend(): Backend {
     } else if (tool === "gemini") {
       emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
         { name: "daily", used_percent: planUsed.gemini, window_minutes: 1440, resets_at: hours(14) },
+      ] });
+    } else if (tool === "muse") {
+      emitRoom(room, { type: "plan_usage", provider: tool, partial: false, windows: [
+        { name: "five_hour", used_percent: planUsed.muse, window_minutes: 300, resets_at: hours(3) },
+        { name: "weekly", used_percent: 4, window_minutes: 10_080, resets_at: hours(90) },
       ] });
     }
   };
@@ -575,6 +580,7 @@ function demoBackend(): Backend {
       { key: "codex", label: "Codex", program: "codex", found: true },
       { key: "gemini", label: "Gemini CLI", program: "gemini", found: false },
       { key: "grok", label: "Grok", program: "grok", found: false },
+      { key: "muse", label: "Muse Code", program: "muse", found: false },
     ],
     pickFolder: async () => null,
     pickPath: async () => null,

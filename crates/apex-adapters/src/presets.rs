@@ -24,6 +24,8 @@ pub(crate) fn output_format(tool: AgentTool) -> OutputFormat {
         AgentTool::Codex => OutputFormat::CodexJson,
         AgentTool::Gemini => OutputFormat::Text,
         AgentTool::Grok => OutputFormat::ClaudeStream,
+        // Muse runs only through its session host (`muse_server.rs`).
+        AgentTool::Muse => OutputFormat::Text,
     }
 }
 
@@ -173,6 +175,12 @@ pub fn agent_command_with(
             }
             "grok"
         }
+        AgentTool::Muse => {
+            // A session host per turn; access is enforced by its flags and
+            // the session's approval mode. See muse_server.rs.
+            args = crate::muse_server::args(access, model);
+            "muse"
+        }
     };
     (program.to_string(), args)
 }
@@ -214,7 +222,7 @@ mod tests {
 
     #[test]
     fn configured_mcp_servers_and_plugins_are_not_disabled() {
-        for tool in [AgentTool::ClaudeCode, AgentTool::Codex, AgentTool::Gemini, AgentTool::Grok] {
+        for tool in [AgentTool::ClaudeCode, AgentTool::Codex, AgentTool::Gemini, AgentTool::Grok, AgentTool::Muse] {
             for access in [Access::Read, Access::Ask, Access::Edits, Access::Full] {
                 let (_, args) = agent_command(tool, None, None, access);
                 for arg in args {

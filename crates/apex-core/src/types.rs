@@ -47,6 +47,9 @@ pub enum AgentTool {
     Codex,
     Gemini,
     Grok,
+    /// Meta's Muse Code, run through its session host on the person's
+    /// own subscription.
+    Muse,
 }
 
 /// How a participant is reached.

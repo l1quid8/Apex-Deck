@@ -125,6 +125,7 @@ static CLAUDE: Provider = Provider::new();
 static CODEX: Provider = Provider::new();
 static GROK: Provider = Provider::new();
 static GEMINI: Provider = Provider::new();
+static MUSE: Provider = Provider::new();
 
 fn provider(tool: AgentTool) -> Option<&'static Provider> {
     match tool {
@@ -132,6 +133,7 @@ fn provider(tool: AgentTool) -> Option<&'static Provider> {
         AgentTool::Codex => Some(&CODEX),
         AgentTool::Grok => Some(&GROK),
         AgentTool::Gemini => Some(&GEMINI),
+        AgentTool::Muse => Some(&MUSE),
     }
 }
 
@@ -144,6 +146,12 @@ where
         Some(provider) => provider.get(read).await,
         None => Ok(None),
     }
+}
+
+/// The last plan `tool` reported, without reading. Muse only says where
+/// the plan stands while a turn runs, so this is all there is to give.
+pub(crate) fn last(tool: AgentTool) -> Option<PlanUsage> {
+    provider(tool).and_then(|provider| provider.slot().last.clone())
 }
 
 /// Note a plan a turn reported, so a chat opened just after doesn't get an
