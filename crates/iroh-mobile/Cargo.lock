@@ -63,19 +63,23 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "apex-adapters"
-version = "0.5.1"
+version = "0.6.2"
 dependencies = [
  "apex-core",
  "async-trait",
+ "base64 0.22.1",
  "futures",
+ "keyring",
+ "libc",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
 name = "apex-core"
-version = "0.5.1"
+version = "0.6.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -87,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "apex-daemon"
-version = "0.5.1"
+version = "0.6.2"
 dependencies = [
  "apex-adapters",
  "apex-host",
@@ -108,18 +112,23 @@ dependencies = [
 
 [[package]]
 name = "apex-host"
-version = "0.5.1"
+version = "0.6.2"
 dependencies = [
  "apex-adapters",
  "apex-core",
  "base64 0.22.1",
  "futures",
  "keyring",
+ "libc",
  "portable-pty",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
+ "tokio-tungstenite",
+ "trash",
 ]
 
 [[package]]
@@ -141,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "apex-pairing"
-version = "0.5.1"
+version = "0.6.2"
 dependencies = [
  "base64 0.22.1",
  "hmac",
@@ -2767,6 +2776,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -3034,6 +3044,18 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -3666,6 +3688,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "trash"
+version = "5.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be89b3fe156965d29ac4f8522f3a640c655affdd9f21cb4f36857f0c92c00317"
+dependencies = [
+ "chrono",
+ "libc",
+ "log",
+ "objc2",
+ "objc2-foundation",
+ "once_cell",
+ "percent-encoding",
+ "scopeguard",
+ "urlencoding",
+ "windows",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3746,6 +3786,12 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
+
+[[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "utf-8"
