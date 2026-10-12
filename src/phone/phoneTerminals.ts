@@ -2,7 +2,8 @@ import { QUIET_MS, waitingFor } from "../attention.ts";
 import type { PtySummary } from "../backend";
 
 export type TerminalDot = "ask" | "run" | "idle" | "fail" | "ended";
-export type PhoneTerminal = PtySummary & { machineId: string; machineName: string; firstSeen: number };
+/** `answerTail`: output since this phone last typed into the terminal, so a question answered from here stops counting. */
+export type PhoneTerminal = PtySummary & { machineId: string; machineName: string; firstSeen: number; answerTail?: string };
 type TerminalCache = Record<string, PhoneTerminal[]>;
 let terminalCache: TerminalCache = {};
 export function readTerminalCache(): TerminalCache { return terminalCache; }
@@ -27,8 +28,12 @@ export function appendTail(current: string, chunk: string, byteLimit = 8192): st
 
 export function stripAnsi(value: string): string {
   return value.replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-_])/gu, "")
-    .split("\n").map((line) => line.slice(line.lastIndexOf("\r") + 1)).join("\n");
+    // Terminal lines end "\r\n"; any other "\r" goes back to the start of the line to draw over it.
+    .split("\n").map((line) => { const text = line.endsWith("\r") ? line.slice(0, -1) : line; return text.slice(text.lastIndexOf("\r") + 1); }).join("\n");
 }
+
+/** The output to look for a question in: only what came after this phone last answered, when it has. */
+export function questionText(t: Pick<PhoneTerminal, "tail" | "answerTail">): string { return t.answerTail ?? t.tail; }
 
 export function lastLine(tail: string): string {
   const lines = stripAnsi(tail).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
@@ -39,10 +44,10 @@ export function lastLine(tail: string): string {
 /** How long a terminal counts as running after its last output. */
 const RUN_MS = 5000;
 
-export function dotState(t: Pick<PtySummary, "state" | "exitCode" | "lastActivity" | "tail">, now = Date.now()): TerminalDot {
+export function dotState(t: Pick<PhoneTerminal, "state" | "exitCode" | "lastActivity" | "tail" | "answerTail">, now = Date.now()): TerminalDot {
   if (t.state === "exited") return t.exitCode === 0 || t.exitCode === null ? "ended" : "fail";
   const quietFor = now - t.lastActivity;
-  if (quietFor >= QUIET_MS && waitingFor(stripAnsi(t.tail))) return "ask";
+  if (quietFor >= QUIET_MS && waitingFor(stripAnsi(questionText(t)))) return "ask";
   return quietFor < RUN_MS ? "run" : "idle";
 }
 

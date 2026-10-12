@@ -8,7 +8,7 @@ import type { PhoneHost } from "../phoneBackend";
 import { canSeeNewThread } from "../phoneRules";
 import { nextTitle } from "../terminalTitle";
 import { writeClipboard } from "../threadCopy";
-import { age, appendTail, askLine, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, nextDotChange, readTerminalCache, stripAnsi, stripOrder, swipeIntent, writeTerminalCache, type PhoneTerminal as PhoneTerminalInfo } from "./phoneTerminals";
+import { age, appendTail, askLine, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, nextDotChange, questionText, readTerminalCache, stripAnsi, stripOrder, swipeIntent, writeTerminalCache, type PhoneTerminal as PhoneTerminalInfo } from "./phoneTerminals";
 import { copyLastOutput, endTerminal, renameTerminal, resizePhoneTerminal } from "./terminalActions";
 
 type View = { kind: "home" } | { kind: "terminal"; machineId: string; id: string };
@@ -106,9 +106,10 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     if (!info.access) { setHostState((s) => ({ ...s, [info.id]: "needs-full" })); return; }
     try {
       const items = await info.host.backend.ptyList(search);
-      const prior = new Map((readTerminalCache()[info.id] ?? []).map((item) => [item.id, item.firstSeen]));
-      // A Mac from before terminal names sends no recent output.
-      const enriched = items.map((item: PtySummary) => ({ ...item, tail: item.tail ?? "", machineId: info.id, machineName: info.name, firstSeen: prior.get(item.id) ?? Date.now() }));
+      const prior = new Map((readTerminalCache()[info.id] ?? []).map((item) => [item.id, item]));
+      // A Mac from before terminal names sends no recent output. Output since an answer is
+      // only kept when none was missed; otherwise the whole tail is checked for a question.
+      const enriched = items.map((item: PtySummary) => { const before = prior.get(item.id); return { ...item, tail: item.tail ?? "", machineId: info.id, machineName: info.name, firstSeen: before?.firstSeen ?? Date.now(), answerTail: before?.cursor === item.cursor ? before.answerTail : undefined }; });
       if (search) setSearchResults((current) => [...(current ?? []).filter((item) => item.machineId !== info.id), ...enriched]);
       else setSummaries((current) => ({ ...current, [info.id]: enriched }));
       for (const item of items) { const key = `${info.id}:${item.id}`; const pending = discoveryTimers.current.get(key); if (pending) clearTimeout(pending); discoveryTimers.current.delete(key); }
@@ -136,7 +137,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
           const existing = items.find((item) => item.id === id);
           if (!existing) return current;
           if (eventCursor <= existing.cursor) return current;
-          return { ...current, [info.id]: items.map((item) => item.id === id ? { ...item, tail: appendTail(item.tail, data), cursor: eventCursor, lastActivity: Date.now() } : item) };
+          return { ...current, [info.id]: items.map((item) => item.id === id ? { ...item, tail: appendTail(item.tail, data), answerTail: item.answerTail === undefined ? undefined : appendTail(item.answerTail, data), cursor: eventCursor, lastActivity: Date.now() } : item) };
         });
       }).then((off) => { if (live) offs.push(off); else off(); }).catch(() => {});
       info.host.backend.onPtyExit((id, code) => { if (!live) return; setSummaries((current) => ({ ...current, [info.id]: (current[info.id] ?? []).map((item) => item.id === id ? { ...item, state: "exited", exitCode: code, lastActivity: Date.now() } : item) })); }).then((off) => { if (live) offs.push(off); else off(); }).catch(() => {});
@@ -204,7 +205,12 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     try { await info.host.backend.ptySpawn({ id, cwd: path, name: shellName, cols: 80, rows: 24 }); if (nameOverride && baseTerminal) { await info.host.backend.ptyKill(baseTerminal.id); closeLocally(baseTerminal); } await refreshHost(info); const created = { id, name: shellName, project: path?.split(/[\\/]/).filter(Boolean).at(-1) ?? baseTerminal?.project ?? null, cwd: path ?? null, tail: "", state: "running" as const, exitCode: null, lastActivity: Date.now(), cursor: 0, machineId: info.id, machineName: info.name, firstSeen: Date.now() }; setSummaries((prev) => ({ ...prev, [info.id]: [created, ...(prev[info.id] ?? []).filter((item) => item.id !== id)] })); open(created); }
     catch (error) { setNotice(String(error)); }
   };
-  const sendText = async (text: string) => { if (!machine || !terminal || terminal.state !== "running") return; try { await machine.host.backend.ptyWrite(terminal.id, text); } catch (error) { setNotice(String(error)); } };
+  const sendText = async (text: string) => {
+    if (!machine || !terminal || terminal.state !== "running") return;
+    // Whatever it asked before this has been answered; only output from here on can ask again.
+    setSummaries((current) => ({ ...current, [machine.id]: (current[machine.id] ?? []).map((item) => item.id === terminal.id ? { ...item, answerTail: "" } : item) }));
+    try { await machine.host.backend.ptyWrite(terminal.id, text); } catch (error) { setNotice(String(error)); }
+  };
   const sendInput = (event: FormEvent) => { event.preventDefault(); const text = input; setInput(""); void sendText(`${text}\r`); };
   const onBeforeInput = (event: React.FormEvent<HTMLInputElement>) => {
     if (!ctrl) return;
@@ -267,7 +273,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
       <button type="button" className="ph-term-project-button" onClick={() => { setQuery(""); setSheet("list"); }}>{project} · <b>{terminal?.name ?? "Terminal"}</b> ▾</button>
       <div className="ph-term-strip" role="tablist" aria-label="Open terminals">{strip.map((item) => <button key={item.id} ref={item.id === terminal?.id ? selectedStrip : undefined} type="button" role="tab" aria-selected={item.id === terminal?.id} className={item.id === terminal?.id ? "selected" : ""} {...holdBind(item)} onClick={() => { if (holdFired.current) { holdFired.current = false; return; } open(item); }}><i className={`ph-term-dot ${dotState(item)}`} />{item.name}{fromPhone(item.id) && <small>phone</small>}</button>)}</div>
       {terminal && <>
-        <div className={`ph-term-status ${dotState(terminal)}`}>{dotState(terminal) === "ask" ? <><span>Asking: {askLine(terminal.tail)}</span>{isYesNo(terminal.tail) && <span><button onClick={() => void sendText("n\r")}>No</button><button onClick={() => void sendText("y\r")}>Yes</button></span>}</> : dotState(terminal) === "ended" || dotState(terminal) === "fail" ? <><span>Finished {age(terminal.lastActivity)} ago · exit {terminal.exitCode ?? "?"}</span><span><button onClick={() => closeTerminal(terminal)}>Close</button><button onClick={() => machine && void newShell(machine, terminal, terminal.name)}>Start again</button></span></> : <span>Full permission · input enabled</span>}</div>
+        <div className={`ph-term-status ${dotState(terminal)}`}>{dotState(terminal) === "ask" ? <><span>Asking: {askLine(questionText(terminal))}</span>{isYesNo(questionText(terminal)) &&<span><button onClick={() => void sendText("n\r")}>No</button><button onClick={() => void sendText("y\r")}>Yes</button></span>}</> : dotState(terminal) === "ended" || dotState(terminal) === "fail" ? <><span>Finished {age(terminal.lastActivity)} ago · exit {terminal.exitCode ?? "?"}</span><span><button onClick={() => closeTerminal(terminal)}>Close</button><button onClick={() => machine && void newShell(machine, terminal, terminal.name)}>Start again</button></span></> : <span>Full permission · input enabled</span>}</div>
         <div className={`ph-term-swipe${dragX !== 0 ? " dragging" : ""}`} onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeEnd} style={{ transform: `translateX(${dragX / 4}px)` }}><div ref={xtermHost} className="ph-term-xterm" />{dragX !== 0 && (() => { const at = strip.findIndex((item) => item.id === terminal.id); const preview = strip[at + (dragX < 0 ? 1 : -1)]; return preview ? <div className={`ph-term-preview ${dragX < 0 ? "next" : "previous"}`}><b>{preview.name}</b><pre>{stripAnsi(preview.tail).split(/\r?\n/u).slice(-40).join("\n")}</pre></div> : null; })()}</div>
         {terminal.state === "running" && <><div className="ph-term-keys">{[["Esc", "\x1b"], ["Tab", "\t"], [ctrl ? "Ctrl ✓" : "Ctrl", "ctrl"], ["←", "D"], ["↓", "B"], ["↑", "A"], ["→", "C"]].map(([label, data]) => <button key={label} type="button" className={data === "ctrl" && ctrl ? "active" : ""} onClick={() => data === "ctrl" ? setCtrl((value) => !value) : void sendText(["A", "B", "C", "D"].includes(data) ? arrowCode(data as "A" | "B" | "C" | "D", !!xterm.current?.modes.applicationCursorKeysMode) : data)}>{label}</button>)}</div><form className="ph-term-command" onSubmit={sendInput}><input value={input} onChange={(event) => setInput(event.target.value)} onBeforeInput={onBeforeInput} placeholder="Type a command…" enterKeyHint="send" autoCapitalize="off" autoCorrect="off" spellCheck={false} /><button type="submit" aria-label="Send">↵</button></form></>}
       </>}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { age, appendTail, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, nextDotChange, stripAnsi, stripOrder, swipeIntent } from '../src/phone/phoneTerminals.ts';
+import { age, appendTail, arrowCode, askLine, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, nextDotChange, questionText, stripAnsi, stripOrder, swipeIntent } from '../src/phone/phoneTerminals.ts';
 
 const terminal = (id, machineId = 'm1', project = 'apex-deck', extra = {}) => ({
   id, name: id, machineId, machineName: machineId, project, cwd: null, tail: '', matched: undefined,
@@ -12,6 +12,23 @@ test('terminal output helpers strip ANSI and recognize status prompts', () => {
   assert.equal(lastLine('old\rnew\n'), 'new');
   assert.equal(isYesNo('Delete local test data? (y/N)'), true);
   assert.equal(dotState(terminal('t', 'm1', 'p', { tail: 'Delete local test data? (y/N)', lastActivity: 0 }), 2000), 'ask');
+});
+
+test('terminal lines ending in CR LF keep their text', () => {
+  assert.equal(stripAnsi('npm run dev\r\n  ready\r\n'), 'npm run dev\n  ready\n');
+  assert.equal(stripAnsi('50%\r100%\r\n'), '100%\n');
+  assert.equal(lastLine('npm run dev\r\n  Local: http://localhost:5173/\r\n'), 'Local: http://localhost:5173/');
+  const menu = 'Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No\r\n';
+  assert.equal(askLine(menu), 'Do you want to proceed?');
+  assert.equal(dotState(terminal('t', 'm1', 'p', { tail: menu, lastActivity: 0 }), 6000), 'ask');
+});
+
+test('a question answered from this phone stops counting until new output asks again', () => {
+  const asked = terminal('t', 'm1', 'p', { tail: 'Deploy now? (y/n) y\r\n% ', lastActivity: 0 });
+  assert.equal(dotState(asked, 6000), 'ask');
+  assert.equal(dotState({ ...asked, answerTail: 'y\r\n% ' }, 6000), 'idle');
+  assert.equal(dotState({ ...asked, answerTail: 'y\r\nOverwrite? (y/n) ' }, 6000), 'ask');
+  assert.equal(questionText({ ...asked, answerTail: 'y\r\n% ' }), 'y\r\n% ');
 });
 
 test('a quiet running terminal is due a redraw when it may be asking, then when it goes idle', () => {
