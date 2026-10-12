@@ -50,6 +50,14 @@ test('closing the active tab activates its left neighbour', () => {
   assert.equal(s.tabs.find((t) => t.id === s.active).kind, 'details');
 });
 
+test('worktrees is a single-instance tab and survives saved-panel parsing', () => {
+  let s = openTab(defaultPanel(), 'worktrees', 1);
+  s = openTab(s, 'worktrees', 2);
+  assert.equal(s.tabs.filter((tab) => tab.kind === 'worktrees').length, 1);
+  const restored = parsePanel(JSON.stringify(s));
+  assert.deepEqual(kinds(restored), ['dashboard', 'tasks', 'details', 'worktrees']);
+});
+
 test('damaged saves fall back safely', () => {
   assert.deepEqual(kinds(parsePanel(null)), ['dashboard', 'tasks', 'details']);
   assert.deepEqual(kinds(parsePanel('nope')), ['dashboard', 'tasks', 'details']);

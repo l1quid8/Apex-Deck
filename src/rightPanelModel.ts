@@ -3,12 +3,12 @@
 // for adding, closing and reordering them. No interface code, so it can be
 // tested on its own. Dashboard and Tasks are always there, first and second.
 
-export type TabKind = "dashboard" | "tasks" | "details" | "browser" | "files";
+export type TabKind = "dashboard" | "tasks" | "details" | "browser" | "files" | "worktrees";
 export interface PanelTab { id: string; kind: TabKind; url?: string; usedAt: number }
 export interface RightPanelState { open: boolean; tabs: PanelTab[]; active: string }
 
 export const FIXED: TabKind[] = ["dashboard", "tasks"];
-export const KINDS: TabKind[] = ["dashboard", "tasks", "details", "browser", "files"];
+export const KINDS: TabKind[] = ["dashboard", "tasks", "details", "browser", "files", "worktrees"];
 export const BROWSER_CAP = 8;
 const STORAGE_KEY = "apex-deck.right-panel.v1";
 

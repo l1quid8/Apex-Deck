@@ -316,6 +316,10 @@ export interface FolderListing {
   truncated: boolean;
 }
 
+export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean }
+export interface WorktreeList { root: string; items: Worktree[] }
+export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
+
 export interface Pane {
   id: string;
   workspaceId: string;

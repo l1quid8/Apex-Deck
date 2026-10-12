@@ -71,6 +71,7 @@ import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
 import { RightBrowser } from "./RightBrowser";
 import { RightFilesTab } from "./RightFiles";
+import { RightWorktreesTab } from "./RightWorktrees";
 import { defaultPanel, loadPanel, openTab, parsePanel, savePanel, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
@@ -2238,6 +2239,13 @@ export function App() {
                 let route: Backend | null = null;
                 try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
                 return <RightFilesTab root={workspace?.path || null} backend={route} threadId={pane?.kind === "chat" ? pane.id : null} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
+              },
+              worktrees: (_tab, visible) => {
+                const pane = listed.find((item) => item.id === focusedPane);
+                const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;
+                let route: Backend | null = null;
+                try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
+                return <RightWorktreesTab root={workspace?.path || null} backend={route} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
               },
               details: (_tab, visible) => detailsTarget
                 ? <div ref={setDetailsSlot} tabIndex={-1} className="right-details-slot" hidden={!visible} />

@@ -7,7 +7,7 @@ import type { ToolServer } from "./types";
 import { mergeParticipant } from "./participantSettings";
 import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
-import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FolderListing, ModelChoice, ParticipantConfig, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
 
 type Unlisten = () => void;
 
@@ -88,6 +88,10 @@ export interface Backend {
   pathsExist(targets: string[], cwd: string | null): Promise<boolean[]>;
   /** What is in a folder on the host, for picking one there. Null is the home folder. */
   listFolder(path: string | null): Promise<FolderListing>;
+  worktreeList(path: string): Promise<WorktreeList>;
+  worktreeAdd(path: string, request: WorktreeAdd): Promise<import("./types").Worktree>;
+  worktreeRemove(path: string, worktree: string, force: boolean): Promise<void>;
+  worktreePrune(path: string): Promise<void>;
   roomPost(id: string, text: string): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
   roomPostTo(id: string, text: string, targets: string[], routed?: boolean): Promise<void>;
@@ -677,6 +681,10 @@ function demoBackend(): Backend {
     workspaceRead: async () => null,
     pathsExist: async (targets) => targets.map(() => false),
     listFolder: async () => { throw new Error("folders cannot be listed in the browser demo"); },
+    worktreeList: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
+    worktreeAdd: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
+    worktreeRemove: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
+    worktreePrune: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     roomTargets: async (id, text) => targetsFor(id, text),
     roomPost: async (id, text) => postPreview(id, text, targetsFor(id, text)),
     roomPostTo: async (id, text, targets) => {

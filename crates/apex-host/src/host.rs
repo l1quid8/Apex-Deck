@@ -15,7 +15,7 @@ use crate::events::{Bus, HostEvent};
 use crate::pty::{PtyManager, SpawnOptions};
 use crate::quit::QuitGate;
 use crate::storage::{SavedRoom, Store};
-use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images};
+use crate::{agents, changes, checkpoints, export, folders, images, mods, preview, reply_images, worktrees};
 
 fn reject_registry_link(directory: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(directory) {
@@ -1050,6 +1050,21 @@ impl Host {
     pub fn folder_list(&self, path: Option<String>) -> Result<folders::Folder, String> {
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|h| !h.is_empty()).map(PathBuf::from);
         folders::list(path.as_deref(), home)
+    }
+
+    pub async fn worktree_list(&self, path: String) -> Result<worktrees::WorktreeList, String> {
+        let task_dir = self.paths.data.join("apex-agent").join("tasks");
+        tokio::task::spawn_blocking(move || worktrees::list(Path::new(&path), &task_dir)).await.map_err(|e| e.to_string())?
+    }
+    pub async fn worktree_add(&self, path: String, request: worktrees::AddRequest) -> Result<worktrees::Worktree, String> {
+        tokio::task::spawn_blocking(move || worktrees::add(Path::new(&path), request)).await.map_err(|e| e.to_string())?
+    }
+    pub async fn worktree_remove(&self, path: String, target: String, force: bool) -> Result<(), String> {
+        let task_dir = self.paths.data.join("apex-agent").join("tasks");
+        tokio::task::spawn_blocking(move || worktrees::remove(Path::new(&path), Path::new(&target), force, &task_dir)).await.map_err(|e| e.to_string())?
+    }
+    pub async fn worktree_prune(&self, path: String) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || worktrees::prune(Path::new(&path))).await.map_err(|e| e.to_string())?
     }
 
     /// The saved session, or `None` before the first save.

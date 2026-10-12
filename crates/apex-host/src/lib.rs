@@ -31,6 +31,7 @@ pub mod host;
 pub mod command;
 pub mod documents;
 pub mod folders;
+pub mod worktrees;
 pub mod lock;
 
 pub use command::Command;

@@ -3,7 +3,7 @@ import { useRef, useState, type ReactNode } from "react";
 import { FIXED, KINDS, activate, closeTab, moveTab, openTab, type PanelTab, type RightPanelState, type TabKind } from "./rightPanelModel";
 import "./right-panel.css";
 
-export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", browser: "Browser", files: "Files" };
+export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", browser: "Browser", files: "Files", worktrees: "Worktrees" };
 const EMPTY: Partial<Record<TabKind, string>> = { details: "Open a thread to see its details." };
 
 interface Props {
