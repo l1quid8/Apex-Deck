@@ -72,7 +72,7 @@ export function reviewDraft(handle: string, draft: string): string {
   return draft.trim() ? `${ask}\n\n${draft}` : ask;
 }
 
-const TOOL_NAMES: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI", grok: "Grok" };
+const TOOL_NAMES: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI", grok: "Grok", muse: "Muse Code" };
 
 /** The tool a bot runs on, as the menu names it. */
 export function toolName(backend: ParticipantBackend): string {

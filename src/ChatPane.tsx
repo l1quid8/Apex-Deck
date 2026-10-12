@@ -190,7 +190,7 @@ export function splitArgs(line: string): string[] {
   return out;
 }
 
-type PresetKey = "claude_code" | "codex" | "gemini" | "grok" | "ollama" | "api" | "command" | "scripted";
+type PresetKey = "claude_code" | "codex" | "gemini" | "grok" | "muse" | "ollama" | "api" | "command" | "scripted";
 
 interface Preset {
   key: PresetKey;
@@ -229,6 +229,12 @@ export const PRESETS: Preset[] = [
     label: "Grok",
     efforts: AGENT_EFFORTS.grok,
     agent: { tool: "grok", detectKey: "grok", modelNote: "The list follows the models Grok offers your account.", enforcesAccess: true, asksFirst: false },
+  },
+  {
+    key: "muse",
+    label: "Muse Code (Meta)",
+    efforts: AGENT_EFFORTS.muse,
+    agent: { tool: "muse", detectKey: "muse", modelNote: "Runs on your Muse Code subscription, never a Meta API key. The list follows the models Muse offers your account.", enforcesAccess: true, asksFirst: false },
   },
   { key: "ollama", label: "Ollama (local models)", efforts: API_EFFORTS, api: { baseUrl: "http://localhost:11434/v1", autoLoad: true } },
   { key: "api", label: "Other API (OpenAI-compatible)", efforts: API_EFFORTS, api: { baseUrl: "", autoLoad: false } },

@@ -1878,3 +1878,151 @@ for line in sys.stdin:
     assert_eq!(result.unwrap().text, "image received");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A stand-in for `muse serve`: checks the command line and environment,
+/// then plays one turn that asks to run a command and writes the reply.
+#[cfg(unix)]
+const FAKE_MUSE: &str = r#"#!/usr/bin/python3
+import sys, json, os
+args = sys.argv[1:]
+log = open('muse-log', 'w')
+log.write(json.dumps({'args': args, 'key': os.environ.get('META_API_KEY')}) + '\n'); log.flush()
+def send(m): sys.stdout.write(json.dumps(m) + '\n'); sys.stdout.flush()
+def read():
+    line = sys.stdin.readline()
+    if not line: sys.exit(0)
+    m = json.loads(line); log.write(line); log.flush(); return m
+m = read(); assert m['method'] == 'initialize', m
+assert m['params']['capabilities']['userInputDialogs'] is False
+send({'jsonrpc': '2.0', 'id': m['id'], 'result': {'serverInfo': {'name': 'muse'}}})
+m = read(); assert m['method'] == 'initialized', m
+m = read(); assert m['method'] == 'session/start', m
+send({'jsonrpc': '2.0', 'id': m['id'], 'result': {'session': {'sessionId': 's1', 'modelId': None}, 'viewCursor': 'v0'}})
+m = read(); assert m['method'] == 'turn/start', m
+assert m['params']['sessionId'] == 's1'
+send({'jsonrpc': '2.0', 'id': m['id'], 'result': {'status': 'accepted', 'turnId': 't1'}})
+send({'jsonrpc': '2.0', 'method': 'item/started', 'params': {'item': {'itemId': 'c1', 'kind': 'toolCall', 'tool': 'write_file', 'args': '{"path":"a.txt"}'}}})
+send({'jsonrpc': '2.0', 'id': 'r1', 'method': 'approval/request', 'params': {
+    'approvalId': 'a1', 'sessionId': 's1', 'toolName': 'bash', 'rawArgs': '{}',
+    'currentRequirementId': {'approvalId': 'a1', 'sourceIndex': 0},
+    'subject': {'kind': 'shell', 'command': 'make test'},
+    'availableChoices': [{'choiceId': 'allow_once', 'decision': 'approved', 'scope': 'once'}, {'choiceId': 'deny', 'decision': 'denied', 'scope': 'once'}]}})
+m = read(); assert m.get('id') == 'r1' and 'result' in m, m
+m = read(); assert m['method'] == 'approval/decide', m
+open('decided', 'w').write(m['params']['choiceId'])
+send({'jsonrpc': '2.0', 'id': m['id'], 'result': {'status': 'accepted', 'terminal': True}})
+send({'jsonrpc': '2.0', 'method': 'item/started', 'params': {'item': {'itemId': 'm1', 'kind': 'agentMessage', 'text': ''}}})
+send({'jsonrpc': '2.0', 'method': 'item/delta', 'params': {'itemId': 'm1', 'field': 'text', 'delta': 'Tests '}})
+send({'jsonrpc': '2.0', 'method': 'item/delta', 'params': {'itemId': 'm1', 'field': 'text', 'delta': 'pass.'}})
+send({'jsonrpc': '2.0', 'method': 'item/completed', 'params': {'item': {'itemId': 'm1', 'kind': 'agentMessage', 'text': 'Tests pass.'}}})
+send({'jsonrpc': '2.0', 'method': 'session/tokenUsage', 'params': {'usage': {'inputTokens': 100, 'outputTokens': 7}, 'promptTokens': 100}})
+send({'jsonrpc': '2.0', 'method': 'session/tokenUsage', 'params': {'usage': {'inputTokens': 120, 'outputTokens': 3}, 'promptTokens': 120}})
+send({'jsonrpc': '2.0', 'method': 'usage/changed', 'params': {'window': {'usedPercent': 7, 'windowDurationMins': 300, 'resetsAtMs': 1791845454000}, 'weekly': {'usedPercent': 1, 'resetsAtMs': 1792368000000}}})
+send({'jsonrpc': '2.0', 'method': 'turn/completed', 'params': {'turnId': 't1', 'terminal': 'completed'}})
+read()
+"#;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn muse_turns_run_through_its_session_host_on_the_subscription() {
+    use apex_core::{AgentTool, PlanUsage, Progress};
+    // A key would bill per use instead of the plan; the bot must never pass it on.
+    std::env::set_var("META_API_KEY", "sk-meta-should-not-be-seen");
+    let dir = fake_tool("muse-session", "muse", FAKE_MUSE);
+    let mut bot_config = config("muse", Backend::Agent { tool: AgentTool::Muse, model: Some("muse-spark-1.3".into()) });
+    bot_config.access = Access::Edits;
+    bot_config.effort = Some("low".into());
+    let bot = CliParticipant::new(bot_config).with_context(&context_in(&dir));
+    let person = Fixed::new(Decision::Approve);
+    let text = Mutex::new(String::new());
+    let activity = Mutex::new(Vec::new());
+    let plans: Mutex<Vec<PlanUsage>> = Mutex::new(Vec::new());
+    let result = bot
+        .respond_with_approvals(
+            request("run the tests"),
+            &|update| match update {
+                Progress::Text(piece) => text.lock().unwrap().push_str(piece),
+                Progress::Activity(line) => activity.lock().unwrap().push(line.to_string()),
+                Progress::Plan(plan) => plans.lock().unwrap().push(plan.clone()),
+                _ => {}
+            },
+            &person,
+        )
+        .await;
+    let reply = result.unwrap();
+    assert_eq!(reply.text, "Tests pass.");
+    assert_eq!(text.into_inner().unwrap(), "Tests pass.");
+    assert_eq!((reply.input_tokens, reply.output_tokens), (Some(220), Some(10)));
+    assert!(activity.lock().unwrap().iter().any(|line| line == "Writing a.txt"), "{:?}", activity.lock().unwrap());
+    let asked = person.asked.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert_eq!((asked[0].kind, asked[0].detail.as_str()), (ActionKind::Command, "make test"));
+    assert_eq!(std::fs::read_to_string(dir.join("decided")).unwrap(), "allow_once");
+    let plans = plans.into_inner().unwrap();
+    assert_eq!(plans[0].windows[0].used_percent, 7);
+
+    let log = std::fs::read_to_string(dir.join("muse-log")).unwrap();
+    let first: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    assert_eq!(first["key"], serde_json::Value::Null, "META_API_KEY reached Muse");
+    let args: Vec<String> = serde_json::from_value(first["args"].clone()).unwrap();
+    assert_eq!(args, ["serve", "--contributor-mode", "off", "--no-session-log", "--model", "muse-spark-1.3"]);
+    assert!(log.contains("\"approvalMode\":\"promptUnmatched\""), "{log}");
+    assert!(log.contains("\"reasoningEffort\":\"low\""), "{log}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_read_only_muse_has_no_writes_or_shell_and_a_declined_request_is_denied() {
+    use apex_core::AgentTool;
+    let dir = fake_tool("muse-read-only", "muse", FAKE_MUSE);
+    let bot = CliParticipant::new(config("muse", Backend::Agent { tool: AgentTool::Muse, model: None })).with_context(&context_in(&dir));
+    let person = Fixed::new(Decision::Reject);
+    let (result, _, _) = work_asking(&bot, &person).await;
+    assert_eq!(result.unwrap().text, "Tests pass.");
+    assert_eq!(std::fs::read_to_string(dir.join("decided")).unwrap(), "deny");
+    let log = std::fs::read_to_string(dir.join("muse-log")).unwrap();
+    let first: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    let args: Vec<String> = serde_json::from_value(first["args"].clone()).unwrap();
+    assert_eq!(args, ["serve", "--contributor-mode", "off", "--no-session-log", "--disable-write", "--disable-shell"]);
+    assert!(log.contains("\"approvalMode\":\"denyUnmatched\""), "{log}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Real Muse, real subscription: `MUSE_LIVE=1 cargo test -p apex-adapters
+/// --test adapters live_muse -- --ignored --nocapture`. Each run uses a
+/// little of the plan's five-hour window.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore]
+async fn live_muse_reads_at_read_only_and_writes_at_edits() {
+    use apex_core::{AgentTool, Progress};
+    if std::env::var("MUSE_LIVE").is_err() { return; }
+    let dir = std::env::temp_dir().join(format!("apex-muse-live-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("note.txt"), "pineapple 42\n").unwrap();
+    let path = format!("{}/.local/bin:/usr/bin:/bin", std::env::var("HOME").unwrap());
+    let context = BuildContext { cwd: Some(dir.clone()), path: Some(path), ..Default::default() };
+    for (access, text, check) in [
+        (Access::Read, "Read note.txt in this folder and reply with exactly its contents, nothing else. Do not change anything.", "read"),
+        (Access::Edits, "Create a file named hi.txt in this folder containing the single word hi. Then reply with one short sentence.", "write"),
+    ] {
+        let mut bot = config("muse", Backend::Agent { tool: AgentTool::Muse, model: Some("muse-spark-1.3".into()) });
+        bot.access = access;
+        bot.effort = Some("low".into());
+        let bot = CliParticipant::new(bot).with_context(&context);
+        let person = Fixed::new(Decision::Reject);
+        let result = bot.respond_with_approvals(request(text), &|update| match update {
+            Progress::Activity(line) => eprintln!("  activity: {line}"),
+            Progress::Plan(plan) => eprintln!("  plan: {:?}", plan.windows),
+            Progress::Context(c) => eprintln!("  context: {}/{}", c.used_tokens, c.window_tokens),
+            _ => {}
+        }, &person).await;
+        eprintln!("[{check}] {:?}; asked {:?}", result.as_ref().map(|r| (&r.text, r.input_tokens, r.output_tokens)), person.asked.lock().unwrap());
+        match check {
+            "read" => assert!(result.unwrap().text.contains("pineapple 42")),
+            _ => { result.unwrap(); assert_eq!(std::fs::read_to_string(dir.join("hi.txt")).unwrap().trim(), "hi"); }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

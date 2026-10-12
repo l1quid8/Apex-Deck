@@ -144,7 +144,7 @@ function readDrafts(): Record<string, Draft> {
 }
 
 const toPerson = (config: ParticipantConfig): Person => ({ id: config.id, display_name: config.display_name, look: config.appearance ?? legacyAppearance(config.id) });
-const TOOL_WORDS: Record<string, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini", grok: "Grok" };
+const TOOL_WORDS: Record<string, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini", grok: "Grok", muse: "Muse Code" };
 /** What a saved bot runs on, in a few words. */
 function toolWords(config: ParticipantConfig): string {
   const backend = config.backend;
@@ -1479,7 +1479,7 @@ export function PhoneApp() {
               status={asking ? "Waiting on your answer" : turn ? `${toolLine(turnWords(turn, false, room.plan))} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}
               statusWarn={asking} working={Boolean(turn)} asking={asking}
               meters={botMeters(provider, room.fill[who.id], provider ? room.plans[provider] : undefined, new Date())}
-              shared={provider && sharing > 1 ? `The plan is shared by all ${sharing} ${provider === "claude_code" ? "Claude Code" : provider === "codex" ? "Codex" : provider === "grok" ? "Grok" : "Gemini"} bots in this thread.` : ""}
+              shared={provider && sharing > 1 ? `The plan is shared by all ${sharing} ${TOOL_WORDS[provider] ?? provider} bots in this thread.` : ""}
               tokens={tokenWords(room.used[who.id])}
               offline={openLink.status !== "online" ? downLine(openLink) : ""}
               onSave={(change) => saveTurn(room.id, openLink.id, who.id)({ change, reported })}

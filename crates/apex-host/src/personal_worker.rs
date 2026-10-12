@@ -357,6 +357,7 @@ pub(crate) fn endpoint(profile: &ParticipantConfig) -> String {
         Backend::Agent { tool: AgentTool::Codex, .. } => "api.openai.com".into(),
         Backend::Agent { tool: AgentTool::Gemini, .. } => "generativelanguage.googleapis.com".into(),
         Backend::Agent { tool: AgentTool::Grok, .. } => "api.x.ai".into(),
+        Backend::Agent { tool: AgentTool::Muse, .. } => "api.meta.ai".into(),
         Backend::OpenAiCompatible { base_url, .. } => {
             let rest = base_url.split("://").nth(1).unwrap_or(base_url);
             let host = rest.split(['/', '?']).next().unwrap_or(rest);

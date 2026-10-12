@@ -23,6 +23,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
     KnownAgent { key: "cursor", label: "Cursor Agent", program: "cursor-agent" },
     KnownAgent { key: "copilot", label: "GitHub Copilot", program: "copilot" },
     KnownAgent { key: "grok", label: "Grok", program: "grok" },
+    KnownAgent { key: "muse", label: "Muse Code", program: "muse" },
     KnownAgent { key: "opencode", label: "OpenCode", program: "opencode" },
     KnownAgent { key: "aider", label: "Aider", program: "aider" },
 ];
