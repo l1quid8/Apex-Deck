@@ -42,6 +42,11 @@ struct PtyRecord { generation: u64, name: String, project: Option<String>, state
 
 fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
 
+/// Forget terminals that ended more than `EXIT_RETENTION_MS` ago.
+fn prune(records: &mut HashMap<String, PtyRecord>, now: u64) {
+    records.retain(|_, record| record.exited_at.is_none_or(|at| now.saturating_sub(at) <= EXIT_RETENTION_MS));
+}
+
 pub struct SpawnOptions {
     pub name: Option<String>,
     pub program: String,
@@ -127,10 +132,18 @@ impl PtyManager {
             .unwrap()
             .insert(id.to_string(), Session { generation, writer, master: pair.master, killer });
 
-        self.records.lock().unwrap().insert(id.to_string(), PtyRecord {
-            generation, name: options.name.clone().unwrap_or_else(|| "shell".into()), project, state: "running".into(), exit_code: None,
-            last_activity: now_ms(), cursor: 0, history: VecDeque::new(), exited_at: None,
-        });
+        {
+            let now = now_ms();
+            let mut records = self.records.lock().unwrap();
+            prune(&mut records, now);
+            // A pane that starts again under the same id keeps counting, so a
+            // phone already attached to it doesn't drop the new output as old.
+            let cursor = records.get(id).map_or(0, |old| old.cursor);
+            records.insert(id.to_string(), PtyRecord {
+                generation, name: options.name.clone().unwrap_or_else(|| "shell".into()), project, state: "running".into(), exit_code: None,
+                last_activity: now, cursor, history: VecDeque::new(), exited_at: None,
+            });
+        }
 
         let records = Arc::clone(&self.records);
         let output_id = id.to_string();
@@ -214,7 +227,7 @@ impl PtyManager {
     pub fn list(&self) -> Vec<PtySummary> {
         let now = now_ms();
         let mut records = self.records.lock().unwrap();
-        records.retain(|_, record| record.exited_at.is_none_or(|at| now.saturating_sub(at) <= EXIT_RETENTION_MS));
+        prune(&mut records, now);
         let mut items: Vec<_> = records.iter().map(|(id, r)| PtySummary {
             id: id.clone(), name: r.name.clone(), project: r.project.clone(), state: r.state.clone(),
             exit_code: r.exit_code, last_activity: r.last_activity, cursor: r.cursor,
@@ -226,12 +239,13 @@ impl PtyManager {
     pub fn snapshot(&self, id: &str) -> Result<PtySnapshot, String> {
         let now = now_ms();
         let mut records = self.records.lock().unwrap();
-        records.retain(|_, record| record.exited_at.is_none_or(|at| now.saturating_sub(at) <= EXIT_RETENTION_MS));
+        prune(&mut records, now);
         let record = records.get(id).ok_or_else(|| format!("no retained terminal with id {id}"))?;
         let cursor = record.cursor;
         let state = record.state.clone();
         let exit_code = record.exit_code;
-        let history: Vec<_> = record.history.iter().copied().collect();
+        // The byte limit can cut a character in two; skip its leftover tail.
+        let history: Vec<_> = record.history.iter().copied().skip_while(|byte| byte & 0xC0 == 0x80).collect();
         drop(records);
         let output = String::from_utf8_lossy(&history).into_owned();
         Ok(PtySnapshot { id: id.into(), output, cursor, state, exit_code })
@@ -314,6 +328,44 @@ mod tests {
         assert!(snapshot.output.len() <= HISTORY_LIMIT);
         assert!(snapshot.output.len() >= HISTORY_LIMIT - 4);
         assert!(snapshot.output.chars().all(|ch| ch == 'x' || ch == '\n' || ch == '\r'));
+    }
+
+    #[test]
+    fn a_cut_character_at_the_start_of_the_history_is_dropped() {
+        let manager = PtyManager::default();
+        // 'é' is two bytes. With one more byte at the end, an odd number of
+        // bytes is dropped, so the kept history starts on the second byte of one.
+        let (_out, exit) = spawn_sh(&manager, "accents", "awk 'BEGIN { for (i = 0; i < 150000; i++) printf \"\\303\\251\"; printf \"x\" }'");
+        exit.recv_timeout(Duration::from_secs(10)).unwrap();
+        let snapshot = manager.snapshot("accents").unwrap();
+        assert!(!snapshot.output.contains('\u{FFFD}'));
+        assert!(snapshot.output.starts_with('é') && snapshot.output.ends_with("éx"));
+    }
+
+    #[test]
+    fn a_terminal_started_again_under_its_id_keeps_counting() {
+        let manager = PtyManager::default();
+        let (_out, exit) = spawn_sh(&manager, "again", "echo first");
+        exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        let before = manager.snapshot("again").unwrap().cursor;
+        assert!(before > 0);
+        let (_out, exit) = spawn_sh(&manager, "again", "echo second");
+        exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        let after = manager.snapshot("again").unwrap();
+        assert!(after.cursor > before);
+        assert!(after.output.contains("second") && !after.output.contains("first"));
+    }
+
+    #[test]
+    fn starting_a_terminal_forgets_ones_that_ended_long_ago() {
+        let manager = PtyManager::default();
+        let (_out, exit) = spawn_sh(&manager, "old", "true");
+        exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        manager.records.lock().unwrap().get_mut("old").unwrap().exited_at = Some(now_ms() - EXIT_RETENTION_MS - 1);
+        let (_out, exit) = spawn_sh(&manager, "new", "true");
+        exit.recv_timeout(Duration::from_secs(5)).unwrap();
+        let records = manager.records.lock().unwrap();
+        assert!(!records.contains_key("old") && records.contains_key("new"));
     }
 
     #[test]
