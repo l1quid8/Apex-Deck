@@ -140,7 +140,7 @@ textarea {
   padding: 8px 16px 8px 88px;
   background: transparent;
   --tb-scale: 0.75;
-  -webkit-app-region: no-drag;
+  -webkit-app-region: drag;
 }
 .titlebar button,
 .titlebar a,
@@ -1498,7 +1498,11 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   text-align: left;
   padding: 9px 10px;
   border-radius: 7px;
+  border-bottom: 1px solid var(--line);
 }
+.attention-list .attention-row.needs_input { border-bottom-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.attention-list .attention-row.failed { border-bottom-color: color-mix(in srgb, var(--danger) 50%, var(--line)); }
+.attention-list .attention-row.done { border-bottom-color: color-mix(in srgb, var(--brand-cyan) 45%, var(--line)); }
 .attention-list button.attention-row:hover {
   background: color-mix(in srgb, var(--text) 7%, transparent);
 }
@@ -2026,7 +2030,12 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
 .quick-add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .quick-add-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .quick-add .form-error { margin: 0; }
-.attention-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 6px 10px 4px; margin-top: 2px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.attention-severity-border { display: flex; flex: none; height: 1px; margin: 0 4px; background: var(--line); }
+.attention-severity-border span { min-width: 0; }
+.attention-severity-border .failed { background: color-mix(in srgb, var(--danger) 50%, var(--line)); }
+.attention-severity-border .needs_input { background: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.attention-severity-border .done { background: color-mix(in srgb, var(--brand-cyan) 45%, var(--line)); }
+.attention-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 6px 10px 4px; margin-top: 2px; font-size: 11px; color: var(--muted); }
 .attention-foot button { padding: 3px 8px; font-size: 11px; }
 kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--bg); }
 
@@ -2134,10 +2143,12 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .confirm-rows { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
 .confirm-rows li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
-/* Now tier, stage 1: the section tabs sit at the centre of the title bar. The
-   two sides take equal room while both fit, and shift aside rather than overlap. */
+/* The section tabs are centered independently of the side controls. Keep the
+   later right group at its content width: it inherits the titlebar's drag
+   region, which Electron applies after the tabs' no-drag region regardless
+   of z-index. Expanding it underneath the switcher swallows Library clicks. */
 .titlebar-start, .titlebar-end { display: flex; align-items: center; gap: 10px; flex: 1 1 0; min-width: max-content; }
-.titlebar-end { justify-content: flex-end; }
+.titlebar-end { justify-content: flex-end; flex: 0 0 auto; }
 .titlebar-start > .attention { margin-left: auto; }
 @media (min-width: 1051px) {
   .titlebar { position: relative; }

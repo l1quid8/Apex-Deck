@@ -112,6 +112,9 @@ export function AttentionMenu({ items, onOpen, onDecide, onMarkReadySeen }: Prop
   ]
     .filter(Boolean)
     .join(" · ") || "No approvals waiting";
+  const borderSegments = (["failed", "needs_input", "done"] as const)
+    .map((kind) => ({ kind, count: items.filter((item) => item.signal.kind === kind).length }))
+    .filter((segment) => segment.count > 0);
   const now = Date.now();
 
   const go = (paneId: string) => {
@@ -155,7 +158,7 @@ export function AttentionMenu({ items, onOpen, onDecide, onMarkReadySeen }: Prop
             );
             if (card && view?.kind === "open") {
               return (
-                <div key={item.paneId} className="attention-row" data-strip={item.paneId}>
+                <div key={item.paneId} className={`attention-row ${item.signal.kind}`} data-strip={item.paneId}>
                   <span className={`dot ${item.signal.kind}`} />
                   {what}
                   <button className="ghost small" onClick={() => go(item.paneId)}>Open to answer</button>
@@ -166,7 +169,7 @@ export function AttentionMenu({ items, onOpen, onDecide, onMarkReadySeen }: Prop
             const waiting = pending?.paneId === item.paneId;
             return (
               <div key={item.paneId} className={`attention-item ${card || !live ? "expanded" : ""}`}>
-                <button className="attention-row" onClick={() => go(item.paneId)}>
+                <button className={`attention-row ${live ? item.signal.kind : ""}`} onClick={() => go(item.paneId)}>
                   <span className={`dot ${live ? item.signal.kind : ""}`} />
                   {what}
                   {where}
@@ -189,6 +192,11 @@ export function AttentionMenu({ items, onOpen, onDecide, onMarkReadySeen }: Prop
               </div>
             );
           })}
+          <div className="attention-severity-border" aria-hidden="true">
+            {borderSegments.map(({ kind, count }) => (
+              <span key={kind} className={kind} style={{ flex: `${count} 0 0%` }} />
+            ))}
+          </div>
           <div className="attention-foot">
             <span>Most urgent first</span>
             {items.some((item) => item.signal.kind === "done") && <button className="ghost small" onClick={onMarkReadySeen}>Mark ready as seen</button>}
