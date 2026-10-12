@@ -194,6 +194,7 @@ fn agent_name(tool: AgentTool) -> &'static str {
         AgentTool::Codex => "Codex",
         AgentTool::Gemini => "Gemini",
         AgentTool::Grok => "Grok",
+        AgentTool::Muse => "Muse",
     }
 }
 

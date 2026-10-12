@@ -24,8 +24,9 @@ pub fn installed_models(tool: AgentTool) -> Vec<ModelChoice> {
             .and_then(|home| std::fs::read_to_string(home.join("models_cache.json")).ok())
             .map(|text| grok_models_from_cache(&text))
             .unwrap_or_default(),
-        // Claude Code and Gemini CLI keep no list of models on disk.
-        AgentTool::ClaudeCode | AgentTool::Gemini => Vec::new(),
+        // Claude Code, Gemini CLI and Muse keep no list of models on disk
+        // that Deck reads.
+        AgentTool::ClaudeCode | AgentTool::Gemini | AgentTool::Muse => Vec::new(),
     }
 }
 

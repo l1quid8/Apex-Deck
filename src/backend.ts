@@ -577,6 +577,7 @@ function demoBackend(): Backend {
       { key: "codex", label: "Codex", program: "codex", found: true },
       { key: "gemini", label: "Gemini CLI", program: "gemini", found: false },
       { key: "grok", label: "Grok", program: "grok", found: false },
+      { key: "muse", label: "Muse", program: "muse", found: true },
     ],
     pickFolder: async () => null,
     pickPath: async () => null,

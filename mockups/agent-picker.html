@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent picker mockup</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #12151a; --panel2: #0f1115;
+    --line: #262b34; --line-soft: #1d2129;
+    --text: #e8eaed; --muted: #a7adb8; --faint: #6e7480;
+    --accent: #7ee787; --accent-dim: #1c3524;
+    --amber: #e8b44b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    font-size: 14px; line-height: 1.45; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 60px; }
+  h1 { font-size: 21px; margin: 0 0 4px; font-weight: 650; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13.5px; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px; margin-bottom: 14px; }
+  .panel h2 { font-size: 13px; font-weight: 650; margin: 0 0 2px; }
+  .panel p.hint { margin: 0 0 12px; color: var(--faint); font-size: 12.5px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  .pcard { display: flex; gap: 10px; align-items: flex-start; text-align: left;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 11px 12px; cursor: pointer; color: inherit; font: inherit; }
+  .pcard:hover:not(:disabled) { border-color: #3a4150; }
+  .pcard.on { border-color: var(--accent); background: #10160f; }
+  .pcard:disabled { opacity: .45; cursor: not-allowed; }
+  .pcard .logo { width: 30px; height: 30px; border-radius: 7px; flex: none;
+    display: grid; place-items: center; background: transparent; border: 0; overflow: hidden; }
+  .pcard .logo svg { display: block; border-radius: 4px; }
+  .pcard strong { display: block; font-size: 13.5px; }
+  .pcard .fam { display: block; color: var(--faint); font-size: 12px; margin-top: 1px; }
+  .status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+    color: var(--muted); margin-top: 5px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .dot.off { background: var(--amber); }
+  .main { display: grid; grid-template-columns: 1fr 230px; gap: 14px; }
+  @media (max-width: 720px) { .main { grid-template-columns: 1fr; } }
+  .search { width: 100%; background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 8px; color: var(--text); padding: 9px 12px; font: inherit;
+    margin-bottom: 10px; outline: none; }
+  .search:focus { border-color: var(--accent); }
+  .mgroup { font-size: 12px; color: var(--faint); font-weight: 600; margin: 12px 0 6px; }
+  .mgroup:first-of-type { margin-top: 0; }
+  .mrow { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    padding: 8px 10px; cursor: pointer; color: inherit; font: inherit; }
+  .mrow:hover { background: #181c23; }
+  .mrow.on { background: #10160f; border-color: var(--accent); }
+  .mrow .mark { width: 22px; height: 22px; border-radius: 6px; flex: none;
+    display: grid; place-items: center; font-size: 12px; font-weight: 700;
+    background: #1a1e25; border: 1px solid var(--line-soft); }
+  .mrow strong { display: block; font-size: 13.5px; font-weight: 550; }
+  .mrow code { display: block; color: var(--faint); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .badge { margin-left: auto; flex: none; font-size: 11px; padding: 2px 8px;
+    border-radius: 20px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.pin { color: var(--accent); border-color: #2c4a34; }
+  .side h3 { font-size: 12px; margin: 0 0 8px; color: var(--muted); font-weight: 650; }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .seg button { background: var(--panel2); border: 1px solid var(--line); color: var(--muted);
+    border-radius: 7px; padding: 6px 11px; font: inherit; font-size: 12.5px; cursor: pointer; }
+  .seg button.on { color: #0b0d10; background: var(--accent); border-color: var(--accent); font-weight: 650; }
+  .seg button:disabled { opacity: .35; cursor: not-allowed; }
+  .foot { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+  .start { background: var(--accent); border: 0; border-radius: 8px; color: #0b0d10;
+    font: inherit; font-weight: 700; padding: 11px 22px; cursor: pointer; }
+  .summary { color: var(--muted); font-size: 13px; }
+  .summary b { color: var(--text); }
+  .note { margin-top: 12px; font-size: 12px; color: var(--faint); }
+  .qa-demo { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 720px) { .qa-demo { grid-template-columns: 1fr; } }
+  .qa-pop { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px; width: 320px; max-width: 100%; box-shadow: 0 12px 32px rgba(0,0,0,.45); }
+  .qa-label { font-size: 11.5px; color: var(--faint); font-weight: 600; display: block; margin: 10px 0 6px; }
+  .qa-label:first-child { margin-top: 0; }
+  .qa-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .qa-chips button { border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    border-radius: 999px; padding: 4px 11px; font: inherit; font-size: 12.5px; cursor: pointer; }
+  .qa-tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .qa-tool { display: flex; flex-direction: column; align-items: center; gap: 5px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+    padding: 9px 4px 7px; cursor: pointer; color: inherit; font: inherit; font-size: 11.5px; }
+  .qa-tool.on { border-color: var(--accent); background: #10160f; }
+  .qa-tool .tlogo { width: 24px; height: 24px; border-radius: 6px; overflow: hidden; display: grid; place-items: center; }
+  .qa-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .qa-field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--faint); min-width: 0; }
+  .qa-field select, .qa-field input { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 7px; color: var(--text); padding: 7px 8px; font: inherit; font-size: 12.5px; width: 100%; }
+  .qa-name { margin-top: 10px; }
+  .qa-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 8px; }
+  .qa-foot .link { background: none; border: 0; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .qa-add { background: var(--accent); border: 0; border-radius: 7px; color: #0b0d10;
+    font: inherit; font-weight: 700; font-size: 12.5px; padding: 8px 14px; cursor: pointer; }
+  .qa-why { font-size: 13px; color: var(--muted); margin: 0; }
+  .qa-why li { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>New agent</h1>
+  <p class="sub">Pick a provider, then a model. What you see here is exactly what will run.</p>
+
+  <div class="panel">
+    <h2>Connect through</h2>
+    <p class="hint">Card shows install state. Disabled means the CLI is not on this machine.</p>
+    <div class="grid" id="providers" role="radiogroup" aria-label="Connect through"></div>
+  </div>
+
+  <div class="panel">
+    <div class="main">
+      <div>
+        <h2>Model</h2>
+        <p class="hint" id="modelHint">Grouped by family. Search filters by name or id.</p>
+        <input class="search" id="q" type="search" placeholder="Search models — try “opus” or “1m”…" aria-label="Search models">
+        <div id="models"></div>
+      </div>
+      <div class="side">
+        <h3>Reasoning effort</h3>
+        <div class="seg" id="effort"></div>
+        <h3>Access</h3>
+        <div class="seg" id="access">
+          <button class="on" data-v="readonly">Read-only</button>
+          <button data-v="full">Full access</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <button class="start" id="start">Add agent</button>
+    <span class="summary" id="summary"></span>
+  </div>
+  <div class="panel">
+    <h2>Quick-add (popover, 320px)</h2>
+    <p class="hint">Same data as above, compressed: logo tiles instead of text buttons, model as a compact select with pins/follows suffix, access as two taps. Mirrors the live <code>.quick-add</code> layout.</p>
+    <div class="qa-demo">
+      <div class="qa-pop" role="dialog" aria-label="Add a bot (mockup)">
+        <span class="qa-label">Saved agents</span>
+        <div class="qa-chips">
+          <button type="button">Reviewer</button>
+          <button type="button">Planner</button>
+        </div>
+        <span class="qa-label">Or a new bot</span>
+        <div class="qa-tools" id="qaTools" role="radiogroup" aria-label="Tool"></div>
+        <div class="qa-row2">
+          <label class="qa-field">Model
+            <select id="qaModel"></select>
+          </label>
+          <label class="qa-field">Access
+            <select id="qaAccess">
+              <option value="read">Read only</option>
+              <option value="edits">Can edit files</option>
+              <option value="full">Full access</option>
+            </select>
+          </label>
+        </div>
+        <label class="qa-field qa-name">Name
+          <input id="qaName" placeholder="e.g. Opus" value="Opus">
+        </label>
+        <div class="qa-foot">
+          <button class="link" type="button">More options</button>
+          <button class="qa-add" type="button" id="qaAdd">Add to chat</button>
+        </div>
+        <p class="note" id="qaSummary" style="margin:8px 0 0"></p>
+      </div>
+      <ul class="qa-why">
+        <li><b>Tools → logo tiles.</b> The live menu shows up to 3 text buttons; tiles keep the same 3-slot rule but make the provider recognizable at 24px.</li>
+        <li><b>Model → one select.</b> No room for search here — options carry the pins/follows suffix (<code>Sonnet 5.5 · pins</code> vs <code>Latest Opus · live</code>).</li>
+        <li><b>Escape hatch stays.</b> <code>More options</code> jumps to the full form above; the popover never grows past 320px.</li>
+      </ul>
+    </div>
+  </div>
+
+  <p class="note">Mockup only — nothing here runs a model. Open this file directly in a browser.</p>
+</div>
+
+<script>
+const PROVIDERS = [
+  { key: "claude_code", name: "Claude Code", fam: "opus · sonnet · haiku", installed: true,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#D97757"/><path d="M9 3.5l.9 3.1 2.2-2.3-.7 3.2 3.1.7-2.9 1.4 2.1 2.4-3.1-.6-.6 3.1-1.5-2.8-2.4 2 .3-3.2-3.1.4 2-2.5-2.7-1.7 3.1-.6-.4-3.1 2.4 2.1z" fill="#fff"/></svg>' },
+  { key: "codex", name: "Codex", fam: "astra · sol · luna", installed: true,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#fff"/><circle cx="9" cy="9" r="4.6" fill="none" stroke="#111" stroke-width="2"/><path d="M9 4.4v9.2M4.4 9h9.2" stroke="#111" stroke-width="2"/></svg>' },
+  { key: "gemini", name: "Gemini CLI", fam: "pro · flash · lite", installed: true,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#1a1e25"/><path d="M9 2l1.7 5.3L16 9l-5.3 1.7L9 16l-1.7-5.3L2 9l5.3-1.7z" fill="#4E8DF5"/></svg>' },
+  { key: "grok", name: "Grok", fam: "grok-4.7 · fast", installed: false,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#fff"/><path d="M4.5 12.5L8 6l3.5 6.5" stroke="#111" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
+  { key: "muse", name: "Muse", fam: "spark · wonder", installed: true,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#0064E0"/><path d="M9 2.5c2.6 0 4.3 1.6 4.3 3.9 0 1.5-.8 2.6-2 3.2.5.3.8.8.8 1.4 0 1.3-1.2 2.5-3.1 2.5S4.7 12.3 4.7 11c0-.6.3-1.1.8-1.4-1.2-.6-2-1.7-2-3.2 0-2.3 1.7-3.9 4.5-3.9z" fill="none" stroke="#fff" stroke-width="1.8"/></svg>' },
+  { key: "ollama", name: "Ollama (local)", fam: "local · qwen · llama", installed: true,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#000"/><ellipse cx="9" cy="9" rx="4.8" ry="5.4" fill="none" stroke="#fff" stroke-width="1.8"/><circle cx="7.2" cy="8.4" r="1" fill="#fff"/><circle cx="10.8" cy="8.4" r="1" fill="#fff"/></svg>' },
+  { key: "api", name: "Other API", fam: "any OpenAI endpoint", installed: true,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#242a33"/><path d="M4 6h10M4 9h10M4 12h6" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>' },
+  { key: "command", name: "Custom command", fam: "any local program", installed: true,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#242a33"/><path d="M4.5 6.5l3 2.5-3 2.5" stroke="#7ee787" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.5 12H14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>' },
+  { key: "scripted", name: "Scripted", fam: "no model · testing", installed: true,
+    mark: '<svg width="18" height="18" viewBox="0 0 18 18"><rect width="18" height="18" rx="4" fill="#242a33"/><path d="M5 9.5l2 2 4-4.5" stroke="#7ee787" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' },
+];
+
+const MODELS = {
+  claude_code: [
+    { g: "Latest — follows each new version", items: [
+      { id: "sonnet", label: "Latest Sonnet", live: true },
+      { id: "opus", label: "Latest Opus", live: true },
+      { id: "opusplan", label: "Opus plans, Sonnet works", live: true },
+    ]},
+    { g: "Pinned — stays on this version", items: [
+      { id: "claude-sonnet-5-5", label: "Sonnet 5.5", live: false },
+      { id: "claude-opus-5-5", label: "Opus 5.5", live: false },
+      { id: "claude-haiku-4-5", label: "Haiku 4.5", live: false },
+    ]},
+  ],
+  codex: [
+    { g: "Current", items: [
+      { id: "gpt-6-astra", label: "Astra, most capable", live: true },
+      { id: "gpt-6.1-sol", label: "Sol, near-Astra, cheaper", live: true },
+      { id: "gpt-6-luna", label: "Luna, fastest", live: true },
+    ]},
+  ],
+  gemini: [ { g: "Pinned", items: [
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", live: false },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", live: false },
+  ]}],
+  muse: [ { g: "Muse (all pin versions)", items: [
+    { id: "muse-wonder-1.0", label: "Muse Wonder 1.0", live: false },
+    { id: "muse-wonder-full-1.0", label: "Muse Wonder Full 1.0", live: false },
+    { id: "muse-spark-1.3", label: "Muse Spark 1.3", live: false },
+    { id: "muse-spark-1.2", label: "Muse Spark 1.2", live: false },
+  ]}],
+  grok: [ { g: "Grok", items: [
+    { id: "grok-4.7", label: "Grok 4.7", live: false },
+    { id: "grok-4.7-build-fast", label: "Grok 4.7 Fast", live: false },
+    { id: "grok-4.6", label: "Grok 4.6", live: false },
+  ]}],
+  ollama: [ { g: "Local", items: [
+    { id: "qwen3-coder:30b", label: "Qwen3 Coder 30B", live: false },
+    { id: "llama3.1:8b", label: "Llama 3.1 8B", live: false },
+  ]}],
+  api: [ { g: "Custom", items: [
+    { id: "api-default", label: "Endpoint default", live: true },
+  ]}],
+};
+
+const EFFORTS = {
+  claude_code: ["low", "medium", "high", "xhigh", "max"],
+  codex: ["low", "medium", "high", "xhigh", "max", "ultra"],
+  gemini: [], grok: ["low", "medium", "high", "xhigh"],
+  muse: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+  ollama: ["none", "minimal", "low", "medium", "high", "xhigh"],
+  api: ["none", "minimal", "low", "medium", "high", "xhigh"], command: [], scripted: [],
+};
+
+let provider = "claude_code", model = "claude-sonnet-5-5", effort = "medium", access = "readonly";
+
+const pEl = document.getElementById("providers");
+const mEl = document.getElementById("models");
+const eEl = document.getElementById("effort");
+const qEl = document.getElementById("q");
+const sEl = document.getElementById("summary");
+
+function renderProviders() {
+  pEl.innerHTML = "";
+  for (const p of PROVIDERS) {
+    const b = document.createElement("button");
+    b.className = "pcard" + (p.key === provider ? " on" : "");
+    b.disabled = !p.installed;
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(p.key === provider));
+    const st = p.installed
+      ? '<span class="status"><span class="dot"></span>ready</span>'
+      : '<span class="status"><span class="dot off"></span>not installed</span>';
+    b.innerHTML = '<span class="logo">' + p.mark + "</span><span><strong>" + p.name + "</strong><span class='fam'>" + p.fam + "</span>" + st + "</span>";
+    b.onclick = () => {
+      provider = p.key;
+      const groups = MODELS[p.key] || [];
+      model = groups.length ? groups[0].items[0].id : "";
+      const es = EFFORTS[p.key] || [];
+      effort = es.includes("medium") ? "medium" : (es[0] || "");
+      renderAll();
+    };
+    pEl.appendChild(b);
+  }
+}
+
+function renderModels() {
+  const q = qEl.value.trim().toLowerCase();
+  mEl.innerHTML = "";
+  if (!MODELS[provider]) {
+    mEl.innerHTML = "<p class='note'>No model picker for this provider — it runs a command, not a model.</p>";
+    return;
+  }
+  let shown = 0;
+  for (const grp of (MODELS[provider] || [])) {
+    const items = grp.items.filter(m =>
+      !q || m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
+    if (!items.length) continue;
+    const h = document.createElement("div");
+    h.className = "mgroup"; h.textContent = grp.g;
+    mEl.appendChild(h);
+    for (const m of items) {
+      shown++;
+      const b = document.createElement("button");
+      b.className = "mrow" + (m.id === model ? " on" : "");
+      b.innerHTML = "<span class='mark'>" + (m.id === model ? "✓" : "") + "</span>" +
+        "<span><strong>" + m.label + "</strong><code>" + m.id + "</code></span>" +
+        "<span class='badge" + (m.live ? "" : " pin") + "'>" + (m.live ? "follows latest" : "pins version") + "</span>";
+      b.onclick = () => { model = m.id; renderModels(); renderSummary(); };
+      mEl.appendChild(b);
+    }
+  }
+  if (!shown) mEl.innerHTML = "<p class='note'>No models match “" + qEl.value.trim() + "”.</p>";
+}
+
+function renderEffort() {
+  const es = EFFORTS[provider] || [];
+  eEl.innerHTML = "";
+  document.querySelector(".side h3").style.display = es.length ? "" : "none";
+  eEl.style.display = es.length ? "" : "none";
+  if (!es.length) {
+    const n = document.createElement("span");
+    n.className = "note"; n.textContent = "This provider picks its own effort.";
+    eEl.appendChild(n); eEl.style.display = "";
+    return;
+  }
+  for (const v of es) {
+    const b = document.createElement("button");
+    b.textContent = v[0].toUpperCase() + v.slice(1);
+    b.className = v === effort ? "on" : "";
+    b.onclick = () => { effort = v; renderEffort(); renderSummary(); };
+    eEl.appendChild(b);
+  }
+}
+
+function renderSummary() {
+  const p = PROVIDERS.find(p => p.key === provider);
+  const es = EFFORTS[provider] || [];
+  sEl.innerHTML = "Adds <b>" + p.name + "</b> · <b>" + model + "</b>" +
+    (es.length && effort ? " · <b>" + effort + "</b>" : "") + " · " + access;
+}
+
+document.getElementById("access").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  access = b.dataset.v;
+  for (const x of e.currentTarget.querySelectorAll("button"))
+    x.classList.toggle("on", x === b);
+  renderSummary();
+});
+qEl.addEventListener("input", renderModels);
+document.getElementById("start").onclick = () => {
+  sEl.innerHTML = "✓ Queued <b>" + model + "</b> on <b>" + provider + "</b> — wire this button to your form next.";
+};
+
+function renderAll() { renderProviders(); renderModels(); renderEffort(); renderSummary(); }
+renderAll();
+
+// ---- Quick-add popover demo: same data, 3 logo tiles, compact model select ----
+let qaProvider = "claude_code";
+const qaToolsEl = document.getElementById("qaTools");
+const qaModelEl = document.getElementById("qaModel");
+const qaSummaryEl = document.getElementById("qaSummary");
+function qaQuickTools() {
+  // Mirror the live rule: installed coding agents first, then local — max 3 tiles.
+  const order = ["claude_code", "codex", "muse", "gemini", "grok", "ollama"];
+  return order.map(k => PROVIDERS.find(p => p.key === k)).filter(p => p && p.installed).slice(0, 3);
+}
+function renderQa() {
+  qaToolsEl.innerHTML = "";
+  for (const p of qaQuickTools()) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "qa-tool" + (p.key === qaProvider ? " on" : "");
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(p.key === qaProvider));
+    b.innerHTML = "<span class='tlogo'>" + p.mark + "</span><span>" + p.name.replace(/\s*\(.*\)$/, "") + "</span>";
+    b.onclick = () => { qaProvider = p.key; renderQa(); };
+    qaToolsEl.appendChild(b);
+  }
+  const groups = MODELS[qaProvider] || [];
+  qaModelEl.innerHTML = "";
+  for (const g of groups) for (const m of g.items) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.label + (m.live ? " · live" : " · pins");
+    qaModelEl.appendChild(o);
+  }
+  if (!qaModelEl.options.length) {
+    const o = document.createElement("option");
+    o.textContent = "No model — runs a command";
+    qaModelEl.appendChild(o);
+  }
+  const p = PROVIDERS.find(p => p.key === qaProvider);
+  qaSummaryEl.textContent = "Adds " + p.name + " · " + (qaModelEl.value || "default");
+}
+qaModelEl.addEventListener("change", renderQa);
+document.getElementById("qaAdd").onclick = () => {
+  const p = PROVIDERS.find(p => p.key === qaProvider);
+  qaSummaryEl.textContent = "✓ Queued " + qaModelEl.value + " on " + p.name + " — wire this to the quick-add form next.";
+};
+renderQa();
+</script>
+</body>
+</html>

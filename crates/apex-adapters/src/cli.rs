@@ -439,6 +439,7 @@ pub(crate) fn sign_in_hint(program: &str, summary: &str) -> Option<&'static str>
         "codex" => "To fix: run `codex login` in a terminal pane, then send your message again.",
         "gemini" => "To fix: run `gemini` in a terminal pane, sign in when asked, then send your message again.",
         "grok" => "To fix: run `grok login` in a terminal pane, then send your message again.",
+        "muse" => "To fix: run `muse login` in a terminal pane, then send your message again.",
         _ => "To fix: sign in to this tool in a terminal pane, then send your message again.",
     })
 }
@@ -578,9 +579,21 @@ impl Participant for CliParticipant {
                     }
                     staged = Some(files);
                 }
-                Backend::Cli { .. } => return Err(ParticipantError::Failed("This custom command has no image input protocol. Use Claude, Codex, Gemini, Grok or a vision-capable API bot for attached images.".into())),
+                Backend::Cli { .. } => return Err(ParticipantError::Failed("This custom command has no image input protocol. Use Claude, Codex, Gemini, Grok, Muse or a vision-capable API bot for attached images.".into())),
                 _ => {}
             }
+        }
+        // Muse reads the prompt from a regular file, never from standard
+        // input, so every Muse turn stages one. Attached images ride along
+        // as `--image` files from the same folder.
+        if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::Muse, .. }) {
+            let files = crate::attachments::Staged::new()?;
+            let path = files.prompt_file(&prompt)?;
+            args.extend(["--prompt-file".into(), path.to_string_lossy().into_owned()]);
+            for image in files.muse_images(&images)? {
+                args.extend(["--image".into(), image.to_string_lossy().into_owned()]);
+            }
+            staged = Some(files);
         }
         // This guard owns staged inputs through completion and cancellation.
         let _staged = staged;

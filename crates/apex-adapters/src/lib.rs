@@ -107,11 +107,17 @@ pub fn build(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Parti
 /// opening several at once reads only once, and a failed read is logged
 /// once and not retried until its wait is over.
 pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanUsage> {
+    if tool == AgentTool::Muse {
+        // No usage endpoint behind `muse` is known, and its turns report
+        // none, so there is nothing to read and nothing to log.
+        return None;
+    }
     let name = match tool {
         AgentTool::ClaudeCode => "Claude",
         AgentTool::Codex => "Codex",
         AgentTool::Grok => "Grok",
         AgentTool::Gemini => "Gemini",
+        AgentTool::Muse => "Muse",
     };
     let read = || async {
         match tool {
@@ -119,6 +125,8 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
             AgentTool::Codex => read_codex_plan(context).await.map_err(|why| plan_cache::Failure::new(why, plan_cache::Failure::SHORT)),
             AgentTool::Grok => grok_usage::read_plan().await,
             AgentTool::Gemini => gemini_usage::read_plan().await,
+            // Unreachable: `plan_usage` returns before reading for Muse.
+            AgentTool::Muse => Err(plan_cache::Failure::new("no Muse usage endpoint", plan_cache::Failure::SHORT)),
         }
     };
     plan_cache::get(tool, read)

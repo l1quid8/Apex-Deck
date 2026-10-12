@@ -1,0 +1,1 @@
+--prompt-file /dev/stdin is not a regular file

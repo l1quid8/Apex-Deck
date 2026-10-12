@@ -319,7 +319,7 @@ export interface MeterRow {
 
 /** Whether a bot's tool reports its context window at all. */
 export function reportsContext(provider: AgentTool | null): boolean {
-  return provider !== null && provider !== "gemini" && provider !== "grok";
+  return provider !== null && provider !== "gemini" && provider !== "grok" && provider !== "muse";
 }
 
 /** Context and plan as bars for the sheet a held bot opens: context first, then each plan window, shortest first, as on the desktop's meters. */
@@ -376,7 +376,7 @@ export function tokenWords(use: { input: number; output: number; turns: number }
   return `${shortCount(use.input)} in · ${shortCount(use.output)} out · ${use.turns === 1 ? "1 turn" : `${use.turns} turns`} in this thread`;
 }
 
-const TOOL_LABELS: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini", grok: "Grok" };
+const TOOL_LABELS: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini", grok: "Grok", muse: "Muse" };
 
 /** The models a bot can pick on the phone, as on the desktop: Default and four first, the rest behind More models. */
 export function modelChoices(tool: AgentTool, reported: ModelChoice[]): { shown: ModelChoice[]; extra: ModelChoice[]; groups: ModelGroup[] } {

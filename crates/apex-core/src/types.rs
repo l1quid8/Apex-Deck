@@ -47,6 +47,7 @@ pub enum AgentTool {
     Codex,
     Gemini,
     Grok,
+    Muse,
 }
 
 /// How a participant is reached.

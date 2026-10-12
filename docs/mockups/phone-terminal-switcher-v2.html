@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phone Code: terminal quick switcher (v2)</title>
+<style>
+  /* Tokens, sizes and parts copied from the iOS design review (ios/src/styles.css) so this sits
+     next to dark-code.png / dark-terminal*.png without looking like a different app.
+     v1 (phone-terminal-switcher-v1.html) is left as it was. */
+  :root {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-synthesis: none;
+    --bg: #090d12; --panel: #0e141b; --panel2: #151e28; --line: #24303d;
+    --text: #e4eaf0; --muted: #91a0af; --faint: #5c6a78;
+    --mint: #71e6b5; --ink: #04211d; --amber: #f7b74f; --red: #f87171;
+    --term: #080c10;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  body.light {
+    --bg: #f2f5f7; --panel: #fff; --panel2: #e9eff3; --line: #cbd5de;
+    --text: #12232d; --muted: #526371; --faint: #8796a3;
+    --mint: #087552; --ink: #fff; --amber: #915900; --red: #b42b39;
+    --term: #fff;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: #06090d; color: var(--text); }
+  body.light { background: #e8eef0; }
+  button, input { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
+  button { cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+  svg { display: block; flex-shrink: 0; }
+  [hidden] { display: none !important; }
+
+  /* Review page around the phone */
+  .c2-page { display: flex; gap: 56px; justify-content: center; align-items: flex-start; padding: 40px 32px 56px; }
+  .c2-side { width: 300px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+  .c2-side h1 { color: var(--text); font-size: 21px; letter-spacing: -0.4px; margin: 0 0 6px; }
+  .c2-side h2 { color: var(--text); font-size: 14px; margin: 22px 0 6px; }
+  .c2-side p { margin: 0 0 10px; }
+  .c2-side ul { margin: 0 0 10px; padding-left: 17px; }
+  .c2-side li { margin-bottom: 7px; }
+  .c2-side strong { color: var(--text); font-weight: 600; }
+  .c2-states { display: grid; gap: 5px; margin: 12px 0 14px; }
+  .c2-states button { text-align: left; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--muted); font-size: 13px; }
+  .c2-states button[aria-pressed="true"] { border-color: var(--mint); color: var(--text); }
+  .c2-look { display: flex; gap: 6px; }
+  .c2-look button { flex: 1; padding: 7px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--muted); font-size: 12px; }
+  .c2-look button[aria-pressed="true"] { border-color: var(--mint); color: var(--text); }
+  body.shot { background: var(--bg); }
+  body.shot .c2-side { display: none; }
+  body.shot .c2-page { padding: 0; display: block; }
+
+  /* Phone frame (design review .phone / .status-bar / .island) */
+  .c2-phone { height: 852px; width: 393px; border-radius: 46px; overflow: hidden; background: var(--bg); position: relative; display: flex; flex-direction: column; font-size: 14px; isolation: isolate; flex-shrink: 0;
+    box-shadow: 0 0 0 1px #32424e, 0 0 0 8px #13191f, 0 30px 90px #0006; }
+  body.light .c2-phone { box-shadow: 0 0 0 1px #8c9ba5, 0 0 0 8px #e4e8ea, 0 30px 90px #1b3c4b20; }
+  body.shot .c2-phone { border-radius: 0; box-shadow: none; }
+  .c2-status { height: 59px; flex-shrink: 0; padding: 20px 28px 0; display: flex; justify-content: space-between; position: relative; font-size: 14px; }
+  .c2-status > span { display: flex; gap: 5px; align-items: flex-start; }
+  .c2-island { position: absolute; width: 116px; height: 32px; background: #000; top: 11px; left: calc(50% - 58px); border-radius: 22px; }
+  .c2-header { display: flex; align-items: center; justify-content: space-between; min-height: 49px; padding: 0 20px 2px; flex-shrink: 0; }
+  .c2-back { display: flex; align-items: center; gap: 7px; background: transparent; border: 0; padding: 0; min-height: 44px; color: var(--mint); font-size: 14px; }
+  .c2-conn { font-size: 10px; letter-spacing: 1px; display: flex; gap: 6px; align-items: center; color: var(--muted); background: var(--panel); padding: 7px 9px; border-radius: 20px; }
+  .c2-conn i { width: 5px; height: 5px; background: var(--mint); border-radius: 100%; }
+  .c2-content { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; padding: 17px 22px 24px; overscroll-behavior: contain; }
+  .c2-content::-webkit-scrollbar { display: none; }
+
+  /* Type (design review h2 / .compact-title / .intro / .eyebrow / .section-label) */
+  .c2-eyebrow { font-size: 10px; letter-spacing: 1.9px; font-weight: 700; color: var(--mint); margin-bottom: 14px; }
+  .c2-h2 { font-size: 34px; letter-spacing: -1.1px; line-height: 1.12; margin: 0 0 14px; }
+  .c2-titlerow { display: flex; align-items: center; justify-content: space-between; }
+  .c2-titlerow .c2-h2 { font-size: 29px; margin: 0; }
+  .c2-intro { color: var(--muted); font-size: 14px; line-height: 1.6; margin: 0 0 25px; }
+  .c2-section { display: flex; justify-content: space-between; font-size: 10px; letter-spacing: 1.4px; font-weight: 600; color: var(--muted); margin: 26px 0 11px; }
+
+  /* Grouped list (design review .group / .row) */
+  .c2-group { background: var(--panel); border: 1px solid var(--line); border-radius: 17px; overflow: hidden; margin-bottom: 20px; }
+  .c2-item { width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; display: flex; align-items: center; gap: 12px; text-align: left; border-radius: 0; padding: 17px 13px; min-height: 44px; }
+  .c2-item:last-child { border-bottom: 0; }
+  .c2-item:active { background: var(--panel2); }
+  .c2-icon { color: var(--mint); display: flex; align-items: center; justify-content: center; width: 32px; flex-shrink: 0; }
+  .c2-copy { flex: 1; min-width: 0; }
+  .c2-copy strong { font-size: 14px; font-weight: 600; display: block; }
+  .c2-copy small { color: var(--muted); display: block; margin-top: 5px; font-size: 11px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .c2-item > svg { color: var(--muted); }
+  .c2-count { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 5px; padding: 4px 7px; color: var(--muted); font-size: 10px; font-weight: 500; }
+  .c2-later { color: var(--faint); font-size: 11px; }
+  .c2-item.is-later strong, .c2-item.is-later .c2-icon { opacity: 0.55; }
+
+  /* Recent terminals tucked under the Terminals row: plain lines, one dot each, shared left edge */
+  .c2-recent { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; text-align: left; padding: 9px 13px 9px 57px; min-height: 44px; position: relative; }
+  .c2-recent:active { background: var(--panel2); }
+  .c2-recent .c2-dot { position: absolute; left: 30px; top: 50%; margin-top: -3.5px; }
+  .c2-recent span { flex: 1; min-width: 0; }
+  .c2-recent b { font-weight: 500; font-size: 13px; }
+  .c2-recent em { font-style: normal; display: block; color: var(--muted); font-family: var(--mono); font-size: 10.5px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .c2-recent time { color: var(--muted); font-size: 11px; }
+  .c2-recentwrap { border-bottom: 1px solid var(--line); padding: 0 0 8px; margin-top: -8px; }
+
+  /* State dots: colour is spent on state only */
+  .c2-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+  .c2-dot.run { background: var(--mint); animation: c2-pulse 1.8s ease-in-out infinite; }
+  .c2-dot.ask { background: var(--amber); }
+  .c2-dot.fail { background: var(--red); }
+  .c2-dot.idle { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); }
+  .c2-dot.ended { background: var(--line); }
+  @keyframes c2-pulse { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .c2-dot.run { animation: none; } }
+  body.shot .c2-dot.run { animation: none; }
+
+  /* Build card (design review .group.padded) */
+  .c2-card { padding: 18px; }
+  .c2-card h3 { font-size: 18px; letter-spacing: -0.3px; margin: 6px 0 8px; }
+  .c2-card p { color: var(--muted); line-height: 1.55; margin: 0 0 16px; }
+  .c2-primary { width: 100%; min-height: 44px; border-radius: 12px; border: 1px solid var(--mint); background: var(--mint); color: var(--ink); font-weight: 650; }
+  .c2-primary:disabled { opacity: 0.4; cursor: default; }
+  .c2-footnote { text-align: center; color: var(--muted); font-size: 12px; line-height: 1.6; margin: 22px 0; }
+
+  /* Terminal screen */
+  .c2-term { display: flex; flex-direction: column; min-height: 100%; }
+  .c2-plus { width: 44px; height: 44px; margin-right: -10px; border: 0; background: transparent; color: var(--mint); display: flex; align-items: center; justify-content: center; border-radius: 12px; }
+  .c2-which { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; padding: 0; min-height: 32px; margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+  .c2-which b { color: var(--text); font-weight: 600; }
+  /* The quick switcher strip */
+  .c2-strip { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; margin: 10px -22px 14px; padding: 0 22px; border-bottom: 1px solid var(--line);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 34px), transparent); mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 34px), transparent); }
+  .c2-strip::-webkit-scrollbar { display: none; }
+  .c2-tab { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; white-space: nowrap; padding: 10px 10px 11px; min-height: 44px; color: var(--muted); font-size: 13px; position: relative; }
+  .c2-tab:first-child { padding-left: 0; }
+  .c2-tab[aria-selected="true"] { color: var(--text); font-weight: 600; }
+  .c2-tab[aria-selected="true"]::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--mint); }
+  .c2-tab:first-child[aria-selected="true"]::after { left: 0; }
+  .c2-tab small { color: var(--faint); font-size: 11px; font-weight: 400; }
+  .c2-tstatus { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; padding: 12px; background: var(--panel2); border-radius: 9px; }
+  .c2-tstatus.ask { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, var(--panel2)); }
+  .c2-tstatus.ended { color: var(--muted); }
+  .c2-viewport { position: relative; overflow: hidden; margin: 14px -22px 0; padding: 0 22px; flex: 1 1 0; display: flex; min-height: 250px; touch-action: pan-y; }
+  .c2-track { display: flex; gap: 44px; width: 100%; transition: transform 260ms cubic-bezier(.2,.8,.2,1); }
+  .c2-track.dragging { transition: none; }
+  @media (prefers-reduced-motion: reduce) { .c2-track { transition: none; } }
+  .c2-out { flex: 0 0 100%; background: var(--term); color: var(--text); border: 1px solid var(--line); padding: 19px 13px; font: 12px/1.9 var(--mono); border-radius: 13px; white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; scrollbar-width: none; margin: 0; position: relative; }
+  body:not(.light) .c2-out { color: #e4eaf0; }
+  .c2-out .m { color: var(--mint); } .c2-out .d { color: var(--muted); } .c2-out .r { color: var(--red); } .c2-out .a { color: var(--amber); }
+  .c2-out.is-ended { opacity: 0.6; }
+  .c2-cursor { display: inline-block; width: 8px; height: 15px; background: var(--mint); vertical-align: -3px; }
+  .c2-pname { display: flex; align-items: center; gap: 6px; font: 600 12px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); margin: -6px 0 12px; }
+  .c2-tab.peek { color: var(--text); }
+  .c2-keys { display: flex; gap: 4px; margin: 12px -7px; }
+  .c2-keys button { flex: 1; min-width: 44px; min-height: 44px; padding: 5px; border-radius: 8px; font-size: 12px; border: 1px solid var(--line); background: var(--panel2); }
+  .c2-keys button.on { border-color: var(--mint); color: var(--mint); }
+  .c2-input { display: flex; gap: 8px; }
+  .c2-input input { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 13px; min-height: 44px; font-size: 15px; }
+  .c2-tstatus.ask { padding: 6px 6px 6px 12px; }
+  .c2-tstatus.ask span { flex: 1; }
+  .c2-tstatus button { min-width: 56px; min-height: 36px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 12px; }
+  .c2-tstatus button.go { border-color: var(--amber); color: var(--amber); }
+  .c2-endrow { display: flex; gap: 9px; margin-top: 14px; }
+  .c2-endrow button { flex: 1; min-height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel2); font-size: 13px; }
+  .c2-endrow button.c2-primary { background: var(--mint); color: var(--ink); border-color: var(--mint); }
+  .c2-quiet { display: flex; gap: 11px; align-items: center; color: var(--muted); font-size: 12px; line-height: 1.6; margin: 20px 4px 4px; }
+  .c2-quiet > svg { color: var(--mint); }
+
+  /* Tab bar (design review .bottom-tabs / .home-safe) */
+  .c2-tabs { display: flex; padding: 6px 15px 3px; justify-content: space-around; flex-shrink: 0; border-top: 1px solid var(--line); background: var(--panel); }
+  .c2-tabs button { flex: 1; background: transparent; border: 0; display: flex; flex-direction: column; align-items: center; gap: 5px; color: var(--muted); padding: 6px 5px; font-size: 10px; min-height: 52px; position: relative; user-select: none; -webkit-user-select: none; }
+  .c2-tabs button.on { color: var(--mint); }
+  .c2-tabs .c2-hold { position: absolute; top: 2px; right: calc(50% - 22px); width: 7px; height: 7px; border-radius: 50%; background: var(--amber); border: 1.5px solid var(--panel); }
+  .c2-home { height: 34px; background: var(--panel); display: flex; justify-content: center; align-items: flex-end; padding-bottom: 9px; flex-shrink: 0; }
+  .c2-home > div { height: 5px; width: 132px; border-radius: 5px; background: var(--text); }
+
+  /* Bottom sheet (design review .sheet-overlay / .sheet) */
+  .c2-scrim { position: absolute; inset: 0; background: #0009; z-index: 20; display: flex; align-items: flex-end; opacity: 0; pointer-events: none; transition: opacity 200ms; }
+  .c2-scrim.on { opacity: 1; pointer-events: auto; }
+  .c2-sheet { border-radius: 26px 26px 0 0; background: var(--panel); border-top: 1px solid var(--line); width: 100%; padding: 10px 20px 34px; max-height: 86%; overflow: auto; scrollbar-width: none; transform: translateY(16px); transition: transform 220ms cubic-bezier(.2,.8,.2,1); }
+  .c2-scrim.on .c2-sheet { transform: none; }
+  @media (prefers-reduced-motion: reduce) { .c2-scrim, .c2-sheet { transition: none; } }
+  .c2-handle { width: 35px; height: 4px; border-radius: 8px; background: var(--muted); margin: 0 auto 13px; opacity: 0.6; }
+  .c2-sheethead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .c2-sheethead h3 { font-size: 20px; letter-spacing: -0.3px; margin: 0; }
+  .c2-close { width: 44px; height: 44px; margin-right: -12px; border: 0; background: transparent; color: var(--muted); display: flex; align-items: center; justify-content: center; }
+  .c2-search { display: flex; align-items: center; gap: 8px; background: var(--panel2); border-radius: 10px; padding: 0 12px; color: var(--muted); }
+  .c2-search input { flex: 1; border: 0; background: transparent; min-height: 40px; font-size: 15px; outline: none; color: var(--text); }
+  .c2-search:focus-within { outline: 2px solid var(--mint); outline-offset: 1px; }
+  .c2-machine { display: flex; justify-content: space-between; align-items: baseline; font-size: 10px; letter-spacing: 1.4px; font-weight: 600; color: var(--muted); margin: 22px 0 2px; }
+  .c2-machine span:last-child { letter-spacing: 0.2px; font-weight: 500; }
+  .c2-proj { font-size: 12px; color: var(--muted); margin: 12px 0 2px; display: flex; gap: 6px; align-items: center; }
+  .c2-pick { width: 100%; display: flex; align-items: center; gap: 12px; border: 0; border-radius: 10px; background: transparent; text-align: left; padding: 9px 0; min-height: 52px; user-select: none; -webkit-user-select: none; }
+  .c2-pick:active { background: var(--panel2); }
+  .c2-pick .c2-dot { margin-left: 2px; }
+  .c2-pick span { flex: 1; min-width: 0; }
+  .c2-pick b { font-size: 15px; font-weight: 500; }
+  .c2-pick b small { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .c2-pick em { font-style: normal; display: block; color: var(--muted); font-family: var(--mono); font-size: 11px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .c2-pick mark { background: color-mix(in srgb, var(--mint) 28%, transparent); color: inherit; border-radius: 2px; }
+  .c2-pick time { color: var(--muted); font-size: 11px; align-self: flex-start; margin-top: 3px; }
+  .c2-pick.cur b { color: var(--mint); }
+  .c2-pick > svg { color: var(--mint); }
+  .c2-new { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; color: var(--mint); padding: 8px 0; min-height: 44px; font-size: 14px; font-weight: 500; }
+  .c2-none { color: var(--muted); font-size: 13px; padding: 18px 0 4px; }
+  .c2-sheetnote { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 20px 0 0; display: flex; gap: 8px; }
+
+  /* Hold menu */
+  .c2-menuhead { display: flex; align-items: center; gap: 10px; padding: 4px 0 14px; border-bottom: 1px solid var(--line); }
+  .c2-menuhead span { flex: 1; min-width: 0; }
+  .c2-menuhead b { font-size: 16px; }
+  .c2-menuhead em { font-style: normal; display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .c2-act { width: 100%; display: flex; align-items: center; gap: 14px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; padding: 15px 2px; min-height: 52px; font-size: 15px; }
+  .c2-act:last-child { border-bottom: 0; }
+  .c2-act svg { color: var(--muted); }
+  .c2-act.danger, .c2-act.danger svg { color: var(--red); }
+
+  .c2-toast { position: absolute; left: 50%; bottom: 112px; transform: translate(-50%, 8px); background: var(--text); color: var(--bg); font-size: 12px; font-weight: 500; padding: 9px 14px; border-radius: 20px; opacity: 0; pointer-events: none; transition: opacity 160ms, transform 160ms; z-index: 40; white-space: nowrap; }
+  .c2-toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (max-width: 760px) { .c2-page { flex-direction: column; align-items: center; gap: 28px; padding: 20px 12px; } .c2-side { width: 100%; max-width: 393px; } }
+</style>
+</head>
+<body>
+<div class="c2-page">
+  <div class="c2-phone" id="phone">
+    <div class="c2-status" aria-hidden="true">
+      <strong>9:41</strong>
+      <div class="c2-island"></div>
+      <span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 20h.01M7 20v-4M12 20v-8M17 20V8M22 4v16"/></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h.01M2 8.82a15 15 0 0 1 20 0M5 12.86a10 10 0 0 1 14 0M8.5 16.43a5 5 0 0 1 7 0"/></svg>
+        <svg width="22" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="7" width="16" height="10" rx="2"/><path d="M22 11v2M6 11v2M10 11v2M14 11v2"/></svg>
+      </span>
+    </div>
+    <header class="c2-header">
+      <button class="c2-back" id="back"></button>
+      <span class="c2-conn"><i></i>LAN</span>
+    </header>
+    <main class="c2-content" id="content"></main>
+    <nav class="c2-tabs" aria-label="Tabs" id="tabs"></nav>
+    <div class="c2-home"><div></div></div>
+    <div class="c2-scrim" id="scrim"><section class="c2-sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Sheet"></section></div>
+    <div class="c2-toast" id="toast" role="status"></div>
+  </div>
+
+  <aside class="c2-side">
+    <h1>Terminal quick switcher</h1>
+    <p>v2 of the iPhone Code tab terminal, built on the design review's own parts (same colours, type sizes, frame, rows and sheet) so it can sit next to <strong>dark-code.png</strong> and <strong>dark-terminal-full.png</strong>.</p>
+    <div class="c2-states" id="states">
+      <button data-state="code">1. Code tab</button>
+      <button data-state="term">2. Terminal, full access</button>
+      <button data-state="switcher">3. All terminals (tap the title, or hold Code)</button>
+      <button data-state="swipe">4. Swiping to the next terminal</button>
+      <button data-state="ask">5. A terminal asking a question</button>
+      <button data-state="ended">6. A terminal that has finished</button>
+      <button data-state="menu">7. Hold a terminal</button>
+      <button data-state="ro">8. Read-only (below Full access)</button>
+    </div>
+    <div class="c2-look"><button data-look="dark">Dark</button><button data-look="light">Light</button></div>
+
+    <h2>How you switch</h2>
+    <ul>
+      <li><strong>Tap a name</strong> in the row under the title. One dot per terminal: green pulsing is running, amber is asking you something, red means the last command failed, an empty ring is idle, grey has finished.</li>
+      <li><strong>Swipe the output</strong> left or right for the next or previous one. The next name shows at the edge while you drag.</li>
+      <li><strong>Tap the title line</strong> for every terminal on every paired machine, with search over names and recent output.</li>
+      <li><strong>Hold the Code tab</strong> from anywhere to open that same list. An amber dot on the tab means a terminal is waiting for an answer.</li>
+      <li><strong>Hold a terminal</strong> in the list for Rename, Copy last output and End.</li>
+    </ul>
+
+    <h2>What changed from v1</h2>
+    <ul>
+      <li>Same parts as the design review: phone frame, 29 px title, status pill, output box, key row and command field.</li>
+      <li>The Code tab keeps every row from <strong>dark-code.png</strong>. Browser and Latest build stay in place, marked <strong>Later</strong>, because nothing feeds them yet.</li>
+      <li>Answer buttons for a terminal asking a yes/no question (state 5), and Run again for a finished one (state 6).</li>
+      <li>The list only claims what the Mac can know: terminals opened in Apex Deck. Terminal.app and iTerm windows aren't listed.</li>
+    </ul>
+
+    <h2>Needs the Mac service first</h2>
+    <ul>
+      <li>A list of open terminals with name, folder, who started it and state (Luna sized this as medium).</li>
+      <li>A short buffer of recent output per terminal, so the phone can join partway through.</li>
+      <li>State 8 means letting a phone below Full access read terminal output. Output can contain secrets, so that's your call, not a quick switch.</li>
+    </ul>
+    <p>Everything here is pretend. Nothing leaves this page.</p>
+  </aside>
+</div>
+
+<script>
+const ICON = {
+  back: '<path d="m12 19-7-7 7-7M19 12H5"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
+  term: '<path d="m4 17 6-6-6-6M12 19h8"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20"/>',
+  chev: '<path d="m9 18 6-6-6-6"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  plus: '<path d="M5 12h14M12 5v14"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  cmd: '<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>',
+  msg: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  laptop: '<path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"/>',
+  server: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
+  pencil: '<path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5zM15 5l4 4"/>',
+  copy: '<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  stop: '<rect x="4" y="4" width="16" height="16" rx="2"/>',
+  rerun: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  phone: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/>',
+};
+const ic = (n, s = 18, w = 2) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+const P = '<span class="m">tyler@apex-macbook</span> ~/apex-deck\n';
+const MACHINES = [
+  { id: "mac", name: "Tyler's MacBook", icon: "laptop" },
+  { id: "vps", name: "Apex-Terminal", icon: "server" },
+];
+const TERMS = [
+  { id: "dev", name: "dev server", machine: "mac", project: "apex-deck", state: "run", time: "now", last: "hmr update /src/phone/PhoneCode.tsx",
+    out: P + '❯ npm run desktop:dev\n\n<span class="d">&gt; apex-deck@0.5.2 desktop:dev\n&gt; vite --mode desktop</span>\n\n  <span class="m">VITE v6.0.5</span>  ready in 412 ms\n\n  ➜  Local:   localhost:5173\n\n<span class="d">11:02:14</span> hmr update /src/phone/PhoneCode.tsx\n<span class="d">11:02:31</span> hmr update /src/phone/phone.css' },
+  { id: "s1", name: "shell 01", machine: "mac", project: "apex-deck", state: "idle", time: "4m", last: "✓ built in 1.34s",
+    out: P + '❯ npm run build\n\n<span class="d">vite v6.0.5 building…</span>\n✓ 128 modules transformed.\ndist/index.html    0.48 kB\ndist/assets/app.js  92.4 kB\n\n<span class="m">✓ built in 1.34s</span>\n\n❯ ' },
+  { id: "tests", name: "tests", machine: "mac", project: "apex-deck", state: "fail", time: "9m", last: "2 failed, 214 passed",
+    out: P + '❯ npm test\n\n<span class="d"> RUN  v2.1.8 ~/apex-deck</span>\n\n <span class="m">✓</span> threadListRules.test.ts (31)\n <span class="m">✓</span> libraryRules.test.ts (18)\n <span class="r">✗</span> sessionEdits.test.ts (12)\n   <span class="r">→ expected 3 edits, got 2</span>\n <span class="r">✗</span> pairing.test.ts (9)\n   <span class="r">→ token expired early</span>\n\n Tests  <span class="r">2 failed</span> | <span class="m">214 passed</span>\n\n❯ ' },
+  { id: "db", name: "db reset", machine: "mac", project: "apex-deck", state: "ask", time: "1m", last: "Delete local test data? (y/N)",
+    out: P + '❯ npm run db:reset\n\n<span class="d">&gt; apex-deck@0.5.2 db:reset</span>\n\nFound 3 test rooms in ./tmp/data:\n  room-ui-check\n  room-pairing\n  room-library\n\n<span class="a">Delete local test data? (y/N)</span> ' },
+  { id: "s2", name: "shell 02", phone: true, machine: "mac", project: "apex-deck", state: "idle", time: "22m", last: "git status · clean",
+    out: P + '❯ git status\nOn branch main\nnothing to commit, working tree clean\n\n❯ ' },
+  { id: "rel", name: "release build", machine: "mac", project: "apex-deck", state: "ended", time: "1h", last: "exit 0 · DMG built",
+    out: P + '❯ npm run desktop:dist\n\n<span class="d">  • building        target=DMG arch=arm64</span>\n<span class="d">  • signing         identity=Developer ID</span>\n  • notarizing      ok\n\n<span class="m">✓ Apex Deck-0.5.2-arm64.dmg</span>\n\n<span class="d">[Process finished · exit 0]</span>' },
+  { id: "cw", name: "cargo watch", machine: "mac", project: "clef-feed", state: "run", time: "1m", last: "Finished dev [unoptimized] in 2.8s", out: "" },
+  { id: "relay", name: "relay logs", machine: "vps", project: "relay", state: "run", time: "now", last: "rate-limit device 7f3a… ok (12/60)", out: "" },
+  { id: "dmn", name: "daemon", machine: "vps", project: "apex_terminal", state: "idle", time: "2h", last: "listening on 0.0.0.0:7420", out: "" },
+];
+const NAMES = { run: "running", ask: "needs an answer", fail: "last command failed", idle: "idle", ended: "finished" };
+const byId = (id) => TERMS.find((t) => t.id === id);
+const here = () => TERMS.filter((t) => t.machine === "mac" && t.project === "apex-deck");
+
+let state = "term", cur = "dev", lastTerm = "dev", access = "full", pendingHold = false;
+const $ = (id) => document.getElementById(id);
+const content = $("content"), scrim = $("scrim"), sheet = $("sheet");
+
+function tabs(active) {
+  const anyAsk = TERMS.some((t) => t.state === "ask");
+  $("tabs").innerHTML = [["cmd", "Agents"], ["term", "Code"], ["msg", "Threads"], ["folder", "Library"]].map(([i, l]) =>
+    `<button class="${l === active ? "on" : ""}" data-tab="${l}" ${l === "Code" ? 'aria-label="Code. Hold to switch terminals."' : ""}>${ic(i, 20)}${l}${l === "Code" && anyAsk ? '<i class="c2-hold" aria-hidden="true"></i>' : ""}</button>`).join("");
+  const code = $("tabs").querySelector('[data-tab="Code"]');
+  holdable(code, () => openSwitcher(), () => { if (state !== "code") go("code"); else openTerm(lastTerm); });
+}
+
+function header(label, onClick) {
+  const b = $("back");
+  b.innerHTML = ic("back", 20) + `<span>${label}</span>`;
+  b.onclick = onClick;
+}
+
+/* ---- 1. Code tab ---- */
+function codeHome() {
+  state = "code";
+  header("Back", () => toast("Back to the machine list"));
+  tabs("Code");
+  const list = here().filter((t) => t.state !== "ended");
+  const running = list.filter((t) => t.state === "run").length, asking = list.filter((t) => t.state === "ask").length;
+  const recent = ["db", "dev", "tests"].map(byId);
+  content.innerHTML = `
+    <div class="c2-eyebrow">TYLER'S MACBOOK</div>
+    <h2 class="c2-h2">Code</h2>
+    <p class="c2-intro">apex-deck · main branch</p>
+    <div class="c2-group">
+      <button class="c2-item" data-toast="Opens the workspace files"><span class="c2-icon">${ic("folder", 22)}</span><span class="c2-copy"><strong>Workspace files</strong><small>~/Downloads/apex-deck</small></span>${ic("chev")}</button>
+      <button class="c2-item" data-toast="Opens Changes to review"><span class="c2-icon">${ic("shield", 22)}</span><span class="c2-copy"><strong>Changes to review</strong><small>Navigation.tsx · 1 proposed edit</small></span><span class="c2-count">1</span>${ic("chev")}</button>
+    </div>
+    <div class="c2-section">HOST TOOLS</div>
+    <div class="c2-group">
+      <button class="c2-item" id="allTerms"><span class="c2-icon">${ic("term", 22)}</span><span class="c2-copy"><strong>Terminals</strong><small>${list.length} open · ${running} running${asking ? ` · <span style="color:var(--amber)">${asking} needs an answer</span>` : ""}</small></span>${ic("chev")}</button>
+      <div class="c2-recentwrap">
+        ${recent.map((t) => `<button class="c2-recent" data-open="${t.id}"><i class="c2-dot ${t.state}" aria-label="${NAMES[t.state]}"></i><span><b>${esc(t.name)}</b><em>${esc(t.last)}</em></span><time>${t.time}</time></button>`).join("")}
+      </div>
+      <button class="c2-item is-later" data-toast="Browser isn't on the phone yet"><span class="c2-icon">${ic("globe", 22)}</span><span class="c2-copy"><strong>Browser</strong><small>View the host’s browser stream</small></span><span class="c2-later">Later</span></button>
+    </div>
+    <div class="c2-group c2-card">
+      <div class="c2-titlerow"><div class="c2-eyebrow" style="margin:0">LATEST BUILD</div><span class="c2-later">Later</span></div>
+      <h3>Ready to preview</h3>
+      <p>128 modules transformed.<br>Build completed in 1.34 seconds.</p>
+      <button class="c2-primary" disabled>Open browser preview</button>
+    </div>
+    <p class="c2-footnote">Files and output stay on your host.<br>Hold the Code tab to jump to any terminal.</p>`;
+  content.querySelector("#allTerms").onclick = openSwitcher;
+  content.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => openTerm(b.dataset.open));
+  content.querySelectorAll("[data-toast]").forEach((b) => b.onclick = () => toast(b.dataset.toast));
+  content.scrollTop = 0;
+}
+
+/* ---- 2/4/5/6/8. Terminal ---- */
+function statusLine(t) {
+  if (access === "ro") return `<div class="c2-tstatus">${ic("eye", 16)}Read-only · output from your host</div>`;
+  if (t.state === "ask") return `<div class="c2-tstatus ask"><span>Asking: delete local test data?</span><button data-key="n">No</button><button class="go" data-key="y">Yes</button></div>`;
+  if (t.state === "ended") return `<div class="c2-tstatus ended">${ic("eye", 16)}Finished ${t.time} ago · exit 0</div>`;
+  return `<div class="c2-tstatus">${ic("eye", 16)}Full permission · input enabled</div>`;
+}
+function outHTML(t, side) {
+  const live = !side && access === "full" && t.state !== "ended";
+  const name = side ? `<div class="c2-pname"><i class="c2-dot ${t.state}"></i>${esc(t.name)}</div>` : "";
+  return `<pre class="c2-out${t.state === "ended" ? " is-ended" : ""}" ${side ? 'aria-hidden="true"' : `aria-label="Output of ${esc(t.name)}"`}>${name}${t.out}${live ? '<span class="c2-cursor"></span>' : ""}</pre>`;
+}
+function termScreen() {
+  state = "term";
+  const t = byId(cur);
+  lastTerm = cur;
+  header("Code", () => go("code"));
+  tabs("Code");
+  const list = here();
+  const { prev, next } = neighbours();
+  let below = "";
+  if (access === "ro") {
+    below = `<div class="c2-quiet">${ic("lock")}<span>You can follow output. Your host must<br>grant full permission to type.</span></div>`;
+  } else if (t.state === "ended") {
+    below = `<div class="c2-endrow"><button id="close">Close</button><button class="c2-primary" id="rerun">Run again</button></div>`;
+  } else {
+    below = `<div class="c2-keys" aria-label="Terminal keys">${["Esc", "Tab", "Ctrl", "←", "↓", "↑", "→"].map((k) => `<button data-key="${k}">${k}</button>`).join("")}</div>
+       <div class="c2-input"><input aria-label="Command" placeholder="Type a command…" id="cmd"></div>`;
+  }
+  content.innerHTML = `<div class="c2-term">
+    <div class="c2-titlerow"><h2 class="c2-h2">Terminal</h2>${access === "full" ? `<button class="c2-plus" id="newShell" aria-label="New shell in apex-deck">${ic("plus", 22)}</button>` : ""}</div>
+    <button class="c2-which" id="which" aria-haspopup="dialog">apex-deck · <b>${esc(t.name)}</b>${ic("down", 15)}</button>
+    <div class="c2-strip" role="tablist" aria-label="Terminals in apex-deck" id="strip">
+      ${list.map((x) => `<button class="c2-tab" role="tab" aria-selected="${x.id === cur}" data-id="${x.id}"><i class="c2-dot ${x.state}" aria-label="${NAMES[x.state]}"></i>${esc(x.name)}${x.phone ? " <small>phone</small>" : ""}</button>`).join("")}
+    </div>
+    ${statusLine(t)}
+    <div class="c2-viewport" id="vp">
+      <div class="c2-track" id="track">
+        ${prev ? `<div style="flex:0 0 100%;display:flex;margin-left:calc(-100% - 44px)">${outHTML(prev, true)}</div>` : ""}
+        ${outHTML(t)}
+        ${next ? outHTML(next, true) : ""}
+      </div>
+    </div>
+    ${below}
+  </div>`;
+  content.querySelector("#which").onclick = openSwitcher;
+  const ns = content.querySelector("#newShell"); if (ns) ns.onclick = newShell;
+  content.querySelectorAll(".c2-tab").forEach((b) => {
+    b.onclick = () => openTerm(b.dataset.id);
+    holdable(b, () => termMenu(b.dataset.id), () => openTerm(b.dataset.id));
+  });
+  content.querySelectorAll("[data-key]").forEach((b) => b.onclick = () => {
+    if (b.dataset.key === "Ctrl") { b.classList.toggle("on"); return; }
+    if (b.dataset.key === "y" || b.dataset.key === "n") { answer(b.dataset.key); return; }
+    toast(`${b.dataset.key} sent to ${t.name}`);
+  });
+  const cmd = content.querySelector("#cmd");
+  if (cmd) cmd.onkeydown = (e) => { if (e.key === "Enter" && cmd.value.trim()) { toast(`Sent to ${t.name}`); cmd.value = ""; } };
+  const rr = content.querySelector("#rerun"); if (rr) rr.onclick = () => { t.state = "run"; t.time = "now"; t.last = "building…"; t.out = P + '❯ npm run desktop:dist\n\n<span class="d">  • building        target=DMG arch=arm64</span>\n'; termScreen(); toast("Running again in release build"); };
+  const cl = content.querySelector("#close"); if (cl) cl.onclick = () => { const i = TERMS.indexOf(t); TERMS.splice(i, 1); cur = here()[0].id; termScreen(); toast("Closed release build"); };
+  wireSwipe();
+  content.querySelectorAll(".c2-out").forEach((o) => { o.scrollTop = o.scrollHeight; });
+  const sel = content.querySelector('.c2-tab[aria-selected="true"]');
+  if (sel) { const s = $("strip"); s.scrollLeft = Math.max(0, sel.offsetLeft - s.clientWidth / 2 + sel.offsetWidth / 2); }
+}
+function answer(k) {
+  const t = byId(cur);
+  if (k === "y") { t.state = "idle"; t.last = "Deleted 3 test rooms"; t.out = t.out.replace('<span class="a">Delete local test data? (y/N)</span> ', '<span class="a">Delete local test data? (y/N)</span> y\n\n<span class="m">✓ Deleted 3 test rooms</span>\n\n❯ '); }
+  else { t.state = "idle"; t.last = "Cancelled"; t.out = t.out.replace('<span class="a">Delete local test data? (y/N)</span> ', '<span class="a">Delete local test data? (y/N)</span> n\nCancelled. Nothing deleted.\n\n❯ '); }
+  termScreen(); toast(k === "y" ? "Sent y to db reset" : "Sent n to db reset");
+}
+function neighbours() { const l = here(), i = l.findIndex((t) => t.id === cur); return { prev: l[i - 1], next: l[i + 1] }; }
+function openTerm(id) { closeSheet(); cur = id; termScreen(); }
+
+/* Swipe: drag the output, the neighbour's name peeks in from the edge */
+function setDrag(dx, hold) {
+  const track = $("track"), vp = $("vp");
+  if (!track) return;
+  track.classList.toggle("dragging", !!hold);
+  track.style.transform = `translateX(${dx}px)`;
+  const { prev, next } = neighbours();
+  const t = Math.abs(dx) < 12 ? null : dx < 0 ? next : prev;
+  document.querySelectorAll(".c2-tab").forEach((b) => b.classList.toggle("peek", !!t && b.dataset.id === t.id));
+}
+function wireSwipe() {
+  const vp = $("vp"); if (!vp) return;
+  let x0 = null, dx = 0;
+  vp.onpointerdown = (e) => { if (e.pointerType === "mouse" && e.button !== 0) return; x0 = e.clientX; dx = 0; vp.setPointerCapture(e.pointerId); };
+  vp.onpointermove = (e) => { if (x0 === null) return; dx = e.clientX - x0; const { prev, next } = neighbours(); if ((dx > 0 && !prev) || (dx < 0 && !next)) dx /= 4; setDrag(dx, true); };
+  vp.onpointerup = vp.onpointercancel = () => {
+    if (x0 === null) return; x0 = null;
+    const { prev, next } = neighbours(); const w = vp.clientWidth;
+    if (dx < -w * 0.25 && next) { setDrag(-w); setTimeout(() => { cur = next.id; termScreen(); }, 200); }
+    else if (dx > w * 0.25 && prev) { setDrag(w); setTimeout(() => { cur = prev.id; termScreen(); }, 200); }
+    else setDrag(0);
+  };
+}
+
+/* ---- 3. All terminals ---- */
+function mark(text, q) {
+  const s = esc(text); if (!q) return s;
+  const i = text.toLowerCase().indexOf(q.toLowerCase()); if (i < 0) return s;
+  return esc(text.slice(0, i)) + "<mark>" + esc(text.slice(i, i + q.length)) + "</mark>" + esc(text.slice(i + q.length));
+}
+function switcherBody(q) {
+  const plain = (t) => t.out.replace(/<[^>]+>/g, "").replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+  const hit = (t) => !q || [t.name, t.last, t.project, plain(t)].join("\n").toLowerCase().includes(q.toLowerCase());
+  // When the words are only in older output, show that line instead of the last one.
+  const line = (t) => !q || t.last.toLowerCase().includes(q.toLowerCase()) ? t.last : (plain(t).split("\n").find((l) => l.toLowerCase().includes(q.toLowerCase())) || t.last).trim();
+  const match = hit;
+  let html = "";
+  MACHINES.forEach((m) => {
+    const mine = TERMS.filter((t) => t.machine === m.id && match(t));
+    if (!mine.length && q) return;
+    const projects = [...new Set(mine.map((t) => t.project))].sort((a, b) => (b === "apex-deck") - (a === "apex-deck"));
+    html += `<div class="c2-machine"><span>${m.name.toUpperCase()}</span><span>${m.id === "mac" ? "this machine" : "Hetzner"}</span></div>`;
+    projects.forEach((p) => {
+      html += `<div class="c2-proj">${ic("folder", 13)}${p}${p === "apex-deck" && m.id === "mac" ? " · this project" : ""}</div>`;
+      mine.filter((t) => t.project === p).forEach((t) => {
+        html += `<button class="c2-pick${t.id === cur && state !== "code" ? " cur" : ""}" data-id="${t.id}"><i class="c2-dot ${t.state}" aria-label="${NAMES[t.state]}"></i><span><b>${mark(t.name, q)}${t.phone ? " <small>· from this phone</small>" : ""}</b><em>${NAMES[t.state]} · ${mark(line(t), q)}</em></span>${t.id === cur && state !== "code" ? ic("check", 18) : `<time>${t.time}</time>`}</button>`;
+      });
+      if (p === "apex-deck" && m.id === "mac" && !q) html += `<button class="c2-new" id="sheetNew">${ic("plus", 18)}New shell in apex-deck</button>`;
+    });
+  });
+  return html || `<p class="c2-none">No terminal name or recent output matches “${esc(q)}”.</p>`;
+}
+function openSwitcher(q = "") {
+  sheet.setAttribute("aria-label", "Terminals");
+  sheet.innerHTML = `<div class="c2-handle"></div>
+    <div class="c2-sheethead"><h3>Terminals</h3><button class="c2-close" aria-label="Close" id="sx">${ic("x", 20)}</button></div>
+    <label class="c2-search">${ic("search", 16)}<input id="sq" placeholder="Search names and output" value="${esc(q)}" aria-label="Search terminals"></label>
+    <div id="sbody">${switcherBody(q)}</div>
+    <p class="c2-sheetnote">${ic("term", 14)}<span>Shows terminals opened in Apex Deck. Terminal.app and iTerm windows aren't listed.</span></p>`;
+  const wire = () => {
+    sheet.querySelectorAll(".c2-pick").forEach((b) => holdable(b, () => termMenu(b.dataset.id), () => {
+      const t = byId(b.dataset.id);
+      if (t.machine !== "mac" || t.project !== "apex-deck") { toast(`Opens ${t.name} on ${MACHINES.find((m) => m.id === t.machine).name}`); return; }
+      openTerm(t.id);
+    }));
+    const n = sheet.querySelector("#sheetNew"); if (n) n.onclick = newShell;
+  };
+  wire();
+  sheet.querySelector("#sx").onclick = closeSheet;
+  sheet.querySelector("#sq").oninput = (e) => { $("sbody").innerHTML = switcherBody(e.target.value.trim()); wire(); };
+  showSheet();
+}
+
+/* ---- 7. Hold menu ---- */
+function termMenu(id) {
+  const t = byId(id);
+  const m = MACHINES.find((x) => x.id === t.machine);
+  sheet.setAttribute("aria-label", `${t.name} actions`);
+  sheet.innerHTML = `<div class="c2-handle"></div>
+    <div class="c2-menuhead"><i class="c2-dot ${t.state}"></i><span><b>${esc(t.name)}</b><em>${t.project} · ${m.name} · ${NAMES[t.state]}</em></span></div>
+    <button class="c2-act" data-a="rename">${ic("pencil")}Rename</button>
+    <button class="c2-act" data-a="copy">${ic("copy")}Copy last output</button>
+    <button class="c2-act danger" data-a="end">${ic("stop")}End terminal</button>`;
+  sheet.querySelectorAll(".c2-act").forEach((b) => b.onclick = () => {
+    const a = b.dataset.a;
+    if (a === "rename") { const n = prompt("Rename terminal", t.name); if (n && n.trim()) { t.name = n.trim(); toast(`Renamed to ${t.name}`); } }
+    if (a === "copy") toast("Copied last output");
+    if (a === "end") { t.state = "ended"; t.last = "Ended from the phone"; t.out += '\n\n<span class="d">[Ended from the phone]</span>'; toast(`Ended ${t.name}`); }
+    closeSheet(); render();
+  });
+  showSheet();
+}
+
+function newShell() {
+  const n = here().filter((t) => /^shell \d+$/.test(t.name)).length + 1;
+  const t = { id: "s" + Date.now(), name: `shell ${String(n).padStart(2, "0")}`, phone: true, machine: "mac", project: "apex-deck", state: "idle", time: "now", last: "new shell", out: P + "❯ " };
+  TERMS.splice(TERMS.indexOf(here().at(-1)) + 1, 0, t);
+  openTerm(t.id); toast(`Started ${t.name} in apex-deck`);
+}
+
+/* ---- shared ---- */
+function holdable(el, onHold, onTap) {
+  let timer = null, held = false;
+  el.onpointerdown = () => { held = false; timer = setTimeout(() => { held = true; onHold(); }, 450); };
+  el.onpointerup = el.onpointerleave = el.onpointercancel = () => clearTimeout(timer);
+  el.oncontextmenu = (e) => { e.preventDefault(); clearTimeout(timer); held = true; onHold(); };
+  el.onclick = (e) => { if (held) { e.preventDefault(); held = false; return; } onTap && onTap(); };
+}
+function showSheet() { scrim.classList.add("on"); setTimeout(() => (sheet.querySelector("input,button") || sheet).focus({ preventScroll: true }), 50); }
+function closeSheet() { scrim.classList.remove("on"); }
+scrim.onclick = (e) => { if (e.target === scrim) closeSheet(); };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+let toastTimer;
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("on"), 1800); }
+function render() { state === "code" ? codeHome() : termScreen(); }
+function go(s) { closeSheet(); s === "code" ? codeHome() : termScreen(); }
+
+function reset(s) {
+  closeSheet(); access = "full"; cur = "dev";
+  const skip = scrim.style.transition; scrim.style.transition = "none"; sheet.style.transition = "none";
+  if (s === "code") codeHome();
+  else if (s === "term") termScreen();
+  else if (s === "switcher") { termScreen(); openSwitcher(); }
+  else if (s === "swipe") { termScreen(); setDrag(-170, true); }
+  else if (s === "ask") { cur = "db"; termScreen(); }
+  else if (s === "ended") { cur = "rel"; termScreen(); }
+  else if (s === "menu") { cur = "tests"; termScreen(); termMenu("tests"); }
+  else if (s === "ro") { access = "ro"; cur = "s1"; termScreen(); }
+  requestAnimationFrame(() => { scrim.style.transition = skip; sheet.style.transition = ""; });
+  document.querySelectorAll("[data-state]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.state === s)));
+}
+function look(l) {
+  document.body.classList.toggle("light", l === "light");
+  document.querySelectorAll("[data-look]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.look === l)));
+}
+document.querySelectorAll("[data-state]").forEach((b) => b.onclick = () => reset(b.dataset.state));
+document.querySelectorAll("[data-look]").forEach((b) => b.onclick = () => look(b.dataset.look));
+const params = new URLSearchParams(location.search);
+if (params.has("shot")) document.body.classList.add("shot");
+look(params.get("look") || "dark");
+reset(params.get("state") || "term");
+</script>
+</body>
+</html>

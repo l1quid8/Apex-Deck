@@ -26,6 +26,9 @@ pub(crate) enum OutputFormat {
     Text,
     /// Claude Code with `--output-format stream-json`.
     ClaudeStream,
+    /// Muse with `exec --json`. Deltas arrive piece by piece, then a
+    /// `run_terminal` carries the whole reply.
+    MuseJson,
     /// Codex with `exec --json`. Messages arrive whole, one event each.
     CodexJson,
     /// Codex's app server, which is driven by requests and reports the
@@ -299,6 +302,7 @@ impl EventReader {
         };
         match self.format {
             OutputFormat::ClaudeStream => self.claude(&event, steps),
+            OutputFormat::MuseJson => self.muse(&event, steps),
             OutputFormat::CodexJson => self.codex(&event, steps),
             OutputFormat::CodexServer => self.codex_server(&event, steps),
             OutputFormat::Text => {}
@@ -571,6 +575,55 @@ impl EventReader {
             detail,
             expires_at: None,
             risky: false,
+        }
+    }
+
+    // ------------------------------------------------------------------- Muse
+    //
+    // `muse exec --json` prints MSP events, one object per line. The reply
+    // arrives as `run_output_delta` pieces and is then stated whole in the
+    // closing `run_terminal`. Anything else on the stream is progress noise.
+
+    fn muse(&mut self, event: &Value, steps: &mut Vec<Step>) {
+        let payload = &event["payload"];
+        let event = if payload.is_object() { payload } else { event };
+        match event["kind"].as_str() {
+            Some("run_output_delta") => {
+                if let Some(text) = event["text"].as_str().filter(|t| !t.is_empty()) {
+                    self.pieces_seen = true;
+                    self.say(text, steps);
+                }
+            }
+            Some("run_terminal") => {
+                self.turn_over = true;
+                let text = event["text"].as_str().unwrap_or("");
+                if event["terminal"].as_str() == Some("completed") {
+                    if self.pieces_seen {
+                        // The pieces already showed it; keep the whole copy
+                        // as the reply so nothing is shown twice.
+                        if !text.trim().is_empty() {
+                            self.final_text = Some(text.to_string());
+                        }
+                    } else {
+                        self.say(text, steps);
+                    }
+                } else {
+                    let reason = event["reason"].as_str().filter(|r| !r.trim().is_empty());
+                    self.failure = Some(
+                        reason
+                            .map(str::to_string)
+                            .filter(|r| !r.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                if text.trim().is_empty() {
+                                    "the turn ended without a reply".to_string()
+                                } else {
+                                    text.to_string()
+                                }
+                            }),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1090,6 +1143,28 @@ mod tests {
 {"type":"assistant","message":{"content":[{"type":"text","text":"It says hello."}]},"parent_tool_use_id":null}
 {"type":"result","subtype":"success","is_error":false,"result":"It says hello.","usage":{"input_tokens":4,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"output_tokens":12}}
 "#;
+
+    // The shape below follows what `muse exec --json` printed for v1.4.6.
+    const MUSE_TURN: &str = r#"{"schema_version":1,"payload_type":"run.output.delta","payload":{"kind":"run_output_delta","text":"Hi, glad you're"}}
+{"schema_version":1,"payload_type":"run.output.delta","payload":{"kind":"run_output_delta","text":" here today."}}
+{"schema_version":1,"payload_type":"run.terminal.completed","payload":{"kind":"run_terminal","terminal":"completed","text":"Hi, glad you're here today.","reason":null}}
+"#;
+
+    #[test]
+    fn muse_deltas_stream_once_and_terminal_sets_the_reply() {
+        let (steps, outcome) = read(OutputFormat::MuseJson, &[MUSE_TURN]);
+        assert_eq!(text(&steps), "Hi, glad you're here today.");
+        assert_eq!(outcome.text, "Hi, glad you're here today.");
+        assert_eq!(outcome.error, None);
+    }
+
+    #[test]
+    fn muse_failed_terminal_is_the_tools_own_message() {
+        let (steps, outcome) = read(OutputFormat::MuseJson, &[r#"{"payload":{"kind":"run_terminal","terminal":"failed","text":"","reason":"nope"}}
+"#]);
+        assert_eq!(text(&steps), "");
+        assert_eq!(outcome.error.as_deref(), Some("nope"));
+    }
 
     #[test]
     fn mcp_approval_shows_exact_server_tool_and_complete_arguments() {

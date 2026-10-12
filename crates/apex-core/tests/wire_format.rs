@@ -48,6 +48,7 @@ fn participant_config_shapes() {
     assert_eq!(to_value(AgentTool::Codex).unwrap(), json!("codex"));
     assert_eq!(to_value(AgentTool::Gemini).unwrap(), json!("gemini"));
     assert_eq!(to_value(AgentTool::Grok).unwrap(), json!("grok"));
+    assert_eq!(to_value(AgentTool::Muse).unwrap(), json!("muse"));
     let default_model: Backend = serde_json::from_value(json!({ "kind": "agent", "tool": "codex" })).unwrap();
     assert_eq!(default_model, Backend::Agent { tool: AgentTool::Codex, model: None });
 

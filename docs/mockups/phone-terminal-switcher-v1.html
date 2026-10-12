@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phone Code: Terminal quick switcher (v1)</title>
+<style>
+  /* Apex Deck's own colours (src/styles.css + src/phone/phone.css). Colour is spent on state only. */
+  :root {
+    --bg: #090d12; --raise: #111921; --press: #16202a; --hair: #1c2631;
+    --text: #e4eaf0; --muted: #8e9cab; --faint: #58656f;
+    --mint: #3def91; --cyan: #1ed7ee; --amber: #f7b74f; --red: #ff6b6b; --violet: #c58cff;
+    --ink: #04130e;
+    --edge: 24px;
+    --code: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #05080c; color: var(--text); }
+  body { font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; border-radius: 10px; }
+  svg { flex: none; display: block; }
+  [hidden] { display: none !important; }
+
+  /* Review page around the phone (hidden in shot mode). */
+  .mk-page { display: flex; flex-wrap: wrap; gap: 32px; justify-content: center; align-items: flex-start; padding: 28px 20px 48px; }
+  .mk-side { width: 320px; color: var(--muted); font-size: 14px; }
+  .mk-side h1 { color: var(--text); font-size: 22px; letter-spacing: -0.4px; margin: 0 0 4px; }
+  .mk-side h2 { color: var(--text); font-size: 15px; margin: 18px 0 6px; }
+  .mk-side p { margin: 0 0 14px; }
+  .mk-side ul { margin: 0 0 14px; padding-left: 18px; }
+  .mk-side li { margin-bottom: 8px; }
+  .mk-side strong { color: var(--text); font-weight: 600; }
+  .mk-states { display: grid; gap: 6px; margin: 6px 0 20px; }
+  .mk-states button { text-align: left; padding: 9px 12px; border: 1px solid var(--hair); border-radius: 10px; color: var(--muted); }
+  .mk-states button[aria-pressed="true"] { border-color: var(--mint); color: var(--text); }
+  body.shot .mk-side { display: none; }
+  body.shot .mk-page { padding: 0; justify-content: flex-start; }
+
+  /* Phone */
+  .ts-phone { width: 393px; height: 852px; background: var(--bg); border-radius: 46px; position: relative; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 0 0 10px #161c23, 0 0 0 11px #2a333d; }
+  body.shot .ts-phone { border-radius: 0; box-shadow: none; }
+  .ts-status { flex: none; height: 50px; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 30px 8px 40px; font-weight: 600; font-size: 16px; letter-spacing: -0.2px; }
+  .ts-status span { display: flex; gap: 6px; align-items: center; }
+  .ts-nav { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 14px 20px 0 14px; }
+  .ts-back { display: flex; align-items: center; gap: 6px; color: var(--mint); font-size: 17px; padding: 8px 10px; border-radius: 10px; }
+  .ts-back:active { background: var(--press); }
+  .ts-link { display: flex; align-items: center; gap: 6px; font-size: 12px; letter-spacing: 1px; color: var(--muted); background: #111a22; border-radius: 999px; padding: 5px 10px; }
+  .ts-link i { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); }
+
+  .ts-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .ts-scroll { flex: 1; overflow-y: auto; scrollbar-width: none; padding-bottom: 20px; }
+  .ts-scroll::-webkit-scrollbar { display: none; }
+
+  /* Code home */
+  .ts-eyebrow { padding: 18px var(--edge) 0; font-size: 12px; font-weight: 700; letter-spacing: 1.6px; color: var(--mint); }
+  .ts-h1 { margin: 6px var(--edge) 0; font-size: 34px; font-weight: 800; letter-spacing: -1px; }
+  .ts-sub { margin: 4px var(--edge) 0; color: var(--muted); font-size: 16px; display: flex; align-items: center; gap: 4px; }
+  .ts-label { padding: 22px var(--edge) 4px; font-size: 14px; font-weight: 600; color: var(--muted); }
+  .ts-item { position: relative; display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; padding: 10px 16px 10px var(--edge); min-height: 62px; }
+  .ts-item:active { background: var(--press); }
+  .ts-item .ts-ic { color: var(--mint); }
+  .ts-item .ts-tx { flex: 1; min-width: 0; }
+  .ts-item strong { display: block; font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
+  .ts-item small { display: block; color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ts-item small b { font-weight: 500; color: var(--mint); }
+  .ts-count { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .ts-chev { color: var(--faint); }
+  .ts-recent { padding: 0 0 0 calc(var(--edge) + 38px); }
+  .ts-recent button { position: relative; display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 16px 7px 0; font-size: 15px; color: var(--muted); }
+  .ts-recent button:active { background: var(--press); }
+  .ts-recent .ts-dot { left: -16px; top: 14px; }
+  .ts-recent span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .ts-recent em { font-style: normal; font-size: 13px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+  /* Dots: one meaning each. Mint pulsing = a command is running. Red = last command failed / shell ended badly. Amber = waiting for input. None = idle prompt. */
+  .ts-dot { position: absolute; width: 8px; height: 8px; border-radius: 50%; }
+  .ts-dot.run { background: var(--mint); animation: ts-pulse 1.8s ease-in-out infinite; }
+  .ts-dot.fail { background: var(--red); }
+  .ts-dot.ask { background: var(--amber); }
+
+  /* Terminal screen */
+  .ts-thead { flex: none; padding: 14px var(--edge) 0; }
+  .ts-thead h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.9px; }
+  .ts-which { display: inline-flex; align-items: center; gap: 4px; margin: 2px 0 0 -6px; padding: 4px 6px; border-radius: 8px; color: var(--muted); font-size: 16px; }
+  .ts-which:active { background: var(--press); }
+  .ts-which b { color: var(--text); font-weight: 500; }
+
+  /* The quick switcher strip: plain names, no pills. Current one is bright with a mint underline. */
+  .ts-strip { flex: none; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; padding: 10px 14px 0 calc(var(--edge) - 10px); scroll-behavior: smooth; }
+  .ts-strip::-webkit-scrollbar { display: none; }
+  .ts-tab { position: relative; flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 10px 10px; font-size: 15px; color: var(--muted); border-radius: 8px; white-space: nowrap; }
+  .ts-tab:active { background: var(--press); }
+  .ts-tab .ts-dot { position: static; width: 6px; height: 6px; }
+  .ts-tab.on { color: var(--text); font-weight: 600; }
+  .ts-tab.on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 2px; height: 2px; border-radius: 2px; background: var(--mint); }
+  .ts-tab.add { color: var(--mint); padding-left: 8px; padding-right: 8px; }
+  .ts-tab .ts-phtag { color: var(--faint); }
+
+  .ts-note { flex: none; display: flex; align-items: center; gap: 8px; margin: 10px 16px 0; padding: 10px 12px; border-radius: 12px; background: #141c25; color: var(--muted); font-size: 13px; }
+  .ts-note.bad { color: var(--red); }
+  .ts-note .ts-grow { flex: 1; }
+  .ts-note button { color: var(--mint); font-weight: 600; padding: 4px 6px; margin: -4px -4px -4px 0; border-radius: 8px; }
+
+  .ts-outwrap { flex: 1; min-height: 0; margin: 10px 16px 0; border: 1px solid #1d2833; border-radius: 16px; overflow: hidden; position: relative; touch-action: pan-y; }
+  .ts-out { position: absolute; inset: 0; padding: 14px 14px 10px; overflow: auto; font: 13px/1.85 var(--code); white-space: pre; scrollbar-width: none; transition: transform .22s cubic-bezier(.2,.8,.2,1), opacity .22s; }
+  .ts-out::-webkit-scrollbar { display: none; }
+  .ts-out .p { color: var(--mint); }
+  .ts-out .d { color: var(--muted); }
+  .ts-out .ok { color: var(--mint); }
+  .ts-out .er { color: var(--red); }
+  .ts-out .wa { color: var(--amber); }
+  .ts-out .cur { display: inline-block; width: 8px; height: 16px; background: var(--mint); vertical-align: -3px; animation: ts-blink 1.1s steps(1) infinite; }
+  .ts-out.ro .cur { display: none; }
+  /* Swipe hint: the neighbour's name peeks in from the edge while dragging. */
+  .ts-peek { position: absolute; top: 50%; transform: translateY(-50%); font-size: 13px; color: var(--muted); background: #141c25; border-radius: 999px; padding: 6px 10px; opacity: 0; transition: opacity .15s; pointer-events: none; }
+  .ts-peek.l { left: 8px; } .ts-peek.r { right: 8px; }
+  .ts-peek.on { opacity: 1; }
+
+  .ts-keys { flex: none; display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin: 12px 16px 0; }
+  .ts-keys button { height: 42px; border-radius: 10px; background: #141c25; border: 1px solid #1f2a35; font-size: 14px; }
+  .ts-keys button:active, .ts-keys button.held { background: #1d2a36; border-color: var(--mint); }
+  .ts-input { flex: none; display: flex; align-items: center; gap: 8px; margin: 10px 16px 12px; padding: 0 6px 0 14px; height: 46px; border-radius: 12px; background: #141c25; border: 1px solid #1f2a35; }
+  .ts-input input { flex: 1; min-width: 0; background: none; border: 0; color: var(--text); font: 15px var(--code); outline: none; }
+  .ts-input input::placeholder { color: var(--faint); font-family: -apple-system, system-ui, sans-serif; }
+  .ts-send { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: linear-gradient(135deg, var(--mint), var(--cyan)); color: var(--ink); }
+  .ts-foot { flex: none; display: flex; gap: 12px; align-items: flex-start; margin: 14px var(--edge) 14px; color: var(--muted); font-size: 14px; }
+  .ts-foot svg { color: var(--mint); margin-top: 2px; }
+
+  /* Tabs, matching the app. */
+  .ts-tabs { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); padding: 8px 6px 30px; background: #0c1218; position: relative; }
+  .ts-tabs button { display: grid; justify-items: center; gap: 3px; font-size: 11px; color: var(--muted); padding: 4px 0; min-height: 48px; }
+  .ts-tabs button.on { color: var(--mint); }
+  .ts-tabs button.on svg { color: var(--cyan); }
+  .ts-home { position: absolute; left: 50%; bottom: 8px; width: 134px; height: 5px; margin-left: -67px; border-radius: 3px; background: #e4eaf0; }
+
+  /* Sheets */
+  .ts-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, .55); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 5; }
+  .ts-scrim.on { opacity: 1; pointer-events: auto; }
+  .ts-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 6; max-height: 82%; display: flex; flex-direction: column; background: var(--raise); border-radius: 22px 22px 0 0; padding: 8px 0 30px; transform: translateY(105%); transition: transform .24s cubic-bezier(.2,.8,.2,1); }
+  .ts-sheet.on { transform: none; }
+  .ts-grab { width: 38px; height: 5px; border-radius: 3px; background: #2a3541; margin: 0 auto 8px; flex: none; }
+  .ts-shead { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 20px; }
+  .ts-shead h3 { flex: 1; margin: 0; font-size: 19px; letter-spacing: -0.3px; }
+  .ts-x { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; }
+  .ts-x:active { background: var(--press); }
+  .ts-find { flex: none; margin: 6px 16px 2px; width: calc(100% - 32px); height: 42px; border-radius: 12px; border: 0; background: #18212b; color: var(--text); padding: 0 14px; font: 16px -apple-system, system-ui, sans-serif; }
+  .ts-find::placeholder { color: var(--faint); }
+  .ts-sbody { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+  .ts-sbody::-webkit-scrollbar { display: none; }
+  .ts-gh { display: flex; align-items: center; gap: 7px; padding: 16px 20px 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .ts-gh .ts-grow { flex: 1; }
+  .ts-gh .ts-off { color: var(--amber); font-weight: 500; }
+  .ts-pick { position: relative; display: block; width: 100%; text-align: left; padding: 8px 18px 8px 20px; min-height: 52px; }
+  .ts-pick:active { background: var(--press); }
+  .ts-pick .ts-dot { left: 7px; top: 17px; }
+  .ts-pick .ts-l1 { display: flex; align-items: baseline; gap: 10px; }
+  .ts-pick .ts-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 500; }
+  .ts-pick .ts-age { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .ts-pick .ts-l2 { display: block; margin-top: 1px; font: 12.5px/1.4 var(--code); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ts-pick .ts-l2 b { font-weight: 400; color: var(--muted); }
+  .ts-pick.cur .ts-nm { color: var(--mint); }
+  .ts-tick { color: var(--mint); }
+  .ts-pick[disabled] { opacity: .45; cursor: default; }
+  .ts-newline { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 20px; color: var(--mint); font-weight: 600; font-size: 16px; text-align: left; }
+  .ts-newline:active { background: var(--press); }
+  .ts-none { padding: 18px 20px; color: var(--faint); font-size: 14px; }
+  .ts-about { padding: 0 20px 14px; font-size: 14px; color: var(--muted); }
+  .ts-about p { margin: 0; }
+  .ts-about code { font: 12px var(--code); color: var(--faint); }
+  .ts-group { margin: 0 16px; background: #18212b; border-radius: 14px; overflow: hidden; }
+  .ts-act { width: 100%; display: flex; align-items: center; justify-content: space-between; text-align: left; min-height: 50px; padding: 0 16px; font-size: 16px; position: relative; }
+  .ts-act + .ts-act::before { content: ""; position: absolute; left: 16px; right: 0; top: 0; height: 1px; background: #24303c; }
+  .ts-act:active { background: var(--press); }
+  .ts-act small { color: var(--muted); font-size: 13px; }
+  .ts-act.danger { color: var(--red); }
+  .ts-gap { height: 10px; }
+  .ts-toast { position: absolute; left: 16px; right: 16px; bottom: 100px; z-index: 7; background: #1b2530; border-radius: 14px; padding: 12px 14px; font-size: 14px; opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; pointer-events: none; }
+  .ts-toast.on { opacity: 1; transform: none; }
+  @keyframes ts-pulse { 50% { opacity: .45; } }
+  @keyframes ts-blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .ts-dot.run, .ts-out .cur { animation: none; }
+    .ts-sheet, .ts-scrim, .ts-toast, .ts-out { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="mk-page">
+  <div class="ts-phone" id="phone">
+    <div class="ts-status"><span>9:41</span><span>
+      <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y=".5" width="3" height="11.5" rx="1"/></svg>
+      <svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.5" fill="none" stroke="currentColor" opacity=".45"/><rect x="2" y="2" width="20" height="9" rx="2" fill="currentColor"/></svg>
+    </span></div>
+    <div class="ts-nav">
+      <button class="ts-back" id="back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></svg><span id="backText">Back</span></button>
+      <span class="ts-link"><i></i>LAN</span>
+    </div>
+    <div class="ts-screen" id="screen"></div>
+    <nav class="ts-tabs" aria-label="Sections">
+      <button data-toast="Opens Agents."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg>Agents</button>
+      <button class="on" aria-current="page" id="codeTab"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg>Code</button>
+      <button data-toast="Opens Threads."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg>Threads</button>
+      <button data-toast="Opens Library."><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Library</button>
+      <i class="ts-home"></i>
+    </nav>
+    <div class="ts-scrim" id="scrim"></div>
+    <section class="ts-sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="ts-grab"></div>
+      <div class="ts-shead"><h3 id="sheetTitle"></h3><button class="ts-x" id="sheetClose" aria-label="Close"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+      <div id="sheetBody" style="display:contents"></div>
+    </section>
+    <div class="ts-toast" id="toast" role="status"></div>
+  </div>
+
+  <aside class="mk-side">
+    <h1>Terminal quick switcher</h1>
+    <p>Jigga's v1, from the Terminal and Code shots in the iOS design review. Every terminal on every paired machine, one tap or one swipe apart.</p>
+    <ul>
+      <li><strong>Three ways to switch.</strong> Tap a name in the strip under the title. Swipe the output left or right for the next one. Tap the title line (<em>apex-deck · dev server ▾</em>) for every terminal on every machine.</li>
+      <li><strong>Hold the Code tab</strong> from anywhere in the app to open the same switcher. Tapping Code while you're on a terminal jumps back to the last one you used.</li>
+      <li><strong>One dot, one meaning.</strong> Mint pulsing: a command is running. Amber: it's asking for input (a y/n prompt, a password). Red: the last command failed. No dot: idle at the prompt.</li>
+      <li><strong>Your Mac's terminals and phone shells sit together.</strong> Shells started from the phone say "this phone". <em>+</em> next to the title starts a new shell in the current project.</li>
+      <li><strong>Hold any terminal</strong> in the switcher for Rename, Copy last output and End.</li>
+      <li>The Code tab's Terminal row shows the count and what's running, plus the three most recent terminals so you can jump straight in.</li>
+    </ul>
+    <div class="mk-states" role="group" aria-label="State">
+      <button data-state="code">1. Code tab</button>
+      <button data-state="term">2. Terminal, full access</button>
+      <button data-state="switcher">3. Switcher (every machine)</button>
+      <button data-state="swipe">4. Mid-swipe to the next one</button>
+      <button data-state="ask">5. A terminal asking for input</button>
+      <button data-state="ended">6. Ended terminal</button>
+      <button data-state="menu">7. Hold menu</button>
+      <button data-state="ro">8. Read-only (below Full access)</button>
+    </div>
+    <h2>Needs new daemon work</h2>
+    <ul>
+      <li><strong>Listing the Mac's terminals and replaying their recent output.</strong> The daemon can't do either today, so v1 of the plan only had phone-owned shells. This switcher needs a terminal list and a scrollback buffer per terminal.</li>
+      <li><strong>Read-only following</strong> (state 8, as in the design review). Terminal output is Full-access only today, so below Full the phone would see nothing until that changes.</li>
+      <li><strong>The amber "asking for input" dot</strong> is a guess from the last output line (ends in <code>[y/N]</code>, <code>password:</code>…). Cheap, but it can be wrong.</li>
+    </ul>
+    <h2>Left out</h2>
+    <ul>
+      <li>Bots' own commands. They run as one-off tool calls, not terminals, so there's nothing to attach to. They stay in the thread.</li>
+      <li>The Browser row and Latest build card from the Code shot (no feature behind them yet, see the plan).</li>
+    </ul>
+  </aside>
+</div>
+<script>
+const params = new URLSearchParams(location.search);
+if (params.has("shot")) document.body.classList.add("shot");
+const ICON = {
+  chev: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
+  down: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  term: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg>',
+  folder: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
+  shield: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3Z"/><path d="M9 12l2 2 4-4"/></svg>',
+  eye: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
+  lock: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
+  tick: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>',
+  mac: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 20h20"/></svg>',
+  server: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c58cff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+};
+const machines = [
+  { id: "mac", name: "Tyler's MacBook", kind: "mac", online: true },
+  { id: "srv", name: "Apex-Terminal", kind: "server", online: true },
+];
+const P = "<span class=p>tyler@apex-macbook</span> ~/apex-deck\n";
+// st: run | ask | fail | idle | ended. mins = last output.
+const TERMS = [
+  { id: "dev", name: "dev server", project: "apex-deck", host: "mac", st: "run", mins: 0, last: "vite  ready in 412 ms  ➜ localhost:5173",
+    out: P + "❯ npm run desktop:dev\n\n<span class=d>> apex-deck@0.5.2 desktop:dev</span>\n<span class=d>> vite --mode desktop</span>\n\n  <span class=ok>VITE v6.0.5</span>  ready in 412 ms\n\n  ➜  Local:   localhost:5173\n  ➜  Network: use --host\n\n<span class=d>11:02:14</span> hmr update /src/phone/PhoneCode.tsx\n<span class=d>11:02:31</span> hmr update /src/phone/phone.css" },
+  { id: "s01", name: "shell 01", project: "apex-deck", host: "mac", st: "idle", mins: 4, last: "✓ built in 1.34s",
+    out: P + "❯ npm run build\n\n<span class=d>vite v6.0.5 building…</span>\n<span class=ok>✓</span> 128 modules transformed.\ndist/index.html    0.48 kB\ndist/assets/app.js  92.4 kB\n\n<span class=ok>✓ built in 1.34s</span>\n\n❯ <i class=cur></i>" },
+  { id: "tests", name: "tests", project: "apex-deck", host: "mac", st: "fail", mins: 9, last: "✗ 2 failed, 214 passed",
+    out: P + "❯ npm test\n\n<span class=ok>✓</span> tests/phone-code-access.test.mjs (6)\n<span class=ok>✓</span> tests/diffGroups.test.mjs (14)\n<span class=er>✗</span> tests/phone-code-default.test.mjs (2 failed)\n  <span class=er>AssertionError:</span> expected 'ios'\n    to equal 'apex-deck'\n\n<span class=er>✗ 2 failed</span>, 214 passed (3.1s)\n\n❯ <i class=cur></i>" },
+  { id: "ph1", name: "shell 02", project: "apex-deck", host: "mac", phone: true, st: "idle", mins: 22, last: "git status · clean",
+    out: P + "❯ git status\nOn branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean\n\n❯ <i class=cur></i>" },
+  { id: "cw", name: "cargo watch", project: "clef-feed", host: "mac", st: "run", mins: 1, last: "Finished dev [unoptimized] in 2.8s",
+    out: "<span class=p>tyler@apex-macbook</span> ~/clef-feed\n❯ cargo watch -x check\n\n<span class=d>[Running 'cargo check']</span>\n   Compiling clef-feed v0.3.0\n<span class=ok>    Finished</span> dev [unoptimized] in 2.8s\n<span class=d>[Finished running. Exit status: 0]</span>" },
+  { id: "rl", name: "relay logs", project: "relay", host: "srv", st: "run", mins: 0, last: "rate-limit device 7f3a… ok (12/60)",
+    out: "<span class=p>root@apex-terminal</span> /srv/relay\n❯ journalctl -fu relay\n\n<span class=d>Oct 12 11:03:02</span> accepted peer 7f3a…\n<span class=d>Oct 12 11:03:02</span> rate-limit device 7f3a… ok (12/60)\n<span class=d>Oct 12 11:03:09</span> accepted peer c21e…" },
+  { id: "dp", name: "deploy", project: "apex_terminal", host: "srv", st: "idle", mins: 180, last: "systemctl restart apex-daemon",
+    out: "<span class=p>root@apex-terminal</span> /srv/apex_terminal\n❯ systemctl restart apex-daemon\n❯ <i class=cur></i>" },
+];
+const ASK_OUT = P + "❯ npx shadcn add sheet\n\n<span class=d>Checking registry…</span>\n<span class=wa>?</span> The file components/ui/sheet.tsx already exists.\n  Overwrite it? <span class=wa>(y/N)</span> <i class=cur></i>";
+
+let terms = [], cur = "dev", last = "s01", screen = "code", access = "full", nextShell = 3;
+const T = (id) => terms.find((t) => t.id === id);
+const mach = (id) => machines.find((m) => m.id === id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ago = (m) => m < 1 ? "now" : m < 60 ? `${m}m` : `${Math.round(m / 60)}h`;
+const dotCls = (t) => ({ run: "run", ask: "ask", fail: "fail", ended: "fail" }[t.st] || "");
+const stateWord = (t) => ({ run: "running", ask: "asking for input", fail: "last command failed", idle: "idle", ended: "ended" }[t.st]);
+const here = () => terms.filter((t) => t.project === T(cur).project && t.host === T(cur).host);
+
+function reset(next) {
+  terms = TERMS.map((t) => ({ ...t }));
+  cur = "dev"; last = "s01"; access = "full"; screen = "term"; nextShell = 3;
+  closeSheet();
+  if (next === "code") screen = "code";
+  if (next === "ask") { const t = T("s01"); t.st = "ask"; t.out = ASK_OUT; t.last = "Overwrite it? (y/N)"; t.mins = 0; cur = "s01"; last = "dev"; }
+  if (next === "ended") { const t = T("tests"); t.st = "ended"; t.last = "Ended · exit 1"; cur = "tests"; }
+  if (next === "ro") access = "read";
+  render();
+  if (next === "switcher") openSwitcher();
+  if (next === "menu") { openSwitcher(); setTimeout(() => termMenu("tests"), 260); }
+  if (next === "swipe") requestAnimationFrame(() => dragTo(-110, true));
+  document.querySelectorAll("[data-state]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.state === next)));
+}
+
+function render() {
+  document.getElementById("backText").textContent = screen === "code" ? "Back" : "Code";
+  const el = document.getElementById("screen");
+  el.innerHTML = screen === "code" ? codeHome() : termScreen();
+  wire();
+}
+
+function codeHome() {
+  const running = terms.filter((t) => t.host === "mac" && t.st === "run").length;
+  const mine = terms.filter((t) => t.host === "mac");
+  const recent = mine.slice().sort((a, b) => a.mins - b.mins).slice(0, 3);
+  const live = terms.find((t) => t.st === "run" && t.host === "mac");
+  return `<div class="ts-scroll">
+    <div class="ts-eyebrow">TYLER'S MACBOOK</div>
+    <h1 class="ts-h1">Code</h1>
+    <div class="ts-sub">apex-deck · main branch</div>
+    <div class="ts-label" style="padding-top:26px">Workspace</div>
+    <button class="ts-item" data-toast="Opens Workspace files."><span class="ts-ic">${ICON.folder}</span><span class="ts-tx"><strong>Workspace files</strong><small>~/Downloads/apex-deck</small></span><span class="ts-chev">${ICON.chev}</span></button>
+    <button class="ts-item" data-toast="Opens Changes to review."><span class="ts-ic">${ICON.shield}</span><span class="ts-tx"><strong>Changes to review</strong><small>Navigation.tsx · 3 files</small></span><span class="ts-count">3</span><span class="ts-chev">${ICON.chev}</span></button>
+    <div class="ts-label">Host tools</div>
+    <button class="ts-item" data-open="${cur}"><span class="ts-ic">${ICON.term}</span><span class="ts-tx"><strong>Terminals</strong><small>${mine.length} on this Mac · <b>${running} running</b>${live ? " · " + esc(live.name) : ""}</small></span><span class="ts-chev">${ICON.chev}</span></button>
+    <div class="ts-recent">
+      ${recent.map((t) => `<button data-open="${t.id}">${dotCls(t) ? `<i class="ts-dot ${dotCls(t)}"></i>` : ""}<span>${esc(t.name)}</span><em>${esc(t.project)} · ${ago(t.mins)}</em></button>`).join("")}
+    </div>
+  </div>`;
+}
+
+function termScreen() {
+  const t = T(cur), ro = access === "read";
+  const list = here();
+  const note = t.st === "ended"
+    ? `<div class="ts-note bad"><span class="ts-grow">Ended · exit 1 · 9 min ago</span><button data-restart="${t.id}">Restart</button></div>`
+    : ro ? `<div class="ts-note">${ICON.eye}<span>Read-only · output from your host</span></div>`
+         : `<div class="ts-note">${ICON.eye}<span>Full permission · input enabled</span></div>`;
+  const keys = ["Esc", "Tab", "Ctrl", "←", "↓", "↑", "→"];
+  return `<div class="ts-thead">
+      <div style="display:flex;align-items:center;justify-content:space-between"><h1>Terminal</h1>${ro ? "" : `<button class="ts-x" id="addShell" style="color:var(--mint);margin-right:-12px" aria-label="New shell in ${esc(t.project)}">${ICON.plus.replace(/16/g, "22")}</button>`}</div>
+      <button class="ts-which" id="which" aria-haspopup="dialog">${esc(t.project)} · <b>${esc(t.name)}</b>${ICON.down}</button>
+    </div>
+    <div class="ts-strip" id="strip" role="tablist" aria-label="Terminals in ${esc(t.project)}">
+      ${list.map((x) => `<button class="ts-tab${x.id === cur ? " on" : ""}" role="tab" aria-selected="${x.id === cur}" data-go="${x.id}">${dotCls(x) ? `<i class="ts-dot ${dotCls(x)}"></i>` : ""}${esc(x.name)}${x.phone ? ' <span class="ts-phtag">· phone</span>' : ""}</button>`).join("")}    </div>
+    ${note}
+    <div class="ts-outwrap" id="outwrap">
+      <div class="ts-out${ro || t.st === "ended" ? " ro" : ""}" id="out">${t.out}</div>
+      <span class="ts-peek l" id="peekL"></span><span class="ts-peek r" id="peekR"></span>
+    </div>
+    ${ro ? `<div class="ts-foot"><span>${ICON.lock}</span><span>You can follow output. Your host must grant full permission to type.</span></div>`
+         : t.st === "ended" ? `<div style="height:14px"></div>`
+         : `<div class="ts-keys">${keys.map((k) => `<button data-key="${k}">${k}</button>`).join("")}</div>
+            <label class="ts-input"><input placeholder="Type a command…" aria-label="Command for ${esc(t.name)}" value="${t.st === "ask" ? "y" : ""}"><button class="ts-send" aria-label="Send" data-toast="Sent to ${esc(t.name)}.">${ICON.send}</button></label>`}`;
+}
+
+function go(id, dir) {
+  if (!T(id) || id === cur) return;
+  if (cur) last = cur;
+  cur = id; screen = "term";
+  render();
+  const out = document.getElementById("out");
+  if (dir && out) {
+    out.style.transition = "none"; out.style.transform = `translateX(${dir * 60}px)`; out.style.opacity = ".2";
+    requestAnimationFrame(() => requestAnimationFrame(() => { out.style.transition = ""; out.style.transform = ""; out.style.opacity = ""; }));
+  }
+  const on = document.querySelector(".ts-tab.on");
+  if (on) on.scrollIntoView({ inline: "nearest", block: "nearest" });
+}
+
+// Swipe on the output: left = next terminal in this project, right = previous.
+function neighbours() { const l = here(), i = l.findIndex((t) => t.id === cur); return { prev: l[i - 1], next: l[i + 1] }; }
+function dragTo(dx, hold) {
+  const out = document.getElementById("out"); if (!out) return;
+  const { prev, next } = neighbours();
+  out.style.transition = "none"; out.style.transform = `translateX(${dx}px)`; out.style.opacity = String(1 - Math.min(Math.abs(dx), 160) / 320);
+  const pl = document.getElementById("peekL"), pr = document.getElementById("peekR");
+  pr.textContent = next ? next.name + " ›" : "Last one"; pl.textContent = prev ? "‹ " + prev.name : "First one";
+  pr.classList.toggle("on", dx < -24); pl.classList.toggle("on", dx > 24);
+  if (hold) return;
+}
+function wireSwipe() {
+  const wrap = document.getElementById("outwrap"); if (!wrap) return;
+  let x0 = null;
+  wrap.addEventListener("pointerdown", (e) => { x0 = e.clientX; });
+  wrap.addEventListener("pointermove", (e) => { if (x0 !== null && Math.abs(e.clientX - x0) > 8) dragTo(e.clientX - x0); });
+  const end = (e) => {
+    if (x0 === null) return;
+    const dx = e.clientX - x0; x0 = null;
+    const { prev, next } = neighbours();
+    if (dx < -80 && next) return go(next.id, 1);
+    if (dx > 80 && prev) return go(prev.id, -1);
+    const out = document.getElementById("out"); out.style.transition = ""; out.style.transform = ""; out.style.opacity = "";
+    document.querySelectorAll(".ts-peek").forEach((p) => p.classList.remove("on"));
+  };
+  wrap.addEventListener("pointerup", end); wrap.addEventListener("pointercancel", end); wrap.addEventListener("pointerleave", end);
+}
+
+function wire() {
+  document.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => { screen = "term"; const id = b.dataset.open; cur = ""; go(id); });
+  document.querySelectorAll("[data-go]").forEach((b) => b.onclick = () => go(b.dataset.go, here().findIndex((t) => t.id === b.dataset.go) > here().findIndex((t) => t.id === cur) ? 1 : -1));
+  const which = document.getElementById("which"); if (which) which.onclick = openSwitcher;
+  const add = document.getElementById("addShell"); if (add) add.onclick = newShell;
+  document.querySelectorAll("[data-restart]").forEach((b) => b.onclick = () => { const t = T(b.dataset.restart); t.st = "idle"; t.mins = 0; t.last = "restarted"; t.out = t.out.split("\n")[0] + "\n❯ <i class=cur></i>"; render(); toast(`Restarted ${t.name}.`); });
+  document.querySelectorAll("[data-key]").forEach((b) => b.onclick = () => { if (b.dataset.key === "Ctrl") b.classList.toggle("held"); });
+  wireSwipe();
+}
+
+function newShell() {
+  const t = T(cur);
+  const id = "new" + nextShell, name = `shell 0${nextShell++}`;
+  terms.push({ id, name, project: t.project, host: t.host, phone: true, st: "idle", mins: 0, last: "new shell", out: t.out.split("\n")[0] + "\n❯ <i class=cur></i>" });
+  go(id, 1);
+  toast(`Started ${name} in ${t.project}.`);
+}
+
+// Switcher sheet: every terminal on every paired machine, this project first.
+function pickRow(t) {
+  const m = mach(t.host);
+  return `<button class="ts-pick${t.id === cur ? " cur" : ""}" data-pick="${t.id}" ${m.online ? "" : "disabled"}>
+    ${dotCls(t) ? `<i class="ts-dot ${dotCls(t)}" aria-label="${stateWord(t)}"></i>` : ""}
+    <span class="ts-l1"><span class="ts-nm">${esc(t.name)}${t.phone ? ' <span style="color:var(--faint);font-weight:400">· this phone</span>' : ""}</span>${t.id === cur ? `<span class="ts-tick">${ICON.tick}</span>` : `<span class="ts-age">${ago(t.mins)}</span>`}</span>
+    <span class="ts-l2"><b>${esc(stateWord(t))}</b> · ${esc(t.last)}</span>
+  </button>`;
+}
+function switcherBody(q) {
+  const ql = (q || "").toLowerCase();
+  const hit = (t) => !ql || (t.name + " " + t.project + " " + t.last).toLowerCase().includes(ql);
+  const c = T(cur);
+  const groups = [];
+  groups.push({ head: `${ICON[mach(c.host).kind]}<span class="ts-grow">${esc(c.project)} · this project</span>`, rows: here().filter(hit), add: true });
+  machines.forEach((m) => {
+    const projects = [...new Set(terms.filter((t) => t.host === m.id && !(t.project === c.project && t.host === c.host)).map((t) => t.project))];
+    projects.forEach((p) => groups.push({ head: `${ICON[m.kind]}<span class="ts-grow">${esc(p)}</span><span>${esc(m.name)}</span>`, rows: terms.filter((t) => t.host === m.id && t.project === p).filter(hit) }));
+  });
+  const shown = groups.filter((g) => g.rows.length || (g.add && !ql));
+  return shown.length ? shown.map((g) => `<div class="ts-gh">${g.head}</div>${g.rows.map(pickRow).join("")}${g.add && !ql && access === "full" ? `<button class="ts-newline" id="sheetNew">${ICON.plus}New shell in ${esc(c.project)}</button>` : ""}`).join("")
+    : `<div class="ts-none">No terminal matches "${esc(q)}".</div>`;
+}
+function openSwitcher() {
+  openSheet("Terminals", `<input class="ts-find" id="find" placeholder="Search terminals and output" autocomplete="off"><div class="ts-sbody" id="sbody">${switcherBody("")}</div>`);
+  const find = document.getElementById("find");
+  find.oninput = () => { document.getElementById("sbody").innerHTML = switcherBody(find.value); wireSheet(); };
+  wireSheet();
+}
+function wireSheet() {
+  document.querySelectorAll("[data-pick]").forEach((b) => {
+    b.onclick = () => { closeSheet(); go(b.dataset.pick); };
+    b.oncontextmenu = (e) => { e.preventDefault(); termMenu(b.dataset.pick); };
+    let timer; b.onpointerdown = () => { timer = setTimeout(() => termMenu(b.dataset.pick), 500); };
+    b.onpointerup = b.onpointerleave = () => clearTimeout(timer);
+  });
+  const n = document.getElementById("sheetNew"); if (n) n.onclick = () => { closeSheet(); newShell(); };
+}
+function termMenu(id) {
+  const t = T(id), m = mach(t.host);
+  openSheet(t.name, `<div class="ts-about"><p><strong style="color:var(--text)">${esc(t.project)}</strong> on ${esc(m.name)}${t.phone ? ", started on this phone" : ""}</p><p>${esc(stateWord(t))[0].toUpperCase() + esc(stateWord(t)).slice(1)} · last output ${ago(t.mins)} ago</p><p><code>${esc(t.last)}</code></p></div>
+    <div class="ts-group">
+      <button class="ts-act" data-act="Opened ${esc(t.name)}." data-pick-after="${t.id}">Open</button>
+      <button class="ts-act" data-act="Rename…">Rename…</button>
+      <button class="ts-act" data-act="Copied the last 200 lines.">Copy last output <small>200 lines</small></button>
+    </div>
+    <div class="ts-gap"></div>
+    <div class="ts-group"><button class="ts-act danger" data-act="Asks first: End ${esc(t.name)}? Anything running in it stops.">End terminal…</button></div>`);
+  document.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => { closeSheet(); if (b.dataset.pickAfter) go(b.dataset.pickAfter); toast(b.dataset.act); });
+}
+
+const sheet = document.getElementById("sheet"), scrim = document.getElementById("scrim");
+function openSheet(title, html) {
+  document.getElementById("sheetTitle").textContent = title;
+  document.getElementById("sheetBody").innerHTML = html;
+  sheet.classList.add("on"); scrim.classList.add("on");
+}
+function closeSheet() { sheet.classList.remove("on"); scrim.classList.remove("on"); }
+scrim.onclick = closeSheet;
+document.getElementById("sheetClose").onclick = closeSheet;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+document.getElementById("back").onclick = () => { if (screen === "term") { screen = "code"; render(); } else toast("Goes back."); };
+
+// Code tab: tap on a terminal jumps to the last one; tap again goes home. Hold opens the switcher.
+const codeTab = document.getElementById("codeTab");
+let holdTimer, held = false;
+codeTab.onpointerdown = () => { held = false; holdTimer = setTimeout(() => { held = true; if (screen !== "term") { screen = "term"; render(); } openSwitcher(); }, 450); };
+codeTab.onpointerup = codeTab.onpointerleave = () => clearTimeout(holdTimer);
+codeTab.oncontextmenu = (e) => { e.preventDefault(); };
+codeTab.onclick = () => { if (held) return; if (screen === "term" && last && T(last)) { go(last, -1); toast(`Back to ${T(cur).name}.`); } else { screen = "code"; render(); } };
+
+let toastTimer;
+function toast(msg) { const t = document.getElementById("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("on"), 1800); }
+document.addEventListener("click", (e) => { const b = e.target.closest("[data-toast]"); if (b) toast(b.dataset.toast); });
+document.querySelectorAll("[data-state]").forEach((b) => b.onclick = () => reset(b.dataset.state));
+window.goState = reset;
+reset(params.get("state") || "term");
+</script>
+</body>
+</html>

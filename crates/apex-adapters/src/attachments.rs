@@ -264,6 +264,34 @@ impl Staged {
         .map_err(|e| ParticipantError::Failed(format!("Couldn't stage Grok images: {e}")))?;
         Ok(path)
     }
+    /// Write `prompt` to a regular file. Muse's `--prompt-file` refuses
+    /// anything else, so `/dev/stdin` cannot be used the way Grok uses it.
+    pub fn prompt_file(&self, prompt: &str) -> Result<PathBuf, ParticipantError> {
+        let path = self.dir.join("prompt.txt");
+        std::fs::write(&path, prompt).map_err(|e| {
+            ParticipantError::Failed(format!("Couldn't stage the prompt file: {e}"))
+        })?;
+        Ok(path)
+    }
+
+    /// Write each image to a file for Muse's repeatable `--image` flag.
+    pub fn muse_images(&self, images: &[Image]) -> Result<Vec<PathBuf>, ParticipantError> {
+        let mut out = Vec::with_capacity(images.len());
+        for (i, image) in images.iter().enumerate() {
+            let extension = image.mime.strip_prefix("image/").unwrap();
+            let path = self.dir.join(format!("image-{i}.{extension}"));
+            // Use the already validated bytes, not a second read of the source.
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&image.data)
+                .expect("loader encoded base64");
+            std::fs::write(&path, bytes).map_err(|e| {
+                ParticipantError::Failed(format!("Couldn't stage Muse images: {e}"))
+            })?;
+            out.push(path);
+        }
+        Ok(out)
+    }
+
     pub fn gemini(&self, prompt: &str, images: &[Image]) -> Result<String, ParticipantError> {
         let mut prompt = prompt.to_owned();
         prompt.push_str("\n\nImages submitted with this turn:\n");

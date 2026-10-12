@@ -357,6 +357,10 @@ pub(crate) fn endpoint(profile: &ParticipantConfig) -> String {
         Backend::Agent { tool: AgentTool::Codex, .. } => "api.openai.com".into(),
         Backend::Agent { tool: AgentTool::Gemini, .. } => "generativelanguage.googleapis.com".into(),
         Backend::Agent { tool: AgentTool::Grok, .. } => "api.x.ai".into(),
+        // Muse's provider host is configurable (`--base-url`) and unverified
+        // here, so it counts as non-local: local-only mode blocks it rather
+        // than leaking prompts.
+        Backend::Agent { tool: AgentTool::Muse, .. } => "cli:muse".into(),
         Backend::OpenAiCompatible { base_url, .. } => {
             let rest = base_url.split("://").nth(1).unwrap_or(base_url);
             let host = rest.split(['/', '?']).next().unwrap_or(rest);
