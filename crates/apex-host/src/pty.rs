@@ -337,7 +337,17 @@ mod tests {
         // bytes is dropped, so the kept history starts on the second byte of one.
         let (_out, exit) = spawn_sh(&manager, "accents", "awk 'BEGIN { for (i = 0; i < 150000; i++) printf \"\\303\\251\"; printf \"x\" }'");
         exit.recv_timeout(Duration::from_secs(10)).unwrap();
-        let snapshot = manager.snapshot("accents").unwrap();
+        // The child can exit before the reader thread drains the pty, so wait
+        // for the trailing byte before asserting on truncated history.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let snapshot = loop {
+            let snapshot = manager.snapshot("accents").unwrap();
+            if snapshot.output.ends_with('x') {
+                break snapshot;
+            }
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for pty drain");
+            std::thread::sleep(Duration::from_millis(20));
+        };
         assert!(!snapshot.output.contains('\u{FFFD}'));
         assert!(snapshot.output.starts_with('é') && snapshot.output.ends_with("éx"));
     }
