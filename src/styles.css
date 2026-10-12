@@ -2135,7 +2135,13 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .titlebar-end { justify-content: flex-end; }
 .titlebar-start > .attention { margin-left: auto; }
 @media (min-width: 1051px) {
-  .titlebar > .section-navigation { margin-left: 0; }
+  .titlebar { position: relative; }
+  .titlebar > .section-navigation {
+    position: absolute;
+    left: calc(50% - 36px);
+    margin-left: 0;
+    transform: translate(-50%, 3px);
+  }
 }
 /* Narrower, there's no room for three balanced groups: the tabs follow the brand. */
 @media (max-width: 1050px) {
@@ -2188,7 +2194,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   font-size: 12px;
 }
 .titlebar > .section-navigation > .section-button { border: 0; }
-.titlebar > .section-navigation,
 .titlebar > .titlebar-start > .attention {
   transform: translateY(3px);
 }
