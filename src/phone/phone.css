@@ -721,8 +721,10 @@
 .ph-crew-grab { display: none; }
 
 /* Library: the phone's picture list and full-screen view (src/phone/PhoneLibrary.tsx). */
-.ph-lib { display: flex; flex-direction: column; min-height: 0; }
+.ph-lib { display: flex; flex-direction: column; min-height: 100%; width: 100%; box-sizing: border-box; }
 .ph-lib-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 12px; }
+.ph-lib-layout { display: flex; flex: 0 0 100%; gap: 6px; }
+.ph-lib-layout button { min-height: 44px; }
 .ph-lib-select {
   flex: 1;
   min-width: 0;
@@ -735,7 +737,8 @@
 }
 .ph-lib-machine { flex-basis: 100%; }
 .ph-lib-none { padding: 10px 4px; font-size: 13px; }
-.ph-lib-grid { display: grid; gap: 6px; }
+.ph-lib-grid { display: grid; gap: 6px; width: 100%; box-sizing: border-box; align-content: start; }
+.ph-lib-grid.is-list { grid-template-columns: 1fr !important; gap: 8px; }
 .ph-lib-tile {
   display: flex;
   flex-direction: column;
@@ -750,18 +753,19 @@
 }
 .ph-lib-thumb {
   display: block;
+  position: relative;
+  flex: none;
   width: 100%;
   aspect-ratio: 1 / 1;
-  position: relative;
   overflow: hidden;
   border-radius: 10px;
   background: var(--panel-2);
 }
 .ph-lib-thumb:has(.ph-lib-big) { display: flex; align-items: center; justify-content: center; padding: 8px; }
 .ph-lib-big { color: var(--muted); font-size: 12px; text-align: center; }
-.ph-lib-tile-wrap { position: relative; min-width: 0; }
+.ph-lib-tile-wrap { position: relative; min-width: 0; align-self: start; }
 .ph-lib-retry { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); }
-.ph-lib-thumb img, .ph-lib-thumb video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ph-lib-thumb img, .ph-lib-thumb video { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
 .ph-lib-play { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #000a; color: #fff; font-size: 13px; pointer-events: none; }
 .ph-lib-caption {
   display: block;
@@ -772,6 +776,9 @@
   color: var(--muted);
   font-size: 12px;
 }
+.ph-lib-grid.is-list .ph-lib-tile { flex-direction: row; align-items: center; gap: 10px; min-height: 76px; }
+.ph-lib-grid.is-list .ph-lib-thumb { width: 76px; height: 76px; aspect-ratio: auto; }
+.ph-lib-grid.is-list .ph-lib-caption { flex: 1; white-space: normal; }
 .ph-lib-viewer {
   position: fixed;
   inset: 0;
@@ -787,9 +794,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  touch-action: none;
   padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 12px calc(12px + env(safe-area-inset-left));
 }
 .ph-lib-viewer-image img, .ph-lib-viewer-image video { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.ph-lib-viewer-image video { touch-action: auto; }
+.ph-lib-viewer-image img { transition: transform .12s ease-out; }
 .ph-lib-viewer-bar {
   flex: none;
   display: flex;
@@ -803,6 +814,8 @@
 .ph-lib-viewer-ask { font-size: 14px; color: var(--text); }
 .ph-lib-viewer-error { font-size: 13px; color: var(--red); }
 .ph-lib-viewer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ph-lib-viewer-actions .ph-lib-action { flex: 0 0 auto; min-width: 44px; }
+.ph-lib-zoom-label { align-self: center; min-width: 44px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
 .ph-lib-action.ph-lib-action {
   flex: 1 1 auto;
   min-height: 44px;

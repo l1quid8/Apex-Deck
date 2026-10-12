@@ -20,6 +20,7 @@ interface Props {
 export function PhoneLibrary({ machines, threads, workspaces, onOpenThread }: Props) {
   const [items, setItems] = useState<MachineItem[]>([]);
   const [filter, setFilter] = useState<LibraryFilter>({ bot: null, workspace: null, machine: null });
+  const [layout, setLayout] = useState<"gallery" | "list">("gallery");
   const [viewing, setViewing] = useState<MachineItem | null>(null);
   const [notes, setNotes] = useState<Record<string, string | null>>({});
   const [pending, setPending] = useState<Record<string, boolean>>({});
@@ -107,6 +108,10 @@ export function PhoneLibrary({ machines, threads, workspaces, onOpenThread }: Pr
 
   return <section ref={root} className="ph-lib">
     {machines.length > 0 && <div className="ph-lib-toolbar">
+      <div className="ph-lib-layout" role="group" aria-label="Library layout">
+        <button type="button" aria-pressed={layout === "gallery"} onClick={() => setLayout("gallery")}>Gallery</button>
+        <button type="button" aria-pressed={layout === "list"} onClick={() => setLayout("list")}>List</button>
+      </div>
       <select className="ph-lib-select ph-lib-machine" aria-label="Filter by machine" value={filter.machine ?? ""} onChange={(e) => setFilter({ ...filter, machine: e.target.value || null })}>
         <option value="">All machines</option>
         {machines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
@@ -128,7 +133,7 @@ export function PhoneLibrary({ machines, threads, workspaces, onOpenThread }: Pr
       <Folder size={30} /><h3>No pictures available</h3><p>Pictures your bots make on your paired machines will appear here.</p>
     </div>}
     {items.length > 0 && shown.length === 0 && <p className="ph-muted ph-lib-none">{filtering ? "No pictures match these filters." : ""}</p>}
-    {shown.length > 0 && <div className="ph-lib-grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+    {shown.length > 0 && <div className={`ph-lib-grid${layout === "list" ? " is-list" : ""}`} style={layout === "list" ? undefined : { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
       {shown.map((item) => { const source = sourceOf(item.machine); return source && <LibraryTile key={itemKey(item)} item={item} backend={source.backend} machine={source.name} onOpen={() => setViewing(item)} />; })}
     </div>}
 
@@ -193,6 +198,32 @@ function PhoneLibraryViewer({ item, backend, machine, threads, workspaceName, on
   const [busy, setBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<unknown>(null);
   const openable = threadExists(item.room, threads);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const gesture = useRef<{ distance: number; zoom: number; panX: number; panY: number; x: number; y: number } | null>(null);
+  const lastTap = useRef(0);
+  const save = () => {
+    if (!url) return;
+    const link = document.createElement("a"); link.href = url; link.download = item.file; link.click();
+  };
+  const changeZoom = (next: number) => { const value = Math.max(1, Math.min(4, next)); setZoom(value); if (value === 1) setPan({ x: 0, y: 0 }); };
+  const touchStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (isVideoItem(item)) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const points = [...pointers.current.values()];
+    gesture.current = { distance: points.length > 1 ? Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) : 0, zoom, panX: pan.x, panY: pan.y, x: event.clientX, y: event.clientY };
+  };
+  const touchMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!gesture.current || isVideoItem(item)) return;
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const points = [...pointers.current.values()];
+    if (points.length > 1 && gesture.current.distance) changeZoom(gesture.current.zoom * Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) / gesture.current.distance);
+    else if (zoom > 1) setPan({ x: gesture.current.panX + event.clientX - gesture.current.x, y: gesture.current.panY + event.clientY - gesture.current.y });
+  };
+  const touchEnd = (event: React.PointerEvent<HTMLDivElement>) => { pointers.current.delete(event.pointerId); gesture.current = null; };
+  const doubleTap = () => { const now = Date.now(); if (now - lastTap.current < 300) changeZoom(zoom > 1 ? 1 : 2); lastTap.current = now; };
 
   useEffect(() => {
     const key = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -210,7 +241,7 @@ function PhoneLibraryViewer({ item, backend, machine, threads, workspaceName, on
   };
 
   return <div className="ph-lib-viewer" role="dialog" aria-label="Picture">
-    <div className="ph-lib-viewer-image">{url && (isVideoItem(item) ? <video src={url} controls playsInline /> : <img src={url} alt="" />)}
+    <div className="ph-lib-viewer-image" onPointerDown={touchStart} onPointerMove={touchMove} onPointerUp={touchEnd} onPointerCancel={touchEnd} onClick={doubleTap}>{url && (isVideoItem(item) ? <video src={url} controls playsInline /> : <img src={url} alt="" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />)}
       {reason && <p className="ph-lib-big">{reason.startsWith("Too big") ? `This ${isVideoItem(item) ? "video" : "picture"} is too big to ${isVideoItem(item) ? "play" : "show"} on the phone. Open it on ${machine}.` : `${machine} didn't say how big this ${isVideoItem(item) ? "video" : "picture"} is, so the phone won't risk loading it. Update Deck on ${machine}, or open it there.`}</p>}
       {failed && <p className="ph-lib-big" role="alert">Couldn't load this picture from {machine}. <button type="button" className="ph-lib-action" onClick={retry}>Retry</button></p>}</div>
     <div className="ph-lib-viewer-bar">
@@ -218,6 +249,8 @@ function PhoneLibraryViewer({ item, backend, machine, threads, workspaceName, on
       {confirming ? <>
         <p className="ph-lib-viewer-ask">Delete this picture? It is removed from the Library. The thread it came from is not changed.</p>
         <span className="ph-lib-viewer-actions">
+          {!isVideoItem(item) && <><button type="button" className="ph-lib-action" aria-label="Zoom out" onClick={() => changeZoom(zoom - 0.25)}>−</button><span className="ph-lib-zoom-label" aria-live="polite">{Math.round(zoom * 100)}%</span><button type="button" className="ph-lib-action" aria-label="Zoom in" onClick={() => changeZoom(zoom + 0.25)}>+</button><button type="button" className="ph-lib-action" onClick={() => changeZoom(1)}>Fit</button></>}
+          <button type="button" className="ph-lib-action" onClick={save} disabled={!url}>Save / Share</button>
           <button type="button" className="ph-lib-action ph-lib-danger" onClick={remove} disabled={busy}>Delete</button>
           <button type="button" className="ph-lib-action" onClick={() => setConfirming(false)} disabled={busy}>Cancel</button>
         </span>

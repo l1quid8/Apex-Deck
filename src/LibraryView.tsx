@@ -32,6 +32,7 @@ export function LibraryView({ machines, backendOf, threads, workspaces, onOpenTh
   const [items, setItems] = useState<MachineItem[]>([]);
   const [loads, setLoads] = useState<Record<string, MachineLoad>>({});
   const [filter, setFilter] = useState<LibraryFilter>({ bot: null, workspace: null, machine: null });
+  const [layout, setLayout] = useState<"gallery" | "list">("gallery");
   const [viewing, setViewing] = useState<MachineItem | null>(null);
   const [question, setQuestion] = useState<Question | null>(null);
   const [error, setError] = useState("");
@@ -96,6 +97,10 @@ export function LibraryView({ machines, backendOf, threads, workspaces, onOpenTh
     {loaded && items.length === 0 && <div className="library-empty"><p className="muted">Pictures your bots make will appear here.</p></div>}
     {items.length > 0 && <>
       <div className="library-filters">
+        <div className="library-layout" role="group" aria-label="Library layout">
+          <button type="button" aria-pressed={layout === "gallery"} onClick={() => setLayout("gallery")}>Gallery</button>
+          <button type="button" aria-pressed={layout === "list"} onClick={() => setLayout("list")}>List</button>
+        </div>
         {several && <label>Machine <select aria-label="Filter by machine" value={filter.machine ?? ""} onChange={(e) => setFilter({ ...filter, machine: e.target.value || null })}>
           <option value="">All machines</option>
           {machines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
@@ -110,7 +115,7 @@ export function LibraryView({ machines, backendOf, threads, workspaces, onOpenTh
         </select></label>
       </div>
       {shown.length === 0 && <p className="muted library-none">{filtering ? "No pictures match these filters." : ""}</p>}
-      <div className="library-grid">
+      <div className={`library-grid${layout === "list" ? " is-list" : ""}`}>
         {shown.map((item) => <LibraryTile key={itemKey(item)} item={item} backend={backendFor(item.machine)} machine={several ? nameOf(item.machine) : ""} onOpen={() => setViewing(item)} />)}
       </div>
     </>}
@@ -165,16 +170,35 @@ function LibraryViewer({ item, backend, bot, when, openable, workspace, machine,
   onClose: () => void; onOpen: () => void; onDelete: () => void;
 }) {
   const url = useImage(item, backend, true);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const drag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
   useEffect(() => {
     const key = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [onClose]);
+  const save = async () => {
+    if (!url) return;
+    const blob = await fetch(url).then((response) => response.blob());
+    const picker = (window as Window & { showSaveFilePicker?: (options: { suggestedName: string }) => Promise<{ createWritable(): Promise<{ write(data: Blob): Promise<void>; close(): Promise<void> }> }> }).showSaveFilePicker;
+    if (picker) {
+      try { const handle = await picker({ suggestedName: item.file }); const writable = await handle.createWritable(); await writable.write(blob); await writable.close(); return; }
+      catch (error) { if ((error as DOMException)?.name === "AbortError") return; throw error; }
+    }
+    const link = document.createElement("a"); link.href = url; link.download = item.file; link.click();
+  };
+  const setScale = (next: number) => { setZoom(Math.max(1, Math.min(16, next))); if (next <= 1) setPan({ x: 0, y: 0 }); };
   return <div className="library-viewer" role="dialog" aria-label="Picture">
-    <div className="library-viewer-image">{url && (isVideoItem(item) ? <video src={url} controls autoPlay aria-label={item.file} /> : <img src={url} alt={item.file} />)}</div>
+    <div className={`library-viewer-image${zoom > 1 && !isVideoItem(item) ? " is-zoomed" : ""}`} onPointerDown={(event) => { if (zoom > 1 && !isVideoItem(item)) { drag.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }; event.currentTarget.setPointerCapture(event.pointerId); } }} onPointerMove={(event) => { if (drag.current) setPan({ x: drag.current.panX + event.clientX - drag.current.x, y: drag.current.panY + event.clientY - drag.current.y }); }} onPointerUp={() => { drag.current = null; }}>
+      {url && (isVideoItem(item) ? <video src={url} controls autoPlay aria-label={item.file} /> : <img ref={imageRef} src={url} alt={item.file} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />)}
+    </div>
     <div className="library-viewer-bar">
       <span className="library-caption">{bot ?? "A bot"} · {new Date(when).toLocaleString()}{workspace && ` · ${workspace}`}{machine && ` · ${machine}`}</span>
       <span className="library-viewer-actions">
+        {!isVideoItem(item) && <><button aria-label="Zoom out" onClick={() => setScale(zoom - 0.25)}>−</button><span className="library-zoom-label">{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => setScale(zoom + 0.25)}>+</button><button onClick={() => { setScale(1); setPan({ x: 0, y: 0 }); }}>Fit</button><button onClick={() => { const image = imageRef.current; if (image) { setScale(image.naturalWidth / Math.max(1, image.clientWidth)); setPan({ x: 0, y: 0 }); } }}>Actual size</button></>}
+        <button onClick={() => void save()} disabled={!url}>Save as…</button>
         {openable && <button className="accent" onClick={onOpen}>Open thread</button>}
         <button className="danger" onClick={onDelete}>Delete</button>
         <button onClick={onClose}>Close</button>
