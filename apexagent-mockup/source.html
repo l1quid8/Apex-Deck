@@ -1,0 +1,497 @@
+<div id="apexagent-workspace-preview" class="viz-carousel" aria-label="ApexAgent workspace designs">
+  <section data-variant="Focused" aria-label="Focused assistant workspace">
+    <div id="aa-focused" class="aa-product" aria-label="Focused Apex Deck design"></div>
+  </section>
+  <section data-variant="Docked" aria-label="Assistant beside a shared chat" hidden>
+    <div id="aa-docked" class="aa-product aa-docked" aria-label="Docked Apex Deck design"></div>
+  </section>
+</div>
+<style>
+#apexagent-workspace-preview { width:100%; }
+#apexagent-workspace-preview .aa-product {
+  --aa-bg:light-dark(#f4f6f7,#090d12); --aa-panel:light-dark(#ffffff,#10171f);
+  --aa-raised:light-dark(#edf1f3,#17212c); --aa-line:light-dark(#dce2e6,#26313e);
+  --aa-text:light-dark(#18252e,#e5ecf2); --aa-muted:light-dark(#596874,#a4b2c0);
+  --aa-accent:light-dark(#147b58,#71e6b5); --aa-accent-fill:light-dark(#dbf5e8,#71e6b5);
+  --aa-accent-ink:light-dark(#104e39,#04211d); --aa-soft:light-dark(#e9f6ef,#142e27);
+  --aa-amber:light-dark(#956011,#f2c47b); --aa-amber-bg:light-dark(#fbf1de,#30281b);
+  --aa-red:light-dark(#b3343c,#f3959b); --aa-red-bg:light-dark(#fff0f0,#331d24);
+  --aa-radius:12px; --aa-reading:620px;
+  width:100%; height:760px; border:1px solid var(--aa-line); border-radius:var(--aa-radius);
+  overflow:hidden; background:var(--aa-bg); color:var(--aa-text); display:flex; flex-direction:column;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:14px; line-height:1.5;
+}
+#apexagent-workspace-preview .aa-product * { box-sizing:border-box; }
+#apexagent-workspace-preview .aa-product [hidden] { display:none !important; }
+#apexagent-workspace-preview .aa-product button,
+#apexagent-workspace-preview .aa-product input,
+#apexagent-workspace-preview .aa-product textarea,
+#apexagent-workspace-preview .aa-product select { font:inherit; }
+#apexagent-workspace-preview .aa-product button { color:inherit; }
+#apexagent-workspace-preview .aa-product button:focus-visible,
+#apexagent-workspace-preview .aa-product input:focus-visible,
+#apexagent-workspace-preview .aa-product select:focus-visible,
+#apexagent-workspace-preview .aa-product textarea:focus-visible { outline:2px solid var(--aa-accent); outline-offset:3px; }
+#apexagent-workspace-preview .aa-product button:disabled { opacity:.45; }
+#apexagent-workspace-preview .aa-product svg { flex:none; width:16px; height:16px; }
+#apexagent-workspace-preview .aa-product p { margin:0 0 12px; }
+#apexagent-workspace-preview .aa-product p:last-child { margin-bottom:0; }
+#apexagent-workspace-preview .aa-product h1,
+#apexagent-workspace-preview .aa-product h2,
+#apexagent-workspace-preview .aa-product h3 { color:inherit; margin:0; font-family:inherit; }
+#apexagent-workspace-preview .aa-product h1 { font-size:23px; letter-spacing:-.65px; font-weight:600; line-height:1.25; }
+#apexagent-workspace-preview .aa-product h2 { font-size:19px; font-weight:600; letter-spacing:-.3px; }
+#apexagent-workspace-preview .aa-product h3 { font-size:15px; font-weight:600; line-height:1.4; }
+#apexagent-workspace-preview .aa-bar { min-height:48px; display:flex; align-items:center; padding:0 18px; gap:20px; border-bottom:1px solid var(--aa-line); background:var(--aa-panel); }
+#apexagent-workspace-preview .aa-brand { display:flex; align-items:center; gap:9px; font-weight:600; white-space:nowrap; }
+#apexagent-workspace-preview .aa-brand svg { color:var(--aa-accent); width:19px; height:19px; }
+#apexagent-workspace-preview .aa-preview { margin-left:auto; font-size:11px; color:var(--aa-muted); white-space:nowrap; padding-right:90px; }
+#apexagent-workspace-preview .aa-nav { display:flex; gap:16px; color:var(--aa-muted); font-size:12px; }
+#apexagent-workspace-preview .aa-nav span:last-child { color:var(--aa-accent); }
+#apexagent-workspace-preview .aa-shell { display:flex; flex:1; min-height:0; min-width:0; }
+#apexagent-workspace-preview .aa-sidebar { width:186px; flex:none; border-right:1px solid var(--aa-line); padding:20px 12px; background:var(--aa-bg); display:flex; flex-direction:column; gap:4px; }
+#apexagent-workspace-preview .aa-sidebar-label { color:var(--aa-muted); font-size:11px; padding:0 10px 8px; }
+#apexagent-workspace-preview .aa-side-button { border:0; background:transparent; width:100%; display:flex; align-items:center; gap:9px; text-align:left; border-radius:8px; padding:9px 10px; font-size:12px; }
+#apexagent-workspace-preview .aa-side-button:hover { background:var(--aa-raised); }
+#apexagent-workspace-preview .aa-side-button.aa-selected { background:var(--aa-soft); color:var(--aa-accent); font-weight:500; }
+#apexagent-workspace-preview .aa-side-rule { height:1px; background:var(--aa-line); margin:16px 10px; }
+#apexagent-workspace-preview .aa-side-bottom { margin-top:auto; padding:12px 10px 0; font-size:11px; color:var(--aa-muted); }
+#apexagent-workspace-preview .aa-workspace { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; position:relative; background:var(--aa-panel); }
+#apexagent-workspace-preview .aa-heading { padding:22px 28px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+#apexagent-workspace-preview .aa-heading-sub { color:var(--aa-muted); font-size:12px; margin-top:5px; }
+#apexagent-workspace-preview .aa-toolbar { display:flex; align-items:center; gap:8px; }
+#apexagent-workspace-preview .aa-icon-button { display:inline-flex; align-items:center; justify-content:center; min-width:32px; min-height:32px; border:0; border-radius:7px; background:transparent; }
+#apexagent-workspace-preview .aa-icon-button:hover { background:var(--aa-raised); }
+#apexagent-workspace-preview .aa-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:7px 12px; min-height:34px; border-radius:7px; border:1px solid var(--aa-line); background:var(--aa-panel); font-size:12px; font-weight:500; text-align:center; }
+#apexagent-workspace-preview .aa-button:hover { background:var(--aa-raised); }
+#apexagent-workspace-preview .aa-button.aa-primary { color:var(--aa-accent-ink); background:var(--aa-accent-fill); border-color:transparent; }
+#apexagent-workspace-preview .aa-button.aa-primary:hover { filter:brightness(.96); }
+#apexagent-workspace-preview .aa-button.aa-quiet { border-color:transparent; background:transparent; color:var(--aa-muted); padding-left:0; }
+#apexagent-workspace-preview .aa-link { border:0; background:transparent; color:var(--aa-accent) !important; padding:0; display:inline-flex; gap:5px; align-items:center; font-size:12px; text-align:left; }
+#apexagent-workspace-preview .aa-tabs { display:flex; align-items:center; gap:24px; border-bottom:1px solid var(--aa-line); padding:0 28px; min-height:41px; }
+#apexagent-workspace-preview .aa-tab { position:relative; align-self:stretch; display:flex; align-items:center; gap:7px; padding:0; border:0; background:transparent; color:var(--aa-muted) !important; font-size:13px; }
+#apexagent-workspace-preview .aa-tab[aria-selected="true"] { color:var(--aa-text) !important; font-weight:600; }
+#apexagent-workspace-preview .aa-tab[aria-selected="true"]::after { content:""; height:2px; background:var(--aa-accent); position:absolute; left:0; right:0; bottom:-1px; }
+#apexagent-workspace-preview .aa-tab-count { min-width:18px; height:18px; display:grid; place-items:center; background:var(--aa-raised); border-radius:5px; font-size:11px; font-weight:400; }
+#apexagent-workspace-preview .aa-body { flex:1; min-height:0; display:flex; }
+#apexagent-workspace-preview .aa-scroll { min-width:0; flex:1; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--aa-line) transparent; padding:26px 28px; }
+#apexagent-workspace-preview .aa-reading { max-width:var(--aa-reading); margin:0 auto; }
+#apexagent-workspace-preview .aa-message { margin-bottom:28px; font-size:14px; line-height:1.65; overflow-wrap:anywhere; }
+#apexagent-workspace-preview .aa-author { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; margin-bottom:9px; }
+#apexagent-workspace-preview .aa-author small { color:var(--aa-muted); font-weight:400; font-size:11px; }
+#apexagent-workspace-preview .aa-avatar { width:22px; height:22px; border-radius:7px; display:grid; place-items:center; background:var(--aa-raised); font-size:10px; line-height:1; }
+#apexagent-workspace-preview .aa-avatar.aa-agent { color:var(--aa-accent); background:var(--aa-soft); }
+#apexagent-workspace-preview .aa-user-text { padding:12px 16px; border-radius:10px; background:var(--aa-raised); max-width:580px; }
+#apexagent-workspace-preview .aa-message ul { margin:10px 0 16px; padding-left:20px; }
+#apexagent-workspace-preview .aa-message li { margin:7px 0; }
+#apexagent-workspace-preview .aa-task { margin-top:14px; padding:17px 18px; border:1px solid var(--aa-line); background:var(--aa-bg); border-radius:10px; }
+#apexagent-workspace-preview .aa-task + .aa-task { margin-top:12px; }
+#apexagent-workspace-preview .aa-task-top { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+#apexagent-workspace-preview .aa-status { display:inline-flex; align-items:center; gap:5px; flex:none; font-size:11px; color:var(--aa-muted); white-space:nowrap; }
+#apexagent-workspace-preview .aa-status.aa-status-ready,
+#apexagent-workspace-preview .aa-status.aa-status-running,
+#apexagent-workspace-preview .aa-status.aa-status-done { color:var(--aa-accent); }
+#apexagent-workspace-preview .aa-status.aa-status-question { color:var(--aa-amber); }
+#apexagent-workspace-preview .aa-task p { margin:7px 0 12px; color:var(--aa-muted); font-size:12px; line-height:1.65; }
+#apexagent-workspace-preview .aa-task-meta { display:flex; flex-wrap:wrap; gap:8px 15px; color:var(--aa-muted); font-size:11px; margin:12px 0; }
+#apexagent-workspace-preview .aa-task-meta span { display:inline-flex; align-items:center; gap:5px; }
+#apexagent-workspace-preview .aa-task-meta svg { width:13px; height:13px; }
+#apexagent-workspace-preview .aa-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+#apexagent-workspace-preview .aa-actions .aa-link { margin-left:5px; }
+#apexagent-workspace-preview .aa-task-question { margin:12px 0; padding:12px; border-radius:7px; background:var(--aa-amber-bg); color:var(--aa-text); font-size:12px; }
+#apexagent-workspace-preview .aa-question-buttons { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
+#apexagent-workspace-preview .aa-task-progress { padding:9px 0 0; color:var(--aa-muted); font-size:11px; }
+#apexagent-workspace-preview .aa-composer-wrap { flex:none; padding:10px 28px 17px; border-top:1px solid var(--aa-line); background:var(--aa-panel); }
+#apexagent-workspace-preview .aa-composer { max-width:var(--aa-reading); margin:0 auto; padding:11px 12px 9px; border:1px solid var(--aa-line); border-radius:11px; background:var(--aa-bg); }
+#apexagent-workspace-preview .aa-composer:focus-within { border-color:var(--aa-accent); }
+#apexagent-workspace-preview .aa-composer textarea { display:block; resize:none; width:100%; min-height:43px; padding:0 2px; border:0; outline-offset:3px; background:transparent; color:var(--aa-text); font-size:13px; line-height:1.5; }
+#apexagent-workspace-preview .aa-composer textarea::placeholder { color:var(--aa-muted); }
+#apexagent-workspace-preview .aa-composer-bottom { display:flex; align-items:center; justify-content:space-between; gap:9px; }
+#apexagent-workspace-preview .aa-composer-profile { display:flex; align-items:center; gap:7px; font-size:11px; color:var(--aa-muted); }
+#apexagent-workspace-preview .aa-composer-note { max-width:var(--aa-reading); margin:8px auto 0; font-size:11px; color:var(--aa-muted); display:flex; justify-content:space-between; gap:10px; }
+#apexagent-workspace-preview .aa-view-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:20px; }
+#apexagent-workspace-preview .aa-view-sub { color:var(--aa-muted); font-size:12px; margin-top:4px; }
+#apexagent-workspace-preview .aa-section-label { color:var(--aa-muted); font-size:12px; margin:23px 0 9px; }
+#apexagent-workspace-preview .aa-detail-head { margin:16px 0 20px; }
+#apexagent-workspace-preview .aa-detail-row { margin-bottom:20px; }
+#apexagent-workspace-preview .aa-detail-label { font-size:11px; color:var(--aa-muted); margin-bottom:7px; }
+#apexagent-workspace-preview .aa-original { padding:12px 14px; border-left:2px solid var(--aa-line); background:var(--aa-bg); font-size:13px; line-height:1.6; }
+#apexagent-workspace-preview .aa-report-row { display:flex; align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--aa-line); font-size:12px; }
+#apexagent-workspace-preview .aa-report-row > div { flex:1; }
+#apexagent-workspace-preview .aa-report-row small { display:block; color:var(--aa-muted); font-size:11px; margin-top:2px; }
+#apexagent-workspace-preview .aa-report-row .aa-status { white-space:normal; max-width:90px; text-align:right; }
+#apexagent-workspace-preview .aa-checks { background:var(--aa-bg); border:1px solid var(--aa-line); border-radius:9px; padding:14px; margin:14px 0; }
+#apexagent-workspace-preview .aa-check { display:flex; gap:8px; align-items:center; font-size:12px; margin:7px 0; }
+#apexagent-workspace-preview .aa-check svg { color:var(--aa-accent); width:14px; height:14px; }
+#apexagent-workspace-preview .aa-diff { padding:13px; background:var(--aa-bg); border:1px solid var(--aa-line); border-radius:8px; font:11px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+#apexagent-workspace-preview .aa-diff-add { color:var(--aa-accent); }
+#apexagent-workspace-preview .aa-diff-remove { color:var(--aa-red); }
+#apexagent-workspace-preview .aa-fields { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+#apexagent-workspace-preview .aa-field { display:block; font-size:12px; margin-bottom:13px; }
+#apexagent-workspace-preview .aa-field select,
+#apexagent-workspace-preview .aa-field input,
+#apexagent-workspace-preview .aa-field textarea { display:block; width:100%; margin-top:6px; padding:8px 10px; border:1px solid var(--aa-line); border-radius:7px; background:var(--aa-bg); color:var(--aa-text); font-size:12px; }
+#apexagent-workspace-preview .aa-field textarea { min-height:75px; resize:vertical; }
+#apexagent-workspace-preview .aa-toggle-row { display:flex; align-items:flex-start; gap:9px; font-size:12px; margin:16px 0; }
+#apexagent-workspace-preview .aa-toggle-row input { accent-color:var(--aa-accent); margin-top:4px; }
+#apexagent-workspace-preview .aa-settings-note { font-size:12px; color:var(--aa-muted); margin:7px 0 20px; }
+#apexagent-workspace-preview .aa-advanced { margin:18px 0; border-top:1px solid var(--aa-line); padding-top:14px; }
+#apexagent-workspace-preview .aa-advanced summary { font-size:12px; color:var(--aa-muted); }
+#apexagent-workspace-preview .aa-advanced > div { padding-top:16px; }
+#apexagent-workspace-preview .aa-timeline { list-style:none; padding:0; margin:12px 0; }
+#apexagent-workspace-preview .aa-timeline li { display:flex; gap:12px; padding:13px 0; border-bottom:1px solid var(--aa-line); }
+#apexagent-workspace-preview .aa-timeline svg { color:var(--aa-accent); margin-top:2px; }
+#apexagent-workspace-preview .aa-timeline p { font-size:12px; margin:0; }
+#apexagent-workspace-preview .aa-timeline small { display:block; font-size:11px; color:var(--aa-muted); margin-top:3px; }
+#apexagent-workspace-preview .aa-overlay { position:absolute; inset:0; background:light-dark(#18252e30,#00000070); z-index:6; display:flex; align-items:flex-start; justify-content:flex-end; padding:68px 22px 20px; }
+#apexagent-workspace-preview .aa-dialog { width:360px; max-width:100%; max-height:100%; overflow-y:auto; padding:20px; border:1px solid var(--aa-line); border-radius:11px; background:var(--aa-panel); box-shadow:0 18px 45px light-dark(#18252e20,#00000050); }
+#apexagent-workspace-preview .aa-dialog-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+#apexagent-workspace-preview .aa-scope-row { display:flex; align-items:center; gap:11px; padding:10px 0; font-size:13px; }
+#apexagent-workspace-preview .aa-scope-row input { accent-color:var(--aa-accent); width:15px; height:15px; }
+#apexagent-workspace-preview .aa-scope-row small { display:block; font-size:11px; color:var(--aa-muted); }
+#apexagent-workspace-preview .aa-dialog-footer { display:flex; justify-content:flex-end; margin-top:18px; }
+#apexagent-workspace-preview .aa-worker { width:315px; flex:none; background:var(--aa-bg); border-left:1px solid var(--aa-line); display:flex; flex-direction:column; min-height:0; }
+#apexagent-workspace-preview .aa-worker-header { display:flex; justify-content:space-between; align-items:flex-start; padding:18px 16px; gap:10px; border-bottom:1px solid var(--aa-line); }
+#apexagent-workspace-preview .aa-worker-title { font-size:13px; font-weight:600; }
+#apexagent-workspace-preview .aa-worker-sub { font-size:11px; color:var(--aa-muted); margin-top:4px; }
+#apexagent-workspace-preview .aa-worker-body { padding:22px 16px; flex:1; min-height:0; overflow-y:auto; }
+#apexagent-workspace-preview .aa-worker .aa-message { font-size:12px; }
+#apexagent-workspace-preview .aa-worker-footer { padding:14px 16px; font-size:11px; color:var(--aa-muted); border-top:1px solid var(--aa-line); }
+#apexagent-workspace-preview .aa-toast { position:absolute; bottom:155px; left:50%; transform:translateX(-50%); z-index:8; max-width:calc(100% - 32px); padding:9px 13px; border:1px solid var(--aa-line); border-radius:8px; background:var(--aa-raised); color:var(--aa-text); box-shadow:0 5px 20px light-dark(#18252e15,#00000040); font-size:12px; text-align:center; }
+#apexagent-workspace-preview .aa-context { width:240px; flex:none; display:flex; flex-direction:column; border-right:1px solid var(--aa-line); background:var(--aa-bg); min-height:0; }
+#apexagent-workspace-preview .aa-context-header { padding:20px 18px 16px; border-bottom:1px solid var(--aa-line); }
+#apexagent-workspace-preview .aa-context-content { padding:22px 18px; flex:1; overflow-y:auto; }
+#apexagent-workspace-preview .aa-context .aa-message { font-size:12px; }
+#apexagent-workspace-preview .aa-participants { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; font-size:11px; color:var(--aa-muted); }
+#apexagent-workspace-preview .aa-context-footer { border-top:1px solid var(--aa-line); padding:15px; font-size:11px; color:var(--aa-muted); }
+#apexagent-workspace-preview .aa-docked .aa-sidebar { width:160px; }
+#apexagent-workspace-preview .aa-docked .aa-heading { padding-left:22px; padding-right:22px; }
+#apexagent-workspace-preview .aa-docked .aa-tabs { padding-left:22px; }
+#apexagent-workspace-preview .aa-docked .aa-scroll { padding-left:22px; padding-right:22px; }
+#apexagent-workspace-preview .aa-docked .aa-composer-wrap { padding-left:22px; padding-right:22px; }
+#apexagent-workspace-preview .aa-docked .aa-toolbar .aa-button { max-width:165px; }
+@media(max-width:950px) {
+  #apexagent-workspace-preview .aa-context { display:none; }
+  #apexagent-workspace-preview .aa-nav { display:none; }
+  #apexagent-workspace-preview .aa-workspace:has(.aa-worker:not([hidden])) .aa-worker { width:280px; }
+}
+@media(max-width:720px) {
+  #apexagent-workspace-preview .aa-sidebar { display:none; }
+  #apexagent-workspace-preview .aa-product { height:790px; }
+  #apexagent-workspace-preview .aa-worker { position:absolute; inset:0; width:100% !important; z-index:4; border:0; background:var(--aa-panel); }
+}
+@media(max-width:480px) {
+  #apexagent-workspace-preview .aa-product { height:840px; border-radius:9px; }
+  #apexagent-workspace-preview .aa-bar { padding:0 12px; gap:7px; }
+  #apexagent-workspace-preview .aa-preview { font-size:11px; padding-right:0; }
+  #apexagent-workspace-preview .aa-brand { font-size:12px; gap:6px; }
+  #apexagent-workspace-preview .aa-heading,
+  #apexagent-workspace-preview .aa-docked .aa-heading { padding:19px 16px 12px; }
+  #apexagent-workspace-preview .aa-heading h1 { font-size:21px; }
+  #apexagent-workspace-preview .aa-toolbar { width:100%; justify-content:space-between; }
+  #apexagent-workspace-preview .aa-tabs,
+  #apexagent-workspace-preview .aa-docked .aa-tabs { padding:0 16px; gap:23px; }
+  #apexagent-workspace-preview .aa-scroll,
+  #apexagent-workspace-preview .aa-docked .aa-scroll { padding:22px 16px; }
+  #apexagent-workspace-preview .aa-composer-wrap,
+  #apexagent-workspace-preview .aa-docked .aa-composer-wrap { padding:12px 16px 15px; }
+  #apexagent-workspace-preview .aa-task { padding:14px; }
+  #apexagent-workspace-preview .aa-task-top { flex-direction:column; gap:6px; }
+  #apexagent-workspace-preview .aa-fields { grid-template-columns:1fr; gap:0; }
+  #apexagent-workspace-preview .aa-composer-note span:last-child { display:none; }
+  #apexagent-workspace-preview .aa-overlay { padding:55px 10px 16px; }
+  #apexagent-workspace-preview .aa-report-row { flex-wrap:wrap; }
+}
+@media(pointer:coarse) {
+  #apexagent-workspace-preview .aa-button,
+  #apexagent-workspace-preview .aa-icon-button,
+  #apexagent-workspace-preview .aa-side-button { min-height:44px; }
+  #apexagent-workspace-preview .aa-composer textarea,
+  #apexagent-workspace-preview .aa-field input,
+  #apexagent-workspace-preview .aa-field textarea,
+  #apexagent-workspace-preview .aa-field select { font-size:16px; }
+}
+@media(prefers-reduced-motion:reduce) { #apexagent-workspace-preview * { scroll-behavior:auto; } }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('apexagent-workspace-preview');
+  if (!root) return;
+  const escape = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
+  const button = (text, action, id='', style='') => `<button type="button" class="aa-button cursor-interaction ${style}" data-action="${action}"${id ? ` data-task="${id}"` : ''}>${text}</button>`;
+  const statuses = { proposed:['Waiting for approval','circle'], running:['Working','loader-circle'], question:['Needs you','circle-help'], ready:['Ready to review','circle-check'], done:['Done','check'], cancelled:['Stopped','square'] };
+  const original = 'Help me finish unfinished work by reviewing all our outstanding threads. I want to clean them up.';
+  const initialTasks = () => [
+    {id:'audit',title:'Review outstanding chats',brief:'Check what is finished, what still needs work, and what is safe to archive. Bring back a cleanup list before making changes.',worker:'Jigga',provider:'Claude Code',chat:'Cleanup review',status:'proposed',source:'Your request',original,mode:'Read only',spend:'$0.00'},
+    {id:'picker',title:'Make the profile picker editable',brief:'Put the profile dropdown beside the task input and keep it editable after assigning a responsibility.',worker:'Null',provider:'Codex',chat:'Profile picker',status:'proposed',source:'Suggested by ApexAgent',original:'ApexAgent suggested this follow-up after reviewing the profile picker chat.',mode:'Separate copy',spend:'$0.00'},
+    {id:'remote',title:'Check remote task hand-off',brief:'Verify that a delegated task can reach the selected host and return its result to ApexAgent.',worker:'Null',provider:'Codex',chat:'Remote iOS + daemon',status:'question',source:'Earlier request',original:'Verify remote task hand-off before we call it finished.',mode:'Read only',spend:'$0.06'}
+  ];
+  const fixtures = [
+    ['Glass interface','Merged; proposed for archive','Ready to archive'],
+    ['ApexAgent delegation','Tests pass; native workflow still needs review','Follow up'],
+    ['Profile picker','Saved profile is still read-only','Unfinished'],
+    ['Remote iOS + daemon','Waiting for host verification','Blocked']
+  ];
+  const controllers = [];
+  function build(id, docked) {
+    const product = document.getElementById(id);
+    let saved = window.openai?.widgetState?.privateContent?.[id];
+    const state = {
+      tab:['chat','tasks','activity','settings'].includes(saved?.tab) ? saved.tab : 'chat',
+      tasks:initialTasks(), messages:[], events:[], detail:null, worker:null, profile:'Jigga',
+      scopes:['apex-deck'], scopeOpen:false, toast:'', askFirst:true, requestChanges:false, defaultMode:'Read only', defaultCap:''
+    };
+    if (saved?.statuses) state.tasks.forEach(task => { if (statuses[saved.statuses[task.id]]) task.status=saved.statuses[task.id]==='running'?'ready':saved.statuses[task.id]; });
+    if (['Jigga','Null'].includes(saved?.profile)) state.profile=saved.profile;
+    if (Array.isArray(saved?.scopes)) state.scopes=saved.scopes.filter(scope => ['apex-deck','apex_terminal','arcane_trader'].includes(scope));
+    product.innerHTML = `
+      <header class="aa-bar"><div class="aa-brand">${icon('layers')}<span>Apex Deck</span></div><nav class="aa-nav" aria-label="Apex Deck"><span>Agents</span><span>Code</span><span>Threads</span><span>ApexAgent</span></nav><span class="aa-preview">Mockup · simulated</span></header>
+      <div class="aa-shell">
+        <aside class="aa-sidebar" aria-label="Workspace navigation">
+          <div class="aa-sidebar-label">Workspace</div>
+          <button class="aa-side-button cursor-interaction aa-selected" data-action="home">${icon('sparkles')}ApexAgent</button>
+          <button class="aa-side-button cursor-interaction" data-action="scope">${icon('folder-open')}apex-deck</button>
+          <div class="aa-side-rule"></div><div class="aa-sidebar-label">Recent chats</div>
+          <button class="aa-side-button cursor-interaction" data-action="worker" data-task="audit">${icon('messages-square')}Cleanup review</button>
+          <button class="aa-side-button cursor-interaction" data-action="worker" data-task="picker">${icon('message-square')}Profile picker</button>
+          <button class="aa-side-button cursor-interaction" data-action="worker" data-task="remote">${icon('message-square')}Remote iOS + daemon</button>
+          <button class="aa-side-button cursor-interaction" data-action="scope">${icon('list')}Browse scope</button>
+          <div class="aa-side-bottom">Local workspace<br>Thread agents do the work.</div>
+        </aside>
+        ${docked ? `<aside class="aa-context" aria-label="Shared chat"><div class="aa-context-header"><h3>Apex Agent</h3><div class="aa-participants"><span>Jigga</span><span>Null</span><span>Gronk</span></div></div><div class="aa-context-content"><div class="aa-message"><div class="aa-author"><span class="aa-avatar">T</span>You</div><p>Let's review the unfinished work before taking on anything new.</p></div><div class="aa-message"><div class="aa-author"><span class="aa-avatar aa-agent">N</span>Null</div><p>The delegation work is in place. The profile picker still needs a usability pass.</p></div><div class="aa-message"><div class="aa-author"><span class="aa-avatar aa-agent">J</span>Jigga</div><p>I'll keep the audit separate from any changes. ApexAgent can coordinate the follow-ups.</p></div>${button('Open linked chat','worker','audit')}</div><div class="aa-context-footer">Reply policy: @mentions only<br>Jigga · Null · Gronk</div></aside>` : ''}
+        <main class="aa-workspace">
+          <header class="aa-heading"><div><h1>ApexAgent</h1><div class="aa-heading-sub">Your assistant, with your thread agents.</div></div><div class="aa-toolbar"><button type="button" class="aa-button cursor-interaction" data-action="scope">${icon('folder-open')}<span data-scope-label>apex-deck · 9 chats</span>${icon('chevron-down')}</button><button type="button" class="aa-icon-button cursor-interaction" aria-label="Assistant settings" data-action="settings">${icon('settings-2')}</button></div></header>
+          <nav class="aa-tabs" role="tablist" aria-label="Assistant views">
+            <button type="button" class="aa-tab cursor-interaction" role="tab" id="${id}-chat-tab" aria-controls="${id}-content" data-tab="chat">Chat</button>
+            <button type="button" class="aa-tab cursor-interaction" role="tab" id="${id}-tasks-tab" aria-controls="${id}-content" data-tab="tasks">Tasks <span class="aa-tab-count" data-task-count>3</span></button>
+            <button type="button" class="aa-tab cursor-interaction" role="tab" id="${id}-activity-tab" aria-controls="${id}-content" data-tab="activity">Activity</button>
+          </nav>
+          <div class="aa-body"><div class="aa-scroll" id="${id}-content" role="tabpanel"><div class="aa-reading" data-view></div></div><aside class="aa-worker" data-worker hidden aria-label="Linked worker chat"></aside></div>
+          <footer class="aa-composer-wrap"><form class="aa-composer" data-compose><textarea aria-label="Message ApexAgent" placeholder="Ask ApexAgent to review, organize, or hand off work…" rows="2" maxlength="1200"></textarea><div class="aa-composer-bottom"><button type="button" class="aa-link cursor-interaction aa-composer-profile" data-action="settings"><span class="aa-avatar aa-agent">${icon('sparkles')}</span><span data-profile>Jigga</span>${icon('chevron-down')}</button><button type="submit" class="aa-button aa-primary cursor-interaction">Send ${icon('arrow-up')}</button></div></form><div class="aa-composer-note"><span data-permission-note>Direct requests run. Suggestions need your approval.</span><span>⌘ Enter to send</span></div></footer>
+          <div class="aa-overlay" data-scope-overlay hidden></div><div class="aa-toast" role="status" aria-live="polite" data-toast hidden></div>
+        </main>
+      </div>`;
+    const view = product.querySelector('[data-view]');
+    const scroll = product.querySelector('.aa-scroll');
+    const textarea = product.querySelector('[data-compose] textarea');
+    const sendButton=product.querySelector('[data-compose] button[type="submit"]');
+    sendButton.type='button'; sendButton.dataset.action='send';
+    let toastTimer;
+    const findTask = key => state.tasks.find(task=>task.id===key);
+    const scopeCount = () => state.scopes.reduce((total,scope)=>total+(scope==='apex-deck'?9:scope==='apex_terminal'?6:4),0);
+    const status = task => `<span class="aa-status aa-status-${task.status}">${icon(statuses[task.status][1])}${statuses[task.status][0]}</span>`;
+    const meta = task => `<div class="aa-task-meta"><span>${icon('user-round')}${escape(task.worker)} · ${escape(task.provider)}</span><span>${icon('messages-square')}${escape(task.chat)}</span><span>${icon(task.mode==='Read only'?'eye':'git-branch')}${escape(task.mode)}</span>${task.spend!=='$0.00'?`<span>${escape(task.spend)} spent</span>`:''}</div>`;
+    const taskCard = (task, compact=false) => {
+      let actions='';
+      if (task.status==='proposed') actions=button(task.id==='audit'?'Start review':'Approve task','approve',task.id,'aa-primary')+button('Edit brief','detail',task.id);
+      if (task.status==='running') actions=button('Open chat','worker',task.id)+button('Stop task','stop',task.id,'aa-quiet');
+      if (task.status==='question') actions=button('Open chat','worker',task.id);
+      if (task.status==='ready') actions=button('Review result','detail',task.id,'aa-primary')+button('Open chat','worker',task.id);
+      if (task.status==='done') actions=button('View result','detail',task.id)+button('Open chat','worker',task.id);
+      if (task.status==='cancelled') actions=button('Resume task','approve',task.id)+button('Open chat','worker',task.id);
+      const question = task.status==='question' ? `<div class="aa-task-question">${task.capPaused?`The task reached its $${escape(task.cap)} spend cap. Raise it to $0.50 to continue?`:`${escape(task.worker)} asks: “May I restart the remote service to verify the connection?”`}<div class="aa-question-buttons">${button(task.capPaused?'Raise cap and continue':'Approve restart','answer',task.id,'aa-primary')}${button(task.capPaused?'Keep paused':'Keep it read-only',task.capPaused?'keep-paused':'readonly',task.id)}</div></div>`:'';
+      return `<article class="aa-task" data-card="${task.id}"><div class="aa-task-top"><h3>${escape(task.title)}</h3>${status(task)}</div><p>${escape(task.brief)}</p>${meta(task)}${question}<div class="aa-actions">${actions}${compact && task.status!=='proposed'?`<button type="button" class="aa-link cursor-interaction" data-action="detail" data-task="${task.id}">Task details ${icon('arrow-up-right')}</button>`:''}</div>${task.status==='running'?'<div class="aa-task-progress" role="status">Working in the linked chat. You can keep talking here.</div>':''}${!compact?`<div class="aa-task-progress">${escape(task.source)}</div>`:''}</article>`;
+    };
+    const message = (who, body, user=false) => `<article class="aa-message"><div class="aa-author"><span class="aa-avatar ${user?'':'aa-agent'}">${user?'T':icon('sparkles')}</span>${escape(who)}<small>${user?'':'Assistant'}</small></div><div${user?' class="aa-user-text"':''}>${body}</div></article>`;
+    function renderChat() {
+      return message('You',escape(original),true)+message('ApexAgent',`<p>I can review the outstanding chats and bring back a short cleanup list.</p><p>I'll separate <strong>finished work</strong>, <strong>unfinished work</strong>, and <strong>anything waiting on you</strong>. You can review each follow-up before an agent changes files or archives a chat.</p>${taskCard(findTask('audit'),true)}`)+state.messages.map(item=>message(item.user?'You':'ApexAgent',(item.html || escape(item.text || ''))+(item.taskId?taskCard(findTask(item.taskId),true):''),item.user)).join('');
+    }
+    function renderTasks() {
+      const open = state.tasks.filter(task=>!['done','cancelled'].includes(task.status));
+      const done = state.tasks.filter(task=>['done','cancelled'].includes(task.status));
+      return `<div class="aa-view-head"><div><h2>Your tasks</h2><div class="aa-view-sub">See who is working, and what needs you.</div></div></div>${open.map(task=>taskCard(task)).join('')}${done.length?'<div class="aa-section-label">Finished and stopped</div>'+done.map(task=>taskCard(task)).join(''):''}`;
+    }
+    function result(task) {
+      if(!['audit','picker','remote'].includes(task.id))return `<p class="aa-view-sub">The simulated worker finished the requested task.</p><div class="aa-checks"><div class="aa-check">${icon('check')}Brief received in the linked chat</div><div class="aa-check">${icon('check')}Result returned to ApexAgent</div></div><div class="aa-detail-label">Requested work</div><p>${escape(task.original)}</p><p class="aa-settings-note">This demonstrates the hand-off flow. The mockup did not execute your request or change any files.</p>`;
+      if (task.id==='audit') return `<p class="aa-view-sub">Sample review of 9 chats. No chats have been archived.</p><div class="aa-checks">${['9 chats reviewed','Linked messages included with each finding','No files or chats changed'].map(text=>`<div class="aa-check">${icon('check')}${text}</div>`).join('')}</div>${fixtures.map(([name,note,label])=>`<div class="aa-report-row"><div><strong>${name}</strong><small>${note}</small></div><span class="aa-status">${label}</span></div>`).join('')}<div class="aa-section-label">Recommendation</div><p>Archive the finished design chats after you confirm their changes are in the app. Keep the profile picker and remote verification chats open.</p>`;
+      return `<p class="aa-view-sub">${task.id==='picker'?'Profile selection stays editable without losing sources or history.':'The selected host returns a result to the linked chat.'}</p><div class="aa-checks">${['TypeScript check passed','Targeted workflow tests passed','Build passed'].map(text=>`<div class="aa-check">${icon('check')}${text}</div>`).join('')}</div><div class="aa-detail-label">${task.id==='picker'?'src/ApexAgent.tsx':'docs/remote-verification.md'}</div><div class="aa-diff"><div class="aa-diff-remove">− ${task.id==='picker'?'&lt;input value={profileName} readOnly /&gt;':'Remote delegation: pending verification'}</div><div class="aa-diff-add">+ ${task.id==='picker'?'&lt;ProfilePicker value={profileId} onChange={updateProfile} /&gt;':'Remote delegation: linked result received'}</div></div><p class="aa-settings-note">Sample checks and changes for this interactive mockup.</p>`;
+    }
+    function renderDetail(task) {
+      const waiting = ['proposed','cancelled'].includes(task.status);
+      return `<button type="button" class="aa-link cursor-interaction" data-action="tasks">${icon('arrow-left')}All tasks</button><div class="aa-detail-head"><div class="aa-task-top"><h2>${escape(task.title)}</h2>${status(task)}</div>${meta(task)}</div><div class="aa-detail-row"><div class="aa-detail-label">Original request</div><div class="aa-original">${escape(task.original)}</div></div>${waiting?`<label class="aa-field">ApexAgent's brief<textarea data-brief>${escape(task.brief)}</textarea></label><div class="aa-fields"><label class="aa-field">Thread agent<select data-worker-select><option${task.worker==='Jigga'?' selected':''}>Jigga</option><option${task.worker==='Null'?' selected':''}>Null</option></select></label><label class="aa-field">Linked chat<input data-chat-name value="${escape(task.chat)}"></label></div><details class="aa-advanced"><summary class="cursor-interaction">Advanced</summary><div><label class="aa-field">Where the task runs<select data-mode><option${task.mode==='Read only'?' selected':''}>Read only</option><option${task.mode==='Separate copy'?' selected':''}>Separate copy</option><option${task.mode==='In project'?' selected':''}>In project</option></select></label><label class="aa-field">Optional spend cap<input type="number" min="0" step="0.5" placeholder="No cap" aria-label="Optional spend cap in dollars"></label><div class="aa-settings-note">Pause and ask you when the cap is reached.</div></div></details><div class="aa-actions">${button('Save brief','save-brief',task.id)}${button(task.id==='audit'?'Start review':'Approve task','approve',task.id,'aa-primary')}</div>`:`<div class="aa-detail-row"><div class="aa-detail-label">Brief</div><p>${escape(task.brief)}</p></div>${task.status==='question'?taskCard(task):task.status==='running'?`<p class="aa-view-sub">The agent is working. Its result will appear here.</p>${button('Open chat','worker',task.id)} ${button('Stop task','stop',task.id)}`:result(task)}${task.status==='ready'?`<div class="aa-actions" style="margin-top:22px">${button(task.id==='audit'?'Mark reviewed':'Accept result','accept',task.id,'aa-primary')}${button('Request changes','changes',task.id)}${button('Open chat','worker',task.id)}</div>`:''}${state.requestChanges?`<div style="margin-top:18px"><label class="aa-field">What should the agent change?<textarea data-change-request placeholder="Describe what needs another pass…"></textarea></label>${button('Send to agent','send-changes',task.id,'aa-primary')}</div>`:''}${task.status==='done'?`<div class="aa-checks"><div class="aa-check">${icon('circle-check')}${task.id==='audit'?'You reviewed the cleanup list.':'Result accepted.'}</div></div>`:''}`}`;
+    }
+    function renderSettings() {
+      return `<div class="aa-view-head"><h2>Assistant settings</h2>${button('Back to chat','home')}</div><label class="aa-field">Assistant profile<select data-profile-select><option${state.profile==='Jigga'?' selected':''}>Jigga</option><option${state.profile==='Null'?' selected':''}>Null</option></select></label><p class="aa-settings-note">The profile ApexAgent uses to understand your request. Each task shows its own thread agent.</p><label class="aa-toggle-row"><input type="checkbox" data-ask-first${state.askFirst?' checked':''}><span>Ask before starting suggested work<br><small class="aa-view-sub">Your direct requests can be handed off immediately.</small></span></label><details class="aa-advanced"><summary class="cursor-interaction">Advanced</summary><div><label class="aa-field">Default execution mode<select><option>Read only</option><option>Separate copy</option><option>In project</option></select></label><label class="aa-field">Optional task spend cap<input type="number" min="0" step="0.5" placeholder="No cap"></label></div></details>${button('Save settings','save-settings','','aa-primary')}`;
+    }
+    function renderActivity() {
+      const events = state.events.length ? state.events : [{text:'Cleanup review prepared',detail:'Jigga in Cleanup review. Waiting for you to start.'},{text:'Remote worker needs your answer',detail:'A service restart requires your approval.'}];
+      return `<h2>Activity</h2><p class="aa-view-sub" style="margin-top:5px">A short record of hand-offs, questions, and results.</p><ol class="aa-timeline">${events.map(item=>`<li>${icon('circle-check')}<div><p>${escape(item.text)}</p><small>${escape(item.detail)}</small></div></li>`).join('')}</ol>`;
+    }
+    function renderWorker() {
+      const pane=product.querySelector('[data-worker]');
+      const task=findTask(state.worker);
+      pane.hidden=!task;
+      if (!task) return;
+      let text=task.status==='proposed'?'The brief is ready. This chat will start when you approve the task.':task.status==='running'?'I have the brief. I’m checking the linked messages and the current project state.':'My result is ready for you in ApexAgent. You can review it without digging through this chat.';
+      if (task.status==='question') text=task.capPaused?'The task reached its spend cap. I’m waiting for you before continuing.':'May I restart the remote service to verify the connection? I sent this question to ApexAgent for your approval.';
+      if (task.status==='cancelled') text='The task is stopped. The conversation and any existing work are kept here.';
+      pane.innerHTML=`<div class="aa-worker-header"><div><div class="aa-worker-title">${escape(task.chat)}</div><div class="aa-worker-sub">${escape(task.worker)} · ${escape(task.provider)}<br>Linked to ApexAgent</div></div><button type="button" class="aa-icon-button cursor-interaction" aria-label="Close worker chat" data-action="close-worker">${icon('x')}</button></div><div class="aa-worker-body">${message('ApexAgent',escape(task.brief))}${message(task.worker,escape(text))}${task.status==='ready'||task.status==='done'?button('Review in ApexAgent','detail',task.id,'aa-primary'):''}</div><div class="aa-worker-footer">Closing this pane keeps the task running.<br>Questions and approvals come back to you.</div>`;
+    }
+    function renderScope() {
+      const overlay=product.querySelector('[data-scope-overlay]');
+      overlay.hidden=!state.scopeOpen;
+      if(!state.scopeOpen) return;
+      overlay.innerHTML=`<section class="aa-dialog" role="dialog" aria-modal="true" aria-label="Choose chats to review"><div class="aa-dialog-header"><h3>Review scope</h3><button type="button" class="aa-icon-button cursor-interaction" aria-label="Close review scope" data-action="close-scope">${icon('x')}</button></div><label class="aa-scope-row"><input type="checkbox" data-all-scopes${state.scopes.length===3?' checked':''}><span>All projects<small>Includes local and remote chats</small></span></label>${[['apex-deck','9 chats · This Mac'],['apex_terminal','6 chats · Apex Terminal'],['arcane_trader','4 chats · Apex Terminal']].map(([name,note])=>`<label class="aa-scope-row"><input type="checkbox" data-scope="${name}"${state.scopes.includes(name)?' checked':''}><span>${name}<small>${note}</small></span></label>`).join('')}<p class="aa-settings-note">Scope choices are a design preview. Remote monitoring support is still required in the app.</p><div class="aa-dialog-footer">${button('Apply scope','apply-scope','','aa-primary')}</div></section>`;
+    }
+    function render() {
+      product.querySelectorAll('[data-tab]').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.tab===state.tab)));
+      const content=product.querySelector('[role="tabpanel"]');
+      content.setAttribute('aria-labelledby',`${id}-${state.tab==='settings'?'chat':state.tab}-tab`);
+      if(state.tab==='settings'){content.removeAttribute('aria-labelledby');content.setAttribute('aria-label','Assistant settings');}
+      else content.removeAttribute('aria-label');
+      product.querySelector('[data-profile]').textContent=state.profile;
+      product.querySelector('[data-task-count]').textContent=state.tasks.filter(task=>!['done','cancelled'].includes(task.status)).length;
+      product.querySelector('[data-scope-label]').textContent=state.scopes.length===3?'All projects · 19 chats':state.scopes.length===1?`${state.scopes[0]} · ${state.scopes[0]==='apex-deck'?9:state.scopes[0]==='apex_terminal'?6:4} chats`:`${state.scopes.length} projects selected`;
+      product.querySelector('[data-permission-note]').textContent=state.askFirst?'Direct requests run. Suggestions need your approval.':'Direct requests and suggestions can run.';
+      view.innerHTML=state.detail?renderDetail(findTask(state.detail)):state.tab==='chat'?renderChat():state.tab==='tasks'?renderTasks():state.tab==='activity'?renderActivity():renderSettings();
+      const capField=view.querySelector('input[aria-label="Optional spend cap in dollars"]');
+      if(capField && state.detail) capField.value=findTask(state.detail).cap ?? '';
+      view.querySelectorAll('.aa-field').forEach(label=>{
+        const input=label.querySelector('input,select,textarea');
+        if(input&&!input.hasAttribute('aria-label'))input.setAttribute('aria-label',label.firstChild.textContent.trim());
+        if(input?.tagName==='TEXTAREA')input.maxLength=1200;
+      });
+      if(state.detail&&findTask(state.detail).status==='question'){
+        const duplicateCard=view.querySelector('.aa-task');
+        if(duplicateCard)duplicateCard.querySelectorAll('.aa-task-top,.aa-task-meta,.aa-task-progress,p').forEach(element=>element.remove());
+      }
+      if(state.detail==='audit'&&['ready','done'].includes(findTask('audit').status)){
+        const reportLabel=view.querySelector('.aa-view-sub');
+        if(reportLabel)reportLabel.textContent=`Sample review of ${scopeCount()} chats. No chats have been archived.`;
+        const firstCheck=view.querySelector('.aa-check');
+        if(firstCheck)firstCheck.innerHTML=icon('check')+`${scopeCount()} chats reviewed`;
+      }
+      if(state.tab==='settings'&&!state.detail){
+        const advanced=view.querySelector('.aa-advanced');
+        advanced.querySelector('select').value=state.defaultMode;
+        advanced.querySelector('input').value=state.defaultCap;
+      }
+      renderWorker(); renderScope();
+      const toast=product.querySelector('[data-toast]'); toast.hidden=!state.toast; toast.textContent=state.toast;
+      if(globalThis.lucide) lucide.createIcons({attrs:{width:16,height:16}});
+    }
+    function save() {
+      const privateContent={};
+      controllers.forEach(controller=>{ privateContent[controller.id]=controller.snapshot(); });
+      window.openai?.setWidgetState?.({modelContent:{mockup:'ApexAgent workspace',design:docked?'Docked':'Focused',view:state.tab,profile:state.profile,scope:state.scopes,tasks:state.tasks.slice(-12).map(task=>({title:task.title.slice(0,100),state:task.status}))},privateContent})?.catch(()=>{});
+    }
+    function notify(text) { clearTimeout(toastTimer); state.toast=text; render(); toastTimer=setTimeout(()=>{state.toast='';render();},2600); }
+    function record(text,task) { state.events.unshift({text,detail:`${task.worker} in ${task.chat} · simulated`}); }
+    function updateBrief(task) {
+      const brief=product.querySelector('[data-brief]');
+      if(brief) task.brief=brief.value.trim() || task.brief;
+      const worker=product.querySelector('[data-worker-select]');
+      if(worker) { task.worker=worker.value; task.provider=task.worker==='Jigga'?'Claude Code':'Codex'; }
+      const chat=product.querySelector('[data-chat-name]');
+      if(chat) task.chat=chat.value.trim() || task.chat;
+      const mode=product.querySelector('[data-mode]'); if(mode) task.mode=mode.value;
+      const cap=product.querySelector('input[aria-label="Optional spend cap in dollars"]');
+      if(cap) task.cap=cap.value===''?'':Math.max(0,Number(cap.value));
+    }
+    function run(task) {
+      updateBrief(task); const spentBefore=Number(task.spend.replace('$',''))||0;
+      task.status='running';task.spend=`$${Math.min(spentBefore+0.03,task.cap!==''&&task.cap!==undefined?Number(task.cap):Infinity).toFixed(2)}`; state.requestChanges=false;
+      record(`${task.title} started`,task); notify(`${task.worker} is working in ${task.chat}`); save();
+      setTimeout(()=>{
+        if(task.status!=='running') return;
+        const total=spentBefore+(task.id==='audit'?0.14:0.09);
+        if(task.cap!==''&&task.cap!==undefined&&Number(task.cap)<total){
+          task.status='question'; task.capPaused=true; task.spend=`$${Number(task.cap).toFixed(2)}`;
+          record(`${task.title} paused at its spend cap`,task);notify('Task paused. Raise its cap to continue.');save();return;
+        }
+        task.status='ready'; task.spend=`$${total.toFixed(2)}`;
+        record(`${task.title} ready to review`,task);
+        if(task.id==='audit') state.messages.push({html:`<p>The cleanup review is ready. In this sample, <strong>${Math.min(4,scopeCount()-3)} chats are ready to archive</strong>, <strong>${Math.max(1,scopeCount()-6)} need follow-up</strong>, and <strong>2 are blocked</strong>.</p>${button('Review cleanup list','detail',task.id,'aa-primary')}`});
+        notify(`${task.title} is ready to review`); save();
+      },1600);
+    }
+    function send() {
+      const text=textarea.value.trim(); if(!text){textarea.focus();return;}
+      textarea.value=''; state.tab='chat'; state.detail=null;
+      state.messages.push({user:true,text});
+      if(/status|progress|how.*going|what.*working/i.test(text)) {
+        const working=state.tasks.filter(task=>task.status==='running');
+        state.messages.push({text:working.length?`${working.length} task is working. I'll bring its result and any questions here.`:'Your tasks are up to date. Open Tasks to see proposals, questions, and results.'});
+      } else {
+        const task={id:`request-${state.tasks.length}`,title:text.length>70?text.slice(0,67)+'…':text,brief:text,worker:state.profile,provider:state.profile==='Jigga'?'Claude Code':'Codex',chat:'New delegated task',status:'running',source:'Your direct request',original:text,mode:state.defaultMode,cap:state.defaultCap,spend:'$0.00'};
+        state.tasks.push(task);
+        state.messages.push({html:`<p>I'll hand this to <strong>${escape(task.worker)}</strong>. You can follow the work in its linked chat.</p>`,taskId:task.id});
+        run(task);
+      }
+      render(); scroll.scrollTop=scroll.scrollHeight; save();
+    }
+    product.addEventListener('click',event=>{
+      const tab=event.target.closest('[data-tab]');
+      if(tab){state.tab=tab.dataset.tab;state.detail=null;state.requestChanges=false;render();scroll.scrollTop=0;save();return;}
+      const target=event.target.closest('[data-action]'); if(!target)return;
+      const action=target.dataset.action; const task=findTask(target.dataset.task);
+      if(action==='send'){send();return;}
+      if(action==='home'||action==='tasks'||action==='settings'){state.tab=action==='home'?'chat':action;state.detail=null;state.requestChanges=false;state.worker=null;render();scroll.scrollTop=0;save();}
+      if(action==='scope'){state.scopeOpen=true;render();product.querySelector('[data-all-scopes]').focus();}
+      if(action==='close-scope'){state.scopeOpen=false;render();product.querySelector('[data-action="scope"]').focus();}
+      if(action==='apply-scope'){
+        const next=[...product.querySelectorAll('[data-scope]:checked')].map(input=>input.dataset.scope);
+        if(!next.length){notify('Select at least one project.');return;}
+        state.scopes=next;state.scopeOpen=false;notify('Review scope updated');save();
+      }
+      if(action==='detail'&&task){state.tab='tasks';state.detail=task.id;state.requestChanges=false;render();scroll.scrollTop=0;save();}
+      if(action==='worker'&&task){state.worker=task.id;render();save();}
+      if(action==='close-worker'){state.worker=null;render();}
+      if(action==='save-brief'&&task){updateBrief(task);record('Task brief updated',task);notify('Brief saved');save();}
+      if(action==='approve'&&task)run(task);
+      if(action==='stop'&&task){task.status='cancelled';record(`${task.title} stopped`,task);notify('Task stopped. Its chat and work are kept.');save();}
+      if((action==='answer'||action==='readonly')&&task){
+        if(task.capPaused){task.cap=0.5;task.capPaused=false;record('Spend cap raised',task);}
+        else {task.brief=action==='readonly'?'Verify the connection without restarting the remote service.':task.brief;record(action==='readonly'?'Read-only check requested':'Service restart approved',task);}
+        run(task);
+      }
+      if(action==='keep-paused'){notify('Task stays paused. Its chat and work are kept.');save();}
+      if(action==='accept'&&task){task.status='done';record(task.id==='audit'?'Cleanup list reviewed':'Result accepted',task);state.messages.push({text:task.id==='audit'?'You reviewed the cleanup list. I can hand off the unfinished work when you ask.':`${task.title} is complete. Its linked chat keeps the result and history.`});notify(task.id==='audit'?'Cleanup list marked reviewed':'Result accepted');save();}
+      if(action==='changes'&&task){state.requestChanges=true;render();product.querySelector('[data-change-request]').focus();}
+      if(action==='send-changes'&&task){const request=product.querySelector('[data-change-request]').value.trim();if(!request){notify('Describe what should change.');return;}task.brief=request;run(task);}
+      if(action==='save-settings'){state.profile=product.querySelector('[data-profile-select]').value;state.askFirst=product.querySelector('[data-ask-first]').checked;const advanced=view.querySelector('.aa-advanced');state.defaultMode=advanced.querySelector('select').value;state.defaultCap=advanced.querySelector('input').value;state.tab='chat';notify('Assistant settings saved');save();}
+    });
+    product.addEventListener('change',event=>{
+      if(event.target.matches('[data-all-scopes]'))product.querySelectorAll('[data-scope]').forEach(input=>input.checked=event.target.checked);
+      if(event.target.matches('[data-scope]'))product.querySelector('[data-all-scopes]').checked=[...product.querySelectorAll('[data-scope]')].every(input=>input.checked);
+    });
+    product.querySelector('[data-compose]').addEventListener('submit',event=>{event.preventDefault();send();});
+    textarea.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();send();}});
+    product.addEventListener('keydown',event=>{
+      if(state.scopeOpen&&event.key==='Tab'){
+        const controls=[...product.querySelector('[data-scope-overlay]').querySelectorAll('button,input')];
+        if(event.shiftKey&&event.target===controls[0]){event.preventDefault();controls[controls.length-1].focus();}
+        else if(!event.shiftKey&&event.target===controls[controls.length-1]){event.preventDefault();controls[0].focus();}
+      }
+      if(event.key==='Escape'){if(state.scopeOpen){state.scopeOpen=false;render();}else if(state.worker){state.worker=null;render();}}
+      if(event.target.matches('[data-tab]')&&['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
+        event.preventDefault();const tabs=[...product.querySelectorAll('[data-tab]')];const current=tabs.indexOf(event.target);const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(current+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;tabs[next].click();tabs[next].focus();
+      }
+    });
+    const controller={id,render,snapshot:()=>({tab:state.tab,statuses:Object.fromEntries(state.tasks.filter(task=>!task.id.startsWith('request-')).map(task=>[task.id,task.status])),profile:state.profile,scopes:state.scopes}),restore:incoming=>{
+      if(!incoming)return;
+      if(JSON.stringify(controller.snapshot())===JSON.stringify(incoming))return;
+      if(['chat','tasks','activity','settings'].includes(incoming.tab))state.tab=incoming.tab;
+      if(['Jigga','Null'].includes(incoming.profile))state.profile=incoming.profile;
+      if(Array.isArray(incoming.scopes)&&incoming.scopes.length)state.scopes=incoming.scopes.filter(scope=>['apex-deck','apex_terminal','arcane_trader'].includes(scope));
+      if(incoming.statuses)state.tasks.forEach(task=>{if(statuses[incoming.statuses[task.id]])task.status=incoming.statuses[task.id];});
+      state.detail=null;render();
+    }};
+    controllers.push(controller);render();
+    if(globalThis.Tweak){
+      const design={readingWidth:620,corners:12};
+      const tweak=new Tweak({container:product,onChange:()=>{product.style.setProperty('--aa-reading',`${design.readingWidth}px`);product.style.setProperty('--aa-radius',`${design.corners}px`);}});
+      tweak.addSlider(design,'readingWidth',{label:'Reading width',min:480,max:760,step:20,unit:'px'});
+      tweak.addSlider(design,'corners',{label:'Window corners',min:4,max:20,step:2,unit:'px'});
+    }
+    return controller;
+  }
+  build('aa-focused',false); build('aa-docked',true);
+  window.addEventListener('openai:set_globals',event=>{
+    const incoming=event.detail?.globals?.widgetState?.privateContent;
+    if(!incoming)return;
+    controllers.forEach(controller=>controller.restore(incoming[controller.id]));
+  });
+})();
+</script>

@@ -9,6 +9,7 @@ import { dotState } from "./hostFacts.ts";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { HoverCard, ProjectCard, ThreadCard, useHoverCard } from "./HoverCards";
 import { Glyph, ProjectFolder } from "./SidebarIcons";
+import { DeckIcon } from "./DeckIcon";
 import { ThreadName } from "./ThreadName";
 import { WorkspaceHostMenu } from "./WorkspaceHostMenu";
 
@@ -46,6 +47,10 @@ export interface ProjectSidebarProps {
   onNewIn(workspace: Workspace): void;
   onAddWorkspace(hostId: string): Promise<void>;
   onManageHosts(): void;
+  appearanceOpen: boolean;
+  settingsOpen: boolean;
+  onOpenAppearance(): void;
+  onOpenSettings(): void;
   onRestore(pane: Pane): void;
   style?: CSSProperties;
 }
@@ -260,6 +265,15 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           </span>
         </div>
       )}
+      <div className="rail-controls" aria-label="Preferences">
+        <span className="rail-version" title={`Apex Deck ${__APP_VERSION__}`}>Apex Deck <span>{__APP_VERSION__}</span></span>
+        <button className={props.appearanceOpen ? "icon active" : "icon"} onClick={props.onOpenAppearance} aria-label="Appearance" title="Appearance" aria-pressed={props.appearanceOpen}>
+          <DeckIcon name="moon" />
+        </button>
+        <button className={props.settingsOpen ? "icon active" : "icon"} onClick={props.onOpenSettings} aria-label="Settings" title="Settings (⌘,)" aria-pressed={props.settingsOpen}>
+          <DeckIcon name="settings" />
+        </button>
+      </div>
       {menu && <MenuList id={`${menu.kind}:${menu.id}`} entries={menuEntries()} anchor={menu.anchor} opener={menu.opener}
         label={menu.kind === "archived" ? "Archived threads" : undefined} onClose={() => setMenu(null)} />}
       {card()}

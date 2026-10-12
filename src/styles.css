@@ -184,24 +184,25 @@ textarea {
   display: flex;
   gap: 4px;
   margin-left: 20px;
-  padding: 3px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 9px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
 }
 .section-button {
   display: flex;
   align-items: center;
   gap: 8px;
   background: transparent;
-  border-color: transparent;
+  border: 0;
+  box-shadow: none;
   color: var(--muted);
   padding: 7px 16px;
 }
 .section-button.selected {
   background: var(--panel-2);
   color: var(--text);
-  border-color: var(--line);
+  border: 0;
 }
 .section-button.agents.selected > span { color: #f5bf54; }
 .section-button.code.selected > span { color: #6ea2ff; }
@@ -2087,6 +2088,42 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .rail-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 12px 8px 0; color: var(--muted); font-size: 11px; }
 .rail-foot button { padding: 2px 6px; font-size: 11px; }
 .rail-foot .pane-menu { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
+.rail .rail-foot { margin-top: 0; }
+.rail-controls { position: relative; margin-top: auto; display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 8px 4px 0; }
+.rail-version { position: absolute; left: calc(50% - 52px); max-width: calc(100% - 80px); overflow: hidden; transform: translateX(-50%); color: var(--muted); font-size: 10px; line-height: 1; white-space: nowrap; text-overflow: ellipsis; }
+.rail-version span { margin-left: 3px; opacity: .72; }
+.rail-controls button.icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); box-shadow: none; }
+.rail-controls button.icon:hover:not(:disabled) { border-color: transparent; background: var(--panel-2); color: var(--text); }
+.rail-controls button.icon.active,
+.rail-controls button.icon[aria-pressed="true"] { border-color: transparent; background: var(--panel-2); color: var(--text); box-shadow: none; }
+.layout-presets { border-color: transparent; overflow: visible; gap: 2px; }
+.layout-presets button,
+.layout-presets button + button { border: 0; border-radius: 7px; background: transparent; }
+.layout-presets button:hover:not(:disabled),
+.layout-presets button.active,
+.layout-presets button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
+.layout-presets button:disabled { opacity: .45; }
+.layout-picker { position: relative; display: inline-flex; align-items: center; }
+.titlebar-end > .layout-picker > .layout-picker-trigger { gap: 4px; width: auto; min-width: 34px; height: 32px; padding: 0 7px; }
+.layout-picker-caret { color: var(--muted); font-size: 11px; line-height: 1; transform: translateY(-1px); }
+.layout-picker-popover { position: absolute; z-index: 55; top: calc(100% + 9px); right: 0; width: 254px; padding: 7px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 16px 38px rgba(0, 0, 0, .42); }
+.layout-picker-heading { padding: 5px 8px 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.layout-choice { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 54px; padding: 7px 8px; text-align: left; border: 1px solid transparent; border-radius: 7px; background: transparent; }
+.layout-choice:hover, .layout-choice:focus-visible { background: color-mix(in srgb, var(--accent) 9%, var(--panel-2)); border-color: color-mix(in srgb, var(--accent) 34%, transparent); outline: none; }
+.layout-choice.selected { background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); border-color: color-mix(in srgb, var(--accent) 38%, transparent); }
+.layout-preview { flex: none; width: 38px; height: 28px; display: grid; gap: 2px; padding: 3px; border: 1px solid color-mix(in srgb, var(--muted) 42%, transparent); border-radius: 4px; background: color-mix(in srgb, var(--bg) 55%, transparent); }
+.layout-preview i { min-width: 0; min-height: 0; border-radius: 1px; background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.layout-preview-grid { grid-template: 1fr 1fr / 1fr 1fr; }
+.layout-preview-top { grid-template: 1.45fr 1fr / 1fr 1fr; }
+.layout-preview-top i:first-child { grid-column: 1 / -1; }
+.layout-preview-left { grid-template: 1fr 1fr / 1.45fr 1fr; }
+.layout-preview-left i:first-child { grid-row: 1 / -1; }
+.layout-choice.selected .layout-preview i { background: var(--accent); }
+.layout-choice-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.layout-choice-copy strong { font-size: 12px; font-weight: 600; }
+.layout-choice-copy small { color: var(--muted); font-size: 10px; line-height: 1.3; }
+.layout-choice-check { color: var(--accent); font-size: 13px; font-weight: 700; }
+.layout-picker-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Now tier, stage 1: what is still running, under the quit question. */
 .confirm-rows { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
@@ -2114,6 +2151,108 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 @media (max-width: 880px) {
   .titlebar > .section-navigation { order: 5; width: 100%; margin-left: 0; justify-content: center; }
   .titlebar .section-button { flex: 1; justify-content: center; }
+}
+
+/* A shorter title bar with a clearly grouped section switcher. */
+.titlebar {
+  box-sizing: border-box;
+  height: 48px;
+  min-height: 48px;
+  padding-top: 0;
+  padding-bottom: 0;
+  row-gap: 2px;
+}
+.titlebar .brand {
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.titlebar .brand-mark {
+  width: 24px;
+  height: 24px;
+}
+.section-navigation {
+  gap: 0;
+  padding: 2px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.titlebar > .section-navigation > .section-button {
+  min-height: 28px;
+  padding: 4px 5px;
+  border: 0;
+  box-shadow: none;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.titlebar > .section-navigation > .section-button { border: 0; }
+.titlebar > .section-navigation,
+.titlebar > .titlebar-start > .attention {
+  transform: translateY(3px);
+}
+.titlebar > .titlebar-start > .attention > .attention-button {
+  min-height: 28px;
+  padding: 4px 9px;
+  gap: 6px;
+  font-size: 12px;
+}
+.titlebar > .titlebar-start > .attention > .attention-button .dot {
+  width: 7px;
+  height: 7px;
+}
+.titlebar .section-button.selected {
+  background: var(--accent);
+  border: 0;
+  color: var(--bg);
+  box-shadow: none;
+}
+.titlebar .section-button:hover:not(:disabled):not(.selected) {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.titlebar .section-button.selected > span {
+  color: var(--text);
+}
+.titlebar .section-button.has-attention {
+  position: relative;
+}
+.titlebar .section-button.has-attention::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -2px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--warn, #e0a030);
+}
+.titlebar .section-button.has-attention.failed::after { background: var(--danger); }
+.titlebar .section-button.has-attention.done::after { background: var(--brand-cyan); }
+.section-navigation { position: relative; }
+.section-navigation > .section-alerts {
+  top: calc(100% + 6px);
+  width: min(400px, calc(100vw - 32px));
+}
+.section-alerts .dot { flex: none; }
+.titlebar .titlebar-new {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--muted) !important;
+  box-shadow: none !important;
+  font-weight: 500;
+}
+.titlebar .titlebar-new:hover:not(:disabled) {
+  background: var(--panel-2) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+  box-shadow: none;
+}
+@media (max-width: 880px) {
+  .titlebar > .section-navigation { order: 0; width: auto; }
+  .titlebar .section-button { flex: 0 0 auto; }
 }
 
 /* A command-line bot that has said nothing for a while: muted, not alarming. */
@@ -2217,7 +2356,9 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 
 /* ---------------------------------------------------------------- settings */
 .body { position: relative; }
-.titlebar button.icon.active { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+.titlebar button.icon { background: transparent; border-color: transparent; box-shadow: none; }
+.titlebar button.icon:hover:not(:disabled) { border-color: transparent; }
+.titlebar button.icon:is(.active, [aria-expanded="true"]) { background: var(--panel-2); border-color: transparent; color: var(--text); }
 .settings { position: absolute; inset: 0; z-index: 40; display: flex; background: var(--bg); }
 .settings-nav { width: 232px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; padding: 20px 12px; background: var(--panel); border-right: 1px solid var(--line); }
 .settings-nav-head { display: flex; align-items: center; justify-content: space-between; padding: 0 10px; }

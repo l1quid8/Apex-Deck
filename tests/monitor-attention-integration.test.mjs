@@ -11,6 +11,7 @@ import * as paneHost from '../src/paneHost.ts';
 import * as themes from '../src/themes.ts';
 import * as assistantRegistry from '../src/assistantRegistry.ts';
 import * as overviewModel from '../src/apexAgentOverview.ts';
+import * as rightPanelModel from '../src/rightPanelModel.ts';
 import * as assistantTaskModel from '../src/assistantTaskModel.ts';
 
 const appUrl = new URL('../src/App.tsx', import.meta.url);
@@ -126,13 +127,14 @@ function appHarness() {
     ...assistantRegistry,
     ...assistantTaskModel,
     ...overviewModel,
+    ...rightPanelModel,
     selectCurrentAssistantRegistry: assistantRegistry.currentAssistantRegistry,
     hostTints: () => new Map(),
     usePaneDrag: () => ({ dragging: false }),
     layoutKey: () => '',
     pickerRows: () => [], workInRows: () => [],
   };
-  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','AttentionMenu','ConfirmDialog','PathPrompt','SidebarHandle']);
+  const componentNames = new Set(['HostPane','HostAgents','HostMonitors','SettingsPage','ThreadName','ChatPane','ModOverlays','ModStatuses','SectionNavigation','AgentsSection','ApexAgentSources','ApexAgentAll','ApexAgentTasks','ApexAgentWidget','LibraryView','DeckIcon','NewMenu','TerminalPane','PreviewPane','ProjectSidebar','ConnectionDialog','MenuList','Glyph','ProjectFolder','Dividers','AttentionMenu','ConfirmDialog','PathPrompt','SidebarHandle','RightPanel']);
   const globalValues = {
     localStorage: { getItem: key => stored.get(key) ?? null, setItem(key, value) { stored.set(key, value); }, removeItem(key) { stored.delete(key); } },
     crypto: { randomUUID: () => `request-${++requestSequence}` },

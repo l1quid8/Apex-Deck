@@ -58,7 +58,7 @@ export function NewMenu({ section, label, disabled, agents, disabledProviders, h
 
   return (
     <div className="new-menu" ref={root}>
-      <button ref={button} className="primary" onClick={() => (open ? close() : show())} disabled={disabled} aria-haspopup="menu" aria-expanded={open}>
+      <button ref={button} className="primary titlebar-new" onClick={() => (open ? close() : show())} disabled={disabled} aria-haspopup="menu" aria-expanded={open}>
         {label}
       </button>
       {open && (

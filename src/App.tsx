@@ -17,7 +17,7 @@ import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
 import { ModOverlays, ModStatuses, OPEN_SETTINGS_EVENT } from "./ModView";
 import { modHost } from "./mods/host";
 import { startHub } from "./hub";
-import { SectionNavigation } from "./SectionNavigation";
+import { SectionNavigation, type SectionFlag } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { ApexAgentSources } from "./ApexAgentSources";
 import { ApexAgentTasks } from "./ApexAgentTasks";
@@ -29,6 +29,7 @@ import "./apex-agent-dock.css";
 import { widgetCoordinates, widgetSidePanelPosition, type AssistantSourceDrop, type WidgetPosition } from "./apexAgentWidgetModel.ts";
 import { LibraryView } from "./LibraryView";
 import { DeckIcon } from "./DeckIcon";
+import { LayoutPicker } from "./LayoutPicker";
 import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { PreviewPane, type ServerChoice } from "./PreviewPane";
@@ -51,7 +52,7 @@ import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
-import { AttentionMenu, type AttentionItem } from "./AttentionMenu";
+import type { AttentionItem } from "./AttentionMenu";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";
@@ -166,6 +167,7 @@ export function App() {
   const [assistantRegistry, setAssistantRegistry] = useState<AssistantRegistryState>(() => emptyAssistantRegistry());
   const [assistantOwners, setAssistantOwners] = useState<Record<string, AssistantTaskOwner>>({});
   const [assistantTaskSignals, setAssistantTaskSignals] = useState<Record<string, Signal>>({});
+  const [assistantTaskNeedsDetails, setAssistantTaskNeedsDetails] = useState<Record<string, string[]>>({});
   const [assistantTaskCounts, setAssistantTaskCounts] = useState<Record<string, number>>({});
   // Each project task's status, keyed by project and task, so a worker chat's menu knows whether its task is still going.
   const [assistantTaskStatuses, setAssistantTaskStatuses] = useState<Record<string, string>>({});
@@ -280,6 +282,7 @@ export function App() {
   const [recentThreads, setRecentThreads] = useState<string[]>([]);
   const [maximized, setMaximized] = useState<string | null>(null);
   const [layout, setLayout] = useState<Layout>("top");
+  const [layoutPreset, setLayoutPreset] = useState<"grid" | Layout>("top");
   /** How the panes of each workspace section are arranged. */
   const [layouts, setLayouts] = useState<Record<string, LayoutNode>>({});
   /** True while a divider is being dragged. */
@@ -446,6 +449,7 @@ export function App() {
       setProfiles(saved?.profiles ?? []);
       setSection(saved?.section ?? "threads");
       setLayout(saved?.layout ?? "top");
+      setLayoutPreset(saved?.layout ?? "top");
       setPanel(saved?.rightPanel ? parsePanel(JSON.stringify(saved.rightPanel)) : saved?.threadDetailsOpen ? { ...defaultPanel(), open: true, active: "details" } : loadPanel());
       setDetailsCollapsed(saved?.threadDetailsCollapsed ?? {});
       // A layout that cannot be read is dropped and rebuilt from the panes,
@@ -646,6 +650,7 @@ export function App() {
     const main = focusedPane && ids.includes(focusedPane) ? focusedPane : ids[0];
     const next = preset === "grid" ? grid(ids, aspect) : mainAndStack([main, ...ids.filter((id) => id !== main)], preset);
     if (next) setTree(next);
+    setLayoutPreset(preset);
     if (preset !== "grid") setLayout(preset);
     setMaximized(null);
   };
@@ -956,9 +961,52 @@ export function App() {
         available: (() => { try { return reachable(workspaceHost(workspace)); } catch { return false; } })(),
       }] : [];
     })];
-  const sectionFlags = {
-    code: summarize(attentionItems.filter((i) => i.where === "Code").map((i) => i.signal)),
-    threads: summarize(attentionItems.filter((i) => i.where === "Threads").map((i) => i.signal)),
+  /** What each section tab shows on hover: its waiting items, most urgent first. */
+  const flagFor = (where: "Code" | "Threads"): SectionFlag => {
+    const mine = attentionItems.filter((item) => item.where === where);
+    return {
+      ...summarize(mine.map((item) => item.signal)),
+      rows: [...mine].sort((a, b) => urgency(a.signal.kind) - urgency(b.signal.kind) || b.signal.at - a.signal.at).map((item) => ({
+        key: item.paneId,
+        title: item.title,
+        note: item.signal.note || label(item.signal.kind),
+        meta: `${item.workspace} · ${item.where}`,
+        kind: item.signal.kind,
+        at: item.signal.at,
+        paneId: item.paneId,
+        cards: item.cards,
+        hostName: item.hostName,
+        available: item.available,
+      })),
+    };
+  };
+  const sectionFlags: Record<"agents" | "code" | "threads", SectionFlag> = {
+    agents: {
+      ...summarize(Object.values(assistantTaskSignals).filter((signal) => signal.kind === "needs_input")),
+      rows: Object.entries(assistantTaskSignals).flatMap(([workspaceId, signal]) => {
+        const workspace = workspaces.find((item) => item.id === workspaceId && !item.hidden);
+        if (!workspace || signal.kind !== "needs_input") return [];
+        return (assistantTaskNeedsDetails[workspaceId] ?? [signal.note]).map((detail, index) => ({ key: `${workspaceId}:${index}`, title: detail, note: "Needs you", meta: `${workspace.name} · Agents`, kind: "needs_input" as const, at: signal.at, paneId: `apex-task:${workspaceId}` }));
+      }),
+    },
+    code: flagFor("Code"),
+    threads: flagFor("Threads"),
+  };
+
+  /** Allow once / Deny from a section tab's hover list. */
+  const decideApproval = async (room: string, request: string, approve: boolean) => {
+    const pane = panes.find(p => p.id === room); const card = openCards(room).find(c => c.request === request);
+    if (!pane || !card) throw new Error("That approval is no longer available.");
+    const b = backendFor(pane);
+    if ((card.hostId ?? "local") !== (b.host?.id ?? "local") || (card.action.expires_at != null && card.action.expires_at <= Date.now())) throw new Error("That approval is no longer available.");
+    await b.roomDecide(room, request, approve, false);
+  };
+
+  /** Go to whatever a section tab's hover list names. */
+  const openAttention = (paneId: string) => {
+    if (paneId.startsWith("apex-monitor:")) { openApexAgent(paneId.slice("apex-monitor:".length), true); return; }
+    if (paneId.startsWith("apex-task:")) { openApexAgent(paneId.slice("apex-task:".length), true); return; }
+    const pane = viewPanes.find((p) => p.id === paneId); if (pane) focusPane(pane);
   };
 
   /** Take a pane off the deck. */
@@ -1260,6 +1308,7 @@ export function App() {
           setAssistantTaskCounts((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
           setAssistantOwners((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
           setAssistantTaskSignals((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
+          setAssistantTaskNeedsDetails((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
           setAssistantTaskErrors((all) => { const { [workspaceId]: _old, ...rest } = all; return rest; });
           return;
         }
@@ -1274,6 +1323,15 @@ export function App() {
           return JSON.stringify(next) === JSON.stringify(all) ? all : next;
         });
         const signal = assistantTaskAttentionSignal(snapshot.tasks, owner);
+        setAssistantTaskNeedsDetails((all) => {
+          const details = snapshot.tasks
+            .filter((task) => task.owner.conversationId === owner.conversationId && ["needs_you", "needs_clarification", "proposed"].includes(task.status))
+            .map((task) => `${task.status === "proposed" ? "Proposed" : task.status === "needs_clarification" ? "Needs clarification" : "Needs you"}: ${(task.originalRequest || task.brief).slice(0, 120)}`);
+          if (JSON.stringify(all[workspaceId] ?? []) === JSON.stringify(details)) return all;
+          const next = { ...all };
+          if (details.length) next[workspaceId] = details; else delete next[workspaceId];
+          return next;
+        });
         setAssistantTaskCounts((all) => ({ ...all, [workspaceId]: snapshot.tasks.filter((task) => ['proposed','needs_clarification','needs_you','ready_for_review','failed','interrupted'].includes(task.status)).length }));
         setAssistantTaskSignals((all) => {
           if (!signal && !(workspaceId in all)) return all;
@@ -1915,44 +1973,15 @@ export function App() {
           <img className="brand-mark" src="/branding/mark.svg" alt="" width="28" height="28" />
           Apex Deck
         </span>
-        <button className="icon" onClick={() => setRailOpen((open) => !open)} disabled={compactApexAgentDock} aria-label={compactApexAgentDock ? "Workspaces hidden while ApexAgent is open" : railOpen ? "Hide workspaces" : "Show workspaces"} title={compactApexAgentDock ? "Workspaces return when ApexAgent closes" : railOpen ? "Hide workspaces" : "Show workspaces"}>
+        <button className="icon" aria-expanded={railOpen && !compactApexAgentDock} onClick={() => setRailOpen((open) => !open)} disabled={compactApexAgentDock} aria-label={compactApexAgentDock ? "Workspaces hidden while ApexAgent is open" : railOpen ? "Hide workspaces" : "Show workspaces"} title={compactApexAgentDock ? "Workspaces return when ApexAgent closes" : railOpen ? "Hide workspaces" : "Show workspaces"}>
           <DeckIcon name="sidebar" />
         </button>
         {backend.demo && <span className="badge" title="Browser preview only. Terminals and model replies are simulated.">Preview mode</span>}
-        {/* Just left of the tabs: it grows away from them, so neither the tabs nor the right-hand controls move. */}
-        <AttentionMenu
-          items={attentionItems}
-          onOpen={(paneId) => {
-            if (paneId.startsWith("apex-monitor:")) { openApexAgent(paneId.slice("apex-monitor:".length), true); return; }
-            if (paneId.startsWith("apex-task:")) { openApexAgent(paneId.slice("apex-task:".length), true); return; }
-            const pane = viewPanes.find((p) => p.id === paneId); if (pane) focusPane(pane);
-          }}
-          onDecide={async (room, request, approve) => {
-            const pane = panes.find(p => p.id === room); const card = openCards(room).find(c => c.request === request);
-            if (!pane || !card) throw new Error("That approval is no longer available.");
-            const b = backendFor(pane);
-            if ((card.hostId ?? "local") !== (b.host?.id ?? "local") || (card.action.expires_at != null && card.action.expires_at <= Date.now())) throw new Error("That approval is no longer available.");
-            await b.roomDecide(room, request, approve, false);
-          }}
-          onMarkReadySeen={() => setAttention(clearReady)}
-        />
         </div>
-        <SectionNavigation section={section} flags={sectionFlags} onChange={(next) => { setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
+        <SectionNavigation section={section} flags={sectionFlags} onOpen={openAttention} onMarkReadySeen={() => setAttention(clearReady)} onDecide={decideApproval} onChange={(next) => { setSettingsOpen(null); setSection(next); setPicking(false); setMaximized(null); }} />
         <div className="titlebar-end">
-        {(
-          <div className="layout-presets" role="group" aria-label="Arrange panes">
-            <button onClick={() => arrange("grid")} disabled={section === "agents" || visiblePanes.length < 2} title="Even grid" aria-label="Arrange as an even grid">
-              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1" /><rect x="9" y="1.5" width="5.5" height="5.5" rx="1" /><rect x="1.5" y="9" width="5.5" height="5.5" rx="1" /><rect x="9" y="9" width="5.5" height="5.5" rx="1" /></svg>
-            </button>
-            <button onClick={() => arrange("top")} disabled={section === "agents" || visiblePanes.length < 2} title="Large pane on top, the rest below" aria-label="Arrange with a large pane on top">
-              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="13" height="7.5" rx="1" /><rect x="1.5" y="11" width="5.5" height="3.5" rx="1" /><rect x="9" y="11" width="5.5" height="3.5" rx="1" /></svg>
-            </button>
-            <button onClick={() => arrange("left")} disabled={section === "agents" || visiblePanes.length < 2} title="Large pane on the left, the rest beside it" aria-label="Arrange with a large pane on the left">
-              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="7.5" height="13" rx="1" /><rect x="11" y="1.5" width="3.5" height="5.5" rx="1" /><rect x="11" y="9" width="3.5" height="5.5" rx="1" /></svg>
-            </button>
-          </div>
-        )}
-        {section === "agents" && <button className="primary" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
+        <LayoutPicker value={layoutPreset} disabled={section === "agents" || visiblePanes.length < 2} onSelect={arrange} />
+        {section === "agents" && <button className="primary titlebar-new" onClick={() => setNewAgentRequest((n) => n + 1)}>+ New agent</button>}
         {section !== "agents" && creationBackend && <HostAgents backend={creationBackend} agents={agents}>{hostAgents => <NewMenu
           section={section}
           label="+ New ▾"
@@ -1966,7 +1995,6 @@ export function App() {
           openRequest={newMenuRequest}
           where={current ? `${current.name} on ${hostNameFor(workspaceHost(current))}` : ""}
         />}</HostAgents>}
-        <button className={settingsOpen ? "icon active" : "icon"} onClick={() => setSettingsOpen((open) => (open ? null : "general"))} aria-label="Settings" title="Settings (⌘,)" aria-pressed={!!settingsOpen}><DeckIcon name="settings" /></button>
         <button ref={detailsToggle} className="icon" onClick={() => detailsOpen ? closeDetails() : setDetailsOpen(true)} aria-label={detailsOpen ? "Hide side panel" : "Show side panel"} title={detailsOpen ? "Hide side panel" : "Show side panel"} aria-expanded={detailsOpen} aria-controls="thread-details"><DeckIcon name="sidebar" /></button>
         </div>
       </header>
@@ -2015,6 +2043,10 @@ export function App() {
             onNewIn={newIn}
             onAddWorkspace={(hostId) => addWorkspace(undefined, hostId)}
             onManageHosts={() => setSettingsOpen("hosts")}
+            appearanceOpen={settingsOpen === "appearance"}
+            settingsOpen={settingsOpen !== null && settingsOpen !== "appearance"}
+            onOpenAppearance={() => setSettingsOpen((open) => open === "appearance" ? null : "appearance")}
+            onOpenSettings={() => setSettingsOpen((open) => open ? null : "general")}
             onRestore={restoreArchived}
             style={sidebarWidths.rail === null ? undefined : { width: sidebarWidths.rail }}
           />
@@ -2189,8 +2221,11 @@ export function App() {
             style={overlayDetails ? { right: `calc(min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px)) + var(--deck-gap, 0px))` } : undefined}
           />
           <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
-            <RightPanel state={panel} onChange={setPanel} onClose={closeDetails} bodies={{
-              dashboard: () => <RightDashboard rows={listed.filter((pane) => pane.kind === "chat" || pane.kind === "terminal").map((pane) => ({ id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "" }))} onOpen={(id) => { const pane = listed.find((item) => item.id === id); if (pane) focusPane(pane); }} />,
+            <RightPanel state={panel} onChange={setPanel} onClose={closeDetails} taskAttention={{ count: sectionFlags.agents.count, details: sectionFlags.agents.rows.map((row) => row.title).join("\n") || "ApexAgent tasks are waiting for your response" }} bodies={{
+              dashboard: () => <RightDashboard rows={listed.filter((pane) => pane.kind === "chat" || pane.kind === "terminal").map((pane) => {
+                const projectNeeds = listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "needs_input");
+                return { id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "", ready: attention[pane.id]?.kind === "done", readyCount: listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "done").length, needsCount: attention[pane.id]?.kind === "needs_input" ? projectNeeds.length : undefined, needsDetails: projectNeeds.map((candidate) => `${candidate.title}: ${attention[candidate.id]?.note ?? "Needs your response"}`).join("; ") };
+              })} onOpen={(id) => { const pane = listed.find((item) => item.id === id); if (pane) focusPane(pane); }} />,
               tasks: () => {
                 const selected = listed.find((pane) => pane.id === focusedPane);
                 const workspaceId = selected?.workspaceId ?? activeWorkspace;

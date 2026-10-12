@@ -1,0 +1,129 @@
+<div id="deck-interactive-preview" class="viz-dotted-background">
+  <section class="deck-window" aria-label="Apex Deck Threads mockup">
+    <header class="deck-header"><span class="deck-logo">A</span><strong>Apex Deck</strong><span class="deck-muted">/</span><span>Threads</span><span class="deck-preview">Design preview</span></header>
+    <div class="deck-room"><div><h2>Deployment options</h2><span class="deck-muted">Project · apex-deck</span></div><div class="deck-people"><span>● Null</span><span>● Jigga</span><span class="deck-muted">Replies · Mentions only</span></div></div>
+    <main class="deck-transcript">
+      <article class="deck-message"><div class="deck-author">Human <span>now</span></div><p>Compare three deployment options for this project.</p></article>
+      <article class="deck-message"><div class="deck-author"><span class="deck-avatar">N</span>Null <span>now · interactive answer</span></div><p id="deck-intro">I’d start with managed hosting: it fits the sample budget and keeps operational work low. Adjust the priorities to see how the tradeoffs change.</p>
+        <section class="deck-answer" aria-label="Deployment comparison">
+          <div class="deck-answer-head"><div><span class="deck-eyebrow">INTERACTIVE COMPARISON · v1</span><h3>Where should this run?</h3></div><button type="button" class="deck-quiet cursor-interaction" id="deck-stream-toggle">Preview streaming</button></div>
+          <div id="deck-ready">
+            <div class="deck-inputs"><label for="deck-budget">Monthly budget <output id="deck-budget-value">$250</output><input id="deck-budget" type="range" min="50" max="500" step="25" value="250"></label><div><span class="deck-label">Priority</span><div class="deck-segments" role="group" aria-label="Deployment priority"><button type="button" data-priority="cost" aria-pressed="false" class="cursor-interaction">Cost</button><button type="button" data-priority="simplicity" aria-pressed="true" class="cursor-interaction">Simplicity</button><button type="button" data-priority="control" aria-pressed="false" class="cursor-interaction">Control</button></div></div></div>
+            <div class="deck-options">
+              <article data-option="vps"><div class="deck-option-top"><h4>VPS</h4><span class="deck-pick" hidden>Best fit</span></div><div class="deck-price">$60<span>/mo</span></div><p class="deck-fit"></p><dl><dt>Operational work</dt><dd>High</dd><dt>Infrastructure control</dt><dd>Full</dd></dl><p class="deck-tradeoff">Own the server, backups, and updates.</p></article>
+              <article data-option="managed"><div class="deck-option-top"><h4>Managed</h4><span class="deck-pick">Best fit</span></div><div class="deck-price">$180<span>/mo</span></div><p class="deck-fit"></p><dl><dt>Operational work</dt><dd>Low</dd><dt>Infrastructure control</dt><dd>Partial</dd></dl><p class="deck-tradeoff">Simpler operations, less configuration freedom.</p></article>
+              <article data-option="serverless"><div class="deck-option-top"><h4>Serverless</h4><span class="deck-pick" hidden>Best fit</span></div><div class="deck-price">$90<span>/mo</span></div><p class="deck-fit"></p><dl><dt>Operational work</dt><dd>Medium</dd><dt>Infrastructure control</dt><dd>Limited</dd></dl><p class="deck-tradeoff">Usage-sensitive cost and runtime constraints.</p></article>
+            </div>
+            <p class="deck-result" id="deck-result" aria-live="polite"></p>
+            <details class="deck-assumptions"><summary class="cursor-interaction">Assumptions &amp; data</summary><p>Illustrative estimates for a small web app at a fixed workload. USD per month; excludes engineering time. These are mock values, not provider quotes. Budget filters eligibility; priority selects among eligible options.</p></details>
+            <footer class="deck-answer-footer"><button type="button" id="deck-reset" class="deck-quiet cursor-interaction">Reset</button><span class="deck-muted">Changes stay local</span><button type="button" id="deck-discuss" class="deck-primary cursor-interaction">Discuss these settings <span aria-hidden="true">↗</span></button></footer>
+          </div>
+          <div id="deck-streaming" hidden aria-live="polite"><span class="deck-eyebrow">NULL IS GENERATING</span><p>Preparing interactive answer…</p><div class="deck-skeleton"></div><div class="deck-skeleton short"></div><p class="deck-muted">Controls appear when the complete card is ready.</p><button type="button" id="deck-finish" class="deck-primary cursor-interaction">Show completed card</button></div>
+        </section>
+      </article>
+      <div id="deck-shared" hidden aria-live="polite"><article class="deck-message"><div class="deck-author">Human <span>sample shared snapshot</span></div><div class="deck-snapshot"><span class="deck-eyebrow">DEPLOYMENT COMPARISON · v1</span><p id="deck-snapshot-text"></p><span class="deck-muted">@Jigga, review these settings.</span></div></article><article class="deck-message"><div class="deck-author"><span class="deck-avatar bot">J</span>Jigga <span>sample reply</span></div><p id="deck-bot-reply"></p></article></div>
+    </main>
+    <footer class="deck-compose"><span class="deck-muted">Message the room…</span><span class="deck-muted">@ mentions route replies</span></footer>
+  </section>
+</div>
+<style>
+#deck-interactive-preview { padding: 16px 0; }
+#deck-interactive-preview .deck-window { --deck-bg:light-dark(#ffffff,#11191e); --deck-panel:light-dark(#f6f8f8,#192329); --deck-line:light-dark(#dce4e4,#304047); --deck-text:light-dark(#17282a,#edf4f4); --deck-muted:light-dark(#576c70,#a7b9bf); --deck-accent:light-dark(#145e50,#97e6c5); --deck-accent-text:light-dark(#ffffff,#102b24); font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; color:var(--deck-text); background:var(--deck-bg); border:1px solid var(--deck-line); border-radius:14px; overflow:hidden; }
+#deck-interactive-preview * { box-sizing:border-box; }
+#deck-interactive-preview [hidden] { display:none !important; }
+#deck-interactive-preview .deck-header { display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--deck-line); }
+#deck-interactive-preview strong,#deck-interactive-preview h2,#deck-interactive-preview h3,#deck-interactive-preview h4 { font-weight:500; }
+#deck-interactive-preview .deck-logo { color:var(--deck-accent); font-weight:500; }
+#deck-interactive-preview .deck-muted,#deck-interactive-preview .deck-author>span:not(.deck-avatar) { color:var(--deck-muted); }
+#deck-interactive-preview .deck-preview { margin-left:auto; font-size:12px; color:var(--deck-muted); padding-right:80px; }
+#deck-interactive-preview .deck-room { padding:20px; display:flex; flex-wrap:wrap; gap:14px; justify-content:space-between; border-bottom:1px solid var(--deck-line); }
+#deck-interactive-preview h2 { font-size:18px; margin:0 0 2px; }
+#deck-interactive-preview .deck-people { display:flex; flex-wrap:wrap; gap:12px; align-content:center; font-size:12px; }
+#deck-interactive-preview .deck-people>span:first-child { color:var(--deck-accent); }
+#deck-interactive-preview .deck-transcript { padding:22px; }
+#deck-interactive-preview .deck-message { margin-bottom:24px; }
+#deck-interactive-preview .deck-message:last-child { margin-bottom:0; }
+#deck-interactive-preview .deck-author { display:flex; align-items:center; gap:8px; font-weight:500; }
+#deck-interactive-preview .deck-author>span:not(.deck-avatar) { font-weight:400; font-size:12px; }
+#deck-interactive-preview .deck-avatar { width:24px; height:24px; border-radius:7px; display:inline-grid; place-items:center; background:var(--deck-accent); color:var(--deck-accent-text); font-size:12px; }
+#deck-interactive-preview .deck-avatar.bot { background:var(--deck-panel); color:var(--deck-text); }
+#deck-interactive-preview p { margin:10px 0 14px; }
+#deck-interactive-preview .deck-answer { border:1px solid var(--deck-line); border-radius:12px; background:var(--deck-panel); }
+#deck-interactive-preview .deck-answer-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:18px; }
+#deck-interactive-preview .deck-eyebrow { font-size:11px; letter-spacing:.08em; color:var(--deck-muted); }
+#deck-interactive-preview h3 { font-size:19px; margin:5px 0 0; }
+#deck-interactive-preview button { font:inherit; border:1px solid var(--deck-line); padding:8px 12px; border-radius:7px; color:var(--deck-text); background:var(--deck-bg); }
+#deck-interactive-preview button:focus-visible,#deck-interactive-preview input:focus-visible,#deck-interactive-preview summary:focus-visible { outline:2px solid var(--deck-accent); outline-offset:3px; }
+#deck-interactive-preview .deck-quiet { background:transparent; font-size:12px; }
+#deck-interactive-preview .deck-inputs { display:grid; grid-template-columns:1fr 1fr; gap:22px; padding:0 18px 20px; }
+#deck-interactive-preview label,#deck-interactive-preview .deck-label { font-size:12px; color:var(--deck-muted); }
+#deck-interactive-preview output { float:right; color:var(--deck-text); font-variant-numeric:tabular-nums; }
+#deck-interactive-preview input { display:block; width:100%; margin:13px 0 0; accent-color:var(--deck-accent); }
+#deck-interactive-preview .deck-segments { display:flex; margin-top:8px; gap:4px; }
+#deck-interactive-preview .deck-segments button { font-size:12px; flex:1; padding:7px; }
+#deck-interactive-preview button[aria-pressed=true],#deck-interactive-preview .deck-primary { background:var(--deck-accent); color:var(--deck-accent-text); border-color:var(--deck-accent); }
+#deck-interactive-preview .deck-options { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border-top:1px solid var(--deck-line); border-bottom:1px solid var(--deck-line); }
+#deck-interactive-preview .deck-options article { padding:16px; background:var(--deck-bg); border-right:1px solid var(--deck-line); }
+#deck-interactive-preview .deck-options article:last-child { border-right:0; }
+#deck-interactive-preview .deck-options article[data-selected=true] { background:var(--deck-panel); box-shadow:inset 0 3px var(--deck-accent); }
+#deck-interactive-preview .deck-option-top { display:flex; flex-wrap:wrap; gap:6px; align-items:center; min-height:26px; }
+#deck-interactive-preview h4 { margin:0; font-size:14px; }
+#deck-interactive-preview .deck-pick { font-size:11px; color:var(--deck-accent); }
+#deck-interactive-preview .deck-price { font-size:26px; font-weight:500; margin-top:12px; font-variant-numeric:tabular-nums; }
+#deck-interactive-preview .deck-price span { font-size:12px; font-weight:400; color:var(--deck-muted); }
+#deck-interactive-preview .deck-fit { font-size:12px; color:var(--deck-muted); margin:0 0 18px; }
+#deck-interactive-preview dl { margin:0; font-size:12px; }
+#deck-interactive-preview dt { color:var(--deck-muted); margin-top:10px; }
+#deck-interactive-preview dd { margin:2px 0 0; }
+#deck-interactive-preview .deck-tradeoff { font-size:12px; color:var(--deck-muted); margin:16px 0 0; }
+#deck-interactive-preview .deck-result { padding:0 18px; }
+#deck-interactive-preview .deck-assumptions { padding:0 18px 16px; font-size:12px; color:var(--deck-muted); }
+#deck-interactive-preview .deck-answer-footer { border-top:1px solid var(--deck-line); padding:14px 18px; display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+#deck-interactive-preview .deck-answer-footer .deck-muted { font-size:12px; }
+#deck-interactive-preview .deck-answer-footer .deck-primary { margin-left:auto; }
+#deck-interactive-preview #deck-streaming { padding:12px 18px 24px; }
+#deck-interactive-preview .deck-skeleton { height:48px; border-radius:6px; background:var(--deck-line); margin:12px 0; }
+#deck-interactive-preview .deck-skeleton.short { width:60%; height:16px; }
+#deck-interactive-preview .deck-snapshot { border-left:2px solid var(--deck-accent); padding:12px 16px; margin-top:10px; background:var(--deck-panel); border-radius:0 8px 8px 0; }
+#deck-interactive-preview .deck-snapshot p { margin:6px 0; }
+#deck-interactive-preview .deck-compose { padding:18px 22px; display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; border-top:1px solid var(--deck-line); font-size:12px; }
+@media(max-width:560px) { #deck-interactive-preview .deck-preview { padding-right:0; } #deck-interactive-preview .deck-transcript { padding:16px; } #deck-interactive-preview .deck-inputs { grid-template-columns:1fr; } #deck-interactive-preview .deck-options { grid-template-columns:1fr; } #deck-interactive-preview .deck-options article { border-right:0; border-bottom:1px solid var(--deck-line); } #deck-interactive-preview .deck-options article:last-child { border-bottom:0; } #deck-interactive-preview .deck-author { flex-wrap:wrap; } }
+@media(pointer:coarse) { #deck-interactive-preview button { min-height:44px; } #deck-interactive-preview input { min-height:44px; } #deck-interactive-preview summary { min-height:44px; } }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('deck-interactive-preview');
+  const q = s => root.querySelector(s);
+  const options = [{id:'vps',name:'VPS',cost:60},{id:'managed',name:'Managed',cost:180},{id:'serverless',name:'Serverless',cost:90}];
+  const order = {cost:['vps','serverless','managed'],simplicity:['managed','serverless','vps'],control:['vps','managed','serverless']};
+  const state = {budget:250,priority:'simplicity'};
+  let result;
+  function restore(saved) {
+    if (saved && Number.isFinite(saved.budget) && saved.budget>=50 && saved.budget<=500 && order[saved.priority]) { state.budget=saved.budget; state.priority=saved.priority; }
+  }
+  restore(window.openai?.widgetState?.modelContent);
+  function render() {
+    q('#deck-budget').value=state.budget;
+    q('#deck-budget-value').textContent='$'+state.budget;
+    result=order[state.priority].map(id=>options.find(o=>o.id===id)).find(o=>o.cost<=state.budget);
+    root.querySelectorAll('[data-priority]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.priority===state.priority)));
+    options.forEach(o=>{const card=q('[data-option='+o.id+']');const chosen=result?.id===o.id;card.dataset.selected=String(chosen);card.querySelector('.deck-pick').hidden=!chosen;card.querySelector('.deck-fit').textContent=o.cost<=state.budget?'Within budget':'Over budget by $'+(o.cost-state.budget);});
+    q('#deck-result').textContent=result?result.name+' is the best fit for '+state.priority+' within your $'+state.budget+'/mo budget.':'None of these sample options fits $'+state.budget+'/mo. Increase the budget or compare other options.';
+  }
+  function save() { window.openai?.setWidgetState?.({modelContent:{...state,recommendation:result?.name??null},privateContent:null})?.catch(()=>{}); }
+  q('#deck-budget').addEventListener('input',e=>{state.budget=Number(e.target.value);render();save();});
+  root.querySelectorAll('[data-priority]').forEach(b=>b.addEventListener('click',()=>{state.priority=b.dataset.priority;render();save();}));
+  q('#deck-reset').addEventListener('click',()=>{state.budget=250;state.priority='simplicity';render();save();});
+  function streaming(on) { q('#deck-ready').hidden=on;q('#deck-streaming').hidden=!on;q('#deck-stream-toggle').textContent=on?'Back to card':'Preview streaming'; }
+  q('#deck-stream-toggle').addEventListener('click',()=>streaming(q('#deck-streaming').hidden));
+  q('#deck-finish').addEventListener('click',()=>streaming(false));
+  q('#deck-discuss').addEventListener('click',()=>{
+    q('#deck-shared').hidden=false;
+    q('#deck-snapshot-text').textContent='Budget: $'+state.budget+'/mo · Priority: '+state.priority+' · Result: '+(result?.name??'No eligible option')+'.';
+    q('#deck-bot-reply').textContent=result?'Using your shared v1 settings ($'+state.budget+'/mo, '+state.priority+'), '+result.name+' fits the budget at the sample $'+result.cost+'/mo. I’d validate workload and backup requirements before choosing.':'With your shared v1 budget of $'+state.budget+'/mo, none of these options is eligible. I’d revisit the workload assumptions before increasing the budget.';
+  });
+  window.addEventListener('openai:set_globals',e=>{restore(e.detail?.globals?.widgetState?.modelContent);render();});
+  render();
+  if(globalThis.Tweak) { const design={radius:12};const tweak=new Tweak({container:q('.deck-answer'),onChange:()=>{q('.deck-answer').style.borderRadius=design.radius+'px';}});tweak.addSlider(design,'radius',{label:'Card corners',min:0,max:24,unit:'px'}); }
+})();
+</script>

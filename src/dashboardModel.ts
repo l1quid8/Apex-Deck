@@ -3,7 +3,7 @@ import type { PaneStatus } from "./types";
 export type DashGroup = "waiting" | "working" | "done" | "idle";
 const ORDER: DashGroup[] = ["waiting", "working", "done", "idle"];
 export const GROUP_LABEL: Record<DashGroup, string> = { waiting: "Waiting for you", working: "Working", done: "Done", idle: "Idle" };
-export interface DashRow { id: string; title: string; project: string; kind: "chat" | "terminal"; status: PaneStatus; note: string }
+export interface DashRow { id: string; title: string; project: string; kind: "chat" | "terminal"; status: PaneStatus; note: string; ready?: boolean; readyCount?: number; needsCount?: number; needsDetails?: string }
 export function groupOf(status: PaneStatus): DashGroup {
   if (status === "needs_input" || status === "failed") return "waiting";
   if (status === "working") return "working";

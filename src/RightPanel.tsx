@@ -11,10 +11,11 @@ interface Props {
   onChange: (next: RightPanelState) => void;
   bodies: Partial<Record<TabKind, (tab: PanelTab, visible: boolean) => ReactNode>>;
   onClose: () => void;
+  taskAttention?: { count: number; details: string };
 }
 
 /** The right panel: a row of tabs and the tab in front. Hidden tabs stay mounted so pages and trees keep their place. */
-export function RightPanel({ state, onChange, bodies, onClose }: Props) {
+export function RightPanel({ state, onChange, bodies, onClose, taskAttention }: Props) {
   const [adding, setAdding] = useState(false);
   const dragging = useRef<string | null>(null);
   const now = () => Date.now();
@@ -23,12 +24,13 @@ export function RightPanel({ state, onChange, bodies, onClose }: Props) {
       {state.tabs.map((tab, index) => {
         const fixed = FIXED.includes(tab.kind);
         const label = tab.kind === "browser" && tab.url ? hostOf(tab.url) : TAB_LABEL[tab.kind];
-        return <div key={tab.id} className={`right-panel-tab${tab.id === state.active ? " active" : ""}`}
+        const flaggedTasks = tab.kind === "tasks" && !!taskAttention?.count;
+        return <div key={tab.id} className={`right-panel-tab${tab.id === state.active ? " active" : ""}${flaggedTasks && tab.id === state.active ? " has-attention" : ""}`}
           draggable={!fixed}
           onDragStart={() => { dragging.current = tab.id; }}
           onDragOver={(e) => { if (dragging.current) e.preventDefault(); }}
           onDrop={() => { if (dragging.current) onChange(moveTab(state, dragging.current, index)); dragging.current = null; }}>
-          <button role="tab" id={`right-tab-${tab.id}`} aria-selected={tab.id === state.active} aria-controls={`right-body-${tab.id}`} title={label} onClick={() => onChange(activate(state, tab.id, now()))}>{label}</button>
+          <button role="tab" id={`right-tab-${tab.id}`} aria-selected={tab.id === state.active} aria-controls={`right-body-${tab.id}`} title={flaggedTasks ? taskAttention?.details : label} onClick={() => onChange(activate(state, tab.id, now()))}>{label}</button>
           {!fixed && <button className="icon small" aria-label={`Close ${label}`} onClick={() => onChange(closeTab(state, tab.id))}>×</button>}
         </div>;
       })}
