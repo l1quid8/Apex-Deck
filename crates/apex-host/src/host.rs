@@ -1067,6 +1067,19 @@ impl Host {
             .await.map_err(|error| error.to_string())?
     }
 
+    pub async fn file_create(&self, root: String, parent: String, name: String, folder: bool) -> Result<String, String> {
+        tokio::task::spawn_blocking(move || crate::project_files::create(Path::new(&root), Path::new(&parent), &name, folder)).await.map_err(|e| e.to_string())?
+    }
+    pub async fn file_rename(&self, root: String, path: String, name: String) -> Result<String, String> {
+        tokio::task::spawn_blocking(move || crate::project_files::rename(Path::new(&root), Path::new(&path), &name)).await.map_err(|e| e.to_string())?
+    }
+    pub async fn file_duplicate(&self, root: String, path: String) -> Result<String, String> {
+        tokio::task::spawn_blocking(move || crate::project_files::duplicate(Path::new(&root), Path::new(&path))).await.map_err(|e| e.to_string())?
+    }
+    pub async fn file_trash(&self, root: String, path: String) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || crate::project_files::trash(Path::new(&root), Path::new(&path))).await.map_err(|e| e.to_string())?
+    }
+
     pub async fn worktree_list(&self, path: String) -> Result<worktrees::WorktreeList, String> {
         let task_dir = self.paths.data.join("apex-agent").join("tasks");
         tokio::task::spawn_blocking(move || worktrees::list(Path::new(&path), &task_dir)).await.map_err(|e| e.to_string())?

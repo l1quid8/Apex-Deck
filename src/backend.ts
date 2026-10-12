@@ -91,6 +91,10 @@ export interface Backend {
   fileRead(root: string, path: string): Promise<FilePreview>;
   fileFind(root: string, query: string): Promise<string[]>;
   fileSearch(root: string, query: string, caseSensitive: boolean, folder: string | null): Promise<FileSearchResult>;
+  fileCreate(root: string, parent: string, name: string, folder: boolean): Promise<string>;
+  fileRename(root: string, path: string, name: string): Promise<string>;
+  fileDuplicate(root: string, path: string): Promise<string>;
+  fileTrash(root: string, path: string): Promise<void>;
   worktreeList(path: string): Promise<WorktreeList>;
   worktreeAdd(path: string, request: WorktreeAdd): Promise<import("./types").Worktree>;
   worktreeRemove(path: string, worktree: string, force: boolean): Promise<void>;
@@ -687,6 +691,10 @@ function demoBackend(): Backend {
     fileRead: async () => { throw new Error("Files can't be read in the browser demo"); },
     fileFind: async () => { throw new Error("Find isn't available in the browser demo"); },
     fileSearch: async () => { throw new Error("Search isn't available in the browser demo"); },
+    fileCreate: async () => { throw new Error("File actions aren't available in the browser demo"); },
+    fileRename: async () => { throw new Error("File actions aren't available in the browser demo"); },
+    fileDuplicate: async () => { throw new Error("File actions aren't available in the browser demo"); },
+    fileTrash: async () => { throw new Error("File actions aren't available in the browser demo"); },
     worktreeList: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreeAdd: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreeRemove: async () => { throw new Error("Worktrees aren't available in the browser demo"); },

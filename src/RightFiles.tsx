@@ -10,6 +10,7 @@ const relative = (root: string, path: string) => path === root ? "." : path.star
 const PREF_KEY = "apex-deck.files-tab.v1";
 type Context = { row: Row; x: number; y: number } | null;
 type FindMode = "name" | "text";
+type FileOperation = { kind: "create-file" | "create-folder" | "rename"; path: string; name: string } | null;
 export function changedSet(diff: ThreadDiff | null, root: string): Set<string> { return new Set(changeMarks(diff, root).keys()); }
 export function FilesError({ onRetry }: { onRetry: () => void }) { return <div className="right-panel-empty"><p className="muted">Can&apos;t read this folder.</p><button onClick={onRetry}>Retry</button></div>; }
 
@@ -22,6 +23,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   const [nameResults, setNameResults] = useState<string[] | null>(null), [textResults, setTextResults] = useState<FileSearchResult | null>(null);
   const [searchFolder, setSearchFolder] = useState<string | null>(null), [caseSensitive, setCaseSensitive] = useState(false), [searchLoading, setSearchLoading] = useState(false), [searchError, setSearchError] = useState("");
   const [changesOpen, setChangesOpen] = useState(true), [context, setContext] = useState<Context>(null), [copied, setCopied] = useState("");
+  const [operation, setOperation] = useState<FileOperation>(null), [operationError, setOperationError] = useState("");
   const listRef = useRef(list); listRef.current = list;
   const wasVisible = useRef(false);
   const treeRef = useRef(tree); treeRef.current = tree;
@@ -83,6 +85,34 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   const copy = async (text: string, what: string) => { const ok = await writeClipboard(text, navigator.clipboard); setCopied(ok ? `${what} copied` : "Clipboard unavailable"); window.setTimeout(() => setCopied(""), 1600); };
   const addToChat = (path: string) => { if (paneId) window.dispatchEvent(new CustomEvent("deck:insert-composer", { detail: { paneId, text: `\`${relative(root, path)}\`` } })); };
   const openPreview = (path: string, changes = false, line: number | null = null) => { setPreviewPath(path); setPreviewView(changes ? "changes" : "file"); setSearchHighlightLine(line); };
+  const beginOperation = (kind: NonNullable<FileOperation>["kind"], path = root ?? "") => {
+    const name = kind === "rename" ? path.split(/[\\/]/).pop() ?? "" : "";
+    setOperation({ kind, path: kind === "rename" ? path : path || root || "", name }); setOperationError(""); setContext(null);
+  };
+  const submitOperation = async (event: React.FormEvent) => {
+    event.preventDefault(); if (!operation || !backend) return;
+    try {
+      if (operation.kind === "create-file" || operation.kind === "create-folder") {
+        const path = await backend.fileCreate(root ?? "", operation.path, operation.name, operation.kind === "create-folder");
+        const parent = operation.path; setTree((current) => ({ ...current, expanded: new Set([...current.expanded, parent]) })); load(parent); setTree((current) => ({ ...current, selected: path }));
+      } else {
+        const path = await backend.fileRename(root ?? "", operation.path, operation.name);
+        if (previewPath === operation.path) setPreviewPath(path);
+        const parent = operation.path.slice(0, operation.path.lastIndexOf("/")) || root!; load(parent);
+      }
+      setOperation(null); setOperationError("");
+    } catch (error) { setOperationError(String(error)); }
+  };
+  const duplicateFile = async (path: string) => {
+    if (!backend) return;
+    try { const copiedPath = await backend.fileDuplicate(root ?? "", path); const parent = copiedPath.slice(0, copiedPath.lastIndexOf("/")) || root!; load(parent); setCopied("File duplicated"); }
+    catch (error) { setOperationError(String(error)); }
+  };
+  const trashPath = async (path: string) => {
+    if (!backend || !window.confirm(`Move ${relative(root, path)} to Trash?`)) return;
+    try { await backend.fileTrash(root ?? "", path); if (previewPath === path) setPreviewPath(null); const parent = path.slice(0, path.lastIndexOf("/")) || root!; load(parent); setCopied("Moved to Trash"); }
+    catch (error) { setOperationError(String(error)); }
+  };
   const showFind = (mode: FindMode = "name", folder: string | null = null) => { setFindOpen(true); setFindMode(mode); setSearchFolder(folder); setFindQuery(""); setNameResults(null); setTextResults(null); setSearchError(""); requestAnimationFrame(() => findInput.current?.focus()); };
   const revealSearchResult = (path: string, line: number | null = null) => {
     const fullPath = path.startsWith(`${root.replace(/\/$/, "")}/`) ? path : join(root, path);
@@ -106,8 +136,15 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     { label: "Show changes", action: () => openPreview(context.row.path, true), show: !!context.row.changed },
     { label: "Collapse inside", action: () => setTree((current) => ({ ...current, expanded: new Set([...current.expanded].filter((path) => !path.startsWith(`${context.row.path}/`))) })), show: context.row.folder },
     { label: "Find in folder…", action: () => showFind("text", context.row.path), show: context.row.folder },
+    { label: "New file…", action: () => beginOperation("create-file", context.row.folder ? context.row.path : context.row.path.slice(0, context.row.path.lastIndexOf("/")) || root!), show: true },
+    { label: "New folder…", action: () => beginOperation("create-folder", context.row.folder ? context.row.path : context.row.path.slice(0, context.row.path.lastIndexOf("/")) || root!), show: true },
+    { label: "Rename…", action: () => beginOperation("rename", context.row.path), show: !context.row.truncated && context.row.path !== root },
+    { label: "Duplicate", action: () => void duplicateFile(context.row.path), show: !context.row.folder },
+    { label: "Move to Trash…", action: () => void trashPath(context.row.path), show: context.row.path !== root },
   ].filter((item) => item.show) : [];
   const activateKey = (event: React.KeyboardEvent) => {
+    if (event.key === "F2" && tree.selected) { event.preventDefault(); beginOperation("rename", tree.selected); return; }
+    if ((event.metaKey || event.ctrlKey) && event.key === "Backspace" && tree.selected) { event.preventDefault(); void trashPath(tree.selected); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c" && tree.selected) {
       event.preventDefault(); void copy(relative(root, tree.selected), "Path"); return;
     }
@@ -137,7 +174,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
       </button>
     </li>;
   };
-  return <div ref={shellRef} className="right-files-shell" onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") { event.preventDefault(); showFind(); } }}><div className="right-files-toolbar"><button type="button" title="Find files" aria-label="Find files" onClick={() => showFind()}>Find</button><button type="button" title="Refresh files" aria-label="Refresh files" onClick={() => { refresh(); onRefresh?.(); }}>↻</button><button type="button" title="Collapse all folders" aria-label="Collapse all folders" onClick={() => setTree((current) => collapseAll(current))}>⊟</button><button type="button" aria-pressed={changedOnly} onClick={() => setChangedOnly((value) => !value)}>Changed only</button><button type="button" aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>Show hidden</button><span className="muted" role="status">{copied}</span></div>
+  return <div ref={shellRef} className="right-files-shell" onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") { event.preventDefault(); showFind(); } }}><div className="right-files-toolbar"><button type="button" title="Find files" aria-label="Find files" onClick={() => showFind()}>Find</button><button type="button" title="Refresh files" aria-label="Refresh files" onClick={() => { refresh(); onRefresh?.(); }}>↻</button><button type="button" title="Collapse all folders" aria-label="Collapse all folders" onClick={() => setTree((current) => collapseAll(current))}>⊟</button><button type="button" aria-pressed={changedOnly} onClick={() => setChangedOnly((value) => !value)}>Changed only</button><button type="button" aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>Show hidden</button><details className="right-files-toolbar-menu"><summary aria-label="File actions" title="File actions">⋯</summary><div className="right-files-context"><button onClick={() => beginOperation("create-file")}>New file…</button><button onClick={() => beginOperation("create-folder")}>New folder…</button></div></details><span className="muted" role="status">{copied}</span></div>{operationError && !operation && <p className="right-files-operation-error" role="alert">{operationError}<button onClick={() => setOperationError("")}>Dismiss</button></p>}
     {findOpen && <form className="right-files-find" aria-label="Find in project" onSubmit={(event) => { event.preventDefault(); if (findMode === "text") runTextSearch(); else if (nameResults?.[0]) revealSearchResult(nameResults[0]); }}>
       <div className="right-files-find-modes"><button type="button" aria-pressed={findMode === "name"} onClick={() => { setFindMode("name"); setTextResults(null); }}>Name</button><button type="button" aria-pressed={findMode === "text"} onClick={() => { setFindMode("text"); setNameResults(null); }}>Text</button><button type="button" aria-label="Close find" title="Close find" onClick={() => { setFindOpen(false); setFindQuery(""); setSearchFolder(null); }}>×</button></div>
       <div className="right-files-find-input"><input ref={findInput} aria-label={findMode === "name" ? "Find files by name" : "Search text in files"} placeholder={findMode === "name" ? "Find files by name…" : "Search text in files…"} value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setTextResults(null); setSearchError(""); }} />{findMode === "text" && <button type="button" aria-pressed={caseSensitive} title="Match case" aria-label="Match case" onClick={() => setCaseSensitive((value) => !value)}>Aa</button>}{findMode === "text" && <button type="submit" disabled={!findQuery.trim() || searchLoading} aria-label="Search project">Search</button>}</div>
@@ -154,6 +191,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     </div>
     {previewPath && <><div className="right-files-resize" role="separator" aria-orientation="horizontal" aria-label="Resize file preview" onPointerDown={(event) => { const start = event.clientY, height = previewHeight; const move = (next: PointerEvent) => setPreviewHeight(Math.max(160, Math.min(Math.floor(window.innerHeight * .7), height + start - next.clientY))); const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); }; window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true }); }} /><div style={{ height: previewHeight, minHeight: 160, flex: "0 0 auto" }}><FilePreviewPanel key={previewPath} root={root} path={previewPath} backend={backend ?? ({ fileRead: async () => { throw new Error("Preview unavailable"); }, openTarget: async () => { throw new Error("Open unavailable"); } } as unknown as Backend)} diff={diff} local={local} paneId={paneId} view={previewView} onView={setPreviewView} onClose={() => setPreviewPath(null)} highlightLine={searchHighlightLine} /></div></>}
     {context && <div className="right-files-context" role="menu" aria-label={`${context.row.name} actions`} style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}>{contextActions.map((item) => <button role="menuitem" key={item.label} onClick={() => { setContext(null); item.action(); }}>{item.label}</button>)}</div>}
+    {operation && <div className="right-files-operation-backdrop"><form className="right-files-operation" role="dialog" aria-modal="true" aria-labelledby="right-files-operation-title" onSubmit={submitOperation}><h3 id="right-files-operation-title">{operation.kind === "rename" ? "Rename" : operation.kind === "create-file" ? "New file" : "New folder"}</h3><label>Name<input autoFocus value={operation.name} onChange={(event) => setOperation({ ...operation, name: event.target.value })} /></label>{operationError && <p role="alert">{operationError}</p>}<div><button type="button" onClick={() => setOperation(null)}>Cancel</button><button type="submit" disabled={!operation.name.trim()}>Save</button></div></form></div>}
   </div>;
 }
 

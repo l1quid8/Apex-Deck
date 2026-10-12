@@ -64,9 +64,21 @@
 .mark-M { color: var(--warn, #dfa52e); }
 .mark-A { color: var(--success, #48b884); }
 .mark-D { color: var(--danger, #e26a70); }
-.right-files-context { position: fixed; z-index: 1000; display: flex; min-width: 180px; flex-direction: column; padding: 4px; border: 1px solid var(--line, rgba(127,127,127,.3)); border-radius: 7px; background: var(--panel, var(--bg)); box-shadow: 0 8px 28px rgba(0,0,0,.24); }
+.right-files-context { position: fixed; z-index: 1000; display: flex; min-width: 180px; max-height: min(70vh, 540px); overflow-y: auto; flex-direction: column; padding: 4px; border: 1px solid var(--line, rgba(127,127,127,.3)); border-radius: 7px; background: var(--panel, var(--bg)); box-shadow: 0 8px 28px rgba(0,0,0,.24); }
 .right-files-context button { border: 0; border-radius: 4px; padding: 6px 9px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .right-files-context button:hover { background: var(--hover, rgba(127,127,127,.14)); }
+.right-files-toolbar-menu { position: relative; }
+.right-files-toolbar-menu summary { list-style: none; cursor: pointer; padding: 3px 8px; border-radius: 4px; }
+.right-files-toolbar-menu summary::-webkit-details-marker { display: none; }
+.right-files-toolbar-menu[open] .right-files-context { position: absolute; top: 26px; left: auto; right: 0; }
+.right-files-operation-backdrop { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; background: rgba(0,0,0,.42); }
+.right-files-operation { width: min(340px, calc(100vw - 32px)); padding: 16px; border: 1px solid var(--line, rgba(127,127,127,.3)); border-radius: 9px; background: var(--panel, var(--bg)); box-shadow: 0 12px 36px rgba(0,0,0,.35); }
+.right-files-operation h3 { margin: 0 0 12px; font-size: 15px; }
+.right-files-operation label { display: grid; gap: 6px; color: var(--muted); }
+.right-files-operation input { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: inherit; }
+.right-files-operation > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.right-files-operation p { color: var(--danger, #ef6975); }
+.right-files-operation-error { display: flex; justify-content: space-between; margin: 4px 8px; color: var(--danger, #ef6975); font-size: 12px; }
 .right-files-find { padding: 6px; border-bottom: 1px solid var(--line, rgba(127,127,127,.18)); }
 .right-files-find-modes, .right-files-find-input { display: flex; align-items: center; gap: 4px; }
 .right-files-find-modes button, .right-files-find-input button { border: 0; border-radius: 4px; padding: 4px 7px; color: inherit; background: transparent; cursor: pointer; }

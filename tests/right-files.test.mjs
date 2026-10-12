@@ -70,6 +70,11 @@ test('right-click actions omit Mac-only entries for remote projects', () => {
   assert.ok(labels.includes('Add to chat'));
   assert.ok(!labels.includes('Open in default app'));
   assert.ok(!labels.includes('Reveal in Finder'));
+  assert.ok(labels.includes('New file…'));
+  assert.ok(labels.includes('New folder…'));
+  assert.ok(labels.includes('Rename…'));
+  assert.ok(labels.includes('Duplicate'));
+  assert.ok(labels.includes('Move to Trash…'));
 });
 
 test('Add to chat sends the relative path and owning pane id without using clipboard', () => {

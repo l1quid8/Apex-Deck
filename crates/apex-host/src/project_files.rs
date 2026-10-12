@@ -82,6 +82,136 @@ fn inside(root: &Path, path: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
+fn validate_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name == ".git"
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err("Use a name without path separators.".into());
+    }
+    Ok(())
+}
+
+fn reject_symlink(root: &Path, path: &Path) -> Result<(), String> {
+    let target = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if fs::symlink_metadata(target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("File operations on symbolic links are not supported.".into());
+    }
+    Ok(())
+}
+
+fn entry_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+fn checked_parent(root: &Path, parent: &Path) -> Result<PathBuf, String> {
+    let parent = inside(root, parent)?;
+    if !parent.is_dir() {
+        return Err("The destination is not a folder.".into());
+    }
+    Ok(parent)
+}
+
+pub fn create(root: &Path, parent: &Path, name: &str, folder: bool) -> Result<String, String> {
+    validate_name(name)?;
+    let parent = checked_parent(root, parent)?;
+    let target = parent.join(name);
+    if entry_exists(&target) {
+        return Err("A file or folder with that name already exists.".into());
+    }
+    if folder {
+        fs::create_dir(&target)
+    } else {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .map(|_| ())
+    }
+    .map_err(|error| format!("Could not create it: {error}"))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+pub fn rename(root: &Path, path: &Path, new_name: &str) -> Result<String, String> {
+    validate_name(new_name)?;
+    reject_symlink(root, path)?;
+    let path = inside(root, path)?;
+    if path == root.canonicalize().map_err(|e| e.to_string())? {
+        return Err("The project root cannot be renamed.".into());
+    }
+    let parent = path.parent().ok_or("That path has no parent folder.")?;
+    checked_parent(root, parent)?;
+    let target = parent.join(new_name);
+    if entry_exists(&target) {
+        return Err("A file or folder with that name already exists.".into());
+    }
+    fs::rename(path, &target).map_err(|error| format!("Could not rename it: {error}"))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+pub fn duplicate(root: &Path, path: &Path) -> Result<String, String> {
+    reject_symlink(root, path)?;
+    let path = inside(root, path)?;
+    if path == root.canonicalize().map_err(|e| e.to_string())? {
+        return Err("The project root cannot be duplicated.".into());
+    }
+    if !path.is_file() {
+        return Err("Only files can be duplicated.".into());
+    }
+    let parent = path.parent().ok_or("That path has no parent folder.")?;
+    checked_parent(root, parent)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("That file name is not supported.")?;
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, Some(ext)),
+        _ => (name, None),
+    };
+    for index in 1..=10_000 {
+        let suffix = if index == 1 {
+            " copy".to_string()
+        } else {
+            format!(" copy {index}")
+        };
+        let copied = match extension {
+            Some(ext) => format!("{stem}{suffix}.{ext}"),
+            None => format!("{stem}{suffix}"),
+        };
+        let target = parent.join(copied);
+        if !entry_exists(&target) {
+            let mut source =
+                File::open(&path).map_err(|error| format!("Could not duplicate it: {error}"))?;
+            let mut destination = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+                .map_err(|error| format!("Could not duplicate it: {error}"))?;
+            std::io::copy(&mut source, &mut destination)
+                .map_err(|error| format!("Could not duplicate it: {error}"))?;
+            return Ok(target.to_string_lossy().into_owned());
+        }
+    }
+    Err("Could not find an available copy name.".into())
+}
+
+pub fn trash(root: &Path, path: &Path) -> Result<(), String> {
+    reject_symlink(root, path)?;
+    let path = inside(root, path)?;
+    if path == root.canonicalize().map_err(|e| e.to_string())? {
+        return Err("The project root cannot be moved to Trash.".into());
+    }
+    trash::delete(&path).map_err(|error| format!("Could not move it to Trash: {error}"))
+}
+
 pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
     let path = inside(root, path)?;
     let metadata = std::fs::metadata(&path).map_err(|e| format!("Could not read file: {e}"))?;
@@ -610,6 +740,47 @@ mod tests {
         fs::create_dir(temp.0.join("folder")).unwrap();
         assert!(read(&temp.0, Path::new(".git/config")).is_err());
         assert!(read(&temp.0, Path::new("folder")).is_err());
+    }
+
+    #[test]
+    fn file_operations_stay_in_project_and_choose_unique_copy_names() {
+        let temp = Temp::new();
+        let created = create(&temp.0, Path::new("."), "notes.txt", false).unwrap();
+        fs::write(&created, "sample").unwrap();
+        let copy = duplicate(&temp.0, Path::new("notes.txt")).unwrap();
+        assert!(copy.ends_with("notes copy.txt"));
+        let second = duplicate(&temp.0, Path::new("notes.txt")).unwrap();
+        assert!(second.ends_with("notes copy 2.txt"));
+        let renamed = rename(&temp.0, Path::new("notes copy.txt"), "renamed.md").unwrap();
+        assert!(renamed.ends_with("renamed.md"));
+        let folder = create(&temp.0, Path::new("."), "folder", true).unwrap();
+        assert!(Path::new(&folder).is_dir());
+        assert!(create(&temp.0, Path::new("."), "../escape", false).is_err());
+        assert!(rename(&temp.0, Path::new("notes.txt"), "../escape").is_err());
+        assert!(duplicate(&temp.0, Path::new("folder")).is_err());
+        assert!(create(&temp.0, Path::new("."), ".git", true).is_err());
+        assert!(rename(&temp.0, Path::new("."), "renamed").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_operations_reject_symbolic_links_and_outside_parents() {
+        let temp = Temp::new();
+        let outside = Temp::new();
+        fs::write(outside.0.join("secret"), "sample").unwrap();
+        std::os::unix::fs::symlink(outside.0.join("secret"), temp.0.join("link")).unwrap();
+        assert!(rename(&temp.0, Path::new("link"), "renamed").is_err());
+        assert!(duplicate(&temp.0, Path::new("link")).is_err());
+        assert!(create(&temp.0, &outside.0, "escape", false).is_err());
+    }
+
+    #[test]
+    #[ignore = "would move a file to the current user's system Trash"]
+    fn trash_moves_file_to_system_trash() {
+        let temp = Temp::new();
+        fs::write(temp.0.join("discard.txt"), "sample").unwrap();
+        trash(&temp.0, Path::new("discard.txt")).unwrap();
+        assert!(!temp.0.join("discard.txt").exists());
     }
 
     #[test]
