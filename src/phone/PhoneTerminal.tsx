@@ -24,6 +24,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     return next;
   });
   const [hostState, setHostState] = useState<Record<string, string>>({});
+  const [hostErrors, setHostErrors] = useState<Record<string, string>>({});
   const [view, setView] = useState<View>({ kind: "home" });
   const [lastTerminal, setLastTerminal] = useState<View | null>(null);
   const [sheet, setSheet] = useState<"list" | "menu" | null>(null);
@@ -89,9 +90,12 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
       else setSummaries((current) => ({ ...current, [info.id]: enriched }));
       for (const item of items) { const key = `${info.id}:${item.id}`; const pending = discoveryTimers.current.get(key); if (pending) clearTimeout(pending); discoveryTimers.current.delete(key); }
       setHostState((s) => ({ ...s, [info.id]: "ready" }));
+      setHostErrors((s) => ({ ...s, [info.id]: "" }));
     } catch (error) {
-      const message = String(error).toLowerCase();
-      setHostState((s) => ({ ...s, [info.id]: message.includes("unknown command") ? "old" : message.includes("limited to some threads") ? "needs-all-threads" : message.includes("access") || message.includes("permission") ? "needs-full" : "offline" }));
+      const detail = String(error);
+      const message = detail.toLowerCase();
+      setHostErrors((s) => ({ ...s, [info.id]: detail }));
+      setHostState((s) => ({ ...s, [info.id]: message.includes("unknown command") ? "old" : message.includes("limited to some threads") ? "needs-all-threads" : message.includes("access") || message.includes("permission") ? "needs-full" : "error" }));
     }
   };
 
@@ -212,6 +216,8 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
       <div className="ph-term-home-head"><b>Terminals</b><button type="button" onClick={() => { setQuery(""); setSheet("list"); }}>See all</button></div>
       {eligible.length === 0 ? <p className="ph-term-muted">Needs Full access</p> : <>
         <button type="button" className="ph-term-open-list" onClick={() => { setQuery(""); setSheet("list"); }}>{visible.filter((item) => item.machineId === machine?.id).length} open · {visible.filter((item) => item.machineId === machine?.id && item.state === "running").length} running · {visible.filter((item) => item.machineId === machine?.id && dotState(item) === "ask").length} needs an answer</button>
+        {machine?.online && machine.access && <button type="button" className="ph-term-new" onClick={() => void newShell(machine)}>＋ New shell</button>}
+        {machine && hostErrors[machine.id] && <p className="ph-term-muted" role="status">Couldn't load terminals: {hostErrors[machine.id]}</p>}
         <div className="ph-group">{visible.filter((item) => item.machineId === machine?.id).slice(0, 3).map((item) => row(item))}</div>
       </>}
       <p className="ph-term-foot">Hold the Code tab to jump to any terminal.</p>
@@ -231,7 +237,7 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     {sheet === "list" && <div className="ph-sheet-back" onClick={() => setSheet(null)}><section className="ph-sheet" role="dialog" aria-modal="true" aria-label="Terminals" onClick={(event) => event.stopPropagation()}><div className="ph-sheet-title"><h3>Terminals</h3><button onClick={() => setSheet(null)}>×</button></div><input className="ph-term-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search names and output" />
       {(query ? searchResults ?? [] : visible).length === 0 && query && <p className="ph-term-muted">No terminal name or recent output matches “{query}”.</p>}
       {(query ? groupForSheet(infos, searchResults ?? [], { machineId: machine?.id ?? "", project }) : groups).map((group) => <div key={`${group.machine.id}:${group.project}`}><h4>{group.machine.name} · {group.project}</h4>{group.terminals.map((item) => row(item, view.kind === "terminal" && item.id === view.id))}</div>)}
-      {infos.filter((info) => !info.access || !info.online || hostState[info.id] === "old" || hostState[info.id] === "needs-all-threads").map((info) => <p className="ph-term-muted" key={info.id}>{info.name}: {hostState[info.id] === "old" ? `Update Apex Deck on ${info.name} to see its terminals` : hostState[info.id] === "needs-all-threads" ? `Allow this phone every thread on ${info.name}` : !info.access ? `Needs Full access on ${info.name}` : `${info.name} is offline`}</p>)}
+      {infos.filter((info) => !info.access || !info.online || hostState[info.id] === "old" || hostState[info.id] === "needs-all-threads" || hostState[info.id] === "error").map((info) => <p className="ph-term-muted" role={hostState[info.id] === "error" || hostState[info.id] === "old" || hostState[info.id] === "needs-all-threads" ? "status" : undefined} key={info.id}>{info.name}: {hostState[info.id] === "old" ? `Update Apex Deck on ${info.name} to see its terminals (${hostErrors[info.id]})` : hostState[info.id] === "needs-all-threads" ? `Allow this phone every thread on ${info.name} (${hostErrors[info.id]})` : hostState[info.id] === "error" ? `Couldn't load terminals: ${hostErrors[info.id]}` : !info.access ? `Needs Full access on ${info.name}` : `${info.name} is offline`}</p>)}
       {!query && machine && <button className="ph-term-new" onClick={() => void newShell(machine)}>＋ New shell in {project}</button>}
       <p className="ph-term-foot">Shows terminals opened in Apex Deck. Terminal.app and iTerm windows aren't listed.</p>
     </section></div>}
