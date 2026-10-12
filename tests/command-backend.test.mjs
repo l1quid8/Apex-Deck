@@ -47,9 +47,11 @@ const COMMANDS = [
   ['apiKeySave', ['A', 'k'], 'api_key_save', { name: 'A', key: 'k' }],
   ['apiKeyRemove', ['A'], 'api_key_remove', { name: 'A' }],
   ['previewProbe', ['localhost:5173'], 'preview_probe', { address: 'localhost:5173' }],
-  ['ptySpawn', [{ id: 'p1', cols: 80, rows: 24 }], 'pty_spawn', { id: 'p1', agent: null, cwd: null, cols: 80, rows: 24 }],
-  ['ptySpawn', [{ id: 'p1', agent: 'codex', cwd: '/w', cols: 80, rows: 24 }], 'pty_spawn', { id: 'p1', agent: 'codex', cwd: '/w', cols: 80, rows: 24 }],
-  ['ptyList', [], 'pty_list', undefined],
+  ['ptySpawn', [{ id: 'p1', cols: 80, rows: 24 }], 'pty_spawn', { id: 'p1', agent: null, cwd: null, name: null, cols: 80, rows: 24 }],
+  ['ptySpawn', [{ id: 'p1', agent: 'codex', cwd: '/w', name: 'dev server', cols: 80, rows: 24 }], 'pty_spawn', { id: 'p1', agent: 'codex', cwd: '/w', name: 'dev server', cols: 80, rows: 24 }],
+  ['ptyList', [], 'pty_list', { query: null }],
+  ['ptyList', ['ok'], 'pty_list', { query: 'ok' }],
+  ['ptyRename', ['p1', 'tests'], 'pty_rename', { id: 'p1', name: 'tests' }],
   ['ptyAttach', ['p1'], 'pty_attach', { id: 'p1' }],
   ['ptyWrite', ['p1', 'ls\n'], 'pty_write', { id: 'p1', data: 'ls\n' }],
   ['ptyResize', ['p1', 100, 30], 'pty_resize', { id: 'p1', cols: 100, rows: 30 }],
@@ -123,14 +125,16 @@ test('events come from the transport with the arguments the UI expects', async (
   const heard = [];
   await backend.onPtyData((id, data, cursor) => heard.push(['data', id, data, cursor]));
   await backend.onPtyExit((id, code) => heard.push(['exit', id, code]));
+  await backend.onPtyRenamed((id, name) => heard.push(['renamed', id, name]));
   await backend.onRoomEvent((room, event) => heard.push(['room', room, event]));
   await backend.onAssistantTasksChanged((snapshot) => heard.push(['tasks', snapshot]));
-  assert.deepEqual(transport.listens.map(l => l.event), ['pty-data', 'pty-exit', 'room-event', 'assistant-tasks-changed']);
+  assert.deepEqual(transport.listens.map(l => l.event), ['pty-data', 'pty-exit', 'pty-renamed', 'room-event', 'assistant-tasks-changed']);
   transport.listens[0].cb({ id: 'p1', data: 'x', cursor: 2 });
   transport.listens[1].cb({ id: 'p1', code: 0 });
-  transport.listens[2].cb({ room: 't', event: { type: 'turn_started', id: 'p' } });
-  transport.listens[3].cb({ workspaceId: 'w', revision: 12 });
-  assert.deepEqual(heard, [['data', 'p1', 'x', 2], ['exit', 'p1', 0], ['room', 't', { type: 'turn_started', id: 'p' }], ['tasks', { workspaceId: 'w', revision: 12 }]]);
+  transport.listens[2].cb({ id: 'p1', name: 'tests' });
+  transport.listens[3].cb({ room: 't', event: { type: 'turn_started', id: 'p' } });
+  transport.listens[4].cb({ workspaceId: 'w', revision: 12 });
+  assert.deepEqual(heard, [['data', 'p1', 'x', 2], ['exit', 'p1', 0], ['renamed', 'p1', 'tests'], ['room', 't', { type: 'turn_started', id: 'p' }], ['tasks', { workspaceId: 'w', revision: 12 }]]);
 });
 
 test('attachments go to the transport\'s own methods', async () => {
@@ -178,6 +182,6 @@ test('apiBalance returns a finite number or null', async () => {
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'ptyList', 'ptyAttach']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });

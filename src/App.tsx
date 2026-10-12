@@ -2137,7 +2137,7 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {!paneBackend ? <div role="alert">{destinationError}</div> : <HostPane backend={paneBackend} agents={agents}>{hostAgents => pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={paneBackend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, hostAgents)} toolLabel={toolName(pane.agent, hostAgents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={paneBackend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, hostAgents)} toolLabel={toolName(pane.agent, hostAgents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onRenamePane={renamePane} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
                     ) : pane.kind === "preview" ? (
                       <PreviewPane
                         pane={pane}

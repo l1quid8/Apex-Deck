@@ -31,6 +31,7 @@ interface Props {
   onRun: (paneId: string, run: TerminalRun) => void;
   /** The title the program gives itself, cleaned; "" when it has none or has ended. */
   onTitle: (paneId: string, title: string) => void;
+  onRenamePane: (paneId: string, title: string) => void;
   /** Raise or clear (with `null`) this pane's request for attention. */
   onSignal: (paneId: string, kind: Attention | null, note?: string) => void;
   /** Close the pane, from the bar shown once the program has ended. */
@@ -63,7 +64,7 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onRenamePane, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
   const connection = useHostConnection(backend);
   const available = installed && hostCanMutate(connection.status);
   /** Fit the terminal to its pane and tell the program its new size. Set up with the terminal below. */
@@ -73,8 +74,11 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
   /** Where the program is, for the bar at the foot of the pane. */
   const [run, setRun] = useState<TerminalRun>(STOPPED);
   // Keep the latest callbacks and folder without restarting the terminal when they change.
-  const latest = useRef({ onActivity, onRun, onTitle, onSignal, onRunStart, onServer, cwd, installed });
-  latest.current = { onActivity, onRun, onTitle, onSignal, onRunStart, onServer, cwd, installed };
+  const latest = useRef({ onActivity, onRun, onTitle, onRenamePane, onSignal, onRunStart, onServer, cwd, installed, title: pane.title });
+  latest.current = { onActivity, onRun, onTitle, onRenamePane, onSignal, onRunStart, onServer, cwd, installed, title: pane.title };
+  const currentPtyId = useRef<string | null>(null);
+  const receivedRename = useRef<string | null>(null);
+  const lastPaneTitle = useRef(pane.title);
   /** Starts the program, or starts it again once it has ended. Set up with the terminal below. */
   const start = useRef<() => void>(() => {});
 
@@ -154,6 +158,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       const again = current.generation > 0;
       const next = started(current, Date.now());
       const id = ptyIdFor(pane.id, next.generation);
+      currentPtyId.current = id;
       servers.reset();
       unregister();
       unregister = registerPty(id, {
@@ -193,7 +198,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       report(next);
       if (hasSize()) fit.fit();
       backend
-        .ptySpawn({ id, agent: pane.agent, cwd: latest.current.cwd || undefined, cols: term.cols, rows: term.rows })
+        .ptySpawn({ id, agent: pane.agent, cwd: latest.current.cwd || undefined, name: latest.current.title, cols: term.cols, rows: term.rows })
         .catch((error) => {
           term.write(`\x1b[31mCould not start: ${String(error)}\x1b[0m\r\n`);
           report(exited(current, next.generation, null, Date.now()));
@@ -208,6 +213,14 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       waiting = false;
       latest.current.onSignal(pane.id, null);
     });
+
+    let renameOff: (() => void) | undefined;
+    void backend.onPtyRenamed((id, name) => {
+      if (id !== currentPtyId.current) return;
+      receivedRename.current = name;
+      lastPaneTitle.current = name;
+      latest.current.onRenamePane(pane.id, name);
+    }).then((off) => { renameOff = off; }).catch(() => {});
 
     // A pane that is hidden has no size; skip fitting until it is shown.
     refit.current = () => {
@@ -258,8 +271,10 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       clearTimeout(titleTimer);
       titled.dispose();
       typed.dispose();
+      renameOff?.();
       unregister();
       if (current.state === "running") backend.ptyKill(ptyId()).catch(() => {});
+      currentPtyId.current = null;
       start.current = () => {};
       term.dispose();
       terminal.current = null;
@@ -267,6 +282,14 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     // The terminal lives as long as the pane; its inputs do not change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
+
+  useEffect(() => {
+    if (pane.title === lastPaneTitle.current) return;
+    lastPaneTitle.current = pane.title;
+    if (receivedRename.current === pane.title) { receivedRename.current = null; return; }
+    const id = currentPtyId.current;
+    if (id) void backend.ptyRename(id, pane.title).catch(() => {});
+  }, [backend, pane.title]);
 
   // Settings › Terminal. A new font size changes how many cells fit, so refit.
   useEffect(() => {

@@ -44,14 +44,16 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     apiKeyRemove: (name) => call("api_key_remove", { name }),
     previewProbe: (address) => call<PreviewProbe>("preview_probe", { address }),
 
-    ptySpawn: (o) => call("pty_spawn", { id: o.id, agent: o.agent ?? null, cwd: o.cwd ?? null, cols: o.cols, rows: o.rows }),
-    ptyList: () => call("pty_list"),
+    ptySpawn: (o) => call("pty_spawn", { id: o.id, agent: o.agent ?? null, cwd: o.cwd ?? null, name: o.name ?? null, cols: o.cols, rows: o.rows }),
+    ptyList: (query) => call("pty_list", { query: query ?? null }),
+    ptyRename: (id, name) => call("pty_rename", { id, name }),
     ptyAttach: (id) => call("pty_attach", { id }),
     ptyWrite: (id, data) => call("pty_write", { id, data }),
     ptyResize: (id, cols, rows) => call("pty_resize", { id, cols, rows }),
     ptyKill: (id) => call("pty_kill", { id }),
     onPtyData: (cb) => transport.listen<{ id: string; data: string; cursor: number }>("pty-data", (p) => cb(p.id, p.data, p.cursor)),
     onPtyExit: (cb) => transport.listen<{ id: string; code: number | null }>("pty-exit", (p) => cb(p.id, p.code)),
+    onPtyRenamed: (cb) => transport.listen<{ id: string; name: string }>("pty-renamed", (p) => cb(p.id, p.name)),
 
     roomCreate: (id, participants, options, cwd) => call<RoomSnapshot>("room_create", { id, participants, options, cwd: cwd || null }),
     roomState: (id) => call("room_state", { id }),
