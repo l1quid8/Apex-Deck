@@ -316,6 +316,12 @@ export interface FolderListing {
   truncated: boolean;
 }
 
+export type FilePreview =
+  | { kind: "text"; text: string; size: number; truncated: boolean }
+  | { kind: "image"; mime: string; data: string; size: number }
+  | { kind: "binary"; size: number }
+  | { kind: "too_large"; size: number };
+
 export interface Worktree { path: string; head: string | null; branch: string | null; main: boolean; locked: boolean; prunable: boolean; changes: number | null; task: boolean }
 export interface WorktreeList { root: string; items: Worktree[] }
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }

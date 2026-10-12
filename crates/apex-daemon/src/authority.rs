@@ -103,7 +103,7 @@ pub fn command_needs(command: &Command) -> Need {
         // Full, and only for devices allowed every thread: terminals,
         // folders and files, new threads, and whole-session or settings writes.
         PtySpawn { .. } | PtyWrite { .. } | PtyResize { .. } | PtyKill { .. } => full(Global),
-        FolderList { .. } | WorktreeList { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreePrune { .. } => full(Global),
+        FolderList { .. } | FileRead { .. } | WorktreeList { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreePrune { .. } => full(Global),
         WorkspaceRead { .. } => full(Global),
         PathsExist { .. } => full(Global),
         StartupFolders {} => full(Global),
@@ -320,6 +320,7 @@ mod tests {
             ("pty_resize", Some((Full, "global")), json!({ "id": "p", "cols": 80, "rows": 24 })),
             ("pty_kill", Some((Full, "global")), json!({ "id": "p" })),
             ("folder_list", Some((Full, "global")), json!({})),
+            ("file_read", Some((Full, "global")), json!({ "root": "/project", "path": "/project/README.md" })),
             ("worktree_list", Some((Full, "global")), json!({ "path": "/p" })),
             ("worktree_add", Some((Full, "global")), json!({ "path": "/p", "branch": "feature/x", "newBranch": true })),
             ("worktree_remove", Some((Full, "global")), json!({ "path": "/p", "worktree": "/p-wt", "force": false })),

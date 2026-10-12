@@ -66,12 +66,12 @@ export function moveSelection(rows: Row[], selected: string | null, key: "ArrowU
   const parent = rows.slice(0, index).reverse().find((candidate) => candidate.folder && row.path.startsWith(`${candidate.path}/`));
   return { selected: parent?.path ?? row.path };
 }
-export function parseFilesPrefs(raw: string | null): Record<string, { expanded: string[]; changedOnly: boolean; showHidden: boolean }> {
+export function parseFilesPrefs(raw: string | null): Record<string, { expanded: string[]; changedOnly: boolean; showHidden: boolean; previewHeight: number }> {
   try {
     const parsed = JSON.parse(raw ?? "{}"); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     return Object.fromEntries(Object.entries(parsed).slice(-20).map(([root, value]) => {
       const v = value && typeof value === "object" ? value as Record<string, unknown> : {};
-      return [root, { expanded: Array.isArray(v.expanded) ? v.expanded.filter((x): x is string => typeof x === "string") : [], changedOnly: v.changedOnly === true, showHidden: v.showHidden === true }];
+      return [root, { expanded: Array.isArray(v.expanded) ? v.expanded.filter((x): x is string => typeof x === "string") : [], changedOnly: v.changedOnly === true, showHidden: v.showHidden === true, previewHeight: typeof v.previewHeight === "number" && Number.isFinite(v.previewHeight) ? Math.max(160, Math.min(700, v.previewHeight)) : 280 }];
     }));
   } catch { return {}; }
 }

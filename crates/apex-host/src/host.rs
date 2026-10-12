@@ -1052,6 +1052,11 @@ impl Host {
         folders::list(path.as_deref(), home)
     }
 
+    pub async fn file_read(&self, root: String, path: String) -> Result<crate::project_files::FilePreview, String> {
+        tokio::task::spawn_blocking(move || crate::project_files::read(Path::new(&root), Path::new(&path)))
+            .await.map_err(|error| error.to_string())?
+    }
+
     pub async fn worktree_list(&self, path: String) -> Result<worktrees::WorktreeList, String> {
         let task_dir = self.paths.data.join("apex-agent").join("tasks");
         tokio::task::spawn_blocking(move || worktrees::list(Path::new(&path), &task_dir)).await.map_err(|e| e.to_string())?
@@ -1614,7 +1619,7 @@ fn open_command(target: OpenTarget, reveal: bool) -> (&'static str, Vec<std::ffi
 }
 
 /// The largest workspace file read for the artifacts pane, in bytes.
-const MAX_WORKSPACE_READ: u64 = 512 * 1024;
+pub(crate) const MAX_WORKSPACE_READ: u64 = 512 * 1024;
 
 fn workspace_read(target: String, cwd: Option<String>) -> Option<String> {
     let OpenTarget::Path(path) = resolve_target(&target, cwd.as_deref()).ok()? else { return None };

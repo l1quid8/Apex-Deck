@@ -59,6 +59,7 @@ const COMMANDS = [
   ['pathsExist', [['a'], null], 'paths_exist', { targets: ['a'], cwd: null }],
   ['listFolder', ['/srv'], 'folder_list', { path: '/srv' }],
   ['listFolder', [null], 'folder_list', { path: null }],
+  ['fileRead', ['/srv/app', '/srv/app/README.md'], 'file_read', { root: '/srv/app', path: '/srv/app/README.md' }],
   ['worktreeList', ['/repo'], 'worktree_list', { path: '/repo' }],
   ['worktreeAdd', ['/repo', { branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }], 'worktree_add', { path: '/repo', branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }],
   ['worktreeRemove', ['/repo', '/repo-wt', true], 'worktree_remove', { path: '/repo', worktree: '/repo-wt', force: true }],

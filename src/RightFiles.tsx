@@ -3,6 +3,7 @@ import type { FolderListing, ThreadDiff } from "./types";
 import type { Backend } from "./backend";
 import { changeMarks, collapseAll, createTree, moveSelection, parseFilesPrefs, toggle, visibleRows, type FilesTree, type Row } from "./filesTreeModel";
 import { writeClipboard } from "./threadCopy";
+import { FilePreviewPanel } from "./FilePreview";
 
 const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`;
 const relative = (root: string, path: string) => path === root ? "." : path.startsWith(`${root.replace(/\/$/, "")}/`) ? path.slice(root.replace(/\/$/, "").length + 1) : path;
@@ -14,6 +15,7 @@ export function FilesError({ onRetry }: { onRetry: () => void }) { return <div c
 export function RightFiles({ root, list, diff, onOpen, backend = null, local = true, paneId = null, onRefresh, visible = true }: { root: string | null; list: (path: string) => Promise<FolderListing>; diff: ThreadDiff | null; onOpen: (path: string) => void; backend?: Backend | null; local?: boolean; paneId?: string | null; onRefresh?: () => void; visible?: boolean }) {
   const [tree, setTree] = useState<FilesTree>(() => createTree(root ?? ""));
   const [changedOnly, setChangedOnly] = useState(false), [showHidden, setShowHidden] = useState(false);
+  const [previewPath, setPreviewPath] = useState<string | null>(null), [previewHeight, setPreviewHeight] = useState(280), [previewView, setPreviewView] = useState<"file" | "changes">("file");
   const [changesOpen, setChangesOpen] = useState(true), [context, setContext] = useState<Context>(null), [copied, setCopied] = useState("");
   const listRef = useRef(list); listRef.current = list;
   const wasVisible = useRef(false);
@@ -22,8 +24,9 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   const rows = useMemo(() => visibleRows(tree, { changes: marks, changedOnly, showHidden }), [tree, marks, changedOnly, showHidden]);
   const rootRef = useRef(root); rootRef.current = root;
   const load = useCallback((path: string) => {
-    setTree((current) => ({ ...current, entries: new Map(current.entries).set(path, { state: "loading" }) }));
-    void listRef.current(path).then((listing) => setTree((current) => current.root === rootRef.current ? ({ ...current, entries: new Map(current.entries).set(path, { state: "ready", listing }) }) : current), (error) => setTree((current) => current.root === rootRef.current ? ({ ...current, entries: new Map(current.entries).set(path, { state: "error", message: String(error) }) }) : current));
+    const owner = rootRef.current;
+    setTree((current) => current.root === owner ? ({ ...current, entries: new Map(current.entries).set(path, { state: "loading" }) }) : current);
+    void listRef.current(path).then((listing) => setTree((current) => current.root === owner ? ({ ...current, entries: new Map(current.entries).set(path, { state: "ready", listing }) }) : current), (error) => setTree((current) => current.root === owner ? ({ ...current, entries: new Map(current.entries).set(path, { state: "error", message: String(error) }) }) : current));
   }, []);
   useEffect(() => {
     if (!root) return;
@@ -31,7 +34,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     try { prefs = parseFilesPrefs(localStorage.getItem(PREF_KEY)); } catch { /* storage can be disabled */ }
     const saved = prefs[root];
     const next = createTree(root); if (saved) next.expanded = new Set([root, ...saved.expanded]);
-    setTree(next); setChangedOnly(saved?.changedOnly ?? false); setShowHidden(saved?.showHidden ?? false);
+    setTree(next); setChangedOnly(saved?.changedOnly ?? false); setShowHidden(saved?.showHidden ?? false); setPreviewHeight(saved?.previewHeight ?? 280); setPreviewPath(null);
     for (const path of next.expanded) load(path);
   }, [root, load]);
   useEffect(() => {
@@ -51,32 +54,36 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     if (!root) return;
     try {
       const all = parseFilesPrefs(localStorage.getItem(PREF_KEY));
-      all[root] = { expanded: [...tree.expanded].filter((path) => path !== root), changedOnly, showHidden };
+      all[root] = { expanded: [...tree.expanded].filter((path) => path !== root), changedOnly, showHidden, previewHeight };
       const recent = Object.fromEntries(Object.entries(all).filter(([key]) => key !== root).slice(-19));
       localStorage.setItem(PREF_KEY, JSON.stringify({ ...recent, [root]: all[root] }));
     } catch { /* storage can be disabled */ }
-  }, [root, tree.expanded, changedOnly, showHidden]);
+  }, [root, tree.expanded, changedOnly, showHidden, previewHeight]);
   useEffect(() => { if (context) { const close = () => setContext(null); window.addEventListener("click", close); return () => window.removeEventListener("click", close); } }, [context]);
   if (!root) return <p className="muted right-panel-empty">This project has no folder.</p>;
   const openFolder = (path: string) => { const wasOpen = tree.expanded.has(path); setTree((current) => toggle(current, path)); if (!wasOpen) load(path); };
   const refresh = () => { for (const path of tree.expanded) load(path); };
   const copy = async (text: string, what: string) => { const ok = await writeClipboard(text, navigator.clipboard); setCopied(ok ? `${what} copied` : "Clipboard unavailable"); window.setTimeout(() => setCopied(""), 1600); };
   const addToChat = (path: string) => { if (paneId) window.dispatchEvent(new CustomEvent("deck:insert-composer", { detail: { paneId, text: `\`${relative(root, path)}\`` } })); };
+  const openPreview = (path: string, changes = false) => { setPreviewPath(path); setPreviewView(changes ? "changes" : "file"); };
   const contextActions = context ? [
-    { label: "Open", action: () => onOpen(context.row.path), show: !context.row.folder },
+    { label: "Open", action: () => openPreview(context.row.path), show: !context.row.folder },
     { label: "Open in default app", action: () => void backend?.openTarget(context.row.path, root, false), show: local },
     { label: "Reveal in Finder", action: () => void backend?.openTarget(context.row.path, root, true), show: local },
     { label: "Copy relative path", action: () => void copy(relative(root, context.row.path), "Path"), show: true },
     { label: "Copy full path", action: () => void copy(context.row.path, "Path"), show: true },
     { label: "Copy file name", action: () => void copy(context.row.name, "Name"), show: true },
     { label: "Add to chat", action: () => addToChat(context.row.path), show: !!paneId },
-    { label: "Show changes", action: () => onOpen(context.row.path), show: !!context.row.changed },
+    { label: "Show changes", action: () => openPreview(context.row.path, true), show: !!context.row.changed },
     { label: "Collapse inside", action: () => setTree((current) => ({ ...current, expanded: new Set([...current.expanded].filter((path) => !path.startsWith(`${context.row.path}/`))) })), show: context.row.folder },
   ].filter((item) => item.show) : [];
   const activateKey = (event: React.KeyboardEvent) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c" && tree.selected) {
+      event.preventDefault(); void copy(relative(root, tree.selected), "Path"); return;
+    }
     if (event.key === "Enter") {
       event.preventDefault(); const row = rows.find((item) => item.path === tree.selected);
-      if (row) row.folder ? openFolder(row.path) : onOpen(row.path);
+      if (row) row.folder ? openFolder(row.path) : openPreview(row.path);
       return;
     }
     if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -95,22 +102,30 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   const fileRow = (row: Row, index: number) => {
     if (row.truncated) return <li key={`${row.path}:truncated`} className="muted right-files-loading">More files not shown.</li>;
     return <li key={row.path} role="treeitem" aria-level={row.depth + 1} aria-expanded={row.folder ? tree.expanded.has(row.path) : undefined}>
-      <button type="button" className={`right-files-item${row.changed ? " changed" : ""}${tree.selected === row.path ? " selected" : ""}`} style={{ paddingLeft: `${6 + row.depth * 14}px` }} tabIndex={tree.selected === row.path || (!tree.selected && index === 0) ? 0 : -1} data-file-path={row.path} draggable={!row.loading && !row.error} onDragStart={(event) => { event.dataTransfer.setData("text/plain", relative(root, row.path)); }} onFocus={() => setTree((current) => ({ ...current, selected: row.path }))} onContextMenu={(event) => { event.preventDefault(); setContext({ row, x: event.clientX, y: event.clientY }); }} onDoubleClick={() => { if (!row.folder && local) void backend?.openTarget(row.path, root, false); }} onClick={(event) => { if (event.altKey && local) void backend?.openTarget(row.path, root, false); else row.folder ? openFolder(row.path) : onOpen(row.path); }} title={row.path}>
+      <button type="button" className={`right-files-item${row.changed ? " changed" : ""}${tree.selected === row.path ? " selected" : ""}`} style={{ paddingLeft: `${6 + row.depth * 14}px` }} tabIndex={tree.selected === row.path || (!tree.selected && index === 0) ? 0 : -1} data-file-path={row.path} draggable={!row.loading && !row.error} onDragStart={(event) => { event.dataTransfer.setData("text/plain", relative(root, row.path)); }} onFocus={() => setTree((current) => ({ ...current, selected: row.path }))} onContextMenu={(event) => { event.preventDefault(); setContext({ row, x: event.clientX, y: event.clientY }); }} onDoubleClick={() => { if (!row.folder && local) onOpen(row.path); }} onClick={(event) => { if (row.error) load(row.path); else if (event.altKey && local) onOpen(row.path); else row.folder ? openFolder(row.path) : openPreview(row.path); }} title={row.error ? `${row.path} · Click to retry` : row.path}>
         <span aria-hidden="true" className="right-files-disclosure">{row.folder ? (tree.expanded.has(row.path) ? "▾" : "▸") : ""}</span><span className="right-files-name">{row.name}</span>{row.hasChangedInside && <span className="right-files-dot" aria-label="Changes inside"/>}{row.changed && <span className={`right-files-mark mark-${row.changed}`} aria-label={row.changed}>{row.changed}</span>}{row.loading && <span className="muted">Loading…</span>}{row.error && <span className="muted">Error · retry</span>}<span className="right-files-more" onClick={(event) => { event.stopPropagation(); const rect = (event.currentTarget as HTMLElement).getBoundingClientRect(); setContext({ row, x: rect.left, y: rect.bottom }); }} aria-label={`More actions for ${row.name}`}>⋯</span>
       </button>
     </li>;
   };
   return <div className="right-files-shell"><div className="right-files-toolbar"><button title="Refresh files" aria-label="Refresh files" onClick={() => { refresh(); onRefresh?.(); }}>↻</button><button title="Collapse all folders" aria-label="Collapse all folders" onClick={() => setTree((current) => collapseAll(current))}>⊟</button><button aria-pressed={changedOnly} onClick={() => setChangedOnly((value) => !value)}>Changed only</button><button aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>Show hidden</button><span className="muted" role="status">{copied}</span></div>
-    {marks.size > 0 && <section className="right-files-changes"><button className="right-files-section-toggle" aria-expanded={changesOpen} onClick={() => setChangesOpen((value) => !value)}>Changed in this thread <span>{marks.size}</span><span>{changesOpen ? "▾" : "▸"}</span></button>{changesOpen && <ul>{(diff?.files ?? []).map((file) => { const path = file.path.startsWith("/") ? file.path : join(root, file.path); const mark = marks.get(path)!; return <li key={path}><button className={`right-files-change mark-${mark}`} onClick={() => onOpen(path)}><span>{mark}</span><span className={mark === "D" ? "right-files-deleted" : ""}>{relative(root, path)}</span><small>+{file.added} −{file.removed}</small></button></li>; })}</ul>}</section>}
-    <ul className="right-files" role="tree" aria-label="Files" onKeyDown={activateKey}>{rows.map(fileRow)}</ul>
+    <div className="right-files-browser" style={previewPath ? { height: `calc(100% - ${previewHeight + 9}px)`, flex: "0 0 auto" } : { flex: "1 1 auto" }}>
+      {marks.size > 0 && <section className="right-files-changes"><button className="right-files-section-toggle" aria-expanded={changesOpen} onClick={() => setChangesOpen((value) => !value)}>Changed in this thread <span>{marks.size}</span><span>{changesOpen ? "▾" : "▸"}</span></button>{changesOpen && <ul>{(diff?.files ?? []).map((file) => { const path = file.path.startsWith("/") ? file.path : join(root, file.path); const mark = marks.get(path)!; return <li key={path}><button className={`right-files-change mark-${mark}`} onClick={() => openPreview(path, true)}><span>{mark}</span><span className={mark === "D" ? "right-files-deleted" : ""}>{relative(root, path)}</span><small>+{file.added} −{file.removed}</small></button></li>; })}</ul>}</section>}
+      <ul className="right-files" role="tree" aria-label="Files" onKeyDown={activateKey}>{rows.map(fileRow)}</ul>
+    </div>
+    {previewPath && <><div className="right-files-resize" role="separator" aria-orientation="horizontal" aria-label="Resize file preview" onPointerDown={(event) => { const start = event.clientY, height = previewHeight; const move = (next: PointerEvent) => setPreviewHeight(Math.max(160, Math.min(Math.floor(window.innerHeight * .7), height + start - next.clientY))); const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); }; window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true }); }} /><div style={{ height: previewHeight, minHeight: 160, flex: "0 0 auto" }}><FilePreviewPanel key={previewPath} root={root} path={previewPath} backend={backend ?? ({ fileRead: async () => { throw new Error("Preview unavailable"); }, openTarget: async () => { throw new Error("Open unavailable"); } } as unknown as Backend)} diff={diff} local={local} paneId={paneId} view={previewView} onView={setPreviewView} onClose={() => setPreviewPath(null)} /></div></>}
     {context && <div className="right-files-context" role="menu" aria-label={`${context.row.name} actions`} style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}>{contextActions.map((item) => <button role="menuitem" key={item.label} onClick={() => { setContext(null); item.action(); }}>{item.label}</button>)}</div>}
   </div>;
 }
 
 export function RightFilesTab({ root, backend, threadId, visible, onOpen, local = true, paneId = null }: { root: string | null; backend: Backend | null; threadId: string | null; visible: boolean; onOpen: (path: string) => void; local?: boolean; paneId?: string | null }) {
   const [diff, setDiff] = useState<ThreadDiff | null>(null);
-  const refreshDiff = useCallback(() => { if (!visible || !threadId || !backend) { setDiff(null); return; } let live = true; void backend.roomDiff(threadId).then((value) => { if (live) setDiff(value); }, () => { if (live) setDiff(null); }); return () => { live = false; }; }, [visible, threadId, backend]);
-  useEffect(() => refreshDiff(), [refreshDiff]);
+  const refreshDiff = useCallback(() => { if (!visible || !threadId || !backend) return; void backend.roomDiff(threadId).then(setDiff, () => setDiff(null)); }, [visible, threadId, backend]);
+  useEffect(() => {
+    if (!visible || !threadId || !backend) { setDiff(null); return; }
+    let live = true;
+    void backend.roomDiff(threadId).then((value) => { if (live) setDiff(value); }, () => { if (live) setDiff(null); });
+    return () => { live = false; };
+  }, [visible, threadId, backend]);
   if (!backend) return <p className="muted right-panel-empty">This project machine is unavailable.</p>;
   return <RightFiles root={root} list={(path) => backend.listFolder(path)} diff={diff} onOpen={onOpen} backend={backend} local={local} paneId={paneId} visible={visible} onRefresh={() => { refreshDiff(); }} />;
 }
