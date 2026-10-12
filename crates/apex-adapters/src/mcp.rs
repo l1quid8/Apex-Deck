@@ -26,6 +26,37 @@ pub(crate) fn claude_connected(listing: &str) -> Vec<String> {
         .collect()
 }
 
+/// Enabled plugin names from `claude plugin list --json`. A project or
+/// local install only counts inside its own folder; ids look like
+/// `name@marketplace`.
+pub(crate) fn claude_plugins(listing: &str, cwd: Option<&str>) -> Vec<String> {
+    let plugins: Vec<Value> = serde_json::from_str(listing).unwrap_or_default();
+    let here = |root: &str| cwd.is_some_and(|cwd| std::path::Path::new(cwd).starts_with(root));
+    let mut names = Vec::<String>::new();
+    for plugin in &plugins {
+        if plugin["enabled"] != true { continue; }
+        if matches!(plugin["scope"].as_str(), Some("project" | "local")) && !plugin["projectPath"].as_str().is_some_and(here) { continue; }
+        let Some(name) = plugin["id"].as_str().and_then(|id| id.split('@').next()).filter(|n| !n.trim().is_empty()) else { continue; };
+        if !names.iter().any(|known| known == name) { names.push(name.to_owned()); }
+    }
+    names
+}
+
+/// Menu entries from a Claude `init` event: its MCP servers, then the
+/// plugins it loaded for this folder, each name once.
+pub(crate) fn claude_init_servers(init: &Value) -> Vec<apex_core::server_request::ToolServer> {
+    let names = ["mcp_servers", "plugins"].into_iter()
+        .filter_map(|key| init[key].as_array())
+        .flatten()
+        .filter_map(|entry| entry["name"].as_str().filter(|n| !n.trim().is_empty()));
+    let mut entries = Vec::<apex_core::server_request::ToolServer>::new();
+    for name in names {
+        let entry = apex_core::server_request::ToolServer::from(name.to_owned());
+        if !entries.iter().any(|known| known.token == entry.token) { entries.push(entry); }
+    }
+    entries
+}
+
 /// True when the server reported a startup or listing error.
 pub(crate) fn failed(server: &Value) -> bool {
     !server["toolsError"].is_null()
@@ -236,6 +267,30 @@ mod tests {
     fn claude_listing_keeps_only_connected_servers() {
         let listing = "Checking MCP server health…\n\nclaude.ai Hyper MCP: https://apex-terminal.xyz/mcp - ✔ Connected\nclaude.ai Canva: https://mcp.canva.com/mcp - ! Needs authentication\nplugin:design:slack: https://mcp.slack.com/mcp (HTTP) - ✔ Connected\nplugin:design:gmail:  (HTTP) - - Not configured\n";
         assert_eq!(claude_connected(listing), ["claude.ai Hyper MCP", "plugin:design:slack"]);
+    }
+    #[test]
+    fn claude_plugins_are_enabled_ones_for_this_folder_named_once() {
+        let listing = r#"[
+            {"id":"superpowers@claude-plugins-official","scope":"user","enabled":true},
+            {"id":"feature-dev@claude-plugins-official","scope":"user","enabled":false},
+            {"id":"frontend-design@claude-plugins-official","scope":"project","enabled":true,"projectPath":"/work/site"},
+            {"id":"frontend-design@claude-plugins-official","scope":"user","enabled":true},
+            {"id":"swift-lsp@official","scope":"local","enabled":true,"projectPath":"/work/app"},
+            {"id":"design@synced","scope":"synced","enabled":true}
+        ]"#;
+        assert_eq!(claude_plugins(listing, Some("/work/app/src")), ["superpowers", "frontend-design", "swift-lsp", "design"]);
+        assert_eq!(claude_plugins(listing, Some("/work/apple")), ["superpowers", "frontend-design", "design"]);
+        assert_eq!(claude_plugins(listing, None), ["superpowers", "frontend-design", "design"]);
+        assert!(claude_plugins("not json", None).is_empty());
+    }
+    #[test]
+    fn claude_init_lists_servers_then_plugins_once() {
+        let init = json!({"type":"system","subtype":"init",
+            "mcp_servers":[{"name":"claude.ai Hyper MCP","status":"connected"},{"name":"plugin:design:slack","status":"needs-auth"}],
+            "plugins":[{"name":"superpowers","path":"/p/superpowers"},{"name":"design","path":"/p/design"},{"name":"superpowers","path":"/q"},{"path":"/nameless"}]});
+        let tokens: Vec<_> = claude_init_servers(&init).into_iter().map(|s| s.token).collect();
+        assert_eq!(tokens, ["claude.ai-hyper-mcp", "plugin:design:slack", "superpowers", "design"]);
+        assert!(claude_init_servers(&json!({"type":"system"})).is_empty());
     }
     #[test]
     fn one_failed_server_is_skipped_but_still_asks_and_others_load() {
