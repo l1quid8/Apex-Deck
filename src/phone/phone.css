@@ -1198,11 +1198,13 @@
 .ph-term-command input { min-width: 0; flex: 1; height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--text); font: inherit; font-size: 14px; }
 .ph-term-command button { width: 44px; border: 0; border-radius: 9px; background: var(--mint); color: #071014; font-size: 21px; }
 .ph-term-search { width: 100%; height: 40px; margin-bottom: 14px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); color: var(--text); font: inherit; }
-.ph-term-root mark { padding: 0 1px; border-radius: 2px; background: color-mix(in srgb, var(--amber) 35%, transparent); color: inherit; }
-.ph-term-root .ph-sheet h4 { margin: 14px 2px 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.ph-term-sheet mark { padding: 0 1px; border-radius: 2px; background: color-mix(in srgb, var(--amber) 35%, transparent); color: inherit; }
+.ph-term-sheet h4 { margin: 14px 2px 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .ph-term-action, .ph-term-new { display: block; width: 100%; min-height: 48px; padding: 12px 3px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; font: inherit; }
 .ph-term-action.danger { color: #ef6363; }
 .ph-term-notice { padding: 8px; border: 0; border-radius: 8px; background: var(--panel-2); color: var(--text); }
 .ph-term-root .ph-term-row { cursor: pointer; }
 .ph-term-root .ph-term-row.disabled { cursor: default; }
+.ph-term-sheet .ph-term-row { cursor: pointer; }
+.ph-term-sheet .ph-term-row:hover:not(:disabled) { background-color: var(--panel-2); border-color: var(--line); color: var(--text); }
 .ph-tabs-amber-dot { position: absolute; top: 5px; right: calc(50% - 18px); width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
