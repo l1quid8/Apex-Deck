@@ -159,7 +159,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     const hostId = workspaceHost(workspace);
     const remote = hostId !== "local";
     const twin = twinPath(workspace, workspaces);
-    const folded = section === "agents" || !!workspace.collapsed;
+    const folded = !!workspace.collapsed;
     const lit = menu?.kind === "project" && menu.id === workspace.id;
     const inside = panes
       .filter((p) => p.workspaceId === workspace.id && props.attention[p.id] && !deleting.has(p.id) && !p.archived)
@@ -176,7 +176,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); open({ kind: "project", id: workspace.id, anchor: { x: event.clientX, y: event.clientY }, opener: more(event.currentTarget) }); }}>
           {/* A div, not a button, so the name inside can be renamed in place. */}
           <div role="button" tabIndex={0} data-workspace={workspace.id} className="ws-name" title={workspace.path || workspace.name}
-            aria-expanded={section === "agents" ? undefined : !folded}
+            aria-expanded={!folded}
             aria-label={[workspace.name, remote ? `on ${hostName(hostId)}` : "", flag?.title].filter(Boolean).join(", ")}
             onClick={() => props.onProjectClick(workspace)}
             onKeyDown={(event) => {
@@ -204,7 +204,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               onClick={() => props.onNewIn(workspace)}><Glyph name="newIn" size={14} /></button>}
           </span>
         </div>
-        {!folded && (own.length > 0 ? own.map((p) => row(p, "project")) : <div className="no-threads">{section === "code" ? "No terminals" : "No threads"}</div>)}
+        {!folded && (own.length > 0 ? own.map((p) => row(p, "project")) : (section === "code" || section === "threads") ? <div className="no-threads">{section === "code" ? "No terminals" : "No threads"}</div> : null)}
       </div>
     );
   };

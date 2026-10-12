@@ -119,7 +119,7 @@ pub fn command_needs(command: &Command) -> Need {
         CopyAttachment { .. } => full(Global),
         ImportReplyImage { .. } => full(Global),
         // The Library holds pictures from every thread.
-        LibraryList {} | LibraryRemove { .. } => full(Global),
+        LibraryList {} | LibraryRemove { .. } | LibraryRename { .. } => full(Global),
         ArtifactExport { .. } => full(Global),
         ExportThread { .. } => full(Global),
 
@@ -334,6 +334,7 @@ mod tests {
             ("import_reply_image", Some((Full, "global")), json!({ "room": "mine", "path": "/x.png" })),
             ("library_list", Some((Full, "global")), json!({})),
             ("library_remove", Some((Full, "global")), json!({ "file": "a.png" })),
+            ("library_rename", Some((Full, "global")), json!({ "file": "a.png", "name": "New name" })),
             ("artifact_export", Some((Full, "global")), json!({ "name": "a", "contents": "x" })),
             ("export_thread", Some((Full, "global")), json!({ "fileName": "a.md", "contents": "x" })),
             ("decision_key_save", None, json!({ "provider": "p", "key": "k" })),

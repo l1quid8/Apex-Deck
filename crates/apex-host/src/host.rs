@@ -1262,6 +1262,11 @@ impl Host {
         reply_images::remove(&self.library_dir(), &file)
     }
 
+    /// Rename a Library entry without moving its file or changing its source.
+    pub fn library_rename(&self, file: String, name: String) -> Result<(), String> {
+        reply_images::rename(&self.library_dir(), &file, &name)
+    }
+
     /// The bytes of a saved attachment, so the chat can show pictures. Only
     /// files in the attachments folder and the Library are read.
     pub fn read_attachment(&self, path: String) -> Result<Vec<u8>, String> {

@@ -84,6 +84,7 @@ const COMMANDS = [
   ['importReplyImage', ['t', '/x.png', 'Null'], 'import_reply_image', { room: 't', path: '/x.png', by: 'Null' }],
   ['libraryList', [], 'library_list', {}],
   ['libraryRemove', ['a.png'], 'library_remove', { file: 'a.png' }],
+  ['libraryRename', ['a.png', 'New name'], 'library_rename', { file: 'a.png', name: 'New name' }],
   ['roomPin', ['t', 'fact'], 'room_pin', { id: 't', fact: 'fact' }],
   ['roomUnpin', ['t', 0], 'room_unpin', { id: 't', index: 0 }],
   ['roomFork', ['t', 'u', null], 'room_fork', { source: 't', target: 'u', upto: null }],

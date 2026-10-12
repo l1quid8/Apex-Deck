@@ -16,6 +16,9 @@ static INDEX: Mutex<()> = Mutex::new(());
 pub struct Item {
     /// The file's name inside the library folder.
     pub file: String,
+    /// User-facing name; the physical file and source path remain unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// "image" or "video"; audio and files later.
     pub kind: String,
     /// Where the picture was first seen.
@@ -53,7 +56,7 @@ pub fn import(dir: &Path, source: &Path, room: &str, by: Option<&str>) -> Result
         std::fs::copy(source, &saved).map_err(|e| format!("could not save the picture: {e}"))?;
     }
     items.retain(|i| i.source != seen);
-    items.push(Item { file, kind: media.into(), source: seen.into_owned(), room: room.into(), by: by.map(str::to_string), created: now() });
+    items.push(Item { file, name: None, kind: media.into(), source: seen.into_owned(), room: room.into(), by: by.map(str::to_string), created: now() });
     write_index(dir, &items)?;
     Ok(saved)
 }
@@ -80,6 +83,21 @@ pub fn remove(dir: &Path, file: &str) -> Result<(), String> {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not delete the picture: {e}")),
         _ => Ok(()),
     }
+}
+
+/// Set an editable display name without changing the stored file or its source.
+pub fn rename(dir: &Path, file: &str, name: &str) -> Result<(), String> {
+    if file.contains('/') || file.starts_with('.') { return Err(format!("{file} is not in the library")); }
+    let name = name.trim();
+    if name.is_empty() { return Err("Enter a name for this picture.".into()); }
+    if name.chars().count() > 160 { return Err("Names must be 160 characters or fewer.".into()); }
+    if name.chars().any(char::is_control) { return Err("Names cannot contain control characters.".into()); }
+    let _guard = INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    let mut items = read_index(dir);
+    let item = items.iter_mut().find(|item| item.file == file && dir.join(&item.file).is_file())
+        .ok_or_else(|| "This picture is no longer in the Library.".to_string())?;
+    item.name = Some(name.to_string());
+    write_index(dir, &items)
 }
 
 fn read_index(dir: &Path) -> Vec<Item> {
@@ -175,6 +193,24 @@ mod tests {
         remove(&dir, &file).unwrap();
         assert!(!saved.exists() && source.exists());
         assert!(list(&dir).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rename_persists_without_changing_the_file_or_source() {
+        let root = scratch("rename");
+        let dir = root.join("library");
+        let source = root.join("original.png");
+        std::fs::write(&source, b"\x89PNG\r\n\x1a\nexample").unwrap();
+        let saved = import(&dir, &source, "pane-1", Some("Luna")).unwrap();
+        let file = saved.file_name().unwrap().to_string_lossy().to_string();
+        rename(&dir, &file, "A better name").unwrap();
+        let item = list(&dir).remove(0);
+        assert_eq!(item.name.as_deref(), Some("A better name"));
+        assert_eq!(item.file, file);
+        assert_eq!(item.source, source.to_string_lossy());
+        assert_eq!(std::fs::read(&saved).unwrap(), b"\x89PNG\r\n\x1a\nexample");
+        assert!(rename(&dir, &file, "  ").is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

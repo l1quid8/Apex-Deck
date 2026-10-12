@@ -17,7 +17,7 @@ const demoKeys = new Set<string>();
 
 /** A picture kept in the Library: `room` is the thread it was made in, `by` the bot. */
 /** `bytes` is the file's size, when the host could read it. */
-export type LibraryItem = { file: string; kind: "image" | string; source: string; room: string; by?: string; created: number; path: string; bytes?: number };
+export type LibraryItem = { file: string; name?: string; kind: "image" | string; source: string; room: string; by?: string; created: number; path: string; bytes?: number };
 
 export interface Backend {
   host?: { id: string; name: string; connection: import("./hostConnections").HostConnectionStore };
@@ -137,6 +137,8 @@ export interface Backend {
   libraryList(): Promise<LibraryItem[]>;
   /** Delete a picture from the Library; the tool's own copy is left alone. */
   libraryRemove(file: string): Promise<void>;
+  /** Change an item's display name without changing its file, path, or source. */
+  libraryRename(file: string, name: string): Promise<void>;
   /** A saved attachment's bytes, for showing pictures in the chat. */
   readAttachment(path: string): Promise<ArrayBuffer>;
   /** Files dropped on the window, with where they landed in CSS pixels. */
@@ -780,6 +782,7 @@ function demoBackend(): Backend {
     importReplyImage: async (_room, path) => path,
     libraryList: async () => [],
     libraryRemove: async () => {},
+    libraryRename: async () => {},
     readAttachment: async () => { throw new Error("Pictures are shown in the desktop app"); },
     onFileDrop: async () => () => {},
     roomPin: async (id, fact) => {

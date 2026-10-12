@@ -117,9 +117,6 @@ const TOAST_MS = 4000;
 
 export function App() {
   const [section, setSection] = useState<AppSection>("threads");
-  /** Code or Threads, whichever was used last; a workspace clicked in Agents opens there. */
-  const [lastDeck, setLastDeck] = useState<"code" | "threads">("threads");
-  useEffect(() => { if (section === "code" || section === "threads") setLastDeck(section); }, [section]);
   /** Bumped by the title bar's + New agent button. */
   const [newAgentRequest, setNewAgentRequest] = useState(0);
   /** What each thread reports: its head's words, and who is replying or stopped on a card. */
@@ -2035,9 +2032,8 @@ export function App() {
             onRenamePane={(id, title) => { if (viewPanes.find((pane) => pane.id === id && (pane as Pane & { assistantTaskId?: string }).assistantTaskId)) setTaskPaneTitle(id, title); else renamePane(id, title); }}
             onRenameWorkspace={(id, name) => setWorkspaces((list) => renameWorkspace(list, id, name))}
             onProjectClick={(workspace) => {
-              // In Agents a project opens on the deck; elsewhere its row folds like Codex's.
-              if (section === "agents") { setActiveWorkspace(workspace.id); setSection(lastDeck); }
-              else setWorkspaces((list) => setCollapsed(list, workspace.id, !workspace.collapsed));
+              setActiveWorkspace(workspace.id);
+              setWorkspaces((list) => setCollapsed(list, workspace.id, !workspace.collapsed));
             }}
             onProjectPin={(workspace) => setWorkspaces((list) => toggleProjectPin(list, workspace.id))}
             onNewIn={newIn}

@@ -89,6 +89,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     importReplyImage: (room, path, by) => call<string>("import_reply_image", { room, path, by }),
     libraryList: () => call<LibraryItem[]>("library_list", {}),
     libraryRemove: (file) => call<void>("library_remove", { file }),
+    libraryRename: (file, name) => call<void>("library_rename", { file, name }),
     readAttachment: (path) => transport.readAttachment(path),
     roomPin: (id, fact) => call<string[]>("room_pin", { id, fact }),
     roomUnpin: (id, index) => call<string[]>("room_unpin", { id, index }),

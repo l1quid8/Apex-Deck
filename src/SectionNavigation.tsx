@@ -62,8 +62,8 @@ export function SectionNavigation({ section, onChange, flags = {}, onOpen, onMar
     {sections.map((item) => {
       const flag = flags[item.id];
       const alert = flag?.count ? flag.worst : null;
-      return <button key={item.id} className={`section-button ${item.id} ${section === item.id ? "selected" : ""}${alert ? ` has-attention ${alert}` : ""}`} aria-current={section === item.id ? "page" : undefined} aria-haspopup={alert ? "dialog" : undefined} onClick={() => onChange(item.id)} onMouseEnter={(event) => alert ? show(item.id, event.currentTarget.offsetLeft) : setHover(null)} onMouseLeave={hide} onFocus={(event) => alert && show(item.id, event.currentTarget.offsetLeft)} onBlur={hide}>
-      <span><SectionIcon section={item.id} /></span>{item.label}
+      return <button key={item.id} style={{ WebkitAppRegion: "no-drag" }} className={`section-button ${item.id} ${section === item.id ? "selected" : ""}${alert ? ` has-attention ${alert}` : ""}`} aria-current={section === item.id ? "page" : undefined} aria-haspopup={alert ? "dialog" : undefined} onClick={() => onChange(item.id)} onMouseEnter={(event) => alert ? show(item.id, event.currentTarget.offsetLeft) : setHover(null)} onMouseLeave={hide} onFocus={(event) => alert && show(item.id, event.currentTarget.offsetLeft)} onBlur={hide}>
+      <span><SectionIcon section={item.id} /></span><span className="section-label">{item.label}</span>
     </button>;
     })}
     {hover && open && rows.length > 0 && <div className="attention-list section-alerts" role="dialog" aria-label="Needs attention" style={{ left: hover.left }} onMouseEnter={() => show(hover.id, hover.left)} onMouseLeave={hide}>
