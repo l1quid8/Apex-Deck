@@ -42,7 +42,9 @@ export function closeTab(s: RightPanelState, id: string): RightPanelState {
   const at = s.tabs.findIndex((t) => t.id === id);
   if (at < 0 || FIXED.includes(s.tabs[at].kind)) return s;
   const tabs = s.tabs.filter((t) => t.id !== id);
-  const active = s.active === id ? (tabs[at - 1] ?? tabs[0]).id : s.active;
+  const closable = tabs.filter((tab) => !FIXED.includes(tab.kind));
+  const left = [...tabs.slice(0, at)].reverse().find((tab) => !FIXED.includes(tab.kind));
+  const active = s.active === id ? (closable.length ? (left ?? tabs[at - 1] ?? tabs[0]).id : "dashboard") : s.active;
   return { ...s, tabs, active };
 }
 
@@ -66,7 +68,8 @@ export function parsePanel(raw: string | null): RightPanelState {
   try { parsed = raw ? JSON.parse(raw) : null; } catch { return base; }
   if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as RightPanelState).tabs)) return base;
   const p = parsed as Partial<RightPanelState>;
-  const seen = new Set<string>();
+  // Fixed IDs are reserved even if a damaged save mislabels one as a closable tab.
+  const seen = new Set<string>(FIXED);
   const kept: PanelTab[] = [];
   for (const t of p.tabs as unknown[]) {
     const tab = t as Partial<PanelTab>;
