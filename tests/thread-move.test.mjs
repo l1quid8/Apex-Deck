@@ -9,12 +9,14 @@ const old = "unknown variant `room_import`, expected one of `session_load`";
 function machines() {
   const log = [];
   /** `existing`: saved files there, by path, as a leftover from an earlier move would leave. */
-  const make = (name, { importError, createError, artifacts = null, saveError, existing = [] } = {}) => ({
+  const make = (name, { importError, createError, artifacts = null, saveError, answers = null, answerError, existing = [] } = {}) => ({
     roomImport: async (...args) => { log.push([name, "import", ...args]); if (importError) throw new Error(importError); },
     dataFolder: async () => { log.push([name, "data folder"]); return `/d/${name}`; },
     pathsExist: async (targets) => { log.push([name, "exists", targets]); return targets.map((t) => existing.includes(t)); },
     roomCreate: async (...args) => { log.push([name, "create", ...args]); if (createError) throw new Error(createError); return snap(); },
     roomDelete: async (...args) => { log.push([name, "delete", ...args]); },
+    answersLoad: async (...args) => { log.push([name, "answers", ...args]); return answers; },
+    answerSave: async (...args) => { log.push([name, "save answer", ...args]); if (answerError) throw new Error(answerError); return { saved: { ...args } }; },
     artifactsLoad: async (...args) => { log.push([name, "artifacts", ...args]); return artifacts; },
     artifactsSave: async (...args) => { log.push([name, "save artifacts", ...args]); if (saveError) throw new Error(saveError); },
   });
@@ -24,13 +26,33 @@ function machines() {
 test("to another machine: import there first, then delete the old copy", async () => {
   const { log, make } = machines();
   assert.equal(await placeThread({ from: make("mac"), to: make("at"), id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" }), "imported");
-  assert.deepEqual(log, [["at", "import", "t", snap(), "/srv/x", false], ["mac", "artifacts", "t"], ["mac", "delete", "t"]]);
+  assert.deepEqual(log, [["at", "import", "t", snap(), "/srv/x", false], ["mac", "artifacts", "t"], ["mac", "answers", "t"], ["mac", "delete", "t"]]);
 });
 
 test("to another machine: the thread's artifacts are saved there before the old copy goes", async () => {
   const { log, make } = machines();
   await placeThread({ from: make("mac", { artifacts: page }), to: make("at"), id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" });
-  assert.deepEqual(log, [["at", "import", "t", snap(), "/srv/x", false], ["mac", "artifacts", "t"], ["at", "save artifacts", "t", page], ["mac", "delete", "t"]]);
+  assert.deepEqual(log, [["at", "import", "t", snap(), "/srv/x", false], ["mac", "artifacts", "t"], ["at", "save artifacts", "t", page], ["mac", "answers", "t"], ["mac", "delete", "t"]]);
+});
+
+const cards = { version: 1, cards: { "2:hosting": { fingerprint: "0a1b2c3d", inputs: { budget: 100 }, revision: 4, at: 1 } } };
+
+test("to another machine: card settings are saved there, each as new, before the old copy goes", async () => {
+  const { log, make } = machines();
+  await placeThread({ from: make("mac", { answers: cards }), to: make("at"), id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" });
+  assert.deepEqual(log.slice(2), [["mac", "answers", "t"], ["at", "save answer", "t", "2:hosting", "0a1b2c3d", { budget: 100 }, 0], ["mac", "delete", "t"]]);
+});
+
+test("a machine too old to keep card settings still takes the thread, without them", async () => {
+  const { log, make } = machines();
+  await placeThread({ from: make("mac", { answers: cards }), to: make("at", { answerError: "unknown variant `answer_save`, expected one of `session_load`" }), id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" });
+  assert.deepEqual(log.at(-1), ["mac", "delete", "t"]);
+});
+
+test("card settings that can't be saved there undo the new copy and leave the thread where it was", async () => {
+  const { log, make } = machines();
+  await assert.rejects(placeThread({ from: make("mac", { answers: cards }), to: make("at", { answerError: "disk full" }), id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" }), /disk full/);
+  assert.deepEqual(log.at(-1), ["at", "delete", "t"]);
 });
 
 test("artifacts that can't be saved there undo the new copy and leave the thread where it was", async () => {
@@ -52,17 +74,18 @@ test("an older helper without room_import still takes a thread with no history f
   assert.deepEqual(log, [
     ["at", "import", "t", snap(), "/srv/x", false],
     ["at", "data folder"],
-    ["at", "exists", ["/d/at/rooms/74.json", "/d/at/rooms/74.artifacts.json"]],
+    ["at", "exists", ["/d/at/rooms/74.json", "/d/at/rooms/74.artifacts.json", "/d/at/rooms/74.answers.json"]],
     ["at", "create", "t", [{ id: "bot" }], { policy: "mention", max_bot_hops: 3 }, "/srv/x"],
     ["mac", "artifacts", "t"],
+    ["mac", "answers", "t"],
     ["mac", "delete", "t"],
   ]);
 });
 
 // An older helper's room_create opens a saved room of the same id as it is, so
 // a copy left there by an earlier move would stand in for this thread.
-for (const left of ["/d/at/rooms/74.json", "/d/at/rooms/74.artifacts.json"]) {
-  test(`an older helper that still has ${left.endsWith("artifacts.json") ? "artifacts" : "a saved thread"} under this id keeps it; nothing is made there or deleted anywhere`, async () => {
+for (const left of ["/d/at/rooms/74.json", "/d/at/rooms/74.artifacts.json", "/d/at/rooms/74.answers.json"]) {
+  test(`an older helper that still has ${left.endsWith("answers.json") ? "card settings" : left.endsWith("artifacts.json") ? "artifacts" : "a saved thread"} under this id keeps it; nothing is made there or deleted anywhere`, async () => {
     const { log, make } = machines();
     const [from, to] = [make("mac", { artifacts: page }), make("at", { importError: old, saveError: "disk full", existing: [left] })];
     await assert.rejects(placeThread({ from, to, id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" }),

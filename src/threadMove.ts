@@ -1,3 +1,5 @@
+import { readAnswers } from "./interactiveAnswers/answerStore.ts";
+import type { AnswersFile } from "./interactiveAnswers/contract.ts";
 // Bringing a thread to where it should run: a thread moved before it
 // started, or a fork to another project or machine. The snapshot is
 // imported there first, and the old copy goes only after that worked.
@@ -27,13 +29,13 @@ export class ThreadAlreadyThere extends MoveRefused {
   }
 }
 
-type Room = Pick<Backend, "roomImport" | "roomCreate" | "roomDelete" | "artifactsLoad" | "artifactsSave" | "dataFolder" | "pathsExist">;
+type Room = Pick<Backend, "roomImport" | "roomCreate" | "roomDelete" | "artifactsLoad" | "artifactsSave" | "answersLoad" | "answerSave" | "dataFolder" | "pathsExist">;
 
-/** Whether `to` keeps a thread, or its artifacts, under `id`. Every apex-daemon saves them as "rooms/<hex id>.json" in its data folder. */
+/** Whether `to` keeps a thread, or its artifacts or card settings, under `id`. Every apex-daemon saves them as "rooms/<hex id>.json" in its data folder. */
 async function savedThere(to: Room, id: string): Promise<boolean> {
   const name = Array.from(new TextEncoder().encode(id), (b) => b.toString(16).padStart(2, "0")).join("");
   const room = `${await to.dataFolder()}/rooms/${name}`;
-  return (await to.pathsExist([`${room}.json`, `${room}.artifacts.json`], null)).some(Boolean);
+  return (await to.pathsExist([`${room}.json`, `${room}.artifacts.json`, `${room}.answers.json`], null)).some(Boolean);
 }
 
 /**
@@ -69,6 +71,7 @@ export async function placeThread({ from, to, id, snapshot, cwd, sameHost, hostN
   try {
     const artifacts = await from.artifactsLoad(id);
     if (artifacts != null) await to.artifactsSave(id, artifacts);
+    await copyAnswers(from, to, id);
   } catch (error) {
     // The copy there is new, so it goes; the thread stays whole where it was.
     await to.roomDelete(id).catch(() => {});
@@ -76,6 +79,25 @@ export async function placeThread({ from, to, id, snapshot, cwd, sameHost, hostN
   }
   await from.roomDelete(id).catch(() => {});
   return how;
+}
+
+/** The settings chosen on the thread's cards go with it, each saved there as new. A machine too old to keep them takes the thread without them. */
+async function copyAnswers(from: Room, to: Room, id: string) {
+  let saved: AnswersFile;
+  try {
+    saved = readAnswers(await from.answersLoad(id));
+  } catch (error) {
+    if (unsupported(error, "answers_load")) return;
+    throw error;
+  }
+  for (const [key, entry] of Object.entries(saved.cards)) {
+    try {
+      await to.answerSave(id, key, entry.fingerprint, entry.inputs, 0);
+    } catch (error) {
+      if (unsupported(error, "answer_save")) return;
+      throw error;
+    }
+  }
 }
 
 /** A message in this history carried a file: its "Attached …:" line names a path on the old machine. */
