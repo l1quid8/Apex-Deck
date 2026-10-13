@@ -5,7 +5,7 @@ export type EditablePreview = Extract<FilePreview, { kind: "text" }>;
 
 /** Only whole, readable text files can be edited. The daemon refuses the rest too. */
 export function isEditable(preview: FilePreview | null, view: "file" | "changes", deleted: boolean): preview is EditablePreview {
-  return !!preview && preview.kind === "text" && !preview.truncated && view === "file" && !deleted;
+  return !!preview && preview.kind === "text" && !preview.truncated && preview.editable !== false && view === "file" && !deleted;
 }
 
 export const isDirty = (text: string, savedText: string) => text !== savedText;

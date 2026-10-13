@@ -11,7 +11,7 @@ export function FilePreviewPanel({ root, path, backend, diff, local, paneId, vie
   root: string; path: string; backend: Backend; diff: ThreadDiff | null; local: boolean; paneId: string | null; view: View; onView(view: View): void; onClose(): void;
   highlightLine?: number | null; onDirtyChange?(dirty: boolean): void; onSaved?(): void;
 }) {
-  const [preview, setPreview] = useState<Preview | null>(null), [error, setError] = useState<string | null>(null), [markdownSource, setMarkdownSource] = useState(false), [copyStatus, setCopyStatus] = useState(""), [editing, setEditing] = useState(false), [dirty, setDirty] = useState(false);
+  const [preview, setPreview] = useState<Preview | null>(null), [error, setError] = useState<string | null>(null), [markdownSource, setMarkdownSource] = useState(false), [copyStatus, setCopyStatus] = useState(""), [editing, setEditing] = useState(false), [dirty, setDirty] = useState(false), [savedSize, setSavedSize] = useState<number | null>(null);
   const relative = path.startsWith(`${root.replace(/\/$/, "")}/`) ? path.slice(root.replace(/\/$/, "").length + 1) : path;
   const file = useMemo(() => diff?.files.find((entry) => (entry.path.startsWith("/") ? entry.path : `${root.replace(/\/$/, "")}/${entry.path}`) === path) ?? null, [diff, path, root]);
   const deleted = !!file?.patch.includes("\n+++ /dev/null");
@@ -22,7 +22,7 @@ export function FilePreviewPanel({ root, path, backend, diff, local, paneId, vie
     if (editing) return;
     if (view === "changes") { setPreview(null); setError(null); return; }
     if (file?.patch.includes("\n+++ /dev/null")) { setPreview(null); setError("This file was deleted in the current thread."); return; }
-    let live = true; setPreview(null); setError(null);
+    let live = true; setPreview(null); setError(null); setSavedSize(null);
     void backend.fileRead(root, path).then((value) => { if (live) setPreview(value); }, (reason) => { if (live) setError(String(reason)); });
     return () => { live = false; };
   }, [backend, file, path, root, view, editing]);
@@ -32,13 +32,13 @@ export function FilePreviewPanel({ root, path, backend, diff, local, paneId, vie
   }, [highlightLine, preview, view]);
   const copyPath = async () => { const ok = await writeClipboard(relative, navigator.clipboard); setCopyStatus(ok ? "Copied" : "Clipboard unavailable"); window.setTimeout(() => setCopyStatus(""), 1500); };
   const addToChat = () => { if (paneId) window.dispatchEvent(new CustomEvent("deck:insert-composer", { detail: { paneId, text: `\`${relative}\`` } })); };
-  const size = preview && "size" in preview ? preview.size : null;
+  const size = savedSize ?? (preview && "size" in preview ? preview.size : null);
   const sizeLabel = (value: number | null) => value === null ? "" : value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
   return <section className="right-files-preview" aria-label={`Preview ${relative}`}>
     <div className="right-files-preview-header"><div className="right-files-preview-title"><strong>{path.split("/").pop()}{dirty && <span className="file-edit-dirty" title="Unsaved changes" aria-hidden="true"> ●</span>}</strong><span className="muted">{relative.includes("/") ? relative.slice(0, relative.lastIndexOf("/")) : "Project root"}{size !== null && ` · ${sizeLabel(size)}`}</span></div><div className="right-files-preview-actions">{editable && !editing && <button title="Edit this file" aria-label="Edit file" onClick={() => setEditing(true)}>Edit</button>}<button title="Copy relative path" aria-label="Copy path" onClick={() => void copyPath()}>Copy path</button>{copyStatus && <span className="muted" role="status">{copyStatus}</span>}{local && <><button title="Open in default app" aria-label="Open in default app" onClick={() => void backend.openTarget(path, root, false).catch(() => {})}>Open</button><button title="Reveal in Finder" aria-label="Reveal in Finder" onClick={() => void backend.openTarget(path, root, true).catch(() => {})}>Reveal</button></>}{paneId && <button title="Add path to chat" aria-label="Add to chat" onClick={addToChat}>Add to chat</button>}<button title="Close preview" aria-label="Close preview" onClick={onClose}>×</button></div></div>
     {file && <div className="right-files-view-switch" role="group" aria-label="Preview view"><button aria-pressed={view === "file"} onClick={() => onView("file")}>File</button><button aria-pressed={view === "changes"} onClick={() => onView("changes")}>Changes</button></div>}
     <div className={`right-files-preview-content${editing ? " editing" : ""}`}>
-      {editing && preview?.kind === "text" ? <FileEditSession root={root} path={path} backend={backend} initial={preview} onDirty={setDirty} onDone={() => setEditing(false)} onSaved={() => onSaved?.()} />
+      {editing && preview?.kind === "text" ? <FileEditSession root={root} path={path} backend={backend} initial={preview} onDirty={setDirty} onDone={() => setEditing(false)} onSaved={(text) => { setSavedSize(new TextEncoder().encode(text).length); onSaved?.(); }} />
         : view === "changes" ? file ? <PatchView patch={file.patch} /> : <p className="muted">This file has no changes in the current thread.</p>
         : error ? <p className="muted">Couldn&apos;t preview this file. {error}</p>
         : !preview ? <p className="muted">Loading preview…</p>

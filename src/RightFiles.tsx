@@ -6,6 +6,7 @@ import { writeClipboard } from "./threadCopy";
 import { FilePreviewPanel } from "./FilePreview";
 import { createPortal } from "react-dom";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { setUnsavedEdit } from "./unsavedEdits";
 
 const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`;
 const relative = (root: string, path: string) => path === root ? "." : path.startsWith(`${root.replace(/\/$/, "")}/`) ? path.slice(root.replace(/\/$/, "").length + 1) : path;
@@ -16,7 +17,7 @@ type FileOperation = { kind: "create-file" | "create-folder" | "rename"; path: s
 export function changedSet(diff: ThreadDiff | null, root: string): Set<string> { return new Set(changeMarks(diff, root).keys()); }
 export function FilesError({ onRetry }: { onRetry: () => void }) { return <div className="right-panel-empty"><p className="muted">Can&apos;t read this folder.</p><button onClick={onRetry}>Retry</button></div>; }
 
-export function RightFiles({ root, list, diff, onOpen, backend = null, local = true, paneId = null, onRefresh, visible = true }: { root: string | null; list: (path: string) => Promise<FolderListing>; diff: ThreadDiff | null; onOpen: (path: string) => void; backend?: Backend | null; local?: boolean; paneId?: string | null; onRefresh?: () => void; visible?: boolean }) {
+export function RightFiles({ root, list, diff, onOpen, backend = null, local = true, paneId = null, onRefresh, visible = true, onDirtyChange }: { root: string | null; list: (path: string) => Promise<FolderListing>; diff: ThreadDiff | null; onOpen: (path: string) => void; backend?: Backend | null; local?: boolean; paneId?: string | null; onRefresh?: () => void; visible?: boolean; onDirtyChange?: (file: string | null) => void }) {
   const [tree, setTree] = useState<FilesTree>(() => createTree(root ?? ""));
   const [changedOnly, setChangedOnly] = useState(false), [showHidden, setShowHidden] = useState(false);
   const [previewPath, setPreviewPath] = useState<string | null>(null), [previewHeight, setPreviewHeight] = useState(280), [previewView, setPreviewView] = useState<"file" | "changes">("file");
@@ -87,6 +88,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     const observer = new ResizeObserver(([entry]) => setWide(entry.contentRect.width >= 720));
     observer.observe(el); return () => observer.disconnect();
   }, [root]);
+  useEffect(() => { onDirtyChange?.(previewDirty && previewPath ? previewPath.split("/").pop() ?? previewPath : null); }, [previewDirty, previewPath]);
   useEffect(() => { if (context) { const close = () => setContext(null); window.addEventListener("click", close); return () => window.removeEventListener("click", close); } }, [context]);
   if (!root) return <p className="muted right-panel-empty">This project has no folder.</p>;
   const openFolder = (path: string) => { const wasOpen = tree.expanded.has(path); setTree((current) => toggle(current, path)); if (!wasOpen) load(path); };
@@ -220,17 +222,34 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   </div>;
 }
 
+type Shown = { root: string | null; backend: Backend | null; threadId: string | null; paneId: string | null; local: boolean };
+
 export function RightFilesTab({ root, backend, threadId, visible, onOpen, local = true, paneId = null }: { root: string | null; backend: Backend | null; threadId: string | null; visible: boolean; onOpen: (path: string) => void; local?: boolean; paneId?: string | null }) {
   const [diff, setDiff] = useState<ThreadDiff | null>(null);
-  const refreshDiff = useCallback(() => { if (!visible || !threadId || !backend) return; void backend.roomDiff(threadId).then(setDiff, () => setDiff(null)); }, [visible, threadId, backend]);
+  const [dirtyFile, setDirtyFile] = useState<string | null>(null), [switchQuestion, setSwitchQuestion] = useState<Question | null>(null);
+  const owner = useRef(Symbol("files-tab"));
+  // Unsaved edits keep this tab on their project when the chat moves to another one, until the user decides.
+  const pinned = useRef<Shown>({ root, backend, threadId, paneId, local });
+  if (!dirtyFile || pinned.current.root === root) pinned.current = { root, backend, threadId, paneId, local };
+  const shown = pinned.current;
+  const held = shown.root !== root;
+  useEffect(() => { setUnsavedEdit(owner.current, dirtyFile); return () => setUnsavedEdit(owner.current, null); }, [dirtyFile]);
+  const showBackend = shown.backend, showThread = shown.threadId;
+  const refreshDiff = useCallback(() => { if (!visible || !showThread || !showBackend) return; void showBackend.roomDiff(showThread).then(setDiff, () => setDiff(null)); }, [visible, showThread, showBackend]);
   useEffect(() => {
-    if (!visible || !threadId || !backend) { setDiff(null); return; }
+    if (!visible || !showThread || !showBackend) { setDiff(null); return; }
     let live = true;
-    void backend.roomDiff(threadId).then((value) => { if (live) setDiff(value); }, () => { if (live) setDiff(null); });
+    void showBackend.roomDiff(showThread).then((value) => { if (live) setDiff(value); }, () => { if (live) setDiff(null); });
     return () => { live = false; };
-  }, [visible, threadId, backend]);
-  if (!backend) return <p className="muted right-panel-empty">This project machine is unavailable.</p>;
-  return <RightFiles root={root} list={(path) => backend.listFolder(path)} diff={diff} onOpen={onOpen} backend={backend} local={local} paneId={paneId} visible={visible} onRefresh={() => { refreshDiff(); }} />;
+  }, [visible, showThread, showBackend]);
+  if (!shown.backend) return <p className="muted right-panel-empty">This project machine is unavailable.</p>;
+  const folder = (path: string | null) => path?.split("/").filter(Boolean).pop() ?? "the old project";
+  const switchNow = () => setSwitchQuestion({ title: `Discard unsaved changes to ${dirtyFile}?`, body: "Your edits to this file haven't been saved.", action: "Discard and switch", onConfirm: () => setDirtyFile(null) });
+  return <>
+    {held && <div className="right-files-held" role="status"><span>Still showing {folder(shown.root)} because {dirtyFile} has unsaved edits.</span><button onClick={switchNow}>Switch project</button></div>}
+    <RightFiles key={shown.root ?? ""} root={shown.root} list={(path) => shown.backend!.listFolder(path)} diff={diff} onOpen={onOpen} backend={shown.backend} local={shown.local} paneId={shown.paneId} visible={visible} onRefresh={() => { refreshDiff(); }} onDirtyChange={setDirtyFile} />
+    {switchQuestion && createPortal(<ConfirmDialog question={switchQuestion} onCancel={() => setSwitchQuestion(null)} />, document.body)}
+  </>;
 }
 
 function TextSearchResults({ result, query, onOpen }: { result: FileSearchResult; query: string; onOpen(path: string, line: number): void }) {

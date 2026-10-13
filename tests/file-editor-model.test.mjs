@@ -32,3 +32,8 @@ test('the language comes from the file name', async () => {
   assert.equal(await languageName('main.rs'), 'Rust');
   assert.equal(await languageName('notes.unknownext'), null);
 });
+
+test('a linked file is not editable, and an older daemon that omits the flag still is', () => {
+  assert.equal(isEditable(text({ editable: false }), 'file', false), false);
+  assert.equal(isEditable(text({ editable: true }), 'file', false), true);
+});

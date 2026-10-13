@@ -35,6 +35,8 @@ pub enum FilePreview {
         size: u64,
         truncated: bool,
         version: String,
+        /// False when the path itself is a symbolic link, which `write` refuses.
+        editable: bool,
     },
     Image {
         mime: String,
@@ -269,6 +271,7 @@ pub fn write(root: &Path, path: &Path, text: &str, expected: Option<&str>) -> Re
 }
 
 pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
+    let editable = reject_symlink(root, path).is_ok();
     let path = inside(root, path)?;
     let metadata = std::fs::metadata(&path).map_err(|e| format!("Could not read file: {e}"))?;
     if !metadata.is_file() {
@@ -330,6 +333,7 @@ pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
             size,
             truncated,
             version,
+            editable,
         });
     }
     // A cap may cut a multi-byte character. Only accept a prefix that decodes
@@ -343,6 +347,7 @@ pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
                         size,
                         truncated: true,
                         version,
+                        editable,
                     });
                 }
             }
@@ -808,6 +813,18 @@ mod tests {
         assert!(leftovers.is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_file_reads_but_is_not_editable() {
+        let temp = Temp::new();
+        fs::write(temp.0.join("real.txt"), "hi").unwrap();
+        std::os::unix::fs::symlink(temp.0.join("real.txt"), temp.0.join("link.txt")).unwrap();
+        let FilePreview::Text { editable, .. } = read(&temp.0, Path::new("link.txt")).unwrap() else {
+            panic!("expected text")
+        };
+        assert!(!editable);
+    }
+
     #[test]
     fn reads_text_and_truncates_at_a_character_boundary() {
         let temp = Temp::new();
@@ -821,7 +838,8 @@ mod tests {
                 version: match read(&temp.0, Path::new("hello.md")).unwrap() {
                     FilePreview::Text { version, .. } => version,
                     _ => unreachable!(),
-                }
+                },
+                editable: true,
             }
         );
         let source = format!("{}é", "x".repeat(MAX_WORKSPACE_READ as usize - 1));

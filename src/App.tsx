@@ -60,6 +60,7 @@ import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssist
 import { assistantTasksForOwner, assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { unsavedEditName } from "./unsavedEdits";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
@@ -364,7 +365,17 @@ export function App() {
   const detailsWidth = sidebarWidths.details ?? SIDEBAR_DEFAULT.details;
   // Full screen fills the work area, so it never floats over the canvas as an overlay.
   const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth);
-  const closeDetails = () => { setDetailsOpen(false); detailsToggle.current?.focus(); };
+  /** Runs `action` now, or after the user agrees to drop unsaved edits in the Files tab. */
+  const guardUnsavedEdits = (action: () => void) => {
+    const file = unsavedEditName();
+    if (!file) { action(); return; }
+    setQuestion({ title: `Discard unsaved changes to ${file}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: action });
+  };
+  const closeDetails = () => guardUnsavedEdits(() => { setDetailsOpen(false); detailsToggle.current?.focus(); });
+  const changePanel = (next: RightPanelState) => {
+    const closesFiles = panel.tabs.some((tab) => tab.kind === "files") && !next.tabs.some((tab) => tab.kind === "files");
+    if (closesFiles) guardUnsavedEdits(() => setPanel(next)); else setPanel(next);
+  };
   // Esc leaves full screen. It never hides the panel, and it leaves typing and open menus or dialogs alone.
   useEffect(() => {
     if (!sidePanelFull) return;
@@ -2246,7 +2257,7 @@ export function App() {
             style={overlayDetails ? { right: `calc(min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px)) + var(--deck-gap, 0px))` } : undefined}
           />}
           <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}${sidePanelFull ? " full" : ""}`} style={sidePanelFull ? undefined : { width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
-            <RightPanel state={panel} onChange={setPanel} onClose={closeDetails} onFull={setSidePanelFull} taskAttention={{ count: sectionFlags.agents.count, details: sectionFlags.agents.rows.map((row) => row.title).join("\n") || "ApexAgent tasks are waiting for your response" }} bodies={{
+            <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} taskAttention={{ count: sectionFlags.agents.count, details: sectionFlags.agents.rows.map((row) => row.title).join("\n") || "ApexAgent tasks are waiting for your response" }} bodies={{
               dashboard: () => <RightDashboard rows={listed.filter((pane) => pane.kind === "chat" || pane.kind === "terminal").map((pane) => {
                 const projectNeeds = listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "needs_input");
                 return { id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "", ready: attention[pane.id]?.kind === "done", readyCount: listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "done").length, needsCount: attention[pane.id]?.kind === "needs_input" ? projectNeeds.length : undefined, needsDetails: projectNeeds.map((candidate) => `${candidate.title}: ${attention[candidate.id]?.note ?? "Needs your response"}`).join("; ") };

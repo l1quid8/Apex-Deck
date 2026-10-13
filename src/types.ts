@@ -323,7 +323,7 @@ export interface FolderListing {
 }
 
 export type FilePreview =
-  | { kind: "text"; text: string; size: number; truncated: boolean; version: string }
+  | { kind: "text"; text: string; size: number; truncated: boolean; version: string; editable?: boolean }
   | { kind: "image"; mime: string; data: string; size: number }
   | { kind: "binary"; size: number }
   | { kind: "too_large"; size: number };

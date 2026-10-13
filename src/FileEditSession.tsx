@@ -8,7 +8,7 @@ import { writeClipboard } from "./threadCopy";
 
 /** One editing run for one file: the toolbar, the conflict bar and the editor. It owns the draft text. */
 export function FileEditSession({ root, path, backend, initial, onDirty, onDone, onSaved }: {
-  root: string; path: string; backend: Backend; initial: EditablePreview; onDirty(dirty: boolean): void; onDone(): void; onSaved(): void;
+  root: string; path: string; backend: Backend; initial: EditablePreview; onDirty(dirty: boolean): void; onDone(): void; onSaved(text: string): void;
 }) {
   const name = path.split("/").pop() ?? path;
   const [loaded, setLoaded] = useState(initial.text), [generation, setGeneration] = useState(0), [draft, setDraft] = useState(initial.text), [savedText, setSavedText] = useState(initial.text), [version, setVersion] = useState(initial.version);
@@ -29,7 +29,7 @@ export function FileEditSession({ root, path, backend, initial, onDirty, onDone,
     setSaving(true); setProblem(""); setConflict(false);
     try {
       const next = await backend.fileWrite(root, path, text, force ? null : expected);
-      setVersion(next); setSavedText(text); setStatus("Saved"); onSaved();
+      setVersion(next); setSavedText(text); setStatus("Saved"); onSaved(text);
       window.setTimeout(() => setStatus(""), 1500);
     } catch (error) {
       if (saveErrorKind(error) === "conflict") setConflict(true); else setProblem(saveErrorMessage(error));
