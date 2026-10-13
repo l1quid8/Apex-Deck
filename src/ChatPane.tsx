@@ -66,6 +66,11 @@ import { DiffPanel } from "./DiffPanel";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
+import { PreparingCard } from "./interactiveAnswers/AnswerCard.tsx";
+import { createAnswerStore } from "./interactiveAnswers/answerStore.ts";
+import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.ts";
+import { cardVersions, discussDraft } from "./interactiveAnswers/share.ts";
+import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
@@ -1562,7 +1567,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {goBackPop(message)}
     </span>;
   };
-  const threadExport = (): ThreadExport => ({ title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries) });
+  const threadExport = (): ThreadExport => ({ title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries), answers: answers?.entries() });
   /** Save the thread. Resolves with the path, "" when the browser started a download, or null if nothing was saved. */
   const saveExport = async (format: "markdown" | "json"): Promise<string | null> => {
     const at = new Date();
@@ -1692,6 +1697,30 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     );
     return () => { live = false; };
   }, [backend, pane.id, profileMode, hostConnection.revision]);
+
+  // Settings people chose on the cards in this thread's replies. See src/interactiveAnswers.
+  const [answers, setAnswers] = useState<AnswerStore | null>(null);
+  useEffect(() => {
+    setAnswers(null);
+    if (profileMode || (hostConnection.revision === 0 && backend.host)) return;
+    let live = true;
+    const store = createAnswerStore(backend, pane.id);
+    void store.load().then(() => { if (live) setAnswers(store); });
+    return () => { live = false; void store.flush(); };
+  }, [backend, pane.id, profileMode, hostConnection.revision]);
+  const versions = useMemo(() => cardVersions(messagesOf(entries)), [entries]);
+  /** "Discuss these settings": the snapshot goes in the message box, never straight to the bots. */
+  const discussCard = (snapshot: string) => {
+    const next = discussDraft(text, snapshot);
+    setText(next);
+    setCaret(next.length);
+    if (details?.overlay) details.close();
+    requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.length, next.length); });
+  };
+  const cardIn = (message: Message) => (code: { language: string; text: string }) =>
+    code.language === CARD_LANGUAGE
+      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} onDiscuss={discussCard} onOpen={openTarget} />
+      : undefined;
 
   const changeArtifacts = (next: ArtifactFile) => {
     latestArtifacts.current = next;
@@ -2855,7 +2884,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
-                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} />
+                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} fence={cardIn(entry.message)} />
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
               </div>
@@ -2895,7 +2924,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 )}
                 {partial && (
                   <div className="draft-text">
-                    <Markdown text={partial} onOpen={openTarget} />
+                    <Markdown text={partial} onOpen={openTarget} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={names.get(id) ?? id} /> : undefined)} />
                   </div>
                 )}
                 {(asks[id] ?? []).map((ask) => (

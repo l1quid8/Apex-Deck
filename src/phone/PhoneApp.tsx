@@ -13,6 +13,10 @@ import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
 import { Markdown } from "../Markdown";
+import { PreparingCard } from "../interactiveAnswers/AnswerCard.tsx";
+import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
+import { cardVersions } from "../interactiveAnswers/share.ts";
+import { ThreadCard } from "../interactiveAnswers/ThreadCard.tsx";
 import { QuestionForm } from "../QuestionForm";
 import { applyQuestionEvent, formView, restoreQuestions, type ThreadAsks } from "../questions";
 import { withAttachments } from "../attachments";
@@ -1897,6 +1901,8 @@ function ThreadView(props: {
   const pill = usePillPress();
   // Holding a message opens its menu. A tap that ends a hold must not also follow a link inside the message.
   const press = useLongPress();
+  // Cards show read-only on the phone for now, at their defaults.
+  const versions = useMemo(() => cardVersions(props.messages), [props.messages]);
   const holdMessage = (seq: number) => {
     if (!props.onMessageMenu) return {};
     const bind = press.bind(() => props.onMessageMenu?.(seq));
@@ -2087,7 +2093,9 @@ function ThreadView(props: {
         ) : (
           <section key={message.seq} className={`ph-msg${holdClass}`} {...holdMessage(message.seq)}>
             {by(message.speaker.id)}
-            <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (!press.held.current && /^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>
+            <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (!press.held.current && /^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
+              ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
+              : undefined)} /></div>
           </section>
         ))}
         {/* Cut off mid-reply: what it had written stays, dimmed, until its reply lands, even after a reload. */}
@@ -2133,7 +2141,7 @@ function ThreadView(props: {
                     </ol>
                   )}
                   {turn.text
-                    ? <div className="ph-md ph-draft"><Markdown text={turn.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} /></div>
+                    ? <div className="ph-md ph-draft"><Markdown text={turn.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={name} /> : undefined)} /></div>
                     : turn.steps.length === 0 && <p className="ph-progress-none">Nothing to show yet. Steps and the reply appear here as {name} works.</p>}
                 </div>
               )}
