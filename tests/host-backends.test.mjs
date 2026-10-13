@@ -3,6 +3,19 @@ import assert from 'node:assert/strict';
 const mod=await import('../src/hostBackends.ts').catch(()=>({}));
 const store=await import('../src/hostConnections.ts').catch(()=>({}));
 
+test('remote turns carry the Mac interactive-answer choice without writing remote app preferences', async () => {
+  const calls=[];
+  let on=true;
+  const c=store.hostConnectionStore('at','AT');c.setStatus({kind:'connected',hostId:'at'});
+  const remote={roomPost:async(...args)=>calls.push(['post',...args]),roomPostTo:async(...args)=>calls.push(['postTo',...args]),roomTurn:async(...args)=>calls.push(['turn',...args]),settingsSave:async()=>assert.fail('must not write remote preferences')};
+  const registry=mod.createHostBackends({local:{settingsLoad:async()=>({interactiveAnswers:on})},hosts:[{id:'at',name:'AT'}],make:()=>({backend:remote,connection:c,start:async()=>{},close(){}})});
+  const backend=registry.get('at');
+  await backend.roomPost('r','hello');
+  await backend.roomPostTo('r','hello',['bot']);
+  on=false;await backend.roomTurn('r',['bot'],null);
+  assert.deepEqual(calls,[['post','r','hello',true],['postTo','r','hello',['bot'],false,true],['turn','r',['bot'],null,false]]);
+});
+
 test('local attachment readers stay stable across renders and check current connection state', async () => {
   const connection = store.hostConnectionStore('local', 'Mac');
   const target = { readAttachment: async () => new ArrayBuffer(3), roomPost: async () => 'sent' };

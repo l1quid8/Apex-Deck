@@ -8,7 +8,7 @@ const read = (path) => fs.readFileSync(new URL(`../src/${path}`, import.meta.url
 
 test("finished replies draw cards, replies being written show the placeholder, and exports get the settings", () => {
   const chat = read("ChatPane.tsx");
-  for (const piece of ["createAnswerStore(backend, pane.id)", "fence={cardIn(entry.message)}", "<PreparingCard author={names.get(id) ?? id} />", "answers: answers?.entries()", "discussDraft(text, snapshot)"]) {
+  for (const piece of ["createAnswerStore(backend, pane.id)", "fence={cardIn(entry.message)}", "<PreparingCard author={names.get(id) ?? id} />", "answers: answerCurrent.current?.entries()", "discussDraft(text, snapshot)"]) {
     assert.ok(chat.includes(piece), piece);
   }
 });

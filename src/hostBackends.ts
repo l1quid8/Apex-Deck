@@ -106,6 +106,19 @@ export function createHostBackends({ local, hosts, make }: { local: Backend; hos
             const wrapped = (...args: unknown[]) => {
               if (!known.has(hostId)) return Promise.reject(new Error("This host was removed."));
               if (key === "call" && ["session_save", "settings_save", "decision_key_save"].includes(String(args[0]))) return Promise.reject(new Error("App preferences are owned by This Mac."));
+              if (["roomPost", "roomPostTo", "roomTurn"].includes(key) && local.settingsLoad) {
+                if (r.connection.get().status.kind !== "connected") return Promise.reject(new Error("Not connected to the host; nothing was queued."));
+                // Carry only this app preference with the turn. Remote
+                // settings stay owned by the remote machine and other clients.
+                return local.settingsLoad().then((settings) => {
+                  if (!known.has(hostId)) throw new Error("This host was removed.");
+                  const next = [...args];
+                  const on = (settings as { interactiveAnswers?: boolean } | null)?.interactiveAnswers === true;
+                  if (key === "roomPostTo") next[3] = args[3] ?? false;
+                  next[key === "roomPost" ? 2 : key === "roomPostTo" ? 4 : 3] = on;
+                  return (value as (...args: unknown[]) => unknown).apply(source, next);
+                });
+              }
               return (value as (...args: unknown[]) => unknown).apply(source, args);
             };
             methods.set(key, { source: value, wrapped });

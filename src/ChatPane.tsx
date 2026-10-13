@@ -67,7 +67,7 @@ import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatc
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { PreparingCard } from "./interactiveAnswers/AnswerCard.tsx";
-import { createAnswerStore } from "./interactiveAnswers/answerStore.ts";
+import { createAnswerStore, discardAnswerSettingsAfter, flushAnswerStores, retainAnswerStore } from "./interactiveAnswers/answerStore.ts";
 import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.ts";
 import { cardVersions, discussDraft } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
@@ -1254,6 +1254,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     backend
       .roomClear(pane.id)
       .then(() => {
+        discardAnswerSettingsAfter(answerCurrent.current, 0);
         messageNumbers.truncate(0);
         setEntries([]);
         setPins(pinsAfterClear);
@@ -1364,7 +1365,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   const forkAt = (title: string, upto: number | null) => {
     if (!onFork) return notify("Forking is available in workspace threads.", "error");
-    return onFork(title, upto, upto ?? messagesOf(entries).length)
+    return flushAnswerStores(backend, pane.id).then(() => onFork(title, upto, upto ?? messagesOf(entries).length))
       .then((name) => notify(`Forked into “${name}”. Both threads work in the same folder, so file edits in one show up in the other.`))
       .catch((error) => notify(`Could not fork: ${String(error)}`, "error"));
   };
@@ -1449,6 +1450,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+      if (request.chat) discardAnswerSettingsAfter(answerCurrent.current, message.seq);
       if (request.chat) messageNumbers.truncate(message.seq);
       if (request.chat) setPins(list => list.filter(pin => { const seq = pinSource(pin); return seq === null || seq < message.seq; }));
       if (request.chat) setEntries((list) => {
@@ -1567,11 +1569,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {goBackPop(message)}
     </span>;
   };
-  const threadExport = (): ThreadExport => ({ title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries), answers: answers?.entries() });
+  const threadExport = async (): Promise<ThreadExport> => {
+    await answersReady.current;
+    return { title: pane.title, participants, transcript: messagesOf(entries), pins, compaction: compactionOf(entries), answers: answerCurrent.current?.entries() };
+  };
   /** Save the thread. Resolves with the path, "" when the browser started a download, or null if nothing was saved. */
   const saveExport = async (format: "markdown" | "json"): Promise<string | null> => {
     const at = new Date();
-    const thread = threadExport();
+    const thread = await threadExport();
     const contents = format === "json" ? exportJson(thread, at) : exportMarkdown(thread, at);
     const path = await backend.exportThread(exportFileName(pane.title, format, at), contents);
     if (path) return path;
@@ -1585,8 +1590,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   const sharePdf = async () => {
     const at = new Date();
-    const thread = threadExport();
     try {
+      const thread = await threadExport();
       const path = await backend.exportPdf(exportFileName(pane.title, "pdf", at), exportHtml(thread, at));
       if (path) {
         notify(`Saved PDF to ${path}`);
@@ -1657,7 +1662,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     onMenuDone?.(id);
     if (menuRequest.action === "fork") void forkAt(`${pane.title} (fork)`, null);
     else if (menuRequest.action === "share_pdf") void sharePdf();
-    else if (menuRequest.action === "copy_markdown") onCopy?.(exportMarkdown(threadExport(), new Date()), "markdown");
+    else if (menuRequest.action === "copy_markdown") void threadExport().then(thread => onCopy?.(exportMarkdown(thread, new Date()), "markdown")).catch(error => notify(`Could not export: ${String(error)}`, "error"));
     else if (menuRequest.action === "copy_reply") onCopy?.(lastReply(messagesOf(entries)), "reply");
     else void saveExport("markdown").then((path) => { if (path) { notify(`Exported to ${path}`); openTarget(path, true); } }).catch((error) => notify(`Could not export: ${String(error)}`, "error"));
   }, [menuRequest, ready, loadError]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1700,14 +1705,34 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   // Settings people chose on the cards in this thread's replies. See src/interactiveAnswers.
   const [answers, setAnswers] = useState<AnswerStore | null>(null);
+  const answerCurrent = useRef<AnswerStore | null>(null);
+  const answersReady = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
     setAnswers(null);
-    if (profileMode || (hostConnection.revision === 0 && backend.host)) return;
+    answerCurrent.current = null;
+    if (profileMode) return;
     let live = true;
     const store = createAnswerStore(backend, pane.id);
-    void store.load().then(() => { if (live) setAnswers(store); });
-    return () => { live = false; void store.flush(); };
-  }, [backend, pane.id, profileMode, hostConnection.revision]);
+    const release = retainAnswerStore(store);
+    // Keep unsaved values and their base revisions across host recovery.
+    // Writes resume only once recovery has reached Connected.
+    let online = false;
+    let refresh = Promise.resolve();
+    const connection = backend.host?.connection;
+    const connected = () => {
+      const next = !connection || connection.get().status.kind === "connected";
+      if (next && !online) refresh = refresh.then(async () => {
+        await store.load();
+        if (live) { answerCurrent.current = store; setAnswers(store); }
+        await store.flush();
+      });
+      answersReady.current = refresh;
+      online = next;
+    };
+    const stop = connection?.subscribe(connected);
+    connected();
+    return () => { live = false; stop?.(); void store.flush().finally(release); };
+  }, [backend, pane.id, profileMode]);
   const versions = useMemo(() => cardVersions(messagesOf(entries)), [entries]);
   /** "Discuss these settings": the snapshot goes in the message box, never straight to the bots. */
   const discussCard = (snapshot: string) => {

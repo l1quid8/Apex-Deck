@@ -46,7 +46,8 @@ import { chooseOutcome, pickerRows, shortName, workInRows } from "./destinations
 import { Glyph, ProjectFolder } from "./SidebarIcons";
 import type { WorkContext } from "./WorkBar";
 import { dotState } from "./hostFacts.ts";
-import { MoveRefused, historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
+import { MoveRefused, forkThread as importThreadFork, historyHasAttachments, placeThread, unsupported } from "./threadMove.ts";
+import { flushAnswerStores } from "./interactiveAnswers/answerStore.ts";
 import { loadRoomState } from "./roomRecovery.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
@@ -1608,6 +1609,7 @@ export function App() {
     if (!reachable(fromHost)) { toast(`Can't reach ${hostNameFor(fromHost)} to bring ${pane.title} over. Try again once it's back.`); return; }
     moving.current.add(pane.id);
     try {
+      await flushAnswerStores(hostBackend(fromHost), pane.id);
       const snapshot = await snapshotOf(pane, source);
       await placeThread({ from: hostBackend(fromHost), to: hostBackend(toHost), id: pane.id, snapshot, cwd: target.path, sameHost: fromHost === toHost, hostName: hostNameFor(toHost) });
       setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, workspaceId: target.id } : p)));
@@ -1628,9 +1630,10 @@ export function App() {
     if (!reachable(toHost)) { toast(`Can't reach ${hostNameFor(toHost)}, so nothing was forked.`); return; }
     if (!reachable(fromHost)) { toast(`Can't reach ${hostNameFor(fromHost)} to read ${source.title}'s history.`); return; }
     try {
+      await flushAnswerStores(hostBackend(fromHost), source.id);
       const snapshot = await snapshotOf(source, from);
       const id = newId("pane");
-      await hostBackend(toHost).roomImport(id, snapshot, target.path);
+      await importThreadFork({ from: hostBackend(fromHost), to: hostBackend(toHost), source: source.id, id, snapshot, cwd: target.path });
       const crossed = fromHost !== toHost && historyHasAttachments(snapshot.transcript);
       const fork = { from: source.id, title: source.title, host: hostNameFor(fromHost), at: snapshot.transcript.length, ...(crossed ? { crossed: true as const } : {}) };
       setPanes((list) => [...list, { id, workspaceId: target.id, kind: "chat", title: `${source.title} (fork)`, fork }]);
@@ -1825,7 +1828,7 @@ export function App() {
   /** Quit once the last save has landed, or after a second if it hangs. */
   const quitNow = () => {
     if (!backend) return;
-    void Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]).then(() => backend.quitApp());
+    void Promise.race([Promise.allSettled([saveQueue.current, flushAnswerStores()]), new Promise((done) => setTimeout(done, 1000))]).then(() => backend.quitApp());
   };
 
   // Asked to quit: the window's close button, ⌘W, ⌘Q or Quit in the app menu.

@@ -82,7 +82,7 @@ export async function placeThread({ from, to, id, snapshot, cwd, sameHost, hostN
 }
 
 /** The settings chosen on the thread's cards go with it, each saved there as new. A machine too old to keep them takes the thread without them. */
-async function copyAnswers(from: Room, to: Room, id: string) {
+async function copyAnswers(from: Room, to: Room, id: string, target = id) {
   let saved: AnswersFile;
   try {
     saved = readAnswers(await from.answersLoad(id));
@@ -92,12 +92,22 @@ async function copyAnswers(from: Room, to: Room, id: string) {
   }
   for (const [key, entry] of Object.entries(saved.cards)) {
     try {
-      await to.answerSave(id, key, entry.fingerprint, entry.inputs, 0);
+      const result = await to.answerSave(target, key, entry.fingerprint, entry.inputs, 0);
+      if ("conflict" in result) throw new Error("Card settings already exist in the destination thread.");
     } catch (error) {
       if (unsupported(error, "answer_save")) return;
       throw error;
     }
   }
+}
+
+/** A project/host fork has a new id and preserves the source and its settings. */
+export async function forkThread({ from, to, source, id, snapshot, cwd }: {
+  from: Room; to: Room; source: string; id: string; snapshot: RoomSnapshot; cwd: string;
+}): Promise<void> {
+  await to.roomImport(id, snapshot, cwd);
+  try { await copyAnswers(from, to, source, id); }
+  catch (error) { await to.roomDelete(id).catch(() => {}); throw error; }
 }
 
 /** A message in this history carried a file: its "Attached …:" line names a path on the old machine. */

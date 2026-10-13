@@ -1170,8 +1170,20 @@ impl Host {
     /// Save one card's settings. See `Store::save_answer`.
     pub fn answer_save(&self, room: String, key: String, fingerprint: String, inputs: serde_json::Map<String, serde_json::Value>, revision: u64) -> Result<crate::storage::AnswerSave, String> {
         check_answer(&key, &fingerprint, &inputs)?;
+        // Serialize against deletion so a delayed window cannot recreate
+        // a settings file after the thread has gone.
+        let _lifecycle = self.room_lifecycle.lock().unwrap();
+        if self.store.room(&room)?.is_none() { return Err("This thread no longer exists, so its card settings weren't saved.".into()); }
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         self.store.save_answer(&room, &key, &fingerprint, inputs, revision, at)
+    }
+
+    /// A remote window carries its own guidance preference with a turn;
+    /// commands without the field retain the host's normal setting.
+    pub(crate) fn turn_answers(&self, id: &str, on: Option<bool>) -> Result<(), String> {
+        let on = match on { Some(on) => on, None => self.settings()?.and_then(|settings| settings.interactive_answers).unwrap_or(false) };
+        self.handle(id)?.answers.store(on, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Saved project monitors, including their findings and attention state.
@@ -2063,6 +2075,11 @@ mod host_tests {
         assert!(on("after"), "a thread opened later starts with it");
         host.settings_save(serde_json::json!({ "interactiveAnswers": false })).unwrap();
         assert!(!on("before") && !on("after"));
+        host.turn_answers("before", Some(true)).unwrap();
+        assert!(on("before"), "a remote turn can carry the window's setting");
+        assert!(!host.settings().unwrap().unwrap().interactive_answers.unwrap(), "remote guidance doesn't rewrite host preferences");
+        host.turn_answers("before", None).unwrap();
+        assert!(!on("before"), "a turn without an override follows this host's setting");
         let _ = std::fs::remove_dir_all(data);
     }
 

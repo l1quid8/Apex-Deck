@@ -113,13 +113,13 @@ export interface Backend {
   worktreeAdd(path: string, request: WorktreeAdd): Promise<import("./types").Worktree>;
   worktreeRemove(path: string, worktree: string, force: boolean): Promise<void>;
   worktreePrune(path: string): Promise<void>;
-  roomPost(id: string, text: string): Promise<void>;
+  roomPost(id: string, text: string, interactiveAnswers?: boolean): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
-  roomPostTo(id: string, text: string, targets: string[], routed?: boolean): Promise<void>;
+  roomPostTo(id: string, text: string, targets: string[], routed?: boolean, interactiveAnswers?: boolean): Promise<void>;
   /** Run participants on the transcript as it is, one after another, without
    *  posting anything. `hops` caps the rounds of bots answering bots that may
    *  follow: null keeps the room's limit, 0 buys exactly one reply each. */
-  roomTurn(id: string, participants: string[], hops: number | null): Promise<void>;
+  roomTurn(id: string, participants: string[], hops: number | null, interactiveAnswers?: boolean): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
   /** Answer an action a bot proposed, named by the `request` from its event.
    *  `always` saves a rule with the thread, so the same thing isn't asked again

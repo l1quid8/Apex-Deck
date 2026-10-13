@@ -136,3 +136,91 @@ test("damaged saved entries are left out", () => {
     zero: { fingerprint: PRINT, inputs: {}, revision: 0 },
   } }), { version: 1, cards: { good: { fingerprint: PRINT, inputs: { budget: 5, priority: "ease" }, revision: 2, at: 9 } } });
 });
+
+test("flush retries a failed save even after its debounce timer fired", async () => {
+  const backend = host({ [KEY]: entry({ budget: 100 }, 2) });
+  let offline = true;
+  const store = createAnswerStore({ ...backend, answerSave: (...args) => offline ? Promise.reject(Error('offline')) : backend.answerSave(...args) }, 't', 1);
+  await store.load();
+  store.set(KEY, PRINT, { budget: 300 });
+  await wait();
+  offline = false;
+  await store.flush();
+  assert.equal(backend.file.cards[KEY].inputs.budget, 300);
+});
+
+test("reloading after a failed save preserves the change's base revision so another window wins explicitly", async () => {
+  const backend = host({ [KEY]: entry({ budget: 100 }, 2) });
+  let offline = true;
+  const store = createAnswerStore({ ...backend, answerSave: (...args) => offline ? Promise.reject(Error('offline')) : backend.answerSave(...args) }, 't', 1);
+  await store.load();
+  store.set(KEY, PRINT, { budget: 300 });
+  await wait();
+  backend.file.cards[KEY] = entry({ budget: 200 }, 3);
+  await store.load();
+  assert.deepEqual(store.values(KEY, PRINT), { budget: 300 });
+  offline = false;
+  await store.flush();
+  assert.equal(backend.saves.at(-1).revision, 2);
+  assert.deepEqual(store.values(KEY, PRINT), { budget: 200 });
+  assert.match(store.status(KEY), /Another window/);
+});
+
+test("registered stores flush pending card edits before application quit or project forks", async () => {
+  const { retainAnswerStore, flushAnswerStores } = await import('../src/interactiveAnswers/answerStore.ts');
+  const backend = host();
+  const store = createAnswerStore(backend, 't', 10_000);
+  await store.load();
+  const release = retainAnswerStore(store);
+  try {
+    store.set(KEY, PRINT, { budget: 300 });
+    await flushAnswerStores();
+    assert.equal(backend.file.cards[KEY].inputs.budget, 300);
+  } finally { release(); }
+});
+
+test("an older load completing after a successful save cannot replace the newer saved input", async () => {
+  const backend=host({[KEY]:entry({budget:100},2)});
+  let finish;
+  let delayed=false;
+  const store=createAnswerStore({...backend,answersLoad:async()=>{
+    const file=await backend.answersLoad();
+    if(delayed)await new Promise(resolve=>{finish=resolve;});
+    return file;
+  }},'t',10_000);
+  await store.load();
+  delayed=true;
+  const loading=store.load();
+  await wait();
+  store.set(KEY,PRINT,{budget:300});
+  await store.flush();
+  finish();await loading;
+  assert.deepEqual(store.values(KEY,PRINT),{budget:300});
+});
+
+test("clearing or rewinding a thread discards removed cached settings and queued edits", async () => {
+  const { discardAnswerSettingsAfter }=await import('../src/interactiveAnswers/answerStore.ts');
+  const backend=host({[KEY]:entry({budget:100},2),'2:hosting':entry({budget:75})});
+  const store=createAnswerStore(backend,'t',10_000);await store.load();
+  store.set(KEY,PRINT,{budget:300});
+  discardAnswerSettingsAfter(store,4);
+  await store.flush();
+  assert.equal(store.values(KEY,PRINT),null);
+  assert.deepEqual(store.values('2:hosting',PRINT),{budget:75});
+  assert.equal(backend.saves.length,0);
+  discardAnswerSettingsAfter(store,0);
+  assert.deepEqual(store.entries(),{});
+});
+
+test("fork preparation flushes only its source thread, so an unrelated offline card cannot block it", async () => {
+  const { retainAnswerStore, flushAnswerStores }=await import('../src/interactiveAnswers/answerStore.ts');
+  const ready=host(),offline=host({}, {saveError:'offline'});
+  const one=createAnswerStore(ready,'source',10_000),two=createAnswerStore(offline,'other',10_000);
+  await one.load();await two.load();
+  const releases=[retainAnswerStore(one),retainAnswerStore(two)];
+  try {
+    one.set(KEY,PRINT,{budget:300});two.set(KEY,PRINT,{budget:200});
+    await flushAnswerStores(ready,'source');
+    assert.equal(ready.saves.length,1);assert.equal(offline.saves.length,0);
+  } finally { releases.forEach(release=>release());await two.flush(); }
+});

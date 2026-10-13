@@ -37,6 +37,21 @@ test("to another machine: the thread's artifacts are saved there before the old 
 
 const cards = { version: 1, cards: { "2:hosting": { fingerprint: "0a1b2c3d", inputs: { budget: 100 }, revision: 4, at: 1 } } };
 
+test('a project or host fork copies chosen settings to its new id and leaves the source whole', async () => {
+  const { forkThread } = await import('../src/threadMove.ts');
+  const { log, make } = machines();
+  await forkThread({ from: make('mac', { answers: cards }), to: make('at'), source: 't', id: 'fork', snapshot: snap(), cwd: '/srv/y' });
+  assert.deepEqual(log, [['at','import','fork',snap(),'/srv/y'],['mac','answers','t'],['at','save answer','fork','2:hosting','0a1b2c3d',{budget:100},0]]);
+});
+
+test('a project fork that cannot copy settings removes only its new copy', async () => {
+  const { forkThread } = await import('../src/threadMove.ts');
+  const { log, make } = machines();
+  await assert.rejects(forkThread({ from: make('mac', { answers: cards }), to: make('at', { answerError: 'disk full' }), source: 't', id: 'fork', snapshot: snap(), cwd: '/srv/y' }), /disk full/);
+  assert.deepEqual(log.at(-1), ['at','delete','fork']);
+  assert.ok(!log.some(([machine, operation]) => machine==='mac' && operation==='delete'));
+});
+
 test("to another machine: card settings are saved there, each as new, before the old copy goes", async () => {
   const { log, make } = machines();
   await placeThread({ from: make("mac", { answers: cards }), to: make("at"), id: "t", snapshot: snap(), cwd: "/srv/x", sameHost: false, hostName: "AT" });

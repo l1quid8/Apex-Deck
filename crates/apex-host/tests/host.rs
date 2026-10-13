@@ -387,6 +387,8 @@ fn card_settings_save_by_revision_refuse_junk_and_keep_their_thread_id_taken() {
     let _ = std::fs::remove_dir_all(&data);
     let host = Running::start(&data);
     assert_eq!(host.call(json!({"cmd":"answers_load","args":{"room":"t"}})).unwrap(), Value::Null);
+    host.call(json!({"cmd":"room_create","args":{"id":"t","participants":[],"options":RoomOptions::default()}})).unwrap();
+    for _ in 0..2 { host.call(json!({"cmd":"room_post_to","args":{"id":"t","text":"message","targets":[]}})).unwrap(); }
     let save = |revision: u64, budget: u64| host.call(json!({"cmd":"answer_save","args":{"room":"t","key":"1:hosting","fingerprint":"0a1b2c3d","inputs":{"budget":budget,"priority":"ease"},"revision":revision}})).unwrap();
     assert_eq!(save(0, 100)["saved"]["revision"], 1);
     assert_eq!(save(1, 150)["saved"]["revision"], 2);
@@ -405,6 +407,22 @@ fn card_settings_save_by_revision_refuse_junk_and_keep_their_thread_id_taken() {
     let snapshot = host.call(json!({"cmd":"room_create","args":{"id":"other","participants":[],"options":RoomOptions::default()}})).unwrap();
     let refused = host.call(json!({"cmd":"room_import","args":{"id":"t","snapshot":snapshot,"cwd":null}}));
     assert!(refused.unwrap_err().contains("a thread with that id already exists"));
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn a_late_card_save_cannot_recreate_state_after_thread_deletion() {
+    let data = std::env::temp_dir().join(format!("apex-host-late-answers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let host = Running::start(&data);
+    host.call(json!({"cmd":"room_create","args":{"id":"t","participants":[],"options":RoomOptions::default()}})).unwrap();
+    for _ in 0..2 { host.call(json!({"cmd":"room_post_to","args":{"id":"t","text":"message","targets":[]}})).unwrap(); }
+    let save = json!({"cmd":"answer_save","args":{"room":"t","key":"1:hosting","fingerprint":"0a1b2c3d","inputs":{"budget":100},"revision":0}});
+    host.call(save.clone()).unwrap();
+    host.call(json!({"cmd":"room_delete","args":{"id":"t"}})).unwrap();
+    assert!(host.call(save).is_err(), "a deleted thread must reject a late answer save");
+    assert_eq!(host.call(json!({"cmd":"answers_load","args":{"room":"t"}})).unwrap(), Value::Null);
     host.host.shutdown();
     let _ = std::fs::remove_dir_all(data);
 }

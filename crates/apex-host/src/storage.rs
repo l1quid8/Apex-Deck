@@ -156,7 +156,12 @@ impl Store {
     }
 
     pub fn save_room(&self, id: &str, room: &SavedRoom) -> Result<(), String> {
-        self.write(&self.room_path(id), room)
+        let _guard = self.writes.lock().unwrap();
+        let previous = self.room(id)?.map(|saved| saved.snapshot.transcript.len()).unwrap_or(0);
+        self.write_held(&self.room_path(id), room)?;
+        let upto = room.snapshot.transcript.len();
+        if upto < previous || upto == 0 { self.prune_answers_held(id, upto)?; }
+        Ok(())
     }
 
     /// Artifacts opened from a thread's replies. The frontend owns their shape (src/artifacts.ts).
@@ -178,6 +183,12 @@ impl Store {
     /// newer entry comes back. A file that can't be read is never written over.
     pub fn save_answer(&self, id: &str, key: &str, fingerprint: &str, inputs: serde_json::Map<String, serde_json::Value>, revision: u64, at: u64) -> Result<AnswerSave, String> {
         let _guard = self.writes.lock().unwrap();
+        if let Some(room) = self.room(id)? {
+            let seq = key.split_once(':').and_then(|(seq, _)| seq.parse::<usize>().ok());
+            if seq.is_none_or(|seq| seq >= room.snapshot.transcript.len()) {
+                return Err("This card's message no longer exists, so its settings weren't saved.".into());
+            }
+        }
         let path = self.answers_path(id);
         let mut file: AnswersFile = self.read(&path)?.unwrap_or(AnswersFile { version: 1, cards: Default::default() });
         let next = match file.cards.get(key) {
@@ -190,6 +201,15 @@ impl Store {
         file.cards.insert(key.to_string(), entry.clone());
         self.write_held(&path, &file)?;
         Ok(AnswerSave::Saved(entry))
+    }
+
+    fn prune_answers_held(&self, id: &str, upto: usize) -> Result<(), String> {
+        let Some(mut file) = self.answers(id)? else { return Ok(()); };
+        file.cards.retain(|key, _| key.split_once(':').and_then(|(seq, _)| seq.parse::<usize>().ok()).is_some_and(|seq| seq < upto));
+        let path = self.answers_path(id);
+        if file.cards.is_empty() {
+            std::fs::remove_file(path).map_err(|error| error.to_string())
+        } else { self.write_held(&path, &file) }
     }
 
     /// Reserve a new room id while serializing writes; never overwrite a thread.
@@ -209,7 +229,7 @@ impl Store {
         }
         // And the settings chosen on its cards.
         match std::fs::copy(self.answers_path(source), self.answers_path(target)) {
-            Ok(_) => {}
+            Ok(_) => { self.prune_answers_held(target, fork.snapshot.transcript.len())?; }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("Could not copy the thread's card settings: {e}")),
         }
@@ -368,7 +388,7 @@ mod tests {
         assert_eq!((newer.revision, newer.inputs["budget"].as_u64()), (2, Some(150)));
 
         let mut room = Room::new(vec![], RoomOptions::default());
-        room.post_human("saved", &|_| {}).await;
+        for _ in 0..4 { room.post_human("saved", &|_| {}).await; }
         store.save_room("chat-1", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
         store.fork_room("chat-1", "chat-2", None, None).unwrap();
         assert_eq!(store.answers("chat-2").unwrap(), store.answers("chat-1").unwrap());
@@ -376,6 +396,26 @@ mod tests {
         store.delete_room("chat-1").unwrap();
         assert!(store.answers("chat-1").unwrap().is_none());
         assert!(store.answers("chat-2").unwrap().is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn removed_messages_do_not_keep_card_settings_or_use_a_forks_capacity() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut room = Room::new(vec![], RoomOptions::default());
+        for _ in 0..3 { room.post_human("message", &|_| {}).await; }
+        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        for seq in 0..3 { store.save_answer("source", &format!("{seq}:hosting"), "0a1b2c3d", serde_json::Map::new(), 0, 0).unwrap(); }
+        store.fork_room("source", "short", Some(1), None).unwrap();
+        assert_eq!(store.answers("short").unwrap().unwrap().cards.len(), 1);
+        room.rewind(1);
+        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        assert_eq!(store.answers("source").unwrap().unwrap().cards.len(), 1);
+        assert!(store.save_answer("source", "2:hosting", "0a1b2c3d", serde_json::Map::new(), 0, 0).is_err(), "late settings for a removed message stay removed");
+        room.clear();
+        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        assert!(store.answers("source").unwrap().is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 
