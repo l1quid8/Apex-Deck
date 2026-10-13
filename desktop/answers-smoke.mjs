@@ -168,6 +168,7 @@ export async function runSmoke(win) {
   // Focus the original pane so its last change proves the real Cmd-Q path,
   // rather than pre-saving and terminating from the smoke driver.
   await page(`document.querySelector('.pane[data-pane-id="answers-smoke"] .answer-card input[type=range]').focus();return true;`);
+  await page(`window.__quitAnswerSave=__deck.backend.answerSave;__deck.backend.answerSave=async(...args)=>{await new Promise(resolve=>setTimeout(resolve,1200));return __quitAnswerSave(...args);};return true;`);
   await setRange(175);
   fs.writeFileSync(path.join(output, `${phase}.json`), JSON.stringify({ passed }, null, 2));
   app.quit();

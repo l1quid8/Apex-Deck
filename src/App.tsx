@@ -1825,10 +1825,11 @@ export function App() {
     return () => window.removeEventListener("keydown", key, true);
   }, []);
 
-  /** Quit once the last save has landed, or after a second if it hangs. */
+  /** Card saves settle before quitting; session writes keep their one-second fallback. */
   const quitNow = () => {
     if (!backend) return;
-    void Promise.race([Promise.allSettled([saveQueue.current, flushAnswerStores()]), new Promise((done) => setTimeout(done, 1000))]).then(() => backend.quitApp());
+    const sessionSave = Promise.race([saveQueue.current.catch(() => {}), new Promise((done) => setTimeout(done, 1000))]);
+    void Promise.allSettled([sessionSave, flushAnswerStores()]).then(() => backend.quitApp());
   };
 
   // Asked to quit: the window's close button, ⌘W, ⌘Q or Quit in the app menu.

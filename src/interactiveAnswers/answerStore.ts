@@ -64,11 +64,13 @@ export function retainAnswerStore(store: AnswerStore): () => void {
 
 /** Forks wait for settings; quit uses the same flush before exiting. */
 export async function flushAnswerStores(backend?: AnswerBackend, room?: string): Promise<void> {
-  await Promise.all([...activeStores].filter(store => !backend || (owners.get(store)?.backend === backend && owners.get(store)?.room === room)).map(async (store) => {
+  const results = await Promise.allSettled([...activeStores].filter(store => !backend || (owners.get(store)?.backend === backend && owners.get(store)?.room === room)).map(async (store) => {
     await store.flush();
     const problem = pendingProblem.get(store)?.();
     if (problem) throw new Error(problem);
   }));
+  const failure = results.find(result => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
 }
 
 export function createAnswerStore(backend: AnswerBackend, room: string, delay = SAVE_DELAY_MS): AnswerStore {

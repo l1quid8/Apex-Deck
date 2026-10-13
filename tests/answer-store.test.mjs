@@ -224,3 +224,18 @@ test("fork preparation flushes only its source thread, so an unrelated offline c
     assert.equal(ready.saves.length,1);assert.equal(offline.saves.length,0);
   } finally { releases.forEach(release=>release());await two.flush(); }
 });
+
+test("application flush waits for every save even if another card already failed", async () => {
+  const { retainAnswerStore, flushAnswerStores }=await import('../src/interactiveAnswers/answerStore.ts');
+  const failed=createAnswerStore(host({}, {saveError:'offline'}),'failed',10_000);
+  const backend=host();let finish;
+  const slow=createAnswerStore({...backend,answerSave:(...args)=>new Promise(resolve=>{finish=()=>resolve(backend.answerSave(...args));})},'slow',10_000);
+  await failed.load();await slow.load();
+  const releases=[retainAnswerStore(failed),retainAnswerStore(slow)];
+  failed.set(KEY,PRINT,{budget:100});slow.set(KEY,PRINT,{budget:300});
+  let complete=false;
+  const flushing=flushAnswerStores().catch(()=>{}).then(()=>{complete=true;});
+  try { await wait();assert.equal(complete,false,'one failure must not let quit outrun another save'); }
+  finally {finish();await flushing;releases.forEach(release=>release());}
+  assert.equal(backend.file.cards[KEY].inputs.budget,300);
+});
