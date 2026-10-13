@@ -85,8 +85,6 @@ document! {
         terminal: Map<String, Value> = "terminal",
         preview: Map<String, Value> = "preview",
         confirm_steer: bool = "confirmSteer",
-        /// Whether bots are told how to add interactive answer cards.
-        interactive_answers: bool = "interactiveAnswers",
     }
 }
 
@@ -182,9 +180,11 @@ mod tests {
         assert_eq!(migrate_settings(None, Some(&Session::default())), None);
     }
     #[test]
-    fn interactive_answers_read_and_write_back() {
+    fn unknown_settings_fields_round_trip_untouched() {
+        // The removed Interactive answers flag survives in `other` but no
+        // longer affects anything: card guidance is always on.
         let settings = Settings::from_value(json!({ "interactiveAnswers": true, "confirmSteer": false })).unwrap();
-        assert_eq!(settings.interactive_answers, Some(true));
+        assert_eq!(settings.confirm_steer, Some(false));
         assert_eq!(settings.to_value(), json!({ "interactiveAnswers": true, "confirmSteer": false }));
     }
 }

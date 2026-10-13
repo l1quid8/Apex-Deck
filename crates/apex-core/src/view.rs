@@ -86,8 +86,8 @@ pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> St
     out
 }
 
-/// Added to every bot's instructions while Settings → Interactive answers is
-/// on. tests/answer-guidance.test.mjs reads the example card out of this
+/// Added to every bot's instructions. Cards always render, so the guidance
+/// is always on. tests/answer-guidance.test.mjs reads the example card out of this
 /// raw string and checks it against src/interactiveAnswers/schema.ts.
 pub const ANSWERS_SYSTEM: &str = r#"
 

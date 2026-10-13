@@ -9,7 +9,7 @@ test("no settings file gives the defaults", () => {
 });
 
 test("saved values are kept", () => {
-  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false, interactiveAnswers: true, botChips: { tool: false, effort: true, usage: false } };
+  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false, botChips: { tool: false, effort: true, usage: false } };
   assert.deepEqual(readSettings(saved), saved);
 });
 
@@ -92,8 +92,7 @@ test("malformed appearance containers are ignored without changing other setting
   }
 });
 
-test("interactive answers stay off unless turned on", () => {
-  assert.equal(readSettings(null).interactiveAnswers, false);
-  assert.equal(readSettings({ interactiveAnswers: true }).interactiveAnswers, true);
-  assert.equal(readSettings({ interactiveAnswers: "yes" }).interactiveAnswers, false);
+test("a leftover interactive-answers flag is ignored; cards are always on", () => {
+  assert.equal("interactiveAnswers" in readSettings(null), false);
+  assert.equal("interactiveAnswers" in readSettings({ interactiveAnswers: true }), false);
 });

@@ -595,7 +595,8 @@ impl Host {
         let stop = room.stop_handle();
         let plan = room.plan_handle();
         let answers = room.answers_handle();
-        answers.store(self.settings().ok().flatten().and_then(|s| s.interactive_answers).unwrap_or(false), Ordering::SeqCst);
+        // Card guidance is always on.
+        answers.store(true, Ordering::SeqCst);
         let approvals = room.approvals_handle();
         let mut runtime = ConcurrentRoom::new(room);
         // Only ApexAgent task threads share the checkout gate; ordinary chat
@@ -1143,12 +1144,11 @@ impl Host {
     pub fn settings_save(&self, mut settings: serde_json::Value) -> Result<(), String> {
         crate::decision::save_key(&mut settings)?;
         let settings = Settings::from_value(settings)?;
-        let answers = settings.interactive_answers.unwrap_or(false);
         let settings = settings.to_value();
         self.store.save_settings(&settings)?;
-        // Open threads follow Interactive answers from their next turn.
+        // Card guidance stays on across settings saves.
         for handle in self.rooms.lock().unwrap().values() {
-            handle.answers.store(answers, Ordering::SeqCst);
+            handle.answers.store(true, Ordering::SeqCst);
         }
         self.emit(HostEvent::SettingsChanged(settings));
         Ok(())
@@ -1179,10 +1179,9 @@ impl Host {
     }
 
     /// A remote window carries its own guidance preference with a turn;
-    /// commands without the field retain the host's normal setting.
+    /// commands without the field leave guidance on.
     pub(crate) fn turn_answers(&self, id: &str, on: Option<bool>) -> Result<(), String> {
-        let on = match on { Some(on) => on, None => self.settings()?.and_then(|settings| settings.interactive_answers).unwrap_or(false) };
-        self.handle(id)?.answers.store(on, Ordering::SeqCst);
+        self.handle(id)?.answers.store(on.unwrap_or(true), Ordering::SeqCst);
         Ok(())
     }
 
@@ -2064,22 +2063,17 @@ mod host_tests {
     }
 
     #[test]
-    fn interactive_answers_follow_the_setting_into_open_and_new_threads() {
+    fn interactive_answers_are_always_on_for_open_and_new_threads() {
         let (host, _runtime, data) = host("answers");
         host.room_create("before".into(), vec![], RoomOptions::default(), None).unwrap();
         let on = |id: &str| host.rooms.lock().unwrap()[id].answers.load(Ordering::SeqCst);
-        assert!(!on("before"));
-        host.settings_save(serde_json::json!({ "interactiveAnswers": true })).unwrap();
-        assert!(on("before"), "an open thread follows from its next turn");
+        assert!(on("before"), "a thread opens with guidance on");
         host.room_create("after".into(), vec![], RoomOptions::default(), None).unwrap();
         assert!(on("after"), "a thread opened later starts with it");
-        host.settings_save(serde_json::json!({ "interactiveAnswers": false })).unwrap();
-        assert!(!on("before") && !on("after"));
-        host.turn_answers("before", Some(true)).unwrap();
-        assert!(on("before"), "a remote turn can carry the window's setting");
-        assert!(!host.settings().unwrap().unwrap().interactive_answers.unwrap(), "remote guidance doesn't rewrite host preferences");
+        host.settings_save(serde_json::json!({})).unwrap();
+        assert!(on("before") && on("after"), "saving settings keeps guidance on");
         host.turn_answers("before", None).unwrap();
-        assert!(!on("before"), "a turn without an override follows this host's setting");
+        assert!(on("before"), "a turn without an override leaves guidance on");
         let _ = std::fs::remove_dir_all(data);
     }
 

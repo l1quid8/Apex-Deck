@@ -366,7 +366,7 @@ pub struct Room {
     /// may hold the room.
     plan: Arc<AtomicBool>,
     /// Whether bots are told they may end a reply with an interactive answer
-    /// card. App-wide: the host sets it from Settings → Interactive answers.
+    /// card. Always on: every thread starts with it.
     answers: Arc<AtomicBool>,
     /// Actions participants have proposed and are waiting on.
     desk: Arc<ApprovalDesk>,
@@ -412,7 +412,8 @@ impl Room {
             usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(snapshot.plan)),
-            answers: Arc::new(AtomicBool::new(false)),
+            // Card guidance is always on.
+            answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(desk),
         }
     }
@@ -431,7 +432,8 @@ impl Room {
             options,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(false)),
-            answers: Arc::new(AtomicBool::new(false)),
+            // Card guidance is always on.
+            answers: Arc::new(AtomicBool::new(true)),
             desk: Arc::new(ApprovalDesk::default()),
         }
     }
@@ -635,7 +637,7 @@ impl Room {
         Arc::clone(&self.plan)
     }
 
-    /// The Interactive answers switch, shared with the host, which sets it from the app's settings.
+    /// Card guidance for this thread, shared with the host, which keeps it on.
     pub fn answers_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.answers)
     }
@@ -973,12 +975,11 @@ impl Room {
 #[cfg(test)]
 mod approver_tests {
     #[test]
-    fn interactive_answers_join_the_instructions_only_while_on_and_before_plan_mode() {
+    fn interactive_answers_join_the_instructions_before_plan_mode() {
         let bot = Arc::new(crate::testing::ScriptedParticipant::new("null", &["done"]));
         let room = Room::new(vec![bot], RoomOptions::default());
         let id = ParticipantId::new("null");
-        assert!(!room.request_for(&id).unwrap().1.system.contains("apex-ui"));
-        room.answers_handle().store(true, Ordering::SeqCst);
+        assert!(room.request_for(&id).unwrap().1.system.contains("apex-ui"), "card guidance is always on");
         room.plan_handle().store(true, Ordering::SeqCst);
         let (_, request) = room.request_for(&id).unwrap();
         assert!(request.system.contains(ANSWERS_SYSTEM));
