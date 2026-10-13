@@ -1,0 +1,54 @@
+/* Interactive answers: a comparison card in a reply. Laid out like
+   mockups/intelligent-ui/threads-comparison.html, in the app's own colours.
+   The fallbacks are for the phone, whose sheet names some colours itself. */
+.answer-card { container-type: inline-size; margin: 10px 0; border: 1px solid var(--line, #24303d); border-radius: var(--radius, 12px); background: var(--panel, #0e141b); overflow: hidden; }
+.answer-card-head { padding: 14px 16px 10px; }
+.answer-eyebrow { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted, #91a0af); }
+.answer-card-head h3 { margin: 4px 0 0; font-size: 15px; font-weight: 600; }
+.answer-summary { margin: 6px 0 0; color: var(--muted, #91a0af); }
+.answer-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px 22px; padding: 4px 16px 14px; }
+.answer-range { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted, #91a0af); }
+.answer-range output { margin-left: 4px; color: var(--text, #e4eaf0); font-variant-numeric: tabular-nums; }
+.answer-range input { width: 100%; accent-color: var(--accent, #71e6b5); }
+.answer-choice { min-width: 0; margin: 0; padding: 0; border: 0; font-size: 12px; color: var(--muted, #91a0af); }
+.answer-choice legend { margin-bottom: 6px; padding: 0; }
+.answer-segments { display: flex; flex-wrap: wrap; gap: 4px; }
+.answer-segments label { position: relative; flex: 1; padding: 6px 10px; border: 1px solid var(--line, #24303d); border-radius: 8px; text-align: center; color: var(--text, #e4eaf0); cursor: pointer; }
+.answer-segments label.on { background: var(--accent, #71e6b5); border-color: var(--accent, #71e6b5); color: var(--accent-ink, #04211d); }
+.answer-segments input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.answer-segments label:has(input:focus-visible) { outline: 2px solid var(--accent, #71e6b5); outline-offset: 2px; }
+.answer-choice:disabled label, .answer-range input:disabled { cursor: default; opacity: 0.7; }
+.answer-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border-top: 1px solid var(--line, #24303d); border-bottom: 1px solid var(--line, #24303d); }
+.answer-option { min-width: 0; padding: 14px 16px; background: var(--bg, #090d12); border-right: 1px solid var(--line, #24303d); }
+.answer-option:last-child { border-right: 0; }
+.answer-option.best { background: var(--panel-2, #151e28); box-shadow: inset 0 3px var(--accent, #71e6b5); }
+.answer-option.out { opacity: 0.55; }
+.answer-option-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; }
+.answer-option h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.answer-best { font-size: 11px; color: var(--accent, #71e6b5); }
+.answer-headline { display: flex; flex-direction: column; margin-top: 8px; }
+.answer-headline strong { font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.answer-headline span, .answer-fit, .answer-note, .answer-hint { font-size: 12px; color: var(--muted, #91a0af); }
+.answer-fit { margin: 4px 0 10px; }
+.answer-option dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; font-size: 12px; }
+.answer-option dt { color: var(--muted, #91a0af); }
+.answer-option dd { margin: 0; }
+.answer-note { margin: 10px 0 0; }
+.answer-result { margin: 0; padding: 12px 16px 4px; }
+.answer-more { padding: 4px 16px 12px; font-size: 12px; color: var(--muted, #91a0af); }
+.answer-more summary { cursor: pointer; }
+.answer-more ul { margin: 6px 0 0; padding-left: 18px; }
+.answer-more pre { max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.answer-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--line, #24303d); }
+.answer-foot .primary { margin-left: auto; }
+.answer-card.preparing, .answer-card.broken { padding: 14px 16px; }
+.answer-skeleton { height: 44px; margin: 10px 0; border-radius: 6px; background: var(--line, #24303d); animation: answer-pulse 1.4s ease-in-out infinite; }
+.answer-skeleton.short { width: 60%; height: 14px; }
+@keyframes answer-pulse { 50% { opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) { .answer-skeleton { animation: none; } }
+/* A narrow pane stacks the options. */
+@container (max-width: 480px) {
+  .answer-options { grid-template-columns: 1fr; }
+  .answer-option { border-right: 0; border-bottom: 1px solid var(--line, #24303d); }
+  .answer-option:last-child { border-bottom: 0; }
+}
