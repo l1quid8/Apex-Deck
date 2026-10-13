@@ -1,5 +1,7 @@
 import { identiconCells, legacyAppearance } from "./identicon.ts";
 import { parseBlocks, parseInline, type Inline } from "./markdownText.ts";
+import type { AnswerEntry } from "./interactiveAnswers/contract.ts";
+import { withCardSummaries } from "./interactiveAnswers/share.ts";
 import type { Compaction, Message, ParticipantConfig } from "./types";
 
 /** Blocks remote loads. Inline styles are the only exception, and there is no script. */
@@ -12,9 +14,16 @@ export interface ThreadExport {
   transcript: Message[];
   pins: string[];
   compaction: Compaction | null;
+  /** Settings chosen on the thread's cards, by cardKey; cards print at these. */
+  answers?: Record<string, AnswerEntry>;
 }
 
 const day = (at: Date) => at.toISOString().slice(0, 10);
+
+/** A message as the Markdown and PDF exports print it: a bot's cards become their summaries. */
+function printed(message: Message, t: ThreadExport): string {
+  return message.speaker.kind === "bot" ? withCardSummaries(message.text, message.seq, t.answers) : message.text;
+}
 
 function speakerName(message: Message, participants: ParticipantConfig[]): string {
   if (message.speaker.kind === "human") return "Human";
@@ -28,7 +37,7 @@ export function exportMarkdown(t: ThreadExport, at: Date): string {
   const parts = [`# ${t.title.trim() || "Thread"}`, `Exported from Apex Deck on ${day(at)}. Participants: ${who}.`];
   if (t.pins.length > 0) parts.push(`## Pinned\n\n${t.pins.map((p) => `- ${p}`).join("\n")}`);
   parts.push("---");
-  for (const message of t.transcript) parts.push(`### ${speakerName(message, t.participants)}\n\n${message.text}`);
+  for (const message of t.transcript) parts.push(`### ${speakerName(message, t.participants)}\n\n${printed(message, t)}`);
   return parts.join("\n\n") + "\n";
 }
 
@@ -115,9 +124,9 @@ export function exportHtml(t: ThreadExport, at: Date): string {
     const short = message.text.length < 1200 ? " short" : "";
     const header = `<header><strong>${name}</strong>${stamp(message.at, at)}</header>`;
     if (message.speaker.kind === "human") {
-      return `<div class="row human${short}"><div class="who">${header}</div><article class="bubble human">${bodyHtml(message.text)}</article></div>`;
+      return `<div class="row human${short}"><div class="who">${header}</div><article class="bubble human">${bodyHtml(printed(message, t))}</article></div>`;
     }
-    return `<div class="row bot${short}">${avatarSvg(message.speaker.id, t.participants)}<div class="col"><div class="who">${header}</div><article class="bubble bot">${bodyHtml(message.text)}</article></div></div>`;
+    return `<div class="row bot${short}">${avatarSvg(message.speaker.id, t.participants)}<div class="col"><div class="who">${header}</div><article class="bubble bot">${bodyHtml(printed(message, t))}</article></div></div>`;
   }).join("\n");
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">

@@ -11,6 +11,8 @@ interface Props {
   codeAction?: (code: { language: string; text: string }) => ReactNode;
   /** Whether a path in a code span exists; those that do become links. */
   pathExists?: (path: string) => Promise<boolean>;
+  /** Draws a fenced block itself, as interactive answers do with apex-ui; undefined keeps the code view. */
+  fence?: (code: { language: string; text: string }) => ReactNode | undefined;
 }
 
 /**
@@ -20,13 +22,13 @@ interface Props {
  * Links are left to RichText, so they behave the same here as everywhere
  * else in the chat.
  */
-export function Markdown({ text, onOpen, codeAction, pathExists }: Props) {
+export function Markdown({ text, onOpen, codeAction, pathExists, fence }: Props) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const inline = (source: string) => <InlineText source={source} onOpen={onOpen} pathExists={pathExists} />;
   return (
     <div className="md">
       {blocks.map((block, i) => (
-        <BlockView key={i} block={block} inline={inline} codeAction={codeAction} />
+        <BlockView key={i} block={block} inline={inline} codeAction={codeAction} fence={fence} />
       ))}
     </div>
   );
@@ -62,7 +64,7 @@ function PathCode({ path, onOpen, pathExists }: { path: string; onOpen: Props["o
   return <code>{real ? <RichText text={`[${path}](${path})`} onOpen={onOpen} /> : path}</code>;
 }
 
-function BlockView({ block, inline, codeAction }: { block: Block; inline: (source: string) => ReactNode; codeAction?: Props["codeAction"] }) {
+function BlockView({ block, inline, codeAction, fence }: { block: Block; inline: (source: string) => ReactNode; codeAction?: Props["codeAction"]; fence?: Props["fence"] }) {
   switch (block.kind) {
     case "paragraph":
       return <p>{inline(block.text)}</p>;
@@ -72,8 +74,11 @@ function BlockView({ block, inline, codeAction }: { block: Block; inline: (sourc
           {inline(block.text)}
         </p>
       );
-    case "code":
+    case "code": {
+      const drawn = fence?.({ language: block.language, text: block.text });
+      if (drawn !== undefined) return <>{drawn}</>;
       return <CodeBlock language={block.language} text={block.text} action={codeAction?.({ language: block.language, text: block.text })} />;
+    }
     case "quote":
       return <blockquote>{inline(block.text)}</blockquote>;
     case "rule":
