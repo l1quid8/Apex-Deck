@@ -1217,3 +1217,6 @@
 .ph-term-sheet .ph-term-row { cursor: pointer; }
 .ph-term-sheet .ph-term-row:hover:not(:disabled) { background-color: var(--panel-2); border-color: var(--line); color: var(--text); }
 .ph-tabs-amber-dot { position: absolute; top: 5px; right: calc(50% - 18px); width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+.ph-speed { padding: 6px 14px 10px; display: grid; gap: 8px; }
+.ph-speed .ph-segment { margin-bottom: 0; }
+.ph-speed small { color: var(--muted); font-size: 12px; }

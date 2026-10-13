@@ -250,6 +250,14 @@ test('a bot\'s model and reasoning read in a few words, and the phone only write
   assert.equal(withPhoneChange(claude, { model: 'haiku' }, []).effort, null);
   assert.equal(withPhoneChange(claude, { model: '' }, []).backend.model, null);
   assert.equal(withPhoneChange(claude, { effort: '' }, []).effort, null);
+  // Speed: Fast and Standard are saved, Default removes it, and tools without a fast option ignore it.
+  assert.equal(withPhoneChange(claude, { speed: 'fast' }, []).speed, 'fast');
+  assert.equal('speed' in withPhoneChange({ ...claude, speed: 'fast' }, { speed: '' }, []), false);
+  assert.equal(withPhoneChange({ ...onMac, speed: 'standard' }, { model: 'sonnet' }, []).speed, 'standard');
+  const gemini = { ...claude, backend: { kind: 'agent', tool: 'gemini', model: null } };
+  assert.equal('speed' in withPhoneChange(gemini, { speed: 'fast' }, []), false);
+  assert.equal(settingsLine({ ...claude, speed: 'fast' }, []).endsWith(' · Fast'), true);
+  assert.equal(settingsLine({ ...gemini, speed: 'fast' }, []), 'Default model');
   assert.equal(withPhoneChange(claude, { effort: 'ultra' }, []).effort, null);
 });
 
