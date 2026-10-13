@@ -46,3 +46,14 @@
 .file-edit-conflict, .file-edit-problem { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; font-size: 12px; border-bottom: 1px solid rgba(238,183,61,.45); background: rgba(238,183,61,.14); }
 .file-edit-conflict span { flex: 1 1 100%; }
 .file-edit-problem { border-bottom-color: rgba(255,107,107,.5); background: rgba(255,107,107,.12); }
+
+/* Wide Files tab (>= 720px): tree on the left, preview/editor on the right at full height. */
+.right-files-body { display: contents; }
+.right-files-shell.wide .right-files-body { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: row; }
+.right-files-shell.wide .right-files-browser { height: auto !important; flex: 1 1 auto; min-width: 0; }
+.right-files-shell.wide .right-files-browser[style*="width"] { flex: 0 0 auto; }
+.right-files-shell.wide .right-files-resize { display: none; }
+.right-files-shell.wide .right-files-preview-slot { height: auto !important; min-height: 0; min-width: 0; flex: 1 1 0; }
+.right-files-resize-v { position: relative; z-index: 1; width: 8px; flex: 0 0 8px; cursor: col-resize; touch-action: none; }
+.right-files-resize-v::after { position: absolute; left: 3px; top: calc(50% - 18px); width: 2px; height: 36px; border-radius: 2px; background: var(--muted, #858995); content: ""; opacity: .5; }
+.right-files-resize-v:hover::after { opacity: 1; background: var(--accent); }
