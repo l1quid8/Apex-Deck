@@ -44,7 +44,7 @@ export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: Hos
     </div>
     <div className="settings-card hosts">
       {list.map((host) => (
-        <HostItem key={host.id} backend={backend} host={host} problem={problem?.hostId === host.id ? problem.words : ""}
+        <HostItem key={host.id} backend={backend} host={host} problem={problem?.hostId === host.id ? problem.words : ""} clearProblem={() => setProblem(null)}
           edit={hosts.update ? () => open({ kind: "edit", hostId: host.id }) : undefined} remove={() => remove(host)} />
       ))}
       {!hasRemote && (
@@ -57,17 +57,17 @@ export function HostsSettings({ backend, hosts }: { backend: Backend; hosts: Hos
           <button className="sm" disabled={backend.demo} onClick={() => open({ kind: "add" })}>+ Add host</button>
         </div>
       )}
-      {dialog && <ConnectionDialog mode={dialog} hosts={list} api={hosts} onClose={() => setDialog(null)} onSaved={(next) => { setList(next); setDialog(null); }} />}
-      {asking && <ConfirmDialog question={asking} onCancel={() => setAsking(null)} />}
     </div>
+    {dialog && <ConnectionDialog mode={dialog} hosts={list} api={hosts} onClose={() => setDialog(null)} onSaved={(next) => { setList(next); setDialog(null); }} />}
+    {asking && <ConfirmDialog question={asking} onCancel={() => setAsking(null)} />}
   </>);
 }
 
-function HostItem({ backend, host, problem, edit, remove }: { backend: Backend; host: HostEntry; problem: string; edit?: () => void; remove(): void }) {
+function HostItem({ backend, host, problem, clearProblem, edit, remove }: { backend: Backend; host: HostEntry; problem: string; clearProblem(): void; edit?: () => void; remove(): void }) {
   const c = backend.machines?.connection(host.id);
   const state = useSyncExternalStore(c?.subscribe ?? (() => () => {}), c?.get ?? (() => null));
   const line = hostLine(host.name, state, { version: __APP_VERSION__, build: __APP_BUILD__ }, time);
-  const retry = () => { backend.machines?.get(host.id); c?.retryNow(); };
+  const retry = () => { clearProblem(); backend.machines?.get(host.id); c?.retryNow(); };
   const label = line.action === "connect" ? "Connect" : "Retry";
   const tone = line.tone === "plain" ? "" : ` ${line.tone}`;
   return (

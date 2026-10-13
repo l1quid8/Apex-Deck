@@ -14,7 +14,7 @@ export type ConnectionMode =
 
 type Test =
   | { state: "testing" }
-  | { state: "ok" | "bad"; text: string; different?: boolean };
+  | { state: "ok" | "bad"; text: string; different?: boolean; known?: boolean };
 
 const DEFAULT_COMMAND = "apex-daemon";
 /** The host part of an SSH destination, as a name for a new server. */
@@ -74,7 +74,7 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
       if (found.kind === "same") setTest({ state: "ok", text: moved ? `Connected, and it's the same machine: apex-daemon there reports ${label}'s host ID.` : `Connected. ${version} is running on ${label}.` });
       else if (found.kind === "bind") setTest({ state: "ok", text: `Connected. Deck hasn't reached ${label} before, so Save remembers this machine as ${label}.` });
       else if (found.kind === "new") setTest({ state: "ok", text: `Connected. ${version} is running there.` });
-      else if (found.kind === "known") setTest({ state: "bad", text: `${ssh.trim()} is ${found.name}, which Deck already has.${editing ? ` ${label} keeps its own address.` : ""}` });
+      else if (found.kind === "known") setTest({ state: "bad", known: true, text: `${ssh.trim()} is ${found.name}, which Deck already has.${editing ? ` ${label} keeps its own address.` : ""}` });
       else setTest({ state: "bad", different: true, text: differentWords() });
     } catch (error) {
       if (ticket === asked.current) setTest({ state: "bad", text: `Couldn't reach ${ssh.trim()}: ${words(error)}` });
@@ -138,7 +138,7 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
           <button type="button" data-act="cancel" onClick={onClose}>Cancel</button>
           {test?.state === "bad" && test.different
             ? <button type="button" className="primary" data-act="instead" onClick={insteadAdd}>Add as a new server</button>
-            : <button type="submit" className="primary" data-act="save" disabled={saving || testing || taken || !name.trim() || !ssh.trim() || (!add && !api.update)}>{add ? "Add server" : "Save"}</button>}
+            : <button type="submit" className="primary" data-act="save" disabled={saving || testing || taken || (add && !!test?.known) || !name.trim() || !ssh.trim() || (!add && !api.update)}>{add ? "Add server" : "Save"}</button>}
         </div>
       </form>
     </div>

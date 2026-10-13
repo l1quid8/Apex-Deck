@@ -49,8 +49,8 @@ export function PairedDevicesSettings({ backend }: { backend: Backend }) {
         </div>
       ))}
       {problem && <div className="settings-row"><span className="error" role="alert">{problem}</span></div>}
-      {asking && <ConfirmDialog question={asking} onCancel={() => setAsking(null)} />}
     </div>
+    {asking && <ConfirmDialog question={asking} onCancel={() => setAsking(null)} />}
     {pairing && <PairPhoneSheet backend={backend} onClose={() => { setPairing(false); void refresh(); }} onPaired={() => void refresh()} />}
   </>);
 }

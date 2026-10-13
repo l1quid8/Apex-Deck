@@ -259,7 +259,6 @@ textarea {
 .folder-empty { padding: 8px; font-size: 12px; }
 .folder-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
 .folder-foot label { display: flex; align-items: center; gap: 6px; }
-.hosts .host-current { color: var(--muted); font-weight: normal; }
 .host-actions { display: flex; gap: 8px; }
 /* Settings → Hosts: one machine per line, with the sidebar's dot */
 .hosts-item { display: flex; align-items: flex-start; gap: 12px; padding: 13px 16px; border-top: 1px solid var(--line); }
