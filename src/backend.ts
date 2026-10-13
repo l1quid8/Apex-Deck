@@ -1,3 +1,4 @@
+import type { AnswerSaveResult, AnswersFile, InputValues } from "./interactiveAnswers/contract.ts";
 import type { ToolServer } from "./types";
 // Everything the UI needs from the desktop shell goes through this
 // interface. In the Electron app it talks to apex-daemon (electronShell.ts).
@@ -47,6 +48,10 @@ export interface Backend {
   /** A thread's artifacts file, beside the thread; artifacts.ts reads it. Null when there is none. */
   artifactsLoad(room: string): Promise<unknown>;
   artifactsSave(room: string, artifacts: unknown): Promise<void>;
+  /** Settings chosen on the cards in a thread's replies (rooms/<hex id>.answers.json); answerStore.ts reads them. Null when there are none. */
+  answersLoad(room: string): Promise<unknown>;
+  /** Save one card's settings. `revision` is the saved revision they were changed from, 0 for none; see AnswerSaveResult. */
+  answerSave(room: string, key: string, fingerprint: string, inputs: InputValues, revision: number): Promise<AnswerSaveResult>;
   /** Ask where to save an artifact and write it there. Null when you cancel. */
   artifactSave(name: string, contents: string): Promise<string | null>;
   /** Write an artifact to the exports folder and open it in its default app. It runs outside the sandbox there. */
@@ -597,6 +602,18 @@ function demoBackend(): Backend {
     settingsSave: async (settings) => { localStorage.setItem("apex-deck.demo.settings.v1", JSON.stringify(settings)); },
     artifactsLoad: async (room) => JSON.parse(localStorage.getItem(`apex-deck.demo.artifacts.${room}`) ?? "null"),
     artifactsSave: async (room, artifacts) => { localStorage.setItem(`apex-deck.demo.artifacts.${room}`, JSON.stringify(artifacts)); },
+    answersLoad: async (room) => JSON.parse(localStorage.getItem(`apex-deck.demo.answers.${room}`) ?? "null"),
+    answerSave: async (room, key, fingerprint, inputs, revision) => {
+      // As answer_save does: a stale revision changes nothing and gets the newer entry back.
+      const name = `apex-deck.demo.answers.${room}`;
+      const file: AnswersFile = JSON.parse(localStorage.getItem(name) ?? "null") ?? { version: 1, cards: {} };
+      const current = file.cards[key];
+      if (current && current.revision !== revision) return { conflict: current };
+      const saved = { fingerprint, inputs, revision: (current?.revision ?? 0) + 1, at: Date.now() };
+      file.cards[key] = saved;
+      localStorage.setItem(name, JSON.stringify(file));
+      return { saved };
+    },
     artifactSave: async (name, contents) => {
       const url = URL.createObjectURL(new Blob([contents]));
       const link = document.createElement("a");
@@ -866,6 +883,8 @@ function demoBackend(): Backend {
       localStorage.setItem(`apex-deck.demo.room.${target}`, JSON.stringify(fork));
       const artifacts = localStorage.getItem(`apex-deck.demo.artifacts.${source}`);
       if (artifacts) localStorage.setItem(`apex-deck.demo.artifacts.${target}`, artifacts);
+      const answers = localStorage.getItem(`apex-deck.demo.answers.${source}`);
+      if (answers) localStorage.setItem(`apex-deck.demo.answers.${target}`, answers);
     },
     roomImport: async (id, snapshot, _cwd, replace = false) => {
       if (replace) { rooms.delete(id); localStorage.removeItem(`apex-deck.demo.room.${id}`); }
@@ -939,6 +958,7 @@ function demoBackend(): Backend {
       rooms.delete(id);
       localStorage.removeItem(`apex-deck.demo.room.${id}`);
       localStorage.removeItem(`apex-deck.demo.artifacts.${id}`);
+      localStorage.removeItem(`apex-deck.demo.answers.${id}`);
     },
     onRoomEvent: async (cb) => {
       roomListeners.add(cb);

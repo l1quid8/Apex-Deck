@@ -41,6 +41,8 @@ const COMMANDS = [
   ['settingsSave', [{ a: 1 }], 'settings_save', { settings: { a: 1 } }],
   ['artifactsLoad', ['r'], 'artifacts_load', { room: 'r' }],
   ['artifactsSave', ['r', [1]], 'artifacts_save', { room: 'r', artifacts: [1] }],
+  ['answersLoad', ['r'], 'answers_load', { room: 'r' }],
+  ['answerSave', ['r', '1:c', '0a1b2c3d', { budget: 1 }, 0], 'answer_save', { room: 'r', key: '1:c', fingerprint: '0a1b2c3d', inputs: { budget: 1 }, revision: 0 }],
   ['dataFolder', [], 'data_folder', undefined],
   ['envPresent', [['A']], 'env_present', { names: ['A'] }],
   ['apiKeyStatus', [['A']], 'api_key_status', { names: ['A'] }],

@@ -1,3 +1,4 @@
+import type { AnswerSaveResult } from "./interactiveAnswers/contract.ts";
 // The Backend as commands to a host plus a shell. The host (apex-daemon)
 // runs the commands; the shell does what belongs to the machine
 // with the screen: dialogs, saved files, the dock, file drops and quitting.
@@ -37,6 +38,8 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     settingsSave: (settings) => call("settings_save", { settings }),
     artifactsLoad: (room) => call<unknown>("artifacts_load", { room }),
     artifactsSave: (room, artifacts) => call("artifacts_save", { room, artifacts }),
+    answersLoad: (room) => call<unknown>("answers_load", { room }),
+    answerSave: (room, key, fingerprint, inputs, revision) => call<AnswerSaveResult>("answer_save", { room, key, fingerprint, inputs, revision }),
     dataFolder: () => call<string>("data_folder"),
     envPresent: (names) => call<boolean[]>("env_present", { names }),
     apiKeyStatus: (names) => call<KeyState[]>("api_key_status", { names }),
