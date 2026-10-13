@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Diff } from "./ApprovalCard";
 import { Avatar } from "./Avatar";
 import { groupDiff } from "./diffGroups";
+import { sameDiffPath } from "./diffPaths";
 import { filesLine, offersSplit, patchLines, reviewPatch, reviewScope, sizeLine, type Reviewer } from "./review";
 import type { ThreadDiff } from "./types";
 
@@ -25,27 +26,34 @@ interface Props {
   /** When set, auto-expand this file path once it appears in the loaded diff. */
   focusPath?: string | null;
   onClearScope?: () => void;
+  /** The thread's workspace folder, for matching adapter paths against git-relative diff paths. */
+  cwd?: string | null;
 }
 
 /** Everything that changed in the folder since this thread started, under
  *  the agent that changed it, and a way to hand it to a reviewer. */
-export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf, onReveal, onRefresh, onClose, reviewers, onReview, paths, focusPath, onClearScope }: Props) {
+export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf, onReveal, onRefresh, onClose, reviewers, onReview, paths, focusPath, onClearScope, cwd }: Props) {
   const [open, setOpen] = useState<string | null>(null);
+  const allFiles = diff?.files ?? [];
+  // `changed` events report raw adapter paths (absolute or ./-prefixed) while
+  // the diff holds git-relative paths, so both comparisons normalize.
+  const same = (a: string, b: string) => sameDiffPath(cwd ?? null, a, b);
+  const files = paths ? allFiles.filter((file) => paths.some((p) => same(p, file.path))) : allFiles;
   useEffect(() => {
     if (!focusPath) return;
-    for (const group of groupDiff(diff?.files ?? [], order)) {
-      if (group.files.some((file) => file.path === focusPath)) {
-        setOpen(`${group.by}:${focusPath}`);
+    // Search the scoped list, so the opened row is always one this panel renders.
+    for (const group of groupDiff(files, order)) {
+      const hit = group.files.find((file) => same(focusPath, file.path));
+      if (hit) {
+        setOpen(`${group.by}:${hit.path}`);
         return;
       }
     }
-  }, [focusPath, diff, order]);
+  }, [focusPath, files, order, cwd]);
   const [asking, setAsking] = useState(false);
   const [split, setSplit] = useState(false);
   const askButton = useRef<HTMLButtonElement>(null);
   const askMenu = useRef<HTMLDivElement>(null);
-  const allFiles = diff?.files ?? [];
-  const files = paths ? allFiles.filter((file) => paths.includes(file.path)) : allFiles;
   const patch = reviewPatch(files);
   const lines = patch ? patchLines(patch) : 0;
   const large = offersSplit(lines);
