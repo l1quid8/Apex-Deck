@@ -13,10 +13,10 @@ fn bot(id: &str, lines: &[&str]) -> Arc<ScriptedParticipant> {
     Arc::new(ScriptedParticipant::new(id, lines))
 }
 
-fn room(bots: &[&Arc<ScriptedParticipant>], policy: TurnPolicy, max_bot_hops: usize) -> Room {
+fn room(bots: &[&Arc<ScriptedParticipant>], policy: TurnPolicy, max_bot_hops: impl Into<Option<usize>>) -> Room {
     let roster: Vec<Arc<dyn Participant>> =
         bots.iter().map(|b| Arc::clone(*b) as Arc<dyn Participant>).collect();
-    Room::new(roster, RoomOptions { policy, max_bot_hops })
+    Room::new(roster, RoomOptions { policy, max_bot_hops: max_bot_hops.into() })
 }
 
 fn say(room: &mut Room, text: &str) -> Vec<RoomEvent> {
@@ -160,6 +160,33 @@ fn bots_that_keep_pinging_each_other_are_cut_off() {
     // One answer to the human, then two rounds of bots answering bots.
     assert_eq!(lines(&room), ["human: @opus go", "opus: @grok 1", "grok: @opus 2", "opus: @grok 3"]);
     assert!(events.contains(&RoomEvent::HopLimitReached { limit: 2, next: vec![ParticipantId::new("grok")] }));
+    assert_eq!(events.last(), Some(&RoomEvent::Idle));
+}
+
+#[test]
+fn unlimited_hops_let_bots_keep_answering_until_no_one_is_addressed() {
+    let opus = bot("opus", &["@grok 1", "@grok 3", "@grok 5", "done"]);
+    let grok = bot("grok", &["@opus 2", "@opus 4", "@opus 6"]);
+    let mut room = room(&[&opus, &grok], TurnPolicy::Mention, None);
+
+    let events = say(&mut room, "@opus go");
+
+    // Past the old cap of 10 with no cut-off: the chain ends because the
+    // last reply addresses nobody, not because a limit was reached.
+    assert_eq!(
+        lines(&room),
+        [
+            "human: @opus go",
+            "opus: @grok 1",
+            "grok: @opus 2",
+            "opus: @grok 3",
+            "grok: @opus 4",
+            "opus: @grok 5",
+            "grok: @opus 6",
+            "opus: done",
+        ]
+    );
+    assert!(!events.iter().any(|e| matches!(e, RoomEvent::HopLimitReached { .. })));
     assert_eq!(events.last(), Some(&RoomEvent::Idle));
 }
 
@@ -356,7 +383,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
     };
     let quiet = bot("quiet", &["hello"]);
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(WorkingBot(config)), quiet.clone()];
-    let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: 0 });
+    let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: Some(0) });
     let events = say(&mut room, "go");
 
     let about_worker: Vec<&RoomEvent> = events
@@ -540,7 +567,7 @@ fn asking_room() -> (Room, ParticipantId) {
         appearance: None, media: None
     };
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(AskingBot(config))];
-    (Room::new(roster, RoomOptions { policy: TurnPolicy::Mention, max_bot_hops: 0 }), id)
+    (Room::new(roster, RoomOptions { policy: TurnPolicy::Mention, max_bot_hops: Some(0) }), id)
 }
 
 /// Run a round, answering every proposal with `approve` from another
@@ -683,7 +710,7 @@ fn editor(id: &str, path: &'static str) -> Arc<dyn Participant> {
 }
 #[test]
 fn changes_and_baseline_survive_restore_and_reset_on_clear() {
-    let mut room = Room::new(vec![editor("a", "x.rs"), editor("b", "y.rs")], RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: 0 });
+    let mut room = Room::new(vec![editor("a", "x.rs"), editor("b", "y.rs")], RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: Some(0) });
     say(&mut room, "go");
     let changes = room.snapshot().changes;
     assert_eq!(changes.len(), 2);
@@ -701,7 +728,7 @@ fn changes_and_baseline_survive_restore_and_reset_on_clear() {
 #[test]
 fn edits_are_recorded_when_stopped_in_parallel_or_sequential_turns() {
     for policy in [TurnPolicy::Everyone, TurnPolicy::RoundRobin] {
-        let mut room = Room::new(vec![editor("a", "x.rs")], RoomOptions { policy, max_bot_hops: 0 });
+        let mut room = Room::new(vec![editor("a", "x.rs")], RoomOptions { policy, max_bot_hops: Some(0) });
         let stop = room.stop_handle();
         block_on(room.post_human("go", &|event| {
             if matches!(event, RoomEvent::Changed { .. }) { stop.store(true, Ordering::SeqCst); }
@@ -739,7 +766,7 @@ fn fork_retains_pins_and_baseline_but_drops_future_summary() {
 
 #[test]
 fn fork_excludes_edits_after_its_message_cutoff() {
-    let mut r = Room::new(vec![editor("a", "x.rs")], RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: 0 });
+    let mut r = Room::new(vec![editor("a", "x.rs")], RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: Some(0) });
     say(&mut r, "one");
     say(&mut r, "two");
     let saved = r.snapshot();
@@ -778,7 +805,7 @@ fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
     };
     let quiet = bot("quiet", &["hello", "again"]);
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(WorkingBot(config.clone())), quiet.clone()];
-    let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: 0 });
+    let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: Some(0) });
     say(&mut room, "go");
     say(&mut room, "again");
     assert_eq!(room.usage().get(&id), Some(&TokenTotals { input: 240, output: 14, turns: 2, cost_micros: 0, unknown_cost_turns: 2, ..Default::default() }));

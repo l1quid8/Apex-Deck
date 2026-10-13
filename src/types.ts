@@ -127,7 +127,8 @@ export type TurnPolicy = "mention" | "everyone" | "round_robin";
 
 export interface RoomOptions {
   policy: TurnPolicy;
-  max_bot_hops: number;
+  /** Rounds of bots answering each other after one of your messages. Null means unlimited: they keep going until nothing new is addressed, or you press Stop. */
+  max_bot_hops: number | null;
 }
 
 export interface ChangeRecord {

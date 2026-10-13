@@ -2178,6 +2178,13 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   -moz-appearance: textfield;
 }
 .stepper input::-webkit-outer-spin-button, .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.chat-options .stepper output {
+  min-width: 34px;
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 
 /* UI review, stage 3: one compact row per bot in thread details. */
 .details-bot { border: 0; border-radius: 6px; padding: 6px 4px; margin-bottom: 4px; }

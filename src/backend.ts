@@ -120,7 +120,8 @@ export interface Backend {
   roomPostTo(id: string, text: string, targets: string[], routed?: boolean, interactiveAnswers?: boolean): Promise<void>;
   /** Run participants on the transcript as it is, one after another, without
    *  posting anything. `hops` caps the rounds of bots answering bots that may
-   *  follow: null keeps the room's limit, 0 buys exactly one reply each. */
+   *  follow: null keeps the room's limit (which itself may be unlimited),
+   *  0 buys exactly one reply each. */
   roomTurn(id: string, participants: string[], hops: number | null, interactiveAnswers?: boolean): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
   /** Answer an action a bot proposed, named by the `request` from its event.
@@ -551,8 +552,9 @@ function demoBackend(): Backend {
   /** Rooms with chains of turns running; a room is idle when its last chain ends. */
   const chains = new Map<string, number>();
   /** Run `first`, then whoever the replies address, up to `limit` rounds of
-   *  bots answering bots, like ConcurrentRoom::run. */
-  const runChain = async (id: string, first: string[], sequential: boolean, limit: number) => {
+   *  bots answering bots, like ConcurrentRoom::run. Null means unlimited:
+   *  the chain ends when no reply addresses anyone new, or Stop is pressed. */
+  const runChain = async (id: string, first: string[], sequential: boolean, limit: number | null) => {
     chains.set(id, (chains.get(id) ?? 0) + 1);
     try {
       let wave = first;
@@ -563,7 +565,7 @@ function demoBackend(): Backend {
         else replies.push(...await Promise.all(wave.map((target) => runPreview(id, target))));
         const next = [...new Set(replies.flat())].filter((target) => rooms.get(id)?.participants.some((p) => p.id === target));
         if (next.length === 0) break;
-        if (hops >= limit) { emitRoom(id, { type: "hop_limit_reached", limit, next }); break; }
+        if (limit !== null && hops >= limit) { emitRoom(id, { type: "hop_limit_reached", limit, next }); break; }
         wave = next;
         inTurn = true;
       }

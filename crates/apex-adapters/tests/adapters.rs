@@ -642,7 +642,7 @@ async fn one_room_can_mix_an_api_bot_a_cli_bot_and_a_scripted_bot() {
         build(config("cli", sh("printf 'cli says hi'")), &BuildContext::default()),
         build(config("fake", Backend::Scripted { lines: vec!["fake says hi".into()] }), &BuildContext::default()),
     ];
-    let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: 0 });
+    let mut room = Room::new(roster, RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: Some(0) });
     room.post_human("roll call", &|_| {}).await;
 
     let said: Vec<(String, String)> = room

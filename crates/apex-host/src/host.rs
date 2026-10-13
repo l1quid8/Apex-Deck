@@ -1849,7 +1849,7 @@ mod tests {
                 config.backend = Backend::Scripted { lines: vec!["finished".into()] };
                 config
             }).collect();
-        host.room_create("chat".into(), configs, RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: 0 }, Some(cwd.to_string_lossy().into_owned())).unwrap();
+        host.room_create("chat".into(), configs, RoomOptions { policy: TurnPolicy::Everyone, max_bot_hops: Some(0) }, Some(cwd.to_string_lossy().into_owned())).unwrap();
         // An ApexAgent task owns the checkout; a gated writer would wait on it forever.
         let gate = host.checkout_gate(&cwd);
         gate.restore_hold("task-reservation").unwrap();

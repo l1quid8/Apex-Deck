@@ -245,8 +245,12 @@ function Threads({ settings, onChange }: { settings: AppSettings; onChange: (s: 
         <option value="round_robin">Everyone in turn</option>
       </select>
     </Row>
-    <Row label="Model-to-model rounds" note="How many times bots may answer each other after one of your messages.">
-      <Stepper label="rounds" value={thread.max_bot_hops} min={0} max={MAX_ROUNDS} onChange={(n) => onChange({ ...settings, newThread: { ...thread, max_bot_hops: n } })} />
+    <Row label="Model-to-model rounds" note="How many times bots may answer each other after one of your messages. Step past 10 for unlimited (∞), which runs until you press Stop.">
+      <span className="stepper">
+        <button type="button" aria-label="Less rounds" disabled={thread.max_bot_hops !== null && thread.max_bot_hops <= 0} onClick={() => onChange({ ...settings, newThread: { ...thread, max_bot_hops: thread.max_bot_hops === null ? MAX_ROUNDS : thread.max_bot_hops - 1 } })}>−</button>
+        <output aria-label="rounds">{thread.max_bot_hops ?? "∞"}</output>
+        <button type="button" aria-label="More rounds" disabled={thread.max_bot_hops === null} onClick={() => onChange({ ...settings, newThread: { ...thread, max_bot_hops: thread.max_bot_hops !== null && thread.max_bot_hops >= MAX_ROUNDS ? null : (thread.max_bot_hops ?? 0) + 1 } })}>+</button>
+      </span>
     </Row>
     <Row label="Access for new bots" note="Ask first only works with tools that can enforce it. Others start at Read only.">
       <select aria-label="Access for new bots" value={settings.newBotAccess} onChange={(e) => onChange({ ...settings, newBotAccess: e.target.value as Access })}>

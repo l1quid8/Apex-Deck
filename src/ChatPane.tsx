@@ -2650,20 +2650,22 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               {REPLY_POLICIES.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
             </select>
           </label>
-          <div className="stepper-field" title="How many rounds of models answering each other are allowed after one of your messages">
+          <div className="stepper-field" title="How many rounds of models answering each other are allowed after one of your messages. Step past 10 for unlimited (∞), which runs until you press Stop.">
             <span id={`rounds-${pane.id}`}>Model-to-model rounds</span>
             <span className="stepper">
-              <button type="button" aria-label="Fewer rounds" disabled={!ready || busy || options.max_bot_hops <= 0} onClick={() => changeOptions({ ...options, max_bot_hops: Math.max(0, options.max_bot_hops - 1) })}>−</button>
-              <input
-                type="number"
-                min={0}
-                max={10}
-                aria-labelledby={`rounds-${pane.id}`}
-                value={options.max_bot_hops}
-                disabled={!ready || busy}
-                onChange={(e) => changeOptions({ ...options, max_bot_hops: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
-              />
-              <button type="button" aria-label="More rounds" disabled={!ready || busy || options.max_bot_hops >= 10} onClick={() => changeOptions({ ...options, max_bot_hops: Math.min(10, options.max_bot_hops + 1) })}>+</button>
+              <button type="button" aria-label="Fewer rounds" disabled={!ready || busy || (options.max_bot_hops !== null && options.max_bot_hops <= 0)} onClick={() => changeOptions({ ...options, max_bot_hops: options.max_bot_hops === null ? 10 : Math.max(0, options.max_bot_hops - 1) })}>−</button>
+              {options.max_bot_hops === null
+                ? <output aria-labelledby={`rounds-${pane.id}`}>∞</output>
+                : <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  aria-labelledby={`rounds-${pane.id}`}
+                  value={options.max_bot_hops}
+                  disabled={!ready || busy}
+                  onChange={(e) => changeOptions({ ...options, max_bot_hops: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
+                />}
+              <button type="button" aria-label="More rounds" disabled={!ready || busy || options.max_bot_hops === null} onClick={() => changeOptions({ ...options, max_bot_hops: options.max_bot_hops !== null && options.max_bot_hops >= 10 ? null : (options.max_bot_hops ?? 0) + 1 })}>+</button>
             </span>
           </div>
           <label>

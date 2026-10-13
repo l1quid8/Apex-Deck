@@ -30,17 +30,24 @@ pub enum TurnPolicy {
     RoundRobin,
 }
 
+fn default_bot_hops() -> Option<usize> {
+    Some(3)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomOptions {
     pub policy: TurnPolicy,
     /// How many rounds of bots answering other bots are allowed after one
-    /// human message. 0 means bots can never trigger each other.
-    pub max_bot_hops: usize,
+    /// human message. 0 means bots can never trigger each other, and `None`
+    /// means unlimited: bots keep answering until nothing addresses anyone
+    /// new, or the person presses Stop.
+    #[serde(default = "default_bot_hops")]
+    pub max_bot_hops: Option<usize>,
 }
 
 impl Default for RoomOptions {
     fn default() -> Self {
-        Self { policy: TurnPolicy::Mention, max_bot_hops: 3 }
+        Self { policy: TurnPolicy::Mention, max_bot_hops: Some(3) }
     }
 }
 
@@ -934,7 +941,8 @@ impl Room {
     /// The human's message is answered by the participants it @mentions, or
     /// by the room's turn policy if it mentions nobody. If a reply @mentions
     /// another participant, that participant answers next, up to
-    /// `max_bot_hops` rounds.
+    /// `max_bot_hops` rounds (`None` keeps going until no reply addresses
+    /// anyone new).
     pub async fn post_human(&mut self, text: &str, on_event: EventSink<'_>) {
         self.stop.store(false, Ordering::SeqCst);
         self.push(Speaker::Human, text.to_string(), on_event);
@@ -959,9 +967,11 @@ impl Room {
             if targets.is_empty() {
                 break;
             }
-            if hops >= self.options.max_bot_hops {
-                on_event(RoomEvent::HopLimitReached { limit: self.options.max_bot_hops, next: targets.clone() });
-                break;
+            if let Some(limit) = self.options.max_bot_hops {
+                if hops >= limit {
+                    on_event(RoomEvent::HopLimitReached { limit, next: targets.clone() });
+                    break;
+                }
             }
             hops += 1;
             // Follow-up rounds run one at a time so each bot sees what the

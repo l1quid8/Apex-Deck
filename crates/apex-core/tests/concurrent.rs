@@ -408,7 +408,7 @@ fn round_robin_requests_see_the_prior_reply_and_hops_keep_their_limit() {
             vec![null.clone(), jigga.clone()],
             RoomOptions {
                 policy: apex_core::TurnPolicy::RoundRobin,
-                max_bot_hops: 1,
+                max_bot_hops: Some(1),
             },
         ));
         let events = Mutex::new(Vec::new());
@@ -546,7 +546,7 @@ fn without_a_budget_a_turn_keeps_the_rooms_round_limit() {
         let jigga = Arc::new(ScriptedParticipant::new("jigga", &["@null two"]));
         let runtime = ConcurrentRoom::new(Room::new(
             vec![null.clone(), jigga.clone()],
-            RoomOptions { policy: apex_core::TurnPolicy::Mention, max_bot_hops: 1 },
+            RoomOptions { policy: apex_core::TurnPolicy::Mention, max_bot_hops: Some(1) },
         ));
         let events = Mutex::new(Vec::new());
         let sink = |event| events.lock().unwrap().push(event);
@@ -715,7 +715,7 @@ fn a_task_room_runs_readers_while_its_writers_wait_for_the_checkout() {
             participant("reader", apex_core::Access::Read),
             participant("writer2", apex_core::Access::Full),
         ];
-        let options = RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: 0 };
+        let options = RoomOptions { policy: apex_core::TurnPolicy::Everyone, max_bot_hops: Some(0) };
         let runtime = ConcurrentRoom::new(Room::new(roster, options)).with_write_gate(gate.clone(), Some("task-42".into()));
         gate.restore_hold("other-task").unwrap();
         let events = Mutex::new(Vec::new());
