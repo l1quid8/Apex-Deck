@@ -29,7 +29,7 @@ test('present rows offer Prune and Remove; missing rows offer Prune only', () =>
   const noop = () => {};
   const present = render(React.createElement(WorktreeRow, { item: row(), busy: false, confirm: false, onOpen: noop, onRemove: noop, onPrune: noop, onCancel: noop }));
   assert.match(present, /<summary[^>]*aria-label="Worktree actions"/);
-  assert.match(present, /<details[^>]*>[\s\S]*>Prune<[\s\S]*>Remove<[\s\S]*<\/details>/);
+  assert.match(present, /<details[^>]*>[\s\S]*>Open folder<[\s\S]*<hr\s*\/?>[\s\S]*>Remove<[\s\S]*>Prune<[\s\S]*<\/details>/);
   assert.match(present, />Prune</);
   assert.match(present, />Remove</);
   const missing = render(React.createElement(WorktreeRow, { item: row({ prunable: true }), busy: false, confirm: false, onOpen: noop, onRemove: noop, onPrune: noop, onCancel: noop }));

@@ -97,14 +97,17 @@ export function WorktreeRow({ item, busy, confirm, pruneConfirm, onOpen, onRemov
     <div className="right-worktrees-heading"><strong>{branch}</strong><div className="right-worktrees-actions">
       {confirm ? <><span className="right-worktrees-confirm">Delete folder and uncommitted changes?</span><button type="button" onClick={() => onRemove(true)} disabled={busy}>Remove anyway</button><button type="button" onClick={onCancel}>Cancel</button></>
       : pruneConfirm && onPrune ? <><span className="right-worktrees-confirm">Unregister worktree; keep files and changes?</span><button type="button" onClick={() => onPrune(true)} disabled={busy}>Prune anyway</button><button type="button" onClick={onCancel}>Cancel</button></> : <>
-        <button type="button" onClick={() => onOpen(item.path)}>Open folder</button>
-        {actionable && <details className="right-worktrees-menu" onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.open = false; }}>
+        <details className="right-worktrees-menu" onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.open = false; }}>
           <summary aria-label="Worktree actions" title="Worktree actions">⋯</summary>
           <div className="right-worktrees-menu-items">
-            {onPrune && <button type="button" title="Unregister worktree and keep files on disk" disabled={busy || item.locked} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onPrune(false); }}>Prune</button>}
+            <button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onOpen(item.path); }}>Open folder</button>
+            {actionable && <>
+              <hr />
             {!item.prunable && <button type="button" title="Delete folder and unregister worktree" disabled={busy || item.locked} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onRemove(false); }}>Remove</button>}
+            {onPrune && <button type="button" title="Unregister worktree and keep files on disk" disabled={busy || item.locked} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onPrune(false); }}>Prune</button>}
+            </>}
           </div>
-        </details>}
+        </details>
       </>}
     </div></div>
     <div className="right-worktrees-meta"><span title={item.path}>{shorten(item.path)}</span>{labels.map((label) => <span key={label} className="right-worktrees-label">{label}</span>)}</div>
