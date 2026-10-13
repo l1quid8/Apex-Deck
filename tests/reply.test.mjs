@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { foldsMessageActions, handOffChoices, handOffLabel, quoteFor, quoteLead, replyText } from '../src/reply.ts';
+import { foldsMessageActions, handOffChoices, handOffLabel, quoteFor, quoteLead, quoteTarget, replyText } from '../src/reply.ts';
 
 test('quote replies address the selected model and preserve multiline context', () => {
   assert.equal(replyText('Thanks', { id: 'null', name: 'Null', text: 'First\n\nSecond' }), '@null Thanks\n\n> Null wrote:\n> First\n> \n> Second');
@@ -49,6 +49,34 @@ test('the hand-off menu lists the other bots and Everyone', () => {
   assert.equal(handOffLabel('null', (id) => (id === 'null' ? 'Null' : id)), 'Send to Null');
   assert.equal(handOffLabel('all', (id) => id), 'Send to everyone');
   assert.equal(handOffLabel(null, (id) => id), 'Send to…');
+});
+
+test('multiple Add to chat quotes stack instead of overwriting', () => {
+  const quotes = [
+    { id: 'null', name: 'Null', text: 'First' },
+    { id: 'jigga', name: 'Jigga', text: 'Second' },
+  ];
+  assert.equal(
+    replyText('Thanks', quotes, ['null', 'jigga']),
+    '@null Thanks\n\n> Null wrote:\n> First\n> \n> Jigga wrote:\n> Second',
+  );
+});
+
+test('an explicit Send to wins across stacked quotes', () => {
+  const quotes = [
+    { id: 'null', name: 'Null', text: 'First' },
+    { id: 'jigga', name: 'Jigga', text: 'Second', to: 'all' },
+  ];
+  assert.ok(replyText('Check', quotes, ['null', 'jigga']).startsWith('@all Check'));
+});
+
+test('preview and send agree when your own quote comes first', () => {
+  const quotes = [
+    { id: '', name: 'I', text: 'Mine' },
+    { id: 'muck', name: 'Muck', text: 'Hi' },
+  ];
+  assert.equal(quoteTarget('', quotes, ['muck', 'null']), 'muck');
+  assert.ok(replyText('', quotes, ['muck', 'null']).startsWith('@muck '));
 });
 
 test('message actions fold into one menu in a pane under 360px wide', () => {

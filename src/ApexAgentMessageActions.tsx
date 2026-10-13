@@ -62,12 +62,19 @@ export function ApexAgentMessageActions({ reactions = [], onToggleReaction, onRe
   </div>;
 }
 
-/** Quote carries only one bounded message. It is context, not trusted instruction or chat history. */
-export function ApexAgentReplyQuote({ quote, onClear }: { quote: MessageQuote | null; onClear: () => void }) {
-  if (!quote) return null;
-  const bounded = quote.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, 360);
-  return <aside className="apex-agent-reply-quote" aria-label="Quoted message">
-    <div><small>Replying to {quote.author}</small><button type="button" aria-label="Remove quoted message" onClick={onClear}>×</button></div>
-    <blockquote>{bounded || '(empty message)'}</blockquote>
+/** Quotes carry only bounded messages. They are context, not trusted instruction or chat history. */
+export function ApexAgentReplyQuote({ quotes, onClear, onRemove }: { quotes: MessageQuote[]; onClear: () => void; onRemove?: (index: number) => void }) {
+  if (!quotes.length) return null;
+  const clearOne = (index: number) => { if (onRemove) onRemove(index); else onClear(); };
+  return <aside className="apex-agent-reply-quote" aria-label={quotes.length === 1 ? 'Quoted message' : 'Quoted messages'}>
+    <div><small>{quotes.length === 1 ? `Replying to ${quotes[0].author}` : `Replying to ${quotes.length} messages`}</small><button type="button" aria-label="Remove quoted messages" onClick={onClear}>×</button></div>
+    {quotes.map((quote, index) => {
+      const bounded = quote.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, 360);
+      return <div key={`${quote.messageId}:${index}`}>
+        {quotes.length > 1 && <small>{quote.author}</small>}
+        <blockquote>{bounded || '(empty message)'}</blockquote>
+        {quotes.length > 1 && <button type="button" aria-label={`Remove quote ${index + 1}`} onClick={() => clearOne(index)}>×</button>}
+      </div>;
+    })}
   </aside>;
 }

@@ -326,14 +326,38 @@ test('reply quote freezes its lane, clears task context, and survives a failed s
   find(mobileArticle, node => node.type === ApexAgentMessageActionsStub).props.onReply();
   tree = h.render();
   assert.equal(cleared, 1);
-  assert.match(find(tree, node => node.type === ApexAgentReplyQuoteStub).props.quote.text, /Message quote-mobile/);
+  assert.match(find(tree, node => node.type === ApexAgentReplyQuoteStub).props.quotes[0].text, /Message quote-mobile/);
   find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Please follow up, Billing API' } });
   tree = h.render(); find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(attempted[0][0], 'mobile');
   tree = h.render();
-  assert.ok(find(tree, node => node.type === ApexAgentReplyQuoteStub).props.quote, 'failed sends keep the quote attached');
+  assert.ok(find(tree, node => node.type === ApexAgentReplyQuoteStub).props.quotes.length, 'failed sends keep the quote attached');
   assert.match(textOf(tree), /offline/);
+});
+
+test('a second Reply stacks instead of replacing, and sending carries both quotes to the first lane', async () => {
+  const h = harness({ workspaces: projects, monitors: [monitor('mobile', [message('m-first', 'assistant', 2)]), monitor('billing', [message('m-second', 'assistant', 3)])] });
+  let tree = h.render();
+  const actions = () => collectAll(tree, node => node.type === ApexAgentMessageActionsStub).filter(node => typeof node.props.onReply === 'function');
+  assert.equal(actions().length, 2);
+  actions()[0].props.onReply();
+  tree = h.render();
+  actions()[1].props.onReply();
+  tree = h.render();
+  actions()[0].props.onReply();
+  tree = h.render();
+  const quotes = find(tree, node => node.type === ApexAgentReplyQuoteStub).props.quotes;
+  assert.equal(quotes.length, 2, 'repeating Reply on the same message is ignored');
+  assert.deepEqual(quotes.map(quote => quote.laneId), ['mobile', 'billing']);
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Follow up on both' } });
+  tree = h.render();
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.replies[0][0], 'mobile');
+  assert.ok(h.replies[0][1].indexOf('Message m-first') < h.replies[0][1].indexOf('Message m-second'), 'quotes keep stack order');
+  tree = h.render();
+  assert.equal(find(tree, node => node.type === ApexAgentReplyQuoteStub).props.quotes.length, 0, 'a sent reply clears its quotes');
 });
 
 test('an open approval is one link in the conversation; its detail shows the exact command, folder and machine, and Approve sends its hash', async () => {
