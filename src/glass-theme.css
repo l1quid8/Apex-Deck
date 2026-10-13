@@ -255,7 +255,9 @@
 
 /* Menus, popovers and dialogs float over text. Most open inside a pane that
    already blurs, and a blur inside a blur can't see past its parent, so these
-   keep the tint and edge but stay nearly solid to remain readable. */
+   keep the tint and edge but stay nearly solid to remain readable.
+   Dialogs (.confirm) are the exception: they sit on their own blurred backdrop,
+   see the rule after this one. */
 :root[data-deck-theme="glass"] :is(.composer-menu, .pane-menu, .hover-card, .usage-card, .bot-settings, .quick-add, .workspace-machine-menu,
   .new-menu-list, .link-menu, .review-menu, .artifact-menu, .model-select > .model-menu, .selection-actions, .steer-pop, .mod-status-menu,
   .host-menu, .attention-list, .proj-picker, .confirm, .toast, .mod-toast, .mod-modal, .library-viewer) {
@@ -265,6 +267,15 @@
   -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
   backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .12), 0 18px 44px -18px rgb(0 0 0 / .6);
+}
+:root[data-deck-theme="glass"] .confirm-backdrop {
+  background: rgb(0 0 0 / .28);
+  -webkit-backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur, 0px)) saturate(1.2);
+}
+/* Floor of .75 so text stays readable when Blur is 0 and the page behind is sharp. */
+:root[data-deck-theme="glass"] .confirm-backdrop > .confirm {
+  --deck-pop: rgb(var(--deck-panel-raised) / max(.75, var(--deck-opacity, .44)));
 }
 :root[data-deck-theme="glass"] .proj-picker .list-wrap.fade::after { background: linear-gradient(transparent, var(--deck-pop)); }
 
