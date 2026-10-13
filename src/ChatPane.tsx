@@ -67,7 +67,7 @@ import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatc
 import { RichText } from "./RichText";
 import { Markdown } from "./Markdown";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
-import { handOffChoices, handOffLabel, quoteFor, quoteLead, replyText, type ReplyQuote } from "./reply";
+import { handOffChoices, handOffLabel, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
 import { attachedImages, attachedVideos, attachmentName, isImage, replyImages, replyVideos, withAttachments, type Attachment } from "./attachments";
 import { mediaKind, priceLabel } from "./media";
 import { mediaSendsFor, priceSend, sourceKey } from "./mediaPrice";
@@ -517,11 +517,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [queued, setQueued] = useState<ParticipantMessage[]>([]);
   const [queuePaused, setQueuePaused] = useState(false);
   const [editor, setEditor] = useState<string | null>(null);
-  const [reply, setReply] = useState<ReplyQuote | null>(null);
+  const [replies, setReplies] = useState<ReplyQuote[]>([]);
   /** Whether the quote's Send to ▾ menu is open. */
   const [handOffOpen, setHandOffOpen] = useState(false);
   const handOffButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => { if (!reply) setHandOffOpen(false); }, [reply]);
+  useEffect(() => { if (replies.length === 0) setHandOffOpen(false); }, [replies.length]);
   useEffect(() => {
     if (!handOffOpen) return;
     const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".hand-off")) setHandOffOpen(false); };
@@ -737,7 +737,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // Who is at work right now, for the line above the composer: bots still
   // replying, and bots stopped on an approval card waiting for you.
   /** Who a quote will lead with right now, for its Send to ▾ button. */
-  const quoteTo = reply ? quoteLead(text.trim(), reply, participants.map((p) => p.id)) : null;
+  const quoteTo = !replies.length ? null : quoteTarget(text.trim(), replies, participants.map((p) => p.id));
 
   // Keep the last context reading so the meters show it straight after a restart.
   const contextLoaded = useRef(false);
@@ -1245,7 +1245,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** Empty the chat so the models start fresh. The participants stay. */
   const clearChat = () => {
     setText("");
-    setReply(null);
+    setReplies([]);
     backend
       .roomClear(pane.id)
       .then(() => {
@@ -1266,7 +1266,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
    *  place of the messages so far; the person still sees them all. */
   const compactChat = () => {
     setText("");
-    setReply(null);
+    setReplies([]);
     setBusy(true);
     void turnQueue.send("/compact", "compact").catch(error => notify(String(error), "error"));
   };
@@ -1412,7 +1412,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const pickedQuote = (p: NonNullable<typeof picked>): ReplyQuote => ({ ...quoteFor(p.message, (id) => names.get(id) ?? id), text: p.text });
   const addPicked = () => {
     if (!picked) return;
-    setReply(pickedQuote(picked)); setPicked(null);
+    const next = pickedQuote(picked);
+    setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]);
+    setPicked(null);
     window.getSelection()?.removeAllRanges();
     input.current?.focus();
   };
@@ -1499,7 +1501,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   /** Directional disclosure for message actions; a menu in narrow panes. */
   const messageActions = (message: Message) => {
-    const quote = () => { setReply(quoteFor(message, (id) => names.get(id) ?? id)); input.current?.focus(); };
+    const quote = () => { const next = quoteFor(message, (id) => names.get(id) ?? id); setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]); input.current?.focus(); };
     const copy = () => copyMessage(message);
     const fork = () => forkAt(`${pane.title} (fork)`, message.seq + 1);
     const goBackKind: GoBack | null = message.speaker.kind === "bot" ? "retry" : message.speaker.kind === "human" ? "revert" : null;
@@ -1934,21 +1936,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (!ready || !participants.length) return;
     let live = true;
     // Ask about the message as it will be sent, with a quote's leading handle.
-    const outgoing = reply ? replyText(text, reply, participants.map((p) => p.id)) : text;
+    const outgoing = replies.length ? replyText(text, replies, participants.map((p) => p.id)) : text;
     const sticky = stickyFor(outgoing, queued);
     if (sticky) { setServerTargets(sticky); return; }
     // A slower answer for older text is ignored once the text has changed.
     backend.roomTargets(pane.id, outgoing).then(ids => { if (live) setServerTargets(ids); }).catch(() => {});
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backend, pane.id, text, reply, ready, participants, optionsSaved, options.policy, queued]);
+  }, [backend, pane.id, text, replies, ready, participants, optionsSaved, options.policy, queued]);
   /** Who gets the message as it stands, for the placeholder. */
   const recipient = recipientName({
     targets: serverTargets,
     roster: participants.map((p) => ({ id: p.id, name: p.display_name })),
     policy: options.policy,
   });
-  const copy = composerCopy(busy, participants.length === 0, { quoting: Boolean(reply), to: recipient, tldr, plan: planOn });
+  const copy = composerCopy(busy, participants.length === 0, { quoting: replies.length > 0, to: recipient, tldr, plan: planOn });
   const serverMenuOpen = findTrigger(text, caret)?.kind === "server";
   useEffect(() => {
     if (!ready) return;
@@ -2066,13 +2068,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     // Mods allowed to see the session may rewrite the prompt or refuse it.
     const hooked = parsed.text ? await modHost.promptSubmit(pane.id, parsed.text) : { text: parsed.text };
     if (hooked.deny) { notify(hooked.deny, "error"); return; }
-    const message = withTldr(withAttachments(hooked.text && replyText(postable(hooked.text), reply, participants.map((p) => p.id)), sendable.map((a) => a.path!)), tldr);
+    const message = withTldr(withAttachments(hooked.text && replyText(postable(hooked.text), replies.length ? replies : null, participants.map((p) => p.id)), sendable.map((a) => a.path!)), tldr);
     if (!backend.host || hostCanMutate(backend.host.connection.get().status)) { /* rechecked by queue acceptance */ } else return;
     if (tldr) wiggle(field.current);
     // ⌘↵ queues it, then steers it from the queue, so a cancelled prompt leaves it queued.
     setSendingFirst(true);
     void turnQueue.send(message).then(id => {
-      setText(current => current === text ? "" : current); setReply(null);
+      setText(current => current === text ? "" : current); setReplies([]);
       attached.forEach(a => a.preview && URL.revokeObjectURL(a.preview));
       setAttached(current => current.filter(a => !attached.includes(a)));
       const item = turnQueue.items.find(queuedItem => queuedItem.id === id);
@@ -3013,19 +3015,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <button type="button" className="ghost" data-act="ask-cancel" onClick={moveAsk.onCancel}>Cancel</button>
           </div>
         </div>}
-        {reply && <div className="quote-preview">
-          <div className="quote-preview-copy"><span className="speaker">{reply.id ? `Quoting ${reply.name}` : "Quoting your message"}</span><blockquote>{reply.text}</blockquote></div>
+        {replies.length > 0 && <div className="quote-preview">
+          <div className="quote-preview-list">{replies.map((item, index) => (
+            <div className="quote-preview-copy" key={`${item.id}:${item.name}:${index}`}><span className="speaker">{item.id ? `Quoting ${item.name}` : "Quoting your message"}</span><blockquote>{item.text}</blockquote><button className="quote-cancel" aria-label={`Remove quote ${index + 1}`} onClick={() => { setReplies((list) => list.filter((_, i) => i !== index)); input.current?.focus(); }}>×</button></div>
+          ))}</div>
           <span className="pane-menu-wrap hand-off">
             <button ref={handOffButton} type="button" className="ghost small" aria-haspopup="menu" aria-expanded={handOffOpen} onClick={() => setHandOffOpen((open) => !open)}>
               {handOffLabel(quoteTo, (id) => names.get(id) ?? id)} ▾
             </button>
             {handOffOpen && <span className="pane-menu hand-off-menu" role="menu">
               {handOffChoices(quoteTo, participants.map((p) => ({ id: p.id, name: p.display_name }))).map((choice) => (
-                <button role="menuitem" key={choice.to} onClick={() => { setReply((quote) => (quote ? { ...quote, to: choice.to } : quote)); setHandOffOpen(false); input.current?.focus(); }}>{choice.label}</button>
+                <button role="menuitem" key={choice.to} onClick={() => { setReplies((list) => list.map((quote) => ({ ...quote, to: choice.to }))); setHandOffOpen(false); input.current?.focus(); }}>{choice.label}</button>
               ))}
             </span>}
           </span>
-          <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
+          <button className="quote-cancel" aria-label="Cancel quotes" onClick={() => { setReplies([]); input.current?.focus(); }}>×</button>
         </div>}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}

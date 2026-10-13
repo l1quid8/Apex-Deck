@@ -107,7 +107,12 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const shownTasks = taskNodes ? (filterWorkspaceId ? taskNodes.filter((item) => item.workspaceId === filterWorkspaceId) : taskNodes).map((item) => item.node) : tasks;
   const filterName = filterWorkspaceId ? names[filterWorkspaceId] ?? 'Project' : '';
   const [text, setText] = useState('');
-  const [replyQuote, setReplyQuote] = useState<(MessageQuote & { laneId: string }) | null>(null);
+  const [replyQuotes, setReplyQuotes] = useState<(MessageQuote & { laneId: string })[]>([]);
+  /** A second Reply stacks instead of replacing; exact duplicates are ignored. The first quote fixes the lane. */
+  const addReplyQuote = (quote: MessageQuote & { laneId: string }) => {
+    setReplyQuotes((list) => list.some((item) => item.messageId === quote.messageId && item.laneId === quote.laneId && item.text === quote.text) ? list : [...list, quote]);
+    setDraftTaskContext(null); onClearTaskContext?.(); setFocus(quote.laneId); setDraftFallback(quote.laneId); requestAnimationFrame(() => composerInput.current?.focus());
+  };
   const [attachmentState, setAttachmentState] = useState<{ paths: string[]; pending: boolean; hasErrors: boolean }>({ paths: [], pending: false, hasErrors: false });
   const [attachmentLane, setAttachmentLane] = useState<string | null>(null);
   const [draftTaskContext, setDraftTaskContext] = useState<ApexAgentTaskContext | null | undefined>(undefined);
@@ -157,7 +162,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     const id = lane.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(^|[^\\p{L}\\p{N}_])@${id}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(text);
   });
-  const target = replyQuote?.laneId ?? (filterWorkspaceId ? filterWorkspaceId : mentionedLane?.id ?? replyTarget(text, lanes, fallbackLane));
+  const target = replyQuotes[0]?.laneId ?? (filterWorkspaceId ? filterWorkspaceId : mentionedLane?.id ?? replyTarget(text, lanes, fallbackLane));
   // Consume longer names first so "Mobile launch" does not also select "Mobile".
   let unmatched = text;
   const namedProjects = [...lanes].sort((a, b) => b.name.length - a.name.length).filter((workspace) => {
@@ -166,7 +171,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     if (!pattern.test(unmatched)) return false;
     unmatched = unmatched.replace(pattern, ' '); return true;
   });
-  const globalReply = !filterWorkspaceId && !replyQuote && !attachmentLane && !!onOverview && (/@all\b/i.test(text) || /\b(everywhere|all (?:my |the )?(?:projects|threads)|across (?:my |the )?projects|overall)\b/i.test(text) || namedProjects.length > 1 || (!namedProjects.length && (fallbackLane === '*' || !fallbackLane)));
+  const globalReply = !filterWorkspaceId && !replyQuotes.length && !attachmentLane && !!onOverview && (/@all\b/i.test(text) || /\b(everywhere|all (?:my |the )?(?:projects|threads)|across (?:my |the )?projects|overall)\b/i.test(text) || namedProjects.length > 1 || (!namedProjects.length && (fallbackLane === '*' || !fallbackLane)));
   const bottom = useRef<HTMLDivElement | null>(null);
   // `busy` only updates on the next render; this blocks a second Enter pressed before then.
   const sending = useRef(false);
@@ -236,7 +241,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     const parsed = parseComposer(raw);
     if ('command' in parsed) {
       if (parsed.command.name === 'unknown') { setError(`Unknown command: ${parsed.command.typed}`); return; }
-      const commandTarget = attachmentLane ?? replyQuote?.laneId ?? target ?? PERSONAL;
+      const commandTarget = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;
       setText(''); runCommand(parsed.command, commandTarget); return;
     }
     const message = parsed.text.startsWith('//') ? parsed.text.slice(1) : parsed.text;
@@ -244,10 +249,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     if ((!message && !capturedPaths.length) || (!selectedTaskContext && !target && !globalReply)) return;
     sending.current = true;
     // Empty the box now so anything typed while waiting survives; a failed send restores the message only into an empty box.
-    const capturedTask = replyQuote ? null : selectedTaskContext;
-    const capturedQuote = replyQuote;
-    const sendLane = attachmentLane ?? capturedQuote?.laneId ?? target;
-    const withQuote = capturedQuote ? `${formatApexAgentQuote(capturedQuote)}${message}` : message;
+    const capturedTask = replyQuotes.length ? null : selectedTaskContext;
+    const capturedQuotes = replyQuotes;
+    const sendLane = attachmentLane ?? capturedQuotes[0]?.laneId ?? target;
+    const withQuote = capturedQuotes.length ? `${formatApexAgentQuote(capturedQuotes)}${message}` : message;
     const outgoing = composerTools.current?.decorate(withQuote) ?? withQuote;
     setText(''); setDraftFallback(null); setDraftTaskContext(undefined); setFocus(globalReply ? '*' : sendLane);
     void run(async () => {
@@ -257,7 +262,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         else if (sendLane === PERSONAL) await personal!.send(outgoing);
         else await onReply(sendLane!, outgoing);
         composerTools.current?.clear(capturedPaths);
-        if (capturedQuote) setReplyQuote((current) => current === capturedQuote ? null : current);
+        if (capturedQuotes.length) setReplyQuotes((current) => current === capturedQuotes ? [] : current);
       } catch (cause) { setText((current) => { if (current.trim()) return current; setDraftTaskContext(capturedTask); return message; }); throw cause; } finally { sending.current = false; }
     });
   };
@@ -493,10 +498,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     }
     if (text.trim() && text !== value && !window.confirm('Replace the current draft with this message?')) return;
     setError('');
-    setText(value); setReplyQuote(null); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(lane); setDraftFallback(lane);
+    setText(value); setReplyQuotes([]); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(lane); setDraftFallback(lane);
     requestAnimationFrame(() => composerInput.current?.focus());
   };
-  const composerLane = attachmentLane ?? replyQuote?.laneId ?? target ?? PERSONAL;
+  const composerLane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;
 
   return <TaskViewContext.Provider value={taskContextValue}><section className="apex-agent widget apex-agent-all" role="region" aria-label="ApexAgent" onKeyDown={onEscape}>
     <header className="apex-agent-head">
@@ -537,8 +542,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
             {item.role === 'human' ? <p>{message.text}</p> : <div className="apex-agent-message-body"><Markdown text={message.text} onOpen={openMessageLink} /></div>}
           </>;
           const personalActions = (item.role === 'human' || item.role === 'assistant') ? <ApexAgentMessageActions mine={item.role === 'human'} text={item.text} at={item.at} stateKey={messageStateKey(assistant!.hostId, PERSONAL, item.id)} onRetry={item.role === 'assistant' ? () => personal!.send(retryMessageText(item.text)) : undefined} onRevert={item.role === 'human' ? () => restoreMessage(PERSONAL, item.text) : undefined} reactions={item.reactions} disabled={busy || !!personal?.offline} onReply={!attachmentLane || attachmentLane === PERSONAL ? () => {
-            const quote = { messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL };
-            setReplyQuote(quote); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(PERSONAL); setDraftFallback(PERSONAL); requestAnimationFrame(() => composerInput.current?.focus());
+            addReplyQuote({ messageId: item.id, author: item.role === 'human' ? 'You' : personal!.name, text: item.text, laneId: PERSONAL });
           } : undefined} onToggleReaction={onReact ? (emoji, enabled) => run(() => onReact(PERSONAL, item.id, emoji, enabled)) : undefined} /> : null;
           return personalActions
             ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={personalBubble}>{personalBody}</div>{personalActions}</article>
@@ -552,8 +556,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
           {evidenceList(message.evidence ?? [], onOpenEvidence && ((item) => void run(() => onOpenEvidence(workspaceId, item))))}
         </>;
         const projectActions = (message.role === 'human' || message.role === 'assistant') ? <ApexAgentMessageActions mine={message.role === 'human'} text={message.text} at={message.at} stateKey={messageStateKey(workspaces.find((w) => w.id === workspaceId)?.hostId ?? '', workspaceId, message.id)} onRetry={message.role === 'assistant' ? () => workspaceId === '*' ? onOverview!(retryMessageText(message.text)) : onReply(workspaceId, retryMessageText(message.text)) : undefined} onRevert={message.role === 'human' ? () => restoreMessage(workspaceId, message.text) : undefined} reactions={message.reactions} disabled={busy || offlineWorkspaceIds.includes(workspaceId)} onReply={!attachmentLane || attachmentLane === workspaceId ? () => {
-          const quote = { messageId: message.id, author: message.role === 'human' ? 'You' : project, text: message.text, laneId: workspaceId };
-          setReplyQuote(quote); setDraftTaskContext(null); onClearTaskContext?.(); setFocus(workspaceId); setDraftFallback(workspaceId); requestAnimationFrame(() => composerInput.current?.focus());
+          addReplyQuote({ messageId: message.id, author: message.role === 'human' ? 'You' : project, text: message.text, laneId: workspaceId });
         } : undefined} onToggleReaction={onReact && monitors.some((monitor) => monitor.workspaceId === workspaceId) ? (emoji, enabled) => run(() => onReact(workspaceId, message.id, emoji, enabled)) : undefined} /> : null;
         return projectActions
           ? <article className={`apex-agent-message-row ${message.role}`} key={`${workspaceId}:${message.id}`}><div className={projectBubble}>{projectBody}</div>{projectActions}</article>
@@ -573,12 +576,12 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     </div>}
     {(!!watched.length || !!selectedTaskContext || !!assistant) && <form className="apex-agent-all-composer" onSubmit={send} hidden={view !== 'chat'}>
       {selectedTaskContext && <div className="assistant-composer-heading"><strong>{selectedTaskContext.project} · {selectedTaskContext.label}</strong><button type="button" onClick={() => { setDraftTaskContext(null); setFocus(null); setDraftFallback(null); onClearTaskContext?.(); }}>New message</button></div>}
-      <ApexAgentReplyQuote quote={replyQuote} onClear={() => setReplyQuote(null)} />
+      <ApexAgentReplyQuote quotes={replyQuotes} onClear={() => setReplyQuotes([])} onRemove={(index) => setReplyQuotes((list) => list.filter((_, i) => i !== index))} />
       <div className="apex-agent-all-compose-box">
         <ApexAgentComposerTools ref={composerTools} value={text} disabled={busy} onChange={(value) => { setText(value); setCaret(composerInput.current?.selectionStart ?? value.length); }} inputRef={composerInput} menuRef={composerMenu} participants={lanes.map((lane) => ({ id: lane.id, display_name: lane.name }))} servers={serversByLane[composerLane] ?? []} serverStatus={serverStatusByLane[composerLane]} includeAll={!!onOverview && !filterWorkspaceId} allMentionDetail="Ask across projects" onTools={composerLane === PERSONAL && assistant ? () => setPanelOpen('connections') : undefined} folderUnavailableReason={pickFolderUnavailableReason} filesUnavailableReason={!saveAttachment ? 'File attachments are unavailable on this destination.' : undefined} trigger={findTrigger(text, caret)}
           saveAttachment={saveAttachment && !selectedTaskContext ? (name, bytes) => {
             if (busy || sending.current) throw new Error('Wait until the current message finishes before adding attachments.');
-            const lane = attachmentLane ?? replyQuote?.laneId ?? target ?? PERSONAL;
+            const lane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;
             setAttachmentLane((current) => current ?? lane);
             return saveAttachment(lane, name, bytes);
           } : undefined}
@@ -596,11 +599,11 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
               image: 'Image generation is not connected to this conversation.',
             } : {}),
           }}
-          onCommand={(command) => runCommand(command, attachmentLane ?? replyQuote?.laneId ?? target ?? PERSONAL)} />
-        <textarea ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(filterWorkspaceId ?? focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); setCaret(event.currentTarget?.selectionStart ?? value.length); }} onClick={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} onKeyUp={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} rows={1} aria-label="Message ApexAgent" placeholder={selectedTaskContext ? 'Reply to this task…' : (attachmentLane ?? replyQuote?.laneId ?? target) === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…'}
+          onCommand={(command) => runCommand(command, attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL)} />
+        <textarea ref={composerInput} className="apex-agent-all-input" value={text} onChange={(event) => { const value = event.target.value; if (!value.trim()) { setDraftFallback(null); setDraftTaskContext(undefined); } else if (!text.trim()) { setDraftFallback(filterWorkspaceId ?? focus ?? lastSpoken ?? (assistant ? PERSONAL : onOverview ? '*' : null)); setDraftTaskContext(selectedTaskContext); } setText(value); setCaret(event.currentTarget?.selectionStart ?? value.length); }} onClick={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} onKeyUp={(event) => setCaret(event.currentTarget?.selectionStart ?? text.length)} rows={1} aria-label="Message ApexAgent" placeholder={selectedTaskContext ? 'Reply to this task…' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `Message ${personal!.name}…` : 'Ask about any project…'}
           onKeyDown={(event) => { if (composerMenu.current?.key(event)) return; if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
       </div>
-      <div className="apex-agent-all-compose-row"><small className="apex-agent-muted apex-agent-all-destination">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : (attachmentLane ?? replyQuote?.laneId ?? target) === PERSONAL ? `To ${personalTag}` : attachmentLane || replyQuote ? `About ${laneNames[attachmentLane ?? replyQuote!.laneId] ?? 'Project'} · fixed for this reply` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 && !replyQuote && !attachmentLane ? ' · name a project to switch' : ''}{attachmentState.paths.length ? ` · ${attachmentState.paths.length} attachment${attachmentState.paths.length === 1 ? '' : 's'}` : ''}</small><button className="primary apex-agent-all-send" disabled={busy || (!text.trim() && !attachmentState.paths.length) || attachmentState.pending || attachmentState.hasErrors || (!selectedTaskContext && !target && !globalReply)}>{busy ? 'Sending…' : 'Send'}</button></div>
+      <div className="apex-agent-all-compose-row"><small className="apex-agent-muted apex-agent-all-destination">{selectedTaskContext ? `Reply to ${selectedTaskContext.project} · ${selectedTaskContext.label}` : globalReply ? 'About all projects' : (attachmentLane ?? replyQuotes[0]?.laneId ?? target) === PERSONAL ? `To ${personalTag}` : attachmentLane || replyQuotes.length ? `About ${laneNames[attachmentLane ?? replyQuotes[0]!.laneId] ?? 'Project'} · fixed for this reply` : target ? `About ${laneNames[target]}` : ''}{!selectedTaskContext && lanes.length > 1 && !replyQuotes.length && !attachmentLane ? ' · name a project to switch' : ''}{attachmentState.paths.length ? ` · ${attachmentState.paths.length} attachment${attachmentState.paths.length === 1 ? '' : 's'}` : ''}</small><button className="primary apex-agent-all-send" disabled={busy || (!text.trim() && !attachmentState.paths.length) || attachmentState.pending || attachmentState.hasErrors || (!selectedTaskContext && !target && !globalReply)}>{busy ? 'Sending…' : 'Send'}</button></div>
     </form>}
     {calling && personal && <PersonalCall lane={personal} onEnd={() => setCalling(false)} />}
     {busy && <div className="apex-agent-busy" role="status">Saving…</div>}

@@ -24,13 +24,28 @@ export function quoteLead(body: string, quote: ReplyQuote, ids: string[]): strin
   return quote.id;
 }
 
+/** Who stacked quotes lead with: the first explicit Send to, else the first quote that names someone. */
+export function quoteTarget(body: string, quotes: ReplyQuote[], ids: string[]): string | null {
+  for (const item of quotes) {
+    if (item.to) return item.to;
+  }
+  for (const item of quotes) {
+    const candidate = quoteLead(body, item, ids);
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
 /** Quote mentions are context, not instructions to summon another participant. */
-export function replyText(text: string, quote: ReplyQuote | null, ids: string[] = []): string {
+export function replyText(text: string, quote: ReplyQuote | ReplyQuote[] | null, ids: string[] = []): string {
   const body = text.trim();
-  if (!quote) return body;
-  const context = `${quote.name} wrote:\n${quote.text}`.replaceAll('@', '＠');
-  const lead = quoteLead(body, quote, ids);
-  return `${lead ? `@${lead} ` : ""}${body}\n\n${context.split('\n').map((line) => `> ${line}`).join('\n')}`;
+  const quotes = !quote ? [] : Array.isArray(quote) ? quote : [quote];
+  if (quotes.length === 0) return body;
+  const blocks = quotes.map((item) =>
+    `${item.name} wrote:\n${item.text}`.replaceAll('@', '＠').split('\n').map((line) => `> ${line}`).join('\n'),
+  );
+  const lead = quoteTarget(body, quotes, ids);
+  return `${lead ? `@${lead} ` : ""}${body}\n\n${blocks.join('\n> \n')}`;
 }
 
 /** The quote for a message: a bot's reply under its name, or one of yours ("I wrote:" to the models). */
