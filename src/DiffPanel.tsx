@@ -20,17 +20,21 @@ interface Props {
   reviewers: Reviewer[];
   /** Attach the change for bot `id` to review: one file, or one file per patch. It never sends. */
   onReview: (id: string, split: boolean) => void;
+  /** When set, show only these paths (a single turn's files). Null shows everything. */
+  paths?: string[] | null;
+  onClearScope?: () => void;
 }
 
 /** Everything that changed in the folder since this thread started, under
  *  the agent that changed it, and a way to hand it to a reviewer. */
-export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf, onReveal, onRefresh, onClose, reviewers, onReview }: Props) {
+export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf, onReveal, onRefresh, onClose, reviewers, onReview, paths, onClearScope }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const [split, setSplit] = useState(false);
   const askButton = useRef<HTMLButtonElement>(null);
   const askMenu = useRef<HTMLDivElement>(null);
-  const files = diff?.files ?? [];
+  const allFiles = diff?.files ?? [];
+  const files = paths ? allFiles.filter((file) => paths.includes(file.path)) : allFiles;
   const patch = reviewPatch(files);
   const lines = patch ? patchLines(patch) : 0;
   const large = offersSplit(lines);
@@ -90,6 +94,11 @@ export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf,
             );
           })}
         </div>
+      )}
+      {paths && (
+        <p className="changes-note">
+          Showing this turn{onClearScope && <> · <button className="ghost small" onClick={onClearScope}>Show all</button></>}
+        </p>
       )}
       {diff?.note && <p className="changes-note">{diff.note}</p>}
       {!loading && files.length === 0 && <p className="muted changes-empty">Nothing has changed yet.</p>}
