@@ -22,13 +22,24 @@ interface Props {
   onReview: (id: string, split: boolean) => void;
   /** When set, show only these paths (a single turn's files). Null shows everything. */
   paths?: string[] | null;
+  /** When set, auto-expand this file path once it appears in the loaded diff. */
+  focusPath?: string | null;
   onClearScope?: () => void;
 }
 
 /** Everything that changed in the folder since this thread started, under
  *  the agent that changed it, and a way to hand it to a reviewer. */
-export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf, onReveal, onRefresh, onClose, reviewers, onReview, paths, onClearScope }: Props) {
+export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf, onReveal, onRefresh, onClose, reviewers, onReview, paths, focusPath, onClearScope }: Props) {
   const [open, setOpen] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusPath) return;
+    for (const group of groupDiff(diff?.files ?? [], order)) {
+      if (group.files.some((file) => file.path === focusPath)) {
+        setOpen(`${group.by}:${focusPath}`);
+        return;
+      }
+    }
+  }, [focusPath, diff, order]);
   const [asking, setAsking] = useState(false);
   const [split, setSplit] = useState(false);
   const askButton = useRef<HTMLButtonElement>(null);
