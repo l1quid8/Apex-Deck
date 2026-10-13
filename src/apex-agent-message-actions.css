@@ -42,9 +42,14 @@
 .apex-agent-message-row.human .apex-agent-reaction-options { left: auto; right: 0; }
 .apex-agent-message-actions [role="alert"] { color: var(--danger, #f87171); font-size: 11px; padding: 0 6px; }
 .apex-agent-reply-quote { border-left: 2px solid var(--accent); margin: 0 0 7px; padding: 5px 9px; background: rgba(127, 127, 127, .08); border-radius: 0 7px 7px 0; }
-.apex-agent-reply-quote > div { display: flex; justify-content: space-between; align-items: center; color: var(--muted); }
+.apex-agent-quote-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--muted); }
+.apex-agent-quote-clear-all { font-size: 12px; }
 .apex-agent-reply-quote button { border: 0; background: none; color: inherit; cursor: pointer; }
-.apex-agent-reply-quote blockquote { margin: 4px 0 0; max-height: 4.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9em; }
+.apex-agent-quote-list { display: flex; flex-direction: column; max-height: 160px; overflow-y: auto; }
+.apex-agent-quote-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; border-top: 1px solid transparent; }
+.apex-agent-quote-row:first-child { border-top: 0; }
+.apex-agent-quote-author { flex-shrink: 0; min-width: 44px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apex-agent-quote-row blockquote { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; margin: 0; max-height: 3em; overflow: hidden; white-space: normal; overflow-wrap: anywhere; font-size: .9em; }
 .apex-agent-message-pinned > .apex-agent-message-bubble,
 .apex-agent-message-pinned > .assistant-chat-message { box-shadow: inset 3px 0 0 var(--accent); }
 

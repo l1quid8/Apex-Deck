@@ -1783,11 +1783,18 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 
 /* Anchor message menus to completed responses. */
 .bubble.bot.completed { position: relative; }
-.quote-preview { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--line); background: var(--panel-2); border-radius: var(--radius); }
-.quote-preview-copy { flex: 1; min-width: 0; }
-.quote-preview-copy .speaker { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; }
-.quote-preview blockquote { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; margin: 2px 0 0; max-height: 32px; overflow: hidden; white-space: normal; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; line-height: 16px; }
-.quote-cancel { flex-shrink: 0; padding: 0; width: 28px; height: 28px; background: transparent; border: 0; font-size: 20px; }
+.quote-preview { display: flex; flex-direction: column; align-items: stretch; margin-bottom: 8px; border: 1px solid var(--line); background: var(--panel-2); border-radius: var(--radius); }
+.quote-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 8px 10px 6px; }
+.quote-count { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.quote-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; min-width: 0; }
+.quote-clear-all { padding: 2px 4px; background: transparent; border: 0; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.quote-clear-all:hover { color: inherit; text-decoration: underline; }
+.quote-preview-list { display: flex; flex-direction: column; max-height: 160px; overflow-y: auto; padding: 0 10px 8px; }
+.quote-preview-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid var(--line); }
+.quote-preview-row:first-child { border-top: 0; }
+.quote-author { flex-shrink: 0; min-width: 44px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; line-height: 16px; }
+.quote-preview-row blockquote { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; margin: 0; max-height: 32px; overflow: hidden; white-space: normal; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; line-height: 16px; }
+.quote-cancel { flex-shrink: 0; align-self: center; padding: 0; width: 28px; height: 28px; background: transparent; border: 0; font-size: 20px; cursor: pointer; }
 
 /* The conversation, with the list of changes beside it when open. */
 .chat-body {

@@ -3016,20 +3016,25 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </div>
         </div>}
         {replies.length > 0 && <div className="quote-preview">
+          <div className="quote-preview-head">
+            <span className="quote-count">{replies.length === 1 ? "1 quote" : `${replies.length} quotes`}</span>
+            <span className="quote-head-actions">
+              <span className="pane-menu-wrap hand-off">
+                <button ref={handOffButton} type="button" className="ghost small" aria-haspopup="menu" aria-expanded={handOffOpen} onClick={() => setHandOffOpen((open) => !open)}>
+                  {handOffLabel(quoteTo, (id) => names.get(id) ?? id)} ▾
+                </button>
+                {handOffOpen && <span className="pane-menu hand-off-menu" role="menu">
+                  {handOffChoices(quoteTo, participants.map((p) => ({ id: p.id, name: p.display_name }))).map((choice) => (
+                    <button role="menuitem" key={choice.to} onClick={() => { setReplies((list) => list.map((quote) => ({ ...quote, to: choice.to }))); setHandOffOpen(false); input.current?.focus(); }}>{choice.label}</button>
+                  ))}
+                </span>}
+              </span>
+              {replies.length > 1 && <button type="button" className="quote-clear-all" onClick={() => { setReplies([]); input.current?.focus(); }}>Clear all</button>}
+            </span>
+          </div>
           <div className="quote-preview-list">{replies.map((item, index) => (
-            <div className="quote-preview-copy" key={`${item.id}:${item.name}:${index}`}><span className="speaker">{item.id ? `Quoting ${item.name}` : "Quoting your message"}</span><blockquote>{item.text}</blockquote><button className="quote-cancel" aria-label={`Remove quote ${index + 1}`} onClick={() => { setReplies((list) => list.filter((_, i) => i !== index)); input.current?.focus(); }}>×</button></div>
+            <div className="quote-preview-row" key={`${item.id}:${item.name}:${index}`}><span className="quote-author" title={item.id ? item.name : "You"}>{item.id ? item.name : "You"}</span><blockquote>{item.text}</blockquote><button className="quote-cancel" aria-label={`Remove quote ${index + 1}`} onClick={() => { setReplies((list) => list.filter((_, i) => i !== index)); input.current?.focus(); }}>×</button></div>
           ))}</div>
-          <span className="pane-menu-wrap hand-off">
-            <button ref={handOffButton} type="button" className="ghost small" aria-haspopup="menu" aria-expanded={handOffOpen} onClick={() => setHandOffOpen((open) => !open)}>
-              {handOffLabel(quoteTo, (id) => names.get(id) ?? id)} ▾
-            </button>
-            {handOffOpen && <span className="pane-menu hand-off-menu" role="menu">
-              {handOffChoices(quoteTo, participants.map((p) => ({ id: p.id, name: p.display_name }))).map((choice) => (
-                <button role="menuitem" key={choice.to} onClick={() => { setReplies((list) => list.map((quote) => ({ ...quote, to: choice.to }))); setHandOffOpen(false); input.current?.focus(); }}>{choice.label}</button>
-              ))}
-            </span>}
-          </span>
-          <button className="quote-cancel" aria-label="Cancel quotes" onClick={() => { setReplies([]); input.current?.focus(); }}>×</button>
         </div>}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}

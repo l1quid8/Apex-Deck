@@ -67,14 +67,14 @@ export function ApexAgentReplyQuote({ quotes, onClear, onRemove }: { quotes: Mes
   if (!quotes.length) return null;
   const clearOne = (index: number) => { if (onRemove) onRemove(index); else onClear(); };
   return <aside className="apex-agent-reply-quote" aria-label={quotes.length === 1 ? 'Quoted message' : 'Quoted messages'}>
-    <div><small>{quotes.length === 1 ? `Replying to ${quotes[0].author}` : `Replying to ${quotes.length} messages`}</small><button type="button" aria-label="Remove quoted messages" onClick={onClear}>×</button></div>
-    {quotes.map((quote, index) => {
+    <div className="apex-agent-quote-head"><small>{quotes.length === 1 ? `Replying to ${quotes[0].author}` : `Replying to ${quotes.length} messages`}</small>{quotes.length > 1 && <button type="button" className="apex-agent-quote-clear-all" aria-label="Remove quoted messages" onClick={onClear}>Clear all</button>}</div>
+    <div className="apex-agent-quote-list">{quotes.map((quote, index) => {
       const bounded = quote.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, 360);
-      return <div key={`${quote.messageId}:${index}`}>
-        {quotes.length > 1 && <small>{quote.author}</small>}
+      return <div className="apex-agent-quote-row" key={`${quote.messageId}:${index}`}>
+        <small className="apex-agent-quote-author" title={quote.author}>{quote.author}</small>
         <blockquote>{bounded || '(empty message)'}</blockquote>
-        {quotes.length > 1 && <button type="button" aria-label={`Remove quote ${index + 1}`} onClick={() => clearOne(index)}>×</button>}
+        <button type="button" aria-label={`Remove quote ${index + 1}`} onClick={() => clearOne(index)}>×</button>
       </div>;
-    })}
+    })}</div>
   </aside>;
 }
