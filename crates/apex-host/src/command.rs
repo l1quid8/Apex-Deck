@@ -448,7 +448,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 137);
+        assert_eq!(names.len(), 138);
+        assert!(names.contains(&"file_write".to_string()));
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
         assert!(names.contains(&"personal_send".to_string()));
