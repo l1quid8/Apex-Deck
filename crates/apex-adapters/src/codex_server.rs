@@ -56,6 +56,9 @@ pub(crate) const ARGS: &[&str] = &["app-server"];
 pub(crate) struct Turn<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
+    /// Codex's service tier, from `presets::codex_service_tier`. `None`
+    /// keeps the person's config.toml choice.
+    pub service_tier: Option<&'static str>,
     pub access: Access,
     pub cwd: Option<String>,
     /// Start Codex in its planning mode, where it asks the person questions
@@ -400,6 +403,9 @@ pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
         // Codex's saved sessions stops the history filling with them.
         "ephemeral": true,
     });
+    if let Some(tier) = turn.service_tier {
+        params["serviceTier"] = json!(tier);
+    }
     if let Some(model) = turn.model {
         params["model"] = json!(model);
     }
@@ -1146,6 +1152,7 @@ mod tests {
         let turn = Turn {
             model: None,
             effort: None,
+            service_tier: None,
             access: Access::Full,
             cwd: None,
             plan: false,
@@ -1160,10 +1167,19 @@ mod tests {
     }
 
     #[test]
+    fn thread_start_sends_the_service_tier_only_when_chosen() {
+        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, plan: false };
+        assert_eq!(thread_start(&turn)["params"]["serviceTier"], "priority");
+        turn.service_tier = None;
+        assert!(thread_start(&turn)["params"].get("serviceTier").is_none());
+    }
+
+    #[test]
     fn thread_start_carries_access_model_and_folder() {
         let turn = Turn {
             model: Some("m"),
             effort: None,
+            service_tier: None,
             access: Access::Edits,
             cwd: Some("/work".into()),
             plan: false,
@@ -1177,6 +1193,7 @@ mod tests {
         let asking = Turn {
             model: None,
             effort: None,
+            service_tier: None,
             access: Access::Ask,
             cwd: None,
             plan: false,
@@ -1188,6 +1205,7 @@ mod tests {
         let bare = Turn {
             model: None,
             effort: None,
+            service_tier: None,
             access: Access::Read,
             cwd: None,
             plan: false,
@@ -1199,6 +1217,7 @@ mod tests {
         let full = Turn {
             model: None,
             effort: None,
+            service_tier: None,
             access: Access::Full,
             cwd: None,
             plan: false,
@@ -1312,6 +1331,7 @@ cat > /dev/null"#;
         let turn = Turn {
             model: None,
             effort: None,
+            service_tier: None,
             access: Access::Full,
             cwd: None,
             plan: false,

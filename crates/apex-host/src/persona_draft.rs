@@ -134,7 +134,7 @@ mod tests {
 
     fn agent(tool: AgentTool) -> ParticipantConfig {
         ParticipantConfig { id: ParticipantId::new("w"), display_name: "W".into(), backend: Backend::Agent { tool, model: None },
-            persona: "old persona".into(), access: Access::Full, effort: None, auto_effort: false, appearance: None, media: None }
+            persona: "old persona".into(), access: Access::Full, effort: None, auto_effort: false, speed: None, appearance: None, media: None }
     }
 
     #[test]

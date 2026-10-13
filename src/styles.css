@@ -2723,6 +2723,9 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .selection-actions button { background: none; border: 0; padding: 4px 8px; border-radius: 6px; font-size: 12px; color: inherit; cursor: pointer; white-space: nowrap; }
 .selection-actions button:hover:not(:disabled) { background: rgba(255,255,255,.08); }
 .model-select { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* Speed in a bot's quick menu: label left, a compact switch right. */
+.bot-speed { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bot-speed .segmented .seg { padding: 4px 10px; font-size: 12px; }
 .bot-settings fieldset { border-top: 1px solid var(--line); padding-top: 10px; }
 .model-select-trigger { display: inline-flex; align-items: center; gap: 6px; margin-right: -8px; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; font-weight: 600; cursor: pointer; }
 .model-select-trigger:hover, .model-select-trigger[aria-expanded="true"] { background: var(--panel); }

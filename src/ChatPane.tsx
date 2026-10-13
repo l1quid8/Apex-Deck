@@ -94,10 +94,12 @@ import type {
   ParticipantConfig,
   RoomEvent,
   RoomOptions,
+  Speed,
   TurnPolicy,
   ThreadDiff,
   TokenTotals,
 } from "./types";
+import { SPEED_OPTIONS, SPEED_TOOLS, speedHint } from "./speed";
 
 interface Props {
   pane: Pane;
@@ -261,6 +263,8 @@ interface Draft {
   /** Empty means the backend's own default. */
   effort: string;
   auto_effort?: boolean;
+  /** Empty follows the tool's own setting (Codex and Claude Code only). */
+  speed?: Speed | "";
   baseUrl: string;
   keyEnv: string;
   /** A key typed into the form and not yet saved. Saved to the machine, never into the bot's settings. */
@@ -296,7 +300,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", auto_effort: config.auto_effort ?? false, keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", auto_effort: config.auto_effort ?? false, speed: config.speed ?? ("" as const), keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -328,7 +332,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, auto_effort: draft.auto_effort === true && levels.length > 0 && (preset?.agent?.tool === "codex" || preset?.agent?.tool === "claude_code"), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, auto_effort: draft.auto_effort === true && levels.length > 0 && (preset?.agent?.tool === "codex" || preset?.agent?.tool === "claude_code"), ...(draft.speed && preset?.agent && SPEED_TOOLS.includes(preset.agent.tool) ? { speed: draft.speed } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -2512,6 +2516,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                     : "Higher levels think longer and cost more. Not every model accepts every level."
                   : "This model has no effort setting."}
               </span>
+            </div>
+          )}
+          {tool && SPEED_TOOLS.includes(tool) && (
+            <div className="wide effort-field">
+              <span className="field-title">Speed</span>
+              <Segmented
+                label="Speed"
+                name="speed"
+                value={draft.speed ?? ""}
+                onChange={(speed) => set("speed", speed)}
+                options={SPEED_OPTIONS}
+              />
+              <span className="hint">{speedHint(tool)}</span>
             </div>
           )}
           {draft.preset !== "scripted" && (

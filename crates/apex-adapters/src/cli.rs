@@ -19,7 +19,7 @@ use crate::events::{self, EventReader, OutputFormat};
 use crate::grok_images;
 use crate::codex_server::{self, TurnError};
 use crate::muse_server;
-use crate::presets::{agent_command_with, clean_effort, clean_model, output_format};
+use crate::presets::{agent_command_with, clean_effort, clean_model, codex_service_tier, output_format};
 use crate::codex_hook;
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 use crate::owned_process::{OwnedChild, Registry};
@@ -102,7 +102,7 @@ impl CliParticipant {
                     return Err(ParticipantError::Failed("This CLI does not have a verified tool-free mode, so the monitor check did not run.".into()));
                 }
                 let (program, mut args) =
-                    agent_command_with(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.access, self.plan.is_some());
+                    agent_command_with(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.speed, self.config.access, self.plan.is_some());
                 if self.tools_disabled {
                     let mut safe = Vec::with_capacity(args.len());
                     let mut i = 0;
@@ -197,6 +197,7 @@ impl CliParticipant {
         let turn = codex_server::Turn {
             model: clean_model(model),
             effort: effort.as_deref(),
+            service_tier: self.config.speed.map(codex_service_tier),
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
             plan: self.plan.is_some(),
@@ -824,7 +825,7 @@ mod auto_tests {
         for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {
             let config: ParticipantConfig = serde_json::from_value(serde_json::json!({"id":"bot","display_name":"Bot","backend":{"kind":"agent","tool":tool,"model":null},"effort":"xhigh"})).unwrap();
             let temporary = effective_turn_config(&config, Some("low"));
-            let (_, args) = agent_command_with(tool, None, temporary.effort.as_deref(), Access::Read, false);
+            let (_, args) = agent_command_with(tool, None, temporary.effort.as_deref(), None, Access::Read, false);
             assert!(args.iter().any(|s| s == "low" || s == "model_reasoning_effort=\"low\""));
             assert_eq!(config.effort.as_deref(), Some("xhigh"));
             assert_eq!(effective_turn_config(&config, None).effort.as_deref(), Some("xhigh"));

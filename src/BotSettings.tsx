@@ -2,7 +2,9 @@ import { popoverTop } from './floating';
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
-import type { ApiModel, MediaSettings, ModelChoice, ParticipantConfig } from './types';
+import type { ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } from './types';
+import { Segmented } from './AgentPicker';
+import { SPEED_OPTIONS, SPEED_TOOLS } from './speed';
 import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortsFor, findModel, modelGroups } from './models';
 import { Picker } from './Picker';
 import { ReasoningSlider } from './ReasoningSlider';
@@ -12,7 +14,7 @@ import { mediaKind, priceLabel, resolveMedia, type ResolvedMedia } from './media
 import { dollars, mediaMenuLine, pictureLine, quoteFor } from './mediaPrice';
 
 /** What a save can carry. */
-type Change = { model?: string; effort?: string; auto_effort?: boolean; media?: MediaSettings };
+type Change = { model?: string; effort?: string; auto_effort?: boolean; speed?: Speed | null; media?: MediaSettings };
 
 interface Props {
   config: ParticipantConfig;
@@ -181,6 +183,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       if (left.model === sent.model) delete left.model;
       if (left.effort === sent.effort) delete left.effort;
       if (left.auto_effort === sent.auto_effort) delete left.auto_effort;
+      if (left.speed === sent.speed) delete left.speed;
       if (left.media === sent.media) delete left.media;
       touched.current = left;
       setSettled(n => n + 1);
@@ -242,6 +245,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       {config.auto_effort && <p className="muted">Trial: Clef logs its pick. Replies use the backup below.</p>}
       {!autoAvailable && (tool === 'codex' || tool === 'claude_code') && <p className="muted">Auto needs the decision observer switched on with a saved key.</p>}
       {!mediaType && <ReasoningSlider title={config.auto_effort ? "Auto backup" : "Reasoning"} efforts={efforts} value={supportedEffort} defaultLabel={apiModel?.default_effort ?? undefined} onCommit={value => config.auto_effort ? (setEffort(value), void apply({ effort: value, auto_effort: true })) : commitEffort(value)} />}
+      {tool && SPEED_TOOLS.includes(tool) && <div className="bot-speed"><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}
       {note && <p className="muted">{note}</p>}

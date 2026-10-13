@@ -41,3 +41,9 @@ test("folding is remembered per thread", () => {
 test('Auto chips show the mode and its saved backup', () => {
   assert.equal(chipDescription({ ...claude, auto_effort: true }, all), "opus-4.5 · Auto (high backup) · asks first");
 });
+
+test("a fast bot says so; standard and default say nothing", () => {
+  assert.equal(chipDescription({ ...claude, speed: "fast" }, all), "opus-4.5 · high · fast · asks first");
+  assert.equal(chipDescription({ ...claude, speed: "standard" }, all), "opus-4.5 · high · asks first");
+  assert.equal(chipDescription({ ...claude, speed: "fast" }, { ...all, effort: false }), "opus-4.5 · asks first");
+});

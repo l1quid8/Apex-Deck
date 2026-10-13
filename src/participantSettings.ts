@@ -1,4 +1,4 @@
-import type { MediaSettings, ParticipantConfig } from './types';
+import type { MediaSettings, ParticipantConfig, Speed } from './types';
 
 export function withTurnSettings(config: ParticipantConfig, model: string, effort: string, supported: string[]): ParticipantConfig {
   const backend = config.backend;
@@ -28,13 +28,14 @@ export function mergeParticipant(current: ParticipantConfig, base: ParticipantCo
 }
 
 /** Apply explicit picks to a fresh config, including picks back to the original value. */
-export function applyTurnChange(current: ParticipantConfig, change: { model?: string; effort?: string; auto_effort?: boolean; media?: MediaSettings }): ParticipantConfig {
+export function applyTurnChange(current: ParticipantConfig, change: { model?: string; effort?: string; auto_effort?: boolean; speed?: Speed | null; media?: MediaSettings }): ParticipantConfig {
   let backend = current.backend;
   if ('model' in change) {
     if (backend.kind === 'agent') backend = { ...backend, model: change.model?.trim() || null };
     else if (backend.kind === 'open_ai_compatible') backend = { ...backend, model: change.model?.trim() || '' };
   }
   const next: ParticipantConfig = { ...current, backend, effort: 'effort' in change ? change.effort || null : current.effort, auto_effort: change.auto_effort ?? ('effort' in change ? false : current.auto_effort ?? false) };
+  if ('speed' in change) { if (change.speed) next.speed = change.speed; else delete next.speed; }
   // Picture and video choices merge: a change names only the settings it moves.
   if (change.media) next.media = { ...current.media, ...change.media };
   return next;

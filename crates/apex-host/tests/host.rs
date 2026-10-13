@@ -99,7 +99,7 @@ fn scripted(id: &str, lines: &[&str]) -> Value {
         persona: String::new(),
         access: Default::default(),
         effort: None,
-        auto_effort: false,
+        auto_effort: false, speed: None,
         appearance: None, media: None
     })
     .unwrap()
@@ -234,7 +234,7 @@ fn winding_down_stops_running_agents_and_keeps_their_chat() {
         persona: String::new(),
         access: Default::default(),
         effort: None,
-        auto_effort: false,
+        auto_effort: false, speed: None,
         appearance: None, media: None
     })
     .unwrap();
@@ -287,7 +287,7 @@ fn opening_a_room_again_mid_turn_keeps_the_running_room() {
         persona: String::new(),
         access: Default::default(),
         effort: None,
-        auto_effort: false,
+        auto_effort: false, speed: None,
         appearance: None, media: None
     })
     .unwrap();

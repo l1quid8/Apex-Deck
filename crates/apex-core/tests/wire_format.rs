@@ -20,7 +20,7 @@ fn participant_config_shapes() {
         persona: "Be brief.".into(),
         access: Access::Edits,
         effort: Some("high".into()),
-        auto_effort: false,
+        auto_effort: false, speed: None,
         appearance: None, media: None
     };
     assert_eq!(

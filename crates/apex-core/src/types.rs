@@ -104,12 +104,24 @@ pub struct ParticipantConfig {
     /// Auto keeps `effort` as its backup; omitted in old/fixed settings.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_effort: bool,
+    /// Standard or fast output, for tools that offer both. `None` leaves
+    /// the tool's own setting (Codex's `service_tier`, for example).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<Speed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<AgentAppearance>,
     /// Choices for a bot whose model makes pictures or videos. Unset
     /// choices use the defaults in `apex_adapters::media`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaSettings>,
+}
+
+/// How fast a bot's tool answers. Fast costs more on both Codex and Claude.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Speed {
+    Standard,
+    Fast,
 }
 
 /// What an image or video bot makes, as the person set it. Each choice is
