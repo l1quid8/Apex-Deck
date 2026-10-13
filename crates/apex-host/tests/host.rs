@@ -382,6 +382,34 @@ fn importing_a_snapshot_makes_a_fresh_room_without_usage_rules_or_changes() {
 }
 
 #[test]
+fn card_settings_save_by_revision_refuse_junk_and_keep_their_thread_id_taken() {
+    let data = std::env::temp_dir().join(format!("apex-host-answers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let host = Running::start(&data);
+    assert_eq!(host.call(json!({"cmd":"answers_load","args":{"room":"t"}})).unwrap(), Value::Null);
+    let save = |revision: u64, budget: u64| host.call(json!({"cmd":"answer_save","args":{"room":"t","key":"1:hosting","fingerprint":"0a1b2c3d","inputs":{"budget":budget,"priority":"ease"},"revision":revision}})).unwrap();
+    assert_eq!(save(0, 100)["saved"]["revision"], 1);
+    assert_eq!(save(1, 150)["saved"]["revision"], 2);
+    // A window still on revision 1 doesn't overwrite revision 2.
+    let stale = save(1, 999);
+    assert_eq!((&stale["conflict"]["revision"], &stale["conflict"]["inputs"]["budget"]), (&json!(2), &json!(150)));
+    for junk in [
+        json!({"room":"t","key":"hosting","fingerprint":"0a1b2c3d","inputs":{},"revision":0}),
+        json!({"room":"t","key":"1:hosting","fingerprint":"XYZ","inputs":{},"revision":0}),
+        json!({"room":"t","key":"1:hosting","fingerprint":"0a1b2c3d","inputs":{"budget":{"x":1}},"revision":2}),
+    ] {
+        assert!(host.call(json!({"cmd":"answer_save","args":junk})).is_err(), "{junk}");
+    }
+    assert_eq!(host.call(json!({"cmd":"answers_load","args":{"room":"t"}})).unwrap()["cards"]["1:hosting"]["revision"], 2);
+    // Settings an earlier move left behind keep the id taken, like artifacts.
+    let snapshot = host.call(json!({"cmd":"room_create","args":{"id":"other","participants":[],"options":RoomOptions::default()}})).unwrap();
+    let refused = host.call(json!({"cmd":"room_import","args":{"id":"t","snapshot":snapshot,"cwd":null}}));
+    assert!(refused.unwrap_err().contains("a thread with that id already exists"));
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
 fn importing_over_leftover_artifacts_is_refused_and_keeps_them() {
     let data = std::env::temp_dir().join(format!("apex-host-leftover-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);

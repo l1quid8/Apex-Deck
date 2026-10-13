@@ -66,6 +66,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomState { id } => read(thread(id)),
         RoomDiff { id } => read(thread(id)),
         ArtifactsLoad { room } => read(thread(room)),
+        AnswersLoad { room } => read(thread(room)),
         AgentsDetect {} => read(GlobalRead),
         AgentModels { .. } => read(GlobalRead),
 
@@ -80,6 +81,8 @@ pub fn command_needs(command: &Command) -> Need {
         RoomAnswer { id, .. } => chat(thread(id)),
         RoomSetPlan { id, .. } => chat(thread(id)),
         SaveAttachment { room, .. } => chat(thread(room)),
+        // Settings chosen on a card: no bot hears them until the person posts them.
+        AnswerSave { room, .. } => chat(thread(room)),
 
         // Full, inside one thread.
         RoomDelete { id } => full(thread(id)),
@@ -289,6 +292,8 @@ mod tests {
             ("room_state", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
             ("room_diff", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
             ("artifacts_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
+            ("answers_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
+            ("answer_save", Some((Chat, "thread")), json!({ "room": "mine", "key": "1:hosting", "fingerprint": "0a1b2c3d", "inputs": {}, "revision": 0 })),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
             ("agent_models", Some((ReadOnly, "global_read")), json!({ "tool": "codex" })),
             ("room_post", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),

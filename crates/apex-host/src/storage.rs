@@ -10,6 +10,34 @@ pub struct SavedRoom {
     pub snapshot: RoomSnapshot,
 }
 
+/// One card's saved settings: src/interactiveAnswers/contract.ts `AnswerEntry`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnswerEntry {
+    pub fingerprint: String,
+    pub inputs: serde_json::Map<String, serde_json::Value>,
+    pub revision: u64,
+    pub at: u64,
+}
+
+/// The settings people chose on a thread's cards, by card key ("<seq>:<card id>").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnswersFile {
+    pub version: u32,
+    pub cards: std::collections::BTreeMap<String, AnswerEntry>,
+}
+
+/// What saving one card's settings did. Serialized as {"saved": …} or {"conflict": …}.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerSave {
+    Saved(AnswerEntry),
+    /// Another client saved first; nothing changed, and this is what it saved.
+    Conflict(AnswerEntry),
+}
+
+/// The most cards one thread keeps settings for.
+pub const MAX_SAVED_CARDS: usize = 500;
+
 /// Serialize writes, flush the replacement, then atomically replace the old
 /// document. A failed read is reported, never treated as an empty session.
 pub struct Store {
@@ -32,6 +60,11 @@ impl Store {
         self.room_path(id).with_extension("artifacts.json")
     }
 
+    /// The settings chosen on a thread's cards, beside its file: "<hex id>.answers.json".
+    fn answers_path(&self, id: &str) -> PathBuf {
+        self.room_path(id).with_extension("answers.json")
+    }
+
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<Option<T>, String> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -42,8 +75,13 @@ impl Store {
     }
 
     fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<(), String> {
-        use std::io::Write;
         let _guard = self.writes.lock().unwrap();
+        self.write_held(path, data)
+    }
+
+    /// Write while the caller holds the write lock.
+    fn write_held<T: Serialize>(&self, path: &Path, data: &T) -> Result<(), String> {
+        use std::io::Write;
         let bytes = serde_json::to_vec_pretty(data).map_err(|e| e.to_string())?;
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -130,6 +168,30 @@ impl Store {
         self.write(&self.artifacts_path(id), artifacts)
     }
 
+    /// The settings people chose on a thread's cards. None when there are none.
+    pub fn answers(&self, id: &str) -> Result<Option<AnswersFile>, String> {
+        self.read(&self.answers_path(id))
+    }
+
+    /// Save one card's settings when `revision` is still its saved revision,
+    /// or nothing is saved under `key` yet. Otherwise nothing changes and the
+    /// newer entry comes back. A file that can't be read is never written over.
+    pub fn save_answer(&self, id: &str, key: &str, fingerprint: &str, inputs: serde_json::Map<String, serde_json::Value>, revision: u64, at: u64) -> Result<AnswerSave, String> {
+        let _guard = self.writes.lock().unwrap();
+        let path = self.answers_path(id);
+        let mut file: AnswersFile = self.read(&path)?.unwrap_or(AnswersFile { version: 1, cards: Default::default() });
+        let next = match file.cards.get(key) {
+            Some(current) if current.revision != revision => return Ok(AnswerSave::Conflict(current.clone())),
+            Some(current) => current.revision + 1,
+            None if file.cards.len() >= MAX_SAVED_CARDS => return Err("This thread keeps settings for too many cards.".into()),
+            None => 1,
+        };
+        let entry = AnswerEntry { fingerprint: fingerprint.to_string(), inputs, revision: next, at };
+        file.cards.insert(key.to_string(), entry.clone());
+        self.write_held(&path, &file)?;
+        Ok(AnswerSave::Saved(entry))
+    }
+
     /// Reserve a new room id while serializing writes; never overwrite a thread.
     pub fn fork_room(&self, source: &str, target: &str, upto: Option<usize>, cwd: Option<String>) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
@@ -145,17 +207,23 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("Could not copy the thread's artifacts: {e}")),
         }
+        // And the settings chosen on its cards.
+        match std::fs::copy(self.answers_path(source), self.answers_path(target)) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("Could not copy the thread's card settings: {e}")),
+        }
         std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
     }
 
     /// Save a new room `id`. Refuses an id that already has a saved room, or
-    /// only its artifacts: a failed move deletes what it made, and they're not.
+    /// only its artifacts or card settings: a failed move deletes what it made, and they're not.
     pub fn import_room(&self, id: &str, saved: &SavedRoom) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         let path = self.room_path(id);
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        if std::fs::symlink_metadata(self.artifacts_path(id)).is_ok() {
+        if [self.artifacts_path(id), self.answers_path(id)].iter().any(|leftover| std::fs::symlink_metadata(leftover).is_ok()) {
             return Err("a thread with that id already exists".into());
         }
         write_new(&path, saved)?;
@@ -164,7 +232,7 @@ impl Store {
 
     pub fn delete_room(&self, id: &str) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
-        for path in [self.room_path(id), self.artifacts_path(id)] {
+        for path in [self.room_path(id), self.artifacts_path(id), self.answers_path(id)] {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -283,6 +351,44 @@ mod tests {
         store.delete_room("chat-1").unwrap();
         assert!(store.artifacts("chat-1").unwrap().is_none());
         assert!(store.artifacts("chat-2").unwrap().is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn card_settings_save_by_revision_follow_forks_and_go_with_their_thread() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        assert!(store.answers("chat-1").unwrap().is_none());
+        let inputs = |budget: u64| serde_json::json!({ "budget": budget, "priority": "ease" }).as_object().unwrap().clone();
+        let AnswerSave::Saved(first) = store.save_answer("chat-1", "3:hosting", "0a1b2c3d", inputs(100), 0, 5).unwrap() else { panic!("the first save was refused") };
+        assert_eq!((first.revision, first.at), (1, 5));
+        assert!(matches!(store.save_answer("chat-1", "3:hosting", "0a1b2c3d", inputs(150), 1, 6).unwrap(), AnswerSave::Saved(AnswerEntry { revision: 2, .. })));
+        // A save made from revision 1 doesn't overwrite revision 2.
+        let AnswerSave::Conflict(newer) = store.save_answer("chat-1", "3:hosting", "0a1b2c3d", inputs(999), 1, 7).unwrap() else { panic!("a stale save was kept") };
+        assert_eq!((newer.revision, newer.inputs["budget"].as_u64()), (2, Some(150)));
+
+        let mut room = Room::new(vec![], RoomOptions::default());
+        room.post_human("saved", &|_| {}).await;
+        store.save_room("chat-1", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        store.fork_room("chat-1", "chat-2", None, None).unwrap();
+        assert_eq!(store.answers("chat-2").unwrap(), store.answers("chat-1").unwrap());
+
+        store.delete_room("chat-1").unwrap();
+        assert!(store.answers("chat-1").unwrap().is_none());
+        assert!(store.answers("chat-2").unwrap().is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_card_settings_file_is_reported_and_never_written_over() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        store.save_answer("chat-1", "1:a", "0a1b2c3d", serde_json::Map::new(), 0, 0).unwrap();
+        let path = store.answers_path("chat-1");
+        std::fs::write(&path, "broken").unwrap();
+        assert!(store.answers("chat-1").is_err());
+        assert!(store.save_answer("chat-1", "1:a", "0a1b2c3d", serde_json::Map::new(), 1, 0).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken");
         std::fs::remove_dir_all(root).unwrap();
     }
 

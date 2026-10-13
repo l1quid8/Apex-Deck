@@ -1152,6 +1152,18 @@ impl Host {
         self.store.save_artifacts(&room, &artifacts)
     }
 
+    /// The settings people chose on the cards in a thread's replies (src/interactiveAnswers).
+    pub fn answers_load(&self, room: String) -> Result<Option<crate::storage::AnswersFile>, String> {
+        self.store.answers(&room)
+    }
+
+    /// Save one card's settings. See `Store::save_answer`.
+    pub fn answer_save(&self, room: String, key: String, fingerprint: String, inputs: serde_json::Map<String, serde_json::Value>, revision: u64) -> Result<crate::storage::AnswerSave, String> {
+        check_answer(&key, &fingerprint, &inputs)?;
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        self.store.save_answer(&room, &key, &fingerprint, inputs, revision, at)
+    }
+
     /// Saved project monitors, including their findings and attention state.
     /// A missing document means there are no monitors; a corrupt document is
     /// an error so clients do not silently lose cached attention.
@@ -1650,6 +1662,38 @@ fn open_command(target: OpenTarget, reveal: bool) -> (&'static str, Vec<std::ffi
             ("xdg-open", vec![shown.into_os_string()])
         }
     }
+}
+
+/// What a client may save for one card: the key "<seq>:<card id>", an 8-digit
+/// lowercase hex fingerprint, and at most 16 settings, each a finite number or
+/// an option id. The same id rule as src/interactiveAnswers/schema.ts.
+fn check_answer(key: &str, fingerprint: &str, inputs: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    let id = |s: &str| {
+        let bytes = s.as_bytes();
+        !bytes.is_empty() && bytes.len() <= 40 && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+            && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_')
+    };
+    let keyed = key.split_once(':').is_some_and(|(seq, card)| !seq.is_empty() && seq.len() <= 9 && seq.bytes().all(|b| b.is_ascii_digit()) && id(card));
+    if !keyed {
+        return Err("A card's key is its message number and its id.".into());
+    }
+    if fingerprint.len() != 8 || !fingerprint.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err("A card's fingerprint is 8 hex digits.".into());
+    }
+    if inputs.len() > 16 {
+        return Err("A card has at most 16 settings.".into());
+    }
+    for (name, value) in inputs {
+        let fits = id(name) && match value {
+            serde_json::Value::Number(n) => n.as_f64().is_some_and(f64::is_finite),
+            serde_json::Value::String(s) => id(s),
+            _ => false,
+        };
+        if !fits {
+            return Err(format!("\"{}\" isn't a setting a card can have.", name.chars().take(40).collect::<String>()));
+        }
+    }
+    Ok(())
 }
 
 /// The largest workspace file read for the artifacts pane, in bytes.

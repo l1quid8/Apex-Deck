@@ -27,6 +27,8 @@ pub enum Command {
     DecisionKeySave { provider: String, key: String },
     ArtifactsLoad { room: String },
     ArtifactsSave { room: String, artifacts: Value },
+    AnswersLoad { room: String },
+    AnswerSave { room: String, key: String, fingerprint: String, inputs: serde_json::Map<String, Value>, revision: u64 },
     MonitorList {},
     MonitorGet { workspace_id: String },
     AssistantHandoffPrepare { #[serde(flatten)] input: crate::assistant_tasks::HandoffPreparation },
@@ -198,6 +200,8 @@ impl Host {
             DecisionKeySave { provider, key } => reply(crate::decision::save_credential(&provider, &key)?),
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
+            AnswersLoad { room } => reply(self.answers_load(room)?),
+            AnswerSave { room, key, fingerprint, inputs, revision } => reply(self.answer_save(room, key, fingerprint, inputs, revision)?),
             MonitorList {} => reply(self.monitor_list()?),
             MonitorGet { workspace_id } => reply(self.monitor_get(&workspace_id)?),
             AssistantHandoffPrepare { input } => reply(self.assistant_handoff_prepare(input).await?),
@@ -440,7 +444,9 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 133);
+        assert_eq!(names.len(), 136);
+        assert!(names.contains(&"answers_load".to_string()));
+        assert!(names.contains(&"answer_save".to_string()));
         assert!(names.contains(&"personal_send".to_string()));
         assert!(names.contains(&"personal_react".to_string()));
         assert!(names.contains(&"monitor_react".to_string()));
