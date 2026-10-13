@@ -2177,8 +2177,6 @@ function ThreadView(props: {
         if (props.tldr && props.gate.enabled && !props.sending && !props.attaching) wiggle(inputRef.current?.parentElement ?? null);
         props.onSend();
       }}>
-        {props.form}
-        {props.plan && <button type="button" className="plan-chip ph-plan" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
         {props.draft.files.length > 0 && (
           <div className="ph-chips">
             {props.draft.files.map((file) => (
@@ -2186,6 +2184,8 @@ function ThreadView(props: {
             ))}
           </div>
         )}
+        {props.form}
+        {props.plan && <button type="button" className="plan-chip ph-plan" aria-label="Plan is on. Turn it off" onClick={props.onStopPlanning}><span aria-hidden="true">◇</span><span className="plan-chip-label">Plan</span><span className="plan-chip-x" aria-hidden="true">✕</span></button>}
         {picking && picking.picks.length > 0 && (
           <div className="ph-mentions" role="listbox" aria-label="Mention a bot">
             {picking.picks.map((pick) => {

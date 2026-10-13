@@ -2052,6 +2052,8 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 .composer-menu small { opacity: .65; }
 
 .attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+/* Attachments sit above the Next-steps form so the form stays flush with the message box. */
+.composer-input > .attachments { margin: 0 8px 8px; }
 .attachment { position: relative; display: flex; align-items: center; height: 56px; max-width: 180px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); overflow: hidden; }
 .attachment[aria-busy="true"] { opacity: .5; }
 .attachment img { height: 100%; width: auto; max-width: 120px; object-fit: cover; }
@@ -3333,6 +3335,8 @@ button.mod-status:hover { color: var(--text); }
 
 /* The form on top of the message box: a bot's question, or next steps. */
 .qform { margin: 0 8px; padding: 10px 12px; border: 1px solid var(--line); border-bottom: 0; border-radius: 12px 12px 0 0; background: var(--panel-2); font-size: 13px; }
+/* The form joins the message box as one card: no gap at the seam, square inner corners. */
+.composer-input > .qform + .composer-box { border-top-left-radius: 0; border-top-right-radius: 0; }
 .qform-notice, .qform-pending { padding: 6px 12px; color: var(--muted); font-size: 12px; }
 .qform-collapsed { display: block; width: calc(100% - 16px); min-height: 0; padding: 6px 12px; text-align: left; color: var(--text); cursor: pointer; }
 .qform-steps { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; }

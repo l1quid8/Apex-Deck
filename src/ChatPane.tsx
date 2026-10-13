@@ -2993,6 +2993,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <input ref={filePicker} type="file" accept="image/*,.pdf,.txt,.md,.csv,.json,.log" multiple hidden
           onChange={(e) => { if (e.target.files) attachFiles(e.target.files); e.target.value = ""; }} />
         <div className="composer-input">
+        {attached.length > 0 && <div className="attachments" aria-label="Attachments">
+          {attached.map((a) => <div className="attachment" key={a.id} title={a.path ?? `${a.name} (saving…)`} aria-busy={!a.path}>
+            {a.preview ? <img src={a.preview} alt={a.name} /> : <span className="attachment-name">{a.name}</span>}
+            <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
+          </div>)}
+        </div>}
         {!profileMode && <QuestionForm view={form} nameOf={(id) => names.get(id) ?? id} colorOf={color}
           highlighted={highlighted} collapsed={formFolded} notice={formNotice}
           onHighlight={setHighlighted} onExpand={() => setFormFolded(false)}
@@ -3020,12 +3026,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             </span>}
           </span>
           <button className="quote-cancel" aria-label="Cancel quote" onClick={() => { setReply(null); input.current?.focus(); }}>×</button>
-        </div>}
-        {attached.length > 0 && <div className="attachments" aria-label="Attachments">
-          {attached.map((a) => <div className="attachment" key={a.id} title={a.path ?? `${a.name} (saving…)`} aria-busy={!a.path}>
-            {a.preview ? <img src={a.preview} alt={a.name} /> : <span className="attachment-name">{a.name}</span>}
-            <button className="icon small" aria-label={`Remove ${a.name}`} onClick={() => unattach(a.id)}>×</button>
-          </div>)}
         </div>}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
