@@ -78,6 +78,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     fileFind: (root, query) => call<string[]>("file_find", { root, query }),
     fileSearch: (root, query, caseSensitive, folder) => call<FileSearchResult>("file_search", { root, query, case_sensitive: caseSensitive, folder }),
     fileCreate: (root, parent, name, folder) => call<string>("file_create", { root, parent, name, folder }),
+    fileWrite: (root, path, text, expected) => call<string>("file_write", { root, path, text, expected }),
     fileRename: (root, path, name) => call<string>("file_rename", { root, path, name }),
     fileDuplicate: (root, path) => call<string>("file_duplicate", { root, path }),
     fileTrash: (root, path) => call<void>("file_trash", { root, path }),
