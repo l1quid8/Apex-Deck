@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dotState, helperNotice, buildNotice, reachNotice, classifyIdentity } from "../src/hostFacts.ts";
+import { dotState, helperNotice, buildNotice, reachNotice, classifyIdentity, hostLine } from "../src/hostFacts.ts";
 import { hostConnectionStore } from "../src/hostConnections.ts";
 
 test("a server's dot: green connected, amber on its way, gray offline, hollow before first use", () => {
@@ -70,4 +70,39 @@ test("the store remembers the helper version and when the host was last reached"
   store.rename("Apex");
   assert.equal(store.get().name, "Apex");
   assert.equal(heard, 1);
+});
+
+const app = { version: "0.7.0", build: { commit: "aaa", dirty: false } };
+const at = () => "7:02 AM";
+const conn = (status, extra = {}) => ({ hostId: "h", name: "AT", status, revision: 0, agents: [], discovery: "idle", ...extra });
+
+test("hostLine: no store is idle, never connected", () => {
+  const line = hostLine("AT", null, app, at);
+  assert.equal(line.dot, "idle");
+  assert.equal(line.action, "connect");
+  assert.doesNotMatch(line.text, /^Connected/);
+});
+
+test("hostLine: idle, connecting and resync use the sidebar's words", () => {
+  assert.deepEqual(hostLine("AT", conn({ kind: "idle" }), app, at), { dot: "idle", text: "Not connected yet. Deck connects when one of its threads opens.", tone: "warn", why: null, notice: null, action: "connect" });
+  assert.deepEqual(hostLine("AT", conn({ kind: "connecting" }), app, at), { dot: "wait", text: "Connecting to AT…", tone: "warn", why: null, notice: null, action: null });
+  assert.deepEqual(hostLine("AT", conn({ kind: "resync" }), app, at), { dot: "wait", text: "Catching up with AT…", tone: "warn", why: null, notice: null, action: null });
+});
+
+test("hostLine: reconnecting and failed carry the raw reason and offer Retry", () => {
+  const re = hostLine("AT", conn({ kind: "reconnecting", attempt: 1, reason: "timed out", retryAt: 0 }, { seenAt: 1 }), app, at);
+  assert.deepEqual(re, { dot: "off", text: "Can't reach AT. Last reached at 7:02 AM.", tone: "bad", why: "timed out", notice: null, action: "retry" });
+  const failed = hostLine("AT", conn({ kind: "failed", reason: "no route" }), app, at);
+  assert.equal(failed.why, "no route");
+  assert.equal(failed.action, "retry");
+});
+
+test("hostLine: connected, with and without a helper version, and with an old helper", () => {
+  const ok = { kind: "connected", hostId: "d" };
+  assert.deepEqual(hostLine("AT", conn(ok, { helper: "0.7.0", build: { commit: "aaa", dirty: false } }), app, at), { dot: "on", text: "Connected · apex-daemon 0.7.0", tone: "plain", why: null, notice: null, action: null });
+  assert.equal(hostLine("AT", conn(ok), app, at).text, "Connected");
+  assert.equal(hostLine("AT", conn(ok, { helper: null }), app, at).text, "Connected");
+  const old = hostLine("AT", conn(ok, { helper: "0.5.0", build: { commit: "aaa", dirty: false } }), app, at);
+  assert.match(old.notice, /AT runs apex-daemon 0\.5\.0; this app is 0\.7\.0/);
+  assert.equal(old.tone, "plain");
 });

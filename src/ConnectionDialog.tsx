@@ -134,7 +134,7 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
         {test && <div className={`conn-test ${test.state}`} role="status">{testing ? <><span className="conn-spin" aria-hidden="true" />{saving ? `Checking that ${ssh.trim()} is still ${label}…` : `Connecting to ${ssh.trim()}…`}</> : test.text}</div>}
         {problem && <div className="conn-test bad" role="alert">{problem}</div>}
         <div className="confirm-actions">
-          {!add && api.check && <button type="button" className="conn-left" data-act="test" disabled={testing || !ssh.trim()} onClick={() => void runTest()}>Test connection</button>}
+          {api.check && <button type="button" className="conn-left" data-act="test" disabled={testing || !ssh.trim()} onClick={() => void runTest()}>Test connection</button>}
           <button type="button" data-act="cancel" onClick={onClose}>Cancel</button>
           {test?.state === "bad" && test.different
             ? <button type="button" className="primary" data-act="instead" onClick={insteadAdd}>Add as a new server</button>

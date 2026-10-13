@@ -15,6 +15,9 @@ export function dotState(status: HostStatus): DotState {
   return status.kind === "connecting" || status.kind === "resync" ? "wait" : "off";
 }
 
+/** The words for each dot, shared by the sidebar and Settings › Hosts. */
+export const DOT_WORDS = { on: "Connected", wait: "Connecting", off: "Can't be reached", idle: "Not connected yet" } as const;
+
 /** Words for a helper older than this app. Deck has no updater, so there is no Restart button. */
 export function helperNotice(name: string, app: string, helper: string | null | undefined): string | null {
   if (helper === undefined || helper === app) return null;
@@ -53,6 +56,36 @@ export function reachNotice(name: string, status: HostStatus, seenAt: number | u
     return { tone: "bad", text: seenAt ? `Can't reach ${name}. Last reached at ${time(seenAt)}.` : `Can't reach ${name}.`, action: "retry" };
   }
   return null;
+}
+
+export interface HostLine {
+  dot: DotState;
+  /** "Connected · apex-daemon 0.7.0", or reachNotice's words. */
+  text: string;
+  tone: "plain" | "warn" | "bad";
+  /** The raw reason from the connection, when it has one (reconnecting/failed). */
+  why: string | null;
+  /** A second warn line when connected to a mismatched helper or build. */
+  notice: string | null;
+  action: "connect" | "retry" | null;
+}
+
+/** Everything Settings › Hosts says about one machine, from the same helpers as the sidebar. */
+export function hostLine(name: string, state: HostConnection | null, app: { version: string; build: Build }, time: (at: number) => string): HostLine {
+  const status = state?.status ?? { kind: "idle" as const };
+  const dot = dotState(status);
+  if (state && status.kind === "connected") {
+    return {
+      dot, tone: "plain", why: null, action: null,
+      text: typeof state.helper === "string" ? `Connected · apex-daemon ${state.helper}` : "Connected",
+      notice: buildNotice(name, app.build, state.build) ?? helperNotice(name, app.version, state.helper),
+    };
+  }
+  const reach = reachNotice(name, status, state?.seenAt, time)!;
+  return {
+    dot, text: reach.text, tone: reach.tone, action: reach.action, notice: null,
+    why: status.kind === "reconnecting" || status.kind === "failed" ? status.reason : null,
+  };
 }
 
 export type ProbeKind = "same" | "bind" | "different" | "known" | "new";

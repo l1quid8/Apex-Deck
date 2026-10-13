@@ -5,7 +5,7 @@ import { label as flagLabel, workspaceFlag, type Signal } from "./attention";
 import { workspaceHost } from "./hostSession.ts";
 import type { HostConnectionStore } from "./hostConnections";
 import { ageWords, hostTints, sidebarSections, twinPath, type ProjectBlock } from "./sidebarModel.ts";
-import { dotState } from "./hostFacts.ts";
+import { DOT_WORDS, dotState } from "./hostFacts.ts";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { HoverCard, ProjectCard, ThreadCard, useHoverCard } from "./HoverCards";
 import { Glyph, ProjectFolder } from "./SidebarIcons";
@@ -58,7 +58,6 @@ export interface ProjectSidebarProps {
 type OpenMenu = { kind: "pane" | "project" | "archived"; id: string; anchor: MenuAnchor; opener: HTMLElement | null };
 
 const noStore = { subscribe: () => () => {}, get: () => null };
-const DOT_WORDS = { on: "Connected", wait: "Connecting", off: "Can't be reached", idle: "Not connected yet" } as const;
 
 /** A server's name and connection dot, beside its project's name. */
 function HostTag({ store, name }: { store?: HostConnectionStore; name: string }) {
