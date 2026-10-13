@@ -45,9 +45,10 @@ export async function runSmoke(win) {
   assert.equal(await page('return __deck.backend.demo;'), false);
   if (phase === 'again') {
     await step('settings survive quitting and reopening the desktop app', async () => {
-      await until('restored card', () => page(`return Boolean(document.querySelector('.answer-card input[type=range]:not(:disabled)'));`));
+      // The fork can restore first; wait for the original pane being checked.
+      await until('restored original card', () => page(`return Boolean(document.querySelector('.pane[data-pane-id="answers-smoke"] .answer-card input[type=range]:not(:disabled)'));`));
       assert.equal(await value(), 175);
-      assert.match(await page(`return document.querySelector('.answer-result').textContent;`), /Serverless/);
+      assert.match(await page(`return document.querySelector('.pane[data-pane-id="answers-smoke"] .answer-result').textContent;`), /Serverless/);
       await shot('reopened');
     });
     fs.writeFileSync(path.join(output, `${phase}.json`), JSON.stringify({ passed }, null, 2));
