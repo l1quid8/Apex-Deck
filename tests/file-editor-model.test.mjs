@@ -37,3 +37,21 @@ test('a linked file is not editable, and an older daemon that omits the flag sti
   assert.equal(isEditable(text({ editable: false }), 'file', false), false);
   assert.equal(isEditable(text({ editable: true }), 'file', false), true);
 });
+
+test('the editor keeps the line ending, so a CRLF file saves back byte-for-byte', async () => {
+  const { EditorState } = await import('@codemirror/state');
+  const { lineSeparatorFor } = await import('../src/fileEditorModel.ts');
+  assert.equal(lineSeparatorFor('a\r\nb\n'), '\r\n');
+  assert.equal(lineSeparatorFor('a\nb'), '\n');
+  assert.equal(lineSeparatorFor('abc'), undefined);
+  for (const original of ['a\r\nb\r\n\r\nc\r\n', 'a\nb\n', 'a\r\nb\nc\r\n', 'x\ry\n']) {
+    const sep = lineSeparatorFor(original);
+    const state = EditorState.create({ doc: original, extensions: sep ? [EditorState.lineSeparator.of(sep)] : [] });
+    assert.equal(state.sliceDoc(), original);
+    // an edit then undo-equivalent: appending and removing text keeps the endings
+    const edited = state.update({ changes: { from: 0, insert: 'Z' } }).state;
+    assert.equal(edited.sliceDoc(), 'Z' + original);
+    const back = edited.update({ changes: { from: 0, to: 1 } }).state;
+    assert.equal(back.sliceDoc(), original);
+  }
+});

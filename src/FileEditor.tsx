@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { EditorView } from "@codemirror/view";
-import { languageFor } from "./fileEditorModel";
+import { languageFor, lineSeparatorFor } from "./fileEditorModel";
 import "./file-editor.css";
 
 /** A CodeMirror 6 editor. The library loads on first use so the main bundle stays small. */
@@ -17,11 +17,13 @@ export function FileEditor({ fileName, initialText, onChange, onSave }: { fileNa
         import("@codemirror/language"), import("@codemirror/autocomplete"), import("@lezer/highlight"), languageFor(fileName).catch(() => null),
       ]);
       if (!live || !host.current) return;
+      const separator = lineSeparatorFor(initialText);
       view.current = new cm.EditorView({
         parent: host.current,
         state: EditorState.create({
           doc: initialText,
           extensions: [
+            ...(separator ? [EditorState.lineSeparator.of(separator)] : []),
             cm.lineNumbers(), cm.highlightActiveLine(), cm.highlightActiveLineGutter(), cm.drawSelection(), cm.EditorView.lineWrapping,
             commands.history(), language.indentOnInput(), language.bracketMatching(), language.syntaxHighlighting(classHighlighter),
             autocomplete.closeBrackets(), search.search({ top: true }), search.highlightSelectionMatches(),
@@ -30,7 +32,7 @@ export function FileEditor({ fileName, initialText, onChange, onSave }: { fileNa
               ...autocomplete.closeBracketsKeymap, ...commands.defaultKeymap, ...search.searchKeymap, ...commands.historyKeymap, commands.indentWithTab,
             ]),
             ...(lang ? [lang] : []),
-            cm.EditorView.updateListener.of((update) => { if (update.docChanged) change.current(update.state.doc.toString()); }),
+            cm.EditorView.updateListener.of((update) => { if (update.docChanged) change.current(update.state.sliceDoc()); }),
             cm.EditorView.contentAttributes.of({ "aria-label": `Editing ${fileName}` }),
           ],
         }),

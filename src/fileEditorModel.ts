@@ -23,6 +23,12 @@ export function saveErrorMessage(error: unknown): string {
   return String(error instanceof Error ? error.message : error).replace(/^Error:\s*/, "");
 }
 
+/** The line ending a file uses, so the editor keeps it instead of rewriting every line. Undefined when the text has no line break. */
+export function lineSeparatorFor(text: string): "\r\n" | "\n" | undefined {
+  if (text.includes("\r\n")) return "\r\n";
+  return text.includes("\n") ? "\n" : undefined;
+}
+
 /** The CodeMirror language for a file name, or null when there isn't one. Loads on demand. */
 export async function languageFor(fileName: string) {
   const [{ LanguageDescription }, { languages }] = await Promise.all([import("@codemirror/language"), import("@codemirror/language-data")]);
