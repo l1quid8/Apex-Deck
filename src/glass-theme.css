@@ -395,6 +395,13 @@
 :where(:is(:root[data-deck-theme="glass"], :root[data-deck-theme="flat"])) ::selection { background: color-mix(in srgb, var(--accent) 45%, transparent); color: inherit; }
 :where(:root[data-deck-light="true"]:is([data-deck-theme="glass"], [data-deck-theme="flat"])) :is(.details-backdrop, .artifacts-backdrop) { background: rgb(20 40 58 / .12); }
 
+/* Files tab: the toolbar and preview paint an opaque panel fill that reads
+   as white strips over the glass sidebar. Let the panel fill show through. */
+:root[data-deck-theme="glass"] :is(.right-files-toolbar, .right-files-preview, .file-editor .cm-gutters) {
+  background: transparent;
+  border-color: var(--deck-edge);
+}
+
 /* Flat keeps the selected palette and radius while returning to solid panels.
    Zeroing these here also disables activity bloom and animated edge light. */
 :root[data-deck-theme="flat"] {
