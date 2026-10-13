@@ -13,6 +13,7 @@ export const DECK_KEYS = [
   { code: 'BracketLeft', shift: false },
   { code: 'BracketRight', shift: false },
   { code: 'Enter', shift: true },
+  { code: 'Backslash', shift: true },
   { code: 'Comma', shift: false },
 ];
 

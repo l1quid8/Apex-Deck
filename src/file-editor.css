@@ -1,0 +1,59 @@
+/* File editor: CodeMirror themed from the app's own colour variables so every skin works. */
+.file-editor { min-height: 0; flex: 1 1 auto; display: flex; overflow: hidden; }
+.file-editor .cm-editor { flex: 1 1 auto; min-width: 0; height: 100%; color: inherit; background: transparent; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.file-editor .cm-editor.cm-focused { outline: 1px solid var(--accent); outline-offset: -1px; }
+.file-editor .cm-scroller { overflow: auto; font: inherit; }
+.file-editor .cm-content { caret-color: var(--accent); padding: 6px 0; }
+.file-editor .cm-cursor { border-left-color: var(--accent); }
+.file-editor .cm-gutters { color: var(--muted); background: var(--panel, transparent); border-right: 1px solid var(--line, rgba(127,127,127,.25)); }
+.file-editor .cm-activeLine { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.file-editor .cm-activeLineGutter { color: inherit; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.file-editor .cm-selectionBackground, .file-editor .cm-focused .cm-selectionBackground { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+.file-editor .cm-matchingBracket { background: color-mix(in srgb, var(--accent) 25%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
+.file-editor .cm-searchMatch { background: rgba(238,183,61,.25); outline: 1px solid rgba(238,183,61,.45); }
+.file-editor .cm-searchMatch-selected { background: rgba(238,183,61,.5); }
+.file-editor .cm-panels { color: inherit; background: var(--panel, var(--bg)); border-color: var(--line, rgba(127,127,127,.25)); }
+.file-editor .cm-panels input, .file-editor .cm-panels button { font: inherit; font-size: 12px; color: inherit; background: transparent; border: 1px solid var(--line, rgba(127,127,127,.3)); border-radius: 4px; padding: 2px 6px; }
+.file-editor .cm-panels button { cursor: pointer; }
+.file-editor .cm-panels label { font-size: 12px; }
+.file-editor .cm-tooltip { color: inherit; background: var(--panel, var(--bg)); border: 1px solid var(--line, rgba(127,127,127,.3)); }
+/* Syntax colours come from the accent and muted colours, so they follow the skin. */
+.file-editor .tok-keyword, .file-editor .tok-operatorKeyword, .file-editor .tok-modifier { color: var(--accent); }
+.file-editor .tok-string, .file-editor .tok-string2, .file-editor .tok-regexp { color: #e0a96d; }
+.file-editor .tok-number, .file-editor .tok-bool, .file-editor .tok-atom { color: #c792ea; }
+.file-editor .tok-comment { color: var(--muted); font-style: italic; }
+.file-editor .tok-typeName, .file-editor .tok-className, .file-editor .tok-namespace { color: #6cb6ff; }
+.file-editor .tok-propertyName, .file-editor .tok-attributeName { color: #8fd3c0; }
+.file-editor .tok-variableName2, .file-editor .tok-variableName.tok-definition, .file-editor .tok-function { color: #f0c674; }
+.file-editor .tok-heading { font-weight: 700; color: var(--accent); }
+.file-editor .tok-link, .file-editor .tok-url { color: #6cb6ff; text-decoration: underline; }
+.file-editor .tok-invalid { color: #ff6b6b; }
+:root[data-deck-light="true"] .file-editor .tok-string, :root[data-deck-light="true"] .file-editor .tok-string2 { color: #9a5b13; }
+:root[data-deck-light="true"] .file-editor .tok-number, :root[data-deck-light="true"] .file-editor .tok-bool, :root[data-deck-light="true"] .file-editor .tok-atom { color: #7b3fb0; }
+:root[data-deck-light="true"] .file-editor .tok-typeName, :root[data-deck-light="true"] .file-editor .tok-className, :root[data-deck-light="true"] .file-editor .tok-link { color: #1b5fb5; }
+:root[data-deck-light="true"] .file-editor .tok-propertyName { color: #1f7a63; }
+:root[data-deck-light="true"] .file-editor .tok-function { color: #8a6a00; }
+
+/* Editing session: toolbar, conflict bar, editor fill the preview. */
+.right-files-preview-content.editing { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.file-edit-session { min-height: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
+.file-edit-toolbar { display: flex; align-items: center; gap: 4px; padding: 3px 7px; border-bottom: 1px solid var(--line, rgba(127,127,127,.18)); }
+.file-edit-toolbar button, .file-edit-conflict button, .file-edit-problem button { border: 1px solid var(--line, rgba(127,127,127,.3)); border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 12px; color: inherit; background: transparent; cursor: pointer; }
+.file-edit-toolbar button:hover:not(:disabled), .file-edit-conflict button:hover, .file-edit-problem button:hover { background: var(--hover, rgba(127,127,127,.14)); }
+.file-edit-toolbar button:disabled { opacity: .45; cursor: default; }
+.file-edit-toolbar .file-edit-save:not(:disabled) { color: var(--accent-ink, #04211d); background: var(--accent); border-color: var(--accent); }
+.file-edit-dirty { color: var(--accent); font-size: 11px; }
+.file-edit-conflict, .file-edit-problem { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; font-size: 12px; border-bottom: 1px solid rgba(238,183,61,.45); background: rgba(238,183,61,.14); }
+.file-edit-conflict span { flex: 1 1 100%; }
+.file-edit-problem { border-bottom-color: rgba(255,107,107,.5); background: rgba(255,107,107,.12); }
+
+/* Wide Files tab (>= 720px): tree on the left, preview/editor on the right at full height. */
+.right-files-body { display: contents; }
+.right-files-shell.wide .right-files-body { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: row; }
+.right-files-shell.wide .right-files-browser { height: auto !important; flex: 1 1 auto; min-width: 0; }
+.right-files-shell.wide .right-files-browser[style*="width"] { flex: 0 0 auto; }
+.right-files-shell.wide .right-files-resize { display: none; }
+.right-files-shell.wide .right-files-preview-slot { height: auto !important; min-height: 0; min-width: 0; flex: 1 1 0; }
+.right-files-resize-v { position: relative; z-index: 1; width: 8px; flex: 0 0 8px; cursor: col-resize; touch-action: none; }
+.right-files-resize-v::after { position: absolute; left: 3px; top: calc(50% - 18px); width: 2px; height: 36px; border-radius: 2px; background: var(--muted, #858995); content: ""; opacity: .5; }
+.right-files-resize-v:hover::after { opacity: 1; background: var(--accent); }

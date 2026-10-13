@@ -161,3 +161,12 @@
 .right-worktrees-menu-items button { display: block; width: 100%; text-align: left; }
 
 .right-worktrees-menu-items hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+
+/* Full screen */
+/* The side panel fills the work area. The canvas stays mounted underneath, so terminals and threads keep running. */
+.body.right-panel-expanded > .canvas { display: none; }
+.body.right-panel-expanded > .thread-details.full { flex: 1 1 0; width: auto; max-width: none; min-width: 0; border-left: 0; }
+/* Text-heavy tabs cap their line length; Files and Browser keep the full width. */
+.right-panel-expanded .right-panel-body > *:not(.right-files-shell):not(.right-browser) { max-width: 960px; margin-inline: auto; }
+.right-files-held { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; border-bottom: 1px solid var(--line, rgba(127,127,127,.25)); background: color-mix(in srgb, var(--accent, #6b8cff) 12%, transparent); }
+.right-files-held span { flex: 1; min-width: 0; }

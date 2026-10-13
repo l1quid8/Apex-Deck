@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { transform } from 'sucrase';
 import * as model from '../src/filesTreeModel.ts';
+import { isEditable } from '../src/fileEditorModel.ts';
 
 const source = await fs.readFile(new URL('../src/RightFiles.tsx', import.meta.url), 'utf8');
 const code = transform(source.replace(/^import .*;\n/gm, '').replace(/export function/g, 'function'), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
@@ -98,7 +99,7 @@ function renderPreview({ value = null, view = 'file', path = '/sample-project/RE
   let hook = 0;
   const useState = (initial) => { const index = hook++; return [index === 0 ? value : initial, () => {}]; };
   const Markdown = ({ text }) => React.createElement('div', { className: 'rendered-markdown' }, text);
-  const component = new Function('React', 'useState', 'useEffect', 'useMemo', 'Markdown', 'writeClipboard', `${previewCode}; return FilePreviewPanel;`)(React, useState, () => {}, (fn) => fn(), Markdown, async () => false);
+  const component = new Function('React', 'useState', 'useEffect', 'useMemo', 'Markdown', 'writeClipboard', 'isEditable', 'FileEditSession', `${previewCode}; return FilePreviewPanel;`)(React, useState, () => {}, (fn) => fn(), Markdown, async () => false, isEditable, () => null);
   const element = component({ root: '/sample-project', path, backend: { fileRead: async () => value, openTarget: async () => {} }, diff, local: false, paneId: null, view, onView() {}, onClose() {} });
   const expand = (node) => {
     if (node == null || typeof node === 'boolean' || typeof node === 'string' || typeof node === 'number') return node;
@@ -151,4 +152,15 @@ test('text search results group by file, highlight matches and open at the resul
   const hit = find(tree, (node) => node.props?.className === 'right-files-search-hit');
   hit.props.onClick();
   assert.deepEqual(opened, [['src/main.ts', 7]]);
+});
+
+test('the Edit button shows only for whole text files in the file view', () => {
+  const hasEdit = (options) => !!find(renderPreview(options).element, (node) => node.type === 'button' && node.props['aria-label'] === 'Edit file');
+  const text = { kind: 'text', text: 'a', size: 1, truncated: false, version: '1-1' };
+  assert.equal(hasEdit({ value: text }), true);
+  assert.equal(hasEdit({ value: { ...text, truncated: true } }), false);
+  assert.equal(hasEdit({ value: { kind: 'binary', size: 3 } }), false);
+  assert.equal(hasEdit({ value: { kind: 'image', mime: 'image/png', data: '', size: 1 } }), false);
+  assert.equal(hasEdit({ value: { kind: 'too_large', size: 9 } }), false);
+  assert.equal(hasEdit({ value: text, view: 'changes' }), false);
 });

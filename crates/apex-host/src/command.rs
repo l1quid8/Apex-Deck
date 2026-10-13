@@ -146,6 +146,7 @@ pub enum Command {
     FileFind { root: String, query: String },
     FileSearch { root: String, query: String, case_sensitive: bool, folder: Option<String> },
     FileCreate { root: String, parent: String, name: String, folder: bool },
+    FileWrite { root: String, path: String, text: String, expected: Option<String> },
     FileRename { root: String, path: String, name: String },
     FileDuplicate { root: String, path: String },
     FileTrash { root: String, path: String },
@@ -355,6 +356,7 @@ impl Host {
             FileFind { root, query } => reply(self.file_find(root, query).await?),
             FileSearch { root, query, case_sensitive, folder } => reply(self.file_search(root, query, case_sensitive, folder).await?),
             FileCreate { root, parent, name, folder } => reply(self.file_create(root, parent, name, folder).await?),
+            FileWrite { root, path, text, expected } => reply(self.file_write(root, path, text, expected).await?),
             FileRename { root, path, name } => reply(self.file_rename(root, path, name).await?),
             FileDuplicate { root, path } => reply(self.file_duplicate(root, path).await?),
             FileTrash { root, path } => reply(self.file_trash(root, path).await?),
@@ -446,7 +448,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 137);
+        assert_eq!(names.len(), 138);
+        assert!(names.contains(&"file_write".to_string()));
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
         assert!(names.contains(&"personal_send".to_string()));

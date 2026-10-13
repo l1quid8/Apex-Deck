@@ -34,6 +34,9 @@ pub enum FilePreview {
         text: String,
         size: u64,
         truncated: bool,
+        version: String,
+        /// False when the path itself is a symbolic link, which `write` refuses.
+        editable: bool,
     },
     Image {
         mime: String,
@@ -212,13 +215,70 @@ pub fn trash(root: &Path, path: &Path) -> Result<(), String> {
     trash::delete(&path).map_err(|error| format!("Could not move it to Trash: {error}"))
 }
 
+/// Identifies one state of a file: modification time in nanoseconds plus size.
+fn file_version(metadata: &fs::Metadata) -> String {
+    let nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!("{nanos}-{}", metadata.len())
+}
+
+/// Replace the text of an existing regular file. `expected` is the version the
+/// editor last saw; a different current version returns `"changed-on-disk"`.
+/// The new content goes to a temp file in the same folder and is renamed over
+/// the target, so a crash never leaves a half-written file.
+pub fn write(root: &Path, path: &Path, text: &str, expected: Option<&str>) -> Result<String, String> {
+    reject_symlink(root, path)?;
+    let target = inside(root, path)?;
+    let metadata = fs::symlink_metadata(&target).map_err(|e| format!("Could not open file: {e}"))?;
+    if !metadata.is_file() {
+        return Err("That path is not a file.".into());
+    }
+    if text.len() as u64 > MAX_WORKSPACE_READ {
+        return Err("File is too large to edit here.".into());
+    }
+    if let Some(expected) = expected {
+        if file_version(&metadata) != expected {
+            return Err("changed-on-disk".into());
+        }
+    }
+    let parent = target.parent().ok_or("That file has no folder.")?;
+    let name = target.file_name().and_then(|n| n.to_str()).ok_or("Bad file name.")?;
+    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = format!(
+        "{:x}{:x}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let temp = parent.join(format!(".{name}.apexdeck-{nonce}"));
+    let result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(text.as_bytes())?;
+        fs::set_permissions(&temp, metadata.permissions())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, &target)
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Could not save file: {error}"));
+    }
+    let saved = fs::metadata(&target).map_err(|e| format!("Could not read file: {e}"))?;
+    Ok(file_version(&saved))
+}
+
 pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
+    let editable = reject_symlink(root, path).is_ok();
     let path = inside(root, path)?;
     let metadata = std::fs::metadata(&path).map_err(|e| format!("Could not read file: {e}"))?;
     if !metadata.is_file() {
         return Err("That path is not a file.".into());
     }
     let size = metadata.len();
+    let version = file_version(&metadata);
     let extension = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -272,6 +332,8 @@ pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
             text: text[..end].to_string(),
             size,
             truncated,
+            version,
+            editable,
         });
     }
     // A cap may cut a multi-byte character. Only accept a prefix that decodes
@@ -284,6 +346,8 @@ pub fn read(root: &Path, path: &Path) -> Result<FilePreview, String> {
                         text: text.to_string(),
                         size,
                         truncated: true,
+                        version,
+                        editable,
                     });
                 }
             }
@@ -675,6 +739,92 @@ mod tests {
         }
     }
 
+    fn text_version(temp: &Temp, name: &str) -> String {
+        match read(&temp.0, Path::new(name)).unwrap() {
+            FilePreview::Text { version, .. } => version,
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_replaces_text_and_returns_the_new_version() {
+        let temp = Temp::new();
+        fs::write(temp.0.join("a.txt"), "one").unwrap();
+        let before = text_version(&temp, "a.txt");
+        let after = write(&temp.0, Path::new("a.txt"), "two!", Some(&before)).unwrap();
+        assert_eq!(fs::read_to_string(temp.0.join("a.txt")).unwrap(), "two!");
+        assert_eq!(after, text_version(&temp, "a.txt"));
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn write_refuses_a_stale_version_and_leaves_the_file_alone() {
+        let temp = Temp::new();
+        fs::write(temp.0.join("a.txt"), "one").unwrap();
+        let error = write(&temp.0, Path::new("a.txt"), "two", Some("0-0")).unwrap_err();
+        assert_eq!(error, "changed-on-disk");
+        assert_eq!(fs::read_to_string(temp.0.join("a.txt")).unwrap(), "one");
+        write(&temp.0, Path::new("a.txt"), "two", None).unwrap();
+        assert_eq!(fs::read_to_string(temp.0.join("a.txt")).unwrap(), "two");
+    }
+
+    #[test]
+    fn write_refuses_git_missing_files_and_oversize_text() {
+        let temp = Temp::new();
+        fs::create_dir(temp.0.join(".git")).unwrap();
+        fs::write(temp.0.join(".git/config"), "private").unwrap();
+        assert!(write(&temp.0, Path::new(".git/config"), "x", None).is_err());
+        assert!(write(&temp.0, Path::new("missing.txt"), "x", None).is_err());
+        assert!(!temp.0.join("missing.txt").exists());
+        fs::write(temp.0.join("a.txt"), "one").unwrap();
+        let big = "x".repeat(MAX_WORKSPACE_READ as usize + 1);
+        assert_eq!(
+            write(&temp.0, Path::new("a.txt"), &big, None).unwrap_err(),
+            "File is too large to edit here."
+        );
+        assert_eq!(fs::read_to_string(temp.0.join("a.txt")).unwrap(), "one");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_refuses_escaping_symlinks_keeps_permissions_and_leaves_no_temp() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = Temp::new();
+        let outside = Temp::new();
+        fs::write(outside.0.join("secret.txt"), "secret").unwrap();
+        symlink(outside.0.join("secret.txt"), temp.0.join("link.txt")).unwrap();
+        assert!(write(&temp.0, Path::new("link.txt"), "x", None).is_err());
+        assert_eq!(fs::read_to_string(outside.0.join("secret.txt")).unwrap(), "secret");
+
+        fs::write(temp.0.join("run.sh"), "#!/bin/sh").unwrap();
+        fs::set_permissions(temp.0.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        write(&temp.0, Path::new("run.sh"), "#!/bin/sh\necho", None).unwrap();
+        let mode = fs::metadata(temp.0.join("run.sh")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+
+        // A folder in place of the file makes the rename fail; no temp may remain.
+        fs::create_dir(temp.0.join("dir")).unwrap();
+        assert!(write(&temp.0, Path::new("dir"), "x", None).is_err());
+        let leftovers: Vec<_> = fs::read_dir(&temp.0)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".apexdeck-"))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_file_reads_but_is_not_editable() {
+        let temp = Temp::new();
+        fs::write(temp.0.join("real.txt"), "hi").unwrap();
+        std::os::unix::fs::symlink(temp.0.join("real.txt"), temp.0.join("link.txt")).unwrap();
+        let FilePreview::Text { editable, .. } = read(&temp.0, Path::new("link.txt")).unwrap() else {
+            panic!("expected text")
+        };
+        assert!(!editable);
+    }
+
     #[test]
     fn reads_text_and_truncates_at_a_character_boundary() {
         let temp = Temp::new();
@@ -684,7 +834,12 @@ mod tests {
             FilePreview::Text {
                 text: "hello".into(),
                 size: 5,
-                truncated: false
+                truncated: false,
+                version: match read(&temp.0, Path::new("hello.md")).unwrap() {
+                    FilePreview::Text { version, .. } => version,
+                    _ => unreachable!(),
+                },
+                editable: true,
             }
         );
         let source = format!("{}é", "x".repeat(MAX_WORKSPACE_READ as usize - 1));

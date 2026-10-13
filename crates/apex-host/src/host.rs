@@ -1086,6 +1086,9 @@ impl Host {
     pub async fn file_create(&self, root: String, parent: String, name: String, folder: bool) -> Result<String, String> {
         tokio::task::spawn_blocking(move || crate::project_files::create(Path::new(&root), Path::new(&parent), &name, folder)).await.map_err(|e| e.to_string())?
     }
+    pub async fn file_write(&self, root: String, path: String, text: String, expected: Option<String>) -> Result<String, String> {
+        tokio::task::spawn_blocking(move || crate::project_files::write(Path::new(&root), Path::new(&path), &text, expected.as_deref())).await.map_err(|e| e.to_string())?
+    }
     pub async fn file_rename(&self, root: String, path: String, name: String) -> Result<String, String> {
         tokio::task::spawn_blocking(move || crate::project_files::rename(Path::new(&root), Path::new(&path), &name)).await.map_err(|e| e.to_string())?
     }

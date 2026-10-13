@@ -13,6 +13,7 @@ export type DeckAction =
   | { kind: "assistant" }
   | { kind: "cycle_pane"; step: 1 | -1 }
   | { kind: "maximize" }
+  | { kind: "side_panel_full" }
   | { kind: "settings" }
   /** Acts on the thread in use, as the sidebar's ⋯ menu would. */
   | { kind: "thread"; action: ThreadKey };
@@ -53,6 +54,7 @@ const BINDINGS: Binding[] = [
   { code: "BracketLeft", key: "[", label: "Previous pane", action: { kind: "cycle_pane", step: -1 } },
   { code: "BracketRight", key: "]", label: "Next pane", action: { kind: "cycle_pane", step: 1 } },
   { code: "Enter", key: "↩", label: "Maximize or restore pane", action: { kind: "maximize" }, macShift: true },
+  { code: "Backslash", key: "\\", label: "Full-screen side panel", action: { kind: "side_panel_full" }, macShift: true },
   { code: "Comma", key: ",", label: "Settings", action: { kind: "settings" } },
   { code: "KeyR", key: "R", label: "Rename thread", action: { kind: "thread", action: "rename" }, macAlt: true },
   { code: "KeyP", key: "P", label: "Pin or unpin thread", action: { kind: "thread", action: "pin" }, macAlt: true },

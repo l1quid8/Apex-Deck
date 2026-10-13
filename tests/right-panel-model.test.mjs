@@ -1,7 +1,7 @@
 // tests/right-panel-model.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultPanel, openTab, closeTab, activate, moveTab, parsePanel, BROWSER_CAP } from '../src/rightPanelModel.ts';
+import { defaultPanel, openTab, closeTab, activate, moveTab, parsePanel, setFull, closePanel, BROWSER_CAP } from '../src/rightPanelModel.ts';
 
 const kinds = (s) => s.tabs.map((t) => t.kind);
 
@@ -69,4 +69,40 @@ test('damaged saves fall back safely', () => {
   assert.equal(new Set(s.tabs.map((t) => t.id)).size, s.tabs.length);
   assert.equal(s.active, 'dashboard');
   assert.equal(s.open, true);
+});
+
+test('a saved panel with no full field reads as docked', () => {
+  const s = parsePanel(JSON.stringify({ open: true, tabs: [], active: 'dashboard' }));
+  assert.equal(s.full, false);
+  assert.equal(s.open, true);
+});
+
+test('only a real true reads as full screen', () => {
+  assert.equal(parsePanel(JSON.stringify({ open: true, full: 'yes', tabs: [], active: 'dashboard' })).full, false);
+  assert.equal(parsePanel(JSON.stringify({ open: true, full: 1, tabs: [], active: 'dashboard' })).full, false);
+  assert.equal(parsePanel(JSON.stringify({ open: true, full: true, tabs: [], active: 'dashboard' })).full, true);
+});
+
+test('the default panel is docked', () => {
+  assert.equal(defaultPanel().full, false);
+});
+
+test('setFull(true) also opens a closed panel', () => {
+  const s = setFull(defaultPanel(), true);
+  assert.equal(s.full, true);
+  assert.equal(s.open, true);
+});
+
+test('setFull(false) leaves the panel open and docked', () => {
+  const s = setFull({ ...defaultPanel(), open: true, full: true }, false);
+  assert.equal(s.full, false);
+  assert.equal(s.open, true);
+});
+
+test('closing the panel clears full screen, so a reopen is docked', () => {
+  const full = setFull(defaultPanel(), true);
+  const closed = closePanel(full);
+  assert.equal(closed.open, false);
+  assert.equal(closed.full, false);
+  assert.equal(openTab(closed, 'files', 1).full, false);
 });

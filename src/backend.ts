@@ -106,6 +106,7 @@ export interface Backend {
   fileFind(root: string, query: string): Promise<string[]>;
   fileSearch(root: string, query: string, caseSensitive: boolean, folder: string | null): Promise<FileSearchResult>;
   fileCreate(root: string, parent: string, name: string, folder: boolean): Promise<string>;
+  fileWrite(root: string, path: string, text: string, expected: string | null): Promise<string>;
   fileRename(root: string, path: string, name: string): Promise<string>;
   fileDuplicate(root: string, path: string): Promise<string>;
   fileTrash(root: string, path: string): Promise<void>;
@@ -738,6 +739,7 @@ function demoBackend(): Backend {
     fileFind: async () => { throw new Error("Find isn't available in the browser demo"); },
     fileSearch: async () => { throw new Error("Search isn't available in the browser demo"); },
     fileCreate: async () => { throw new Error("File actions aren't available in the browser demo"); },
+    fileWrite: async () => { throw new Error("File actions aren't available in the browser demo"); },
     fileRename: async () => { throw new Error("File actions aren't available in the browser demo"); },
     fileDuplicate: async () => { throw new Error("File actions aren't available in the browser demo"); },
     fileTrash: async () => { throw new Error("File actions aren't available in the browser demo"); },

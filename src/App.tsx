@@ -60,6 +60,7 @@ import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssist
 import { assistantTasksForOwner, assistantMessageArgs, clearPendingRequest, loadPendingRequest, savePendingRequest, type AssistantTaskOwner, type AssistantTaskSnapshot, type PendingAssistantRequest, type AssistantTask, type HandoffBatch, handoffPreparationArgs } from "./assistantTaskModel.ts";
 import type { MonitorEvidence, ProjectMonitor } from "./apexAgentModel.ts";
 import { ConfirmDialog, type Question } from "./ConfirmDialog";
+import { unsavedEditName } from "./unsavedEdits";
 import { PathPrompt } from "./PathPrompt";
 import { SidebarHandle } from "./SidebarHandle";
 import { SIDEBAR_DEFAULT, loadWidths, saveWidths, type Sidebar, type SidebarWidths } from "./sidebars";
@@ -73,7 +74,7 @@ import { RightDashboard } from "./RightDashboard";
 import { RightBrowser } from "./RightBrowser";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
-import { defaultPanel, loadPanel, openTab, parsePanel, savePanel, type RightPanelState } from "./rightPanelModel";
+import { closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -333,7 +334,15 @@ export function App() {
   const [panel, setPanel] = useState<RightPanelState>(loadPanel);
   useEffect(() => savePanel(panel), [panel]);
   const detailsOpen = panel.open;
-  const setDetailsOpen = (open: boolean) => setPanel((p) => ({ ...p, open }));
+  const setDetailsOpen = (open: boolean) => setPanel((p) => open ? { ...p, open } : closePanel(p));
+  /** Full screen for the side panel. It opens the panel if needed and collapses ApexAgent's full screen. */
+  const setSidePanelFull = (full: boolean) => {
+    setPanel((p) => setFull(p, full));
+    if (full && apexAgentFull) { setApexAgentFull(false); try { localStorage.setItem("apex-agent-full-screen", "0"); } catch { /* Lasts for this window. */ } }
+  };
+  // Only one of the two fills the window: ApexAgent going full collapses the side panel.
+  useEffect(() => { if (apexAgentFull) setPanel((p) => p.full ? setFull(p, false) : p); }, [apexAgentFull]);
+  const sidePanelFull = detailsOpen && panel.full;
   const asideRef = useRef<HTMLElement | null>(null);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
   const [detailsSlot, setDetailsSlot] = useState<HTMLElement | null>(null);
@@ -354,8 +363,32 @@ export function App() {
   const detailsTargetRef = useRef<string | null>(null);
   const pendingSection = useRef<DetailsSection | undefined>(undefined);
   const detailsWidth = sidebarWidths.details ?? SIDEBAR_DEFAULT.details;
-  const overlayDetails = detailsOverlay(availableWidth, detailsWidth);
-  const closeDetails = () => { setDetailsOpen(false); detailsToggle.current?.focus(); };
+  // Full screen fills the work area, so it never floats over the canvas as an overlay.
+  const overlayDetails = !sidePanelFull && detailsOverlay(availableWidth, detailsWidth);
+  /** Runs `action` now, or after the user agrees to drop unsaved edits in the Files tab. */
+  const guardUnsavedEdits = (action: () => void) => {
+    const file = unsavedEditName();
+    if (!file) { action(); return; }
+    setQuestion({ title: `Discard unsaved changes to ${file}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: action });
+  };
+  const closeDetails = () => guardUnsavedEdits(() => { setDetailsOpen(false); detailsToggle.current?.focus(); });
+  const changePanel = (next: RightPanelState) => {
+    const closesFiles = panel.tabs.some((tab) => tab.kind === "files") && !next.tabs.some((tab) => tab.kind === "files");
+    if (closesFiles) guardUnsavedEdits(() => setPanel(next)); else setPanel(next);
+  };
+  // Esc leaves full screen. It never hides the panel, and it leaves typing and open menus or dialogs alone.
+  useEffect(() => {
+    if (!sidePanelFull) return;
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), .cm-editor")) return;
+      if (document.querySelector('[role="menu"]:not([hidden]), [role="dialog"]:not([hidden]), [aria-modal="true"]')) return;
+      setSidePanelFull(false);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [sidePanelFull]);
   const showDetails = (target?: DetailsSection) => {
     pendingSection.current = target;
     focusDetails.current = true;
@@ -1817,6 +1850,8 @@ export function App() {
       else if (pane) runPaneMenu(pane, action.action, "head");
     } else if (action.kind === "maximize") {
       if (focusedPane && visiblePanes.some((p) => p.id === focusedPane)) setMaximized((m) => (m === focusedPane ? null : focusedPane));
+    } else if (action.kind === "side_panel_full") {
+      setSidePanelFull(!(panel.open && panel.full));
     }
   };
   useEffect(() => {
@@ -2012,7 +2047,7 @@ export function App() {
       {monitorPollers.map(({ hostId, backend: hostRoute, version }) => <HostMonitors key={hostId} hostId={hostId} backend={hostRoute} getVersion={monitorHostVersion} onMonitors={acceptHostMonitors(version)} />)}
       {migrationNotice && <div className="connection-banner" role="status">{migrationNotice}<button onClick={() => setMigrationNotice("")}>Dismiss</button></div>}
       {storageError && <div className="storage-error" role="alert">{storageError}</div>}
-      <div className={`body${apexWorkspace && apexAgentDockFocused ? " apex-agent-dock-focused" : ""}${compactApexAgentDock ? " apex-agent-dock-narrow" : ""}${apexAgentFull && (apexAgentAllOpen || !!apexWorkspace) ? " apex-agent-dock-expanded" : ""}`} ref={bodyRef}>
+      <div className={`body${apexWorkspace && apexAgentDockFocused ? " apex-agent-dock-focused" : ""}${compactApexAgentDock ? " apex-agent-dock-narrow" : ""}${apexAgentFull && (apexAgentAllOpen || !!apexWorkspace) ? " apex-agent-dock-expanded" : ""}${sidePanelFull ? " right-panel-expanded" : ""}`} ref={bodyRef}>
         {railVisible && (
           <ProjectSidebar
             backend={backend}
@@ -2062,7 +2097,7 @@ export function App() {
           />
         )}
 
-        <main ref={canvasRef} className={`canvas section-${section}`} inert={apexAgentFull && (apexAgentAllOpen || !!apexWorkspace) ? true : undefined} aria-hidden={apexAgentFull && (apexAgentAllOpen || !!apexWorkspace) ? true : undefined}>
+        <main ref={canvasRef} className={`canvas section-${section}`} inert={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined} aria-hidden={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined}>
           {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} addRequest={newAgentRequest} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
@@ -2212,7 +2247,7 @@ export function App() {
         </aside>}
         {detailsOpen && <>
           {overlayDetails && <button className="details-backdrop" style={{ left: railOpen ? bodyRef.current?.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0 : 0 }} aria-label="Close side panel overlay" onClick={closeDetails} />}
-          <SidebarHandle
+          {!sidePanelFull && <SidebarHandle
             which="details"
             width={sidebarWidths.details}
             measure={() => asideRef.current?.getBoundingClientRect().width ?? detailsWidth}
@@ -2220,9 +2255,9 @@ export function App() {
             onActive={setResizing}
             className={overlayDetails ? "overlay" : ""}
             style={overlayDetails ? { right: `calc(min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px)) + var(--deck-gap, 0px))` } : undefined}
-          />
-          <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}`} style={{ width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
-            <RightPanel state={panel} onChange={setPanel} onClose={closeDetails} taskAttention={{ count: sectionFlags.agents.count, details: sectionFlags.agents.rows.map((row) => row.title).join("\n") || "ApexAgent tasks are waiting for your response" }} bodies={{
+          />}
+          <aside id="thread-details" tabIndex={-1} ref={asideRef} role={overlayDetails ? "dialog" : undefined} className={`thread-details ${overlayDetails ? "overlay" : "docked"}${sidePanelFull ? " full" : ""}`} style={sidePanelFull ? undefined : { width: overlayDetails ? `min(${detailsWidth}px, 100% - 2 * var(--deck-gap, 0px))` : detailsWidth }} aria-label="Side panel">
+            <RightPanel state={panel} onChange={changePanel} onClose={closeDetails} onFull={setSidePanelFull} taskAttention={{ count: sectionFlags.agents.count, details: sectionFlags.agents.rows.map((row) => row.title).join("\n") || "ApexAgent tasks are waiting for your response" }} bodies={{
               dashboard: () => <RightDashboard rows={listed.filter((pane) => pane.kind === "chat" || pane.kind === "terminal").map((pane) => {
                 const projectNeeds = listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "needs_input");
                 return { id: pane.id, title: pane.title, project: workspaces.find((workspace) => workspace.id === pane.workspaceId)?.name ?? "", kind: pane.kind as "chat" | "terminal", status: statusOf(pane), note: attention[pane.id]?.note ?? "", ready: attention[pane.id]?.kind === "done", readyCount: listed.filter((candidate) => candidate.workspaceId === pane.workspaceId && attention[candidate.id]?.kind === "done").length, needsCount: attention[pane.id]?.kind === "needs_input" ? projectNeeds.length : undefined, needsDetails: projectNeeds.map((candidate) => `${candidate.title}: ${attention[candidate.id]?.note ?? "Needs your response"}`).join("; ") };

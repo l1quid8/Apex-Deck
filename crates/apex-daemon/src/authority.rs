@@ -106,7 +106,7 @@ pub fn command_needs(command: &Command) -> Need {
         // Full, and only for devices allowed every thread: terminals,
         // folders and files, new threads, and whole-session or settings writes.
         PtySpawn { .. } | PtyList { .. } | PtyRename { .. } | PtyAttach { .. } | PtyWrite { .. } | PtyResize { .. } | PtyKill { .. } => full(Global),
-        FolderList { .. } | FileRead { .. } | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. } | WorktreeList { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreeForget { .. } | WorktreePrune { .. } => full(Global),
+        FolderList { .. } | FileRead { .. } | FileFind { .. } | FileSearch { .. } | FileCreate { .. } | FileWrite { .. } | FileRename { .. } | FileDuplicate { .. } | FileTrash { .. } | WorktreeList { .. } | WorktreeAdd { .. } | WorktreeRemove { .. } | WorktreeForget { .. } | WorktreePrune { .. } => full(Global),
         WorkspaceRead { .. } => full(Global),
         PathsExist { .. } => full(Global),
         StartupFolders {} => full(Global),
@@ -334,6 +334,7 @@ mod tests {
             ("file_find", Some((Full, "global")), json!({ "root": "/project", "query": "readme" })),
             ("file_search", Some((Full, "global")), json!({ "root": "/project", "query": "TODO", "caseSensitive": false, "folder": null })),
             ("file_create", Some((Full, "global")), json!({ "root": "/project", "parent": "/project", "name": "new.txt", "folder": false })),
+            ("file_write", Some((Full, "global")), json!({ "root": "/project", "path": "a.txt", "text": "x", "expected": null })),
             ("file_rename", Some((Full, "global")), json!({ "root": "/project", "path": "/project/old.txt", "name": "new.txt" })),
             ("file_duplicate", Some((Full, "global")), json!({ "root": "/project", "path": "/project/old.txt" })),
             ("file_trash", Some((Full, "global")), json!({ "root": "/project", "path": "/project/old.txt" })),

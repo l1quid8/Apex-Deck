@@ -52,5 +52,7 @@ test('storage parser repairs malformed preferences and keeps at most twenty root
   assert.deepEqual(parseFilesPrefs('{'), {});
   const parsed = parseFilesPrefs(JSON.stringify(Object.fromEntries(Array.from({ length: 22 }, (_, i) => [`/${i}`, { expanded: [1, '/x'], changedOnly: 1, showHidden: true }]))));
   assert.equal(Object.keys(parsed).length, 20);
-  assert.deepEqual(parsed['/21'], { expanded: ['/x'], changedOnly: false, showHidden: true, previewHeight: 280 });
+  assert.deepEqual(parsed['/21'], { expanded: ['/x'], changedOnly: false, showHidden: true, previewHeight: 280, treeWidth: 280 });
+  assert.equal(parseFilesPrefs('{"/a":{"treeWidth":9999}}')['/a'].treeWidth, 600);
+  assert.equal(parseFilesPrefs('{"/a":{"treeWidth":5}}')['/a'].treeWidth, 180);
 });
