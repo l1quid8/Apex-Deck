@@ -9,6 +9,7 @@ import { usePersonalAssistant, type PersonalLane } from "../personalAssistant";
 import "../apex-agent-dock.css";
 import { currentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "../assistantRegistry";
 import { ReasoningSlider } from "../ReasoningSlider";
+import { SPEED_OPTIONS, speedHint } from "../speed";
 import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
@@ -35,7 +36,7 @@ import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, r
 import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
   modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
-  pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange,
+  pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange, phoneSpeed,
   canSeeNewThread, connectionKey, isPaired, loadRemoteMode, remoteModeKey, withHints,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
@@ -63,7 +64,7 @@ import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
-import type { AgentTool, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomEvent, RoomOptions, RoomState, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
+import type { AgentTool, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
   ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Copy, Folder, Globe, Laptop, Lock, MessageSquare,
@@ -1705,6 +1706,7 @@ function BotSheet(props: {
   const savedModel = "model" in backend ? backend.model ?? "" : "";
   const [model, setModel] = useState(savedModel);
   const [effort, setEffort] = useState(props.config.effort ?? "");
+  const [speed, setSpeed] = useState<Speed | "">(props.config.speed ?? "");
   const [typed, setTyped] = useState(savedModel);
   const [view, setView] = useState<"bot" | "models">("bot");
   const [result, setResult] = useState<{ saving: boolean; error: string; saved: boolean }>({ saving: false, error: "", saved: false });
@@ -1718,6 +1720,7 @@ function BotSheet(props: {
   const [settled, setSettled] = useState(0);
   // Show the bot as its machine has it (after a save, or a change from the Mac), except picks still saving.
   const savedEffort = props.config.effort ?? "";
+  const savedSpeed = props.config.speed ?? "";
   const shownModel = useRef(savedModel);
   useEffect(() => {
     if (!("model" in touched.current)) {
@@ -1728,7 +1731,8 @@ function BotSheet(props: {
       setTyped((current) => current === before ? savedModel : current);
     }
     if (!("effort" in touched.current)) setEffort(savedEffort);
-  }, [savedModel, savedEffort, settled]);
+    if (!("speed" in touched.current)) setSpeed(savedSpeed);
+  }, [savedModel, savedEffort, savedSpeed, settled]);
   const choices = tool ? modelChoices(tool, props.reported) : null;
   const groups = choices?.groups ?? [];
   const all = choices ? [...choices.shown, ...choices.extra] : [];
@@ -1749,6 +1753,7 @@ function BotSheet(props: {
       const left: TurnChange = { ...touched.current };
       if (left.model === sent.model) delete left.model;
       if (left.effort === sent.effort) delete left.effort;
+      if (left.speed === sent.speed) delete left.speed;
       touched.current = left;
       setSettled((n) => n + 1);
       if (mine === version.current) setResult({ saving: false, error: "", saved: true });
@@ -1759,6 +1764,7 @@ function BotSheet(props: {
       const now = saved.current;
       setModel("model" in now.backend ? now.backend.model ?? "" : "");
       setEffort(now.effort ?? "");
+      setSpeed(now.speed ?? "");
       setResult({ saving: false, error: words(error), saved: false });
     }
   };
@@ -1802,7 +1808,7 @@ function BotSheet(props: {
         <Avatar seed={props.who.look.seed} color={props.who.look.color} size="lg" working={props.working && !props.asking} />
         <span className="ph-grow">
           <strong style={{ color: props.who.look.color }}>{name}</strong>
-          <small>{settingsLine({ ...props.config, backend: "model" in backend ? { ...backend, model: model || null } as ParticipantConfig["backend"] : backend, effort: effort || null }, props.reported)}</small>
+          <small>{settingsLine({ ...props.config, backend: "model" in backend ? { ...backend, model: model || null } as ParticipantConfig["backend"] : backend, effort: effort || null, speed: speed || null }, props.reported)}</small>
           <small className={props.statusWarn ? "ph-amber" : undefined}>{props.status}</small>
         </span>
       </div>
@@ -1835,10 +1841,21 @@ function BotSheet(props: {
           <div className="ph-reasoning">
             <ReasoningSlider efforts={levels} value={levels.includes(effort) ? effort : ""} onCommit={(value) => { setEffort(value); if (value !== (levels.includes(effort) ? effort : "")) void apply({ effort: value }); }} />
           </div>
+          {phoneSpeed(props.config) && (
+            <div className="ph-speed">
+              <strong>Speed</strong>
+              <div className="ph-segment" role="radiogroup" aria-label="Speed">
+                {SPEED_OPTIONS.map((option) => (
+                  <button key={option.value || "default"} type="button" role="radio" aria-checked={speed === option.value} title={option.title} onClick={() => { if (option.value !== speed) { setSpeed(option.value); void apply({ speed: option.value }); } }}>{option.text}</button>
+                ))}
+              </div>
+              <small>{speedHint(tool!)}</small>
+            </div>
+          )}
         </fieldset>
         {note && <p className="ph-sheet-text ph-quiet">{note}</p>}
         <p className={`ph-sheet-text ph-turn-note${result.error ? " ph-red" : props.offline ? " ph-amber" : ""}`} role={result.error ? "alert" : "status"}>
-          {props.offline ? `${props.offline}. Model and reasoning can change once it's back.`
+          {props.offline ? `${props.offline}. Model, reasoning and speed can change once it's back.`
             : result.error ? `Couldn't save: ${result.error}`
             : result.saving ? "Saving…"
             : result.saved ? props.working ? `Saved. ${name} finishes this reply first, then uses it.` : `Saved. ${name} uses it from its next reply.`

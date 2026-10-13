@@ -5,8 +5,9 @@
 import { contextLevel, countdown, isLow, liveWindows, percent, planLevel, shortCount, windowLabel } from "./battery.ts";
 import { findTrigger, insertAt, menuItems, type Trigger } from "./composerMenu.ts";
 import { AGENT_EFFORTS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups, type ModelGroup } from "./models.ts";
-import { withTurnSettings } from "./participantSettings.ts";
-import type { AgentTool, ModelChoice, ParticipantConfig, PlanWindow, ToolServer } from "./types.ts";
+import { applyTurnChange, withTurnSettings } from "./participantSettings.ts";
+import { SPEED_TOOLS } from "./speed.ts";
+import type { AgentTool, ModelChoice, ParticipantConfig, PlanWindow, Speed, ToolServer } from "./types.ts";
 
 export type MachineKind = "mac" | "server";
 export type LinkStatus = "online" | "offline" | "connecting";
@@ -395,7 +396,7 @@ export function reasoningLevels(config: ParticipantConfig, groups: ModelGroup[],
 
 const modelOf = (config: ParticipantConfig) => "model" in config.backend ? config.backend.model ?? "" : "";
 
-/** "Latest Opus · High reasoning": a bot's model and reasoning in a few words. */
+/** "Latest Opus · High reasoning": a bot's model and reasoning in a few words, then "Fast" when it's set. */
 export function settingsLine(config: ParticipantConfig, reported: ModelChoice[]): string {
   const backend = config.backend;
   if (backend.kind === "cli") return backend.program;
@@ -404,12 +405,13 @@ export function settingsLine(config: ParticipantConfig, reported: ModelChoice[])
   const model = modelOf(config);
   const name = model ? findModel(groups, model)?.label ?? model : "Default model";
   const levels = reasoningLevels(config, groups, model);
-  if (levels.length === 0) return name;
-  return `${name} · ${config.effort && levels.includes(config.effort) ? `${effortLabel(config.effort)} reasoning` : "Default reasoning"}`;
+  const fast = config.speed === "fast" && phoneSpeed(config) ? " · Fast" : "";
+  if (levels.length === 0) return name + fast;
+  return `${name} · ${config.effort && levels.includes(config.effort) ? `${effortLabel(config.effort)} reasoning` : "Default reasoning"}${fast}`;
 }
 
 /** What the phone changed in a bot's sheet. Only these fields are written. */
-export type TurnChange = { model?: string; effort?: string };
+export type TurnChange = { model?: string; effort?: string; speed?: Speed | "" };
 
 /**
  * The bot as saved on its machine with only the phone's changes laid over it, so a change made
@@ -420,8 +422,13 @@ export function withPhoneChange(saved: ParticipantConfig, change: TurnChange, re
   const groups = backend.kind === "agent" ? modelGroups(backend.tool, reported, TOOL_LABELS[backend.tool]) : [];
   const model = change.model ?? modelOf(saved);
   const effort = change.effort ?? saved.effort ?? "";
-  return withTurnSettings(saved, model, effort, reasoningLevels(saved, groups, model));
+  const next = withTurnSettings(saved, model, effort, reasoningLevels(saved, groups, model));
+  // Empty Speed follows the tool's own setting, as on the desktop.
+  return "speed" in change && phoneSpeed(saved) ? applyTurnChange(next, { speed: change.speed || null }) : next;
 }
+
+/** Whether a bot's tool offers a Speed choice (Codex and Claude Code). */
+export const phoneSpeed = (config: ParticipantConfig) => config.backend.kind === "agent" && SPEED_TOOLS.includes(config.backend.tool);
 
 /** Short words that read as capitals in a tool's name. */
 const TOOL_CAPS: Record<string, string> = { mcp: "MCP", ai: "AI", api: "API", db: "DB", sql: "SQL", pdf: "PDF", ui: "UI", aws: "AWS", lsp: "LSP", repl: "REPL", github: "GitHub", gitlab: "GitLab" };
