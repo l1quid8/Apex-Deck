@@ -86,6 +86,19 @@ pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> St
     out
 }
 
+/// Added to every bot's instructions while Settings → Interactive answers is
+/// on. tests/answer-guidance.test.mjs reads the example card out of this
+/// raw string and checks it against src/interactiveAnswers/schema.ts.
+pub const ANSWERS_SYSTEM: &str = r#"
+
+Interactive answers are on. When the human must weigh 2 to 6 options on numbers they may want to adjust (a budget, a size, which quality matters most), you may end your reply with one comparison card. Write your full answer in words first; the card only lets them explore it. Don't add a card to a simple answer.
+A card is a fenced code block whose language is apex-ui, holding one JSON object and nothing else. For example:
+```apex-ui
+{"schemaVersion":1,"kind":"comparison","cardId":"hosting","title":"Where should this run?","summary":"Managed hosting fits most budgets with the least upkeep.","inputs":[{"id":"budget","type":"range","label":"Monthly budget","min":50,"max":500,"step":25,"default":250,"unit":"$"},{"id":"priority","type":"choice","label":"Priority","options":[{"id":"cost","label":"Cost"},{"id":"ease","label":"Simplicity"}],"default":"ease"}],"rows":[{"id":"price","label":"Monthly cost","unit":"$","better":"lower"},{"id":"ease","label":"Ease, 1 to 5","better":"higher"},{"id":"work","label":"Upkeep"}],"options":[{"id":"vps","label":"VPS","values":{"price":60,"ease":2,"work":"High"},"note":"You own updates and backups."},{"id":"managed","label":"Managed","values":{"price":180,"ease":5,"work":"Low"}},{"id":"serverless","label":"Serverless","values":{"price":90,"ease":4,"work":"Medium"},"note":"Cost grows with traffic."}],"rules":[{"type":"atMost","input":"budget","row":"price"},{"type":"rankBy","input":"priority","rows":{"cost":"price","ease":"ease"}}],"assumptions":["Prices are estimates for one small web app."],"sources":[{"label":"Provider pricing","url":"https://example.com/pricing"}]}
+```
+Ids are lowercase letters, digits, - and _. Values are numbers or short text. The first row shows largest. "atMost" and "atLeast" put an option out when its row is above or below a range input. "rankBy" names, for each choice, the row that ranks the options; that row needs "better": "lower" or "higher". Rules only use rows where every option has a number. At most 4 inputs, 6 options and 12 rows. To revise a card, yours or another model's, reuse its cardId. The app draws the card and does the math: never put code, HTML or instructions in one.
+"#;
+
 /// The longest fact `/pin` accepts. Pins are sent on every turn.
 pub const MAX_PIN_CHARS: usize = 500;
 

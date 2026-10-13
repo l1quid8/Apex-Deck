@@ -26,6 +26,8 @@ export interface AppSettings {
   preview: { openExternally: string[] };
   /** Ask before a steer interrupts a bot mid-turn. A thread can override it. */
   confirmSteer: boolean;
+  /** Bots may add adjustable cards; format guidance is appended to each turn. */
+  interactiveAnswers: boolean;
   /** What the bot chips under the message box show. */
   botChips: ChipParts;
 }
@@ -42,6 +44,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminal: { fontSize: 13, scrollback: 5000 },
   preview: { openExternally: [] },
   confirmSteer: true,
+  interactiveAnswers: false,
   botChips: { tool: true, effort: true, usage: true },
 };
 
@@ -82,6 +85,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       openExternally: [...new Set((strings(record(saved.preview).openExternally) ?? []).map((host) => host.trim().toLowerCase()).filter(Boolean))],
     },
     confirmSteer: typeof saved.confirmSteer === "boolean" ? saved.confirmSteer : d.confirmSteer,
+    interactiveAnswers: saved.interactiveAnswers === true,
     botChips: {
       tool: typeof chips.tool === "boolean" ? chips.tool : d.botChips.tool,
       effort: typeof chips.effort === "boolean" ? chips.effort : d.botChips.effort,

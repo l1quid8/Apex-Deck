@@ -85,6 +85,8 @@ document! {
         terminal: Map<String, Value> = "terminal",
         preview: Map<String, Value> = "preview",
         confirm_steer: bool = "confirmSteer",
+        /// Whether bots are told how to add interactive answer cards.
+        interactive_answers: bool = "interactiveAnswers",
     }
 }
 
@@ -178,5 +180,11 @@ mod tests {
         assert_eq!(migrate_settings(None, Some(&old_session)).unwrap().to_value(), json!({ "disabledProviders": ["grok"] }));
         assert_eq!(migrate_settings(None, None), None);
         assert_eq!(migrate_settings(None, Some(&Session::default())), None);
+    }
+    #[test]
+    fn interactive_answers_read_and_write_back() {
+        let settings = Settings::from_value(json!({ "interactiveAnswers": true, "confirmSteer": false })).unwrap();
+        assert_eq!(settings.interactive_answers, Some(true));
+        assert_eq!(settings.to_value(), json!({ "interactiveAnswers": true, "confirmSteer": false }));
     }
 }

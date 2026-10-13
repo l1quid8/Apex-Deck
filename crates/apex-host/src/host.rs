@@ -39,6 +39,8 @@ pub(crate) struct RoomHandle {
     stop: Arc<AtomicBool>,
     /// The thread's Plan switch, shared with the room.
     plan: Arc<AtomicBool>,
+    /// Settings → Interactive answers, shared with the room.
+    answers: Arc<AtomicBool>,
     /// Actions the room's participants have proposed and are waiting on.
     /// Reached without the transcript lock while a provider is running.
     approvals: Arc<apex_core::ApprovalDesk>,
@@ -592,6 +594,8 @@ impl Host {
         self.store.save_room(&id, &SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() })?;
         let stop = room.stop_handle();
         let plan = room.plan_handle();
+        let answers = room.answers_handle();
+        answers.store(self.settings().ok().flatten().and_then(|s| s.interactive_answers).unwrap_or(false), Ordering::SeqCst);
         let approvals = room.approvals_handle();
         let mut runtime = ConcurrentRoom::new(room);
         // Only ApexAgent task threads share the checkout gate; ordinary chat
@@ -605,7 +609,7 @@ impl Host {
         self.rooms
             .lock()
             .unwrap()
-            .insert(id, RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, plan, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
+            .insert(id, RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), room: runtime.room(), runtime, checkpoint, deleted: Arc::default(), stop, plan, answers, approvals, context, task_run_id: Arc::default(), task_error: Arc::default() });
         Ok(snapshot)
     }
 
@@ -1138,8 +1142,14 @@ impl Host {
     /// Replace all the settings and tell every client.
     pub fn settings_save(&self, mut settings: serde_json::Value) -> Result<(), String> {
         crate::decision::save_key(&mut settings)?;
-        let settings = Settings::from_value(settings)?.to_value();
+        let settings = Settings::from_value(settings)?;
+        let answers = settings.interactive_answers.unwrap_or(false);
+        let settings = settings.to_value();
         self.store.save_settings(&settings)?;
+        // Open threads follow Interactive answers from their next turn.
+        for handle in self.rooms.lock().unwrap().values() {
+            handle.answers.store(answers, Ordering::SeqCst);
+        }
         self.emit(HostEvent::SettingsChanged(settings));
         Ok(())
     }
@@ -1936,7 +1946,7 @@ mod tests {
         ], RoomOptions::default()));
         let room = runtime.room();
         let snapshot = futures::executor::block_on(async { room.lock().await.snapshot() });
-        let handle = RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
+        let handle = RoomHandle { recovery: Arc::default(), live: Arc::default(), observation_revision: Arc::default(), stop: Arc::default(), plan: Arc::default(), answers: Arc::default(), approvals: Arc::default(), context: BuildContext::default(), task_run_id: Arc::default(), task_error: Arc::default(), runtime, room,
             checkpoint: Arc::new(Mutex::new(SavedRoom { cwd: None, snapshot })), deleted: Arc::default() };
         (handle, Store::new(path.clone()), path)
     }
@@ -2039,6 +2049,21 @@ mod host_tests {
         let _ = std::fs::remove_dir_all(&data);
         let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         (host, runtime, data)
+    }
+
+    #[test]
+    fn interactive_answers_follow_the_setting_into_open_and_new_threads() {
+        let (host, _runtime, data) = host("answers");
+        host.room_create("before".into(), vec![], RoomOptions::default(), None).unwrap();
+        let on = |id: &str| host.rooms.lock().unwrap()[id].answers.load(Ordering::SeqCst);
+        assert!(!on("before"));
+        host.settings_save(serde_json::json!({ "interactiveAnswers": true })).unwrap();
+        assert!(on("before"), "an open thread follows from its next turn");
+        host.room_create("after".into(), vec![], RoomOptions::default(), None).unwrap();
+        assert!(on("after"), "a thread opened later starts with it");
+        host.settings_save(serde_json::json!({ "interactiveAnswers": false })).unwrap();
+        assert!(!on("before") && !on("after"));
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedActi
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
 use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker, TokenTotals};
-use crate::view::{pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
+use crate::view::{ANSWERS_SYSTEM, pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -365,6 +365,9 @@ pub struct Room {
     /// The Plan switch. Shared with the host, which flips it while a turn
     /// may hold the room.
     plan: Arc<AtomicBool>,
+    /// Whether bots are told they may end a reply with an interactive answer
+    /// card. App-wide: the host sets it from Settings → Interactive answers.
+    answers: Arc<AtomicBool>,
     /// Actions participants have proposed and are waiting on.
     desk: Arc<ApprovalDesk>,
 }
@@ -409,6 +412,7 @@ impl Room {
             usage: snapshot.usage,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(snapshot.plan)),
+            answers: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(desk),
         }
     }
@@ -427,6 +431,7 @@ impl Room {
             options,
             stop: Arc::new(AtomicBool::new(false)),
             plan: Arc::new(AtomicBool::new(false)),
+            answers: Arc::new(AtomicBool::new(false)),
             desk: Arc::new(ApprovalDesk::default()),
         }
     }
@@ -630,6 +635,11 @@ impl Room {
         Arc::clone(&self.plan)
     }
 
+    /// The Interactive answers switch, shared with the host, which sets it from the app's settings.
+    pub fn answers_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.answers)
+    }
+
     pub(crate) fn has(&self, id: &ParticipantId) -> bool {
         self.roster.iter().any(|p| &p.config().id == id)
     }
@@ -717,7 +727,9 @@ impl Room {
             access: Some(participant.config().access),
             system: system_prompt(participant.config(), &configs) + &pinned_section(&self.pins) + &self.transcript.iter().rev().find(|m| m.speaker == Speaker::Human).map(|m| {
                 crate::server_request::prompt_section(&m.text)
-            }).unwrap_or_default(),
+            }).unwrap_or_default()
+                // Before Plan mode's text: next_steps_request cuts that off the end.
+                + if self.answers.load(Ordering::SeqCst) { ANSWERS_SYSTEM } else { "" },
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
             plan: false,
@@ -960,6 +972,20 @@ impl Room {
 
 #[cfg(test)]
 mod approver_tests {
+    #[test]
+    fn interactive_answers_join_the_instructions_only_while_on_and_before_plan_mode() {
+        let bot = Arc::new(crate::testing::ScriptedParticipant::new("null", &["done"]));
+        let room = Room::new(vec![bot], RoomOptions::default());
+        let id = ParticipantId::new("null");
+        assert!(!room.request_for(&id).unwrap().1.system.contains("apex-ui"));
+        room.answers_handle().store(true, Ordering::SeqCst);
+        room.plan_handle().store(true, Ordering::SeqCst);
+        let (_, request) = room.request_for(&id).unwrap();
+        assert!(request.system.contains(ANSWERS_SYSTEM));
+        assert!(request.system.ends_with(PLAN_SYSTEM), "Plan mode's text stays last");
+        let (_, steps) = room.next_steps_request(&id).unwrap();
+        assert!(steps.system.ends_with(ANSWERS_SYSTEM), "next steps drop only Plan mode's text");
+    }
     use super::*;
     use crate::approval::ActionKind;
     use futures::FutureExt;
