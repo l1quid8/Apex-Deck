@@ -555,7 +555,7 @@ impl Host {
                 let pane_options = if new_thread {
                     apex_core::RoomOptions {
                         policy: apex_core::TurnPolicy::RoundRobin,
-                        max_bot_hops: 0,
+                        max_bot_hops: Some(0),
                     }
                 } else {
                     request
@@ -783,7 +783,7 @@ impl Host {
             }
             let mut options = apex_core::RoomOptions::default();
             options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = 0;
+            options.max_bot_hops = Some(0);
             (None, Some((profiles, options)))
         } else if already_bound {
             return Err("The saved execution chat for this task is missing.".into());
@@ -820,7 +820,7 @@ impl Host {
             }
             let mut options = apex_core::RoomOptions::default();
             options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = 0;
+            options.max_bot_hops = Some(0);
             (None, Some((profiles, options)))
         };
         // The source thread gets one short line, only on the task's first start.
@@ -1023,7 +1023,7 @@ impl Host {
             }
             let mut options = apex_core::RoomOptions::default();
             options.policy = apex_core::TurnPolicy::RoundRobin;
-            options.max_bot_hops = 0;
+            options.max_bot_hops = Some(0);
             (selected_profiles, options)
         };
         // The source thread gets one short line, only on the task's first start.

@@ -136,7 +136,7 @@ export class ParticipantQueues {
   /** Run `to` once more on the transcript as it is, ahead of anything queued
    *  for them, posting no text. Their paused queues resume after it, since
    *  you chose to go on with them. `hops` caps the bot-to-bot rounds that
-   *  may follow; null keeps the room's limit. */
+   *  may follow; null keeps the room's limit (which itself may be unlimited). */
   turn(to: string[], hops: number | null) {
     if (!this.available()) return;
     for (const id of to) this.paused.delete(id);

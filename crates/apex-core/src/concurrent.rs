@@ -53,7 +53,7 @@ impl Drop for Ticket {
 pub struct TurnBatch {
     tickets: Vec<Ticket>,
     sequential: bool,
-    limit: usize,
+    limit: Option<usize>,
     pending: Arc<AtomicUsize>,
     generations: HashMap<ParticipantId, u64>,
     advisor: Option<Arc<dyn crate::decision::TurnAdvisor>>,
@@ -186,7 +186,8 @@ impl ConcurrentRoom {
     /// Turns on the transcript as it is; nothing is posted. Several
     /// participants answer one after another, each seeing the replies before
     /// it. `hops` caps the rounds of bots answering bots that may follow:
-    /// `None` keeps the room's limit, `Some(0)` buys exactly one reply each.
+    /// `None` keeps the room's limit (which itself may be unlimited),
+    /// `Some(0)` buys exactly one reply each.
     pub async fn begin_turn(&self, ids: Vec<ParticipantId>, hops: Option<usize>) -> Result<TurnBatch, String> {
         let room = self.room.lock().await;
         if ids.is_empty() {
@@ -204,7 +205,7 @@ impl ConcurrentRoom {
         Ok(self.batch(
             unique,
             true,
-            hops.unwrap_or(room.options().max_bot_hops),
+            hops.or(room.options().max_bot_hops),
             room.configs().into_iter().map(|c| c.id).collect(),
         ))
     }
@@ -212,7 +213,7 @@ impl ConcurrentRoom {
         &self,
         ids: Vec<ParticipantId>,
         sequential: bool,
-        limit: usize,
+        limit: Option<usize>,
         roster: Vec<ParticipantId>,
     ) -> TurnBatch {
         let mut slots = self.slots.lock().unwrap();
@@ -331,9 +332,11 @@ impl ConcurrentRoom {
             if unique.is_empty() {
                 break;
             }
-            if hops >= batch.limit {
-                sink(RoomEvent::HopLimitReached { limit: batch.limit, next: unique });
-                break;
+            if let Some(limit) = batch.limit {
+                if hops >= limit {
+                    sink(RoomEvent::HopLimitReached { limit, next: unique });
+                    break;
+                }
             }
             hops += 1;
             batch.sequential = true;

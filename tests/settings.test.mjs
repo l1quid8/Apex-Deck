@@ -23,6 +23,11 @@ test("values that make no sense fall back one by one", () => {
   assert.equal(read.terminal.scrollback, 5000);
 });
 
+test("unlimited rounds are kept as null", () => {
+  assert.equal(readSettings({ newThread: { policy: "mention", max_bot_hops: null } }).newThread.max_bot_hops, null);
+  assert.equal(readSettings({ newThread: { policy: "mention", max_bot_hops: 5 } }).newThread.max_bot_hops, 5);
+});
+
 test("the provider list older versions kept in the session file is carried over once", () => {
   assert.deepEqual(readSettings(null, ["aider"]).disabledProviders, ["aider"]);
   // A settings file, once saved, wins over the old copy.

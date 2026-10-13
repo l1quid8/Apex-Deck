@@ -88,8 +88,15 @@ fn saved_agent_appearance_survives_a_config_round_trip() {
 
 #[test]
 fn room_options_shape() {
-    let options = RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: 2 };
+    let options = RoomOptions { policy: TurnPolicy::RoundRobin, max_bot_hops: Some(2) };
     assert_eq!(to_value(options).unwrap(), json!({ "policy": "round_robin", "max_bot_hops": 2 }));
+    // Unlimited travels as null, and old snapshots without the field keep the default of 3.
+    let unlimited = RoomOptions { policy: TurnPolicy::Mention, max_bot_hops: None };
+    assert_eq!(to_value(unlimited).unwrap(), json!({ "policy": "mention", "max_bot_hops": null }));
+    let parsed: RoomOptions = serde_json::from_value(json!({ "policy": "mention", "max_bot_hops": null })).unwrap();
+    assert_eq!(parsed.max_bot_hops, None);
+    let missing: RoomOptions = serde_json::from_value(json!({ "policy": "mention" })).unwrap();
+    assert_eq!(missing.max_bot_hops, Some(3));
     assert_eq!(to_value(TurnPolicy::Mention).unwrap(), json!("mention"));
     assert_eq!(to_value(TurnPolicy::Everyone).unwrap(), json!("everyone"));
 }

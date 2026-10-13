@@ -52,6 +52,9 @@ const record = (value: unknown): Record<string, unknown> => (value && typeof val
 const strings = (value: unknown): string[] | null => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : null);
 const whole = (value: unknown, min: number, max: number, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback;
+/** Rounds of bots answering each other: a whole number clamped to the stepper, or null for unlimited. */
+const hops = (value: unknown, fallback: number | null): number | null =>
+  value === null ? null : whole(value, 0, MAX_ROUNDS, fallback ?? DEFAULT_SETTINGS.newThread.max_bot_hops as number);
 
 /** Read a saved settings file. `legacyDisabled` is the provider list older
  *  versions kept in the session file; it is used only when this file has none. */
@@ -71,7 +74,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
     disabledProviders: strings(saved.disabledProviders) ?? strings(legacyDisabled) ?? [],
     newThread: {
       policy: POLICIES.includes(thread.policy as TurnPolicy) ? thread.policy as TurnPolicy : d.newThread.policy,
-      max_bot_hops: whole(thread.max_bot_hops, 0, MAX_ROUNDS, d.newThread.max_bot_hops),
+      max_bot_hops: hops(thread.max_bot_hops, d.newThread.max_bot_hops),
     },
     newBotAccess: ACCESS.includes(saved.newBotAccess as Access) ? saved.newBotAccess as Access : d.newBotAccess,
     terminal: {
