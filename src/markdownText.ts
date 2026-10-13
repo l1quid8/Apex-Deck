@@ -248,3 +248,31 @@ export function pathLike(text: string): boolean {
   if (s.includes("/")) return /[A-Za-z0-9_]/.test(s) && !/^\/+$/.test(s);
   return /^[\w.-]+$/.test(s) && FILE_EXTENSIONS.test(s) && !s.startsWith(".") || /^\.[\w-]+(rc|ignore|env)$/.test(s);
 }
+
+/**
+ * `source` with each fenced block written in `language` swapped for what
+ * `swap` returns for its text; null keeps the block as written. Blocks are
+ * found the way parseBlocks finds them, including one a reply never closed.
+ */
+export function swapFences(source: string, language: string, swap: (text: string) => string | null): string {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const fence = FENCE.exec(lines[i]);
+    if (!fence) {
+      out.push(lines[i]);
+      i++;
+      continue;
+    }
+    const marker = fence[1];
+    const closing = new RegExp(`^\\s{0,3}\\${marker[0]}{${marker.length},}\\s*$`);
+    let end = i + 1;
+    while (end < lines.length && !closing.test(lines[end])) end++;
+    const swapped = fence[2] === language ? swap(lines.slice(i + 1, end).join("\n")) : null;
+    if (swapped === null) out.push(...lines.slice(i, end + 1));
+    else out.push(swapped);
+    i = end + 1;
+  }
+  return out.join("\n");
+}

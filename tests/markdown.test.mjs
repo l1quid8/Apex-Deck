@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseBlocks, parseInline } from "../src/markdownText.ts";
+import { parseBlocks, parseInline, swapFences } from "../src/markdownText.ts";
 
 const kinds = (text) => parseBlocks(text).map((b) => b.kind);
 
@@ -82,4 +82,10 @@ test("stars and underscores inside words, paths and links are left alone", () =>
     assert.deepEqual(parseInline(plain), [{ kind: "text", text: plain }], plain);
   }
   assert.deepEqual(parseInline("`` a ` b ``"), [{ kind: "code", text: "a ` b" }]);
+});
+
+test("swapFences swaps only blocks in the language asked for, closed or not", () => {
+  const text = "a\n```apex-ui\n{1}\n```\nb\n```js\nx\n```\n~~~apex-ui\n{2}";
+  assert.equal(swapFences(text, "apex-ui", (body) => `<${body}>`), "a\n<{1}>\nb\n```js\nx\n```\n<{2}>");
+  assert.equal(swapFences(text, "apex-ui", () => null), text);
 });
