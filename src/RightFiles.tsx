@@ -4,6 +4,8 @@ import type { Backend } from "./backend";
 import { changeMarks, collapseAll, createTree, moveSelection, parseFilesPrefs, revealPath as modelRevealPath, toggle, visibleRows, type FilesTree, type Row } from "./filesTreeModel";
 import { writeClipboard } from "./threadCopy";
 import { FilePreviewPanel } from "./FilePreview";
+import { createPortal } from "react-dom";
+import { ConfirmDialog, type Question } from "./ConfirmDialog";
 
 const join = (dir: string, name: string) => `${dir.replace(/\/$/, "")}/${name}`;
 const relative = (root: string, path: string) => path === root ? "." : path.startsWith(`${root.replace(/\/$/, "")}/`) ? path.slice(root.replace(/\/$/, "").length + 1) : path;
@@ -24,6 +26,7 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   const [searchFolder, setSearchFolder] = useState<string | null>(null), [caseSensitive, setCaseSensitive] = useState(false), [searchLoading, setSearchLoading] = useState(false), [searchError, setSearchError] = useState("");
   const [changesOpen, setChangesOpen] = useState(true), [context, setContext] = useState<Context>(null), [copied, setCopied] = useState("");
   const [operation, setOperation] = useState<FileOperation>(null), [operationError, setOperationError] = useState("");
+  const [previewDirty, setPreviewDirty] = useState(false), [leaveQuestion, setLeaveQuestion] = useState<Question | null>(null);
   const listRef = useRef(list); listRef.current = list;
   const wasVisible = useRef(false);
   const treeRef = useRef(tree); treeRef.current = tree;
@@ -84,20 +87,34 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
   const refresh = () => { for (const path of tree.expanded) load(path); };
   const copy = async (text: string, what: string) => { const ok = await writeClipboard(text, navigator.clipboard); setCopied(ok ? `${what} copied` : "Clipboard unavailable"); window.setTimeout(() => setCopied(""), 1600); };
   const addToChat = (path: string) => { if (paneId) window.dispatchEvent(new CustomEvent("deck:insert-composer", { detail: { paneId, text: `\`${relative(root, path)}\`` } })); };
-  const openPreview = (path: string, changes = false, line: number | null = null) => { setPreviewPath(path); setPreviewView(changes ? "changes" : "file"); setSearchHighlightLine(line); };
+  /** Runs `action` now, or after the user agrees to drop unsaved edits in the open preview. */
+  const confirmLeave = (action: () => void) => {
+    if (!previewDirty || !previewPath) { action(); return; }
+    setLeaveQuestion({ title: `Discard unsaved changes to ${previewPath.split("/").pop()}?`, body: "Your edits to this file haven't been saved.", action: "Discard", onConfirm: () => { setPreviewDirty(false); action(); } });
+  };
+  const openPreviewNow = (path: string, changes = false, line: number | null = null) => { setPreviewPath(path); setPreviewView(changes ? "changes" : "file"); setSearchHighlightLine(line); };
+  const openPreview = (path: string, changes = false, line: number | null = null) => {
+    if (path === previewPath && !changes) openPreviewNow(path, changes, line); else confirmLeave(() => openPreviewNow(path, changes, line));
+  };
+  const touchesPreview = (path: string) => !!previewPath && (previewPath === path || previewPath.startsWith(`${path}/`));
   const beginOperation = (kind: NonNullable<FileOperation>["kind"], path = root ?? "") => {
     const name = kind === "rename" ? path.split(/[\\/]/).pop() ?? "" : "";
     setOperation({ kind, path: kind === "rename" ? path : path || root || "", name }); setOperationError(""); setContext(null);
   };
   const submitOperation = async (event: React.FormEvent) => {
     event.preventDefault(); if (!operation || !backend) return;
+    if (operation.kind === "rename" && touchesPreview(operation.path) && previewDirty) { confirmLeave(() => void runOperation(operation)); return; }
+    void runOperation(operation);
+  };
+  const runOperation = async (operation: NonNullable<FileOperation>) => {
+    if (!backend) return;
     try {
       if (operation.kind === "create-file" || operation.kind === "create-folder") {
         const path = await backend.fileCreate(root ?? "", operation.path, operation.name, operation.kind === "create-folder");
         const parent = operation.path; setTree((current) => ({ ...current, expanded: new Set([...current.expanded, parent]) })); load(parent); setTree((current) => ({ ...current, selected: path }));
       } else {
         const path = await backend.fileRename(root ?? "", operation.path, operation.name);
-        if (previewPath === operation.path) setPreviewPath(path);
+        if (previewPath === operation.path) { setPreviewDirty(false); setPreviewPath(path); }
         const parent = operation.path.slice(0, operation.path.lastIndexOf("/")) || root!; load(parent);
       }
       setOperation(null); setOperationError("");
@@ -109,8 +126,8 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
     catch (error) { setOperationError(String(error)); }
   };
   const trashPath = async (path: string) => {
-    if (!backend || !window.confirm(`Move ${relative(root, path)} to Trash?`)) return;
-    try { await backend.fileTrash(root ?? "", path); if (previewPath === path) setPreviewPath(null); const parent = path.slice(0, path.lastIndexOf("/")) || root!; load(parent); setCopied("Moved to Trash"); }
+    if (!backend || !window.confirm(`Move ${relative(root, path)} to Trash?${previewDirty && touchesPreview(path) ? " Unsaved changes in the open file will be lost." : ""}`)) return;
+    try { await backend.fileTrash(root ?? "", path); if (touchesPreview(path)) { setPreviewDirty(false); setPreviewPath(null); } const parent = path.slice(0, path.lastIndexOf("/")) || root!; load(parent); setCopied("Moved to Trash"); }
     catch (error) { setOperationError(String(error)); }
   };
   const showFind = (mode: FindMode = "name", folder: string | null = null) => { setFindOpen(true); setFindMode(mode); setSearchFolder(folder); setFindQuery(""); setNameResults(null); setTextResults(null); setSearchError(""); requestAnimationFrame(() => findInput.current?.focus()); };
@@ -189,8 +206,9 @@ export function RightFiles({ root, list, diff, onOpen, backend = null, local = t
         {findMode === "text" && textResults && <TextSearchResults result={textResults} query={findQuery} onOpen={(path, line) => revealSearchResult(path, line)} />}
       </div> : <ul className="right-files" role="tree" aria-label="Files" onKeyDown={activateKey}>{rows.map(fileRow)}</ul>}
     </div>
-    {previewPath && <><div className="right-files-resize" role="separator" aria-orientation="horizontal" aria-label="Resize file preview" onPointerDown={(event) => { const start = event.clientY, height = previewHeight; const move = (next: PointerEvent) => setPreviewHeight(Math.max(160, Math.min(Math.floor(window.innerHeight * .7), height + start - next.clientY))); const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); }; window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true }); }} /><div style={{ height: previewHeight, minHeight: 160, flex: "0 0 auto" }}><FilePreviewPanel key={previewPath} root={root} path={previewPath} backend={backend ?? ({ fileRead: async () => { throw new Error("Preview unavailable"); }, openTarget: async () => { throw new Error("Open unavailable"); } } as unknown as Backend)} diff={diff} local={local} paneId={paneId} view={previewView} onView={setPreviewView} onClose={() => setPreviewPath(null)} highlightLine={searchHighlightLine} /></div></>}
+    {previewPath && <><div className="right-files-resize" role="separator" aria-orientation="horizontal" aria-label="Resize file preview" onPointerDown={(event) => { const start = event.clientY, height = previewHeight; const move = (next: PointerEvent) => setPreviewHeight(Math.max(160, Math.min(Math.floor(window.innerHeight * .7), height + start - next.clientY))); const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); }; window.addEventListener("pointermove", move); window.addEventListener("pointerup", end, { once: true }); }} /><div style={{ height: previewHeight, minHeight: 160, flex: "0 0 auto" }}><FilePreviewPanel key={previewPath} root={root} path={previewPath} backend={backend ?? ({ fileRead: async () => { throw new Error("Preview unavailable"); }, openTarget: async () => { throw new Error("Open unavailable"); } } as unknown as Backend)} diff={diff} local={local} paneId={paneId} view={previewView} onView={(next) => next === "file" ? setPreviewView(next) : confirmLeave(() => setPreviewView(next))} onClose={() => confirmLeave(() => setPreviewPath(null))} highlightLine={searchHighlightLine} onDirtyChange={setPreviewDirty} onSaved={() => onRefresh?.()} /></div></>}
     {context && <div className="right-files-context" role="menu" aria-label={`${context.row.name} actions`} style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}>{contextActions.map((item) => <button role="menuitem" key={item.label} onClick={() => { setContext(null); item.action(); }}>{item.label}</button>)}</div>}
+    {leaveQuestion && createPortal(<ConfirmDialog question={leaveQuestion} onCancel={() => setLeaveQuestion(null)} />, document.body)}
     {operation && <div className="right-files-operation-backdrop"><form className="right-files-operation" role="dialog" aria-modal="true" aria-labelledby="right-files-operation-title" onSubmit={submitOperation}><h3 id="right-files-operation-title">{operation.kind === "rename" ? "Rename" : operation.kind === "create-file" ? "New file" : "New folder"}</h3><label>Name<input autoFocus value={operation.name} onChange={(event) => setOperation({ ...operation, name: event.target.value })} /></label>{operationError && <p role="alert">{operationError}</p>}<div><button type="button" onClick={() => setOperation(null)}>Cancel</button><button type="submit" disabled={!operation.name.trim()}>Save</button></div></form></div>}
   </div>;
 }
