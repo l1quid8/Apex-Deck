@@ -84,6 +84,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     worktreeList: (path) => call<WorktreeList>("worktree_list", { path }),
     worktreeAdd: (path, request) => call<Worktree>("worktree_add", { path, ...request }),
     worktreeRemove: (path, worktree, force) => call("worktree_remove", { path, worktree, force }),
+    worktreeForget: (path, worktree, force) => call("worktree_forget", { path, worktree, force }),
     worktreePrune: (path) => call("worktree_prune", { path }),
     roomPost: (id, text, interactiveAnswers) => call("room_post", { id, text, ...(interactiveAnswers === undefined ? {} : { interactive_answers: interactiveAnswers }) }),
     roomTargets: (id, text) => call<string[]>("room_targets", { id, text }),

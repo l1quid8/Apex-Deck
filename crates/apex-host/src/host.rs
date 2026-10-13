@@ -1107,6 +1107,10 @@ impl Host {
         let task_dir = self.paths.data.join("apex-agent").join("tasks");
         tokio::task::spawn_blocking(move || worktrees::remove(Path::new(&path), Path::new(&target), force, &task_dir)).await.map_err(|e| e.to_string())?
     }
+    pub async fn worktree_forget(&self, path: String, target: String, force: bool) -> Result<(), String> {
+        let task_dir = self.paths.data.join("apex-agent").join("tasks");
+        tokio::task::spawn_blocking(move || worktrees::forget(Path::new(&path), Path::new(&target), force, &task_dir)).await.map_err(|e| e.to_string())?
+    }
     pub async fn worktree_prune(&self, path: String) -> Result<(), String> {
         tokio::task::spawn_blocking(move || worktrees::prune(Path::new(&path))).await.map_err(|e| e.to_string())?
     }

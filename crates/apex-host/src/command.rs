@@ -152,6 +152,7 @@ pub enum Command {
     WorktreeList { path: String },
     WorktreeAdd { path: String, branch: String, new_branch: bool, base: Option<String>, folder: Option<String> },
     WorktreeRemove { path: String, worktree: String, force: bool },
+    WorktreeForget { path: String, worktree: String, force: bool },
     WorktreePrune { path: String },
     QuitHeard { request: u64 },
     /// Confirms the quit; the shell that owns the window does the exiting.
@@ -360,6 +361,7 @@ impl Host {
             WorktreeList { path } => reply(self.worktree_list(path).await?),
             WorktreeAdd { path, branch, new_branch, base, folder } => reply(self.worktree_add(path, crate::worktrees::AddRequest { branch, new_branch, base, folder }).await?),
             WorktreeRemove { path, worktree, force } => reply(self.worktree_remove(path, worktree, force).await?),
+            WorktreeForget { path, worktree, force } => reply(self.worktree_forget(path, worktree, force).await?),
             WorktreePrune { path } => reply(self.worktree_prune(path).await?),
             QuitHeard { request } => { self.quit_heard(request); reply(()) },
             QuitApp {} => { self.quit_confirm(); reply(()) },
@@ -444,7 +446,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 136);
+        assert_eq!(names.len(), 137);
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
         assert!(names.contains(&"personal_send".to_string()));

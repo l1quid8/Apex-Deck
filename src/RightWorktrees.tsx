@@ -9,7 +9,7 @@ const GENERIC_ERROR = "Couldn't manage worktrees. Check the service and try agai
 
 export function worktreeErrorMessage(reason: unknown): string {
   const message = String((reason as Error)?.message ?? reason);
-  return /unknown variant [`'\"]?worktree_(?:list|add|remove|prune)|unknown command.*worktree_(?:list|add|remove|prune)|unsupported.*worktree_(?:list|add|remove|prune)/i.test(message)
+  return /unknown variant [`'\"]?worktree_(?:list|add|remove|forget|prune)|unknown command.*worktree_(?:list|add|remove|forget|prune)|unsupported.*worktree_(?:list|add|remove|forget|prune)/i.test(message)
     ? OLD_SERVICE
     : GENERIC_ERROR;
 }
@@ -20,7 +20,7 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
   const [busy, setBusy] = useState("");
   const [adding, setAdding] = useState(false);
   const [request, setRequest] = useState<WorktreeAdd>(initialRequest());
-  const [confirm, setConfirm] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{ path: string; action: "prune" | "remove" } | null>(null);
   const loadId = useRef(0);
   const load = async () => {
     if (!root || !backend) return;
@@ -37,11 +37,18 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
     catch (reason) { const message = worktreeErrorMessage(reason); setError(message); if (message === OLD_SERVICE) setAdding(false); }
     finally { setBusy(""); }
   };
+  const doPruneOne = async (path: string, force = false) => {
+    if (!root || !backend) return;
+    setBusy(path); setError(""); setConfirm(null);
+    try { await backend.worktreeForget(root, path, force); await load(); }
+    catch (reason) { const message = String((reason as Error)?.message ?? reason); if (message.startsWith("has-changes:")) setConfirm({ path, action: "prune" }); else { const safe = worktreeErrorMessage(reason); setError(safe); if (safe === OLD_SERVICE) setAdding(false); } }
+    finally { setBusy(""); }
+  };
   const doRemove = async (path: string, force = false) => {
     if (!root || !backend) return;
     setBusy(path); setError(""); setConfirm(null);
     try { await backend.worktreeRemove(root, path, force); await load(); }
-    catch (reason) { const message = String((reason as Error)?.message ?? reason); if (message.startsWith("has-changes:")) setConfirm(path); else { const safe = worktreeErrorMessage(reason); setError(safe); if (safe === OLD_SERVICE) setAdding(false); } }
+    catch (reason) { const message = String((reason as Error)?.message ?? reason); if (message.startsWith("has-changes:")) setConfirm({ path, action: "remove" }); else { const safe = worktreeErrorMessage(reason); setError(safe); if (safe === OLD_SERVICE) setAdding(false); } }
     finally { setBusy(""); }
   };
   const doPrune = async () => {
@@ -78,20 +85,28 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
     {!listing && !error && <p className="muted right-worktrees-empty">Loading worktrees…</p>}
     {error && !adding && <p className="right-worktrees-error" role="alert">{error}</p>}
     {listing && listing.items.length === 0 && <p className="muted right-worktrees-empty">No worktrees found.</p>}
-    {listing && <ul className="right-worktrees-list">{listing.items.map((item) => <WorktreeRow key={item.path} item={item} busy={busy === item.path} confirm={confirm === item.path} onOpen={onOpen} onRemove={(force) => void doRemove(item.path, force)} onCancel={() => setConfirm(null)} />)}</ul>}
+    {listing && <ul className="right-worktrees-list">{listing.items.map((item) => <WorktreeRow key={item.path} item={item} busy={busy === item.path} confirm={confirm?.path === item.path && confirm.action === "remove"} pruneConfirm={confirm?.path === item.path && confirm.action === "prune"} onOpen={onOpen} onRemove={(force) => void doRemove(item.path, force)} onPrune={(force) => { void doPruneOne(item.path, force); }} onCancel={() => setConfirm(null)} />)}</ul>}
     {listing?.items.some((item) => item.prunable) && <button type="button" className="right-worktrees-prune" onClick={() => void doPrune()} disabled={!!busy}>{busy === "prune" ? "Cleaning…" : "Clean up missing"}</button>}
   </section>;
 }
-export function WorktreeRow({ item, busy, confirm, onOpen, onRemove, onCancel }: { item: Worktree; busy: boolean; confirm: boolean; onOpen: (path: string) => void; onRemove: (force: boolean) => void; onCancel: () => void }) {
+export function WorktreeRow({ item, busy, confirm, pruneConfirm, onOpen, onRemove, onPrune, onCancel }: { item: Worktree; busy: boolean; confirm: boolean; pruneConfirm?: boolean; onOpen: (path: string) => void; onRemove: (force: boolean) => void; onPrune?: (force: boolean) => void; onCancel: () => void }) {
   const branch = item.branch ?? (item.head ? `detached · ${item.head.slice(0, 8)}` : "detached");
   const labels = [item.main && "Main", item.changes != null && item.changes > 0 && `Changes · ${item.changes}`, item.locked && "Locked", item.prunable && "Missing", item.task && "ApexAgent task"].filter(Boolean) as string[];
+  const actionable = !item.main && !item.task;
   return <li className="right-worktrees-row">
-    <div className="right-worktrees-heading"><strong>{branch}</strong><span className="right-worktrees-actions">
-      {confirm ? <><span className="right-worktrees-confirm">Has uncommitted changes</span><button type="button" onClick={() => onRemove(true)} disabled={busy}>Remove anyway</button><button type="button" onClick={onCancel}>Cancel</button></> : <>
+    <div className="right-worktrees-heading"><strong>{branch}</strong><div className="right-worktrees-actions">
+      {confirm ? <><span className="right-worktrees-confirm">Delete folder and uncommitted changes?</span><button type="button" onClick={() => onRemove(true)} disabled={busy}>Remove anyway</button><button type="button" onClick={onCancel}>Cancel</button></>
+      : pruneConfirm && onPrune ? <><span className="right-worktrees-confirm">Unregister worktree; keep files and changes?</span><button type="button" onClick={() => onPrune(true)} disabled={busy}>Prune anyway</button><button type="button" onClick={onCancel}>Cancel</button></> : <>
         <button type="button" onClick={() => onOpen(item.path)}>Open folder</button>
-        {!item.main && !item.task && !item.prunable && <button type="button" onClick={() => onRemove(false)} disabled={busy}>Remove</button>}
+        {actionable && <details className="right-worktrees-menu" onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.open = false; }}>
+          <summary aria-label="Worktree actions" title="Worktree actions">⋯</summary>
+          <div className="right-worktrees-menu-items">
+            {onPrune && <button type="button" title="Unregister worktree and keep files on disk" disabled={busy || item.locked} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onPrune(false); }}>Prune</button>}
+            {!item.prunable && <button type="button" title="Delete folder and unregister worktree" disabled={busy || item.locked} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onRemove(false); }}>Remove</button>}
+          </div>
+        </details>}
       </>}
-    </span></div>
+    </div></div>
     <div className="right-worktrees-meta"><span title={item.path}>{shorten(item.path)}</span>{labels.map((label) => <span key={label} className="right-worktrees-label">{label}</span>)}</div>
   </li>;
 }

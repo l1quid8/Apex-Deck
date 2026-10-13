@@ -152,3 +152,10 @@
 .right-worktrees-confirm, .right-worktrees-error { color: var(--warn, #e0a030); font-size: 12px; }
 .right-worktrees-empty { padding: 12px 0; }
 .right-worktrees-prune { margin-top: 8px; }
+
+.right-worktrees-menu { position: relative; }
+.right-worktrees-menu summary { list-style: none; cursor: pointer; color: var(--accent); padding: 4px 8px; border-radius: 4px; }
+.right-worktrees-menu summary::-webkit-details-marker { display: none; }
+.right-worktrees-menu summary:hover { background: var(--hover); }
+.right-worktrees-menu-items { position: absolute; right: 0; top: 100%; z-index: 55; min-width: 110px; padding: 4px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,.3); }
+.right-worktrees-menu-items button { display: block; width: 100%; text-align: left; }

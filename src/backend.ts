@@ -112,6 +112,7 @@ export interface Backend {
   worktreeList(path: string): Promise<WorktreeList>;
   worktreeAdd(path: string, request: WorktreeAdd): Promise<import("./types").Worktree>;
   worktreeRemove(path: string, worktree: string, force: boolean): Promise<void>;
+  worktreeForget(path: string, worktree: string, force: boolean): Promise<void>;
   worktreePrune(path: string): Promise<void>;
   roomPost(id: string, text: string, interactiveAnswers?: boolean): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
@@ -743,6 +744,7 @@ function demoBackend(): Backend {
     worktreeList: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreeAdd: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreeRemove: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
+    worktreeForget: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     worktreePrune: async () => { throw new Error("Worktrees aren't available in the browser demo"); },
     roomTargets: async (id, text) => targetsFor(id, text),
     roomPost: async (id, text) => postPreview(id, text, targetsFor(id, text)),

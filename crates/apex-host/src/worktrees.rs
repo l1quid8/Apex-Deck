@@ -218,6 +218,9 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
 }
 pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
     let state = list(project, task_dir)?;
+    if std::fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("The worktree folder was replaced.".into());
+    }
     let target = fs_canonical(target).unwrap_or_else(|| target.to_path_buf());
     let row = state
         .items
@@ -245,6 +248,46 @@ pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
             error
         }
     })
+}
+
+/// Unregister only the selected worktree, retaining its working files.
+/// A separate command prevents older hosts from interpreting Prune as deletion.
+pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
+    let state = list(project, task_dir)?;
+    let row = state.items.iter().find(|w| Path::new(&w.path) == target)
+        .ok_or("That folder is not a worktree for this project.")?;
+    if row.main { return Err("The main checkout can't be removed here.".into()); }
+    if row.task { return Err("ApexAgent manages this worktree.".into()); }
+    if row.locked { return Err("Unlock this worktree before pruning it.".into()); }
+    if !force && row.changes.unwrap_or(0) > 0 {
+        return Err("has-changes:Unregister this worktree and keep its files?".into());
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(target) {
+        if !meta.is_dir() || meta.file_type().is_symlink() { return Err("The worktree folder was replaced.".into()); }
+    }
+    let common = git(project, &["rev-parse".into(), "--path-format=absolute".into(), "--git-common-dir".into()])?;
+    let registry = Path::new(common.trim()).join("worktrees");
+    let entries = std::fs::read_dir(&registry).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+        let admin = entry.path();
+        let gitdir = std::fs::read_to_string(admin.join("gitdir")).map_err(|e| e.to_string())?;
+        if Path::new(gitdir.trim()) != target.join(".git") { continue; }
+        if admin.join("locked").exists() { return Err("Unlock this worktree before pruning it.".into()); }
+        let pointer = target.join(".git");
+        if let Ok(meta) = std::fs::symlink_metadata(&pointer) {
+            if !meta.is_file() || meta.file_type().is_symlink() { return Err("The worktree Git pointer was replaced.".into()); }
+            let contents = std::fs::read_to_string(&pointer).map_err(|e| e.to_string())?;
+            if contents.trim().strip_prefix("gitdir: ").map(Path::new) != Some(admin.as_path()) {
+                return Err("The worktree Git pointer was replaced.".into());
+            }
+            std::fs::remove_file(pointer).map_err(|e| e.to_string())?;
+        }
+        std::fs::remove_dir_all(admin).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err("Could not find the selected worktree registration.".into())
 }
 pub fn prune(project: &Path) -> Result<(), String> {
     git(project, &["worktree".into(), "prune".into()]).map(|_| ())
@@ -396,6 +439,115 @@ mod tests {
         assert!(remove(&root, &root, false, &tasks)
             .unwrap_err()
             .contains("main checkout"));
+    }
+    #[test]
+    fn prune_one_keeps_files_and_only_unregisters_selected() {
+        let (_tmp, root, tasks) = repo();
+        let wt = add(&root, AddRequest { branch: "keep-files".into(), new_branch: true, base: None, folder: None }).unwrap();
+        let other = add(&root, AddRequest { branch: "keep-registration".into(), new_branch: true, base: None, folder: None }).unwrap();
+        fs::write(Path::new(&wt.path).join("notes"), "unsaved work").unwrap();
+        forget(&root, Path::new(&wt.path), true, &tasks).unwrap();
+        assert_eq!(fs::read_to_string(Path::new(&wt.path).join("notes")).unwrap(), "unsaved work");
+        assert_eq!(fs::read_to_string(Path::new(&wt.path).join("seed")).unwrap(), "seed");
+        let rows = list(&root, &tasks).unwrap();
+        assert!(!rows.items.iter().any(|r| r.path == wt.path));
+        assert!(rows.items.iter().any(|r| r.path == other.path));
+    }
+    #[test]
+    fn prune_one_protects_locked_main_and_task_worktrees() {
+        let (_tmp, root, tasks) = repo();
+        let wt = add(&root, AddRequest { branch: "prune-locked".into(), new_branch: true, base: None, folder: None }).unwrap();
+        git(&root, &["worktree".into(), "lock".into(), wt.path.clone()]).unwrap();
+        assert!(forget(&root, Path::new(&wt.path), true, &tasks).is_err());
+        assert!(forget(&root, &root, true, &tasks).is_err());
+        assert_eq!(fs::read_to_string(Path::new(&wt.path).join("seed")).unwrap(), "seed");
+        let task = add(&root, AddRequest { branch: "prune-task".into(), new_branch: true, base: None, folder: Some(tasks.join("job").to_string_lossy().into_owned()) }).unwrap();
+        assert!(forget(&root, Path::new(&task.path), true, &tasks).is_err());
+        assert!(Path::new(&task.path).exists());
+    }
+    #[test]
+    fn prune_one_missing_does_not_prune_other_missing_worktrees() {
+        let (_tmp, root, tasks) = repo();
+        let wt = add(&root, AddRequest { branch: "missing-one".into(), new_branch: true, base: None, folder: None }).unwrap();
+        let other = add(&root, AddRequest { branch: "missing-two".into(), new_branch: true, base: None, folder: None }).unwrap();
+        fs::remove_dir_all(&wt.path).unwrap();
+        fs::remove_dir_all(&other.path).unwrap();
+        forget(&root, Path::new(&wt.path), false, &tasks).unwrap();
+        let rows = list(&root, &tasks).unwrap();
+        assert!(!rows.items.iter().any(|r| r.path == wt.path));
+        assert!(rows.items.iter().any(|r| r.path == other.path));
+    }
+    #[test]
+    fn delete_removes_folder_and_unregisters() {
+        let (_tmp, root, tasks) = repo();
+        let wt = add(
+            &root,
+            AddRequest {
+                branch: "gone".into(),
+                new_branch: true,
+                base: None,
+                folder: None,
+            },
+        )
+        .unwrap();
+        assert!(Path::new(&wt.path).exists());
+        remove(&root, Path::new(&wt.path), false, &tasks).unwrap();
+        assert!(!Path::new(&wt.path).exists());
+        assert!(!list(&root, &tasks)
+            .unwrap()
+            .items
+            .iter()
+            .any(|w| w.path == wt.path));
+    }
+    #[test]
+    fn delete_requires_force_for_dirty_and_protects_main_and_task() {
+        let (_tmp, root, tasks) = repo();
+        let wt = add(
+            &root,
+            AddRequest {
+                branch: "messy".into(),
+                new_branch: true,
+                base: None,
+                folder: None,
+            },
+        )
+        .unwrap();
+        fs::write(Path::new(&wt.path).join("untracked"), "x").unwrap();
+        assert!(remove(&root, Path::new(&wt.path), false, &tasks)
+            .unwrap_err()
+            .starts_with("has-changes:"));
+        assert!(Path::new(&wt.path).exists());
+        remove(&root, Path::new(&wt.path), true, &tasks).unwrap();
+        assert!(!Path::new(&wt.path).exists());
+        assert!(remove(&root, &root, true, &tasks)
+            .unwrap_err()
+            .contains("main checkout"));
+    }
+    #[test]
+    fn delete_respects_locked_worktrees_even_with_force() {
+        let (_tmp, root, tasks) = repo();
+        let wt = add(&root, AddRequest {
+            branch: "locked".into(), new_branch: true, base: None, folder: None,
+        }).unwrap();
+        git(&root, &["worktree".into(), "lock".into(), wt.path.clone()]).unwrap();
+        assert!(remove(&root, Path::new(&wt.path), true, &tasks).is_err());
+        assert_eq!(fs::read_to_string(Path::new(&wt.path).join("seed")).unwrap(), "seed");
+        assert!(list(&root, &tasks).unwrap().items.iter().any(|w| w.path == wt.path && w.locked));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn delete_does_not_follow_a_replaced_worktree_symlink() {
+        let (tmp, root, tasks) = repo();
+        let wt = add(&root, AddRequest {
+            branch: "replaced".into(), new_branch: true, base: None, folder: None,
+        }).unwrap();
+        let elsewhere = tmp.path().join("unrelated");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::write(elsewhere.join("keep"), "unrelated work").unwrap();
+        fs::remove_dir_all(&wt.path).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &wt.path).unwrap();
+        assert!(remove(&root, Path::new(&wt.path), false, &tasks).is_err());
+        assert_eq!(fs::read_to_string(elsewhere.join("keep")).unwrap(), "unrelated work");
     }
     #[test]
     fn protects_task_and_prunes_missing() {

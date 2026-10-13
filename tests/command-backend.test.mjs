@@ -76,6 +76,7 @@ const COMMANDS = [
   ['worktreeList', ['/repo'], 'worktree_list', { path: '/repo' }],
   ['worktreeAdd', ['/repo', { branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }], 'worktree_add', { path: '/repo', branch: 'feature/x', newBranch: true, base: 'main', folder: '/repo-wt' }],
   ['worktreeRemove', ['/repo', '/repo-wt', true], 'worktree_remove', { path: '/repo', worktree: '/repo-wt', force: true }],
+  ['worktreeForget', ['/repo', '/repo-wt', true], 'worktree_forget', { path: '/repo', worktree: '/repo-wt', force: true }],
   ['worktreePrune', ['/repo'], 'worktree_prune', { path: '/repo' }],
   ['roomPost', ['t', 'hi'], 'room_post', { id: 't', text: 'hi' }],
   ['roomPost', ['t', 'hi', true], 'room_post', { id: 't', text: 'hi', interactive_answers: true }],

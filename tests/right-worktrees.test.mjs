@@ -25,6 +25,35 @@ test('main and ApexAgent task rows cannot be removed', () => {
   }
 });
 
+test('present rows offer Prune and Remove; missing rows offer Prune only', () => {
+  const noop = () => {};
+  const present = render(React.createElement(WorktreeRow, { item: row(), busy: false, confirm: false, onOpen: noop, onRemove: noop, onPrune: noop, onCancel: noop }));
+  assert.match(present, /<summary[^>]*aria-label="Worktree actions"/);
+  assert.match(present, /<details[^>]*>[\s\S]*>Prune<[\s\S]*>Remove<[\s\S]*<\/details>/);
+  assert.match(present, />Prune</);
+  assert.match(present, />Remove</);
+  const missing = render(React.createElement(WorktreeRow, { item: row({ prunable: true }), busy: false, confirm: false, onOpen: noop, onRemove: noop, onPrune: noop, onCancel: noop }));
+  assert.match(missing, />Prune</);
+  assert.doesNotMatch(missing, />Remove</);
+});
+
+test('main and ApexAgent task rows offer neither Prune nor Remove', () => {
+  const noop = () => {};
+  for (const item of [row({ main: true }), row({ task: true })]) {
+    const html = render(React.createElement(WorktreeRow, { item, busy: false, confirm: false, onOpen: noop, onRemove: noop, onPrune: noop, onCancel: noop }));
+    assert.doesNotMatch(html, />Remove</);
+    assert.doesNotMatch(html, />Prune</);
+  }
+});
+
+test('has-changes confirmation retries pruning with force', () => {
+  let force;
+  const tree = WorktreeRow({ item: row(), busy: false, confirm: false, pruneConfirm: true, onOpen() {}, onRemove() {}, onPrune(value) { force = value; }, onCancel() {} });
+  const find = (node) => { if (!node || typeof node !== 'object') return null; if (node.type === 'button' && node.props.children === 'Prune anyway') return node; for (const child of React.Children.toArray(node.props?.children)) { const found = find(child); if (found) return found; } return null; };
+  find(tree).props.onClick();
+  assert.equal(force, true);
+});
+
 test('has-changes confirmation retries removal with force', () => {
   let force;
   const tree = WorktreeRow({ item: row(), busy: false, confirm: true, onOpen() {}, onRemove(value) { force = value; }, onCancel() {} });
