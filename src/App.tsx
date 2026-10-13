@@ -73,7 +73,7 @@ import { RightDashboard } from "./RightDashboard";
 import { RightBrowser } from "./RightBrowser";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
-import { defaultPanel, loadPanel, openTab, parsePanel, savePanel, type RightPanelState } from "./rightPanelModel";
+import { closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -333,7 +333,7 @@ export function App() {
   const [panel, setPanel] = useState<RightPanelState>(loadPanel);
   useEffect(() => savePanel(panel), [panel]);
   const detailsOpen = panel.open;
-  const setDetailsOpen = (open: boolean) => setPanel((p) => ({ ...p, open }));
+  const setDetailsOpen = (open: boolean) => setPanel((p) => open ? { ...p, open } : closePanel(p));
   const asideRef = useRef<HTMLElement | null>(null);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
   const [detailsSlot, setDetailsSlot] = useState<HTMLElement | null>(null);

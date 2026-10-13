@@ -5,7 +5,8 @@
 
 export type TabKind = "dashboard" | "tasks" | "details" | "browser" | "files" | "worktrees";
 export interface PanelTab { id: string; kind: TabKind; url?: string; usedAt: number }
-export interface RightPanelState { open: boolean; tabs: PanelTab[]; active: string }
+/** `full` fills the work area; it only means anything while `open`. */
+export interface RightPanelState { open: boolean; full: boolean; tabs: PanelTab[]; active: string }
 
 export const FIXED: TabKind[] = ["dashboard", "tasks"];
 export const KINDS: TabKind[] = ["dashboard", "tasks", "details", "browser", "files", "worktrees"];
@@ -15,7 +16,7 @@ const STORAGE_KEY = "apex-deck.right-panel.v1";
 const fixedTab = (kind: TabKind): PanelTab => ({ id: kind, kind, usedAt: 0 });
 
 export function defaultPanel(): RightPanelState {
-  return { open: false, tabs: [fixedTab("dashboard"), fixedTab("tasks"), fixedTab("details")], active: "dashboard" };
+  return { open: false, full: false, tabs: [fixedTab("dashboard"), fixedTab("tasks"), fixedTab("details")], active: "dashboard" };
 }
 
 let seq = 0;
@@ -36,6 +37,16 @@ export function openTab(s: RightPanelState, kind: TabKind, now: number, url?: st
   }
   const tab: PanelTab = { id: kind === "browser" ? newId(kind, now) : kind, kind, usedAt: now, ...(url !== undefined ? { url } : {}) };
   return { ...s, open: true, tabs: [...tabs, tab], active: tab.id };
+}
+
+/** Fill the work area, or go back to docked. Filling also opens a closed panel. */
+export function setFull(s: RightPanelState, full: boolean): RightPanelState {
+  return { ...s, full, open: full ? true : s.open };
+}
+
+/** Hide the panel. It comes back docked, so full screen is cleared too. */
+export function closePanel(s: RightPanelState): RightPanelState {
+  return { ...s, open: false, full: false };
 }
 
 export function closeTab(s: RightPanelState, id: string): RightPanelState {
@@ -81,7 +92,7 @@ export function parsePanel(raw: string | null): RightPanelState {
   const browsers = kept.filter((t) => t.kind === "browser").sort((a, b) => b.usedAt - a.usedAt).slice(0, BROWSER_CAP).map((t) => t.id);
   const tabs = [fixedTab("dashboard"), fixedTab("tasks"), ...kept.filter((t) => t.kind !== "browser" || browsers.includes(t.id))];
   const active = typeof p.active === "string" && tabs.some((t) => t.id === p.active) ? p.active : "dashboard";
-  return { open: p.open === true, tabs, active };
+  return { open: p.open === true, full: p.full === true, tabs, active };
 }
 
 export function loadPanel(): RightPanelState {
