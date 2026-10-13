@@ -671,6 +671,19 @@ function createWindow(host, beside) {
       rememberWindows();
     }
   });
+  // Unsaved edits in the file editor ask the page to stay open. Electron blocks it
+  // silently unless the app answers, so ask here.
+  win.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      message: 'Discard unsaved changes?',
+      detail: "A file you're editing has changes that haven't been saved.",
+      buttons: ['Leave', 'Stay'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (choice === 0) event.preventDefault();
+  });
   win.on('focus', () => Menu.setApplicationMenu(menu()));
   if (smoke) {
     // On screen, so pages can be captured, but invisible, click-through and
