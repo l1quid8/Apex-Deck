@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { HostEntry, HostsApi } from "./backend";
 import { classifyIdentity } from "./hostFacts.ts";
 import { ipcWords as words } from "./electronShell";
@@ -117,7 +118,7 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
 
   const title = add ? "Add a server" : `Edit connection · ${label}`;
   const testing = test?.state === "testing";
-  return (
+  return createPortal(
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <form className="confirm connection-dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <strong id="connection-title">{title}</strong>
@@ -141,6 +142,7 @@ export function ConnectionDialog({ mode: start, hosts: known, api, uses = "", on
             : <button type="submit" className="primary" data-act="save" disabled={saving || testing || taken || (add && !!test?.known) || !name.trim() || !ssh.trim() || (!add && !api.update)}>{add ? "Add server" : "Save"}</button>}
         </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }

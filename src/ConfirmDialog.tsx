@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 export interface Question {
   title: string;
@@ -26,7 +27,7 @@ export function ConfirmDialog({ question, onCancel }: { question: Question; onCa
       if (opener.current instanceof HTMLElement && opener.current.isConnected) opener.current.focus();
     };
   }, []);
-  return (
+  return createPortal(
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
       <div className="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby={question.rows?.length ? "confirm-body confirm-rows" : "confirm-body"}>
         <strong id="confirm-title">{question.title}</strong>
@@ -41,6 +42,7 @@ export function ConfirmDialog({ question, onCancel }: { question: Question; onCa
           <button className="danger" onClick={() => { onCancel(); question.onConfirm(); }}>{question.action}</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

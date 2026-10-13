@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 
 import type { Backend } from "./backend";
 import { useHostConnection } from "./useHostConnection";
@@ -16,7 +17,7 @@ export function PathPrompt({ backend }: { backend: Backend }) {
   if (!request) return null;
   let target: Backend;
   try { target = backend.machines?.get(request.hostId) ?? backend; }
-  catch (error) { return <div className="confirm-backdrop"><div role="alert">{String(error)}<button onClick={() => pathPrompt.answer(null)}>Cancel</button></div></div>; }
+  catch (error) { return createPortal(<div className="confirm-backdrop"><div role="alert">{String(error)}<button onClick={() => pathPrompt.answer(null)}>Cancel</button></div></div>, document.body); }
   return <HostPathPrompt key={request.hostId ?? "local"} backend={target} request={request} />;
 }
 function HostPathPrompt({ backend, request }: { backend: Backend; request: PathRequest }) {
@@ -88,7 +89,7 @@ function HostPathPrompt({ backend, request }: { backend: Backend; request: PathR
     }
     if (pathPrompt.get() === request) pathPrompt.answer(chosen);
   };
-  return (
+  return createPortal(
     <div className="confirm-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) cancel(); }}>
       <form className="confirm path-prompt" role="dialog" aria-modal="true" aria-labelledby="path-prompt-title"
         onSubmit={(event) => { event.preventDefault(); void choose(); }}
@@ -137,6 +138,7 @@ function HostPathPrompt({ backend, request }: { backend: Backend; request: PathR
           <button type="submit" className="primary" disabled={!chosen || loading || !hostCanMutate(status)}>{typeOnly ? (loading ? "Checking…" : "Choose") : request.kind === "directory" ? "Choose this folder" : "Choose"}</button>
         </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }

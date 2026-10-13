@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { Backend } from "./backend";
 import { TIERS, threadsText, type PairedDevice, type Tier } from "./pairedDevices";
@@ -91,7 +92,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
     }
   };
 
-  return (
+  return createPortal(
     <div className="confirm-backdrop">
       <div className="confirm pair-sheet" role="dialog" aria-modal="true" aria-labelledby="pair-title">
         <strong id="pair-title">Pair a phone</strong>
@@ -162,6 +163,7 @@ export function PairPhoneSheet({ backend, onClose, onPaired }: { backend: Backen
           {!claim && <button onClick={onClose}>{state.kind === "paired" ? "Done" : "Cancel"}</button>}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
