@@ -27,6 +27,9 @@ export function developmentDataDir(repo, env = process.env, home = os.homedir())
   return path.join(home, '.apex-deck', 'dev', `${label}-${identity}`);
 }
 
+/** Keep the development daemon's socket separate from an installed service. */
+export const developmentHostDataDir = (dataDir) => `${dataDir}-checkout-host`;
+
 /**
  * `serve` that stops when the app does; `--remote` when Remote access is on,
  * so paired phones can reach it from anywhere; a data folder only when one is set.

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { daemonBinary, serveArgs, dataDirArgs, developmentDataDir, remoteAccessSaved, saveRemoteAccess, waitForSocket } from '../desktop/sidecar.mjs';
+import { daemonBinary, serveArgs, dataDirArgs, developmentDataDir, developmentHostDataDir, remoteAccessSaved, saveRemoteAccess, waitForSocket } from '../desktop/sidecar.mjs';
 
 test('waitForSocket resolves once something listens, and again once it has stopped', async () => {
   const dir = fs.mkdtempSync('/tmp/deck-wait-');
@@ -37,13 +37,14 @@ test('serve exits with the app, and names a data folder only when one is set', (
   assert.deepEqual(dataDirArgs('/tmp/d'), ['data-dir', '--data-dir', '/tmp/d']);
 });
 
-test('development data is stable per checkout and honors an explicit data folder', () => {
+test('development data is stable per checkout and the host data folder is isolated from installed service data', () => {
   const env = {};
   const a = developmentDataDir('/work/deck-a', env, '/users/tester');
   assert.equal(a, developmentDataDir('/work/deck-a/.', env, '/users/tester'));
   assert.notEqual(a, developmentDataDir('/other/deck-a', env, '/users/tester'));
   assert.match(a, /^\/users\/tester\/\.apex-deck\/dev\/deck-a-[a-f0-9]{12}$/);
   assert.equal(developmentDataDir('/work/deck-a', { APEX_DECK_DATA_DIR: '/tmp/shared' }, '/users/tester'), '/tmp/shared');
+  assert.equal(developmentHostDataDir('/tmp/shared'), '/tmp/shared-checkout-host');
 });
 
 test('with remote access on, serve adds --remote; off, it does not', () => {
