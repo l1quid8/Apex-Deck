@@ -520,11 +520,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   useEffect(() => { if (showChanges) refreshDiff.current(); }, [showChanges]);
   /** Scope the changes panel to one reply's files, set by its strip. Null shows everything. */
   const [turnPaths, setTurnPaths] = useState<string[] | null>(null);
+  /** Which file to auto-expand in the changes panel after a strip file click. Null expands none. */
+  const [focusPath, setFocusPath] = useState<string | null>(null);
   /** Files each bot reply changed, from the change events' author and round offset. Model-agnostic. */
   const turnFiles = useMemo(() => turnFilesFor(messagesOf(entries), changes), [entries, changes]);
-  const openTurnDiff = (seq: number) => {
+  const openTurnDiff = (seq: number, path?: string) => {
     const files = turnFiles.get(seq) ?? [];
     setTurnPaths(files.map((file) => file.path));
+    setFocusPath(path ?? null);
     details?.show("changes");
     loadDiff();
   };
@@ -1644,7 +1647,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         setText(""); return exportAs(command.format);
 
       case "diff":
-        setText(""); setTurnPaths(null); details?.show("changes"); loadDiff(); return;
+        setText(""); setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); return;
       case "plan":
         setText(""); void setPlan(!planOn); return;
       case "image": {
@@ -2771,7 +2774,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${panel ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={panel !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>
         <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
       </button>}
-      {changes.length > 0 && <button className="ghost small" aria-label={`Changes · ${changedFiles}`} title="Changes" onClick={() => { setTurnPaths(null); details?.show("changes"); loadDiff(); }}>
+      {changes.length > 0 && <button className="ghost small" aria-label={`Changes · ${changedFiles}`} title="Changes" onClick={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }}>
         <ChangesIcon /><span className="count-label">Changes · </span>{changedFiles}
       </button>}
     </div>
@@ -2848,7 +2851,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
         if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
       }} /> }
-      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} onClearScope={() => setTurnPaths(null)} />} />, details.slot)}
+      {!profileMode && details?.target === pane.id && details.open && details.slot && createPortal(<ThreadDetails host={details} title={pane.title} cwd={cwd} subtitle={[workspaceName, participants.length === 1 ? "1 bot" : `${participants.length} bots`].filter(Boolean).join(" · ")} bots={botControls} form={modelForm} room={roomControls} allowed={allowedList} changes={<DiffPanel diff={diff} loading={diffLoading} order={participants.map(p => p.id)} onRefresh={loadDiff} nameOf={id => names.get(id) ?? id} colorOf={color} appearanceOf={appearance} onReveal={path => openTarget(path, true)} reviewers={reviewerRows(participants)} onReview={askForReview} paths={turnPaths} focusPath={focusPath} onClearScope={() => { setTurnPaths(null); setFocusPath(null); }} />} />, details.slot)}
       {profileMode && !adding && participants.length > 0 && <div className="chat-bar"><div className="chips">{addButton}</div></div>}
 
       {!profileMode && pins.length > 0 && pinControls}
@@ -2948,7 +2951,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 {(() => {
                   const files = turnFiles.get(entry.message.seq);
                   if (!files?.length) return null;
-                  return <ChangedFilesStrip files={files} onOpenFile={() => openTurnDiff(entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />;
+                  return <ChangedFilesStrip files={files} onOpenFile={(path) => openTurnDiff(entry.message.seq, path)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />;
                 })()}
               </div>
               {messageActions(entry.message)}
