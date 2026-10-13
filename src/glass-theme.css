@@ -397,7 +397,7 @@
 
 /* Files tab: the toolbar and preview paint an opaque panel fill that reads
    as white strips over the glass sidebar. Let the panel fill show through. */
-:root[data-deck-theme="glass"] :is(.right-files-toolbar, .right-files-preview) {
+:root[data-deck-theme="glass"] :is(.right-files-toolbar, .right-files-preview, .file-editor .cm-gutters) {
   background: transparent;
   border-color: var(--deck-edge);
 }
