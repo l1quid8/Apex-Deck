@@ -5,7 +5,7 @@
 //! reply. The flags below are the ones each tool documents for that mode;
 //! if a tool changes its flags, this is the only place to update.
 
-use apex_core::{Access, AgentTool};
+use apex_core::{Access, AgentTool, Speed};
 
 use crate::events::OutputFormat;
 
@@ -55,13 +55,22 @@ pub fn allow_reading(dir: &std::path::Path) {
 /// `access` is turned into the tool's own permission flags where the tool
 /// has them, so "read only" is enforced by the tool and not just requested
 /// in the prompt.
+/// Codex's name for a speed: its "Fast" tier is `priority`, and `default`
+/// is standard even when the person's config.toml picks priority.
+pub(crate) fn codex_service_tier(speed: Speed) -> &'static str {
+    match speed {
+        Speed::Standard => "default",
+        Speed::Fast => "priority",
+    }
+}
+
 pub fn agent_command(
     tool: AgentTool,
     model: Option<&str>,
     effort: Option<&str>,
     access: Access,
 ) -> (String, Vec<String>) {
-    agent_command_with(tool, model, effort, access, false)
+    agent_command_with(tool, model, effort, None, access, false)
 }
 
 /// `agent_command`, for a turn taken while the thread's Plan switch is on.
@@ -71,6 +80,7 @@ pub fn agent_command_with(
     tool: AgentTool,
     model: Option<&str>,
     effort: Option<&str>,
+    speed: Option<Speed>,
     access: Access,
     plan: bool,
 ) -> (String, Vec<String>) {
@@ -111,7 +121,13 @@ pub fn agent_command_with(
                 Access::Edits => push(&["--permission-mode", "acceptEdits"]),
                 Access::Full => push(&["--permission-mode", "bypassPermissions"]),
             }
-            push(&["--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--settings", r#"{"permissions":{"ask":["mcp__*"]}}"#]);
+            // Fast mode must be asked for on the command line in print mode;
+            // Claude's own saved fast setting does not apply there.
+            let settings = match speed {
+                Some(Speed::Fast) => r#"{"permissions":{"ask":["mcp__*"]},"fastMode":true}"#,
+                _ => r#"{"permissions":{"ask":["mcp__*"]}}"#,
+            };
+            push(&["--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--settings", settings]);
             "claude"
         }
         AgentTool::Codex => {
@@ -125,6 +141,9 @@ pub fn agent_command_with(
             if let Some(setting) = codex_effort.as_deref() {
                 // Config values are written as TOML, so the level is quoted.
                 push(&["-c", setting]);
+            }
+            if let Some(tier) = speed.map(codex_service_tier) {
+                push(&["-c", &format!("service_tier=\"{tier}\"")]);
             }
             push(&[
                 "--sandbox",
@@ -187,19 +206,36 @@ pub fn agent_command_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn speed_reaches_claude_and_codex_only_when_chosen() {
+        let settings = |args: &[String]| args[args.iter().position(|a| a == "--settings").unwrap() + 1].clone();
+        let (_, fast) = agent_command_with(AgentTool::ClaudeCode, None, None, Some(Speed::Fast), Access::Read, false);
+        assert!(settings(&fast).contains(r#""fastMode":true"#));
+        for speed in [None, Some(Speed::Standard)] {
+            let (_, args) = agent_command_with(AgentTool::ClaudeCode, None, None, speed, Access::Read, false);
+            assert!(!settings(&args).contains("fastMode"));
+        }
+        let (_, codex) = agent_command_with(AgentTool::Codex, None, None, Some(Speed::Standard), Access::Read, false);
+        assert!(codex.iter().any(|a| a == r#"service_tier="default""#));
+        let (_, codex) = agent_command_with(AgentTool::Codex, None, None, None, Access::Read, false);
+        assert!(!codex.iter().any(|a| a.starts_with("service_tier")));
+        let (_, gemini) = agent_command_with(AgentTool::Gemini, None, None, Some(Speed::Fast), Access::Read, false);
+        assert_eq!(gemini, agent_command(AgentTool::Gemini, None, None, Access::Read).1);
+    }
+
     use super::*;
 
     #[test]
     fn a_planning_claude_starts_in_its_own_planning_mode() {
-        let (_, plain) = agent_command_with(AgentTool::ClaudeCode, None, None, Access::Read, false);
+        let (_, plain) = agent_command_with(AgentTool::ClaudeCode, None, None, None, Access::Read, false);
         assert_eq!(plain, agent_command(AgentTool::ClaudeCode, None, None, Access::Read).1);
-        let (program, planning) = agent_command_with(AgentTool::ClaudeCode, None, None, Access::Read, true);
+        let (program, planning) = agent_command_with(AgentTool::ClaudeCode, None, None, None, Access::Read, true);
         assert_eq!(program, "claude");
         let line = planning.join(" ");
         assert!(line.contains("--permission-mode plan"), "{line}");
         assert!(!line.contains("--disallowedTools"), "plan mode does the holding back: {line}");
         assert!(line.contains("--permission-prompt-tool stdio"), "it still asks Deck: {line}");
-        let (_, gemini) = agent_command_with(AgentTool::Gemini, None, None, Access::Read, true);
+        let (_, gemini) = agent_command_with(AgentTool::Gemini, None, None, None, Access::Read, true);
         assert_eq!(gemini, agent_command(AgentTool::Gemini, None, None, Access::Read).1, "others plan read-only");
     }
 

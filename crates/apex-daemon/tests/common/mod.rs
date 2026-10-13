@@ -395,7 +395,7 @@ fn participant(id: &str, backend: Backend) -> Value {
         persona: String::new(),
         access: Default::default(),
         effort: None,
-        auto_effort: false,
+        auto_effort: false, speed: None,
         appearance: None, media: None
     })
     .unwrap()

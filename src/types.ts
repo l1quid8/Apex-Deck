@@ -35,6 +35,8 @@ export type ParticipantBackend =
   | { kind: "cli"; program: string; args: string[] }
   | { kind: "scripted"; lines: string[] };
 
+export type Speed = "standard" | "fast";
+
 export interface ParticipantConfig {
   id: string;
   display_name: string;
@@ -45,6 +47,8 @@ export interface ParticipantConfig {
   effort: string | null;
   /** Auto keeps effort as the fallback; recommendations are log-only during the trial. */
   auto_effort?: boolean;
+  /** Standard or fast output (Codex and Claude Code). Missing follows the tool's own setting. */
+  speed?: Speed | null;
   appearance?: { seed: string; color: string } | null;
   /** Choices for a bot whose model makes pictures or videos (see media.ts). */
   media?: MediaSettings | null;

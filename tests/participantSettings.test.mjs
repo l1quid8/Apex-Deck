@@ -38,3 +38,10 @@ test('picture and video choices merge into the saved ones', () => {
   assert.deepEqual(bare.media, { build_on_last: false });
   assert.equal(bot.media, undefined);
 });
+test('speed is saved when picked and removed when set back to Default', () => {
+  const fast = applyTurnChange(bot, { speed: 'fast' });
+  assert.equal(fast.speed, 'fast');
+  assert.equal(fast.effort, bot.effort, 'other settings stay');
+  assert.equal('speed' in applyTurnChange(fast, { speed: null }), false);
+  assert.equal(applyTurnChange(fast, { effort: 'high' }).speed, 'fast', 'a reasoning change keeps the speed');
+});

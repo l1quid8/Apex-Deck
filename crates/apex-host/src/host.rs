@@ -880,7 +880,7 @@ impl Host {
         let replacement = apex_adapters::build(next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
-                return Err("Only model and reasoning can change while models are replying".into());
+                return Err("Only model, reasoning and speed can change while models are replying".into());
             }
         } else { room.replace_participant(replacement); }
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
@@ -2183,7 +2183,7 @@ mod host_tests {
         apex_core::ParticipantConfig {
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
-            persona: String::new(), access: apex_core::Access::Read, effort: None, auto_effort: false, appearance: None, media: None
+            persona: String::new(), access: apex_core::Access::Read, effort: None, auto_effort: false, speed: None, appearance: None, media: None
         }
     }
 
