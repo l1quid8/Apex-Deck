@@ -79,3 +79,11 @@ test("⌥⇧⌘O changes the project of the thread in use", () => {
   assert.equal(shortcutFor(press("KeyO", { metaKey: true, altKey: true }), true), null);
   assert.deepEqual(shortcutList(true).find((s) => s.label === "Change the thread's project"), { label: "Change the thread's project", keys: "⌥⇧⌘O", thread: true });
 });
+
+test("⌘⇧\\ toggles the side panel's full screen on macOS, Ctrl+Shift+\\ elsewhere", () => {
+  assert.deepEqual(shortcutFor(press("Backslash", { metaKey: true, shiftKey: true }), true), { kind: "side_panel_full" });
+  assert.deepEqual(shortcutFor(press("Backslash", { ctrlKey: true, shiftKey: true }), false), { kind: "side_panel_full" });
+  // Without Shift, ⌘\ is left alone.
+  assert.equal(shortcutFor(press("Backslash", { metaKey: true }), true), null);
+  assert.deepEqual(shortcutList(true).find((s) => s.label === "Full-screen side panel"), { label: "Full-screen side panel", keys: "⇧⌘\\" });
+});

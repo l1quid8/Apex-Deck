@@ -32,3 +32,11 @@ test('details tab without a thread says so', () => {
   const html = render(s, {});
   assert.match(html, /Open a thread to see its details\./);
 });
+
+test('the expand button sits before the hide button and says what it will do', () => {
+  const docked = render({ ...model.defaultPanel(), open: true });
+  assert.match(docked, /aria-label="Expand side panel" aria-pressed="false"/);
+  assert.ok(docked.indexOf('Expand side panel') < docked.indexOf('Hide side panel'));
+  const full = render({ ...model.defaultPanel(), open: true, full: true });
+  assert.match(full, /aria-label="Collapse side panel" aria-pressed="true"/);
+});

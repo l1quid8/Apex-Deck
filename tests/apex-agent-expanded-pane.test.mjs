@@ -7,7 +7,7 @@ const styles = await fs.readFile(new URL('../src/apex-agent-dock.css', import.me
 
 test('expanded ApexAgent hides the canvas while keeping its pane tree mounted', () => {
   assert.match(app, /className=\{`body[\s\S]*?apexAgentFull && \(apexAgentAllOpen \|\| !!apexWorkspace\) \? " apex-agent-dock-expanded"/);
-  assert.match(app, /<main ref=\{canvasRef\} className=\{`canvas section-\$\{section\}`\} inert=\{apexAgentFull && \(apexAgentAllOpen \|\| !!apexWorkspace\) \? true : undefined\} aria-hidden=\{apexAgentFull && \(apexAgentAllOpen \|\| !!apexWorkspace\) \? true : undefined\}>/);
+  assert.match(app, /<main ref=\{canvasRef\} className=\{`canvas section-\$\{section\}`\} inert=\{\(sidePanelFull \|\| \(apexAgentFull && \(apexAgentAllOpen \|\| !!apexWorkspace\)\)\) \? true : undefined\} aria-hidden=\{\(sidePanelFull \|\| \(apexAgentFull && \(apexAgentAllOpen \|\| !!apexWorkspace\)\)\) \? true : undefined\}>/);
   assert.match(styles, /\.body\.apex-agent-dock-expanded > \.canvas \{ display: none; \}/);
   assert.match(styles, /\.body\.apex-agent-dock-expanded > \.apex-agent-dock\.apex-agent-full/);
   assert.match(app, /<main[^>]*>[\s\S]*?<div ref=\{gridArea\} className=\{`grid/);

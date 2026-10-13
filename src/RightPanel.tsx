@@ -25,11 +25,12 @@ interface Props {
   onChange: (next: RightPanelState) => void;
   bodies: Partial<Record<TabKind, (tab: PanelTab, visible: boolean) => ReactNode>>;
   onClose: () => void;
+  onFull: (full: boolean) => void;
   taskAttention?: { count: number; details: string };
 }
 
 /** The right panel: a row of tabs and the tab in front. Hidden tabs stay mounted so pages and trees keep their place. */
-export function RightPanel({ state, onChange, bodies, onClose, taskAttention }: Props) {
+export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAttention }: Props) {
   const [adding, setAdding] = useState(false);
   const dragging = useRef<string | null>(null);
   const now = () => Date.now();
@@ -49,6 +50,7 @@ export function RightPanel({ state, onChange, bodies, onClose, taskAttention }: 
         </div>;
       })}
       <button className="icon small" aria-label="Add a tab" aria-expanded={adding} onClick={() => setAdding((v) => !v)}>+</button>
+      <button className="icon small right-panel-full" aria-label={state.full ? "Collapse side panel" : "Expand side panel"} aria-pressed={state.full} title={state.full ? "Collapse" : "Expand"} onClick={() => onFull(!state.full)}>{state.full ? "⤡" : "⤢"}</button>
       <button className="icon small right-panel-close" aria-label="Hide side panel" onClick={onClose}>×</button>
     </div>
     {adding && <div className="right-panel-add" role="menu">
