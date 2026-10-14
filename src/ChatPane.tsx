@@ -1455,6 +1455,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const revertIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
   /** The Retry or Revert waiting on its confirmation. */
   const [goingBack, setGoingBack] = useState<{ kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[] } | null>(null);
+  /** Invalidates generated approval when Retry or Revert starts, before history or files can change. */
+  const [goneBack, setGoneBack] = useState(0);
   /** Retry on a bot's reply, Revert on your message: delete from there, put this thread's files back. */
   const goBack = (message: Message) => {
     if (busy) return notify("Stop the bots first.", "error");
@@ -1470,6 +1472,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     setGoingBack(null);
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
+    setGoneBack((n) => n + 1);
     void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
       if (request.chat) discardAnswerSettingsAfter(answerCurrent.current, message.seq);
       if (request.chat) messageNumbers.truncate(message.seq);
@@ -1765,7 +1768,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   const cardIn = (message: Message) => (code: { language: string; text: string }) =>
     code.language === CARD_LANGUAGE
-      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={hostConnection.revision} executionAllowed={focused} readOnly={message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
+      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={`${hostConnection.revision}:${goneBack}:${cwd}`} executionAllowed={focused && ready} readOnly={message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
       : undefined;
 
   const changeArtifacts = (next: ArtifactFile) => {

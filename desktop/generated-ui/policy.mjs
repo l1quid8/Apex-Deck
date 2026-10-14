@@ -1,5 +1,6 @@
 // Trusted policy only. No model bytes, environment flags, or renderer claims
 // can establish the packaged-runtime release gates.
+import { GENERATED_UI_RUNTIME_POLICY, readGeneratedUiCapability } from '../../shared/generatedUiCapability.mjs';
 export const WRAPPER_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; frame-src about:; child-src about:; worker-src 'none'; object-src 'none'; media-src 'none'; manifest-src 'none'; form-action 'none'; base-uri 'none'";
 export const WRAPPER_HEADERS = Object.freeze({
   'Content-Type': 'text/html; charset=utf-8',
@@ -9,8 +10,19 @@ export const WRAPPER_HEADERS = Object.freeze({
   'Cache-Control': 'no-store',
   'Permissions-Policy': 'accelerometer=(), autoplay=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()',
 });
-export function runtimeCapability() {
-  return { enabled: false, reason: 'Generated interfaces are disabled until the packaged Electron security and recovery gates have been independently verified. The text answer remains available.' };
+/** `code` is the running adapter's own version pair: a changed adapter or policy is unreviewed until the registry names it. */
+export function runtimeCapability(code, versions = process.versions, platform = process.platform, architecture = process.arch) {
+  const unsupported = { enabled: false, reason: 'This runtime is not approved for generated interfaces. The text answer remains available.' };
+  // Renderer ownership/termination and native authority gates were exercised
+  // on this platform only. Runtime upgrades and other platforms fail closed.
+  if (platform !== 'darwin' || architecture !== 'arm64') return unsupported;
+  const guidance = readGeneratedUiCapability({
+    protocolVersion: GENERATED_UI_RUNTIME_POLICY.protocolVersion,
+    adapterVersion: code?.adapterVersion,
+    securityPolicyVersion: code?.securityPolicyVersion,
+    electronVersion: versions.electron, chromiumVersion: versions.chrome,
+  });
+  return guidance ? { enabled: true, reason: 'Run starts this revision in the isolated local sandbox.', guidance } : unsupported;
 }
 export const GENERATED_WEB_PREFERENCES = Object.freeze({
   sandbox: true, contextIsolation: true, webSecurity: true,
@@ -21,14 +33,20 @@ export const GENERATED_WEB_PREFERENCES = Object.freeze({
   safeDialogs: true, disableDialogs: true, v8CacheOptions: 'none',
 });
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
-export function checkedBounds(value, content) {
+export function checkedBounds(value, content, zoom = 1) {
   if (!exact(value, ['x', 'y', 'width', 'height']) || !content) return null;
   if (!Object.values(value).every(Number.isSafeInteger)) return null;
+  if (!Number.isFinite(zoom) || zoom < 0.25 || zoom > 5) return null;
   // Reserve the window title/toolbar. The exact visible card rectangle comes
   // only from the owner Deck main frame; overlays/unmounts send null to stop.
-  if (value.x < 0 || value.y < 40 || value.width < 1 || value.height < 200 || value.height > 800
-      || value.x + value.width > content.width || value.y + value.height > content.height) return null;
-  return { ...value };
+  if (value.x < 0 || value.y < 0 || value.width < 1 || value.height < 200 || value.height > 800) return null;
+  // The approving renderer reports CSS pixels; native view bounds use DIP.
+  // Read zoom only from the trusted owner WebContents and round inward.
+  const x = Math.ceil(value.x * zoom), y = Math.ceil(value.y * zoom);
+  const width = Math.floor((value.x + value.width) * zoom) - x;
+  const height = Math.floor((value.y + value.height) * zoom) - y;
+  if (y < 40 || width < 1 || height < 1 || x + width > content.width || y + height > content.height) return null;
+  return { x, y, width, height };
 }
 export function bootstrapRequestAllowed(details, url, live) {
   return live && details.url === url && details.resourceType === 'mainFrame';

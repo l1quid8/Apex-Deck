@@ -1,0 +1,8 @@
+{
+  "protocolVersion": 1,
+  "adapterVersion": "open-intelligent-ui-8391a94-deck-2",
+  "securityPolicyVersion": "generated-ui-deny-all-3",
+  "verifiedRuntimeBuilds": [
+    { "electronVersion": "44.5.1", "chromiumVersion": "152.0.7977.130" }
+  ]
+}

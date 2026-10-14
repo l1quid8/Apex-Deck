@@ -12,7 +12,7 @@ use crate::approval::{ApprovalDesk, Approver, Decision, FileChange, ProposedActi
 use crate::mention::{parse_mentions, MentionTarget};
 use crate::participant::{Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
 use crate::types::{AgentTool, Message, ParticipantConfig, ParticipantId, PlanWindow, Speaker, TokenTotals};
-use crate::view::{ANSWERS_SYSTEM, pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
+use crate::view::{answers_system_for_capability, GeneratedUiCapability, pinned_section, render_view_after, system_prompt, Role, ViewTurn, COMPACT_ASK, COMPACT_SYSTEM, MAX_PIN_CHARS, PASS_TOKEN};
 
 /// Who answers a human message that does not @mention anyone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -722,7 +722,12 @@ impl Room {
     }
 
     pub(crate) fn request_for(&self, id: &ParticipantId) -> Option<(Arc<dyn Participant>, TurnRequest)> {
+        self.request_for_capability(id, self.answers.load(Ordering::SeqCst), GeneratedUiCapability::Unsupported)
+    }
+
+    pub(crate) fn request_for_capability(&self, id: &ParticipantId, answers: bool, capability: GeneratedUiCapability) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let participant = self.roster.iter().find(|p| &p.config().id == id)?.clone();
+        let answer_guidance = if answers { answers_system_for_capability(capability) } else { String::new() };
         let configs = self.configs();
         // What the summary covers counts as seen.
         let start = self.compacted_upto();
@@ -739,7 +744,7 @@ impl Room {
                 crate::server_request::prompt_section(&m.text)
             }).unwrap_or_default()
                 // Before Plan mode's text: next_steps_request cuts that off the end.
-                + if self.answers.load(Ordering::SeqCst) { ANSWERS_SYSTEM } else { "" },
+                + &answer_guidance,
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
             plan: false,
@@ -985,6 +990,7 @@ impl Room {
 
 #[cfg(test)]
 mod approver_tests {
+    use crate::view::ANSWERS_SYSTEM;
     #[test]
     fn interactive_answers_join_the_instructions_before_plan_mode() {
         let bot = Arc::new(crate::testing::ScriptedParticipant::new("null", &["done"]));

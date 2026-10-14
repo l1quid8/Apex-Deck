@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runtimeCapability, checkedBounds, collectOwnership, recheckOwnedProcess, bootstrapRequestAllowed } from '../desktop/generated-ui/policy.mjs';
 import { revisionDigest, readRuntimeMessage, MessageBudget, readRunRequest } from '../desktop/generated-ui/protocol.mjs';
+import { ADAPTER_VERSION, SECURITY_POLICY_VERSION } from '../desktop/generated-ui/frame-content.mjs';
+const code = { adapterVersion: ADAPTER_VERSION, securityPolicyVersion: SECURITY_POLICY_VERSION };
+
+test('main converts approved CSS geometry to owner zoom before native placement',()=>{
+  const css={x:20,y:80,width:500,height:300};
+  assert.deepEqual(checkedBounds(css,{width:900,height:700},0.8),{x:16,y:64,width:400,height:240});
+  assert.deepEqual(checkedBounds(css,{width:1800,height:1400},2),{x:40,y:160,width:1000,height:600});
+  for(const zoom of [0,NaN,Infinity,-1])assert.equal(checkedBounds(css,{width:900,height:700},zoom),null);
+  assert.equal(checkedBounds(css,{width:900,height:700},2),null);
+});
 
 const card = { schemaVersion: 1, kind: 'generated', cardId: 'a', title: 'A', summary: 'Summary', html: '<p>A</p>', css: '', js: '', fallback: 'Fallback' };
 const identity = { threadId: 'thread', seq: 3, cardId: 'a', hostId: 'local' };
@@ -14,8 +24,22 @@ const contents = (id, frames) => ({ id, isDestroyed: () => false, mainFrame: { .
 test('production capability cannot be enabled by environment or incomplete evidence', () => {
   process.env.APEX_DECK_GENERATED_UI = '1';
   assert.equal(runtimeCapability().enabled, false);
-  assert.equal(runtimeCapability({ electron: '44.5.1', chromium: 'x', network: true }).enabled, false);
+  assert.equal(runtimeCapability(code, { electron: '44.5.1', chrome: 'x', network: true }, 'darwin', 'arm64').enabled, false);
   delete process.env.APEX_DECK_GENERATED_UI;
+});
+
+test('only the reviewed adapter, policy, runtime and platform enable Run', () => {
+  const versions = { electron: '44.5.1', chrome: '152.0.7977.130' };
+  const enabled = runtimeCapability(code, versions, 'darwin', 'arm64');
+  assert.equal(enabled.enabled, true);
+  assert.deepEqual(enabled.guidance, { protocolVersion: 1, ...code, electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130' });
+  // A changed adapter or policy is unreviewed even though the registry still names its old pair.
+  for (const changed of [{ ...code, adapterVersion: `${ADAPTER_VERSION}-next` }, { ...code, securityPolicyVersion: `${SECURITY_POLICY_VERSION}-next` }, undefined]) {
+    assert.equal(runtimeCapability(changed, versions, 'darwin', 'arm64').enabled, false);
+  }
+  assert.equal(runtimeCapability(code, { ...versions, electron: '44.5.2' }, 'darwin', 'arm64').enabled, false);
+  assert.equal(runtimeCapability(code, versions, 'darwin', 'x64').enabled, false);
+  assert.equal(runtimeCapability(code, versions, 'linux', 'arm64').enabled, false);
 });
 
 test('bounds reject control overlap and out-of-window or stale geometry', () => {

@@ -3,7 +3,7 @@
 use crate::room::{progress_event, RoomApprover};
 use crate::{
     Access, ApprovalDesk, ChangeRecord, Participant, ParticipantId, Progress, Room, RoomEvent, Speaker,
-    TurnPolicy, TurnRequest,
+    GeneratedUiCapability, TurnPolicy, TurnRequest,
 };
 use futures::lock::Mutex as AsyncMutex;
 use futures::{
@@ -60,9 +60,18 @@ pub struct TurnBatch {
     write_owner: String,
     retained_owner: bool,
     retain_write_lease: Arc<AtomicBool>,
+    answers: bool,
+    generated_ui: GeneratedUiCapability,
 }
 impl TurnBatch {
     pub fn with_advisor(mut self, advisor: Arc<dyn crate::decision::TurnAdvisor>) -> Self { self.advisor = Some(advisor); self }
+    /// A client capability belongs to this chain, including queued turns and
+    /// bot-to-bot hops. A concurrent client cannot overwrite it.
+    pub fn with_answer_guidance(mut self, answers: Option<bool>, generated_ui: GeneratedUiCapability) -> Self {
+        self.answers = answers.unwrap_or(true);
+        self.generated_ui = generated_ui;
+        self
+    }
 }
 impl Drop for TurnBatch {
     fn drop(&mut self) {
@@ -181,6 +190,7 @@ impl ConcurrentRoom {
             room.options().policy == TurnPolicy::RoundRobin,
             room.options().max_bot_hops,
             room.configs().into_iter().map(|c| c.id).collect(),
+            room.answers_handle().load(Ordering::SeqCst),
         ))
     }
     /// Turns on the transcript as it is; nothing is posted. Several
@@ -207,6 +217,7 @@ impl ConcurrentRoom {
             true,
             hops.or(room.options().max_bot_hops),
             room.configs().into_iter().map(|c| c.id).collect(),
+            room.answers_handle().load(Ordering::SeqCst),
         ))
     }
     fn batch(
@@ -215,6 +226,7 @@ impl ConcurrentRoom {
         sequential: bool,
         limit: Option<usize>,
         roster: Vec<ParticipantId>,
+        answers: bool,
     ) -> TurnBatch {
         let mut slots = self.slots.lock().unwrap();
         self.pending.fetch_add(1, Ordering::SeqCst);
@@ -246,6 +258,8 @@ impl ConcurrentRoom {
             write_owner: self.write_owner.clone().unwrap_or_else(|| format!("manual-{}", NEXT_WRITE_OWNER.fetch_add(1, Ordering::Relaxed))),
             retained_owner: self.write_owner.is_some(),
             retain_write_lease: Arc::default(),
+            answers,
+            generated_ui: GeneratedUiCapability::Unsupported,
         }
     }
     pub fn stop(&self, id: Option<&ParticipantId>) {
@@ -266,7 +280,7 @@ impl ConcurrentRoom {
             if batch.sequential {
                 for ticket in tickets {
                     self.admit_writer(&ticket, &batch, &mut write_lease).await;
-                    next.extend(self.run_one(ticket, None, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner).await);
+                    next.extend(self.run_one(ticket, None, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await);
                 }
             } else {
                 // Freeze idle participants' views before any reply in this
@@ -276,7 +290,7 @@ impl ConcurrentRoom {
                     tickets
                         .iter()
                         .map(|ticket| {
-                            room.request_for(&ticket.id).map(|(p, r)| {
+                            room.request_for_capability(&ticket.id, batch.answers, batch.generated_ui).map(|(p, r)| {
                                 (p, r, room.transcript().len(), room.approvals_handle())
                             })
                         })
@@ -295,14 +309,14 @@ impl ConcurrentRoom {
                         let mut ids = Vec::new();
                         for (index, (ticket, prepared)) in writers {
                             self.admit_writer(&ticket, &batch, &mut write_lease).await;
-                            ids.push((index, self.run_one(ticket, prepared, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner).await));
+                            ids.push((index, self.run_one(ticket, prepared, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await));
                         }
                         ids
                     };
                     let read_turns = futures::future::join_all(readers.into_iter().map(|(index, (ticket, prepared))| {
                         let batch = &batch;
                         async move {
-                            (index, self.run_one(ticket, prepared, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner).await)
+                            (index, self.run_one(ticket, prepared, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui).await)
                         }
                     }));
                     let (mut results, readers) = futures::join!(write_turns, read_turns);
@@ -315,7 +329,7 @@ impl ConcurrentRoom {
                         tickets
                             .into_iter()
                             .zip(prepared)
-                            .map(|(t, p)| self.run_one(t, p, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner)),
+                            .map(|(t, p)| self.run_one(t, p, batch.advisor.as_deref(), sink, batch.retain_write_lease.clone(), batch.write_owner.clone(), batch.retained_owner, batch.answers, batch.generated_ui)),
                     )
                     .await
                     {
@@ -399,6 +413,8 @@ impl ConcurrentRoom {
         retain_write_lease: Arc<AtomicBool>,
         write_owner: String,
         durable_owner: bool,
+        answers: bool,
+        generated_ui: GeneratedUiCapability,
     ) -> Vec<ParticipantId> {
         let ready = ticket.previous.clone().now_or_never().is_some();
         let prepared = if ready {
@@ -420,7 +436,7 @@ impl ConcurrentRoom {
             prepared
         } else {
             let room = self.room.lock().await;
-            let Some((participant, request)) = room.request_for(&ticket.id) else {
+            let Some((participant, request)) = room.request_for_capability(&ticket.id, answers, generated_ui) else {
                 return Vec::new();
             };
             (
@@ -448,9 +464,12 @@ impl ConcurrentRoom {
             let mut config = participant.config().clone();
             config.access = Access::Read;
             let room = self.room.lock().await;
+            let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { String::new() };
             request.system = crate::view::system_prompt(&config, &room.configs())
                 + &crate::view::pinned_section(room.pins())
-                + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default();
+                + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
+                + &answer_guidance;
+            if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
         }
         sink(RoomEvent::TurnStarted {
             id: ticket.id.clone(),

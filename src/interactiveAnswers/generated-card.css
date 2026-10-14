@@ -1,5 +1,14 @@
+/* Inline-size containment removes the card's intrinsic width. Stretch its
+   chat bubble instead of shrinking a diagram to the prose's shortest line. */
+.bot-row:has(.generated-answer) { width: 85%; }
+.bot-row > .bubble:has(.generated-answer) { justify-self: stretch; }
+/* Staging Discuss text must not make Chromium shift an approved native view.
+   Explicit scrolling still revokes it through the normal capture listener. */
+.transcript:has(.generated-answer[data-generated-running="true"]) { overflow-anchor: none; }
 .generated-fallback { margin: 0; padding: 4px 16px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.generated-slot { margin: 0 16px 14px; border: 1px solid var(--line, #24303d); border-radius: 6px; background: var(--bg, #090d12); display: grid; place-items: center; color: var(--muted, #91a0af); min-height: 200px; max-height: 800px; }
+/* Inward integer rounding can remove one CSS pixel at a fractional top edge.
+   Reserve it so the native rectangle still meets main's 200px minimum. */
+.generated-slot { margin: 0 16px 14px; border: 1px solid var(--line, #24303d); border-radius: 6px; background: var(--bg, #090d12); display: grid; place-items: center; color: var(--muted, #91a0af); min-height: 201px; max-height: 800px; }
 .generated-slot > span { padding: 20px; text-align: center; font-size: 12px; }
 .generated-discuss { padding: 12px 16px; border-top: 1px solid var(--line, #24303d); }
 .generated-discuss pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }

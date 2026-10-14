@@ -113,10 +113,10 @@ pub enum Command {
     LibraryRename { file: String, name: String },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     RoomState { id: String },
-    RoomPost { id: String, text: String, #[serde(default)] interactive_answers: Option<bool> },
+    RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
     RoomTargets { id: String, text: String },
-    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default)] routed: bool, #[serde(default)] interactive_answers: Option<bool> },
-    RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize>, #[serde(default)] interactive_answers: Option<bool> },
+    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default)] routed: bool, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
+    RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
     RoomStop { id: String, participant: Option<ParticipantId> },
     RoomDecide { id: String, request: String, approve: bool, always: Option<bool> },
     RoomSetPlan { id: String, on: bool },
@@ -189,6 +189,12 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + 
 impl Host {
     /// Run `command` and answer with what the matching method returns, as JSON.
     pub async fn call(self: &Arc<Self>, command: Command) -> Result<Value, String> {
+        self.call_with_client_capability(command, apex_core::GeneratedUiCapability::Unsupported).await
+    }
+
+    /// Session context is supplied by the authenticated transport, never from
+    /// a command argument or durable room setting. This host does not execute UI.
+    pub async fn call_with_client_capability(self: &Arc<Self>, command: Command, capability: apex_core::GeneratedUiCapability) -> Result<Value, String> {
         use Command::*;
         match command {
             SessionLoad {} => reply(self.session_load()?),
@@ -323,10 +329,10 @@ impl Host {
             LibraryRename { file, name } => reply(self.library_rename(file, name)?),
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
             RoomState { id } => reply(self.room_state(id)?),
-            RoomPost { id, text, interactive_answers } => { self.turn_answers(&id, interactive_answers)?; reply(self.room_post(id, text).await?) },
+            RoomPost { id, text, interactive_answers } => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
-            RoomPostTo { id, text, targets, routed, interactive_answers } => { self.turn_answers(&id, interactive_answers)?; reply(self.room_post_to(id, text, targets, routed).await?) },
-            RoomTurn { id, participants, hops, interactive_answers } => { self.turn_answers(&id, interactive_answers)?; reply(self.room_turn(id, participants, hops).await?) },
+            RoomPostTo { id, text, targets, routed, interactive_answers } => reply(self.room_post_to_with_answer_guidance(id, text, targets, routed, interactive_answers, capability).await?),
+            RoomTurn { id, participants, hops, interactive_answers } => reply(self.room_turn_with_answer_guidance(id, participants, hops, interactive_answers, capability).await?),
             RoomStop { id, participant } => { self.room_stop(id, participant); reply(()) },
             RoomDecide { id, request, approve, always } => reply(self.room_decide(id, request, approve, always)?),
             RoomSetPlan { id, on } => reply(self.room_set_plan(id, on)?),
@@ -391,6 +397,16 @@ mod tests {
     use super::*;
     use crate::HostPaths;
     use serde_json::json;
+
+    #[test]
+    fn turn_answer_preference_accepts_existing_snake_case_transport_arguments() {
+        let post = Command::from_json(json!({"cmd":"room_post","args":{"id":"r","text":"hi","interactive_answers":false}})).unwrap();
+        assert!(matches!(post, Command::RoomPost { interactive_answers: Some(false), .. }));
+        let post_to = Command::from_json(json!({"cmd":"room_post_to","args":{"id":"r","text":"hi","targets":["bot"],"interactive_answers":false}})).unwrap();
+        assert!(matches!(post_to, Command::RoomPostTo { interactive_answers: Some(false), .. }));
+        let retry = Command::from_json(json!({"cmd":"room_turn","args":{"id":"r","participants":["bot"],"interactive_answers":false}})).unwrap();
+        assert!(matches!(retry, Command::RoomTurn { interactive_answers: Some(false), .. }));
+    }
 
     #[test]
     fn arguments_use_the_names_the_desktop_ui_sends() {

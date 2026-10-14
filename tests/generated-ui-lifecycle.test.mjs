@@ -68,3 +68,14 @@ test('a new card version is historical only when a later same-id card exists',()
   assert.equal(latestCardVersion(versions,'chart'),2);
   assert.equal(latestCardVersion(versions,'fresh'),1);
 });
+
+test('a disposed last session refreshes capability and removes the unusable Run action',async()=>{
+  const {run,api,event}=setup();await run.checkCapability();await run.start(bounds);
+  api.capability=async()=>({enabled:false,reason:'Session limit reached. Restart Deck.'});
+  await run.stop();assert.equal(run.state.enabled,false);assert.match(run.state.reason,/Session limit/);
+  api.capability=async()=>({enabled:true,reason:''});await run.checkCapability();await run.start(bounds);
+  api.capability=async()=>({enabled:false,reason:'Renderer cleanup could not be confirmed.'});
+  event({runId:'r1',type:'stopped',reason:'Frozen interface stopped.'});
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(run.state.enabled,false);assert.match(run.state.reason,/cleanup/);
+});

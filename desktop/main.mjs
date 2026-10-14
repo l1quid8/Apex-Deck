@@ -309,7 +309,7 @@ ipcMain.on('apex:tauriStorage', (event) => {
 const windows = new Map();
 
 // Generated code lives in a dedicated host/session, never in the chat renderer.
-// The production release gate is closed; no environment variable enables it.
+// Main admits only the independently verified runtime/policy registry tuple.
 installGeneratedUI({ electron: { app, ipcMain, powerMonitor, session, WebContentsView, webContents }, deckWindow });
 
 /** Handle `channel` only for a Deck window's own page; `run` gets that window first. */

@@ -54,6 +54,57 @@ fn setup() -> (ConcurrentRoom, oneshot::Sender<()>) {
 }
 
 #[test]
+fn answer_guidance_is_captured_when_a_batch_is_accepted() {
+    block_on(async {
+        let bot = Arc::new(ScriptedParticipant::new("bot", &["first", "second"]));
+        let room = Room::new(vec![bot.clone()], RoomOptions::default());
+        let answers = room.answers_handle();
+        let runtime = ConcurrentRoom::new(room);
+        let first = runtime.begin_post("first request", None, &|_| {}).await.unwrap();
+        answers.store(false, std::sync::atomic::Ordering::SeqCst);
+        let second = runtime.begin_post("second request", None, &|_| {}).await.unwrap();
+        runtime.run(first, &|_| {}).await;
+        runtime.run(second, &|_| {}).await;
+        let requests = bot.requests();
+        assert!(requests[0].system.contains("kind\":\"comparison"), "a later client's preference must not alter the accepted turn");
+        assert!(!requests[1].system.contains("apex-ui"));
+    });
+}
+
+#[test]
+fn generated_guidance_stays_with_its_queued_chain_and_bot_hops() {
+    block_on(async {
+        let first = Arc::new(ScriptedParticipant::new("first", &["@second continue", "plain answer"]));
+        let second = Arc::new(ScriptedParticipant::new("second", &["done"]));
+        let runtime = ConcurrentRoom::new(Room::new(vec![first.clone(), second.clone()], RoomOptions::default()));
+        let generated = runtime.begin_post("@first calculator", None, &|_| {}).await.unwrap()
+            .with_answer_guidance(None, apex_core::GeneratedUiCapability::Verified);
+        let phone = runtime.begin_post("@first phone follow-up", None, &|_| {}).await.unwrap();
+        runtime.run(generated, &|_| {}).await;
+        runtime.run(phone, &|_| {}).await;
+        assert!(first.requests()[0].system.contains("kind\":\"generated"));
+        assert!(second.requests()[0].system.contains("kind\":\"generated"), "a bot hop retains the initiating client's capability");
+        assert!(first.requests()[1].system.contains("kind\":\"comparison"));
+        assert!(!first.requests()[1].system.contains("kind\":\"generated"));
+        assert!(!serde_json::to_string(&runtime.room().lock().await.snapshot()).unwrap().contains("generated_ui"), "capability is never persisted in the transcript snapshot");
+    });
+}
+
+#[test]
+fn comparison_fixtures_remain_available_in_verified_generated_guidance() {
+    block_on(async {
+        let bot = Arc::new(ScriptedParticipant::new("bot", &["done"]));
+        let runtime = ConcurrentRoom::new(Room::new(vec![bot.clone()], RoomOptions::default()));
+        let batch = runtime.begin_turn(vec![ParticipantId::new("bot")], Some(0)).await.unwrap()
+            .with_answer_guidance(None, apex_core::GeneratedUiCapability::Verified);
+        runtime.run(batch, &|_| {}).await;
+        assert!(bot.requests()[0].system.contains("kind\":\"comparison"), "verified clients must still receive the complete comparison wire schema");
+        assert!(bot.requests()[0].system.contains("kind\":\"generated"));
+        assert!(!bot.requests()[0].system.contains("never put code, HTML or instructions in one."), "the comparison-only universal code ban must not forbid generated cards");
+    });
+}
+
+#[test]
 fn checkout_gate_serializes_two_rooms_while_read_turns_continue() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     block_on(async {

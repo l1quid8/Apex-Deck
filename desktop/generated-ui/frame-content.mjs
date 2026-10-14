@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { WRAPPER_CSP } from "./policy.mjs";
 export { WRAPPER_CSP } from "./policy.mjs";
 
-export const ADAPTER_VERSION = "open-intelligent-ui-8391a94-deck-1";
-export const SECURITY_POLICY_VERSION = "generated-ui-deny-all-1";
+export const ADAPTER_VERSION = "open-intelligent-ui-8391a94-deck-2";
+export const SECURITY_POLICY_VERSION = "generated-ui-deny-all-3";
 export const CHILD_CSP = WRAPPER_CSP.replace("frame-src about:; child-src about:", "frame-src 'none'; child-src 'none'");
 
 const DESIGN_SYSTEM_CSS = readFileSync(new URL("../../third_party/open-intelligent-ui/design-system.css", import.meta.url), "utf8");
@@ -20,6 +20,34 @@ export function clampReportedHeight(height) {
 // This fixed script contains no model bytes. It runs before any card markup.
 const CHILD_BOOTSTRAP_JS = String.raw`(() => {
   "use strict";
+  // Chromium exposes one unlabeled entry for each present media-device kind
+  // even when its native permission checks deny device operations. Remove the
+  // native getter before any model bytes and seal both same-realm paths. The
+  // opaque sandbox origin prevents recovering it from a fresh child realm;
+  // extra frames are also terminated by main. Native policy still denies all
+  // actual device operations; this closes the separate presence disclosure.
+  Object.defineProperty(Navigator.prototype, "mediaDevices", { value: undefined, writable: false, configurable: false });
+  Object.defineProperty(navigator, "mediaDevices", { value: undefined, writable: false, configurable: false });
+  // open() clears Window/Document listeners; native write()/writeln() can
+  // invoke it internally. Seal all three entry points before model code so
+  // neither a prototype call nor a shadow can erase the trusted file guards.
+  const denyRewrite = () => { throw new Error("Document rewriting is disabled in generated interfaces"); };
+  for (const method of ["open", "write", "writeln"]) {
+    Object.defineProperty(Document.prototype, method, { value: denyRewrite, writable: false, configurable: false });
+    Object.defineProperty(document, method, { value: denyRewrite, writable: false, configurable: false });
+  }
+  // A click grants execCommand("copy") even under the clipboard-write policy, so
+  // a card could swap the clipboard for a command pasted later. Clipboard commands
+  // are refused (copy/cut events are also blocked below); other editing commands
+  // run. The name is read once, with natives saved before model code.
+  const nativeExecCommand = Document.prototype.execCommand, applyNative = Reflect.apply, toText = String, lowerCase = String.prototype.toLowerCase;
+  const execCommand = function(command, showUI, value) {
+    const name = applyNative(lowerCase, toText(command), []);
+    if (name === "copy" || name === "cut" || name === "paste") throw new Error("The clipboard is unavailable in generated interfaces");
+    return applyNative(nativeExecCommand, this, [name, showUI, value]);
+  };
+  Object.defineProperty(Document.prototype, "execCommand", { value: execCommand, writable: false, configurable: false });
+  Object.defineProperty(document, "execCommand", { value: execCommand, writable: false, configurable: false });
   const parentWindow = parent;
   const sendToParent = parentWindow.postMessage.bind(parentWindow);
   const create = document.createElement.bind(document);
@@ -87,7 +115,9 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
   // Window is the first capture target. Register before any model listener;
   // a Document listener would run after a hostile Window capture listener.
   for (const type of ["click", "keydown", "pointerdown", "mousedown", "touchstart"]) window.addEventListener(type, blockFileActivation, { capture: true, passive: false });
-  for (const type of ["dragenter", "dragover", "drop", "paste"]) window.addEventListener(type, blockEvent, { capture: true, passive: false });
+  // Copy and cut too: no model handler can set clipboard data, and the selection
+  // is not copied. A cancelled copy with no data set leaves the clipboard as it was.
+  for (const type of ["dragenter", "dragover", "drop", "paste", "copy", "cut"]) window.addEventListener(type, blockEvent, { capture: true, passive: false });
   const disableFiles = () => { for (const input of document.querySelectorAll('input[type="file"]')) if (!input.disabled) input.disabled = true; };
   new MutationObserver(disableFiles).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["type", "disabled"] });
 
@@ -99,6 +129,7 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
     style.textContent = "html, body { height: auto !important; min-height: 0 !important; }";
     appendHead(style);
     let previous = -Infinity;
+    let reportedHeight = null;
     function reportHeight() {
       const now = performance.now();
       if (now - previous < 100) return;
@@ -107,14 +138,20 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
       const computed = getComputedStyle(document.body);
       height += parseFloat(computed.marginTop) || 0;
       height += parseFloat(computed.marginBottom) || 0;
-      if (Number.isFinite(height)) emit("resize", { height: Math.ceil(height) });
+      if (!Number.isFinite(height)) return;
+      height = Math.ceil(height);
+      // Startup polling and ResizeObserver can see the same layout repeatedly.
+      // Only a changed measurement needs to update the native view.
+      if (height === reportedHeight) return;
+      reportedHeight = height;
+      emit("resize", { height });
     }
     new ResizeObserver(reportHeight).observe(document.body);
     window.addEventListener("resize", reportHeight);
     window.addEventListener("load", reportHeight);
     const interval = setInterval(reportHeight, 200);
     setTimeout(() => clearInterval(interval), 3000);
-    reportHeight();
+    return reportHeight;
   }
   Object.defineProperty(window, "generatedUI", { configurable: false, writable: false, value: Object.freeze({
     discuss(text) { if (initializationComplete && typeof text === "string" && text.trim() && text.length <= 4000) emit("discuss", { text }); }
@@ -149,9 +186,10 @@ const CHILD_BOOTSTRAP_JS = String.raw`(() => {
         try { appendBody(behavior); } finally { initializingBehavior = false; }
       }
       if (initializationFailed) return;
-      installMeasurement();
+      const reportHeight = installMeasurement();
       initializationComplete = true;
       emit("ready");
+      reportHeight();
     } else if (message && message.type === "ping" && bound(message, ["nonce"]) && initializationComplete && typeof message.nonce === "string" && message.nonce.length > 0 && message.nonce.length <= 128) {
       emit("pong", { nonce: message.nonce });
     } else if (message && message.type === "theme" && bound(message, ["tokens"]) && message.tokens && typeof message.tokens === "object" && !Array.isArray(message.tokens)) {
@@ -173,7 +211,7 @@ export function buildWrapperDocument({ runId, revisionDigest }) {
   if (typeof runId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(runId) || typeof revisionDigest !== "string" || !/^[a-f0-9]{64}$/.test(revisionDigest)) throw new TypeError("Invalid generated UI run binding");
   const binding = JSON.stringify({ protocolVersion: 1, runId, revisionDigest });
   const fixedChild = JSON.stringify(buildFinalFrameContent()).replace(/</g, "\\u003c");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${WRAPPER_CSP}"><style>html,body{margin:0;height:100%;overflow:hidden;background:transparent}iframe{width:100%;height:100%;border:0;background:transparent}</style></head><body><iframe id="generated-frame" sandbox="allow-scripts" connectionallowlist="()" referrerpolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; usb 'none'; serial 'none'; hid 'none'; bluetooth 'none'; payment 'none'; fullscreen 'none'; web-share 'none'; local-fonts 'none'; screen-wake-lock 'none'; storage-access 'none'"></iframe><script>(() => {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${WRAPPER_CSP}"><style>html,body{margin:0;height:100%;overflow:hidden;background:#090d12}iframe{width:100%;height:100%;border:0;background:transparent}</style></head><body><iframe id="generated-frame" sandbox="allow-scripts" connectionallowlist="()" referrerpolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; usb 'none'; serial 'none'; hid 'none'; bluetooth 'none'; payment 'none'; fullscreen 'none'; web-share 'none'; local-fonts 'none'; screen-wake-lock 'none'; storage-access 'none'"></iframe><script>(() => {
   "use strict";
   const binding = ${binding};
   const frame = document.getElementById("generated-frame");

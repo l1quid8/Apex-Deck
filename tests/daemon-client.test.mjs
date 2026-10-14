@@ -80,6 +80,41 @@ test('start says hello first, sends nothing else until the welcome, and resolves
   assert.deepEqual(statuses.at(-1), { kind: 'connected', hostId: 'h1' });
 });
 
+test('each new session queries trusted client capabilities before hello and never carries a stale reconnect claim', async () => {
+  const daemon = fakeDaemon(); const timers = fakeTimers();
+  let available = { generated_ui: { protocolVersion: 1, adapterVersion: 'open-intelligent-ui-8391a94-deck-1', securityPolicyVersion: 'generated-ui-deny-all-1', electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130' } };
+  const client = new DaemonClient(daemon.connect, { timers, clientCapabilities: async () => available });
+  const started = client.start(); await tick();
+  const first = daemon.last();
+  assert.deepEqual(first.sent[0].args.client_capabilities, available);
+  first.receive({ id: first.sent[0].id, ok: welcome() }); await started;
+  available = undefined;
+  first.drop('gone'); timers.advance(1000); await tick();
+  assert.equal(Object.hasOwn(daemon.last().sent[0].args, 'client_capabilities'), false);
+  client.close();
+});
+
+test('a failed capability query still connects with comparison-only hello', async () => {
+  const daemon = fakeDaemon(); const client = new DaemonClient(daemon.connect, {
+    clientCapabilities: async () => { throw new Error('runtime unavailable'); },
+  });
+  const started = client.start(); await tick();
+  const link = daemon.last();
+  assert.deepEqual(link.sent[0].args, { protocol: 1 });
+  link.receive({ id: link.sent[0].id, ok: welcome() }); await started; client.close();
+});
+
+test('an unavailable trusted capability query cannot hold ordinary chat connection open forever', async () => {
+  const daemon = fakeDaemon(); const timers = fakeTimers();
+  const client = new DaemonClient(daemon.connect, { timers, clientCapabilities: () => new Promise(() => {}) });
+  const started = client.start(); await tick();
+  assert.equal(daemon.last().sent.length, 0);
+  timers.advance(2000); await tick();
+  const link = daemon.last();
+  assert.deepEqual(link.sent[0]?.args, { protocol: 1 });
+  link.receive({ id: link.sent[0].id, ok: welcome() }); await started; client.close();
+});
+
 test('calls carry increasing ids and are answered by id, in any order', async () => {
   const { daemon, client } = await connected();
   const link = daemon.last();

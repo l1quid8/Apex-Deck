@@ -30,7 +30,8 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     ? { enabled: false, reason: 'Renderer cleanup could not be confirmed. Restart Deck before running another generated interface.' }
     : ledger.count >= MAX_RUNS
     ? { enabled: false, reason: 'The generated interface session limit was reached. Restart Deck to run another interface.' }
-    : testEnabled ? { enabled: true, reason: 'Standalone test harness only; release gates remain unverified.' } : runtimeCapability();
+    : testEnabled ? { enabled: true, reason: 'Standalone test harness only; release gates remain unverified.' }
+    : runtimeCapability({ adapterVersion: ADAPTER_VERSION, securityPolicyVersion: SECURITY_POLICY_VERSION });
   const allContents = () => webContents.getAllWebContents();
   const metrics = () => app.getAppMetrics();
   const ownerMatches = (state, owner) => state.win === owner.win && state.ownerFrame === owner.frame && !owner.win.isDestroyed() && owner.frame === owner.win.webContents.mainFrame;
@@ -68,6 +69,8 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     runs.delete(state.runId);
     if (states.get(state.win.id) === state) states.delete(state.win.id);
     detach(state);
+    // Removing the native view leaves no focused contents; return keyboard focus to Deck.
+    try { if (!state.win.isDestroyed() && state.win.isFocused()) state.win.webContents.focus(); } catch {}
     for (const timer of state.timers) { clearTimeout(timer); clearInterval(timer); }
     state.listeners.splice(0).forEach(remove => { try { remove(); } catch {} });
     state.document = null;
@@ -204,6 +207,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     bind(state, state.win, 'closed', () => { void stopState(state, 'Deck window closed.'); });
     bind(state, state.win.webContents, 'did-start-navigation', () => { void stopState(state, 'Deck window changed document.'); });
     bind(state, state.win.webContents, 'render-process-gone', () => { void stopState(state, 'Deck renderer stopped.'); });
+    bind(state, state.win.webContents, 'zoom-changed', () => { void stopState(state, 'Deck zoom changed.'); });
   }
 
   async function initialize(state) {
@@ -256,7 +260,8 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     const read = readRunRequest(request);
     if (!read.ok) throw new Error(read.reason);
     if (owner.win.isDestroyed() || owner.frame !== owner.win.webContents.mainFrame) throw new Error('Not the Deck window.');
-    const bounds = checkedBounds(read.bounds, owner.win.getContentBounds());
+    const zoom = owner.win.webContents.getZoomFactor();
+    const bounds = checkedBounds(read.bounds, owner.win.getContentBounds(), zoom);
     if (!bounds) throw new Error('The interface must be visible inside the Deck window.');
     // Register admission synchronously, before disposal/setup can yield. The
     // owner can cancel by requestId while no runId has been returned yet.
@@ -280,7 +285,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     const state = { runId, revisionDigest: digest, win: owner.win, ownerFrame: owner.frame, card: read.card, identity: read.identity,
       session: ses, view, page: view.webContents, live: true, phase: 'bootstrap', attached: false,
       timers: [], listeners: [], records: [], frames: [], fileGuards: [], budget: new MessageBudget(),
-      admission, nonce: null, lastPong: clock(), started: clock(), geometryAt: null, url: `https://generated-ui.invalid/${runId}` };
+      admission, zoom, nonce: null, lastPong: clock(), started: clock(), geometryAt: null, url: `https://generated-ui.invalid/${runId}` };
     admission.state = state;
     state.document = buildWrapperDocument({ runId, revisionDigest: digest });
     const promise = new Promise((resolve, reject) => { state.resolveBootstrap = resolve; state.rejectBootstrap = reject; });
@@ -291,6 +296,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
       state.timers.push(setInterval(() => {
         if (!state.live) return;
         const now = clock();
+        if (state.win.webContents.getZoomFactor() !== state.zoom) { void stopState(state, 'Deck zoom changed.'); return; }
         if (state.geometryAt !== null && now - state.geometryAt > GEOMETRY_LEASE_MS) { void stopState(state, 'Interface geometry expired.'); return; }
         if (state.phase !== 'ready' && now - state.started >= 2000) { void stopState(state, 'The interface did not become ready within two seconds.'); return; }
         if (state.phase === 'ready' && now - state.lastPong >= 5000) { void stopState(state, 'The interface stopped responding.'); return; }
@@ -319,7 +325,9 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     const state = runs.get(runId);
     if (!state || !ownerMatches(state, owner)) return;
     if (value === null) { void stopState(state, 'Interface is no longer visible.'); return; }
-    const checked = checkedBounds(value, owner.win.getContentBounds());
+    const zoom = owner.win.webContents.getZoomFactor();
+    if (zoom !== state.zoom) { void stopState(state, 'Deck zoom changed.'); return; }
+    const checked = checkedBounds(value, owner.win.getContentBounds(), zoom);
     if (!checked) { detach(state); void stopState(state, 'Interface bounds are outside the visible card.'); return; }
     state.geometryAt = clock(); state.view.setBounds(checked); state.view.setVisible(true);
     if (!state.attached) { owner.win.contentView.addChildView(state.view); state.attached = true; }

@@ -38,6 +38,7 @@ pub mod lock;
 
 pub use command::Command;
 pub use host::{Host, HostPaths};
+pub use apex_core::{ClientCapabilities, GeneratedUiCapability};
 
 mod decision;
 mod next_steps;

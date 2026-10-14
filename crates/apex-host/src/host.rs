@@ -723,9 +723,13 @@ impl Host {
 
     /// Compatibility command for the existing UI; resolves when this chain ends.
     pub async fn room_post(self: &Arc<Self>, id: String, text: String) -> Result<(), String> {
-        if self.assistant_continue_thread(&id, Some(text.clone()), vec![], None).await? { return Ok(()); }
+        self.room_post_with_answer_guidance(id, text, None, apex_core::GeneratedUiCapability::Unsupported).await
+    }
+
+    pub(crate) async fn room_post_with_answer_guidance(self: &Arc<Self>, id: String, text: String, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
+        if self.assistant_continue_thread(&id, Some(text.clone()), vec![], None, answers, capability).await? { return Ok(()); }
         let handle = self.handle(&id)?;
-        let batch = self.prepare_post(&id, &handle, &text, None, true).await?;
+        let batch = self.prepare_post(&id, &handle, &text, None, true).await?.with_answer_guidance(answers, capability);
         self.run_batch(&id, &handle, batch).await
     }
 
@@ -735,9 +739,13 @@ impl Host {
 
     /// Saves the human message once, then runs targets in the background.
     pub async fn room_post_to(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, routed: bool) -> Result<(), String> {
-        if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None).await? { return Ok(()); }
+        self.room_post_to_with_answer_guidance(id, text, targets, routed, None, apex_core::GeneratedUiCapability::Unsupported).await
+    }
+
+    pub(crate) async fn room_post_to_with_answer_guidance(self: &Arc<Self>, id: String, text: String, targets: Vec<ParticipantId>, routed: bool, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
+        if self.assistant_continue_thread(&id, Some(text.clone()), targets.clone(), None, answers, capability).await? { return Ok(()); }
         let handle = self.handle(&id)?;
-        let batch = self.prepare_post(&id, &handle, &text, Some(targets), routed).await?;
+        let batch = self.prepare_post(&id, &handle, &text, Some(targets), routed).await?.with_answer_guidance(answers, capability);
         self.run_batch_in_background(id, handle, batch);
         Ok(())
     }
@@ -747,10 +755,14 @@ impl Host {
     /// rounds that may follow: `None` keeps the room's limit, `Some(0)` buys
     /// exactly one reply each.
     pub async fn room_turn(self: &Arc<Self>, id: String, participants: Vec<ParticipantId>, hops: Option<usize>) -> Result<(), String> {
-        if self.assistant_continue_thread(&id, None, participants.clone(), hops).await? { return Ok(()); }
+        self.room_turn_with_answer_guidance(id, participants, hops, None, apex_core::GeneratedUiCapability::Unsupported).await
+    }
+
+    pub(crate) async fn room_turn_with_answer_guidance(self: &Arc<Self>, id: String, participants: Vec<ParticipantId>, hops: Option<usize>, answers: Option<bool>, capability: apex_core::GeneratedUiCapability) -> Result<(), String> {
+        if self.assistant_continue_thread(&id, None, participants.clone(), hops, answers, capability).await? { return Ok(()); }
         self.handle(&id)?.observation_revision.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(&id)?;
-        let batch = handle.runtime.begin_turn(participants, hops).await?;
+        let batch = handle.runtime.begin_turn(participants, hops).await?.with_answer_guidance(answers, capability);
         let snapshot = handle.room.lock().await.snapshot();
         let settings = self.settings_load().ok().flatten().unwrap_or_default();
         let advisor = crate::decision::observer(&self.runtime, self.paths.data.clone(), id.clone(), handle.clone(), snapshot, settings, handle.observation_revision.load(Ordering::SeqCst), false);
@@ -1183,13 +1195,6 @@ impl Host {
         if self.store.room(&room)?.is_none() { return Err("This thread no longer exists, so its card settings weren't saved.".into()); }
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
         self.store.save_answer(&room, &key, &fingerprint, inputs, revision, at)
-    }
-
-    /// A remote window carries its own guidance preference with a turn;
-    /// commands without the field leave guidance on.
-    pub(crate) fn turn_answers(&self, id: &str, on: Option<bool>) -> Result<(), String> {
-        self.handle(id)?.answers.store(on.unwrap_or(true), Ordering::SeqCst);
-        Ok(())
     }
 
     /// Saved project monitors, including their findings and attention state.
@@ -2060,6 +2065,7 @@ mod tests {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+    use apex_core::Participant;
 
     fn host(name: &str) -> (Arc<Host>, tokio::runtime::Runtime, PathBuf) {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -2079,8 +2085,39 @@ mod host_tests {
         assert!(on("after"), "a thread opened later starts with it");
         host.settings_save(serde_json::json!({})).unwrap();
         assert!(on("before") && on("after"), "saving settings keeps guidance on");
-        host.turn_answers("before", None).unwrap();
-        assert!(on("before"), "a turn without an override leaves guidance on");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn command_session_capability_reaches_post_post_to_and_retry_without_changing_room_defaults() {
+        let (host, runtime, data) = host("client-guidance");
+        let bot = Arc::new(apex_core::testing::ScriptedParticipant::new("bot", &["one", "two", "three", "four"]));
+        host.room_create("r".into(), vec![bot.config().clone()], RoomOptions::default(), None).unwrap();
+        runtime.block_on(async {
+            // Capture the real room's requests without a provider or live daemon.
+            *host.handle("r").unwrap().room.lock().await = Room::new(vec![bot.clone()], RoomOptions::default());
+            let verified = apex_core::GeneratedUiCapability::Verified;
+            let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None };
+            host.call_with_client_capability(post, verified).await.unwrap();
+            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], routed: false, interactive_answers: None };
+            host.call_with_client_capability(post_to, verified).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            let retry = crate::Command::RoomTurn { id: "r".into(), participants: vec![ParticipantId::new("bot")], hops: Some(0), interactive_answers: None };
+            host.call_with_client_capability(retry, verified).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            let legacy = crate::Command::RoomPost { id: "r".into(), text: "phone follow-up".into(), interactive_answers: None };
+            host.call(legacy).await.unwrap();
+            let requests = bot.requests();
+            assert_eq!(requests.len(), 4);
+            for request in &requests[..3] { assert!(request.system.contains("kind\":\"generated")); }
+            assert!(requests[3].system.contains("kind\":\"comparison"));
+            assert!(!requests[3].system.contains("kind\":\"generated"));
+            assert!(host.handle("r").unwrap().answers.load(Ordering::SeqCst));
+        });
         let _ = std::fs::remove_dir_all(data);
     }
 

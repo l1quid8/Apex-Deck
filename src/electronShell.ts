@@ -13,6 +13,7 @@ import { daemonTransport, fromBase64, toBase64 } from "./daemon/transport.ts";
 import { pathPrompt, type PathRequest } from "./typedPath.ts";
 import { recentFiles } from "./recentFiles.ts";
 import type { GeneratedApi } from "./interactiveAnswers/generatedRun.ts";
+import { clientCapabilitiesForGeneratedRuntime } from '../shared/generatedUiCapability.mjs';
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
@@ -190,7 +191,8 @@ export function electronShell(
 
 /** Connect to the host and build the Backend on it. Resolves once connected. */
 export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
-  const client = new DaemonClient(bridgeConnect(bridge));
+  const clientCapabilities = async () => clientCapabilitiesForGeneratedRuntime(await bridge.generatedUI?.capability());
+  const client = new DaemonClient(bridgeConnect(bridge), { clientCapabilities });
   client.onStatus((status) => {
     connection.setStatus(status);
 
@@ -226,7 +228,7 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
     host: { id: "local", name: "This Mac", connection: localConnection } }, localConnection);
   const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: (host, state) => {
     const connect = bridgeConnect(bridge, host.id);
-    const remoteClient = new DaemonClient(connect);
+    const remoteClient = new DaemonClient(connect, { clientCapabilities });
     state.setRetry(() => remoteClient.retryNow());
     remoteClient.onStatus(status => {
       // The version first, so the card never shows a connected host with last session's helper.

@@ -3,6 +3,7 @@
 // link carries it. It says hello, matches replies to calls, hands events to
 // listeners, and reconnects after a drop, resuming from the last event it
 // saw. No DOM and no Electron here, so the phone app can use it too.
+import type { ClientCapabilities } from '../../shared/generatedUiCapability.mjs';
 
 /** One connection to the daemon, carrying whole lines. */
 export interface Link {
@@ -135,13 +136,15 @@ export class DaemonClient {
   private resolveStarted: ((welcome: Welcome) => void) | null = null;
   /** Sent with hello on a WebSocket. The desktop's stdio link doesn't use one. */
   private readonly token: string | null;
+  private readonly clientCapabilities?: () => Promise<ClientCapabilities | undefined>;
 
-  constructor(connect: Connect, options: { delay?: (attempt: number) => number; timers?: Timers; token?: string } = {}) {
+  constructor(connect: Connect, options: { delay?: (attempt: number) => number; timers?: Timers; token?: string; clientCapabilities?: () => Promise<ClientCapabilities | undefined> } = {}) {
     this.connect = connect;
     this.delay = options.delay ?? backoff;
     this.timers = options.timers ?? realTimers;
     const token = options.token?.trim() ?? "";
     this.token = token ? token : null;
+    this.clientCapabilities = options.clientCapabilities;
   }
 
   /** Connect, retrying until the first welcome. */
@@ -240,6 +243,22 @@ export class DaemonClient {
     const args: Record<string, unknown> = { protocol: PROTOCOL };
     if (this.token) args.token = this.token;
     if (this.bootId !== null) args.since = { boot_id: this.bootId, seq: this.lastSeq };
+    try {
+      if (this.clientCapabilities) {
+        // Stay well inside the remote daemon's 10s hello deadline. A missing
+        // capability is a normal comparison-only connection, not a blocker.
+        let deadline: unknown;
+        const unavailable = new Promise<undefined>(resolve => {
+          deadline = this.timers.setTimeout(() => resolve(undefined), 2000);
+        });
+        try {
+          const capabilities = await Promise.race([this.clientCapabilities(), unavailable]);
+          if (capabilities) args.client_capabilities = capabilities;
+        } finally { this.timers.clearTimeout(deadline); }
+      }
+    } catch { /* Missing runtime capability keeps comparison guidance. */ }
+    // A capability query can outlive a closed/replaced connection.
+    if (generation !== this.dialGeneration || this.closed || this.link !== link) return;
     link.send(JSON.stringify({ id: this.helloId, cmd: "hello", args }));
   }
 

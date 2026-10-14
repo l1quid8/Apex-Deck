@@ -1,0 +1,1356 @@
+{
+  "schemaVersion": 1,
+  "baseCommit": "7e9e48e",
+  "branch": "feat/generated-ui-run",
+  "capability": {
+    "protocolVersion": 1,
+    "adapterVersion": "open-intelligent-ui-8391a94-deck-2",
+    "securityPolicyVersion": "generated-ui-deny-all-3",
+    "verifiedRuntimeBuilds": [
+      {
+        "electronVersion": "44.5.1",
+        "chromiumVersion": "152.0.7977.130"
+      }
+    ]
+  },
+  "platform": "darwin-arm64",
+  "candidateArchiveSha256": "8874c9dcb2f353155ee0dad339d7075d7820096db62252a90ea60d6d53332ae7",
+  "evidenceMethod": "Temporary test-entry copies of one signed packaged app; unchanged retained production archive and native runtime. Lifecycle smoke dispatch and audit are instrumented; --verified leaves runtime capability unchanged. Candidate had renderer-only incremental repacks with outer signature metadata preserved, after a full release package build.",
+  "network": {
+    "evidence": "/tmp/null-generated-final-network",
+    "passed": true,
+    "controls": {
+      "captureHealthy": true,
+      "finalCaptureWitness": true,
+      "clockBounded": true,
+      "externalHTTP": true,
+      "externalHTTPS": true,
+      "authoritativeDNS": true,
+      "dnsPrefetch": true,
+      "rendererPreconnectEvent": true,
+      "preconnectSensorDNS": true,
+      "externalWebsocket": true,
+      "webtransport": true,
+      "turnUDP": true,
+      "turnTCP": true,
+      "stunBindingUDP": true,
+      "turnAllocateUDP": true,
+      "turnAllocateTCP": true,
+      "relayedDataChannel": true,
+      "localHTTP4": true,
+      "localHTTP6": true,
+      "localHTTPS4": true,
+      "localHTTPS6": true,
+      "localSTUN6": true,
+      "localTURN6TCP": true,
+      "packetTCP": true,
+      "packetUDP": true,
+      "perVectorReceipts": true
+    },
+    "blocked": [
+      {
+        "name": "header-only",
+        "passed": true,
+        "receipts": 0,
+        "emissions": 0
+      },
+      {
+        "name": "shipped",
+        "passed": true,
+        "receipts": 0,
+        "emissions": 0
+      },
+      {
+        "name": "shipped-nested-remote",
+        "passed": true,
+        "receipts": 0,
+        "emissions": 0
+      },
+      {
+        "name": "shipped-nested-srcdoc",
+        "passed": true,
+        "receipts": 0,
+        "emissions": 0
+      },
+      {
+        "name": "shipped-location",
+        "passed": true,
+        "receipts": 0,
+        "emissions": 0
+      },
+      {
+        "name": "shipped-anchor",
+        "passed": true,
+        "receipts": 0,
+        "emissions": 0
+      },
+      {
+        "name": "shipped-form",
+        "passed": true,
+        "receipts": 0,
+        "emissions": 0
+      }
+    ],
+    "captureHealth": {
+      "listening": true,
+      "captured": 2187,
+      "dropped": 0,
+      "stop": {
+        "pid": 494053,
+        "state": "signalled"
+      }
+    },
+    "sourceFiles": [
+      {
+        "path": "desktop/generated-ui/host.mjs",
+        "packaged": "371e46433bcd17dca6522a5d102e8a5d0384417b2c334c4afcc9af5a3c24507c",
+        "currentSource": "371e46433bcd17dca6522a5d102e8a5d0384417b2c334c4afcc9af5a3c24507c",
+        "matchesCurrentSource": true
+      },
+      {
+        "path": "desktop/generated-ui/policy.mjs",
+        "packaged": "ed7be1db8cb25614fc7e1a08a26f17394f6322f04a4cb260442aa2c919dbab40",
+        "currentSource": "ed7be1db8cb25614fc7e1a08a26f17394f6322f04a4cb260442aa2c919dbab40",
+        "matchesCurrentSource": true
+      },
+      {
+        "path": "desktop/generated-ui/frame-content.mjs",
+        "packaged": "c27165df9fd1614f1bf0e6fef34b5ccd202fe943118d6fb9a20478ef1bd151b8",
+        "currentSource": "c27165df9fd1614f1bf0e6fef34b5ccd202fe943118d6fb9a20478ef1bd151b8",
+        "matchesCurrentSource": true
+      },
+      {
+        "path": "desktop/generated-ui/preload.cjs",
+        "packaged": "b397e11216ef689b6eb1e7966a3162f094a2364b60e1f90a86bda1d4922aeb56",
+        "currentSource": "b397e11216ef689b6eb1e7966a3162f094a2364b60e1f90a86bda1d4922aeb56",
+        "matchesCurrentSource": true
+      },
+      {
+        "path": "desktop/generated-ui/protocol.mjs",
+        "packaged": "3eaac2178636adf774cc348957dc3f633f68a6cd2825d1137f445a543bf43229",
+        "currentSource": "3eaac2178636adf774cc348957dc3f633f68a6cd2825d1137f445a543bf43229",
+        "matchesCurrentSource": true
+      },
+      {
+        "path": "shared/generatedCard.mjs",
+        "packaged": "47b509b1bc59a05e2589784de50e2ed2ddbda83015dd63587b4a91f0a331c848",
+        "currentSource": "47b509b1bc59a05e2589784de50e2ed2ddbda83015dd63587b4a91f0a331c848",
+        "matchesCurrentSource": true
+      },
+      {
+        "path": "shared/generatedUiCapability.mjs",
+        "packaged": "e48a6792d0ef4bb079141cc8409594ede4ccd844108122e9b9ca98b6c56cace5",
+        "currentSource": "e48a6792d0ef4bb079141cc8409594ede4ccd844108122e9b9ca98b6c56cace5",
+        "matchesCurrentSource": true
+      },
+      {
+        "path": "shared/generated-ui-runtime.json",
+        "packaged": "12dabaf443ef7307ad855c5f4fa0cd1335a22ce7afdb4dd6cfe5d6175e82cd83",
+        "currentSource": "12dabaf443ef7307ad855c5f4fa0cd1335a22ce7afdb4dd6cfe5d6175e82cd83",
+        "matchesCurrentSource": true
+      },
+      {
+        "path": "Contents/MacOS/Apex Deck",
+        "source": "2d63c140ebff1f60ad7b17c7e65d445abbeb4fdc506b3b20cadf9729a7edf4ef",
+        "copy": "2d63c140ebff1f60ad7b17c7e65d445abbeb4fdc506b3b20cadf9729a7edf4ef"
+      },
+      {
+        "path": "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework",
+        "source": "74a7bd9560a01d97c8055774f6dcb33131f169387922105044c4c62d8d7cb0f8",
+        "copy": "74a7bd9560a01d97c8055774f6dcb33131f169387922105044c4c62d8d7cb0f8"
+      }
+    ],
+    "limitations": [
+      "Process-scoped controlled DoH and synthetic certificate trust are probe instrumentation. Chromium DoH resolver liveness traffic is retained separately and correlated by TCP source port, never timestamp-only inference. Literal-IP early-teardown navigation phases disable only the probe-process DoH resolver. Default OS DNS path is not independently captured.",
+      "Remote capture covers configured IPv4 endpoint and TURN relay ports; IPv6 external routing is unavailable on this endpoint.",
+      "Loopback IPv4/IPv6 transport uses independent local listener accepts rather than privileged macOS BPF capture."
+    ]
+  },
+  "authority": {
+    "evidence": "/tmp/null-generated-final-authority",
+    "passed": true,
+    "checks": [
+      {
+        "name": "real production capability matches its exact runtime registry; trusted preload and daemon positive control",
+        "passed": true
+      },
+      {
+        "name": "native Cmd-V and file-drop positive controls; focused clipboard read/write and document replacement guards",
+        "passed": true
+      },
+      {
+        "name": "opaque generated child cannot read real Deck DOM, storage, IndexedDB, Node, preload or daemon APIs",
+        "passed": true
+      },
+      {
+        "name": "every real Deck IPC invoke handler rejects generated main/child and mismatched owner frame",
+        "passed": true
+      },
+      {
+        "name": "clipboard, filesystem, camera/microphone/display, location and device permission APIs",
+        "passed": true
+      },
+      {
+        "name": "file input programmatic/label/native pointer activation and hostile handler bypass",
+        "passed": true
+      },
+      {
+        "name": "native file chooser interception protects open shadow-root file inputs",
+        "passed": true
+      },
+      {
+        "name": "native file chooser interception protects closed shadow-root file inputs",
+        "passed": true
+      },
+      {
+        "name": "drop and paste bytes never reach generated handlers",
+        "passed": true
+      },
+      {
+        "name": "copy, cut and execCommand cannot write the clipboard",
+        "passed": true
+      },
+      {
+        "name": "document.open/write/writeln cannot erase native drop and paste guards",
+        "passed": true
+      },
+      {
+        "name": "malformed/stale/oversized/wrong-source/port-bearing messages cannot stage draft or send",
+        "passed": true
+      },
+      {
+        "name": "port-bearing malformed message flood disposes host and preserves real Deck/daemon",
+        "passed": true
+      },
+      {
+        "name": "forms/popups/downloads/protocols/external forwarding: popup-denied",
+        "passed": true
+      },
+      {
+        "name": "forms/popups/downloads/protocols/external forwarding: form-denied",
+        "passed": true
+      },
+      {
+        "name": "forms/popups/downloads/protocols/external forwarding: download-denied",
+        "passed": true
+      },
+      {
+        "name": "forms/popups/downloads/protocols/external forwarding: app-protocol-navigation",
+        "passed": true
+      },
+      {
+        "name": "forms/popups/downloads/protocols/external forwarding: external-protocol-navigation",
+        "passed": true
+      },
+      {
+        "name": "forms/popups/downloads/protocols/external forwarding: top-external-forwarding",
+        "passed": true
+      },
+      {
+        "name": "forms/popups/downloads/protocols/external forwarding: file-protocol-navigation",
+        "passed": true
+      }
+    ],
+    "productionRunEnabled": true,
+    "nativePasteboardCleanup": {
+      "id": 2,
+      "newerClipboardPreserved": false,
+      "ok": true,
+      "restoreMatched": true
+    },
+    "sourceFiles": [
+      {
+        "file": "desktop/main.mjs",
+        "production": "2798e7bab257c3734bf28bfe9011feb9f629c22758cc32488b3bd4731159d4e1",
+        "checkout": "2798e7bab257c3734bf28bfe9011feb9f629c22758cc32488b3bd4731159d4e1"
+      },
+      {
+        "file": "desktop/preload.cjs",
+        "production": "c076aa98a2e78dee0f3384835ad7f0ce66667d86a90cb13f59a97e01ffcc6ddd",
+        "checkout": "c076aa98a2e78dee0f3384835ad7f0ce66667d86a90cb13f59a97e01ffcc6ddd"
+      },
+      {
+        "file": "desktop/generated-ui/host.mjs",
+        "production": "371e46433bcd17dca6522a5d102e8a5d0384417b2c334c4afcc9af5a3c24507c",
+        "checkout": "371e46433bcd17dca6522a5d102e8a5d0384417b2c334c4afcc9af5a3c24507c"
+      },
+      {
+        "file": "desktop/generated-ui/preload.cjs",
+        "production": "b397e11216ef689b6eb1e7966a3162f094a2364b60e1f90a86bda1d4922aeb56",
+        "checkout": "b397e11216ef689b6eb1e7966a3162f094a2364b60e1f90a86bda1d4922aeb56"
+      },
+      {
+        "file": "desktop/generated-ui/policy.mjs",
+        "production": "ed7be1db8cb25614fc7e1a08a26f17394f6322f04a4cb260442aa2c919dbab40",
+        "checkout": "ed7be1db8cb25614fc7e1a08a26f17394f6322f04a4cb260442aa2c919dbab40"
+      },
+      {
+        "file": "desktop/generated-ui/frame-content.mjs",
+        "production": "c27165df9fd1614f1bf0e6fef34b5ccd202fe943118d6fb9a20478ef1bd151b8",
+        "checkout": "c27165df9fd1614f1bf0e6fef34b5ccd202fe943118d6fb9a20478ef1bd151b8"
+      },
+      {
+        "file": "desktop/generated-ui/protocol.mjs",
+        "production": "3eaac2178636adf774cc348957dc3f633f68a6cd2825d1137f445a543bf43229",
+        "checkout": "3eaac2178636adf774cc348957dc3f633f68a6cd2825d1137f445a543bf43229"
+      },
+      {
+        "file": "shared/generatedCard.mjs",
+        "production": "47b509b1bc59a05e2589784de50e2ed2ddbda83015dd63587b4a91f0a331c848",
+        "checkout": "47b509b1bc59a05e2589784de50e2ed2ddbda83015dd63587b4a91f0a331c848"
+      },
+      {
+        "file": "shared/generatedUiCapability.mjs",
+        "production": "e48a6792d0ef4bb079141cc8409594ede4ccd844108122e9b9ca98b6c56cace5",
+        "checkout": "e48a6792d0ef4bb079141cc8409594ede4ccd844108122e9b9ca98b6c56cace5"
+      },
+      {
+        "file": "shared/generated-ui-runtime.json",
+        "production": "12dabaf443ef7307ad855c5f4fa0cd1335a22ce7afdb4dd6cfe5d6175e82cd83",
+        "checkout": "12dabaf443ef7307ad855c5f4fa0cd1335a22ce7afdb4dd6cfe5d6175e82cd83"
+      }
+    ]
+  },
+  "lifecycle": {
+    "evidence": "/tmp/deck-generated-lifecycle-8LbYvs",
+    "passed": true,
+    "checks": [
+      {
+        "name": "partial generated stream stays inert; completion does not execute",
+        "passed": true
+      },
+      {
+        "name": "native Run renders a working SVG flowchart; Stop and retry require a fresh click",
+        "passed": true
+      },
+      {
+        "name": "Discuss preview does not modify or send a draft; trusted Discuss appends",
+        "passed": true
+      },
+      {
+        "name": "scroll disposes generated view and stale Discuss",
+        "passed": true
+      },
+      {
+        "name": "trusted modal overlay disposes generated view and stale Discuss",
+        "passed": true
+      },
+      {
+        "name": "ApexAgent partial overlay disposes generated view and stale Discuss",
+        "passed": true
+      },
+      {
+        "name": "connection resync disposes generated view and stale Discuss",
+        "passed": true
+      },
+      {
+        "name": "ordinary disconnect disposes generated view and stale Discuss",
+        "passed": true
+      },
+      {
+        "name": "resize and owner focus loss dispose; another window cannot stop owner run",
+        "passed": true
+      },
+      {
+        "name": "suspend invalidates all run authority without sleeping the machine",
+        "passed": true
+      },
+      {
+        "name": "owner zoom uses native DIP bounds and changing it revokes the old run",
+        "passed": true
+      },
+      {
+        "name": "revised payload stops the old run; old card remains text-only",
+        "passed": true
+      },
+      {
+        "name": "fork and renderer reload never preserve execution approval",
+        "passed": true
+      },
+      {
+        "name": "calculator local controls, keyboard labels and Reset work in chat",
+        "passed": true
+      },
+      {
+        "name": "chart local controls, keyboard labels and Reset work in chat",
+        "passed": true
+      },
+      {
+        "name": "captured claude flowchart renders and its Next/Reset controls work",
+        "passed": true
+      },
+      {
+        "name": "captured codex flowchart renders and its Next/Reset controls work",
+        "passed": true
+      },
+      {
+        "name": "chat Revert and Retry stop a running interface; the isolated daemon remains usable",
+        "passed": true
+      },
+      {
+        "name": "freeze-init watchdog recovers chat and terminates generated PIDs",
+        "passed": true
+      },
+      {
+        "name": "freeze-after watchdog recovers chat and terminates generated PIDs",
+        "passed": true
+      },
+      {
+        "name": "freeze-micro watchdog recovers chat and terminates generated PIDs",
+        "passed": true
+      },
+      {
+        "name": "freeze-allocation watchdog recovers chat and terminates generated PIDs",
+        "passed": true
+      },
+      {
+        "name": "trusted Stop terminates a frozen OOPIF run",
+        "passed": true
+      },
+      {
+        "name": "quit event disposes generated PIDs while isolated daemon and chat still answer",
+        "passed": true
+      }
+    ],
+    "recoveries": [
+      {
+        "kind": "freeze-init",
+        "manualStop": false,
+        "pids": [
+          72794,
+          72795
+        ],
+        "sameGeneratedProcess": false,
+        "stopReason": "The interface did not become ready within two seconds.",
+        "payloadDelivered": true,
+        "elapsedMs": 1742
+      },
+      {
+        "kind": "freeze-after",
+        "manualStop": false,
+        "pids": [
+          72865,
+          72866
+        ],
+        "sameGeneratedProcess": false,
+        "stopReason": "The interface stopped responding.",
+        "payloadDelivered": true,
+        "elapsedMs": 4914
+      },
+      {
+        "kind": "freeze-micro",
+        "manualStop": false,
+        "pids": [
+          72935,
+          72936
+        ],
+        "sameGeneratedProcess": false,
+        "stopReason": "The interface stopped responding.",
+        "payloadDelivered": true,
+        "elapsedMs": 5020
+      },
+      {
+        "kind": "freeze-allocation",
+        "manualStop": false,
+        "pids": [
+          73007,
+          73008
+        ],
+        "sameGeneratedProcess": false,
+        "stopReason": "The interface stopped responding.",
+        "payloadDelivered": true,
+        "elapsedMs": 4904
+      },
+      {
+        "kind": "freeze-after",
+        "manualStop": true,
+        "pids": [
+          73079,
+          73086
+        ],
+        "sameGeneratedProcess": false,
+        "stopReason": "Generated interface approval was cancelled.",
+        "payloadDelivered": true,
+        "elapsedMs": 57
+      }
+    ],
+    "providerResizeHeights": {
+      "claude": [
+        420
+      ],
+      "codex": [
+        485
+      ]
+    },
+    "cycles": [
+      {
+        "name": "partial generated stream stays inert; completion does not execute",
+        "passed": true
+      },
+      {
+        "name": "32 fresh real sessions dispose all PIDs and then fail closed",
+        "passed": true
+      }
+    ],
+    "quit": {
+      "code": 0,
+      "remaining": [],
+      "passed": true
+    },
+    "sourceFiles": [
+      {
+        "file": "desktop/main.mjs",
+        "production": "2798e7bab257c3734bf28bfe9011feb9f629c22758cc32488b3bd4731159d4e1",
+        "checkout": "2798e7bab257c3734bf28bfe9011feb9f629c22758cc32488b3bd4731159d4e1"
+      },
+      {
+        "file": "desktop/preload.cjs",
+        "production": "c076aa98a2e78dee0f3384835ad7f0ce66667d86a90cb13f59a97e01ffcc6ddd",
+        "checkout": "c076aa98a2e78dee0f3384835ad7f0ce66667d86a90cb13f59a97e01ffcc6ddd"
+      },
+      {
+        "file": "desktop/generated-ui/host.mjs",
+        "production": "371e46433bcd17dca6522a5d102e8a5d0384417b2c334c4afcc9af5a3c24507c",
+        "checkout": "371e46433bcd17dca6522a5d102e8a5d0384417b2c334c4afcc9af5a3c24507c"
+      },
+      {
+        "file": "desktop/generated-ui/frame-content.mjs",
+        "production": "c27165df9fd1614f1bf0e6fef34b5ccd202fe943118d6fb9a20478ef1bd151b8",
+        "checkout": "c27165df9fd1614f1bf0e6fef34b5ccd202fe943118d6fb9a20478ef1bd151b8"
+      },
+      {
+        "file": "desktop/generated-ui/policy.mjs",
+        "production": "ed7be1db8cb25614fc7e1a08a26f17394f6322f04a4cb260442aa2c919dbab40",
+        "checkout": "ed7be1db8cb25614fc7e1a08a26f17394f6322f04a4cb260442aa2c919dbab40"
+      },
+      {
+        "file": "desktop/generated-ui/preload.cjs",
+        "production": "b397e11216ef689b6eb1e7966a3162f094a2364b60e1f90a86bda1d4922aeb56",
+        "checkout": "b397e11216ef689b6eb1e7966a3162f094a2364b60e1f90a86bda1d4922aeb56"
+      },
+      {
+        "file": "desktop/generated-ui/protocol.mjs",
+        "production": "3eaac2178636adf774cc348957dc3f633f68a6cd2825d1137f445a543bf43229",
+        "checkout": "3eaac2178636adf774cc348957dc3f633f68a6cd2825d1137f445a543bf43229"
+      },
+      {
+        "file": "shared/generatedCard.mjs",
+        "production": "47b509b1bc59a05e2589784de50e2ed2ddbda83015dd63587b4a91f0a331c848",
+        "checkout": "47b509b1bc59a05e2589784de50e2ed2ddbda83015dd63587b4a91f0a331c848"
+      },
+      {
+        "file": "shared/generatedUiCapability.mjs",
+        "production": "e48a6792d0ef4bb079141cc8409594ede4ccd844108122e9b9ca98b6c56cace5",
+        "checkout": "e48a6792d0ef4bb079141cc8409594ede4ccd844108122e9b9ca98b6c56cace5"
+      },
+      {
+        "file": "shared/generated-ui-runtime.json",
+        "production": "12dabaf443ef7307ad855c5f4fa0cd1335a22ce7afdb4dd6cfe5d6175e82cd83",
+        "checkout": "12dabaf443ef7307ad855c5f4fa0cd1335a22ce7afdb4dd6cfe5d6175e82cd83"
+      },
+      {
+        "file": "dist/index.html",
+        "production": "01e84ab5b82c3b9a7ee6f540a93a2fad814c7be9ca48d997b34ca0a1713f2b61",
+        "checkout": "01e84ab5b82c3b9a7ee6f540a93a2fad814c7be9ca48d997b34ca0a1713f2b61"
+      },
+      {
+        "file": "dist/assets/apl-gfMMiTNf.js",
+        "production": "9619f3fb6609168d82b468b6f950530bd23fafbc261f7b56696b10c483522d93",
+        "checkout": "9619f3fb6609168d82b468b6f950530bd23fafbc261f7b56696b10c483522d93"
+      },
+      {
+        "file": "dist/assets/asciiarmor-C_eisQCp.js",
+        "production": "d0d548398b732306f912bbd8cd04486543520e3882a05e98b20a86bfa2b70089",
+        "checkout": "d0d548398b732306f912bbd8cd04486543520e3882a05e98b20a86bfa2b70089"
+      },
+      {
+        "file": "dist/assets/asn1-DCl_8MCW.js",
+        "production": "ecd2d25e2e3152f480db9d3e698b2ac94f01fc3dc90d7f51d53d71f5c2a0db33",
+        "checkout": "ecd2d25e2e3152f480db9d3e698b2ac94f01fc3dc90d7f51d53d71f5c2a0db33"
+      },
+      {
+        "file": "dist/assets/asterisk-BEn0Cwpx.js",
+        "production": "2a2f286533f7527943a00fba13a31187ca2ddfdd1d8dac717175eb734f0dd14e",
+        "checkout": "2a2f286533f7527943a00fba13a31187ca2ddfdd1d8dac717175eb734f0dd14e"
+      },
+      {
+        "file": "dist/assets/brainfuck-D5EjA2JK.js",
+        "production": "5475a1a35d2dd641d8cd989a938161509774ccd2b76150b09c4058185476df6e",
+        "checkout": "5475a1a35d2dd641d8cd989a938161509774ccd2b76150b09c4058185476df6e"
+      },
+      {
+        "file": "dist/assets/clike-D_6L3tnO.js",
+        "production": "208321c3862b7a7f18613d56e7e6b0c63687b8bf4f6e90cb421c40d1e9444ad8",
+        "checkout": "208321c3862b7a7f18613d56e7e6b0c63687b8bf4f6e90cb421c40d1e9444ad8"
+      },
+      {
+        "file": "dist/assets/clojure-BflJGmDX.js",
+        "production": "3ccea67a7d55baa7ada3701e3382834b1c4b98caad17385635495df8ecf1b075",
+        "checkout": "3ccea67a7d55baa7ada3701e3382834b1c4b98caad17385635495df8ecf1b075"
+      },
+      {
+        "file": "dist/assets/cmake-84nbDH0I.js",
+        "production": "b04b2d247760958ea0055bc5f2e6b71768ce16eb6c4c9ef107f9756832a49fbf",
+        "checkout": "b04b2d247760958ea0055bc5f2e6b71768ce16eb6c4c9ef107f9756832a49fbf"
+      },
+      {
+        "file": "dist/assets/cobol-DHLQUbN7.js",
+        "production": "dbabfa9a971f5684d1ec67be806185042bec8f381ddc8d72f29671d403741e3d",
+        "checkout": "dbabfa9a971f5684d1ec67be806185042bec8f381ddc8d72f29671d403741e3d"
+      },
+      {
+        "file": "dist/assets/coffeescript-De_zI4J0.js",
+        "production": "036cefc2b4652f1513a94c360f9131b00d05c2b91f8d1e1de998075eb2bb802c",
+        "checkout": "036cefc2b4652f1513a94c360f9131b00d05c2b91f8d1e1de998075eb2bb802c"
+      },
+      {
+        "file": "dist/assets/commonlisp-DgAKBe0r.js",
+        "production": "a5cf5425784f04223503bbebd02c95a25190604640b15c238143c65585dd3146",
+        "checkout": "a5cf5425784f04223503bbebd02c95a25190604640b15c238143c65585dd3146"
+      },
+      {
+        "file": "dist/assets/crystal-Bsdphhtm.js",
+        "production": "13bbc57de4aebda33b48734f2b181e8f46383f7f4cd991c854fa30c3b63cf15a",
+        "checkout": "13bbc57de4aebda33b48734f2b181e8f46383f7f4cd991c854fa30c3b63cf15a"
+      },
+      {
+        "file": "dist/assets/css-CnaYoQib.js",
+        "production": "196216d43c6f0da651aed4b274a684b1ccb5b693a057e26e01ac66002f5434f6",
+        "checkout": "196216d43c6f0da651aed4b274a684b1ccb5b693a057e26e01ac66002f5434f6"
+      },
+      {
+        "file": "dist/assets/cypher-p9eYesGn.js",
+        "production": "cd05736f31fba1aa9830d94e6b3799236e0b8cd2b989674fb9b074532a8bb42c",
+        "checkout": "cd05736f31fba1aa9830d94e6b3799236e0b8cd2b989674fb9b074532a8bb42c"
+      },
+      {
+        "file": "dist/assets/d-DWkQyNnU.js",
+        "production": "eb4116d03dcda3c7dcb1f8681fe9858eb6f7c7b24213a8397c4862151627d532",
+        "checkout": "eb4116d03dcda3c7dcb1f8681fe9858eb6f7c7b24213a8397c4862151627d532"
+      },
+      {
+        "file": "dist/assets/diff-ChtP43wD.js",
+        "production": "cf4c32c773b4aec08498fd170b7f74733a695fdbcbb18170413e05c8d64d4848",
+        "checkout": "cf4c32c773b4aec08498fd170b7f74733a695fdbcbb18170413e05c8d64d4848"
+      },
+      {
+        "file": "dist/assets/dist-57r15cE4.js",
+        "production": "26bd16b19b8149b9ca6368fc25e313bd5e8b81468b40fd696d5b7cf0a6ad106e",
+        "checkout": "26bd16b19b8149b9ca6368fc25e313bd5e8b81468b40fd696d5b7cf0a6ad106e"
+      },
+      {
+        "file": "dist/assets/dist-B2E7TFqv.js",
+        "production": "b5a05b4844fd43c4f5506de3dd271e4cff2dacf1b65370a99e08f56798324575",
+        "checkout": "b5a05b4844fd43c4f5506de3dd271e4cff2dacf1b65370a99e08f56798324575"
+      },
+      {
+        "file": "dist/assets/dist-B3mlc_M5.js",
+        "production": "43360d7ca78820f5491c4354e38b9261d67a2d4e248c682de123a99f07ab8fb0",
+        "checkout": "43360d7ca78820f5491c4354e38b9261d67a2d4e248c682de123a99f07ab8fb0"
+      },
+      {
+        "file": "dist/assets/dist-B7lD0-_Y.js",
+        "production": "a3af97876652ba77a135a2317925cd5db9ec9deab1463048d8769b86d34ebb56",
+        "checkout": "a3af97876652ba77a135a2317925cd5db9ec9deab1463048d8769b86d34ebb56"
+      },
+      {
+        "file": "dist/assets/dist-BHQN8Yzg.js",
+        "production": "bcfc80e2298473bcf1e999fbe05b7241b052b740c33a59557f3e6d04985adbcd",
+        "checkout": "bcfc80e2298473bcf1e999fbe05b7241b052b740c33a59557f3e6d04985adbcd"
+      },
+      {
+        "file": "dist/assets/dist-BIvhPe03.js",
+        "production": "f3f0f29125f9a538704174388371988caeaea9a6cc0029d0955efb9d6aac3d78",
+        "checkout": "f3f0f29125f9a538704174388371988caeaea9a6cc0029d0955efb9d6aac3d78"
+      },
+      {
+        "file": "dist/assets/dist-BQx8P26w.js",
+        "production": "6f44ff91313c8dc017c2fedd8f12a32fb04c1d1c5bb53cbead68a331d9f70a17",
+        "checkout": "6f44ff91313c8dc017c2fedd8f12a32fb04c1d1c5bb53cbead68a331d9f70a17"
+      },
+      {
+        "file": "dist/assets/dist-BRCy9Xlx.js",
+        "production": "38a134c206f390b6d3ca49af27d8a788450b255ca45315f39039a9d1ef0842cd",
+        "checkout": "38a134c206f390b6d3ca49af27d8a788450b255ca45315f39039a9d1ef0842cd"
+      },
+      {
+        "file": "dist/assets/dist-C0LbuGVy.js",
+        "production": "800f04fb91b7143d7a480d5380446591eec32e2852d4456ee82fdf633561d42a",
+        "checkout": "800f04fb91b7143d7a480d5380446591eec32e2852d4456ee82fdf633561d42a"
+      },
+      {
+        "file": "dist/assets/dist-C0eehd_q.js",
+        "production": "e0f9c72d14f89ab1d3f1ca6cbfa8722a20cc75a5e282bc0e8de5c094c688e7e7",
+        "checkout": "e0f9c72d14f89ab1d3f1ca6cbfa8722a20cc75a5e282bc0e8de5c094c688e7e7"
+      },
+      {
+        "file": "dist/assets/dist-C1MYg0l8.js",
+        "production": "169814a13259cb5e6d88f3318623e15a33dbf76aec7578a550ee31c93c13283e",
+        "checkout": "169814a13259cb5e6d88f3318623e15a33dbf76aec7578a550ee31c93c13283e"
+      },
+      {
+        "file": "dist/assets/dist-C8m08p5D.js",
+        "production": "ef4dda4731fbf641f85c15814e32c8fad19a03ae2681582fb9f66f245faefa03",
+        "checkout": "ef4dda4731fbf641f85c15814e32c8fad19a03ae2681582fb9f66f245faefa03"
+      },
+      {
+        "file": "dist/assets/dist-CJiGuTXi.js",
+        "production": "22a3e2aa39cab7f02ec4b580f4041e71dc90d0dec47077ae9595fe9b5805daa1",
+        "checkout": "22a3e2aa39cab7f02ec4b580f4041e71dc90d0dec47077ae9595fe9b5805daa1"
+      },
+      {
+        "file": "dist/assets/dist-COSbIoAv.js",
+        "production": "8de1a53861cbb9f61663c44fb485454ecc0131b0b70448bffbfb7ba3548ce6fe",
+        "checkout": "8de1a53861cbb9f61663c44fb485454ecc0131b0b70448bffbfb7ba3548ce6fe"
+      },
+      {
+        "file": "dist/assets/dist-CTc1dDIu.js",
+        "production": "1dfbf2e32dd0828d5a50c68df2736f0c7577c36c39dfd01b7ec5af72784da712",
+        "checkout": "1dfbf2e32dd0828d5a50c68df2736f0c7577c36c39dfd01b7ec5af72784da712"
+      },
+      {
+        "file": "dist/assets/dist-C_yxrGoC.js",
+        "production": "279e944b8a4f3c1b1eac2a581425d790c14a974779004657a690a4610a0c470c",
+        "checkout": "279e944b8a4f3c1b1eac2a581425d790c14a974779004657a690a4610a0c470c"
+      },
+      {
+        "file": "dist/assets/dist-CoHXW6W6.js",
+        "production": "3bdc0328e828b7d77bfe9bf88c2f1ef549b064d5e43042b28e49185b8f18e5ad",
+        "checkout": "3bdc0328e828b7d77bfe9bf88c2f1ef549b064d5e43042b28e49185b8f18e5ad"
+      },
+      {
+        "file": "dist/assets/dist-Cpoyle9v.js",
+        "production": "5d631114de01cd51d8fd027acd5fc5dd399b00ab9c524ae7ca3ba4c637a98b17",
+        "checkout": "5d631114de01cd51d8fd027acd5fc5dd399b00ab9c524ae7ca3ba4c637a98b17"
+      },
+      {
+        "file": "dist/assets/dist-D1Rdr_fi.js",
+        "production": "8fb5f34208c9fbb2380bd610957e5ec820accdcfcaec004ec69d4591f1c7eb7a",
+        "checkout": "8fb5f34208c9fbb2380bd610957e5ec820accdcfcaec004ec69d4591f1c7eb7a"
+      },
+      {
+        "file": "dist/assets/dist-DHzpGhNO.js",
+        "production": "06a671f933719fe6a94136253926ce768f0035377aa0e8c2b5ea1c364f1ed168",
+        "checkout": "06a671f933719fe6a94136253926ce768f0035377aa0e8c2b5ea1c364f1ed168"
+      },
+      {
+        "file": "dist/assets/dist-DIY8o39n.js",
+        "production": "8aaebcf115c96a0d5a38bda8e9c7a1244df588ee3d499acb9e3acffc542585af",
+        "checkout": "8aaebcf115c96a0d5a38bda8e9c7a1244df588ee3d499acb9e3acffc542585af"
+      },
+      {
+        "file": "dist/assets/dist-DRy8HjVB.js",
+        "production": "6666486c9a6f954c7ce0b30dd3019259f6464ced125fd3af66fd8b295abb29b6",
+        "checkout": "6666486c9a6f954c7ce0b30dd3019259f6464ced125fd3af66fd8b295abb29b6"
+      },
+      {
+        "file": "dist/assets/dist-DYUV4QTp.js",
+        "production": "4e87cda3e9601cc7081b708649a6264a256c07bd492124d974a39f6f1fd3c1d9",
+        "checkout": "4e87cda3e9601cc7081b708649a6264a256c07bd492124d974a39f6f1fd3c1d9"
+      },
+      {
+        "file": "dist/assets/dist-Dj9jmfT-.js",
+        "production": "f9a44facb312854a800fd211a820825cc256ebb54eb5b0313e773a8630f0ee94",
+        "checkout": "f9a44facb312854a800fd211a820825cc256ebb54eb5b0313e773a8630f0ee94"
+      },
+      {
+        "file": "dist/assets/dist-V9iWNd65.js",
+        "production": "d9118519da13eb2c95a92eabb4eae92b610e7a479a6436d1c98d5b12bbf6fe50",
+        "checkout": "d9118519da13eb2c95a92eabb4eae92b610e7a479a6436d1c98d5b12bbf6fe50"
+      },
+      {
+        "file": "dist/assets/dist-gUT0BSMX.js",
+        "production": "e37a0898bc6fcb2139ca6d5405be4f4d32eb1daa51163bbdb7045cddbcc3b1a3",
+        "checkout": "e37a0898bc6fcb2139ca6d5405be4f4d32eb1daa51163bbdb7045cddbcc3b1a3"
+      },
+      {
+        "file": "dist/assets/dist-gVXdMCp9.js",
+        "production": "779fdcb2703aed90a461f7f393931cc32c72a0b0e3cfc9edded0ba0a700c0f10",
+        "checkout": "779fdcb2703aed90a461f7f393931cc32c72a0b0e3cfc9edded0ba0a700c0f10"
+      },
+      {
+        "file": "dist/assets/dist-lJi9-lfm.js",
+        "production": "ecb28cdd0c068580d1d48dc1fd30922887f4be01249faed7ea29ecacf279a2ed",
+        "checkout": "ecb28cdd0c068580d1d48dc1fd30922887f4be01249faed7ea29ecacf279a2ed"
+      },
+      {
+        "file": "dist/assets/dist-mBCC5Kuz.js",
+        "production": "67f799ab97c6815418d2971b01eaaad0b292594255e15c0ec6ccc69bb14e8e2e",
+        "checkout": "67f799ab97c6815418d2971b01eaaad0b292594255e15c0ec6ccc69bb14e8e2e"
+      },
+      {
+        "file": "dist/assets/dist-shYLtuyO.js",
+        "production": "427492e99cd84a2181de64f593e8ded246615cb307dd65a574d024258a5f7562",
+        "checkout": "427492e99cd84a2181de64f593e8ded246615cb307dd65a574d024258a5f7562"
+      },
+      {
+        "file": "dist/assets/dockerfile-DJkHQgkl.js",
+        "production": "c86168d3e36da3ebce319561f0be8af50366b8c9889ea2822b18aba45febe8fb",
+        "checkout": "c86168d3e36da3ebce319561f0be8af50366b8c9889ea2822b18aba45febe8fb"
+      },
+      {
+        "file": "dist/assets/dtd-DTF72YNO.js",
+        "production": "8f289b3c0a603c2de057f44cfb513dcb9e24dfeff1ac299a0acde4f1279385a9",
+        "checkout": "8f289b3c0a603c2de057f44cfb513dcb9e24dfeff1ac299a0acde4f1279385a9"
+      },
+      {
+        "file": "dist/assets/dylan-BCDoL_-p.js",
+        "production": "132d155483a1e5bd0998f45cebfb733412ec5f69514c1e6cb15e3164f139e438",
+        "checkout": "132d155483a1e5bd0998f45cebfb733412ec5f69514c1e6cb15e3164f139e438"
+      },
+      {
+        "file": "dist/assets/ebnf-D4c0_ac3.js",
+        "production": "e39d883c18e1d0436f36926b7b46617128b40cfd7ed0a10bd66af695fcadfe97",
+        "checkout": "e39d883c18e1d0436f36926b7b46617128b40cfd7ed0a10bd66af695fcadfe97"
+      },
+      {
+        "file": "dist/assets/ecl-BVIeWmwY.js",
+        "production": "fa4f1534359480b3174b2ca9ff915972f9475bdaa74aab645bfda1eca46074e9",
+        "checkout": "fa4f1534359480b3174b2ca9ff915972f9475bdaa74aab645bfda1eca46074e9"
+      },
+      {
+        "file": "dist/assets/eiffel-BEjRio4Q.js",
+        "production": "df2f416a891d40045c83ff1900af1cb87f72695ad4d87c50682738624c38a266",
+        "checkout": "df2f416a891d40045c83ff1900af1cb87f72695ad4d87c50682738624c38a266"
+      },
+      {
+        "file": "dist/assets/elm-Cshzl8qu.js",
+        "production": "7dc9b8c8a1289df3800c9ca773519840019d47deefb03dca7f7302b9882f12e9",
+        "checkout": "7dc9b8c8a1289df3800c9ca773519840019d47deefb03dca7f7302b9882f12e9"
+      },
+      {
+        "file": "dist/assets/erlang-BV0c4Hdn.js",
+        "production": "17d201413a70fc04906b3d0265bc6b80e7d8f176c38f46979c366ecbea144e77",
+        "checkout": "17d201413a70fc04906b3d0265bc6b80e7d8f176c38f46979c366ecbea144e77"
+      },
+      {
+        "file": "dist/assets/factor-LKH5gN8L.js",
+        "production": "985d490b848506f5c777d7a0584fc9343798e03d2a69c2a556a486d43db1237a",
+        "checkout": "985d490b848506f5c777d7a0584fc9343798e03d2a69c2a556a486d43db1237a"
+      },
+      {
+        "file": "dist/assets/fcl-ClOhbFR7.js",
+        "production": "08ce5e646edb4d614970bead56bd5b06f14093bc904af846e33b1d60fa142052",
+        "checkout": "08ce5e646edb4d614970bead56bd5b06f14093bc904af846e33b1d60fa142052"
+      },
+      {
+        "file": "dist/assets/forth-D6RzAl64.js",
+        "production": "89cdf42385551ba2c763602802e59a86ec8587db8f43527160095244e48552cd",
+        "checkout": "89cdf42385551ba2c763602802e59a86ec8587db8f43527160095244e48552cd"
+      },
+      {
+        "file": "dist/assets/fortran-Bt6PBEDR.js",
+        "production": "0ee1b38b1c87eddf928e6d11929c96ad15d006d477182f4d6fb181475cbaaa25",
+        "checkout": "0ee1b38b1c87eddf928e6d11929c96ad15d006d477182f4d6fb181475cbaaa25"
+      },
+      {
+        "file": "dist/assets/gas-BHEdbvp9.js",
+        "production": "72ce032bf8e2f97291cb8070c844d7a36255c89a0b32f65d8f2865b9344ef472",
+        "checkout": "72ce032bf8e2f97291cb8070c844d7a36255c89a0b32f65d8f2865b9344ef472"
+      },
+      {
+        "file": "dist/assets/gherkin-oBAE_ms0.js",
+        "production": "ca63055e8d4e39e3280607c357763a89ff08c3e719f48a2749f3d8cde1fea56d",
+        "checkout": "ca63055e8d4e39e3280607c357763a89ff08c3e719f48a2749f3d8cde1fea56d"
+      },
+      {
+        "file": "dist/assets/groovy-CUpZ7dEl.js",
+        "production": "3864499821a78f46e62c21582deb146e1bda1128068faca178f7b2d5a952397f",
+        "checkout": "3864499821a78f46e62c21582deb146e1bda1128068faca178f7b2d5a952397f"
+      },
+      {
+        "file": "dist/assets/haskell-BRsoo5mP.js",
+        "production": "868e8b21da5021140b51775df3d9ebb51bf5aa0925b2dba75b9923e71a717e6d",
+        "checkout": "868e8b21da5021140b51775df3d9ebb51bf5aa0925b2dba75b9923e71a717e6d"
+      },
+      {
+        "file": "dist/assets/haxe-DjVOVvNP.js",
+        "production": "d82d48ac4fdb69dd2dca969ecfb5e59dca97e15d10ec4872afe73d5ac1253325",
+        "checkout": "d82d48ac4fdb69dd2dca969ecfb5e59dca97e15d10ec4872afe73d5ac1253325"
+      },
+      {
+        "file": "dist/assets/http-CLVgA2GD.js",
+        "production": "94a0d68f2fa36fd78ed3f3c9483b33062fee90c694f4e70797d9cc5a6715b914",
+        "checkout": "94a0d68f2fa36fd78ed3f3c9483b33062fee90c694f4e70797d9cc5a6715b914"
+      },
+      {
+        "file": "dist/assets/idl-BUZw3wgd.js",
+        "production": "438714d3559726d0a0a3ac7a0a08267c929d0bb690fa2eef514b82322be2f6a4",
+        "checkout": "438714d3559726d0a0a3ac7a0a08267c929d0bb690fa2eef514b82322be2f6a4"
+      },
+      {
+        "file": "dist/assets/javascript-Bu8mWwtz.js",
+        "production": "df00507e8e79bde38a22326c6071437adceafe4b032ff92910b7ae51aaca5036",
+        "checkout": "df00507e8e79bde38a22326c6071437adceafe4b032ff92910b7ae51aaca5036"
+      },
+      {
+        "file": "dist/assets/julia-CQfgDRfP.js",
+        "production": "0c2cf72d1ac90213c3b42a91c800c587f75ee81e2bcde2712dddfd386d8967eb",
+        "checkout": "0c2cf72d1ac90213c3b42a91c800c587f75ee81e2bcde2712dddfd386d8967eb"
+      },
+      {
+        "file": "dist/assets/livescript-BXxG0Yva.js",
+        "production": "fe8dcb554ae3e959a556e5e0d4c1d6b186818e451a4269ae603062c478094f96",
+        "checkout": "fe8dcb554ae3e959a556e5e0d4c1d6b186818e451a4269ae603062c478094f96"
+      },
+      {
+        "file": "dist/assets/lua-DPCEkfD_.js",
+        "production": "2f4183f6b44b5ad6d9e5fe805a843c7d9336a4e95ef811b7bff81a03562295d6",
+        "checkout": "2f4183f6b44b5ad6d9e5fe805a843c7d9336a4e95ef811b7bff81a03562295d6"
+      },
+      {
+        "file": "dist/assets/main-BblAA_gr.css",
+        "production": "017d90cea9868594f59c680155e998036e194abdcde26f8f632cb15aaa49effe",
+        "checkout": "017d90cea9868594f59c680155e998036e194abdcde26f8f632cb15aaa49effe"
+      },
+      {
+        "file": "dist/assets/main-BjMCD2p6.js",
+        "production": "aeac478d40005c0c8b30c6bfd9d49c59cc3e17f914defb16b695e1ff1e831ffc",
+        "checkout": "aeac478d40005c0c8b30c6bfd9d49c59cc3e17f914defb16b695e1ff1e831ffc"
+      },
+      {
+        "file": "dist/assets/mathematica-u8YMmbU0.js",
+        "production": "84ae4ba6bf879a4608696af785e17cedd8b581bdbea0c90f856585d451b34190",
+        "checkout": "84ae4ba6bf879a4608696af785e17cedd8b581bdbea0c90f856585d451b34190"
+      },
+      {
+        "file": "dist/assets/mbox-BEMVcqjs.js",
+        "production": "44dc8f20f0534aa78d31245211628291e31351f36bee1ac1d7aeb8a59a11d254",
+        "checkout": "44dc8f20f0534aa78d31245211628291e31351f36bee1ac1d7aeb8a59a11d254"
+      },
+      {
+        "file": "dist/assets/mirc-C9zpzAZU.js",
+        "production": "edc1c63e88e0942b88240b589af3bc3e6ada91a4996eb5eff61d64d069d8085a",
+        "checkout": "edc1c63e88e0942b88240b589af3bc3e6ada91a4996eb5eff61d64d069d8085a"
+      },
+      {
+        "file": "dist/assets/mllike-B45xgp2S.js",
+        "production": "0530b163f7297af3234377ec8d70cc26919c6e38f3dd34c8069a30387ff666a0",
+        "checkout": "0530b163f7297af3234377ec8d70cc26919c6e38f3dd34c8069a30387ff666a0"
+      },
+      {
+        "file": "dist/assets/modelica-CqHI_q-D.js",
+        "production": "e620fa810ea18a71a5d491ea8da8638f6113f1ae435c7300b9a2f2d332c5691f",
+        "checkout": "e620fa810ea18a71a5d491ea8da8638f6113f1ae435c7300b9a2f2d332c5691f"
+      },
+      {
+        "file": "dist/assets/mscgen-qgSLujhx.js",
+        "production": "53b24ee7c56bc57af791aed5bc20b0cf51333dd20c6f48eb9dd7d7a222a4d96b",
+        "checkout": "53b24ee7c56bc57af791aed5bc20b0cf51333dd20c6f48eb9dd7d7a222a4d96b"
+      },
+      {
+        "file": "dist/assets/mumps-BSzj6Xyz.js",
+        "production": "b74f315529764ac8bd1dc5de0000a81e8ec336ca167b130a9380af3f8e2c2527",
+        "checkout": "b74f315529764ac8bd1dc5de0000a81e8ec336ca167b130a9380af3f8e2c2527"
+      },
+      {
+        "file": "dist/assets/nginx-8H7HVH4w.js",
+        "production": "2a52b1abff5c4f9cf1f947a23d2d810f69f5dc602ab9b715a0676b8faf7576e9",
+        "checkout": "2a52b1abff5c4f9cf1f947a23d2d810f69f5dc602ab9b715a0676b8faf7576e9"
+      },
+      {
+        "file": "dist/assets/nsis-viPvXFiq.js",
+        "production": "650cc541455f7d197edf02bba71ab1fcf7303a805d017b0b00c562bf4b2abfa9",
+        "checkout": "650cc541455f7d197edf02bba71ab1fcf7303a805d017b0b00c562bf4b2abfa9"
+      },
+      {
+        "file": "dist/assets/ntriples-B9h1VB_g.js",
+        "production": "4cbb7f70c5252f4f7411a7dcd77fbf2a7eeb3401217580ea58454dbf61b39f77",
+        "checkout": "4cbb7f70c5252f4f7411a7dcd77fbf2a7eeb3401217580ea58454dbf61b39f77"
+      },
+      {
+        "file": "dist/assets/octave-D2Q8cUp1.js",
+        "production": "435819b2e5cd3263138c94a8970bb09101e4c3f186594eb4649f8bc604eecad9",
+        "checkout": "435819b2e5cd3263138c94a8970bb09101e4c3f186594eb4649f8bc604eecad9"
+      },
+      {
+        "file": "dist/assets/oz-BwTct_5T.js",
+        "production": "122d799c67d18e54c5ef26e7786f81ae0fc4ce2dbdeb57aa2ff4b2e5f23fb0a8",
+        "checkout": "122d799c67d18e54c5ef26e7786f81ae0fc4ce2dbdeb57aa2ff4b2e5f23fb0a8"
+      },
+      {
+        "file": "dist/assets/pascal-Dp_KdFgX.js",
+        "production": "2d5e3c493596b6ffcc688ab63c6501d11be92ccb669d92b5c2a36cc876b7acdd",
+        "checkout": "2d5e3c493596b6ffcc688ab63c6501d11be92ccb669d92b5c2a36cc876b7acdd"
+      },
+      {
+        "file": "dist/assets/perl-BkSkiI9m.js",
+        "production": "efd47f9ae8043b2e00b8ac2ecf12d5b3916d049fd230d4e2de748e79c633d125",
+        "checkout": "efd47f9ae8043b2e00b8ac2ecf12d5b3916d049fd230d4e2de748e79c633d125"
+      },
+      {
+        "file": "dist/assets/phone-C0RGf_oX.js",
+        "production": "c4d9f08c813385fc051576424d1a46c70fb5add74b282dcff93186b3f4d11d49",
+        "checkout": "c4d9f08c813385fc051576424d1a46c70fb5add74b282dcff93186b3f4d11d49"
+      },
+      {
+        "file": "dist/assets/phone-CSeT4ATV.css",
+        "production": "137b9299ea0eed556499821f587aeaa074cfb3730b8c8f078866f13df290fa0c",
+        "checkout": "137b9299ea0eed556499821f587aeaa074cfb3730b8c8f078866f13df290fa0c"
+      },
+      {
+        "file": "dist/assets/pig-AF4Hwhju.js",
+        "production": "fff5fffe6757c1708a03dec395f9b3bd038d30fce56b70e00960da5ea203c78e",
+        "checkout": "fff5fffe6757c1708a03dec395f9b3bd038d30fce56b70e00960da5ea203c78e"
+      },
+      {
+        "file": "dist/assets/powershell-BcIto6Sf.js",
+        "production": "8024135b87241820f964efccd79e04a67b5a30366f474f54fdb5e63d8fb51a92",
+        "checkout": "8024135b87241820f964efccd79e04a67b5a30366f474f54fdb5e63d8fb51a92"
+      },
+      {
+        "file": "dist/assets/properties-C357ku5U.js",
+        "production": "265cd5a3bc8e8e1426825db6da7dfd6398db08f4ca5dc266b3f432a982868452",
+        "checkout": "265cd5a3bc8e8e1426825db6da7dfd6398db08f4ca5dc266b3f432a982868452"
+      },
+      {
+        "file": "dist/assets/protobuf-D1ij_kNL.js",
+        "production": "7c936836371bd94a649f756e6c07bb3f3139555c4a2c18c0ac6060ca26332d77",
+        "checkout": "7c936836371bd94a649f756e6c07bb3f3139555c4a2c18c0ac6060ca26332d77"
+      },
+      {
+        "file": "dist/assets/pug-3K-JMW4g.js",
+        "production": "dee0f76a800e3b447280716410840a3cbd5f73d3a1eeb5e81c2fc04b143cf00c",
+        "checkout": "dee0f76a800e3b447280716410840a3cbd5f73d3a1eeb5e81c2fc04b143cf00c"
+      },
+      {
+        "file": "dist/assets/puppet-BZyAS7I4.js",
+        "production": "a600a4c00b1745a13b1e619a137f2c67ae87352aa1ab57dad71cf94d633265a7",
+        "checkout": "a600a4c00b1745a13b1e619a137f2c67ae87352aa1ab57dad71cf94d633265a7"
+      },
+      {
+        "file": "dist/assets/python-B_1Jd8HM.js",
+        "production": "8e6518c2f97a6057d9801d6401b2da865382f8d54b8e718c794e011b74f3a53a",
+        "checkout": "8e6518c2f97a6057d9801d6401b2da865382f8d54b8e718c794e011b74f3a53a"
+      },
+      {
+        "file": "dist/assets/q-B9NhS7L_.js",
+        "production": "b1aacfc6dada3beff2530353c44dbd3b7c9fa39f6c315e27de6b44825fcd7cb4",
+        "checkout": "b1aacfc6dada3beff2530353c44dbd3b7c9fa39f6c315e27de6b44825fcd7cb4"
+      },
+      {
+        "file": "dist/assets/r-CxDmU1I4.js",
+        "production": "ce1385db9dc69828b103ea845015e5ebdad1b624eef79f4c9f5dc56d5d23a7ad",
+        "checkout": "ce1385db9dc69828b103ea845015e5ebdad1b624eef79f4c9f5dc56d5d23a7ad"
+      },
+      {
+        "file": "dist/assets/rpm-gpDK5sbt.js",
+        "production": "5ad9e795d1d7fe0390cc015a03d54aef739a2244340e2deaf5df4f6ed013a8df",
+        "checkout": "5ad9e795d1d7fe0390cc015a03d54aef739a2244340e2deaf5df4f6ed013a8df"
+      },
+      {
+        "file": "dist/assets/ruby-ChfNwlCY.js",
+        "production": "bf7640300ec2fcda90331b55594a232b76d5a3542be898d4b6565b6cb3a61ce7",
+        "checkout": "bf7640300ec2fcda90331b55594a232b76d5a3542be898d4b6565b6cb3a61ce7"
+      },
+      {
+        "file": "dist/assets/sas-C2OyD2Y6.js",
+        "production": "9c51535bc98848d00a7a16101ad2ff162cb44106468b7a7d595f04719e082cab",
+        "checkout": "9c51535bc98848d00a7a16101ad2ff162cb44106468b7a7d595f04719e082cab"
+      },
+      {
+        "file": "dist/assets/scheme-D9qYN0V5.js",
+        "production": "92e00992b5c67b8d38c35f9088b09ee58175c3dd1ea45f9d135fd95269bb0dbe",
+        "checkout": "92e00992b5c67b8d38c35f9088b09ee58175c3dd1ea45f9d135fd95269bb0dbe"
+      },
+      {
+        "file": "dist/assets/shell-DwuoZtxw.js",
+        "production": "eada594fb1134cc2dfb8874e055a8db889b2685fa6aa6342841343be30038937",
+        "checkout": "eada594fb1134cc2dfb8874e055a8db889b2685fa6aa6342841343be30038937"
+      },
+      {
+        "file": "dist/assets/sieve-tLWDfEkZ.js",
+        "production": "9e46e1396212c04e17b36ef6995ccff254c31c158ee297a17dce13a027cc968f",
+        "checkout": "9e46e1396212c04e17b36ef6995ccff254c31c158ee297a17dce13a027cc968f"
+      },
+      {
+        "file": "dist/assets/simple-mode-DXiLM1-G.js",
+        "production": "1da2ff3f952ded0f8e8080499e58b44d3b22bc7c5e2ae8db2f99a3a6105310b2",
+        "checkout": "1da2ff3f952ded0f8e8080499e58b44d3b22bc7c5e2ae8db2f99a3a6105310b2"
+      },
+      {
+        "file": "dist/assets/smalltalk-BLp5-jwC.js",
+        "production": "559d0a977880456b4f916cf9b1592b375c96047cd9dd0a13b3598b4369072553",
+        "checkout": "559d0a977880456b4f916cf9b1592b375c96047cd9dd0a13b3598b4369072553"
+      },
+      {
+        "file": "dist/assets/solr-B78wSQJQ.js",
+        "production": "b3d8aa05e7f39b5b77c41817b02ff8f0e8ec11e6b8f3a91a8ae260f91dd3b01a",
+        "checkout": "b3d8aa05e7f39b5b77c41817b02ff8f0e8ec11e6b8f3a91a8ae260f91dd3b01a"
+      },
+      {
+        "file": "dist/assets/sparql-Dz-mlCAC.js",
+        "production": "02e59f6539d324beb643eee727f0b4356549cafe15f7aaceb3d3c34ee5bdad0d",
+        "checkout": "02e59f6539d324beb643eee727f0b4356549cafe15f7aaceb3d3c34ee5bdad0d"
+      },
+      {
+        "file": "dist/assets/spreadsheet-CTIncYxj.js",
+        "production": "d3af197570b0a504e7c45dcd619b58422c5cb2f54b9028e556768e2213b070f6",
+        "checkout": "d3af197570b0a504e7c45dcd619b58422c5cb2f54b9028e556768e2213b070f6"
+      },
+      {
+        "file": "dist/assets/sql-DuQMFDvy.js",
+        "production": "648b34cda3d7da91025ed7ec142ffbd5bf26528407740383bdf690643a16c73c",
+        "checkout": "648b34cda3d7da91025ed7ec142ffbd5bf26528407740383bdf690643a16c73c"
+      },
+      {
+        "file": "dist/assets/stex-DNzd62Q_.js",
+        "production": "f12ad11c2bff04c45c80f79d02250c76f0b1d01b254d04da7b195f4ad15b556f",
+        "checkout": "f12ad11c2bff04c45c80f79d02250c76f0b1d01b254d04da7b195f4ad15b556f"
+      },
+      {
+        "file": "dist/assets/styles-DjChDM7H.css",
+        "production": "34f283eb914911e14d808a67d48b36a851292c0df8b8851c63cbc9a73261e6ae",
+        "checkout": "34f283eb914911e14d808a67d48b36a851292c0df8b8851c63cbc9a73261e6ae"
+      },
+      {
+        "file": "dist/assets/styles-k5gZfXJK.js",
+        "production": "1fad02d7c61a8db1ea2b21e307a303bf1f00ebf2f3cf2f359374490b782734f4",
+        "checkout": "1fad02d7c61a8db1ea2b21e307a303bf1f00ebf2f3cf2f359374490b782734f4"
+      },
+      {
+        "file": "dist/assets/stylus-BOVgKnng.js",
+        "production": "8522dc37629aa3153da10fac7505ac8f289219c3eb79246bc6d9e05f1a5ed148",
+        "checkout": "8522dc37629aa3153da10fac7505ac8f289219c3eb79246bc6d9e05f1a5ed148"
+      },
+      {
+        "file": "dist/assets/swift-DKB6_1j6.js",
+        "production": "f0835c04896ba11cf7884b2175e31574762723655d4e6461ce6ec7046479eaa3",
+        "checkout": "f0835c04896ba11cf7884b2175e31574762723655d4e6461ce6ec7046479eaa3"
+      },
+      {
+        "file": "dist/assets/tcl-BGfruO1u.js",
+        "production": "3e07cc02b94880557cd297c19f467421a7f452c8240534e7e9e7dbc4607b1813",
+        "checkout": "3e07cc02b94880557cd297c19f467421a7f452c8240534e7e9e7dbc4607b1813"
+      },
+      {
+        "file": "dist/assets/textile-C4jVoHG1.js",
+        "production": "87165770d704543ebf20f4da7f1a84f4c97bd43dc707f71759b32239f9516f9e",
+        "checkout": "87165770d704543ebf20f4da7f1a84f4c97bd43dc707f71759b32239f9516f9e"
+      },
+      {
+        "file": "dist/assets/tiddlywiki-VlUiK86J.js",
+        "production": "1bd675104bdfd2ac7ec250cefe80d8f48581bf103519f1c7407b2a4e3502da93",
+        "checkout": "1bd675104bdfd2ac7ec250cefe80d8f48581bf103519f1c7407b2a4e3502da93"
+      },
+      {
+        "file": "dist/assets/tiki-AK6FwT8q.js",
+        "production": "40f9417ef31d3a2a2671e52e8cf0d2a62f60f6c3e928dbaa831817ecdd77eead",
+        "checkout": "40f9417ef31d3a2a2671e52e8cf0d2a62f60f6c3e928dbaa831817ecdd77eead"
+      },
+      {
+        "file": "dist/assets/toml-BPTmHmyx.js",
+        "production": "55c50c3d69b919264e6f1d9e6d9279d381d88c1c9a9e1cd4a75c82abe9680de8",
+        "checkout": "55c50c3d69b919264e6f1d9e6d9279d381d88c1c9a9e1cd4a75c82abe9680de8"
+      },
+      {
+        "file": "dist/assets/troff-C2dAgh7P.js",
+        "production": "46bba1f3f4223fd204bf913bbeebdbc0256db1e69bd9a2e804175c5841ec8fe5",
+        "checkout": "46bba1f3f4223fd204bf913bbeebdbc0256db1e69bd9a2e804175c5841ec8fe5"
+      },
+      {
+        "file": "dist/assets/ttcn-PPSTk1ow.js",
+        "production": "6d53eb1b3bceb8f3a212937286bfdaeed42149560fa0e815d735527686a7f6d2",
+        "checkout": "6d53eb1b3bceb8f3a212937286bfdaeed42149560fa0e815d735527686a7f6d2"
+      },
+      {
+        "file": "dist/assets/ttcn-cfg-2b4Gb5sE.js",
+        "production": "ac7fc0a6da171cc715153f966c7907e688604a7e78cc00db914af119e976eb68",
+        "checkout": "ac7fc0a6da171cc715153f966c7907e688604a7e78cc00db914af119e976eb68"
+      },
+      {
+        "file": "dist/assets/turtle-Cx3rYX2g.js",
+        "production": "ceb6ee2aef9f2a911bd3d33a4913af35ce960f77ce309d0e3173e5f257c50afc",
+        "checkout": "ceb6ee2aef9f2a911bd3d33a4913af35ce960f77ce309d0e3173e5f257c50afc"
+      },
+      {
+        "file": "dist/assets/vb-BthdM_4N.js",
+        "production": "e025945bc97ae2640b26c11b737636cc735b0600387077412dbbae1e488d2686",
+        "checkout": "e025945bc97ae2640b26c11b737636cc735b0600387077412dbbae1e488d2686"
+      },
+      {
+        "file": "dist/assets/vbscript-D9f6rSsU.js",
+        "production": "17756f99b070ecf14eb93e21030c15c6fb5f483d189b18d34943ebef3802b173",
+        "checkout": "17756f99b070ecf14eb93e21030c15c6fb5f483d189b18d34943ebef3802b173"
+      },
+      {
+        "file": "dist/assets/velocity-CqftRsjg.js",
+        "production": "73fe5a94c56d83b21ad4bca500a377e32d2ecaab55df875ecae446a65a680cbe",
+        "checkout": "73fe5a94c56d83b21ad4bca500a377e32d2ecaab55df875ecae446a65a680cbe"
+      },
+      {
+        "file": "dist/assets/verilog-CjI9Y6RI.js",
+        "production": "1b2591bfbefcfda9f59a0657cec762e2eae0fe3adb897dce65a68e119be58b9d",
+        "checkout": "1b2591bfbefcfda9f59a0657cec762e2eae0fe3adb897dce65a68e119be58b9d"
+      },
+      {
+        "file": "dist/assets/vhdl-kS471soi.js",
+        "production": "dcbd07bcd5b806eee08ab28b0b0819438abebb9b05aee10a5b983fec08e5b828",
+        "checkout": "dcbd07bcd5b806eee08ab28b0b0819438abebb9b05aee10a5b983fec08e5b828"
+      },
+      {
+        "file": "dist/assets/webidl-D5jiJvOU.js",
+        "production": "fc2dfdc276c574d2bbda79a675c05f6cebc4a24313b1c3a5743ef0b31290e05e",
+        "checkout": "fc2dfdc276c574d2bbda79a675c05f6cebc4a24313b1c3a5743ef0b31290e05e"
+      },
+      {
+        "file": "dist/assets/worker--_oJFfwh.js",
+        "production": "7146b47baebcae7c53297c18cff4e015e07d9f5df3ea9c3e35524881e28105c3",
+        "checkout": "7146b47baebcae7c53297c18cff4e015e07d9f5df3ea9c3e35524881e28105c3"
+      },
+      {
+        "file": "dist/assets/xquery-BKJx4mf9.js",
+        "production": "852b1dc43c633b82ad40b05b4175872080ca8df85e84b39a6005a55dbdb23c49",
+        "checkout": "852b1dc43c633b82ad40b05b4175872080ca8df85e84b39a6005a55dbdb23c49"
+      },
+      {
+        "file": "dist/assets/yacas-CXXgtw0p.js",
+        "production": "717ca22d8f94a5a221635a01bc506c11f0fe36088ed98f3a08532a7da9297831",
+        "checkout": "717ca22d8f94a5a221635a01bc506c11f0fe36088ed98f3a08532a7da9297831"
+      },
+      {
+        "file": "dist/assets/z80-Co3PbHdE.js",
+        "production": "8d4374929f96885f45950a5964b6aec62e4b769e2c62d2d76535b74b833330f9",
+        "checkout": "8d4374929f96885f45950a5964b6aec62e4b769e2c62d2d76535b74b833330f9"
+      }
+    ]
+  },
+  "sameProcessRecovery": {
+    "evidence": "/tmp/deck-generated-lifecycle-vCvUyf",
+    "passed": true,
+    "checks": [
+      {
+        "name": "partial generated stream stays inert; completion does not execute",
+        "passed": true
+      },
+      {
+        "name": "freeze-init same-process recovery",
+        "passed": true
+      },
+      {
+        "name": "freeze-after same-process recovery",
+        "passed": true
+      },
+      {
+        "name": "freeze-micro same-process recovery",
+        "passed": true
+      },
+      {
+        "name": "freeze-allocation same-process recovery",
+        "passed": true
+      },
+      {
+        "name": "trusted Stop terminates a frozen same-process run",
+        "passed": true
+      }
+    ],
+    "recoveries": [
+      {
+        "kind": "freeze-init",
+        "manualStop": false,
+        "pids": [
+          74628
+        ],
+        "sameGeneratedProcess": true,
+        "stopReason": "The interface did not become ready within two seconds.",
+        "payloadDelivered": true,
+        "elapsedMs": 1793
+      },
+      {
+        "kind": "freeze-after",
+        "manualStop": false,
+        "pids": [
+          74694
+        ],
+        "sameGeneratedProcess": true,
+        "stopReason": "The interface stopped responding.",
+        "payloadDelivered": true,
+        "elapsedMs": 4916
+      },
+      {
+        "kind": "freeze-micro",
+        "manualStop": false,
+        "pids": [
+          74767
+        ],
+        "sameGeneratedProcess": true,
+        "stopReason": "The interface stopped responding.",
+        "payloadDelivered": true,
+        "elapsedMs": 5017
+      },
+      {
+        "kind": "freeze-allocation",
+        "manualStop": false,
+        "pids": [
+          74838
+        ],
+        "sameGeneratedProcess": true,
+        "stopReason": "The interface stopped responding.",
+        "payloadDelivered": true,
+        "elapsedMs": 4914
+      },
+      {
+        "kind": "freeze-after",
+        "manualStop": true,
+        "pids": [
+          74908
+        ],
+        "sameGeneratedProcess": true,
+        "stopReason": "Generated interface approval was cancelled.",
+        "payloadDelivered": true,
+        "elapsedMs": 59
+      }
+    ],
+    "scope": "Site isolation disabled only to exercise same-generated-process termination; no security result claimed under these flags."
+  },
+  "reviewFindingsResolved": [
+    "Unknown runtime capability remains disabled; adapter/policy exact-version binding",
+    "Document rewriting cannot erase file/paste guards",
+    "Media presence getter unavailable before model code",
+    "Copy/cut/native execCommand cannot mutate the clipboard",
+    "Native file chooser interception tested in open/closed shadow roots",
+    "Normal disconnect and early Retry/Revert revoke execution",
+    "Frozen probes require actual payload delivery, ready phase, exact watchdog reason and PID exit",
+    "Real production app.quit/app.exit observed with outer PID receipts",
+    "Repeated identical measurements removed, initial measurement follows ready",
+    "Approved viewport reserved while active and browser scroll anchoring disabled there; explicit scroll still revokes",
+    "Native default backdrop paints dark behind inherited dark text",
+    "Assistant-owned continuations preserve per-turn capability and explicit answers=false"
+  ],
+  "verification": {
+    "typescript": "npx tsc --noEmit exit 0",
+    "scopedJs": {
+      "passed": 182,
+      "failed": 0,
+      "log": "/tmp/null-generated-scoped-done.log"
+    },
+    "rust": {
+      "passed": 666,
+      "failed": 0,
+      "ignored": 3,
+      "log": "/tmp/null-generated-rust-final.log"
+    },
+    "fullJs": {
+      "passed": 1412,
+      "failed": 12,
+      "total": 1424,
+      "baselineFailureNames": [
+        "a bot's model and reasoning read in a few words, and the phone only writes what it changed",
+        "a rendered sidebar chat drag carries its owning folder and machine",
+        "a stale callback after workspace host rebinding cannot clear the new host blocker",
+        "a successful host monitor snapshot adds attention and an empty snapshot clears that host",
+        "an ApexAgent callback from a removed workspace is ignored, including null",
+        "an ApexAgent callback from an old workspace path cannot add or clear attention",
+        "an ApexAgent callback from before host reconnection cannot clear the current blocker",
+        "host monitor snapshots reconcile only their own host across multiple workspaces",
+        "monitor blockers survive conversation visits and pane attention cleanup, then clear on resolution",
+        "monitor snapshots are accepted only for the rendered workspace, host, and path",
+        "the rendered Mark ready as seen button clears ordinary Ready flags but keeps the ApexAgent blocker",
+        "the rendered attention menu and sidebar badge keep an unresolved ApexAgent blocker after the conversation is read"
+      ],
+      "identicalToBaseline": true,
+      "log": "/tmp/null-generated-suite-review.log",
+      "transient": "An earlier concurrent check timed out the existing quick-selector Electron test; scoped and final isolated full-suite runs passed that test."
+    }
+  }
+}

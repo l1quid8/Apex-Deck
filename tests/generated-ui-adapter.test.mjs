@@ -33,6 +33,9 @@ function childHarness(srcdoc) {
   const messages = [];
   const styles = [];
   const scriptErrors = [];
+  const intervals = [];
+  const resizeObservers = [];
+  let now = 100;
   let context;
   class NativeEvent {
     constructor(type, { target = null, ...data } = {}) {
@@ -98,12 +101,63 @@ function childHarness(srcdoc) {
     }
   }, querySelectorAll: () => [], set innerHTML(value) { this.html = value; order.push("html"); }, get innerHTML() { return this.html; } };
   const parent = { postMessage: (data) => messages.push(data) };
-  const document = { head, body, documentElement: { style: { setProperty() {} } }, createElement: (tag) => ({ tagName: tag.toUpperCase(), textContent: "" }), addEventListener: (type, fn, capture) => listen("document", type, fn, capture), querySelectorAll: () => [] };
+  const commands = [];
+  class Document { open() { events.clear(); } write() { events.clear(); } writeln() { events.clear(); } execCommand(name) { commands.push(name); return true; } }
+  const document = Object.assign(new Document(),{ head, body, documentElement: { style: { setProperty() {} } }, createElement: (tag) => ({ tagName: tag.toUpperCase(), textContent: "" }), addEventListener: (type, fn, capture) => listen("document", type, fn, capture), querySelectorAll: () => [] });
   const window = { addEventListener: (type, fn, capture) => listen("window", type, fn, capture) };
-  context = vm.createContext({ document, window, parent, TextEncoder, Event: NativeEvent, Element, HTMLElement: Element, HTMLInputElement: Input, HTMLLabelElement: Label, MutationObserver: class { observe() {} }, ResizeObserver: class { observe() {} }, getComputedStyle: () => ({ marginTop: "10", marginBottom: "4" }), setInterval: () => 1, setTimeout: () => 1, clearInterval() {}, performance: { now: () => 100 }, order, console });
+  class Navigator { get mediaDevices() { return { enumerateDevices: async () => [{kind:'videoinput',deviceId:'canary'}] }; } }
+  const navigator = new Navigator();
+  context = vm.createContext({ Document, document, window, parent, Navigator, navigator, TextEncoder, Event: NativeEvent, Element, HTMLElement: Element, HTMLInputElement: Input, HTMLLabelElement: Label, MutationObserver: class { observe() {} }, ResizeObserver: class { constructor(callback) { resizeObservers.push(callback); } observe() {} }, getComputedStyle: () => ({ marginTop: "10", marginBottom: "4" }), setInterval: callback => { intervals.push(callback); return intervals.length; }, setTimeout: () => 1, clearInterval() {}, performance: { now: () => now }, order, console });
   vm.runInContext(scriptOf(srcdoc), context);
-  return { order, messages, styles, scriptErrors, body, context, parent, dispatch, createEvent: (type, data) => new NativeEvent(type, data), eventState: (event) => eventStates.get(event), input: (options) => new Input(options), label: (options) => new Label(options), event: (data, extras = {}) => dispatch(new NativeEvent("message", { source: parent, data, ports: [], ...extras })) };
+  return { order, messages, styles, scriptErrors, commands, body, context, parent, dispatch, intervals, resizeObservers, setNow: value => { now = value; }, createEvent: (type, data) => new NativeEvent(type, data), eventState: (event) => eventStates.get(event), input: (options) => new Input(options), label: (options) => new Label(options), event: (data, extras = {}) => dispatch(new NativeEvent("message", { source: parent, data, ports: [], ...extras })) };
 }
+
+test('startup polling and resize observations report a stable height only once, then report a real change', async () => {
+  const { buildWrapperDocument } = await adapter();
+  const child = childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
+  child.body.scrollHeight = 396; // 410 including body margins.
+  child.event({ ...base, type: 'bind' });
+  child.event({ ...base, type: 'init', card });
+  for (let index = 1; index <= 45; index++) {
+    child.setNow(100 + index * 200);
+    child.intervals[0]();
+    child.resizeObservers[0]();
+    child.dispatch(child.createEvent('resize'));
+  }
+  assert.deepEqual(child.messages.filter(message => message.type === 'resize').map(message => message.height), [410]);
+  child.body.scrollHeight = 416;
+  child.setNow(10000);
+  child.resizeObservers[0]();
+  assert.deepEqual(child.messages.filter(message => message.type === 'resize').map(message => message.height), [410, 430]);
+});
+
+test('fixed child removes device enumeration before model code and seals both recovery paths', async () => {
+  const {buildWrapperDocument}=await adapter();
+  const harness=wrapperHarness(buildWrapperDocument);
+  const child=childHarness(harness.frame.srcdoc);
+  assert.equal(vm.runInContext('navigator.mediaDevices',child.context),undefined);
+  assert.equal(vm.runInContext('Object.getOwnPropertyDescriptor(Navigator.prototype,"mediaDevices").get',child.context),undefined);
+  assert.equal(vm.runInContext('Reflect.deleteProperty(navigator,"mediaDevices")',child.context),false);
+  assert.equal(vm.runInContext('Reflect.defineProperty(Navigator.prototype,"mediaDevices",{value:{enumerateDevices(){return "leak"}}})',child.context),false);
+  assert.equal(vm.runInContext('Object.setPrototypeOf(navigator,{mediaDevices:{enumerateDevices(){return "leak"}}}); navigator.mediaDevices',child.context),undefined);
+});
+
+test('model cannot rewrite the document to erase trusted file and message listeners', async () => {
+  const {buildWrapperDocument}=await adapter();
+  const harness=wrapperHarness(buildWrapperDocument);
+  for(const method of ['open','write','writeln']) {
+    const child=childHarness(harness.frame.srcdoc);
+    assert.throws(()=>vm.runInContext(`document.${method}('<input type="file">')`,child.context),/rewriting is disabled/);
+    assert.throws(()=>vm.runInContext(`Document.prototype.${method}.call(document,'<input type="file">')`,child.context),/rewriting is disabled/);
+    assert.equal(vm.runInContext(`Reflect.deleteProperty(document,'${method}')`,child.context),false);
+    assert.equal(vm.runInContext(`Reflect.defineProperty(Document.prototype,'${method}',{value:()=>{}})`,child.context),false);
+    const file=child.input({type:'file'});
+    const drop=child.createEvent('drop',{target:file,dataTransfer:{files:[{}]}});
+    child.dispatch(drop);
+    assert.equal(child.eventState(drop).defaultPrevented,true);
+    assert.equal(child.eventState(drop).immediateStopped,true);
+  }
+});
 
 test("pinned files match the source receipt and full MIT notice", () => {
   const root = new URL("../third_party/open-intelligent-ui/", import.meta.url);
@@ -228,8 +282,9 @@ test("child installs markup and CSS before executing exact script text once", as
   assert.equal(child.context.payload, "</script><script>unexpected()</script>");
   assert.equal(child.body.html, card.html);
   assert.equal(child.styles[0].textContent, card.css);
-  assert.deepEqual(child.messages.map((message) => message.type), ["bootstrap", "resize", "ready"]);
-  assert.equal(child.messages[1].height, 214);
+  // Main accepts resize only after ready, so the initial height must follow it.
+  assert.deepEqual(child.messages.map((message) => message.type), ["bootstrap", "ready", "resize"]);
+  assert.equal(child.messages[2].height, 214);
   child.event({ ...base, type: "ping", nonce: "trusted-challenge" });
   child.event({ ...base, type: "ping", nonce: "wrong", revisionDigest: "b".repeat(64) });
   assert.equal(child.messages.at(-1).nonce, "trusted-challenge");
@@ -263,6 +318,32 @@ test("child window capture blocks dropped and pasted files before later model li
     assert.equal(child.eventState(event).immediateStopped, true, type);
   }
   assert.deepEqual(Array.from(child.context.delivered), []);
+});
+
+test("model code cannot write the clipboard through copy/cut handlers or execCommand", async () => {
+  const { buildWrapperDocument } = await adapter();
+  const child = childHarness(wrapperHarness(buildWrapperDocument).frame.srcdoc);
+  child.event({ ...base, type: "bind" });
+  child.event({ ...base, type: "init", card: { ...card, js: `globalThis.written = [];
+    window.addEventListener("copy", (event) => globalThis.written.push("copy"), true);
+    window.addEventListener("cut", (event) => globalThis.written.push("cut"), true);
+    Reflect.apply = () => "hostile apply"; String.prototype.toLowerCase = () => "bold";` } });
+  for (const type of ["copy", "cut"]) {
+    const event = child.createEvent(type, { clipboardData: { setData() { throw new Error("model data reached the clipboard"); } } });
+    child.dispatch(event);
+    assert.equal(child.eventState(event).defaultPrevented, true, type);
+    assert.equal(child.eventState(event).immediateStopped, true, type);
+  }
+  assert.deepEqual(Array.from(child.context.written), []);
+  for (const command of ["copy", "CUT", "Paste"]) {
+    assert.throws(() => vm.runInContext(`document.execCommand(${JSON.stringify(command)})`, child.context), /clipboard is unavailable/, command);
+    assert.throws(() => vm.runInContext(`Document.prototype.execCommand.call(document, ${JSON.stringify(command)})`, child.context), /clipboard is unavailable/, command);
+  }
+  // The name is read once: one that says "copy" on a second reading reaches the native command as "bold".
+  assert.equal(vm.runInContext(`document.execCommand({ n: 0, toString() { return this.n++ ? "copy" : "bold"; } })`, child.context), true);
+  assert.deepEqual(child.commands, ["bold"]);
+  assert.equal(vm.runInContext(`Reflect.deleteProperty(document, "execCommand")`, child.context), false);
+  assert.equal(vm.runInContext(`Reflect.defineProperty(Document.prototype, "execCommand", { value: () => true })`, child.context), false);
 });
 
 test("child file guards use saved native event methods despite prototype and instance overrides", async () => {

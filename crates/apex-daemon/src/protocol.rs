@@ -388,7 +388,7 @@ where
                         match need {
                             Ok(need) => {
                                 in_flight += 1;
-                                run(Arc::clone(&daemon.host), id, command, need, replies_tx.clone());
+                                run(Arc::clone(&daemon.host), id, command, need, replies_tx.clone(), hello.client_capability);
                             }
                             Err(why) => {
                                 if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), why)).await {
@@ -476,11 +476,11 @@ where
 
 /// Run `command` on its own task and send its result to `replies`, with
 /// what a device needed to run it (`need`), to be checked again on delivery.
-fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>) {
+fn run(host: Arc<Host>, id: u64, command: Command, need: Option<authority::Need>, replies: mpsc::UnboundedSender<Reply>, client_capability: apex_host::GeneratedUiCapability) {
     let session = matches!(command, Command::SessionLoad {});
     let task = {
         let host = Arc::clone(&host);
-        tokio::spawn(async move { host.call(command).await })
+        tokio::spawn(async move { host.call_with_client_capability(command, client_capability).await })
     };
     tokio::spawn(async move {
         let result = match task.await {
@@ -559,6 +559,7 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
 struct Hello {
     id: Value,
     since: Option<Since>,
+    client_capability: apex_host::GeneratedUiCapability,
 }
 
 /// Where a returning client left off.
@@ -588,7 +589,13 @@ fn read_hello(text: &str, trust: &Trust, daemon: &Daemon) -> Result<Hello, Strin
         }
     }
     let since = serde_json::from_value(args["since"].clone()).ok();
-    Ok(Hello { id, since })
+    // Capabilities are informational, not authorization. Old, malformed,
+    // unapproved-runtime and phone/browser hellos all retain comparison.
+    let claimed = &args["client_capabilities"];
+    let capabilities = if claimed.to_string().len() <= 1024 {
+        serde_json::from_value::<apex_host::ClientCapabilities>(claimed.clone()).unwrap_or_default()
+    } else { Default::default() };
+    Ok(Hello { id, since, client_capability: capabilities.generated_ui_capability() })
 }
 
 /// Compare without stopping at the first difference.
@@ -641,6 +648,32 @@ mod tests {
         let mut client = connect_to(&daemon, trust);
         client._data = Some(data);
         client
+    }
+
+    #[tokio::test]
+    async fn client_capabilities_never_enable_unreviewed_runtime_or_authorize_commands() {
+        let (daemon, _data) = daemon();
+        let claim = json!({ "generated_ui": { "protocolVersion": 1, "adapterVersion": "open-intelligent-ui-8391a94-deck-1", "securityPolicyVersion": "generated-ui-deny-all-1", "electronVersion": "44.5.1", "chromiumVersion": "152.0.7977.130" } });
+        for capabilities in [Value::Null, json!({}), claim.clone(), json!({ "generated_ui": true }), json!({"generated_ui": {"verified":true}}), json!({"generated_ui":claim["generated_ui"],"unexpected":true})] {
+            for trust in [Trust::Local, Trust::Token, Trust::Device("paired-desktop".into())] {
+                let frame = json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret","client_capabilities":capabilities}});
+                let hello = read_hello(&frame.to_string(), &trust, &daemon).unwrap();
+                assert_eq!(hello.client_capability, apex_host::GeneratedUiCapability::Unsupported);
+            }
+        }
+        // The reviewed registry tuple selects generated guidance, and it still authorizes nothing.
+        let registry: Value = serde_json::from_str(include_str!("../../../shared/generated-ui-runtime.json")).unwrap();
+        let build = &registry["verifiedRuntimeBuilds"][0];
+        let reviewed = json!({ "generated_ui": { "protocolVersion": registry["protocolVersion"], "adapterVersion": registry["adapterVersion"], "securityPolicyVersion": registry["securityPolicyVersion"], "electronVersion": build["electronVersion"], "chromiumVersion": build["chromiumVersion"] } });
+        let frame = json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret","client_capabilities":reviewed}});
+        assert_eq!(read_hello(&frame.to_string(), &Trust::Token, &daemon).unwrap().client_capability, apex_host::GeneratedUiCapability::Verified);
+        for capabilities in [claim, reviewed] {
+            let mut client = connect_to(&daemon, Trust::Token);
+            client.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret","client_capabilities":capabilities}})).await;
+            assert!(client.next().await.unwrap().get("ok").is_some());
+            client.send(json!({"id":1,"cmd":"devices_list","args":{}})).await;
+            assert_eq!(client.next().await.unwrap()["err"], "not allowed from a remote connection");
+        }
     }
 
     fn connect_to(daemon: &Arc<Daemon>, trust: Trust) -> Client {

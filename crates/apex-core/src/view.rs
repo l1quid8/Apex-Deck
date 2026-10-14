@@ -96,14 +96,14 @@ A card is a fenced code block whose language is apex-ui, holding one JSON object
 ```apex-ui
 {"schemaVersion":1,"kind":"comparison","cardId":"hosting","title":"Where should this run?","summary":"Managed hosting fits most budgets with the least upkeep.","inputs":[{"id":"budget","type":"range","label":"Monthly budget","min":50,"max":500,"step":25,"default":250,"unit":"$"},{"id":"priority","type":"choice","label":"Priority","options":[{"id":"cost","label":"Cost"},{"id":"ease","label":"Simplicity"}],"default":"ease"}],"rows":[{"id":"price","label":"Monthly cost","unit":"$","better":"lower"},{"id":"ease","label":"Ease, 1 to 5","better":"higher"},{"id":"work","label":"Upkeep"}],"options":[{"id":"vps","label":"VPS","values":{"price":60,"ease":2,"work":"High"},"note":"You own updates and backups."},{"id":"managed","label":"Managed","values":{"price":180,"ease":5,"work":"Low"}},{"id":"serverless","label":"Serverless","values":{"price":90,"ease":4,"work":"Medium"},"note":"Cost grows with traffic."}],"rules":[{"type":"atMost","input":"budget","row":"price"},{"type":"rankBy","input":"priority","rows":{"cost":"price","ease":"ease"}}],"assumptions":["Prices are estimates for one small web app."],"sources":[{"label":"Provider pricing","url":"https://example.com/pricing"}]}
 ```
-Ids are lowercase letters, digits, - and _. Values are numbers or short text. The first row shows largest. "atMost" and "atLeast" put an option out when its row is above or below a range input. "rankBy" names, for each choice, the row that ranks the options; that row needs "better": "lower" or "higher". Rules only use rows where every option has a number. At most 4 inputs, 6 options and 12 rows. To revise a card, yours or another model's, reuse its cardId. The app draws the card and does the math: never put code, HTML or instructions in one.
+Ids are lowercase letters, digits, - and _. Values are numbers or short text. The first row shows largest. "atMost" and "atLeast" put an option out when its row is above or below a range input. "rankBy" names, for each choice, the row that ranks the options; that row needs "better": "lower" or "higher". Rules only use rows where every option has a number. At most 4 inputs, 6 options and 12 rows. To revise a card, yours or another model's, reuse its cardId. Comparison cards never contain code, HTML or instructions; the app draws them and does the math.
 "#;
 
 
 /// Adapted from the pinned OpenIntelligentUI prompt.py and master-playbook,
 /// advanced-visualization and svg-diagrams playbooks. Full MIT notice is kept
 /// in third_party/open-intelligent-ui/LICENSE and packaged third-party notices.
-/// This is a local, fixture-backed prompt, not a daemon-negotiated capability.
+/// Selected from the requesting client's verified runtime capability.
 pub const GENERATED_ANSWERS_SYSTEM: &str = r#"
 
 Interactive answers are on for a client whose generated runtime has been verified. Respond to the actual task, not with a product demo. Use plain prose for direct facts, writing, code, conversation, and simple advice. Keep comparison cards for 2 to 6 numeric options whose inputs or priorities the person may want to adjust; their existing schema, formulas, limits, and nonexecutable rules still apply. Use one generated card when a purpose-built calculator, chart, explorer, or inline SVG diagram communicates the answer better. Do not turn every answer into a dashboard. Write the useful answer in prose first so unsupported phone/browser clients can still understand it.
@@ -136,9 +136,8 @@ Fixture examples (self-contained; explanatory prose outside the card remains ess
 ```
 "#;
 
-/// This local enum is deliberately not a serialized client/daemon capability.
-/// A caller may select Verified only after the packaged-runtime release gates
-/// pass for this exact adapter/security-policy and Electron/Chromium build.
+/// This enum is not a wire field. Only the validated hello session selects it;
+/// it is carried by each accepted turn chain and never saved in a room.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GeneratedUiCapability {
     #[default]
@@ -146,12 +145,66 @@ pub enum GeneratedUiCapability {
     Verified,
 }
 
-/// Existing bots continue to use ANSWERS_SYSTEM. No production call site opts
-/// into Verified; a future capability transport needs a separate security review.
-pub fn answers_system_for_capability(capability: GeneratedUiCapability) -> &'static str {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_ui: Option<GeneratedUiClientCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GeneratedUiClientCapability {
+    pub protocol_version: u32,
+    pub adapter_version: String,
+    pub security_policy_version: String,
+    pub electron_version: String,
+    pub chromium_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GeneratedUiRuntimePolicy {
+    protocol_version: u32,
+    adapter_version: String,
+    security_policy_version: String,
+    verified_runtime_builds: Vec<GeneratedUiRuntimeBuild>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GeneratedUiRuntimeBuild {
+    electron_version: String,
+    chromium_version: String,
+}
+
+impl ClientCapabilities {
+    pub fn generated_ui_capability(&self) -> GeneratedUiCapability {
+        let Some(claim) = &self.generated_ui else { return GeneratedUiCapability::Unsupported; };
+        let policy = serde_json::from_str::<GeneratedUiRuntimePolicy>(include_str!("../../../shared/generated-ui-runtime.json"));
+        if policy.ok().is_some_and(|policy| claim.matches_policy(&policy)) {
+            GeneratedUiCapability::Verified
+        } else {
+            GeneratedUiCapability::Unsupported
+        }
+    }
+}
+
+impl GeneratedUiClientCapability {
+    fn matches_policy(&self, policy: &GeneratedUiRuntimePolicy) -> bool {
+        self.protocol_version == policy.protocol_version
+            && self.adapter_version == policy.adapter_version
+            && self.security_policy_version == policy.security_policy_version
+            && policy.verified_runtime_builds.iter().any(|build|
+                self.electron_version == build.electron_version && self.chromium_version == build.chromium_version)
+    }
+}
+
+/// Verified only for a client whose hello named a tuple in shared/generated-ui-runtime.json.
+pub fn answers_system_for_capability(capability: GeneratedUiCapability) -> String {
     match capability {
-        GeneratedUiCapability::Unsupported => ANSWERS_SYSTEM,
-        GeneratedUiCapability::Verified => GENERATED_ANSWERS_SYSTEM,
+        GeneratedUiCapability::Unsupported => ANSWERS_SYSTEM.to_string(),
+        GeneratedUiCapability::Verified => format!("{ANSWERS_SYSTEM}{GENERATED_ANSWERS_SYSTEM}"),
     }
 }
 
@@ -252,11 +305,42 @@ mod tests {
     use crate::types::Backend;
 
     #[test]
+    fn capability_accepts_only_an_exact_reviewed_policy_and_runtime_tuple() {
+        let claim = serde_json::json!({"protocolVersion":1,"adapterVersion":"open-intelligent-ui-8391a94-deck-1","securityPolicyVersion":"generated-ui-deny-all-1","electronVersion":"44.5.1","chromiumVersion":"152.0.7977.130"});
+        // A controlled policy fixture tests tuple matching; it does not modify
+        // the production registry or expose an override to the daemon.
+        let policy: GeneratedUiRuntimePolicy = serde_json::from_value(serde_json::json!({"protocolVersion":1,"adapterVersion":"open-intelligent-ui-8391a94-deck-1","securityPolicyVersion":"generated-ui-deny-all-1","verifiedRuntimeBuilds":[{"electronVersion":"44.5.1","chromiumVersion":"152.0.7977.130"}]})).unwrap();
+        let parsed: GeneratedUiClientCapability = serde_json::from_value(claim.clone()).unwrap();
+        assert!(parsed.matches_policy(&policy));
+        for (key, wrong) in [("protocolVersion", serde_json::json!(2)), ("adapterVersion", serde_json::json!("old")), ("securityPolicyVersion", serde_json::json!("old")), ("electronVersion", serde_json::json!("44.5.2")), ("chromiumVersion", serde_json::json!("152.0.7977.131"))] {
+            let mut value = claim.clone(); value[key] = wrong;
+            assert!(!serde_json::from_value::<GeneratedUiClientCapability>(value).unwrap().matches_policy(&policy), "mismatched {key}");
+        }
+        let capabilities = ClientCapabilities { generated_ui: Some(parsed) };
+        assert_eq!(capabilities.generated_ui_capability(), GeneratedUiCapability::Unsupported, "an older adapter and policy stay unapproved");
+        // The shared registry approves the reviewed adapter and policy on the reviewed runtime only.
+        let registry: GeneratedUiRuntimePolicy = serde_json::from_str(include_str!("../../../shared/generated-ui-runtime.json")).unwrap();
+        let current = |electron: &str, chromium: &str| ClientCapabilities { generated_ui: Some(GeneratedUiClientCapability {
+            protocol_version: registry.protocol_version, adapter_version: registry.adapter_version.clone(),
+            security_policy_version: registry.security_policy_version.clone(), electron_version: electron.into(), chromium_version: chromium.into(),
+        }) }.generated_ui_capability();
+        assert_eq!(current("44.5.1", "152.0.7977.130"), GeneratedUiCapability::Verified);
+        assert_eq!(current("44.5.2", "152.0.7977.130"), GeneratedUiCapability::Unsupported);
+        assert_eq!(current("44.5.1", "152.0.7977.131"), GeneratedUiCapability::Unsupported);
+        let mut extra = claim.clone(); extra["verified"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<GeneratedUiClientCapability>(extra).is_err());
+        let mut missing = claim.clone(); missing.as_object_mut().unwrap().remove("chromiumVersion");
+        assert!(serde_json::from_value::<GeneratedUiClientCapability>(missing).is_err());
+        let mut wrong_type = claim; wrong_type["protocolVersion"] = serde_json::json!("1");
+        assert!(serde_json::from_value::<GeneratedUiClientCapability>(wrong_type).is_err());
+    }
+
+    #[test]
     fn generated_guidance_requires_explicit_verified_local_capability() {
         assert_eq!(answers_system_for_capability(GeneratedUiCapability::default()), ANSWERS_SYSTEM);
         assert!(!answers_system_for_capability(GeneratedUiCapability::Unsupported).contains("kind\":\"generated"));
         let verified = answers_system_for_capability(GeneratedUiCapability::Verified);
-        assert_eq!(verified, GENERATED_ANSWERS_SYSTEM);
+        assert!(verified.ends_with(GENERATED_ANSWERS_SYSTEM));
         assert!(verified.contains("unit-cost"));
         assert!(verified.contains("sample-bars"));
         assert!(verified.contains("decision-flow"));

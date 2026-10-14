@@ -23,6 +23,9 @@ files:
   - "!desktop/run-smoke.mjs"
   - "!desktop/dev.mjs"
   - "!desktop/run-widget-smoke.mjs"
+  - "!desktop/generated-ui/security-*.mjs"
+  - "!desktop/generated-ui/run-packaged-*.mjs"
+  - "!desktop/generated-ui/runtime-smoke.mjs"
 extraResources:
   - from: target/release/apex-daemon
     to: bin/apex-daemon

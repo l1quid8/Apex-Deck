@@ -1,4 +1,5 @@
 /** Trusted UI lifecycle. Main owns validation, approval digests and execution. */
+import type { GeneratedRuntimeCapability } from '../../shared/generatedUiCapability.mjs';
 export interface GeneratedIdentity { threadId: string; seq: number; cardId: string; hostId: string }
 export interface GeneratedBounds { x: number; y: number; width: number; height: number }
 export interface GeneratedEvent {
@@ -9,7 +10,7 @@ export interface GeneratedEvent {
   reason?: string;
 }
 export interface GeneratedApi {
-  capability(): Promise<{ enabled: boolean; reason: string }>;
+  capability(): Promise<GeneratedRuntimeCapability>;
   run(request: { requestId: string; source: string; identity: GeneratedIdentity; bounds: GeneratedBounds }): Promise<{ runId: string; revisionDigest: string }>;
   /** Revoke a click's authority even before run() returns a runId. */
   cancel(requestId: string): Promise<void>;
@@ -55,10 +56,10 @@ export class GeneratedRun {
     this.state = { ...this.state, ...patch };
     this.changed();
   }
-  async checkCapability() {
+  async checkCapability(preserveReasonWhenEnabled = false) {
     try {
       const result = await this.api?.capability();
-      this.update({ enabled: result?.enabled === true, reason: result?.reason ?? "This client shows the text version of this interface." });
+      this.update({ enabled: result?.enabled === true, reason: result?.enabled && preserveReasonWhenEnabled ? this.state.reason : result?.reason ?? "This client shows the text version of this interface." });
     } catch {
       this.update({ enabled: false, reason: "This interface is unavailable. The text version is below." });
     }
@@ -83,6 +84,7 @@ export class GeneratedRun {
       if (generation === this.generation) {
         this.requestId = null;
         this.update({ phase: "idle", reason: "This interface could not start. You can try again.", discuss: "" });
+        void this.checkCapability(true);
       }
     }
   }
@@ -101,6 +103,7 @@ export class GeneratedRun {
       this.requestId = null;
       ++this.generation;
       this.update({ phase: "idle", reason: event.reason ?? "Interface stopped. Run it again to start fresh.", discuss: "" });
+      void this.checkCapability(true);
     }
   }
   place(bounds: GeneratedBounds | null) {
@@ -124,6 +127,7 @@ export class GeneratedRun {
       ...(requestId && this.api ? [this.api.cancel(requestId)] : []),
       ...(runId && this.api ? [this.api.stop(runId)] : []),
     ]);
+    await this.checkCapability(true);
   }
   dispose() {
     if (this.disposed) return;

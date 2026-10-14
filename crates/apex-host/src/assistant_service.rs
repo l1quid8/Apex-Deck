@@ -1178,8 +1178,10 @@ impl Host {
         text: Option<String>,
         targets: Vec<ParticipantId>,
         _hops: Option<usize>,
+        answers: Option<bool>,
+        capability: apex_core::GeneratedUiCapability,
     ) -> Result<bool, String> {
-        self.continue_thread_expected(id, text, targets, None).await
+        self.continue_thread_expected_with_answer_guidance(id, text, targets, None, answers, capability).await
     }
 
     async fn continue_thread_expected(
@@ -1188,6 +1190,18 @@ impl Host {
         text: Option<String>,
         targets: Vec<ParticipantId>,
         expected_revision: Option<u64>,
+    ) -> Result<bool, String> {
+        self.continue_thread_expected_with_answer_guidance(id, text, targets, expected_revision, None, apex_core::GeneratedUiCapability::Unsupported).await
+    }
+
+    async fn continue_thread_expected_with_answer_guidance(
+        self: &Arc<Self>,
+        id: &str,
+        text: Option<String>,
+        targets: Vec<ParticipantId>,
+        expected_revision: Option<u64>,
+        answers: Option<bool>,
+        capability: apex_core::GeneratedUiCapability,
     ) -> Result<bool, String> {
         // Ordinary chats do not participate in task integration. Let their
         // read turns continue while another task is being accepted.
@@ -1368,7 +1382,7 @@ impl Host {
             .prepare_post(id, &handle, &content, Some(selected), false)
             .await
         {
-            Ok(batch) => batch,
+            Ok(batch) => batch.with_answer_guidance(answers, capability),
             Err(error) => {
                 let outcome = TaskOutcome {
                     status: TaskStatus::Failed,
@@ -4079,6 +4093,47 @@ mod tests {
     }
 
     #[test]
+    fn assistant_owned_continuations_keep_each_commands_answer_guidance() {
+        use apex_core::GeneratedUiCapability::{Unsupported, Verified};
+
+        let f = fixture();
+        let task = approve_into_parent(&f, "continuation-guidance", TaskMode::ReadOnly);
+        let child = task.execution_thread_id.clone().unwrap();
+        let bot = Arc::new(apex_core::testing::ScriptedParticipant::new("null", &["done"; 9]));
+        f.runtime.block_on(async {
+            let handle = f.host.handle(&child).unwrap();
+            let mut room = handle.room.lock().await;
+            *room = apex_core::Room::restore(vec![bot.clone()], room.snapshot());
+        });
+
+        let mut failures = Vec::new();
+        for (answers, capability, want_comparison, want_generated) in [
+            (None, Verified, true, true),
+            (Some(false), Verified, false, false),
+            (None, Unsupported, true, false),
+        ] {
+            for kind in ["post", "post_to", "turn"] {
+                let command = match kind {
+                    "post" => crate::Command::RoomPost { id: child.clone(), text: "Continue with a calculator".into(), interactive_answers: answers },
+                    "post_to" => crate::Command::RoomPostTo { id: child.clone(), text: "Continue with a chart".into(), targets: vec![ParticipantId::new("null")], routed: false, interactive_answers: answers },
+                    _ => crate::Command::RoomTurn { id: child.clone(), participants: vec![ParticipantId::new("null")], hops: Some(0), interactive_answers: answers },
+                };
+                f.runtime.block_on(f.host.call_with_client_capability(command, capability)).unwrap();
+                assert_eq!(wait_for(&f, &task.id).status, TaskStatus::ReadyForReview);
+                let request = bot.requests().pop().unwrap();
+                let comparison = request.system.contains("kind\":\"comparison");
+                let generated = request.system.contains("kind\":\"generated");
+                if (comparison, generated) != (want_comparison, want_generated) {
+                    failures.push(format!("{kind} answers={answers:?} capability={capability:?}: comparison={comparison}, generated={generated}"));
+                }
+            }
+        }
+        assert_eq!(bot.requests().len(), 9);
+        assert!(f.runtime.block_on(async { f.host.handle(&child).unwrap().room.lock().await.answers_handle().load(Ordering::SeqCst) }), "a continuation preference must not change the room default");
+        assert!(failures.is_empty(), "continuation guidance mismatches: {failures:?}");
+    }
+
+    #[test]
     fn continuation_invalidates_the_previous_review_and_captures_a_new_diff() {
         let f = fixture();
         let response = f
@@ -4098,7 +4153,9 @@ mod tests {
                     child,
                     Some("Please make one more pass".into()),
                     vec![ParticipantId::new("null")],
-                    None
+                    None,
+                    None,
+                    apex_core::GeneratedUiCapability::Unsupported
                 ))
                 .unwrap(),
             true
