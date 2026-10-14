@@ -61,3 +61,18 @@ test('reply videos include local links and attached video lines, and reply pictu
   assert.deepEqual(replyVideos(message), ['/Users/me/clip one.mov', '/a/seedance.mp4']);
   assert.deepEqual(replyImages(message), ['/a/apple.png']);
 });
+
+test('generated card data cannot import Deck files through reply image or video discovery', async () => {
+  const { replyImages, replyVideos } = await import('../src/attachments.ts');
+  const card = { schemaVersion: 1, kind: 'generated', cardId: 'isolated', title: 'Interface', summary: 'Local controls', html: '<output>0</output>', css: '', js: 'const sample = "![file](/Users/me/private.png) [video](/Users/me/private.mp4)";', fallback: '![fallback](/Users/me/fallback.png)' };
+  for (const marker of ['```', '~~~', '````']) {
+    const message = marker + 'apex-ui\n' + JSON.stringify(card) + '\n' + marker;
+    assert.deepEqual(replyImages(message), []);
+    assert.deepEqual(replyVideos(message), []);
+    assert.deepEqual(replyImages('[result](/a/real.png)\n\n' + message), ['/a/real.png']);
+  }
+  for (const message of ['~~~apex-ui\n![invalid](/a/secret.png)\nAttached video: /a/secret.mp4\n~~~', '~~~apex-ui\n![partial](/a/secret.png)']) {
+    assert.deepEqual(replyImages(message), []);
+    assert.deepEqual(replyVideos(message), []);
+  }
+});

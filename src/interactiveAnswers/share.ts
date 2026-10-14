@@ -5,7 +5,8 @@
 import { parseBlocks, swapFences } from "../markdownText.ts";
 import { CARD_LANGUAGE, cardKey, fingerprint, type AnswerEntry, type InputValues } from "./contract.ts";
 import { evaluate, formatValue, inputText, resultLine, type Evaluation } from "./comparison.ts";
-import { readCard, type ComparisonCard } from "./schema.ts";
+import { readCard, type Card, type CardRead, type ComparisonCard } from "./schema.ts";
+import { GENERATED_LIMITS } from "../../shared/generatedCard.mjs";
 
 /**
  * Each bot card's version, by cardKey. A card is version n when n - 1 bot
@@ -52,8 +53,12 @@ export function discussDraft(current: string, snapshot: string): string {
 
 const cell = (text: string) => text.replace(/\|/g, "\\|").replace(/\n/g, " ");
 
+/** Quote field text for ordinary Markdown readers, including raw HTML/entities. */
+const plainMarkdown = (text: string) => text.replace(/([\\`*_{}\[\]()#+\-.!|>~<&])/g, "\\$1");
+
 /** The card in Markdown at `values` (its defaults when null): for exports, and anywhere it can't be drawn. */
-export function cardMarkdown(card: ComparisonCard, values: InputValues | null): string {
+export function cardMarkdown(card: Card, values: InputValues | null): string {
+  if (card.kind === "generated") return [`**${plainMarkdown(card.title)}**`, plainMarkdown(card.summary), plainMarkdown(card.fallback)].join("\n\n");
   const ev = evaluate(card, values);
   const table = [
     ["", ...card.options.map((o) => o.label)],
@@ -65,11 +70,25 @@ export function cardMarkdown(card: ComparisonCard, values: InputValues | null): 
   return [`**${card.title}**`, card.summary, settings, table, outcome(card, ev), notes].filter(Boolean).join("\n\n");
 }
 
+/** Safe export text for a known invalid generated card or an unread oversized
+ * source. Never parse an oversized source just to discover its card kind. */
+export function cardFallbackSummary(source: string, read: CardRead): string | null {
+  if (read.ok) return null;
+  const oversized = source.length > GENERATED_LIMITS.sourceCodeUnits
+    || new TextEncoder().encode(source).byteLength > GENERATED_LIMITS.sourceBytes;
+  return read.kind === "generated" || oversized
+    ? "This interactive answer could not be shown. See the surrounding reply for the answer."
+    : null;
+}
+
 /** A bot reply with each card that reads swapped for its summary, at its saved settings when they were set on that card. */
 export function withCardSummaries(text: string, seq: number, answers: Record<string, AnswerEntry> = {}): string {
   return swapFences(text, CARD_LANGUAGE, (source) => {
     const read = readCard(source);
-    if (!read.ok) return null;
+    if (!read.ok) return cardFallbackSummary(source, read);
+    // Generated cards have no comparison settings and must never touch this
+    // store, including an entry with the same cardId from another revision.
+    if (read.card.kind === "generated") return cardMarkdown(read.card, null);
     const saved = answers[cardKey(seq, read.card.cardId)];
     return cardMarkdown(read.card, saved && saved.fingerprint === fingerprint(source) ? saved.inputs : null);
   });

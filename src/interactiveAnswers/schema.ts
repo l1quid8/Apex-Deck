@@ -1,11 +1,14 @@
 // Interactive answers: the card format. A card is a fenced `apex-ui` block of
 // JSON at the end of a bot's reply. Every value is checked here, so the card
 // component only ever draws a card that makes sense; anything else gets a
-// reason to show instead. Unknown fields are ignored, so a model that adds
-// one still gets its card. Shared names are in contract.ts.
+// reason to show instead. Comparison cards ignore unknown fields; generated
+// cards use the strict contract shared with Electron main.
+
+import { GENERATED_LIMITS, validateGeneratedCard, type GeneratedCard } from "../../shared/generatedCard.mjs";
+export type { GeneratedCard } from "../../shared/generatedCard.mjs";
 
 export const SCHEMA_VERSION = 1;
-/** The longest card source read, in characters. */
+/** The longest comparison source read, in JavaScript UTF-16 code units. */
 export const MAX_CARD_CHARS = 16_000;
 
 export interface RangeInput { id: string; type: "range"; label: string; min: number; max: number; step: number; default: number; unit?: string }
@@ -39,7 +42,8 @@ export interface ComparisonCard {
 }
 
 /** A block read as a card, or why it can't be one. `unsupported`: a newer app could draw it. */
-export type CardRead = { ok: true; card: ComparisonCard } | { ok: false; reason: string; unsupported: boolean };
+export type Card = ComparisonCard | GeneratedCard;
+export type CardRead = { ok: true; card: Card } | { ok: false; reason: string; unsupported: boolean; kind?: "generated" };
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 
@@ -171,13 +175,29 @@ function rules(value: unknown, card: Pick<ComparisonCard, "inputs" | "rows" | "o
 
 /** Read a fenced block's text as a card. */
 export function readCard(source: string): CardRead {
-  if (source.length > MAX_CARD_CHARS) return { ok: false, reason: `The card is larger than ${MAX_CARD_CHARS.toLocaleString("en-US")} characters.`, unsupported: false };
+  // Bound parsing before reading kind. The larger outer cap admits generated
+  // cards; every other kind retains the comparison reader's original cap.
+  if (source.length > GENERATED_LIMITS.sourceCodeUnits) return { ok: false, reason: "The card source is larger than 131,072 UTF-16 code units.", unsupported: false };
+  if (new TextEncoder().encode(source).byteLength > GENERATED_LIMITS.sourceBytes) return { ok: false, reason: "The card source is larger than 131,072 UTF-8 bytes.", unsupported: false };
+  const comparisonTooLarge = (): CardRead => ({ ok: false, reason: `The card is larger than ${MAX_CARD_CHARS.toLocaleString("en-US")} characters.`, unsupported: false });
   let raw: unknown;
   try {
     raw = JSON.parse(source);
   } catch {
+    if (source.length > MAX_CARD_CHARS) return comparisonTooLarge();
     return { ok: false, reason: "The card isn't valid JSON.", unsupported: false };
   }
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && (
+    (raw as Record<string, unknown>).kind === "generated" ||
+    // Missing/mistyped generated discriminators must not expose code in
+    // text-only clients and exports. Valid comparison cards keep their
+    // permissive unknown-field contract and never enter this path.
+    ((raw as Record<string, unknown>).kind !== "comparison" && ["html", "css", "js"].some((key) => Object.hasOwn(raw, key)))
+  )) {
+    const read = validateGeneratedCard(raw);
+    return read.ok ? read : { ...read, kind: "generated" };
+  }
+  if (source.length > MAX_CARD_CHARS) return comparisonTooLarge();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, reason: "The card must be a JSON object.", unsupported: false };
   const top = raw as Record<string, unknown>;
   if (typeof top.schemaVersion !== "number") return { ok: false, reason: "The card has no schemaVersion.", unsupported: false };

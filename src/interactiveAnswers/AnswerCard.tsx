@@ -134,17 +134,18 @@ export function PreparingCard({ author }: { author: string }) {
 }
 
 /** A block that can't be drawn as a card: why, with its data tucked away. */
-export function CardFallback({ reason, source }: { reason: string; source: string }) {
+export function CardFallback({ reason, source, hideSource = false }: { reason: string; source: string; hideSource?: boolean }) {
+  const bounded = !hideSource && source.length <= 131_072 && new TextEncoder().encode(source).byteLength <= 131_072;
   return (
     <section className="answer-card broken">
       <span className="answer-eyebrow">Interactive answer</span>
       <p>This interactive answer can't be shown. {reason}</p>
-      <details className="answer-more">
+      {bounded && <details className="answer-more">
         <summary>Show the card's data</summary>
         <pre>
           <code>{source}</code>
         </pre>
-      </details>
+      </details>}
     </section>
   );
 }

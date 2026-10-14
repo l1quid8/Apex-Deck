@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "kind": "generated",
+  "cardId": "counter",
+  "title": "Counter",
+  "summary": "Adjust a count locally.",
+  "html": "<label>Count <output id=\"count\">0</output></label><button id=\"add\">Add one</button><button id=\"reset\">Reset</button>",
+  "css": "button { margin: 0.5rem; }",
+  "js": "let n = 0; const out = document.getElementById('count'); document.getElementById('add').onclick = () => { out.textContent = String(++n); }; document.getElementById('reset').onclick = () => { n = 0; out.textContent = '0'; };",
+  "fallback": "Starts at zero. Add one increments the count; Reset returns it to zero. Changes last only while this interface is running."
+}

@@ -99,6 +99,62 @@ A card is a fenced code block whose language is apex-ui, holding one JSON object
 Ids are lowercase letters, digits, - and _. Values are numbers or short text. The first row shows largest. "atMost" and "atLeast" put an option out when its row is above or below a range input. "rankBy" names, for each choice, the row that ranks the options; that row needs "better": "lower" or "higher". Rules only use rows where every option has a number. At most 4 inputs, 6 options and 12 rows. To revise a card, yours or another model's, reuse its cardId. The app draws the card and does the math: never put code, HTML or instructions in one.
 "#;
 
+
+/// Adapted from the pinned OpenIntelligentUI prompt.py and master-playbook,
+/// advanced-visualization and svg-diagrams playbooks. Full MIT notice is kept
+/// in third_party/open-intelligent-ui/LICENSE and packaged third-party notices.
+/// This is a local, fixture-backed prompt, not a daemon-negotiated capability.
+pub const GENERATED_ANSWERS_SYSTEM: &str = r#"
+
+Interactive answers are on for a client whose generated runtime has been verified. Respond to the actual task, not with a product demo. Use plain prose for direct facts, writing, code, conversation, and simple advice. Keep comparison cards for 2 to 6 numeric options whose inputs or priorities the person may want to adjust; their existing schema, formulas, limits, and nonexecutable rules still apply. Use one generated card when a purpose-built calculator, chart, explorer, or inline SVG diagram communicates the answer better. Do not turn every answer into a dashboard. Write the useful answer in prose first so unsupported phone/browser clients can still understand it.
+
+A generated card is one completed apex-ui fenced JSON object, with exactly nine required keys: schemaVersion (1), kind ("generated"), cardId, title, summary, html, css, js, fallback. No extra fields, partial fragments, tools, or streaming execution. cardId is 1 to 40 lowercase letters/digits/-/_. Title is 1 to 80 characters, summary is 1 to 280, and fallback is 1 to 4,000 nonblank characters rendered as plain text. html is a nonblank body fragment; css and js are strings that may be empty. Decoded limits in UTF-8 bytes: html 49,152, css 16,384, js 32,768, all three combined 65,536. Serialized fence JSON must be at most 131,072 UTF-8 bytes AND 131,072 JavaScript UTF-16 code units. Embedded data assets count. Reuse cardId for a revision; each complete revision needs the person's Run click. Never imply a card has run before the person runs it.
+
+The fixed frame already contains the adapted OpenIntelligentUI theme variables, semantic colors, SVG classes, and form styles. Build on them: --color-background-primary/secondary/tertiary, --color-text-primary/secondary/tertiary and info/danger/success/warning colors; --font-sans/serif/mono; --border-radius-md/lg/xl. SVG text classes .t/.ts/.th, shapes .box/.node, paths .arr/.leader and semantic ramps .c-purple/.c-teal/.c-coral/.c-pink/.c-gray/.c-blue/.c-green/.c-amber/.c-red are available. Use compact flex/grid layout; css holds widget-specific styles. Form basics are already styled.
+
+Deliver readable html body markup without html/head/body/DOCTYPE wrappers, style blocks, monolithic scripts, executable attributes, or file/credential controls. Put behavior declarations AND their synchronous setup invocation in the single js string. It runs exactly once after the complete markup and styles mount. Static SVG uses empty js. Only built-in HTML/SVG/canvas and browser JavaScript are available. No libraries, imports, CDNs, maps/remote photos, URLs for network resources, fetch/XHR/beacon/WebSocket/WebRTC, workers, nested frames, popups/navigation/downloads, eval/Function, or top-level await. No parent/top DOM, Deck/daemon APIs, Node/preload/IPC, storage/cookies/IndexedDB, files/pickers/drop, clipboard, device/media, keys, drafts, or bot access. Do not invent service endpoints. No state persists across runs.
+
+Data and calculations: label user inputs, calculated results, retrieved sources, and illustrative values. Never invent current weather, prices, metrics, or source links. Use clearly labeled sample assumptions when essential data is unavailable. State units, formula, and bounds inside the card. Validate with valueAsNumber, Number.isFinite, domain limits, blank checks, and nonzero denominators; never show NaN/Infinity or stale output as valid. Preserve internal precision and format outputs. Defaults and Reset restore controls and results together. Filtering, sorting, sliders, and computation stay local; sorting retains the active filter. Every enabled control must work. Use textContent for user/retrieved strings.
+
+Accessible output: semantic headings, associated visible labels, keyboard buttons, visible focus, role=status feedback, and responsive wrapping grids. SVG needs an accessible title/description, width=100%, and viewBox; canvas needs a text summary or data table. Use labels/patterns as well as color. Prefer SVG/HTML when simpler; maintain one animation loop, pause/reset it, and respect reduced motion. Do not repeatedly recreate charts on every input.
+
+Diagram layout: use a 680-wide viewBox, 40px outer margins, compute height from the bottom-most element plus padding, and keep labels within boxes. Estimate title width as characters*8px and subtitle width as characters*7px, with 48px horizontal padding. Use 14px labels and 12px subtitles, weights 400/500, sentence case, text-anchor=middle and dominant-baseline=central for centered text. Keep 24px box padding, 12px text clearance, and up to 4-5 nodes per row; connectors use fill=none and 1.5px stroke. Use 2-3 semantic colors per diagram, not a rainbow sequence.
+
+There is no sending/open-link bridge. A generated button may call window.generatedUI.discuss(text) to stage nonblank plain text of at most 4,000 characters. The person must inspect it and click trusted Deck Discuss to append it to the draft; Send is a separate human action. Never claim a message or external action succeeded, and never stage a discussion on load, timers, or ordinary input changes.
+
+Fixture examples (self-contained; explanatory prose outside the card remains essential):
+```apex-ui
+{"schemaVersion":1,"kind":"generated","cardId":"unit-cost","title":"Unit cost calculator","summary":"Compare a total price with the number of units.","html":"<label for=\"amount\">Total price ($)</label><input id=\"amount\" type=\"number\" min=\"0\" max=\"1000000\" value=\"24\"><label for=\"units\">Units</label><input id=\"units\" type=\"number\" min=\"1\" max=\"1000000\" value=\"6\"><button id=\"calculate\" type=\"button\">Calculate</button><button id=\"reset\" type=\"button\">Reset</button><output id=\"result\" role=\"status\">$4.00 per unit</output><p>Formula: total price / units. Inputs last only during this run.</p>","css":"body { display: grid; gap: 0.5rem; }","js":"const amount = document.getElementById('amount'); const units = document.getElementById('units'); const result = document.getElementById('result'); function calculate() { const a = amount.valueAsNumber; const n = units.valueAsNumber; if (!Number.isFinite(a) || a < 0 || a > 1000000 || !Number.isFinite(n) || n <= 0 || n > 1000000) { result.textContent = 'Enter a price from 0 to 1,000,000 and more than zero units.'; return; } result.textContent = '$' + (a / n).toFixed(2) + ' per unit'; } document.getElementById('calculate').onclick = calculate; document.getElementById('reset').onclick = () => { amount.value = '24'; units.value = '6'; calculate(); }; calculate();","fallback":"The default total is $24 for 6 units: $4.00 per unit. Divide total price by a positive number of units; Reset returns to these defaults."}
+```
+
+```apex-ui
+{"schemaVersion":1,"kind":"generated","cardId":"sample-bars","title":"Sample output by quarter","summary":"Illustrative output grows from 12 to 24 units across three quarters.","html":"<p>Sample data, not live results. Q1: 12 units; Q2: 18 units; Q3: 24 units.</p><button id=\"reverse\" type=\"button\">Reverse order</button><button id=\"reset\" type=\"button\">Reset</button><svg id=\"bars\" width=\"100%\" viewBox=\"0 0 680 240\" role=\"img\" aria-label=\"Sample output by quarter\"></svg>","css":"svg { display: block; }","js":"const rows = [{label:'Q1',value:12},{label:'Q2',value:18},{label:'Q3',value:24}]; const svg = document.getElementById('bars'); let reversed = false; function draw() { svg.replaceChildren(); const shown = reversed ? [...rows].reverse() : rows; shown.forEach((row, i) => { const g = document.createElementNS('http://www.w3.org/2000/svg','g'); g.setAttribute('class','c-blue'); const rect = document.createElementNS(g.namespaceURI,'rect'); rect.setAttribute('x','90'); rect.setAttribute('y',String(30+i*65)); rect.setAttribute('width',String(row.value*20)); rect.setAttribute('height','35'); const text = document.createElementNS(g.namespaceURI,'text'); text.setAttribute('x','40'); text.setAttribute('y',String(52+i*65)); text.setAttribute('class','t'); text.textContent = row.label; const value = document.createElementNS(g.namespaceURI,'text'); value.setAttribute('x',String(100+row.value*20)); value.setAttribute('y',String(52+i*65)); value.setAttribute('class','t'); value.textContent = String(row.value); g.append(rect,text,value); svg.append(g); }); } document.getElementById('reverse').onclick = () => { reversed = !reversed; draw(); }; document.getElementById('reset').onclick = () => { reversed = false; draw(); }; draw();","fallback":"Sample values: Q1 = 12 units, Q2 = 18 units, Q3 = 24 units. The bars display these illustrative values; Reverse order changes their order, and Reset restores Q1, Q2, Q3."}
+```
+
+```apex-ui
+{"schemaVersion":1,"kind":"generated","cardId":"decision-flow","title":"Choosing the answer format","summary":"Use prose for a fact, comparison for numeric choices, and a generated card for a working tool.","html":"<svg width=\"100%\" viewBox=\"0 0 680 200\" role=\"img\" aria-labelledby=\"flow-title flow-desc\" xmlns=\"http://www.w3.org/2000/svg\"><title id=\"flow-title\">Answer format decision flow</title><desc id=\"flow-desc\">Start with the task. Direct fact: prose. Numeric options: comparison. Working controls: generated card.</desc><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"8\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\"><path d=\"M2 1L8 5L2 9\" fill=\"none\" stroke=\"context-stroke\" stroke-width=\"1.5\"/></marker></defs><g class=\"box c-gray\"><rect x=\"250\" y=\"20\" width=\"180\" height=\"44\" rx=\"8\"/><text class=\"th\" x=\"340\" y=\"42\" text-anchor=\"middle\" dominant-baseline=\"central\">Read the task</text></g><path class=\"arr\" d=\"M340 64V95H130V130 M340 95V130 M340 95H550V130\" marker-end=\"url(#arrow)\"/><g class=\"box c-teal\"><rect x=\"40\" y=\"130\" width=\"180\" height=\"44\" rx=\"8\"/><text class=\"th\" x=\"130\" y=\"152\" text-anchor=\"middle\" dominant-baseline=\"central\">Fact: prose</text></g><g class=\"box c-blue\"><rect x=\"250\" y=\"130\" width=\"180\" height=\"44\" rx=\"8\"/><text class=\"th\" x=\"340\" y=\"152\" text-anchor=\"middle\" dominant-baseline=\"central\">Options: comparison</text></g><g class=\"box c-purple\"><rect x=\"460\" y=\"130\" width=\"180\" height=\"44\" rx=\"8\"/><text class=\"th\" x=\"550\" y=\"152\" text-anchor=\"middle\" dominant-baseline=\"central\">Tool: generated</text></g></svg>","css":"","js":"","fallback":"Choose prose for direct facts, comparison cards for numeric option tradeoffs, and generated cards when working custom controls or a diagram help explain the task."}
+```
+"#;
+
+/// This local enum is deliberately not a serialized client/daemon capability.
+/// A caller may select Verified only after the packaged-runtime release gates
+/// pass for this exact adapter/security-policy and Electron/Chromium build.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GeneratedUiCapability {
+    #[default]
+    Unsupported,
+    Verified,
+}
+
+/// Existing bots continue to use ANSWERS_SYSTEM. No production call site opts
+/// into Verified; a future capability transport needs a separate security review.
+pub fn answers_system_for_capability(capability: GeneratedUiCapability) -> &'static str {
+    match capability {
+        GeneratedUiCapability::Unsupported => ANSWERS_SYSTEM,
+        GeneratedUiCapability::Verified => GENERATED_ANSWERS_SYSTEM,
+    }
+}
+
 /// The longest fact `/pin` accepts. Pins are sent on every turn.
 pub const MAX_PIN_CHARS: usize = 500;
 
@@ -194,6 +250,17 @@ pub fn render_prompt(system: &str, turns: &[ViewTurn]) -> String {
 mod tests {
     use super::*;
     use crate::types::Backend;
+
+    #[test]
+    fn generated_guidance_requires_explicit_verified_local_capability() {
+        assert_eq!(answers_system_for_capability(GeneratedUiCapability::default()), ANSWERS_SYSTEM);
+        assert!(!answers_system_for_capability(GeneratedUiCapability::Unsupported).contains("kind\":\"generated"));
+        let verified = answers_system_for_capability(GeneratedUiCapability::Verified);
+        assert_eq!(verified, GENERATED_ANSWERS_SYSTEM);
+        assert!(verified.contains("unit-cost"));
+        assert!(verified.contains("sample-bars"));
+        assert!(verified.contains("decision-flow"));
+    }
 
     fn cfg(id: &str, name: &str) -> ParticipantConfig {
         ParticipantConfig {

@@ -1,7 +1,9 @@
 import { identiconCells, legacyAppearance } from "./identicon.ts";
 import { parseBlocks, parseInline, type Inline } from "./markdownText.ts";
 import type { AnswerEntry } from "./interactiveAnswers/contract.ts";
-import { withCardSummaries } from "./interactiveAnswers/share.ts";
+import { cardFallbackSummary, cardMarkdown, withCardSummaries } from "./interactiveAnswers/share.ts";
+import { readCard } from "./interactiveAnswers/schema.ts";
+import { cardKey, fingerprint } from "./interactiveAnswers/contract.ts";
 import type { Compaction, Message, ParticipantConfig } from "./types";
 
 /** Blocks remote loads. Inline styles are the only exception, and there is no script. */
@@ -67,12 +69,29 @@ function inlineHtml(source: string): string {
   return parseInline(source).map(draw).join("");
 }
 
-function bodyHtml(text: string): string {
+function bodyHtml(text: string, cards?: { seq: number; answers?: Record<string, AnswerEntry> }): string {
   return parseBlocks(text).map((block) => {
     switch (block.kind) {
       case "paragraph": return `<p>${inlineHtml(block.text)}</p>`;
       case "heading": return `<p class="h">${inlineHtml(block.text)}</p>`;
-      case "code": return `<pre>${esc(block.text)}</pre>`;
+      case "code": {
+        if (cards && block.language === "apex-ui") {
+          const read = readCard(block.text);
+          if (read.ok && read.card.kind === "generated") {
+            const card = read.card;
+            // Plain fields bypass Markdown parsing, preserving literal text
+            // and preventing formatting/HTML injection in the PDF document.
+            return `<section class="generated-text"><p><strong>${esc(card.title)}</strong></p><p>${esc(card.summary)}</p><p>${esc(card.fallback)}</p></section>`;
+          }
+          if (read.ok) {
+            const saved = cards.answers?.[cardKey(cards.seq, read.card.cardId)];
+            return bodyHtml(cardMarkdown(read.card, saved?.fingerprint === fingerprint(block.text) ? saved.inputs : null));
+          }
+          const fallback = cardFallbackSummary(block.text, read);
+          if (fallback) return `<p>${esc(fallback)}</p>`;
+        }
+        return `<pre>${esc(block.text)}</pre>`;
+      }
       case "quote": return `<blockquote>${inlineHtml(block.text)}</blockquote>`;
       case "rule": return "<hr>";
       case "list": {
@@ -126,7 +145,7 @@ export function exportHtml(t: ThreadExport, at: Date): string {
     if (message.speaker.kind === "human") {
       return `<div class="row human${short}"><div class="who">${header}</div><article class="bubble human">${bodyHtml(printed(message, t))}</article></div>`;
     }
-    return `<div class="row bot${short}">${avatarSvg(message.speaker.id, t.participants)}<div class="col"><div class="who">${header}</div><article class="bubble bot">${bodyHtml(printed(message, t))}</article></div></div>`;
+    return `<div class="row bot${short}">${avatarSvg(message.speaker.id, t.participants)}<div class="col"><div class="who">${header}</div><article class="bubble bot">${bodyHtml(message.text, { seq: message.seq, answers: t.answers })}</article></div></div>`;
   }).join("\n");
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -166,6 +185,7 @@ blockquote { margin: 8px 0; padding-left: 10px; border-left: 3px solid #24303d; 
 ul, ol { margin: 0 0 8px; padding-left: 20px; }
 p { margin: 0 0 8px; }
 p:last-child, ul:last-child, ol:last-child, pre:last-child { margin-bottom: 0; }
+.generated-text p { white-space: pre-wrap; }
 </style></head><body>
 <table class="page"><thead><tr><td></td></tr></thead><tfoot><tr><td></td></tr></tfoot><tbody><tr><td>
 <h1>${esc(title)}</h1>

@@ -12,9 +12,12 @@ import { DaemonClient, type Connect, type Link } from "./daemon/client.ts";
 import { daemonTransport, fromBase64, toBase64 } from "./daemon/transport.ts";
 import { pathPrompt, type PathRequest } from "./typedPath.ts";
 import { recentFiles } from "./recentFiles.ts";
+import type { GeneratedApi } from "./interactiveAnswers/generatedRun.ts";
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
+  /** Absent in older desktops; execution capability is checked in main. */
+  generatedUI?: GeneratedApi;
   daemon: {
     connect(hostId: string): Promise<number>;
     send(hostId: string, gen: number, line: string): void;

@@ -1765,7 +1765,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   const cardIn = (message: Message) => (code: { language: string; text: string }) =>
     code.language === CARD_LANGUAGE
-      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} onDiscuss={discussCard} onOpen={openTarget} />
+      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={hostConnection.revision} executionAllowed={focused} readOnly={message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
       : undefined;
 
   const changeArtifacts = (next: ArtifactFile) => {

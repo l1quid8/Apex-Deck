@@ -1,5 +1,6 @@
 // Addresses for the Preview pane: what you type in its address field, and the
 // local servers a terminal says it started. See the spec, section 1.
+import { swapFences } from "./markdownText.ts";
 
 /** Terminal escape sequences: colours, titles and the like. */
 const ESCAPES = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-_])/gu;
@@ -74,7 +75,10 @@ function matches(plain: string): { address: string; end: number }[] {
 /** Local server addresses in terminal output, once each, in order. LAN and internet addresses are left out. */
 export function findServerUrls(output: string): string[] {
   const found: string[] = [];
-  for (const { address } of matches(output.replace(ESCAPES, ""))) if (!found.includes(address)) found.push(address);
+  // Cards are inert payloads until approved in their dedicated host. Scanning
+  // their code or fallback for URLs would bypass that host via auto-Preview.
+  const prose = swapFences(output, "apex-ui", () => "");
+  for (const { address } of matches(prose.replace(ESCAPES, ""))) if (!found.includes(address)) found.push(address);
   return found;
 }
 

@@ -1,0 +1,56 @@
+{
+  "repository": "https://github.com/CopilotKit/OpenIntelligentUI",
+  "commit": "8391a94c1c3939c679e40ddd7bfc08a9ef690e70",
+  "tree": "ee0c531c3301e7d28ca6d6872197acd4b0b53517",
+  "license": "MIT",
+  "files": [
+    {
+      "sourcePath": "apps/app/src/components/generative-ui/open-generative-ui/renderer.tsx",
+      "vendoredPath": "apps/app/src/components/generative-ui/open-generative-ui/renderer.tsx",
+      "sha256": "d02b0df5afad48e8a3b8ac64fbd57bc43687b9395695b72d00d4f26772ad3d85",
+      "bytes": 15003
+    },
+    {
+      "sourcePath": "apps/app/src/components/generative-ui/open-generative-ui/frame-content.ts",
+      "vendoredPath": "apps/app/src/components/generative-ui/open-generative-ui/frame-content.ts",
+      "sha256": "5357b93e719da8ae65106192b2f79cba499a52465dd7e87eeb49f4e377f7b87c",
+      "bytes": 5604
+    },
+    {
+      "sourcePath": "packages/design-system/src/index.ts",
+      "vendoredPath": "packages/design-system/src/index.ts",
+      "sha256": "220d87b7b1a6d416b1a71e2b884205d0f05afe422b42ec4fd43e1baff97af607",
+      "bytes": 18276
+    },
+    {
+      "sourcePath": "apps/agent/src/prompt.py",
+      "vendoredPath": "apps/agent/src/prompt.py",
+      "sha256": "4840c52567a8f4cf8a6b504329d397b0ab1747a79287b4d809def6337a58d3c2",
+      "bytes": 6229
+    },
+    {
+      "sourcePath": "apps/agent/skills/master-playbook/SKILL.md",
+      "vendoredPath": "apps/agent/skills/master-playbook/SKILL.md",
+      "sha256": "f7db548e11c967ce6d8de56326d94d0f2f4fbee197cebfe268d774293c0010f4",
+      "bytes": 4666
+    },
+    {
+      "sourcePath": "apps/agent/skills/advanced-visualization/SKILL.md",
+      "vendoredPath": "apps/agent/skills/advanced-visualization/SKILL.md",
+      "sha256": "9de71f615a6ab6285109b20fa3b5cbc4f78b13992d2ca5de2b9737f703f7888c",
+      "bytes": 12117
+    },
+    {
+      "sourcePath": "apps/agent/skills/svg-diagrams/SKILL.md",
+      "vendoredPath": "apps/agent/skills/svg-diagrams/SKILL.md",
+      "sha256": "0ff9173b0bf85d51d11bde485e6f1c54efcb959a9ad7a90f7eb38420b600cb40",
+      "bytes": 12014
+    },
+    {
+      "sourcePath": "LICENSE",
+      "vendoredPath": "LICENSE",
+      "sha256": "15a0e5343aea872c0573ad72feb6044b336f162d724cc1673c608e6b37ea071b",
+      "bytes": 1067
+    }
+  ]
+}

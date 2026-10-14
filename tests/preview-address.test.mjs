@@ -72,3 +72,12 @@ test("an address split across two chunks is found once it is whole", () => {
   watch.reset();
   assert.deepEqual(watch.feed("Local: http://localhost:5173/\n"), ["http://localhost:5173/"]);
 });
+
+test('interactive card payloads never become automatic Preview network requests', () => {
+  const card = { schemaVersion: 1, kind: 'generated', cardId: 'isolated', title: 'Interface', summary: 'http://localhost:8888/summary', html: '<img src="http://localhost:9876/leak">', css: '', js: 'fetch("http://127.0.0.1:9876/leak?value=from-card")', fallback: 'http://localhost:8888/fallback' };
+  const fence = '```apex-ui\n' + JSON.stringify(card) + '\n```';
+  assert.deepEqual(findServerUrls(fence), []);
+  assert.deepEqual(findServerUrls('Server: http://localhost:3000/\n\n' + fence), ['http://localhost:3000/']);
+  assert.deepEqual(findServerUrls('~~~apex-ui\nhttp://localhost:9876/invalid-card\n~~~'), []);
+  assert.deepEqual(findServerUrls('```apex-ui\n{"html":"http://localhost:9876/partial'), []);
+});

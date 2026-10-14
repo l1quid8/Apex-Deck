@@ -10,6 +10,13 @@ files:
   - package.json
   - desktop/**
   - dist/**
+  # Shared generated-card validation is imported by the isolated main host.
+  - shared/**
+  # Only the audited local styles and attribution are needed at runtime.
+  - third_party/open-intelligent-ui/design-system.css
+  - third_party/open-intelligent-ui/LICENSE
+  - third_party/open-intelligent-ui/manifest.json
+  - third_party/open-intelligent-ui/README.md
   # The UI is bundled into dist/ and main uses only Electron and Node.
   - "!node_modules/**"
   # Dev-only launchers; smoke.mjs stays so the packaged app can be smoke-tested.
@@ -19,6 +26,8 @@ files:
 extraResources:
   - from: target/release/apex-daemon
     to: bin/apex-daemon
+  - from: third_party/open-intelligent-ui/LICENSE
+    to: third-party-notices/OpenIntelligentUI-MIT-LICENSE.txt
 mac:
   icon: build/icons/icon.icns
   category: public.app-category.developer-tools

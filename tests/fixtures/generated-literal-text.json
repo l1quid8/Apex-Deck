@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "kind": "generated",
+  "cardId": "literal-text",
+  "title": "Literal *title* <img src=x>",
+  "summary": "[Fake link](https://example.com) & **literal summary**",
+  "html": "<div>Never export this generated markup.</div>",
+  "css": "body { color: red; }",
+  "js": "globalThis.generatedExportExecuted = true; throw new Error('Generated code must never run in exports');",
+  "fallback": "# Literal heading\n\n```js\nalert('literal');\n```\n<script>alert('literal')</script>\n- Literal bullet\n1. Literal number\n> Literal quote\n| A | B |\n| -- | -- |\n&amp; stays literal."
+}

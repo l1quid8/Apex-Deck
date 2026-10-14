@@ -3,6 +3,8 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AnswerCard, CardFallback } from "./AnswerCard.tsx";
 import { cardKey, fingerprint, type AnswerStore } from "./contract.ts";
 import { readCard } from "./schema.ts";
+import { GeneratedAnswerCard } from "./GeneratedAnswerCard.tsx";
+import { latestCardVersion } from "./generatedRun.ts";
 
 interface Props {
   /** The fenced block's text. */
@@ -17,18 +19,32 @@ interface Props {
   answers: AnswerStore | null;
   /** Show the card without letting it change: the phone, for now. */
   readOnly?: boolean;
+  threadId?: string;
+  hostId?: string;
+  executionEpoch?: number;
+  executionAllowed?: boolean;
   onDiscuss?: (snapshot: string) => void;
   onOpen: (target: string) => void;
 }
 
 /** A card in a finished reply, with the settings saved for it; the fallback when the block isn't one. */
-export function ThreadCard({ source, seq, author, versions, answers, readOnly = false, onDiscuss, onOpen }: Props) {
+export function ThreadCard({ source, seq, author, versions, answers, readOnly = false, threadId = "", hostId = "local", executionEpoch = 0, executionAllowed = true, onDiscuss, onOpen }: Props) {
   const read = useMemo(() => readCard(source), [source]);
   const print = useMemo(() => fingerprint(source), [source]);
-  const key = read.ok ? cardKey(seq, read.card.cardId) : "";
+  const key = read.ok && read.card.kind === "comparison" ? cardKey(seq, read.card.cardId) : "";
   const [, redraw] = useState(0);
   useEffect(() => (answers && key ? answers.subscribe(key, () => redraw((n) => n + 1)) : undefined), [answers, key]);
-  if (!read.ok) return <CardFallback reason={read.reason} source={source} />;
+  if (!read.ok) return <CardFallback reason={read.reason} source={source} hideSource={read.kind === "generated"} />;
+  if (read.card.kind === "generated") {
+    const version = versions.get(cardKey(seq, read.card.cardId)) ?? 1;
+    return <GeneratedAnswerCard
+      key={`${hostId}:${threadId}:${seq}:${executionEpoch}:${source}`}
+      card={read.card} source={source} version={version} author={author}
+      identity={{ threadId, seq, cardId: read.card.cardId, hostId }}
+      historical={version < latestCardVersion(versions, read.card.cardId)}
+      readOnly={readOnly} executionAllowed={executionAllowed} onDiscuss={onDiscuss}
+    />;
+  }
   const store = readOnly ? null : answers;
   return (
     <CardBoundary source={source}>

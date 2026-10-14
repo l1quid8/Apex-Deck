@@ -131,3 +131,11 @@ test("a card that throws while it is drawn falls back instead of breaking the ch
   assert.equal(fallback.type, CardFallback);
   assert.match(fallback.props.reason, /couldn't be drawn/);
 });
+
+
+test("an oversized invalid card never dumps its unbounded source into the fallback", () => {
+  const source = "oversized".repeat(20000);
+  const tree = CardFallback({ reason: "Too large.", source });
+  assert.equal(find(tree, n => n.type === "pre"), null);
+  assert.ok(text(tree).length < 500);
+});

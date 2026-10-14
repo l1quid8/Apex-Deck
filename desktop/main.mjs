@@ -4,7 +4,7 @@
 // relays lines and does what needs the machine with the screen. Each window
 // runs on one host, this Mac or another machine, so two can sit side by side.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, session, shell, WebContentsView, webContents } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -22,6 +22,7 @@ import { answers, daemonBinary, dataFolder, localDaemon, remoteAccessSaved, save
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
 import { changeRemoteAccess } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
+import { installGeneratedUI } from './generated-ui/host.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
@@ -290,7 +291,7 @@ ipcMain.on('daemon:send', (event, hostId, gen, line) => {
 });
 ipcMain.on('daemon:close', (event, hostId, gen) => { if (fromUi(event)) links.close(event.sender.id, hostId, gen); });
 
-ipcMain.on('apex:smoke', (event) => { event.returnValue = smoke; });
+ipcMain.on('apex:smoke', (event) => { event.returnValue = fromUi(event) && smoke; });
 
 /** What the Tauri app kept in its window's storage, read once for preload.cjs to copy over. */
 let tauriItems = null;
@@ -306,6 +307,10 @@ ipcMain.on('apex:tauriStorage', (event) => {
 
 /** Every Deck window by BrowserWindow id: `{ win, host, browser, badge }`. */
 const windows = new Map();
+
+// Generated code lives in a dedicated host/session, never in the chat renderer.
+// The production release gate is closed; no environment variable enables it.
+installGeneratedUI({ electron: { app, ipcMain, powerMonitor, session, WebContentsView, webContents }, deckWindow });
 
 /** Handle `channel` only for a Deck window's own page; `run` gets that window first. */
 function handle(channel, run) {

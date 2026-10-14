@@ -1,6 +1,7 @@
 /** Photos and files attached in the composer. They are saved with the app
  *  and stored as paths in the transcript. Adapters load new image attachments
  *  into each provider's image input; later turns keep the path as context. */
+import { swapFences } from "./markdownText.ts";
 
 export interface Attachment {
   id: string;
@@ -54,7 +55,9 @@ export function attachedVideos(message: string): string[] {
 /** The local files a reply links to or attaches, once each, in order.
  *  Code is skipped, since paths there are examples rather than results. */
 function replyFiles(message: string): string[] {
-  const prose = message.replace(/```[\s\S]*?(```|$)/g, "").replace(/`[^`\n]*`/g, "");
+  // Both fence styles (including incomplete/invalid cards) are inert. Their
+  // strings must never cause a local-file import before or after Run approval.
+  const prose = swapFences(message, "apex-ui", () => "").replace(/```[\s\S]*?(```|$)/g, "").replace(/`[^`\n]*`/g, "");
   const links = [...prose.matchAll(/!?\[[^\]\n]*\]\((?:<([^>\n]+)>|([^)\s]+))\)/g)].map((m) => m[1] ?? m[2]);
   const decoded = links.map((link) => { try { return decodeURI(link); } catch { return link; } });
   const found = [...decoded, ...attachedImages(prose), ...attachedVideos(prose)].filter((p) => p.startsWith("/"));

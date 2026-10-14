@@ -1,0 +1,723 @@
+{
+  "packaged": false,
+  "versions": {
+    "electron": "44.5.1",
+    "chromium": "152.0.7977.130",
+    "node": "24.21.0"
+  },
+  "releaseEnabled": false,
+  "testOnlyPolicy": true,
+  "observations": [
+    {
+      "at": 1791987868007,
+      "type": "renderer-console",
+      "runId": "5040f1f017402fd5f76370e9fbcfe5ca",
+      "message": "Unrecognized feature: 'web-share'."
+    },
+    {
+      "at": 1791987868030,
+      "type": "file-guard-ready",
+      "runId": "5040f1f017402fd5f76370e9fbcfe5ca"
+    },
+    {
+      "at": 1791987868078,
+      "type": "file-guard-target",
+      "runId": "5040f1f017402fd5f76370e9fbcfe5ca",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987868089,
+      "type": "file-guard-target-ready",
+      "runId": "5040f1f017402fd5f76370e9fbcfe5ca",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987868092,
+      "type": "bootstrap-received",
+      "runId": "5040f1f017402fd5f76370e9fbcfe5ca"
+    },
+    {
+      "at": 1791987868093,
+      "type": "ownership-verified",
+      "runId": "5040f1f017402fd5f76370e9fbcfe5ca",
+      "records": [
+        {
+          "pid": 31426,
+          "creationTime": 1791987867925.809,
+          "nodes": [
+            2
+          ]
+        },
+        {
+          "pid": 31427,
+          "creationTime": 1791987868010.627,
+          "nodes": [
+            3
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "pid": 31426,
+          "node": 2,
+          "url": "https://generated-ui.invalid/5040f1f017402fd5f76370e9fbcfe5ca",
+          "detached": false
+        },
+        {
+          "pid": 31427,
+          "node": 3,
+          "url": "about:srcdoc",
+          "detached": false
+        }
+      ]
+    },
+    {
+      "at": 1791987868093,
+      "type": "payload-delivered",
+      "runId": "5040f1f017402fd5f76370e9fbcfe5ca"
+    },
+    {
+      "at": 1791987868799,
+      "type": "disposed",
+      "runId": "5040f1f017402fd5f76370e9fbcfe5ca",
+      "records": [
+        {
+          "pid": 31426,
+          "creationTime": 1791987867925.809,
+          "nodes": [
+            2
+          ]
+        },
+        {
+          "pid": 31427,
+          "creationTime": 1791987868010.627,
+          "nodes": [
+            3
+          ]
+        }
+      ],
+      "remaining": [],
+      "reason": "Stopped."
+    },
+    {
+      "at": 1791987868817,
+      "type": "disposed",
+      "runId": "6923d94b34bba9871d1db9de0ae4c2d9",
+      "records": [],
+      "remaining": [],
+      "reason": "Generated interface approval was cancelled."
+    },
+    {
+      "at": 1791987868894,
+      "type": "renderer-console",
+      "runId": "9dad43e64538cdf7b562f629197651ec",
+      "message": "Unrecognized feature: 'web-share'."
+    },
+    {
+      "at": 1791987868909,
+      "type": "file-guard-ready",
+      "runId": "9dad43e64538cdf7b562f629197651ec"
+    },
+    {
+      "at": 1791987868956,
+      "type": "file-guard-target",
+      "runId": "9dad43e64538cdf7b562f629197651ec",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987868985,
+      "type": "file-guard-target-ready",
+      "runId": "9dad43e64538cdf7b562f629197651ec",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987868986,
+      "type": "bootstrap-received",
+      "runId": "9dad43e64538cdf7b562f629197651ec"
+    },
+    {
+      "at": 1791987868987,
+      "type": "ownership-verified",
+      "runId": "9dad43e64538cdf7b562f629197651ec",
+      "records": [
+        {
+          "pid": 31433,
+          "creationTime": 1791987868819.967,
+          "nodes": [
+            5
+          ]
+        },
+        {
+          "pid": 31434,
+          "creationTime": 1791987868896.286,
+          "nodes": [
+            6
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "pid": 31433,
+          "node": 5,
+          "url": "https://generated-ui.invalid/9dad43e64538cdf7b562f629197651ec",
+          "detached": false
+        },
+        {
+          "pid": 31434,
+          "node": 6,
+          "url": "about:srcdoc",
+          "detached": false
+        }
+      ]
+    },
+    {
+      "at": 1791987868987,
+      "type": "payload-delivered",
+      "runId": "9dad43e64538cdf7b562f629197651ec"
+    },
+    {
+      "at": 1791987870868,
+      "type": "disposed",
+      "runId": "9dad43e64538cdf7b562f629197651ec",
+      "records": [
+        {
+          "pid": 31433,
+          "creationTime": 1791987868819.967,
+          "nodes": [
+            5
+          ]
+        },
+        {
+          "pid": 31434,
+          "creationTime": 1791987868896.286,
+          "nodes": [
+            6
+          ]
+        }
+      ],
+      "remaining": [],
+      "reason": "The interface did not become ready within two seconds."
+    },
+    {
+      "at": 1791987870942,
+      "type": "renderer-console",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4",
+      "message": "Unrecognized feature: 'web-share'."
+    },
+    {
+      "at": 1791987870956,
+      "type": "file-guard-ready",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4"
+    },
+    {
+      "at": 1791987871010,
+      "type": "file-guard-target",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987871024,
+      "type": "file-guard-target-ready",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987871026,
+      "type": "bootstrap-received",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4"
+    },
+    {
+      "at": 1791987871027,
+      "type": "ownership-verified",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4",
+      "records": [
+        {
+          "pid": 31437,
+          "creationTime": 1791987870875.021,
+          "nodes": [
+            7
+          ]
+        },
+        {
+          "pid": 31438,
+          "creationTime": 1791987870944.52,
+          "nodes": [
+            8
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "pid": 31437,
+          "node": 7,
+          "url": "https://generated-ui.invalid/1a4a7f54c0c5ddfe43e3e981de36b5d4",
+          "detached": false
+        },
+        {
+          "pid": 31438,
+          "node": 8,
+          "url": "about:srcdoc",
+          "detached": false
+        }
+      ]
+    },
+    {
+      "at": 1791987871027,
+      "type": "payload-delivered",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4"
+    },
+    {
+      "at": 1791987871029,
+      "type": "renderer-console",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4",
+      "message": "Uncaught Error: Initialization failed"
+    },
+    {
+      "at": 1791987872923,
+      "type": "disposed",
+      "runId": "1a4a7f54c0c5ddfe43e3e981de36b5d4",
+      "records": [
+        {
+          "pid": 31437,
+          "creationTime": 1791987870875.021,
+          "nodes": [
+            7
+          ]
+        },
+        {
+          "pid": 31438,
+          "creationTime": 1791987870944.52,
+          "nodes": [
+            8
+          ]
+        }
+      ],
+      "remaining": [],
+      "reason": "The interface did not become ready within two seconds."
+    },
+    {
+      "at": 1791987873021,
+      "type": "renderer-console",
+      "runId": "6a7f02abf2e1fdce5d6a0d477ba0c5f9",
+      "message": "Unrecognized feature: 'web-share'."
+    },
+    {
+      "at": 1791987873044,
+      "type": "file-guard-ready",
+      "runId": "6a7f02abf2e1fdce5d6a0d477ba0c5f9"
+    },
+    {
+      "at": 1791987873088,
+      "type": "file-guard-target",
+      "runId": "6a7f02abf2e1fdce5d6a0d477ba0c5f9",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987873103,
+      "type": "file-guard-target-ready",
+      "runId": "6a7f02abf2e1fdce5d6a0d477ba0c5f9",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987873105,
+      "type": "bootstrap-received",
+      "runId": "6a7f02abf2e1fdce5d6a0d477ba0c5f9"
+    },
+    {
+      "at": 1791987873106,
+      "type": "ownership-verified",
+      "runId": "6a7f02abf2e1fdce5d6a0d477ba0c5f9",
+      "records": [
+        {
+          "pid": 31445,
+          "creationTime": 1791987872949.232,
+          "nodes": [
+            9
+          ]
+        },
+        {
+          "pid": 31446,
+          "creationTime": 1791987873024.023,
+          "nodes": [
+            10
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "pid": 31445,
+          "node": 9,
+          "url": "https://generated-ui.invalid/6a7f02abf2e1fdce5d6a0d477ba0c5f9",
+          "detached": false
+        },
+        {
+          "pid": 31446,
+          "node": 10,
+          "url": "about:srcdoc",
+          "detached": false
+        }
+      ]
+    },
+    {
+      "at": 1791987873106,
+      "type": "payload-delivered",
+      "runId": "6a7f02abf2e1fdce5d6a0d477ba0c5f9"
+    },
+    {
+      "at": 1791987878234,
+      "type": "disposed",
+      "runId": "6a7f02abf2e1fdce5d6a0d477ba0c5f9",
+      "records": [
+        {
+          "pid": 31445,
+          "creationTime": 1791987872949.232,
+          "nodes": [
+            9
+          ]
+        },
+        {
+          "pid": 31446,
+          "creationTime": 1791987873024.023,
+          "nodes": [
+            10
+          ]
+        }
+      ],
+      "remaining": [],
+      "reason": "The interface stopped responding."
+    },
+    {
+      "at": 1791987878335,
+      "type": "renderer-console",
+      "runId": "f46c7b01cd0b97e8a069ae876efa6d7c",
+      "message": "Unrecognized feature: 'web-share'."
+    },
+    {
+      "at": 1791987878352,
+      "type": "file-guard-ready",
+      "runId": "f46c7b01cd0b97e8a069ae876efa6d7c"
+    },
+    {
+      "at": 1791987878399,
+      "type": "file-guard-target",
+      "runId": "f46c7b01cd0b97e8a069ae876efa6d7c",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987878473,
+      "type": "file-guard-target-ready",
+      "runId": "f46c7b01cd0b97e8a069ae876efa6d7c",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987878475,
+      "type": "bootstrap-received",
+      "runId": "f46c7b01cd0b97e8a069ae876efa6d7c"
+    },
+    {
+      "at": 1791987878476,
+      "type": "ownership-verified",
+      "runId": "f46c7b01cd0b97e8a069ae876efa6d7c",
+      "records": [
+        {
+          "pid": 31613,
+          "creationTime": 1791987878240.209,
+          "nodes": [
+            11
+          ]
+        },
+        {
+          "pid": 31615,
+          "creationTime": 1791987878337.399,
+          "nodes": [
+            12
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "pid": 31613,
+          "node": 11,
+          "url": "https://generated-ui.invalid/f46c7b01cd0b97e8a069ae876efa6d7c",
+          "detached": false
+        },
+        {
+          "pid": 31615,
+          "node": 12,
+          "url": "about:srcdoc",
+          "detached": false
+        }
+      ]
+    },
+    {
+      "at": 1791987878476,
+      "type": "payload-delivered",
+      "runId": "f46c7b01cd0b97e8a069ae876efa6d7c"
+    },
+    {
+      "at": 1791987883575,
+      "type": "disposed",
+      "runId": "f46c7b01cd0b97e8a069ae876efa6d7c",
+      "records": [
+        {
+          "pid": 31613,
+          "creationTime": 1791987878240.209,
+          "nodes": [
+            11
+          ]
+        },
+        {
+          "pid": 31615,
+          "creationTime": 1791987878337.399,
+          "nodes": [
+            12
+          ]
+        }
+      ],
+      "remaining": [],
+      "reason": "The interface stopped responding."
+    },
+    {
+      "at": 1791987883675,
+      "type": "renderer-console",
+      "runId": "dbfd373231945e2023ccbfccc1beeba4",
+      "message": "Unrecognized feature: 'web-share'."
+    },
+    {
+      "at": 1791987883688,
+      "type": "file-guard-ready",
+      "runId": "dbfd373231945e2023ccbfccc1beeba4"
+    },
+    {
+      "at": 1791987883743,
+      "type": "file-guard-target",
+      "runId": "dbfd373231945e2023ccbfccc1beeba4",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987883753,
+      "type": "file-guard-target-ready",
+      "runId": "dbfd373231945e2023ccbfccc1beeba4",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987883755,
+      "type": "bootstrap-received",
+      "runId": "dbfd373231945e2023ccbfccc1beeba4"
+    },
+    {
+      "at": 1791987883755,
+      "type": "ownership-verified",
+      "runId": "dbfd373231945e2023ccbfccc1beeba4",
+      "records": [
+        {
+          "pid": 31624,
+          "creationTime": 1791987883602.589,
+          "nodes": [
+            13
+          ]
+        },
+        {
+          "pid": 31625,
+          "creationTime": 1791987883678.148,
+          "nodes": [
+            14
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "pid": 31624,
+          "node": 13,
+          "url": "https://generated-ui.invalid/dbfd373231945e2023ccbfccc1beeba4",
+          "detached": false
+        },
+        {
+          "pid": 31625,
+          "node": 14,
+          "url": "about:srcdoc",
+          "detached": false
+        }
+      ]
+    },
+    {
+      "at": 1791987883755,
+      "type": "payload-delivered",
+      "runId": "dbfd373231945e2023ccbfccc1beeba4"
+    },
+    {
+      "at": 1791987884327,
+      "type": "disposed",
+      "runId": "dbfd373231945e2023ccbfccc1beeba4",
+      "records": [
+        {
+          "pid": 31624,
+          "creationTime": 1791987883602.589,
+          "nodes": [
+            13
+          ]
+        },
+        {
+          "pid": 31625,
+          "creationTime": 1791987883678.148,
+          "nodes": [
+            14
+          ]
+        }
+      ],
+      "remaining": [],
+      "reason": "Interface geometry expired."
+    },
+    {
+      "at": 1791987884406,
+      "type": "renderer-console",
+      "runId": "6220c00767e4864850baed8f5d28a979",
+      "message": "Unrecognized feature: 'web-share'."
+    },
+    {
+      "at": 1791987884419,
+      "type": "file-guard-ready",
+      "runId": "6220c00767e4864850baed8f5d28a979"
+    },
+    {
+      "at": 1791987884467,
+      "type": "file-guard-target",
+      "runId": "6220c00767e4864850baed8f5d28a979",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987884476,
+      "type": "file-guard-target-ready",
+      "runId": "6220c00767e4864850baed8f5d28a979",
+      "targetType": "iframe"
+    },
+    {
+      "at": 1791987884477,
+      "type": "bootstrap-received",
+      "runId": "6220c00767e4864850baed8f5d28a979"
+    },
+    {
+      "at": 1791987884477,
+      "type": "ownership-verified",
+      "runId": "6220c00767e4864850baed8f5d28a979",
+      "records": [
+        {
+          "pid": 31627,
+          "creationTime": 1791987884336.514,
+          "nodes": [
+            15
+          ]
+        },
+        {
+          "pid": 31628,
+          "creationTime": 1791987884408.845,
+          "nodes": [
+            16
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "pid": 31627,
+          "node": 15,
+          "url": "https://generated-ui.invalid/6220c00767e4864850baed8f5d28a979",
+          "detached": false
+        },
+        {
+          "pid": 31628,
+          "node": 16,
+          "url": "about:srcdoc",
+          "detached": false
+        }
+      ]
+    },
+    {
+      "at": 1791987884478,
+      "type": "payload-delivered",
+      "runId": "6220c00767e4864850baed8f5d28a979"
+    },
+    {
+      "at": 1791987885372,
+      "type": "disposed",
+      "runId": "6220c00767e4864850baed8f5d28a979",
+      "records": [
+        {
+          "pid": 31627,
+          "creationTime": 1791987884336.514,
+          "nodes": [
+            15
+          ]
+        },
+        {
+          "pid": 31628,
+          "creationTime": 1791987884408.845,
+          "nodes": [
+            16
+          ]
+        }
+      ],
+      "remaining": [],
+      "reason": "The interface sent too many messages."
+    }
+  ],
+  "probes": [
+    {
+      "name": "renderer separation, ownership-before-delivery, explicit owner stop",
+      "passed": true,
+      "chatPid": 31424,
+      "generatedPids": [
+        31426,
+        31427
+      ]
+    },
+    {
+      "name": "cancel before bootstrap prevents payload delivery and removes native host",
+      "passed": true
+    },
+    {
+      "name": "sync-loop",
+      "passed": true,
+      "elapsedMs": 2055,
+      "reason": "The interface did not become ready within two seconds."
+    },
+    {
+      "name": "initialization-error",
+      "passed": true,
+      "elapsedMs": 2072,
+      "reason": "The interface did not become ready within two seconds."
+    },
+    {
+      "name": "after-ready",
+      "passed": true,
+      "elapsedMs": 5294,
+      "reason": "The interface stopped responding."
+    },
+    {
+      "name": "microtask-loop",
+      "passed": true,
+      "elapsedMs": 5362,
+      "reason": "The interface stopped responding."
+    },
+    {
+      "name": "stale geometry detaches and disposes",
+      "passed": true
+    },
+    {
+      "name": "malformed child message storm is stopped by trusted wrapper",
+      "passed": true
+    },
+    {
+      "name": "lifetime partition cap",
+      "passed": true
+    }
+  ],
+  "pendingReleaseGates": [
+    "actual packaged runtime",
+    "independent network and authoritative DNS/UDP/TCP capture with positive control",
+    "Connection-Allowlist inheritance",
+    "full escape/authority matrix",
+    "multiple windows and full UI lifecycle",
+    "independent security review"
+  ],
+  "passed": true
+}

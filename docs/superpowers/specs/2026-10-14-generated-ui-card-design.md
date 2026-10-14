@@ -1,6 +1,6 @@
 # Generated UI card (design)
 
-Status: revised draft, not built. Extends Interactive answers M1 with `kind: "generated"`. Execution and generated-card bot guidance stay disabled until the release gates below pass.
+Status: implemented for review on `feat/generated-ui-cards`; see [verification handoff](../reviews/2026-10-14-generated-ui-cards.md). Extends Interactive answers M1 with `kind: "generated"`. Execution and generated-card bot guidance stay disabled until the release gates below pass.
 
 ## Goal and boundary
 
