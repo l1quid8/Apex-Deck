@@ -110,9 +110,17 @@ export const AGENT_MODELS: Record<AgentTool, ModelGroup[]> = {
       label: "Shortcuts (Antigravity picks the version)",
       models: [
         { id: "auto", label: "Pro or Flash, chosen per request" },
+        { id: "argon", label: "Latest Argon" },
         { id: "pro", label: "Latest Pro" },
         { id: "flash", label: "Latest Flash" },
         { id: "flash-lite", label: "Latest Flash-Lite" },
+      ],
+    },
+    {
+      label: "Argon",
+      models: [
+        { id: "gemini-4-argon", label: "Gemini 4 Argon" },
+        { id: "gemini-4-argon-preview", label: "Gemini 4 Argon (preview)" },
       ],
     },
     {
