@@ -64,6 +64,44 @@ pub(crate) fn codex_service_tier(speed: Speed) -> &'static str {
     }
 }
 
+pub(crate) fn resolve_gemini_program(path: Option<&str>) -> &'static str {
+    let check_path = |p_str: &str| -> Option<&'static str> {
+        for dir in std::env::split_paths(p_str) {
+            for candidate in ["agy", "gemini", "antigravity"] {
+                let p = dir.join(candidate);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(m) = std::fs::metadata(&p) {
+                        if m.is_file() && m.permissions().mode() & 0o111 != 0 {
+                            return Some(candidate);
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    if p.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        None
+    };
+
+    if let Some(p) = path {
+        if let Some(cand) = check_path(p) {
+            return cand;
+        }
+    }
+    if let Ok(p) = std::env::var("PATH") {
+        if let Some(cand) = check_path(&p) {
+            return cand;
+        }
+    }
+    "gemini"
+}
+
 pub fn agent_command(
     tool: AgentTool,
     model: Option<&str>,
@@ -83,6 +121,18 @@ pub fn agent_command_with(
     speed: Option<Speed>,
     access: Access,
     plan: bool,
+) -> (String, Vec<String>) {
+    agent_command_in(tool, model, effort, speed, access, plan, None)
+}
+
+pub fn agent_command_in(
+    tool: AgentTool,
+    model: Option<&str>,
+    effort: Option<&str>,
+    speed: Option<Speed>,
+    access: Access,
+    plan: bool,
+    path: Option<&str>,
 ) -> (String, Vec<String>) {
     let model = clean_model(model);
     let effort = clean_effort(effort);
@@ -161,16 +211,44 @@ pub fn agent_command_with(
             "codex"
         }
         AgentTool::Gemini => {
+            let program = resolve_gemini_program(path);
             if let Some(model) = model {
                 push(&["--model", model]);
             }
-            if let Some(dir) = READABLE.get() {
-                push(&["--include-directories", dir]);
+            if let Some(effort) = effort {
+                push(&["--effort", effort]);
             }
-            // Access is only stated in the prompt for Gemini, and it has no
-            // effort flag, so neither is passed.
+            if let Some(dir) = READABLE.get() {
+                if program == "gemini" {
+                    push(&["--include-directories", dir]);
+                } else {
+                    push(&["--add-dir", dir]);
+                }
+            }
+            match access {
+                Access::Read => {
+                    if program != "gemini" {
+                        push(&["--sandbox"]);
+                    }
+                }
+                Access::Ask => {
+                    if program != "gemini" {
+                        push(&["--mode", "auto"]);
+                    }
+                }
+                Access::Edits => {
+                    if program != "gemini" {
+                        push(&["--mode", "accept-edits"]);
+                    }
+                }
+                Access::Full => {
+                    if program != "gemini" {
+                        push(&["--dangerously-skip-permissions"]);
+                    }
+                }
+            }
             push(&["-p", STDIN_INSTRUCTION]);
-            "gemini"
+            program
         }
         AgentTool::Grok => {
             // Grok does not read piped input in its one-shot mode, but it
@@ -315,10 +393,18 @@ mod tests {
     #[test]
     fn gemini_commands() {
         let (program, args) = agent_command(AgentTool::Gemini, Some("some-model"), Some("high"), Access::Read);
-        assert_eq!(program, "gemini");
-        assert_eq!(args, ["--model", "some-model", "-p", STDIN_INSTRUCTION]);
+        assert!(program == "gemini" || program == "agy" || program == "antigravity");
+        if program == "agy" || program == "antigravity" {
+            assert_eq!(args, ["--model", "some-model", "--effort", "high", "--sandbox", "-p", STDIN_INSTRUCTION]);
+        } else {
+            assert_eq!(args, ["--model", "some-model", "--effort", "high", "-p", STDIN_INSTRUCTION]);
+        }
         let (_, args) = agent_command(AgentTool::Gemini, None, None, Access::Full);
-        assert_eq!(args, ["-p", STDIN_INSTRUCTION]);
+        if program == "agy" || program == "antigravity" {
+            assert_eq!(args, ["--dangerously-skip-permissions", "-p", STDIN_INSTRUCTION]);
+        } else {
+            assert_eq!(args, ["-p", STDIN_INSTRUCTION]);
+        }
     }
 
     #[test]

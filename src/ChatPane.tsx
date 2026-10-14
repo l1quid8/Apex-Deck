@@ -233,9 +233,9 @@ export const PRESETS: Preset[] = [
   },
   {
     key: "gemini",
-    label: "Gemini CLI",
+    label: "Antigravity / Gemini",
     efforts: AGENT_EFFORTS.gemini,
-    agent: { tool: "gemini", detectKey: "gemini", modelNote: "Names are from Google's model list. Gemini CLI says so in the chat if your account cannot use one.", enforcesAccess: false, asksFirst: false },
+    agent: { tool: "gemini", detectKey: "gemini", modelNote: "Names are from Google's model list. Antigravity says so in the chat if your account cannot use one.", enforcesAccess: true, asksFirst: true },
   },
   {
     key: "grok",

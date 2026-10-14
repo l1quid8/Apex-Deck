@@ -32,6 +32,7 @@ export function ProviderLogo({ preset, label }: { preset: string; label: string 
           </svg>
         </Tile>
       );
+    case "antigravity":
     case "gemini":
       return (
         <Tile bg="#1A73E8" label={label}>

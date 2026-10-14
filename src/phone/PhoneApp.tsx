@@ -150,7 +150,7 @@ function readDrafts(): Record<string, Draft> {
 }
 
 const toPerson = (config: ParticipantConfig): Person => ({ id: config.id, display_name: config.display_name, look: config.appearance ?? legacyAppearance(config.id) });
-const TOOL_WORDS: Record<string, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini", grok: "Grok", muse: "Muse Code" };
+const TOOL_WORDS: Record<string, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Antigravity", grok: "Grok", muse: "Muse Code" };
 /** What a saved bot runs on, in a few words. */
 function toolWords(config: ParticipantConfig): string {
   const backend = config.backend;

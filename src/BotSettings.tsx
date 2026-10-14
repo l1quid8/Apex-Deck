@@ -93,7 +93,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   }, [anchor, close]);
   // The server's own list for API bots. Empty (fallback Picker) when it did not load.
   const rich = api !== null && apiList.length > 0;
-  const groups = tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : tool === 'grok' ? 'Grok' : tool === 'muse' ? 'Muse Code' : 'Gemini') : rich ? apiModelGroups(apiList) : [];
+  const groups = tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : tool === 'grok' ? 'Grok' : tool === 'muse' ? 'Muse Code' : 'Antigravity') : rich ? apiModelGroups(apiList) : [];
   const effortsOf = (id: string) => tool ? effortsFor(AGENT_EFFORTS[tool], groups, id) : effortsFor(API_EFFORTS, groups, id);
   const efforts = effortsOf(model);
   const supportedEffort = efforts.includes(effort) ? effort : '';

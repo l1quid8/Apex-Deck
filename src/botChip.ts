@@ -7,7 +7,7 @@ import type { AgentTool, ParticipantConfig } from "./types";
  *  model and "asks first" always show. */
 export interface ChipParts { tool: boolean; effort: boolean; usage: boolean }
 
-export const AGENT_LABEL: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Gemini CLI", grok: "Grok", muse: "Muse Code" };
+export const AGENT_LABEL: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Antigravity / Gemini", grok: "Grok", muse: "Muse Code" };
 
 /** The line after a bot's name: tool · model · effort · asks first, without the parts turned off. */
 export function chipDescription(config: ParticipantConfig, parts: ChipParts): string {

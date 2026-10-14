@@ -38,8 +38,7 @@ const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 export const AGENT_EFFORTS: Record<AgentTool, string[]> = {
   claude_code: CLAUDE_EFFORTS,
   codex: CODEX_EFFORTS,
-  // Gemini CLI has no effort setting on the command line.
-  gemini: [],
+  gemini: ["low", "medium", "high", "xhigh", "max"],
   grok: ["low", "medium", "high", "xhigh"],
   muse: ["minimal", "low", "medium", "high", "xhigh", "max"],
 };
@@ -108,7 +107,7 @@ export const AGENT_MODELS: Record<AgentTool, ModelGroup[]> = {
   ],
   gemini: [
     {
-      label: "Shortcuts (Gemini CLI picks the version)",
+      label: "Shortcuts (Antigravity picks the version)",
       models: [
         { id: "auto", label: "Pro or Flash, chosen per request" },
         { id: "pro", label: "Latest Pro" },

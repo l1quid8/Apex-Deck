@@ -62,7 +62,7 @@ test("read-only bots come first, and each row says what the bot can do", () => {
     bot("tool", { kind: "cli", program: "mytool", args: [] }),
   ]);
   assert.deepEqual(rows.map((r) => [r.name, r.label, r.note]), [
-    ["Ada", "Gemini CLI · Read only", ""],
+    ["Ada", "Antigravity / Gemini · Read only", ""],
     ["Opus", "API · Read only", "Can't read attachments"],
     ["Tool", "Command · Read only", ""],
     ["Jigga", "Claude Code", "Can edit files"],

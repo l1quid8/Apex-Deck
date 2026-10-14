@@ -7,6 +7,7 @@ test("disabled CLI providers disappear from both terminal and chat selections", 
   assert.equal(providerEnabled("claude", disabled), false);
   assert.equal(providerEnabled("claude_code", disabled), false);
   assert.equal(providerEnabled("gemini", disabled), false);
+  assert.equal(providerEnabled("antigravity", disabled), false);
   assert.equal(providerEnabled("codex", disabled), true);
 });
 

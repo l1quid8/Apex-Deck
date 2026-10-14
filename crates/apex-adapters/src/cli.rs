@@ -19,7 +19,7 @@ use crate::events::{self, EventReader, OutputFormat};
 use crate::grok_images;
 use crate::codex_server::{self, TurnError};
 use crate::muse_server;
-use crate::presets::{agent_command_with, clean_effort, clean_model, codex_service_tier, output_format};
+use crate::presets::{agent_command_in, agent_command_with, clean_effort, clean_model, codex_service_tier, output_format};
 use crate::codex_hook;
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 use crate::owned_process::{OwnedChild, Registry};
@@ -102,7 +102,7 @@ impl CliParticipant {
                     return Err(ParticipantError::Failed("This CLI does not have a verified tool-free mode, so the monitor check did not run.".into()));
                 }
                 let (program, mut args) =
-                    agent_command_with(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.speed, self.config.access, self.plan.is_some());
+                    agent_command_in(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.speed, self.config.access, self.plan.is_some(), self.path.as_deref());
                 if self.tools_disabled {
                     let mut safe = Vec::with_capacity(args.len());
                     let mut i = 0;
@@ -478,6 +478,8 @@ pub(crate) fn sign_in_hint(program: &str, summary: &str) -> Option<&'static str>
         "claude" => "To fix: open a Claude Code pane (or run `claude` in a terminal), type /login, finish signing in, then send your message again.",
         "codex" => "To fix: run `codex login` in a terminal pane, then send your message again.",
         "gemini" => "To fix: run `gemini` in a terminal pane, sign in when asked, then send your message again.",
+        "agy" => "To fix: run `agy` in a terminal pane, sign in when asked, then send your message again.",
+        "antigravity" => "To fix: run `antigravity` in a terminal pane, sign in when asked, then send your message again.",
         "grok" => "To fix: run `grok login` in a terminal pane, then send your message again.",
         "muse" => "To fix: run `muse login` in a terminal pane and choose browser sign-in, then send your message again.",
         _ => "To fix: sign in to this tool in a terminal pane, then send your message again.",
@@ -614,8 +616,10 @@ impl Participant for CliParticipant {
                     if let Some(index) = args.iter().position(|arg| arg == "--include-directories") {
                         args[index + 1].push(',');
                         args[index + 1].push_str(&directory);
-                    } else {
+                    } else if program == "gemini" {
                         args.extend(["--include-directories".into(), directory]);
+                    } else {
+                        args.extend(["--add-dir".into(), directory]);
                     }
                     staged = Some(files);
                 }

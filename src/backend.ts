@@ -591,7 +591,7 @@ function demoBackend(): Backend {
     detectAgents: async () => [
       { key: "claude", label: "Claude Code", program: "claude", found: true },
       { key: "codex", label: "Codex", program: "codex", found: true },
-      { key: "gemini", label: "Gemini CLI", program: "gemini", found: false },
+      { key: "gemini", label: "Antigravity / Gemini", program: "agy", found: false },
       { key: "grok", label: "Grok", program: "grok", found: false },
       { key: "muse", label: "Muse Code", program: "muse", found: false },
     ],

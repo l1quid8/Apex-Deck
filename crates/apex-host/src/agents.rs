@@ -14,18 +14,19 @@ pub struct KnownAgent {
     pub key: &'static str,
     pub label: &'static str,
     pub program: &'static str,
+    pub candidates: &'static [&'static str],
 }
 
 pub const KNOWN_AGENTS: &[KnownAgent] = &[
-    KnownAgent { key: "claude", label: "Claude Code", program: "claude" },
-    KnownAgent { key: "codex", label: "Codex", program: "codex" },
-    KnownAgent { key: "gemini", label: "Gemini CLI", program: "gemini" },
-    KnownAgent { key: "cursor", label: "Cursor Agent", program: "cursor-agent" },
-    KnownAgent { key: "copilot", label: "GitHub Copilot", program: "copilot" },
-    KnownAgent { key: "grok", label: "Grok", program: "grok" },
-    KnownAgent { key: "muse", label: "Muse Code", program: "muse" },
-    KnownAgent { key: "opencode", label: "OpenCode", program: "opencode" },
-    KnownAgent { key: "aider", label: "Aider", program: "aider" },
+    KnownAgent { key: "claude", label: "Claude Code", program: "claude", candidates: &["claude"] },
+    KnownAgent { key: "codex", label: "Codex", program: "codex", candidates: &["codex"] },
+    KnownAgent { key: "gemini", label: "Antigravity / Gemini", program: "agy", candidates: &["agy", "gemini", "antigravity"] },
+    KnownAgent { key: "cursor", label: "Cursor Agent", program: "cursor-agent", candidates: &["cursor-agent"] },
+    KnownAgent { key: "copilot", label: "GitHub Copilot", program: "copilot", candidates: &["copilot"] },
+    KnownAgent { key: "grok", label: "Grok", program: "grok", candidates: &["grok"] },
+    KnownAgent { key: "muse", label: "Muse Code", program: "muse", candidates: &["muse"] },
+    KnownAgent { key: "opencode", label: "OpenCode", program: "opencode", candidates: &["opencode"] },
+    KnownAgent { key: "aider", label: "Aider", program: "aider", candidates: &["aider"] },
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -153,17 +154,23 @@ fn run_with_deadline(command: &mut Command) -> Option<String> {
 
 /// Report which known agents are installed.
 pub fn detect() -> Vec<AgentInfo> {
-    let programs: Vec<&str> = KNOWN_AGENTS.iter().map(|a| a.program).collect();
+    let programs: Vec<&str> = KNOWN_AGENTS.iter().flat_map(|a| a.candidates.iter().copied()).collect();
     let from_shell = probe_with_shell(&user_shell(), &programs).unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
 
     KNOWN_AGENTS
         .iter()
-        .map(|agent| AgentInfo {
-            key: agent.key.to_string(),
-            label: agent.label.to_string(),
-            program: agent.program.to_string(),
-            found: from_shell.iter().any(|p| p == agent.program) || on_path(agent.program, &path),
+        .map(|agent| {
+            let found_prog = agent
+                .candidates
+                .iter()
+                .find(|&&p| from_shell.iter().any(|s| s == p) || on_path(p, &path));
+            AgentInfo {
+                key: agent.key.to_string(),
+                label: agent.label.to_string(),
+                program: found_prog.unwrap_or(&agent.program).to_string(),
+                found: found_prog.is_some(),
+            }
         })
         .collect()
 }

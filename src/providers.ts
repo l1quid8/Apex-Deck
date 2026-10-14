@@ -1,7 +1,9 @@
 import type { ParticipantConfig } from "./types";
 
 export function providerEnabled(id: string, disabled: readonly string[]): boolean {
-  return !disabled.includes(id === "claude_code" ? "claude" : id);
+  if (id === "claude_code") return !disabled.includes("claude");
+  if (id === "gemini" || id === "antigravity") return !disabled.includes("gemini") && !disabled.includes("antigravity");
+  return !disabled.includes(id);
 }
 
 export function providerForConfig(config: ParticipantConfig): string {
