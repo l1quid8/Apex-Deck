@@ -101,7 +101,7 @@ import type {
   ThreadDiff,
   TokenTotals,
 } from "./types";
-import { SPEED_OPTIONS, SPEED_TOOLS, speedHint } from "./speed";
+import { SPEED_OPTIONS, supportsSpeed, speedHint } from "./speed";
 
 interface Props {
   pane: Pane;
@@ -334,7 +334,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, auto_effort: draft.auto_effort === true && levels.length > 0 && (preset?.agent?.tool === "codex" || preset?.agent?.tool === "claude_code"), ...(draft.speed && preset?.agent && SPEED_TOOLS.includes(preset.agent.tool) ? { speed: draft.speed } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, auto_effort: draft.auto_effort === true && levels.length > 0 && (preset?.agent?.tool === "codex" || preset?.agent?.tool === "claude_code"), ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -2181,6 +2181,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   // Ask the tool for its own model list the first time its preset is shown.
   const tool = preset.agent?.tool;
+  const speedAvailable = supportsSpeed(tool
+    ? { kind: "agent", tool, model: draft.model }
+    : preset.api
+      ? { kind: "open_ai_compatible", base_url: draft.baseUrl, model: draft.model, api_key_env: null }
+      : { kind: "scripted", lines: [] });
   useEffect(() => {
     if (!adding || !tool || reported[tool]) return;
     let current = true;
@@ -2533,7 +2538,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               </span>
             </div>
           )}
-          {tool && SPEED_TOOLS.includes(tool) && (
+          {speedAvailable && (
             <div className="wide effort-field">
               <span className="field-title">Speed</span>
               <Segmented

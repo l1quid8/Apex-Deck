@@ -298,3 +298,15 @@ test('a bot pill opens its details on a short downward drag, and sideways still 
   assert.equal(pillDrag(20, 32), 'wait');
   assert.equal(pillDrag(30, 32), 'scroll');
 });
+
+// An OpenAI URL lookalike must not enable paid priority settings.
+test('phone speed saves for direct OpenAI and stays unavailable on other API endpoints', () => {
+  const api = { id: 'api', backend: { kind: 'open_ai_compatible', base_url: 'https://api.openai.com/v1', model: 'gpt-6-sol', api_key_env: null } };
+  const fast = withPhoneChange(api, { speed: 'fast' }, []);
+  assert.equal(fast.speed, 'fast');
+  assert.equal(withPhoneChange(fast, { speed: 'standard' }, []).speed, 'standard');
+  assert.equal('speed' in withPhoneChange(fast, { speed: '' }, []), false);
+  for (const base_url of ['https://api.openai.com.evil.test/v1', 'https://other.test/api.openai.com/v1', 'https://api.openai.com/proxy', 'invalid']) {
+    assert.equal(withPhoneChange({ ...api, backend: { ...api.backend, base_url } }, { speed: 'fast' }, []).speed, undefined);
+  }
+});

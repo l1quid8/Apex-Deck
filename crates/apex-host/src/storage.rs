@@ -296,6 +296,29 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn participant_speed_survives_store_reopen_and_default_clears_it() {
+        let root = temp();
+        for backend in [
+            serde_json::json!({"kind":"agent","tool":"codex","model":"gpt-6-sol"}),
+            serde_json::json!({"kind":"agent","tool":"claude_code","model":"opus"}),
+            serde_json::json!({"kind":"open_ai_compatible","base_url":"https://api.openai.com/v1","model":"gpt-6-sol","api_key_env":null}),
+        ] {
+            for speed in [Some(apex_core::Speed::Fast), Some(apex_core::Speed::Standard), None] {
+                let mut participant: apex_core::ParticipantConfig = serde_json::from_value(serde_json::json!({
+                    "id":"speed-test","display_name":"Speed test","persona":"","access":"read","effort":null,"backend":backend
+                })).unwrap();
+                participant.speed = speed;
+                let mut snapshot = Room::new(vec![], RoomOptions::default()).snapshot();
+                snapshot.participants.push(participant);
+                Store::new(root.clone()).save_room("speed", &SavedRoom { cwd: None, snapshot }).unwrap();
+                let reopened = Store::new(root.clone()).room("speed").unwrap().unwrap();
+                assert_eq!(reopened.snapshot.participants[0].speed, speed);
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn restart_restores_session_and_messages_and_close_deletes_only_selected_chat() {
         let root = temp();

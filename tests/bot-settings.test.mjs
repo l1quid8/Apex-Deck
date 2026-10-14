@@ -8,7 +8,7 @@ import electron from 'electron';
 import { createServer } from 'vite';
 
 // Exercise the real selector and save pipeline in Chromium with an in-memory backend.
-test('All providers support searchable fast selection and persist manual fallback choices', { timeout: 60000 }, async () => {
+test('Model switching and supported speed selections persist when the quick selector reopens', { timeout: 60000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-settings-'));
   const html = `<html><body><button id="anchor">Bot</button><div id="test-root"></div><script type="module">
     import React from 'react'; import {createRoot} from 'react-dom/client';
@@ -62,6 +62,25 @@ test('All providers support searchable fast selection and persist manual fallbac
           await wait(()=>window.fixture.config.backend.model==='custom-model');
           await run(()=>{window.fixture.key=Math.random();window.fixture.render();});
           await wait(()=>document.querySelector('.model-select-trigger')?.textContent.includes('custom-model'));
+        }
+        for(const tool of ['codex','claude_code','openai','gemini','grok','muse','api']){
+          await win.webContents.executeJavaScript('window.fixture.mount('+JSON.stringify(tool==='openai'?'api':tool)+')');
+          if(tool==='openai') await run(()=>{window.fixture.config.backend.base_url='https://api.openai.com/v1';window.fixture.render();});
+          await wait(()=>document.querySelector('.model-select-trigger'));
+          const supported=['codex','claude_code','openai'].includes(tool);
+          assert.equal(await run(()=>!!document.querySelector('.bot-speed')),supported,'speed eligibility for '+tool);
+          if(!supported) continue;
+          for(const [label,value] of [['Fast','fast'],['Standard','standard'],['Default',undefined]]){
+            await win.webContents.executeJavaScript('Array.from(document.querySelectorAll(".bot-speed button")).find(b=>b.textContent==='+JSON.stringify(label)+').click()');
+            for(let i=0;i<100;i++){
+              if(await run(()=>window.fixture.config.speed)===value)break;
+              await new Promise(r=>setTimeout(r,20));
+            }
+            assert.equal(await run(()=>window.fixture.config.speed),value,'saved '+label+' for '+tool);
+            await run(()=>{window.fixture.config=JSON.parse(JSON.stringify(window.fixture.config));window.fixture.key=Math.random();window.fixture.render();});
+            await new Promise(r=>setTimeout(r,50));
+            assert.equal(await run(()=>document.querySelector('.bot-speed [aria-checked="true"]')?.textContent),label,'reopened '+label+' for '+tool);
+          }
         }
         console.log('Model selector Chromium checks passed'); app.exit(0);
       }catch(error){console.error(error.stack);app.exit(1);}

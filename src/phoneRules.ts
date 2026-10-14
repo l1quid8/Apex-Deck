@@ -6,7 +6,7 @@ import { contextLevel, countdown, isLow, liveWindows, percent, planLevel, shortC
 import { findTrigger, insertAt, menuItems, type Trigger } from "./composerMenu.ts";
 import { AGENT_EFFORTS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups, type ModelGroup } from "./models.ts";
 import { applyTurnChange, withTurnSettings } from "./participantSettings.ts";
-import { SPEED_TOOLS } from "./speed.ts";
+import { supportsSpeed } from "./speed.ts";
 import type { AgentTool, ModelChoice, ParticipantConfig, PlanWindow, Speed, ToolServer } from "./types.ts";
 
 export type MachineKind = "mac" | "server";
@@ -427,8 +427,8 @@ export function withPhoneChange(saved: ParticipantConfig, change: TurnChange, re
   return "speed" in change && phoneSpeed(saved) ? applyTurnChange(next, { speed: change.speed || null }) : next;
 }
 
-/** Whether a bot's tool offers a Speed choice (Codex and Claude Code). */
-export const phoneSpeed = (config: ParticipantConfig) => config.backend.kind === "agent" && SPEED_TOOLS.includes(config.backend.tool);
+/** Whether the bot's backend accepts a speed override. */
+export const phoneSpeed = (config: ParticipantConfig) => supportsSpeed(config.backend);
 
 /** Short words that read as capitals in a tool's name. */
 const TOOL_CAPS: Record<string, string> = { mcp: "MCP", ai: "AI", api: "API", db: "DB", sql: "SQL", pdf: "PDF", ui: "UI", aws: "AWS", lsp: "LSP", repl: "REPL", github: "GitHub", gitlab: "GitLab" };

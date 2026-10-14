@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
 import type { ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } from './types';
 import { Segmented } from './AgentPicker';
-import { SPEED_OPTIONS, SPEED_TOOLS } from './speed';
+import { SPEED_OPTIONS, supportsSpeed, speedHint } from './speed';
 import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortsFor, findModel, modelGroups } from './models';
 import { ReasoningSlider } from './ReasoningSlider';
 import { latestSaveQueue } from './settingsSave';
@@ -298,7 +298,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       {config.auto_effort && <p className="muted">Trial: Clef logs its pick. Replies use the backup below.</p>}
       {!autoAvailable && (tool === 'codex' || tool === 'claude_code') && <p className="muted">Auto needs the decision observer switched on with a saved key.</p>}
       {!mediaType && <ReasoningSlider title={config.auto_effort ? "Auto backup" : "Reasoning"} efforts={efforts} value={supportedEffort} defaultLabel={apiModel?.default_effort ?? undefined} onCommit={value => config.auto_effort ? (setEffort(value), void apply({ effort: value, auto_effort: true })) : commitEffort(value)} />}
-      {tool && SPEED_TOOLS.includes(tool) && <div className="bot-speed"><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
+      {supportsSpeed(config.backend) && <div className="bot-speed" title={speedHint(tool ?? undefined)}><span className="model-select-label">Speed</span><Segmented label="Speed" name="quick-bot-speed" options={SPEED_OPTIONS} value={'speed' in touched.current ? touched.current.speed ?? '' : config.speed ?? ''} onChange={speed => { void apply({ speed: speed || null }); }} /></div>}
       {apiPrice && <p className="muted">{apiPrice}</p>}
       {mediaBlock}
       {note && <p className="muted">{note}</p>}

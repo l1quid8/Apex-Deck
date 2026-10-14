@@ -38,6 +38,19 @@ impl OpenAiCompatParticipant {
     }
 }
 
+// Never send OpenAI's paid processing override to an arbitrary compatible server.
+fn apply_speed(body: &mut Value, base_url: &str, speed: Option<apex_core::Speed>) {
+    let Some(speed) = speed else { return };
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else { return };
+    if url.scheme() == "https" && url.host_str() == Some("api.openai.com")
+        && url.port_or_known_default() == Some(443) && url.path().trim_end_matches('/') == "/v1"
+        && url.query().is_none() && url.fragment().is_none()
+        && url.username().is_empty() && url.password().is_none()
+    {
+        body["service_tier"] = json!(crate::presets::codex_service_tier(speed));
+    }
+}
+
 /// The JSON body for one turn.
 pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequest) -> Result<Value, ParticipantError> {
     let images = crate::attachments::for_request(request)?;
@@ -206,7 +219,9 @@ impl Participant for OpenAiCompatParticipant {
 
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         let effort = request.effort_override.as_deref().or(self.config.effort.as_deref());
-        let mut call = self.client.post(&url).json(&request_body(model, effort, &request)?);
+        let mut body = request_body(model, effort, &request)?;
+        apply_speed(&mut body, base_url, self.config.speed);
+        let mut call = self.client.post(&url).json(&body);
         if let Some(name) = api_key_env.as_deref().filter(|n| !n.is_empty()) {
             let key = crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?;
             call = call.bearer_auth(key);
@@ -296,6 +311,20 @@ impl Participant for OpenAiCompatParticipant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speed_is_sent_only_to_the_direct_openai_api_when_explicit() {
+        for (speed, expected) in [(None, None), (Some(apex_core::Speed::Standard), Some("default")), (Some(apex_core::Speed::Fast), Some("priority"))] {
+            let mut body = json!({"model": "gpt-6-sol"});
+            apply_speed(&mut body, "https://api.openai.com/v1/", speed);
+            assert_eq!(body.get("service_tier").and_then(Value::as_str), expected);
+        }
+        for url in ["https://api.openai.com.evil.test/v1", "https://other.test/api.openai.com/v1", "https://api.openai.com/proxy", "invalid"] {
+            let mut body = json!({"model": "gpt-6-sol"});
+            apply_speed(&mut body, url, Some(apex_core::Speed::Fast));
+            assert!(body.get("service_tier").is_none(), "{url}");
+        }
+    }
 
     #[test]
     fn effort_is_only_in_the_request_when_set() {
