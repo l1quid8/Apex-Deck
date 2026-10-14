@@ -19,7 +19,7 @@ use crate::events::{self, EventReader, OutputFormat};
 use crate::grok_images;
 use crate::codex_server::{self, TurnError};
 use crate::muse_server;
-use crate::presets::{agent_command_in, agent_command_with, clean_effort, clean_model, codex_service_tier, output_format};
+use crate::presets::{agent_command_in, clean_effort, clean_model, codex_service_tier, output_format};
 use crate::codex_hook;
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 use crate::owned_process::{OwnedChild, Registry};
@@ -112,7 +112,7 @@ impl CliParticipant {
                     safe.extend(["--safe-mode", "--restricted", "--tools", "", "--strict-mcp-config", "--setting-sources", ""].into_iter().map(str::to_owned));
                     args = safe;
                 }
-                Ok((program, args, output_format(*tool)))
+                Ok((program.clone(), args, output_format(*tool, &program)))
             }
             _ => Err(ParticipantError::NotConfigured("backend is not a command-line tool".into())),
         }
@@ -824,6 +824,7 @@ ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_
 #[cfg(test)]
 mod auto_tests {
     use super::*;
+    use crate::presets::agent_command_with;
     #[test]
     fn reply_override_uses_the_tools_flags_and_does_not_change_saved_settings() {
         for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {

@@ -122,7 +122,7 @@ pub async fn plan_usage(tool: AgentTool, context: &BuildContext) -> Option<PlanU
             AgentTool::ClaudeCode => claude_usage::read_plan().await,
             AgentTool::Codex => read_codex_plan(context).await.map_err(|why| plan_cache::Failure::new(why, plan_cache::Failure::SHORT)),
             AgentTool::Grok => grok_usage::read_plan().await,
-            AgentTool::Gemini => gemini_usage::read_plan().await,
+            AgentTool::Gemini => gemini_usage::read_plan(context.path.as_deref()).await,
             AgentTool::Muse => unreachable!("answered from the last turn above"),
         }
     };

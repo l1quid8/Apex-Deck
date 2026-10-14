@@ -320,7 +320,7 @@ export interface MeterRow {
 
 /** Whether a bot's tool reports its context window at all. */
 export function reportsContext(provider: AgentTool | null): boolean {
-  return provider !== null && provider !== "gemini" && provider !== "grok";
+  return provider !== null && provider !== "grok";
 }
 
 /** Context and plan as bars for the sheet a held bot opens: context first, then each plan window, shortest first, as on the desktop's meters. */

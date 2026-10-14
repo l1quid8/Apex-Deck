@@ -34,6 +34,8 @@ pub(crate) enum OutputFormat {
     /// Codex's app server, which is driven by requests and reports the
     /// reply piece by piece. See `codex_server.rs` for the conversation.
     CodexServer,
+    /// Google Antigravity (`agy`) with `--output-format stream-json`.
+    AntigravityStream,
 }
 
 /// Something to show while a turn is running.
@@ -305,6 +307,7 @@ impl EventReader {
             OutputFormat::MuseJson => self.muse(&event, steps),
             OutputFormat::CodexJson => self.codex(&event, steps),
             OutputFormat::CodexServer => self.codex_server(&event, steps),
+            OutputFormat::AntigravityStream => self.antigravity(&event, steps),
             OutputFormat::Text => {}
         }
     }
@@ -937,6 +940,121 @@ impl EventReader {
         if !paths.is_empty() {
             self.doing(format!("Editing {}", paths.join(", ")), steps);
         }
+    }
+
+    // ------------------------------------------------------------ Antigravity
+
+    fn antigravity(&mut self, event: &Value, steps: &mut Vec<Step>) {
+        match event["event"].as_str() {
+            Some("step_update") => {
+                let step = &event["step_update"];
+                if let Some(delta) = step["text_delta"].as_str().filter(|s| !s.is_empty()) {
+                    self.pieces_seen = true;
+                    self.say(delta, steps);
+                }
+                match step["step_type"].as_str() {
+                    Some("tool") => {
+                        let tool_name = step["tool_name"]
+                            .as_str()
+                            .or_else(|| step["tool_info"]["name"].as_str())
+                            .unwrap_or("tool");
+                        let params = &step["tool_info"]["parameters"];
+                        let state = step["state"].as_str();
+                        if state == Some("ACTIVE") {
+                            let activity = self.antigravity_activity(tool_name, params);
+                            self.doing(activity, steps);
+                            let changes = self.antigravity_changes(tool_name, params);
+                            if let Some(id) = step["step_index"].as_u64().map(|n| n.to_string()) {
+                                if !changes.is_empty() {
+                                    self.edits.insert(id, changes);
+                                }
+                            }
+                        } else if state == Some("DONE") {
+                            if let Some(id) = step["step_index"].as_u64().map(|n| n.to_string()) {
+                                if let Some(changes) = self.edits.remove(&id) {
+                                    steps.extend(changes.into_iter().map(Step::Change));
+                                }
+                            }
+                        }
+                    }
+                    Some("agent_response") => {
+                        if let Some(usage) = step.get("usage") {
+                            let input = usage["input_tokens"].as_u64().unwrap_or(0);
+                            let cache = usage["cache_read_tokens"].as_u64().unwrap_or(0);
+                            if input + cache > 0 {
+                                self.last_request = Some((input + cache, String::new()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("result") => {
+                let res = &event["result"];
+                self.turn_over = true;
+                if res["status"].as_str() == Some("SUCCESS") {
+                    if let Some(resp) = res["response"].as_str() {
+                        if !self.pieces_seen || self.final_text.is_none() {
+                            self.final_text = Some(resp.to_string());
+                        }
+                    }
+                    if let Some(usage) = res.get("usage") {
+                        if let Some(inp) = usage["input_tokens"].as_u64() {
+                            self.input_tokens = Some(inp);
+                        }
+                        if let Some(out) = usage["output_tokens"].as_u64() {
+                            self.output_tokens = Some(out);
+                        }
+                    }
+                    let used = self.last_request.as_ref().map(|(t, _)| *t).or(self.input_tokens);
+                    if let Some(used) = used {
+                        steps.push(Step::Context(ContextUse {
+                            used_tokens: used,
+                            window_tokens: 1_000_000,
+                        }));
+                    }
+                } else {
+                    self.failure = res["error"]
+                        .as_str()
+                        .or_else(|| res["response"].as_str())
+                        .map(str::to_string)
+                        .or_else(|| Some("Antigravity turn failed".to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn antigravity_activity(&self, tool: &str, params: &Value) -> String {
+        let field = |key: &str| params[key].as_str().map(str::trim).filter(|s| !s.is_empty());
+        let path = || field("AbsolutePath").or_else(|| field("TargetFile")).or_else(|| field("path")).map(|p| self.short_path(p));
+        let line = match tool {
+            "view_file" => path().map(|p| format!("Reading {p}")),
+            "replace_file_content" | "multi_replace_file_content" | "sed_file" => path().map(|p| format!("Editing {p}")),
+            "write_to_file" => path().map(|p| format!("Writing {p}")),
+            "run_command" => field("CommandLine").map(|c| format!("Running: {}", one_line(c))),
+            "grep_search" => field("query").map(|q| format!("Searching for {q}")),
+            "find_by_name" => field("pattern").map(|p| format!("Looking for files matching {p}")),
+            "search_web" => field("query").map(|q| format!("Searching the web for {q}")),
+            "read_url_content" => field("Url").map(|u| format!("Fetching {u}")),
+            "invoke_subagent" => Some("Starting a helper".to_string()),
+            _ => None,
+        };
+        line.unwrap_or_else(|| format!("Using {tool}"))
+    }
+
+    fn antigravity_changes(&self, tool: &str, params: &Value) -> Vec<FileChange> {
+        let text = |val: &Value| val.as_str().unwrap_or("").to_string();
+        let Some(path) = params["TargetFile"].as_str().or_else(|| params["AbsolutePath"].as_str()) else {
+            return Vec::new();
+        };
+        let path = self.short_path(path);
+        let diff = match tool {
+            "replace_file_content" => replaced(&text(&params["TargetContent"]), &text(&params["ReplacementContent"])),
+            "write_to_file" => replaced("", &text(&params["CodeContent"])),
+            _ => return Vec::new(),
+        };
+        vec![FileChange::new(path, diff)]
     }
 
     /// `path` relative to the workspace folder when it is inside it.
@@ -1849,5 +1967,37 @@ mod tests {
             ]
         );
         assert_eq!(outcome.input_tokens, Some(1));
+    }
+
+    #[test]
+    fn antigravity_stream_reports_text_activity_changes_and_context() {
+        let stream = r#"{"event":"step_update","step_update":{"step_index":0,"state":"ACTIVE","step_type":"agent_response","text_delta":"Let me check"}}
+{"event":"step_update","step_update":{"step_index":0,"state":"DONE","step_type":"agent_response","text_delta":" the file.\n","usage":{"input_tokens":12000,"output_tokens":50,"cache_read_tokens":1000,"total_tokens":13050}}}
+{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"tool","tool_name":"replace_file_content","tool_info":{"parameters":{"TargetFile":"/workspace/src/lib.rs","TargetContent":"old","ReplacementContent":"new"}}}}
+{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"tool","tool_name":"replace_file_content","tool_info":{"parameters":{"TargetFile":"/workspace/src/lib.rs"}}}}
+{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"Done!"}}
+{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":15000,"output_tokens":20,"cache_read_tokens":0,"total_tokens":15020}}}
+{"event":"result","result":{"status":"SUCCESS","response":"Let me check the file.\nDone!\n","usage":{"input_tokens":27000,"output_tokens":70,"total_tokens":27070}}}
+"#;
+        let mut reader = EventReader::new(OutputFormat::AntigravityStream, Some("/workspace".into()));
+        let steps = reader.push(stream);
+        let outcome = reader.outcome();
+
+        assert_eq!(outcome.text, "Let me check the file.\nDone!\n");
+        assert_eq!(outcome.input_tokens, Some(27000));
+        assert_eq!(outcome.output_tokens, Some(70));
+        assert!(outcome.error.is_none());
+
+        assert!(steps.iter().any(|s| matches!(s, Step::Activity(act) if act.contains("Editing src/lib.rs"))));
+        assert!(steps.iter().any(|s| matches!(s, Step::Change(change) if change.path == "src/lib.rs")));
+
+        let (contexts, _) = meters(&steps);
+        assert_eq!(
+            contexts,
+            vec![ContextUse {
+                used_tokens: 15_000,
+                window_tokens: 1_000_000,
+            }]
+        );
     }
 }

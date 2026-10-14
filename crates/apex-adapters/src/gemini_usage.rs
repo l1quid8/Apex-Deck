@@ -15,8 +15,80 @@ use crate::plan_cache::Failure;
 const LOAD: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 const QUOTA: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 
-/// Read Gemini's plan usage with the login the Gemini CLI saved.
-pub(crate) async fn read_plan() -> Result<PlanUsage, Failure> {
+/// Read Gemini's plan usage. When Antigravity (`agy` or `antigravity`) is used,
+/// reads directly from `agy -p /usage --output-format json`. Otherwise reads
+/// with the login the Gemini CLI saved.
+pub(crate) async fn read_plan(path: Option<&str>) -> Result<PlanUsage, Failure> {
+    let program = crate::presets::resolve_gemini_program(path);
+    if program == "agy" || program == "antigravity" {
+        return read_agy_plan(program, path).await;
+    }
+    read_legacy_plan().await
+}
+
+async fn read_agy_plan(program: &str, path: Option<&str>) -> Result<PlanUsage, Failure> {
+    let short = |why: String| Failure::new(why, Failure::SHORT);
+    let mut command = tokio::process::Command::new(program);
+    command.args(["-p", "/usage", "--output-format", "json"]);
+    command.env("NO_COLOR", "1").env("TERM", "dumb");
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command.stdin(std::process::Stdio::null());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+
+    let output = tokio::time::timeout(Duration::from_secs(15), command.output())
+        .await
+        .map_err(|_| short(format!("`{program} -p /usage` timed out")))?
+        .map_err(|e| short(format!("could not run `{program}`: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(short(format!("`{program}` failed: {}", stderr.trim())));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(stdout.trim())
+        .map_err(|e| short(format!("could not parse `{program}` usage JSON: {e}")))?;
+    parse_agy_usage(&json).ok_or_else(|| short("the reply had no usage windows".into()))
+}
+
+/// Parse Antigravity's JSON response for the `/usage` command.
+pub(crate) fn parse_agy_usage(json: &Value) -> Option<PlanUsage> {
+    let groups = json["command"]["data"]["groups"].as_array()?;
+    let gemini_group = groups.iter().find(|g| {
+        g["name"].as_str().map_or(false, |n| n.contains("Gemini"))
+    })?;
+    let buckets = gemini_group["buckets"].as_array()?;
+    let mut windows: Vec<PlanWindow> = Vec::new();
+    for bucket in buckets {
+        let remaining = bucket["remaining_fraction"].as_f64()?;
+        let used = ((1.0 - remaining) * 100.0).round().clamp(0.0, 100.0) as u32;
+        let window_type = bucket["window"].as_str().or_else(|| bucket["id"].as_str())?;
+        let (name, minutes) = match window_type {
+            w if w.contains("5h") || w.contains("five_hour") => ("five_hour", Some(300)),
+            w if w.contains("week") || w.contains("7d") => ("seven_day", Some(10_080)),
+            other => (other, None),
+        };
+        let resets = bucket["reset_time"].as_str().and_then(unix_seconds);
+        windows.push(PlanWindow {
+            name: name.to_string(),
+            used_percent: used,
+            window_minutes: minutes,
+            resets_at: resets,
+        });
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    Some(PlanUsage {
+        provider: AgentTool::Gemini,
+        windows,
+        partial: false,
+    })
+}
+
+async fn read_legacy_plan() -> Result<PlanUsage, Failure> {
     let short = |why: String| Failure::new(why, Failure::SHORT);
     let home = std::env::var_os("HOME").ok_or_else(|| short("no Gemini CLI login found".into()))?;
     let saved = tokio::fs::read_to_string(std::path::PathBuf::from(home).join(".gemini/oauth_creds.json"))
@@ -150,5 +222,54 @@ mod tests {
         assert_eq!(saved_token(&json!({ "refresh_token": "nope" }), 0).unwrap_err(), "no Gemini CLI login found");
         assert_eq!(project_id(&json!({ "cloudaicompanionProject": " my-project " })).unwrap(), "my-project");
         assert!(project_id(&json!({ "allowedTiers": [] })).is_none());
+    }
+
+    #[test]
+    fn parses_agy_usage_groups_into_five_hour_and_weekly_windows() {
+        let usage = json!({
+            "command": {
+                "name": "usage",
+                "data": {
+                    "groups": [
+                        {
+                            "name": "Gemini Models",
+                            "buckets": [
+                                {
+                                    "id": "gemini-weekly",
+                                    "name": "Weekly Limit Remaining",
+                                    "window": "weekly",
+                                    "remaining_fraction": 0.92,
+                                    "reset_time": "2026-10-21T03:45:28Z"
+                                },
+                                {
+                                    "id": "gemini-5h",
+                                    "name": "Five Hour Limit Remaining",
+                                    "window": "5h",
+                                    "remaining_fraction": 0.74,
+                                    "reset_time": "2026-10-14T08:45:28Z"
+                                }
+                            ]
+                        },
+                        {
+                            "name": "Claude and GPT models",
+                            "buckets": [
+                                { "id": "3p-weekly", "window": "weekly", "remaining_fraction": 1.0 }
+                            ]
+                        }
+                    ]
+                }
+            }
+        });
+        let plan = parse_agy_usage(&usage).unwrap();
+        assert_eq!(plan.provider, AgentTool::Gemini);
+        assert_eq!(plan.windows.len(), 2);
+        assert_eq!(plan.windows[0].name, "seven_day");
+        assert_eq!(plan.windows[0].used_percent, 8);
+        assert_eq!(plan.windows[0].window_minutes, Some(10_080));
+        assert!(plan.windows[0].resets_at.is_some());
+        assert_eq!(plan.windows[1].name, "five_hour");
+        assert_eq!(plan.windows[1].used_percent, 26);
+        assert_eq!(plan.windows[1].window_minutes, Some(300));
+        assert!(plan.windows[1].resets_at.is_some());
     }
 }

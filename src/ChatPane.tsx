@@ -2355,7 +2355,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const provider = planProvider(p);
     const windows = provider ? plans[provider]?.windows : undefined;
     const plan = windows ? planLine(windows, new Date()) : null;
-    const reports = (p.backend.kind === "agent" && p.backend.tool !== "gemini" && p.backend.tool !== "grok") || p.backend.kind === "open_ai_compatible";
+    const reports = (p.backend.kind === "agent" && p.backend.tool !== "grok") || p.backend.kind === "open_ai_compatible";
     const account = accountOf(p);
     const left = account ? balances[account.key] : undefined;
     const spent = spendLine(used[p.id], dollars);

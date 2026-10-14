@@ -15,14 +15,19 @@ const STDIN_INSTRUCTION: &str =
     "Reply to the group chat conversation given on standard input. Follow the instructions at the top of it.";
 
 /// How to read what `tool` prints when run with the flags below. Claude
-/// Code, Codex and Grok are run in their event modes, which report the reply
-/// as it is written, each tool used, token counts and a proper error. Grok's
-/// event mode is the same as Claude Code's.
-pub(crate) fn output_format(tool: AgentTool) -> OutputFormat {
+/// Code, Codex, Grok and Antigravity are run in their event modes, which report
+/// the reply as it is written, each tool used, token counts and a proper error.
+pub(crate) fn output_format(tool: AgentTool, program: &str) -> OutputFormat {
     match tool {
         AgentTool::ClaudeCode => OutputFormat::ClaudeStream,
         AgentTool::Codex => OutputFormat::CodexJson,
-        AgentTool::Gemini => OutputFormat::Text,
+        AgentTool::Gemini => {
+            if program == "gemini" {
+                OutputFormat::Text
+            } else {
+                OutputFormat::AntigravityStream
+            }
+        }
         AgentTool::Grok => OutputFormat::ClaudeStream,
         // Muse runs only through its session host (`muse_server.rs`).
         AgentTool::Muse => OutputFormat::Text,
@@ -247,6 +252,9 @@ pub fn agent_command_in(
                     }
                 }
             }
+            if program != "gemini" {
+                push(&["--output-format", "stream-json"]);
+            }
             push(&["-p", STDIN_INSTRUCTION]);
             program
         }
@@ -395,13 +403,13 @@ mod tests {
         let (program, args) = agent_command(AgentTool::Gemini, Some("some-model"), Some("high"), Access::Read);
         assert!(program == "gemini" || program == "agy" || program == "antigravity");
         if program == "agy" || program == "antigravity" {
-            assert_eq!(args, ["--model", "some-model", "--effort", "high", "--sandbox", "-p", STDIN_INSTRUCTION]);
+            assert_eq!(args, ["--model", "some-model", "--effort", "high", "--sandbox", "--output-format", "stream-json", "-p", STDIN_INSTRUCTION]);
         } else {
             assert_eq!(args, ["--model", "some-model", "--effort", "high", "-p", STDIN_INSTRUCTION]);
         }
         let (_, args) = agent_command(AgentTool::Gemini, None, None, Access::Full);
         if program == "agy" || program == "antigravity" {
-            assert_eq!(args, ["--dangerously-skip-permissions", "-p", STDIN_INSTRUCTION]);
+            assert_eq!(args, ["--dangerously-skip-permissions", "--output-format", "stream-json", "-p", STDIN_INSTRUCTION]);
         } else {
             assert_eq!(args, ["-p", STDIN_INSTRUCTION]);
         }
