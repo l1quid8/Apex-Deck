@@ -30,6 +30,25 @@ export function cardVersions(messages: { seq: number; speaker: { kind: string };
   return versions;
 }
 
+/** One automatic candidate per thread, so native cards never replace each other in a loop. */
+export function latestGeneratedCardKey(messages: { seq: number; speaker: { kind: string }; text: string }[]): string | null {
+  let latest: string | null = null;
+  const count = new Map<string, number>();
+  for (const message of messages) {
+    if (message.speaker.kind !== "bot" || !message.text.includes(CARD_LANGUAGE)) continue;
+    for (const block of parseBlocks(message.text)) {
+      if (block.kind !== "code" || block.language !== CARD_LANGUAGE) continue;
+      const read = readCard(block.text);
+      if (read.ok && read.card.kind === "generated") {
+        latest = cardKey(message.seq, read.card.cardId);
+        count.set(latest, (count.get(latest) ?? 0) + 1);
+      }
+    }
+  }
+  // Repeated identities in one reply cannot nominate two automatic hosts.
+  return latest && count.get(latest) === 1 ? latest : null;
+}
+
 /** The result line, then which options are out and why. */
 function outcome(card: ComparisonCard, ev: Evaluation): string {
   const out = ev.options.filter((o) => o.out.length > 0).map((o) => `${o.label} (${o.out.join(", ").toLowerCase()})`);

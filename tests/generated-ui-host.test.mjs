@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { runtimeCapability, checkedBounds, collectOwnership, recheckOwnedProcess, bootstrapRequestAllowed } from '../desktop/generated-ui/policy.mjs';
 import { revisionDigest, readRuntimeMessage, MessageBudget, readRunRequest } from '../desktop/generated-ui/protocol.mjs';
 import { ADAPTER_VERSION, SECURITY_POLICY_VERSION } from '../desktop/generated-ui/frame-content.mjs';
+import { createGeneratedUIManager } from '../desktop/generated-ui/host.mjs';
 const code = { adapterVersion: ADAPTER_VERSION, securityPolicyVersion: SECURITY_POLICY_VERSION };
 
 test('main converts approved CSS geometry to owner zoom before native placement',()=>{
@@ -20,6 +21,16 @@ const binding = { runId: 'a'.repeat(32), revisionDigest: 'b'.repeat(64) };
 const envelope = (type, extra = {}) => ({ protocolVersion: 1, ...binding, type, ...extra });
 const frame = (pid, node, url = 'about:srcdoc') => ({ osProcessId: pid, frameTreeNodeId: node, detached: false, url });
 const contents = (id, frames) => ({ id, isDestroyed: () => false, mainFrame: { ...frames[0], framesInSubtree: frames } });
+
+test('background, hidden and minimized Deck windows cannot create an automatic interface',async()=>{
+  for(const flags of [{focused:false,visible:true,minimized:false},{focused:true,visible:false,minimized:false},{focused:true,visible:true,minimized:true}]){
+    let allocations=0;
+    const manager=createGeneratedUIManager({electron:{app:{},session:{fromPartition(){allocations++;throw Error('Allocated a background host');}},webContents:{}},emit(){},testPolicy:{testOnly:true,enabled:true,ledger:{count:0}}});
+    const mainFrame={};const win={id:1,isDestroyed:()=>false,isFocused:()=>flags.focused,isVisible:()=>flags.visible,isMinimized:()=>flags.minimized,webContents:{mainFrame,getZoomFactor:()=>1},getContentBounds:()=>({width:900,height:700})};
+    await assert.rejects(manager.run({win,frame:mainFrame},{requestId,source:JSON.stringify(card),identity,bounds:{x:20,y:80,width:500,height:300}}),/foreground/);
+    assert.equal(allocations,0);
+  }
+});
 
 test('production capability cannot be enabled by environment or incomplete evidence', () => {
   process.env.APEX_DECK_GENERATED_UI = '1';

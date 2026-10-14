@@ -19,13 +19,50 @@ function setup() {
   return {api,run,calls,event:e=>event?.(e)};
 }
 
-test('capability checks and mounting never execute generated code; one click starts one run',async()=>{
+test('capability checks alone never execute; starting twice creates one run',async()=>{
   const {run,calls}=setup(); await run.checkCapability();
   assert.equal(calls.length,0);
   await run.start(bounds); assert.equal(calls[0][0],'run');
   await run.start(bounds); assert.equal(calls.filter(c=>c[0]==='run').length,1);
   await run.stop(); assert.equal(run.state.phase,'idle');
   await run.start(bounds); assert.equal(calls.filter(c=>c[0]==='run').length,2);
+});
+test('automatic opening waits for enabled, stable visible geometry and starts exactly once',async()=>{
+  const {run,calls}=setup();
+  await run.autoStart(bounds,0);await run.autoStart(bounds,300);assert.equal(calls.length,0);
+  await run.checkCapability();
+  await run.autoStart(null,400);await run.autoStart(bounds,500);
+  await run.autoStart(bounds,749);assert.equal(calls.length,0);
+  await run.autoStart(bounds,750);assert.equal(calls.filter(c=>c[0]==='run').length,1);
+  await run.autoStart(bounds,2000);assert.equal(calls.filter(c=>c[0]==='run').length,1);
+  assert.equal(run.state.attempted,true);
+});
+test('scrolling geometry resets automatic opening until the new rectangle settles',async()=>{
+  const {run,calls}=setup();await run.checkCapability();
+  await run.autoStart(bounds,0);await run.autoStart({...bounds,y:50},250);
+  await run.autoStart({...bounds,y:50},499);assert.equal(calls.length,0);
+  await run.autoStart(null,500);await run.autoStart(bounds,1000);
+  await run.autoStart(bounds,1250);assert.equal(calls.filter(c=>c[0]==='run').length,1);
+});
+test('Stop, startup failure and watchdog termination never automatically reopen a card',async()=>{
+  for(const failure of ['stop','startup','watchdog']){
+    const {run,api,calls,event}=setup();await run.checkCapability();
+    if(failure==='startup')api.run=async request=>{calls.push(['run',request]);throw Error('failed');};
+    await run.autoStart(bounds,0);await run.autoStart(bounds,250);
+    if(failure==='stop')await run.stop();
+    if(failure==='watchdog')event({runId:'r1',type:'stopped',reason:'Unresponsive'});
+    await run.autoStart(bounds,1000);await run.autoStart(bounds,2000);
+    assert.equal(calls.filter(c=>c[0]==='run').length,1,failure);
+    if(failure==='stop'){await run.start(bounds);assert.equal(calls.filter(c=>c[0]==='run').length,2);}
+  }
+});
+test('Stop before opening cancels the scheduled automatic start',async()=>{
+  const {run,calls}=setup();await run.checkCapability();await run.autoStart(bounds,0);
+  await run.stop();await run.autoStart(bounds,1000);assert.equal(calls.filter(c=>c[0]==='run').length,0);
+});
+test('disposing an unopened controller does not consume the mounted card automatic attempt',async()=>{
+  const {run}=setup();await run.checkCapability();await run.autoStart(bounds,0);run.dispose();
+  assert.equal(run.state.attempted,false);
 });
 test('disposed pending run responses are stopped; they cannot remount or stage text',async()=>{
   const {api,run,calls,event}=setup(); await run.checkCapability();

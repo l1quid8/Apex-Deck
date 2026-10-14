@@ -9,7 +9,8 @@ const React={createElement:(type,props,...children)=>({type,props:props??{},chil
 const src=fs.readFileSync(new URL('../src/interactiveAnswers/GeneratedAnswerCard.tsx',import.meta.url),'utf8');
 const code=transform(src.replace(/^import .*;\n/gm,'').replace(/^export /gm,''),{transforms:['typescript','jsx'],jsxRuntime:'classic'}).code;
 const mockWindow={apexDeck:{generatedUI:{}}};
-const {GeneratedAnswerCard}=new Function('React','useState','useRef','useEffect','useLayoutEffect','GeneratedRun','latestCardVersion','window',code+'\nreturn {GeneratedAnswerCard};')(React,x=>[x,()=>{}],x=>({current:x}),()=>{},()=>{},GeneratedRun,latestCardVersion,mockWindow);
+let renderedState;
+const {GeneratedAnswerCard}=new Function('React','useState','useRef','useEffect','useLayoutEffect','GeneratedRun','latestCardVersion','window',code+'\nreturn {GeneratedAnswerCard};')(React,x=>[renderedState??x,()=>{}],x=>({current:x}),()=>{},()=>{},GeneratedRun,latestCardVersion,mockWindow);
 const card={schemaVersion:1,kind:'generated',cardId:'flow',title:'<h1>Flow</h1>',summary:'**Literal summary**',fallback:'<script>never()</script>',html:'<div>code secret</div>',css:'',js:'dangerous()'};
 const props={card,source:JSON.stringify(card),version:1,author:'Null',identity:{threadId:'t',seq:1,cardId:'flow',hostId:'local'},historical:false,readOnly:false};
 function walk(node,fn){if(!node||typeof node!=='object')return;fn(node);for(const c of node.children??[])walk(c,fn);}
@@ -18,8 +19,22 @@ test('generated fallback is literal trusted text and never an iframe or innerHTM
  const tree=GeneratedAnswerCard(props);assert.match(text(tree),/\*\*Literal summary\*\*/);assert.match(text(tree),/<script>never\(\)<\/script>/);assert.doesNotMatch(text(tree),/code secret|dangerous/);
  walk(tree,n=>{assert.notEqual(n.type,'iframe');assert.equal(n.props.dangerouslySetInnerHTML,undefined);});
 });
-test('Run starts disabled until main grants capability',()=>{
- let run;walk(GeneratedAnswerCard(props),n=>{if(n.type==='button'&&text(n)==='Run this interface')run=n;});assert.equal(run.props.disabled,true);
+test('automatic interfaces do not ask the user for an initial Run click',()=>{
+ try {
+  for(const enabled of [false,true]){
+   renderedState={enabled,phase:'idle',reason:'',height:300,discuss:'',attempted:false};
+   let buttons=0;walk(GeneratedAnswerCard(props),n=>{if(n.type==='button')buttons++;});assert.equal(buttons,0);
+  }
+ }finally{renderedState=undefined;}
+});
+test('a running card exposes Stop and a stopped card exposes Restart',()=>{
+ try {
+  for(const [phase,label] of [['running','Stop'],['idle','Restart']]){
+   renderedState={enabled:true,phase,reason:'',height:300,discuss:'',attempted:true};
+   const buttons=[];walk(GeneratedAnswerCard(props),n=>{if(n.type==='button')buttons.push(text(n));});
+   assert.deepEqual(buttons,[label]);
+  }
+ }finally{renderedState=undefined;}
 });
 test('chat revokes generated execution whenever its host is disconnected or its room is not ready',()=>{
  const chat=fs.readFileSync(new URL('../src/ChatPane.tsx',import.meta.url),'utf8');
@@ -50,6 +65,11 @@ test('generated ThreadCard never subscribes, reads or writes comparison settings
  const shown=ThreadCard({source:JSON.stringify(card),seq:1,author:'Null',versions:new Map([['1:flow',1],['9:flow',2]]),answers,onOpen(){},threadId:'thread-a',hostId:'server'});
  assert.equal(shown.type,GeneratedAnswerCard);assert.equal(shown.props.historical,true);
  assert.deepEqual(shown.props.identity,{threadId:'thread-a',seq:1,cardId:'flow',hostId:'server'});
+});
+test('ThreadCard passes automatic opening only to the latest generated message/card',()=>{
+ const base={source:JSON.stringify(card),seq:1,author:'Null',versions:new Map([['1:flow',1]]),answers:null,onOpen(){},threadId:'t'};
+ assert.equal(ThreadCard({...base,autoStartKey:'1:flow'}).props.autoStart,true);
+ assert.equal(ThreadCard({...base,autoStartKey:'9:other'}).props.autoStart,false);
 });
 
 test('a reconnect, Retry or Revert, or a new folder remounts a generated card, so its run stops',()=>{

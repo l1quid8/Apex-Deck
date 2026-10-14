@@ -24,12 +24,13 @@ interface Props {
   /** Changes when a running generated interface must stop: a reconnect, a Retry or Revert, or a new folder. */
   executionEpoch?: string;
   executionAllowed?: boolean;
+  autoStartKey?: string | null;
   onDiscuss?: (snapshot: string) => void;
   onOpen: (target: string) => void;
 }
 
 /** A card in a finished reply, with the settings saved for it; the fallback when the block isn't one. */
-export function ThreadCard({ source, seq, author, versions, answers, readOnly = false, threadId = "", hostId = "local", executionEpoch = "", executionAllowed = true, onDiscuss, onOpen }: Props) {
+export function ThreadCard({ source, seq, author, versions, answers, readOnly = false, threadId = "", hostId = "local", executionEpoch = "", executionAllowed = true, autoStartKey = null, onDiscuss, onOpen }: Props) {
   const read = useMemo(() => readCard(source), [source]);
   const print = useMemo(() => fingerprint(source), [source]);
   const key = read.ok && read.card.kind === "comparison" ? cardKey(seq, read.card.cardId) : "";
@@ -43,6 +44,7 @@ export function ThreadCard({ source, seq, author, versions, answers, readOnly = 
       card={read.card} source={source} version={version} author={author}
       identity={{ threadId, seq, cardId: read.card.cardId, hostId }}
       historical={version < latestCardVersion(versions, read.card.cardId)}
+      autoStart={autoStartKey === cardKey(seq, read.card.cardId)}
       readOnly={readOnly} executionAllowed={executionAllowed} onDiscuss={onDiscuss}
     />;
   }

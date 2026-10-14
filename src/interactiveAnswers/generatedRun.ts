@@ -1,4 +1,4 @@
-/** Trusted UI lifecycle. Main owns validation, approval digests and execution. */
+/** Trusted UI lifecycle. Main owns validation, revision digests and execution. */
 import type { GeneratedRuntimeCapability } from '../../shared/generatedUiCapability.mjs';
 export interface GeneratedIdentity { threadId: string; seq: number; cardId: string; hostId: string }
 export interface GeneratedBounds { x: number; y: number; width: number; height: number }
@@ -12,7 +12,7 @@ export interface GeneratedEvent {
 export interface GeneratedApi {
   capability(): Promise<GeneratedRuntimeCapability>;
   run(request: { requestId: string; source: string; identity: GeneratedIdentity; bounds: GeneratedBounds }): Promise<{ runId: string; revisionDigest: string }>;
-  /** Revoke a click's authority even before run() returns a runId. */
+  /** Revoke a pending start even before run() returns a runId. */
   cancel(requestId: string): Promise<void>;
   bounds(runId: string, bounds: GeneratedBounds | null): void;
   stop(runId: string): Promise<void>;
@@ -24,6 +24,7 @@ export interface GeneratedState {
   reason: string;
   discuss: string;
   height: number;
+  attempted: boolean;
 }
 
 export function latestCardVersion(versions: Map<string, number>, cardId: string): number {
@@ -32,9 +33,9 @@ export function latestCardVersion(versions: Map<string, number>, cardId: string)
   return latest;
 }
 
-/** No saved approval; each new instance starts idle and requires a human click. */
+/** Each instance starts fresh. Automatic opening is a single, visible attempt. */
 export class GeneratedRun {
-  state: GeneratedState = { enabled: false, phase: "idle", reason: "Checking interface availability…", discuss: "", height: 300 };
+  state: GeneratedState = { enabled: false, phase: "idle", reason: "Checking interface availability…", discuss: "", height: 300, attempted: false };
   private api: GeneratedApi | undefined;
   private request: { source: string; identity: GeneratedIdentity };
   private changed: () => void;
@@ -44,6 +45,8 @@ export class GeneratedRun {
   private requestId: string | null = null;
   private early: GeneratedEvent[] = [];
   private unsubscribe: (() => void) | undefined;
+  private automaticBounds: string | null = null;
+  private visibleSince = 0;
 
   constructor(api: GeneratedApi | undefined, request: { source: string; identity: GeneratedIdentity }, changed: () => void) {
     this.api = api;
@@ -64,13 +67,20 @@ export class GeneratedRun {
       this.update({ enabled: false, reason: "This interface is unavailable. The text version is below." });
     }
   }
+  async autoStart(bounds: GeneratedBounds | null, now: number) {
+    if (this.disposed || this.state.attempted || this.state.phase !== "idle") return;
+    if (!bounds || !this.state.enabled || !Number.isFinite(now)) { this.automaticBounds = null; return; }
+    const sample = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
+    if (sample !== this.automaticBounds) { this.automaticBounds = sample; this.visibleSince = now; return; }
+    if (now - this.visibleSince >= 250) await this.start(bounds);
+  }
   async start(bounds: GeneratedBounds) {
     if (this.disposed || !this.api || !this.state.enabled || this.state.phase !== "idle") return;
     const generation = ++this.generation;
     const requestId = crypto.randomUUID();
     this.requestId = requestId;
     this.early = [];
-    this.update({ phase: "starting", reason: "Starting interface…", discuss: "" });
+    this.update({ phase: "starting", reason: "Opening interface…", discuss: "", attempted: true });
     try {
       const result = await this.api.run({ ...this.request, requestId, bounds });
       if (this.disposed || generation !== this.generation) {
@@ -102,7 +112,7 @@ export class GeneratedRun {
       this.current = null;
       this.requestId = null;
       ++this.generation;
-      this.update({ phase: "idle", reason: event.reason ?? "Interface stopped. Run it again to start fresh.", discuss: "" });
+      this.update({ phase: "idle", reason: event.reason ?? "Interface stopped. Restart to start fresh.", discuss: "" });
       void this.checkCapability(true);
     }
   }
@@ -122,7 +132,7 @@ export class GeneratedRun {
     this.current = null;
     this.requestId = null;
     this.early = [];
-    this.update({ phase: "idle", reason: "Interface stopped. Run it again to start fresh.", discuss: "" });
+    this.update({ phase: "idle", reason: "Interface stopped. Restart to start fresh.", discuss: "", attempted: true });
     await Promise.allSettled([
       ...(requestId && this.api ? [this.api.cancel(requestId)] : []),
       ...(runId && this.api ? [this.api.stop(runId)] : []),
@@ -131,8 +141,8 @@ export class GeneratedRun {
   }
   dispose() {
     if (this.disposed) return;
-    void this.stop();
     this.disposed = true;
+    void this.stop();
     this.unsubscribe?.();
   }
 }

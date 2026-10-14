@@ -35,6 +35,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
   const allContents = () => webContents.getAllWebContents();
   const metrics = () => app.getAppMetrics();
   const ownerMatches = (state, owner) => state.win === owner.win && state.ownerFrame === owner.frame && !owner.win.isDestroyed() && owner.frame === owner.win.webContents.mainFrame;
+  const foreground = win => !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused();
   const notify = (state, type, extra = {}) => {
     if (!state.win.isDestroyed() && state.ownerFrame === state.win.webContents.mainFrame) emit(state.win, { runId: state.runId, type, ...extra });
   };
@@ -216,7 +217,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     await state.fileProtection;
     await Promise.all(state.fileGuards);
     if (!state.live || state.guardFailed || !state.admission.live || admissions.get(state.win.id) !== state.admission) return;
-    if (!ownerMatches(state, state.admission.owner)) { await stopState(state, 'The approving Deck frame changed.'); return; }
+    if (!ownerMatches(state, state.admission.owner) || !foreground(state.win)) { await stopState(state, 'The owning Deck frame is no longer in the foreground.'); return; }
     const owned = ownership(state);
     if (!owned.ok || owned.frames[0].url !== state.url) { await stopState(state, owned.reason ?? 'Unexpected generated document.'); return; }
     state.records = owned.records; state.frames = owned.frames;
@@ -260,6 +261,7 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     const read = readRunRequest(request);
     if (!read.ok) throw new Error(read.reason);
     if (owner.win.isDestroyed() || owner.frame !== owner.win.webContents.mainFrame) throw new Error('Not the Deck window.');
+    if (!foreground(owner.win)) throw new Error('The Deck window must be in the foreground.');
     const zoom = owner.win.webContents.getZoomFactor();
     const bounds = checkedBounds(read.bounds, owner.win.getContentBounds(), zoom);
     if (!bounds) throw new Error('The interface must be visible inside the Deck window.');
@@ -272,9 +274,9 @@ export function createGeneratedUIManager({ electron, emit, audit = () => {}, tes
     const previous = states.get(owner.win.id);
     if (previous) await stopState(previous, 'Replaced by a fresh approved interface.');
     if (!admission.live || admissions.get(owner.win.id) !== admission) throw new Error('Generated interface approval was cancelled.');
-    if (owner.win.isDestroyed() || owner.frame !== owner.win.webContents.mainFrame) {
+    if (!foreground(owner.win) || owner.frame !== owner.win.webContents.mainFrame) {
       admission.live = false; admissions.delete(owner.win.id);
-      throw new Error('The approving Deck frame changed.');
+      throw new Error('The owning Deck frame is no longer in the foreground.');
     }
     if (!capability().enabled) throw new Error(capability().reason);
     const runId = randomBytes(16).toString('hex');

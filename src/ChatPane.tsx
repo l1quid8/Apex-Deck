@@ -71,7 +71,7 @@ import { Markdown } from "./Markdown";
 import { PreparingCard } from "./interactiveAnswers/AnswerCard.tsx";
 import { createAnswerStore, discardAnswerSettingsAfter, flushAnswerStores, retainAnswerStore } from "./interactiveAnswers/answerStore.ts";
 import { CARD_LANGUAGE, type AnswerStore } from "./interactiveAnswers/contract.ts";
-import { cardVersions, discussDraft } from "./interactiveAnswers/share.ts";
+import { cardVersions, discussDraft, latestGeneratedCardKey } from "./interactiveAnswers/share.ts";
 import { ThreadCard } from "./interactiveAnswers/ThreadCard.tsx";
 import { ParticipantQueues, queuedSticky, type ParticipantMessage, type TurnKind } from "./turnQueue";
 import { handOffChoices, handOffLabel, quoteFor, quoteTarget, replyText, type ReplyQuote } from "./reply";
@@ -1758,6 +1758,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return () => { live = false; stop?.(); void store.flush().finally(release); };
   }, [backend, pane.id, profileMode]);
   const versions = useMemo(() => cardVersions(messagesOf(entries)), [entries]);
+  const autoStartKey = useMemo(() => latestGeneratedCardKey(messagesOf(entries)), [entries]);
   /** "Discuss these settings": the snapshot goes in the message box, never straight to the bots. */
   const discussCard = (snapshot: string) => {
     const next = discussDraft(text, snapshot);
@@ -1768,7 +1769,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   const cardIn = (message: Message) => (code: { language: string; text: string }) =>
     code.language === CARD_LANGUAGE
-      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={`${hostConnection.revision}:${goneBack}:${cwd}`} executionAllowed={focused && ready} readOnly={message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
+      ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? names.get(message.speaker.id) ?? message.speaker.id : "Human"} versions={versions} answers={answers} threadId={pane.id} hostId={backend.host?.id ?? "local"} executionEpoch={`${hostConnection.revision}:${goneBack}:${cwd}`} executionAllowed={focused && ready} autoStartKey={autoStartKey} readOnly={message.speaker.kind !== "bot"} onDiscuss={discussCard} onOpen={openTarget} />
       : undefined;
 
   const changeArtifacts = (next: ArtifactFile) => {

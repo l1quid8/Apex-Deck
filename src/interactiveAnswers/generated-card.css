@@ -13,3 +13,7 @@
 .generated-discuss { padding: 12px 16px; border-top: 1px solid var(--line, #24303d); }
 .generated-discuss pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
 .generated-status { padding: 0 16px 12px; }
+.generated-answer .answer-foot { min-height: 48px; box-sizing: border-box; }
+.generated-text-version { padding: 0 16px 12px; }
+.generated-text-version summary { cursor: pointer; color: var(--muted, #91a0af); font-size: 12px; }
+.generated-text-version .generated-fallback { padding: 12px 0 0; }

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { exportHtml, exportJson, exportMarkdown } from "../src/exportThread.ts";
-import { cardMarkdown, cardVersions, withCardSummaries } from "../src/interactiveAnswers/share.ts";
+import * as share from "../src/interactiveAnswers/share.ts";
+const { cardMarkdown, cardVersions, withCardSummaries } = share;
 import { readCard } from "../src/interactiveAnswers/schema.ts";
 import { variant as comparisonVariant } from "./interactive-answers-fixture.mjs";
 
@@ -11,6 +12,15 @@ const literal = JSON.parse(readFileSync(new URL("./fixtures/generated-literal-te
 const fence = (card) => "```apex-ui\n" + JSON.stringify(card) + "\n```";
 const thread = (card) => ({ title: "Generated card", participants: [{ id: "null", display_name: "Null" }], pins: [], compaction: null, transcript: [{ seq: 3, speaker: { kind: "bot", id: "null" }, text: "Essential prose.\n\n" + fence(card) }] });
 const at = new Date("2026-10-14T12:00:00Z");
+
+test('only the newest valid generated bot card is chosen for automatic opening',()=>{
+  const bot=(seq,card)=>({seq,speaker:{kind:'bot'},text:fence(card)});
+  const messages=[bot(1,card),bot(2,{...card,cardId:'second'}),{seq:3,speaker:{kind:'human'},text:fence(card)},bot(4,{...card,extra:true}),{seq:5,speaker:{kind:'bot'},text:'```apex-ui\n'+comparisonVariant(()=>{})+'\n```'}];
+  assert.equal(share.latestGeneratedCardKey(messages),'2:second');
+  assert.equal(share.latestGeneratedCardKey([]),null);
+  assert.equal(share.latestGeneratedCardKey([{seq:1,speaker:{kind:'bot'},text:fence(card)+'\n'+fence({...card,cardId:'last'})}]),'1:last');
+  assert.equal(share.latestGeneratedCardKey([{seq:1,speaker:{kind:'bot'},text:fence(card)+'\n'+fence({...card,title:'Duplicate identity'})}]),null);
+});
 
 test("generated Markdown summaries contain only title, summary and fallback", () => {
   const result = readCard(JSON.stringify(card));
