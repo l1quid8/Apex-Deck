@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AGENT_EFFORTS, apiModelGroups, apiModelList, contextSize, defaultEffortFor, effortsFor, modelGroups } from '../src/models.ts';
+import { AGENT_EFFORTS, AGENT_MODELS, apiModelGroups, apiModelList, contextSize, defaultEffortFor, effortsFor, modelGroups } from '../src/models.ts';
 
 test('grok catalog order is shown least reasoning first', () => {
   const reported = [
@@ -81,4 +81,16 @@ test('a list with only pictures shows only the Image section', () => {
 
 test('a text-only list keeps the single unlabelled-by-kind group', () => {
   assert.deepEqual(apiModelGroups([{ id: 'a' }, { id: 'b', kind: 'text' }]).map(g => g.label), ['Offered by this provider']);
+});
+
+test('antigravity/gemini models include argon shortcut and argon group', () => {
+  const geminiModels = AGENT_MODELS.gemini;
+  const shortcuts = geminiModels.find(g => g.label.startsWith('Shortcuts'));
+  assert(shortcuts);
+  assert(shortcuts.models.some(m => m.id === 'argon'));
+
+  const argonGroup = geminiModels.find(g => g.label === 'Argon');
+  assert(argonGroup);
+  assert(argonGroup.models.some(m => m.id === 'gemini-4-argon'));
+  assert(argonGroup.models.some(m => m.id === 'gemini-4-argon-preview'));
 });
