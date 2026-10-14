@@ -2730,6 +2730,8 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .bot-settings .bot-meter-track { width: 100%; height: 5px; }
 .bot-settings .bot-meter-timer { text-align: right; opacity: 0.75; white-space: nowrap; }
 .bot-settings .bot-meter-money > span { grid-column: 2 / -1; }
+.model-menu .model-manual { display: grid; gap: 6px; padding: 6px; }
+.model-menu .model-manual input { min-width: 0; width: 100%; box-sizing: border-box; }
 .model-menu .model-filter { margin: 2px 2px 4px; width: calc(100% - 4px); }
 .model-menu.stacked { width: 300px; grid-template-columns: minmax(0, 1fr); overflow-x: hidden; }
 .model-menu.stacked .model-menu-name { flex-direction: column; align-items: stretch; gap: 1px; overflow: hidden; }

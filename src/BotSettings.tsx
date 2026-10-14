@@ -6,7 +6,6 @@ import type { ApiModel, MediaSettings, ModelChoice, ParticipantConfig, Speed } f
 import { Segmented } from './AgentPicker';
 import { SPEED_OPTIONS, SPEED_TOOLS } from './speed';
 import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, contextSize, defaultEffortFor, effortsFor, findModel, modelGroups } from './models';
-import { Picker } from './Picker';
 import { ReasoningSlider } from './ReasoningSlider';
 import { latestSaveQueue } from './settingsSave';
 import { applyTurnChange } from './participantSettings';
@@ -36,6 +35,8 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const apiKeyEnv = api?.api_key_env ?? null;
   const [apiList, setApiList] = useState<ApiModel[]>([]);
   const [filter, setFilter] = useState('');
+  const [manualModel, setManualModel] = useState('');
+  const [discovery, setDiscovery] = useState<'loading' | 'ready' | 'empty'>('loading');
   const [model, setModel] = useState('model' in config.backend ? config.backend.model ?? '' : '');
   const [effort, setEffort] = useState(config.effort ?? '');
   const [autoAvailable, setAutoAvailable] = useState(false);
@@ -77,12 +78,16 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   useEffect(() => {
     if (apiUrl === null) return;
     let active = true;
-    backend.apiModels(apiUrl, apiKeyEnv).then(list => { if (active) setApiList(list); }).catch(() => { if (active) setApiList([]); });
+    setApiList([]); setDiscovery('loading');
+    backend.apiModels(apiUrl, apiKeyEnv).then(list => { if (active) { setApiList(list); setDiscovery(list.length ? 'ready' : 'empty'); } }).catch(() => { if (active) { setApiList([]); setDiscovery('empty'); } });
     return () => { active = false; };
   }, [backend, apiUrl, apiKeyEnv]);
   useEffect(() => {
     let active = true;
-    if (tool) backend.agentModels(tool).then(list => { if (active) setReported(list); }).catch(() => {});
+    if (tool) {
+      setReported([]); setDiscovery('loading');
+      backend.agentModels(tool).then(list => { if (active) { setReported(list); setDiscovery(list.length ? 'ready' : 'empty'); } }).catch(() => { if (active) setDiscovery('empty'); });
+    }
     return () => { active = false; };
   }, [backend, tool]);
   const [open, setOpen] = useState(false);
@@ -118,7 +123,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       window.removeEventListener('resize', close);
     };
   }, [anchor, close, open]);
-  // The server's own list for API bots. Empty (fallback Picker) when it did not load.
+  // API metadata also controls pricing and media-specific settings.
   const rich = api !== null && apiList.length > 0;
   const groups = tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : tool === 'grok' ? 'Grok' : tool === 'muse' ? 'Muse Code' : 'Antigravity') : rich ? apiModelGroups(apiList) : [];
   const effortsOf = (id: string) => tool ? effortsFor(AGENT_EFFORTS[tool], groups, id) : effortsFor(API_EFFORTS, groups, id);
@@ -126,7 +131,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const supportedEffort = efforts.includes(effort) ? effort : '';
   const note = findModel(groups, model)?.note;
   const all = groups.flatMap(g => g.models);
-  const current = all.find(m => m.id === model);
+  const current = all.find(m => m.id === model) ?? (model ? { id: model } : undefined);
   const apiModel = rich ? apiList.find(m => m.id === model) : undefined;
   // Picture and video models price per picture or per clip instead of per token, and take no reasoning level.
   const mediaType = mediaKind(apiModel);
@@ -147,22 +152,22 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   }, [backend, quoteKey]);
   const quoting = quoteKey !== '' && quote?.key !== quoteKey;
   const quoted = quote?.key === quoteKey ? quote.usd : null;
-  // Rich API list: the filter (over 8 models) replaces the first-4 split; the current model always leads the 4.
+  // Every provider gets search and the current model first, even for custom IDs.
   const query = filter.trim().toLowerCase();
-  const filtering = rich && all.length > 8;
   const matches = (m: ModelChoice) => !query || m.id.toLowerCase().includes(query) || (m.label ?? '').toLowerCase().includes(query);
-  const ordered = rich && current ? [current, ...all.filter(m => m.id !== model)] : all;
+  const ordered = current ? [current, ...all.filter(m => m.id !== model)] : all;
   // With Text, Image and Video sections every model is listed under its heading, so none hide behind More models.
   const sections = rich && apiList.some(m => mediaKind(m));
-  const shown = rich && query ? all.filter(matches) : sections ? ordered : ordered.slice(0, 4);
-  const extra = rich && query || sections ? [] : ordered.slice(4);
-  const items: { id: string; label?: string | null }[] = [...(tool || !rich || !savedModel ? [{ id: '', label: tool || !rich ? 'Default' : 'Provider default' }] : []), ...shown];
+  const shown = query ? ordered.filter(matches) : sections ? ordered : ordered.slice(0, 4);
+  const extra = query || sections ? [] : ordered.slice(4);
+  const defaultItem = { id: '', label: tool ? 'Default' : 'Provider default' };
+  const items: { id: string; label?: string | null }[] = query ? shown : model ? [...shown, defaultItem] : [defaultItem, ...shown];
   // With picture and video models, the menu is headed Text, Image and Video. The current model leads with no heading.
   const sectionOf = new Map(groups.flatMap(g => g.models.map(m => [m.id, g.label] as const)));
   const heads = new Map<string, string>();
   if (sections) {
     let prev = '';
-    for (const m of query || !current ? all.filter(matches) : ordered) {
+    for (const m of ordered.filter(matches)) {
       if (!query && current && m.id === current.id) continue;
       const label = sectionOf.get(m.id) ?? '';
       if (label !== prev) heads.set(m.id, label);
@@ -216,7 +221,7 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     if (version === saveVersion.current) setSaving(false);
   };
   useEffect(() => {
-    const pick = (event: KeyboardEvent) => { const n = Number(event.key); if (!(tool || rich) || !open || saving || !(n >= 1 && n <= items.length) || (event.target as HTMLElement).tagName === 'INPUT') return; pickModel(items[n - 1].id); };
+    const pick = (event: KeyboardEvent) => { const n = Number(event.key); if (!open || saving || !(n >= 1 && n <= items.length) || (event.target as HTMLElement).tagName === 'INPUT') return; pickModel(items[n - 1].id); };
     document.addEventListener('keydown', pick);
     return () => document.removeEventListener('keydown', pick);
   });
@@ -259,14 +264,15 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   return createPortal(<div ref={root} className="bot-settings" style={position} onScroll={() => setOpen(false)} role="dialog" aria-label={`Settings for ${config.display_name}`}>
     <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
     <fieldset aria-busy={saving}>
-      {tool || rich ? <div className="model-select">
+      <div className="model-select">
         <span className="model-select-label">Model</span>
         <button ref={triggerRef} type="button" className="model-select-trigger" aria-haspopup="menu" aria-expanded={open} onClick={toggleMenu}>
           <span>{model ? current?.label ?? model : rich ? 'Provider default' : 'Default'}</span><svg className="model-select-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </button>
         {open && createPortal(
           <div ref={menuRef} className={rich ? 'model-menu stacked' : 'model-menu'} role="menu" aria-label="Model" style={menuPos}>
-            {filtering && <input className="model-filter" aria-label="Filter models" placeholder="Filter models" value={filter} onChange={event => setFilter(event.currentTarget.value)} />}
+            <input autoFocus className="model-filter" aria-label="Filter models" placeholder="Filter models" value={filter} onChange={event => setFilter(event.currentTarget.value)} />
+            {query && !shown.length && <p className="muted">No matching models.</p>}
             {items.map((m, i) => <Fragment key={m.id || 'default'}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" onClick={() => pickModel(m.id)}>
               {nameOf(m)}
               <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>{i < 9 && <kbd>{i + 1}</kbd>}
@@ -276,10 +282,18 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
               {nameOf(m)}
               <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>
             </button></Fragment>)}
+            {discovery === 'loading' && <p className="muted">Loading models…</p>}
+            {discovery === 'empty' && <div className="model-manual">
+              <p className="muted">Model discovery unavailable. Enter a model ID.</p>
+              <input aria-label="Model name" placeholder="Model ID" value={manualModel} onChange={event => setManualModel(event.currentTarget.value)} onKeyDown={event => {
+                if (event.key === 'Enter' && manualModel.trim()) { event.preventDefault(); pickModel(manualModel.trim()); }
+              }} />
+              <button type="button" disabled={!manualModel.trim()} onClick={() => pickModel(manualModel.trim())}>Use model</button>
+            </div>}
           </div>,
           document.body
         )}
-      </div> : <label>Model<Picker name="quick-bot-model" value={model} onChange={value => { setModel(value); touched.current = { ...touched.current, model: value }; }} groups={[]} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>}
+      </div>
       {(tool === 'codex' || tool === 'claude_code') && <label className="check-label"><input type="checkbox" checked={touched.current.auto_effort ?? config.auto_effort ?? false} disabled={!efforts.length || (!config.auto_effort && !autoAvailable)} onChange={event => { void apply({ auto_effort: event.target.checked }); }} /> Auto</label>}
       {config.auto_effort && <p className="muted">Trial: Clef logs its pick. Replies use the backup below.</p>}
       {!autoAvailable && (tool === 'codex' || tool === 'claude_code') && <p className="muted">Auto needs the decision observer switched on with a saved key.</p>}
@@ -289,7 +303,6 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
       {mediaBlock}
       {note && <p className="muted">{note}</p>}
       {error && <p role="alert" className="danger-text">{error}</p>}
-      {!tool && !rich && <div className="bot-settings-actions"><button className="primary" disabled={!model.trim()} onClick={() => void apply({ model, effort: supportedEffort })}>{saving ? 'Saving…' : 'Apply'}</button></div>}
     </fieldset>
   </div>, document.body);
 }

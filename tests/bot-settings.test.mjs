@@ -1,0 +1,79 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import electron from 'electron';
+import { createServer } from 'vite';
+
+// Exercise the real selector and save pipeline in Chromium with an in-memory backend.
+test('All providers support searchable fast selection and persist manual fallback choices', { timeout: 60000 }, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-settings-'));
+  const html = `<html><body><button id="anchor">Bot</button><div id="test-root"></div><script type="module">
+    import React from 'react'; import {createRoot} from 'react-dom/client';
+    import {BotSettings} from '/src/BotSettings.tsx'; import '/src/styles.css';
+    const root=createRoot(document.getElementById('test-root'));
+    window.fixture={config:null,fail:false,saves:0,mount(tool,fail=false){
+      this.fail=fail; this.key=Math.random(); this.config={id:'bot',display_name:'Test',effort:null,backend:tool==='api'?{kind:'open_ai_compatible',base_url:'http://test',model:'last'}:{kind:'agent',tool,model:'last'}};
+      this.render();
+    },render(){root.render(React.createElement(BotSettings,{key:this.key,config:this.config,roomId:'test',anchor:document.getElementById('anchor'),backend,save:async config=>{this.config=config;this.saves++;this.render();},close(){root.render(null);}}));}};
+    const models=[{id:'first',label:'First model'},{id:'last',label:'Last model'}];
+    const backend={decisionKeyStatus:async()=>false,agentModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},apiModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},roomCreate:async()=>({participants:[window.fixture.config]})};
+    window.ready=true;
+  </script></body></html>`;
+  const server = await createServer({ server: { port: 0 }, logLevel: 'error', plugins: [{ name: 'bot-settings-test', configureServer(server) { server.middlewares.use('/__bot_settings_test', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/__bot_settings_test', html)); }); } }] });
+  await server.listen();
+  const url = `http://localhost:${server.httpServer.address().port}/__bot_settings_test`;
+  const main = path.join(temp, 'main.cjs');
+  fs.writeFileSync(main, `
+    const {app,BrowserWindow}=require('electron'); const assert=require('node:assert/strict');
+    app.whenReady().then(async()=>{
+      const win=new BrowserWindow({show:false,width:1280,height:900,webPreferences:{contextIsolation:true}});
+      win.webContents.on('console-message',(_e,...args)=>console.log(...args));
+      const run=fn=>win.webContents.executeJavaScript('('+fn.toString()+')()');
+      const wait=async fn=>{for(let i=0;i<200;i++){if(await run(fn)) return;await new Promise(r=>setTimeout(r,20));}throw Error('Timed out: '+fn+' '+JSON.stringify(await run(()=>({ready:window.ready,body:document.body.innerHTML.slice(0,1600)}))));};
+      try {
+        await win.loadURL(${JSON.stringify(url)});
+        await wait(()=>window.ready);
+        const enter=async (selector,value)=>win.webContents.executeJavaScript('(()=>{const e=document.querySelector('+JSON.stringify(selector)+');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(e,'+JSON.stringify(value)+');e.dispatchEvent(new Event("input",{bubbles:true}));})()');
+        for(const tool of ['claude_code','codex','gemini','grok','muse','api']){
+          await win.webContents.executeJavaScript('window.fixture.mount('+JSON.stringify(tool)+')');
+          await wait(()=>document.querySelector('.model-select-trigger'));
+          await run(()=>document.querySelector('.model-select-trigger').click());
+          await wait(()=>document.querySelector('.model-menu'));
+          assert.equal(await run(()=>!!document.querySelector('[aria-label="Filter models"]')),true,'search for '+tool);
+          assert.equal(await run(()=>document.querySelector('[role="menuitemradio"]').getAttribute('aria-checked')),'true','current first for '+tool);
+          await enter('[aria-label="Filter models"]','FIRST');
+          await wait(()=>document.querySelectorAll('[role="menuitemradio"]').length===1);
+          await run(()=>document.querySelector('[role="menuitemradio"]').click());
+          await wait(()=>window.fixture.config.backend.model==='first');
+          await run(()=>{window.fixture.key=Math.random();window.fixture.render();});
+          await wait(()=>document.querySelector('.model-select-trigger')?.textContent.includes('First model'));
+          await run(()=>document.querySelector('.model-select-trigger').click());
+          await wait(()=>document.querySelector('[role="menuitemradio"]'));
+          assert.equal(await run(()=>document.querySelector('[role="menuitemradio"]').getAttribute('aria-checked')),'true','saved choice survives reopening for '+tool);
+          await win.webContents.executeJavaScript('window.fixture.mount('+JSON.stringify(tool)+',true)');
+          await wait(()=>document.querySelector('.model-select-trigger')?.getAttribute('aria-expanded')==='false');
+          await run(()=>document.querySelector('.model-select-trigger').click());
+          await wait(()=>document.querySelector('[aria-label="Model name"]'));
+          await enter('[aria-label="Model name"]',' custom-model ');
+          await run(()=>document.querySelector('[aria-label="Model name"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})));
+          await wait(()=>window.fixture.config.backend.model==='custom-model');
+          await run(()=>{window.fixture.key=Math.random();window.fixture.render();});
+          await wait(()=>document.querySelector('.model-select-trigger')?.textContent.includes('custom-model'));
+        }
+        console.log('Model selector Chromium checks passed'); app.exit(0);
+      }catch(error){console.error(error.stack);app.exit(1);}
+    });
+  `);
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(electron, [main, '--user-data-dir=' + path.join(temp, 'profile')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = ''; child.stdout.on('data', bytes => output += bytes); child.stderr.on('data', bytes => output += bytes);
+      const timer = setTimeout(() => child.kill('SIGKILL'), 50000);
+      child.on('error', reject); child.on('exit', code => { clearTimeout(timer); resolve({ code, output }); });
+    });
+    assert.equal(result.code, 0, result.output);
+  } finally { await server.close(); fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
