@@ -1,4 +1,4 @@
-import { popoverTop } from './floating';
+import { menuPlacement, popoverTop } from './floating';
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { Backend } from './backend';
@@ -66,6 +66,8 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const requested = useRef({ model, effort });
   const [position, setPosition] = useState({ top: 0, left: 0 });
   const root = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const rect = anchor.getBoundingClientRect();
     const height = root.current?.offsetHeight ?? 260;
@@ -83,14 +85,39 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     if (tool) backend.agentModels(tool).then(list => { if (active) setReported(list); }).catch(() => {});
     return () => { active = false; };
   }, [backend, tool]);
+  const [open, setOpen] = useState(false);
+  const [more, setMore] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number; maxHeight: number; maxWidth?: number }>({ right: 0, maxHeight: 260 });
   useEffect(() => {
-    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node) && !anchor.contains(event.target as Node)) close(); };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { if (root.current?.querySelector('.model-select .model-menu')) { event.stopPropagation(); setOpen(false); return; } event.stopPropagation(); close(); anchor.focus(); } };
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target)) return;
+      if (triggerRef.current?.contains(target)) return;
+      if (open) setOpen(false);
+      if (!root.current?.contains(target) && !anchor.contains(target)) close();
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (open) {
+          event.stopPropagation();
+          setOpen(false);
+          triggerRef.current?.focus();
+          return;
+        }
+        event.stopPropagation();
+        close();
+        anchor.focus();
+      }
+    };
     document.addEventListener('pointerdown', outside);
     document.addEventListener('keydown', escape);
     window.addEventListener('resize', close);
-    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); window.removeEventListener('resize', close); };
-  }, [anchor, close]);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', escape);
+      window.removeEventListener('resize', close);
+    };
+  }, [anchor, close, open]);
   // The server's own list for API bots. Empty (fallback Picker) when it did not load.
   const rich = api !== null && apiList.length > 0;
   const groups = tool ? modelGroups(tool, reported, tool === 'codex' ? 'Codex' : tool === 'claude_code' ? 'Claude Code' : tool === 'grok' ? 'Grok' : tool === 'muse' ? 'Muse Code' : 'Antigravity') : rich ? apiModelGroups(apiList) : [];
@@ -98,9 +125,6 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
   const efforts = effortsOf(model);
   const supportedEffort = efforts.includes(effort) ? effort : '';
   const note = findModel(groups, model)?.note;
-  const [open, setOpen] = useState(false);
-  const [more, setMore] = useState(false);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number; maxHeight: number; maxWidth?: number }>({ top: 0, right: 0, maxHeight: 260 });
   const all = groups.flatMap(g => g.models);
   const current = all.find(m => m.id === model);
   const apiModel = rich ? apiList.find(m => m.id === model) : undefined;
@@ -220,26 +244,41 @@ export function BotSettings({ config, roomId, anchor, backend, save, close, avat
     setEffort(value);
     if (value !== requested.current.effort || model !== requested.current.model) void apply({ effort: value });
   };
+  const toggleMenu = () => {
+    if (!open && triggerRef.current) {
+      const r = triggerRef.current.getBoundingClientRect();
+      const place = menuPlacement(r, { width: window.innerWidth, height: window.innerHeight });
+      setMenuPos({ ...place, ...(rich ? { maxWidth: Math.max(220, r.right - 8) } : {}) });
+      setMore(false);
+      setFilter('');
+      setOpen(true);
+    } else {
+      setOpen(false);
+    }
+  };
   return createPortal(<div ref={root} className="bot-settings" style={position} onScroll={() => setOpen(false)} role="dialog" aria-label={`Settings for ${config.display_name}`}>
     <div className="bot-settings-head">{avatar}<div className="details-bot-copy"><strong>{config.display_name}</strong>{meters}</div></div>
     <fieldset aria-busy={saving}>
       {tool || rich ? <div className="model-select">
         <span className="model-select-label">Model</span>
-        <button type="button" className="model-select-trigger" aria-haspopup="menu" aria-expanded={open} onClick={event => { const r = event.currentTarget.getBoundingClientRect(); setMenuPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right - 8), maxHeight: Math.min(320, Math.max(160, window.innerHeight - r.bottom - 12)), ...(rich ? { maxWidth: Math.max(220, r.right - 8) } : {}) }); setOpen(v => !v); setMore(false); setFilter(''); }}>
+        <button ref={triggerRef} type="button" className="model-select-trigger" aria-haspopup="menu" aria-expanded={open} onClick={toggleMenu}>
           <span>{model ? current?.label ?? model : rich ? 'Provider default' : 'Default'}</span><svg className="model-select-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </button>
-        {open && <div className={rich ? 'model-menu stacked' : 'model-menu'} role="menu" aria-label="Model" style={menuPos}>
-          {filtering && <input className="model-filter" aria-label="Filter models" placeholder="Filter models" value={filter} onChange={event => setFilter(event.currentTarget.value)} />}
-          {items.map((m, i) => <Fragment key={m.id || 'default'}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" onClick={() => pickModel(m.id)}>
-            {nameOf(m)}
-            <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>{i < 9 && <kbd>{i + 1}</kbd>}
-          </button></Fragment>)}
-          {extra.length > 0 && <button className="model-menu-item model-menu-more" aria-expanded={more} onClick={() => setMore(v => !v)}>{more ? 'Fewer models' : 'More models'}<span>{more ? '⌃' : '⌄'}</span></button>}
-          {more && extra.map(m => <Fragment key={m.id}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" onClick={() => pickModel(m.id)}>
-            {nameOf(m)}
-            <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>
-          </button></Fragment>)}
-        </div>}
+        {open && createPortal(
+          <div ref={menuRef} className={rich ? 'model-menu stacked' : 'model-menu'} role="menu" aria-label="Model" style={menuPos}>
+            {filtering && <input className="model-filter" aria-label="Filter models" placeholder="Filter models" value={filter} onChange={event => setFilter(event.currentTarget.value)} />}
+            {items.map((m, i) => <Fragment key={m.id || 'default'}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" onClick={() => pickModel(m.id)}>
+              {nameOf(m)}
+              <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>{i < 9 && <kbd>{i + 1}</kbd>}
+            </button></Fragment>)}
+            {extra.length > 0 && <button className="model-menu-item model-menu-more" aria-expanded={more} onClick={() => setMore(v => !v)}>{more ? 'Fewer models' : 'More models'}<span>{more ? '⌃' : '⌄'}</span></button>}
+            {more && extra.map(m => <Fragment key={m.id}>{head(m.id)}<button role="menuitemradio" aria-checked={model === m.id} className="model-menu-item" onClick={() => pickModel(m.id)}>
+              {nameOf(m)}
+              <span className="model-menu-check">{model === m.id ? '✓' : ''}</span>
+            </button></Fragment>)}
+          </div>,
+          document.body
+        )}
       </div> : <label>Model<Picker name="quick-bot-model" value={model} onChange={value => { setModel(value); touched.current = { ...touched.current, model: value }; }} groups={[]} emptyLabel="Provider default" customLabel="Type a model name…" customPlaceholder="Model name" /></label>}
       {(tool === 'codex' || tool === 'claude_code') && <label className="check-label"><input type="checkbox" checked={touched.current.auto_effort ?? config.auto_effort ?? false} disabled={!efforts.length || (!config.auto_effort && !autoAvailable)} onChange={event => { void apply({ auto_effort: event.target.checked }); }} /> Auto</label>}
       {config.auto_effort && <p className="muted">Trial: Clef logs its pick. Replies use the backup below.</p>}

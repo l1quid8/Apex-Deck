@@ -18,3 +18,33 @@ export function popoverTop(anchor: { top: number; bottom: number }, height: numb
   const top = below + height + MARGIN <= viewportHeight ? below : anchor.top - gap - height;
   return Math.max(MARGIN, Math.min(top, viewportHeight - height - MARGIN));
 }
+
+/**
+ * Fixed-position offsets for a dropdown menu beside `anchor`:
+ * opens below when there is enough room, otherwise opens above,
+ * keeping its right edge lined up with the anchor and fitting on screen.
+ */
+export function menuPlacement(
+  anchor: { top: number; bottom: number; left: number; right: number },
+  viewport: { width: number; height: number },
+  preferredMaxHeight = 320,
+  gap = 4,
+  margin = MARGIN,
+): { top?: number; bottom?: number; right: number; maxHeight: number } {
+  const spaceBelow = viewport.height - anchor.bottom - gap - margin;
+  const spaceAbove = anchor.top - gap - margin;
+  const right = Math.max(margin, viewport.width - anchor.right);
+
+  if (spaceBelow < 200 && spaceAbove > spaceBelow) {
+    return {
+      bottom: viewport.height - anchor.top + gap,
+      right,
+      maxHeight: Math.min(preferredMaxHeight, Math.max(120, spaceAbove)),
+    };
+  }
+  return {
+    top: anchor.bottom + gap,
+    right,
+    maxHeight: Math.min(preferredMaxHeight, Math.max(120, spaceBelow)),
+  };
+}

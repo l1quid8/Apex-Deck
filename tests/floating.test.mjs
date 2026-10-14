@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aboveAnchor, popoverTop } from "../src/floating.ts";
+import { aboveAnchor, menuPlacement, popoverTop } from "../src/floating.ts";
 
 const window = { width: 1200, height: 800 };
 
@@ -27,4 +27,22 @@ test("bot settings open above a badge at the bottom of the window", () => {
 
 test("bot settings taller than the room on either side stay on screen", () => {
   assert.equal(popoverTop({ top: 200, bottom: 230 }, 700, 800), 8);
+});
+
+test("a menu opens below when there is ample room", () => {
+  const anchor = { top: 100, bottom: 130, left: 200, right: 350 };
+  const placement = menuPlacement(anchor, window);
+  assert.equal(placement.top, 134);
+  assert.equal(placement.bottom, undefined);
+  assert.equal(placement.right, 850);
+  assert.equal(placement.maxHeight, 320);
+});
+
+test("a menu opens above when room below is tight", () => {
+  const anchor = { top: 650, bottom: 680, left: 200, right: 350 };
+  const placement = menuPlacement(anchor, window);
+  assert.equal(placement.top, undefined);
+  assert.equal(placement.bottom, 154); // 800 - 650 + 4
+  assert.equal(placement.right, 850);
+  assert.equal(placement.maxHeight, 320);
 });
