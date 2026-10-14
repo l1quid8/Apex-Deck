@@ -259,7 +259,7 @@
    Dialogs (.confirm) are the exception: they sit on their own blurred backdrop,
    see the rule after this one. */
 :root[data-deck-theme="glass"] :is(.composer-menu, .pane-menu, .hover-card, .usage-card, .bot-settings, .quick-add, .workspace-machine-menu,
-  .new-menu-list, .link-menu, .review-menu, .artifact-menu, .model-select > .model-menu, .selection-actions, .steer-pop, .mod-status-menu,
+  .new-menu-list, .link-menu, .review-menu, .artifact-menu, .model-menu, .selection-actions, .steer-pop, .mod-status-menu,
   .host-menu, .attention-list, .proj-picker, .confirm, .toast, .mod-toast, .mod-modal, .library-viewer) {
   --deck-pop: rgb(var(--deck-panel-raised) / max(.96, var(--deck-opacity, .44)));
   background: linear-gradient(165deg, oklch(.8 .1 var(--deck-hue, 172) / .07), transparent 60%), var(--deck-pop);
