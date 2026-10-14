@@ -72,6 +72,8 @@ impl TurnBatch {
         self.generated_ui = generated_ui;
         self
     }
+    /// Whether this chain asked for interactive-answer guidance.
+    pub fn answers(&self) -> bool { self.answers }
 }
 impl Drop for TurnBatch {
     fn drop(&mut self) {
@@ -464,11 +466,11 @@ impl ConcurrentRoom {
             let mut config = participant.config().clone();
             config.access = Access::Read;
             let room = self.room.lock().await;
-            let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { String::new() };
+            let answer_guidance = if answers { crate::view::answers_system_for_capability(generated_ui) } else { "" };
             request.system = crate::view::system_prompt(&config, &room.configs())
                 + &crate::view::pinned_section(room.pins())
                 + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
-                + &answer_guidance;
+                + answer_guidance;
             if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
         }
         sink(RoomEvent::TurnStarted {

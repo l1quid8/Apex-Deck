@@ -13,7 +13,7 @@ import { daemonTransport, fromBase64, toBase64 } from "./daemon/transport.ts";
 import { pathPrompt, type PathRequest } from "./typedPath.ts";
 import { recentFiles } from "./recentFiles.ts";
 import type { GeneratedApi } from "./interactiveAnswers/generatedRun.ts";
-import { clientCapabilitiesForGeneratedRuntime } from '../shared/generatedUiCapability.mjs';
+import { clientCapabilitiesForGeneratedRuntime, type ClientCapabilities } from '../shared/generatedUiCapability.mjs';
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
@@ -191,7 +191,11 @@ export function electronShell(
 
 /** Connect to the host and build the Backend on it. Resolves once connected. */
 export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
-  const clientCapabilities = async () => clientCapabilitiesForGeneratedRuntime(await bridge.generatedUI?.capability());
+  // Each hello asks afresh (a session limit can disable Run), but the local
+  // and remote clients reconnecting together share one query to main.
+  let asking: Promise<ClientCapabilities | undefined> | null = null;
+  const clientCapabilities = () => asking ??= (async () => clientCapabilitiesForGeneratedRuntime(await bridge.generatedUI?.capability()))()
+    .finally(() => { asking = null; });
   const client = new DaemonClient(bridgeConnect(bridge), { clientCapabilities });
   client.onStatus((status) => {
     connection.setStatus(status);

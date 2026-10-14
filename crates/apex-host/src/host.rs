@@ -712,10 +712,11 @@ impl Host {
         // Stop and new messages move the revision on, so next steps are
         // only worked out for replies nothing has overtaken.
         let revision = handle.observation_revision.load(Ordering::SeqCst);
+        let answers = batch.answers();
         self.runtime.spawn(async move {
             match host.run_batch(&id, &handle, batch).await {
                 Err(error) => host.room_event(&id, RoomEvent::Failed { id: ParticipantId::new("storage"), error }),
-                Ok(()) if !handle.busy() => crate::next_steps::suggest(Arc::clone(&host), id, handle, revision),
+                Ok(()) if !handle.busy() => crate::next_steps::suggest(Arc::clone(&host), id, handle, revision, answers),
                 Ok(()) => {}
             }
         });
@@ -2310,11 +2311,11 @@ mod host_tests {
         let before = handle.observation_revision.load(Ordering::SeqCst);
         host.room_stop("r".into(), None);
         let _guard = runtime.enter();
-        crate::next_steps::suggest(Arc::clone(&host), "r".into(), host.handle("r").unwrap(), before);
+        crate::next_steps::suggest(Arc::clone(&host), "r".into(), host.handle("r").unwrap(), before, true);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { .. })).is_none(), "stopped: no suggestions, no fork");
         let now = handle.observation_revision.load(Ordering::SeqCst);
-        crate::next_steps::suggest(Arc::clone(&host), "r".into(), host.handle("r").unwrap(), now);
+        crate::next_steps::suggest(Arc::clone(&host), "r".into(), host.handle("r").unwrap(), now, true);
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, .. })).is_some(), "the same reply, not stopped, gets them");
         let _ = std::fs::remove_dir_all(data);
     }

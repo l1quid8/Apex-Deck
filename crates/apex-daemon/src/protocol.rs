@@ -664,9 +664,13 @@ mod tests {
         // The reviewed registry tuple selects generated guidance, and it still authorizes nothing.
         let registry: Value = serde_json::from_str(include_str!("../../../shared/generated-ui-runtime.json")).unwrap();
         let build = &registry["verifiedRuntimeBuilds"][0];
-        let reviewed = json!({ "generated_ui": { "protocolVersion": registry["protocolVersion"], "adapterVersion": registry["adapterVersion"], "securityPolicyVersion": registry["securityPolicyVersion"], "electronVersion": build["electronVersion"], "chromiumVersion": build["chromiumVersion"] } });
+        let reviewed = json!({ "generated_ui": { "protocolVersion": registry["protocolVersion"], "adapterVersion": registry["adapterVersion"], "securityPolicyVersion": registry["securityPolicyVersion"], "electronVersion": build["electronVersion"], "chromiumVersion": build["chromiumVersion"], "platform": build["platform"], "arch": build["arch"] } });
         let frame = json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret","client_capabilities":reviewed}});
         assert_eq!(read_hello(&frame.to_string(), &Trust::Token, &daemon).unwrap().client_capability, apex_host::GeneratedUiCapability::Verified);
+        // A runtime on a platform whose native gates were not exercised stays comparison-only.
+        let mut other_platform = reviewed.clone(); other_platform["generated_ui"]["arch"] = json!("x64");
+        let frame = json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret","client_capabilities":other_platform}});
+        assert_eq!(read_hello(&frame.to_string(), &Trust::Token, &daemon).unwrap().client_capability, apex_host::GeneratedUiCapability::Unsupported);
         for capabilities in [claim, reviewed] {
             let mut client = connect_to(&daemon, Trust::Token);
             client.send(json!({"id":0,"cmd":"hello","args":{"protocol":1,"token":"secret","client_capabilities":capabilities}})).await;

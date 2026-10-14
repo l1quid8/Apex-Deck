@@ -160,6 +160,8 @@ pub struct GeneratedUiClientCapability {
     pub security_policy_version: String,
     pub electron_version: String,
     pub chromium_version: String,
+    pub platform: String,
+    pub arch: String,
 }
 
 #[derive(Deserialize)]
@@ -176,13 +178,19 @@ struct GeneratedUiRuntimePolicy {
 struct GeneratedUiRuntimeBuild {
     electron_version: String,
     chromium_version: String,
+    platform: String,
+    arch: String,
 }
+
+/// The reviewed registry, parsed once. A malformed registry approves nothing;
+/// `registry_parses` keeps that from shipping unnoticed.
+static GENERATED_UI_RUNTIME_POLICY: std::sync::LazyLock<Option<GeneratedUiRuntimePolicy>> = std::sync::LazyLock::new(||
+    serde_json::from_str(include_str!("../../../shared/generated-ui-runtime.json")).ok());
 
 impl ClientCapabilities {
     pub fn generated_ui_capability(&self) -> GeneratedUiCapability {
         let Some(claim) = &self.generated_ui else { return GeneratedUiCapability::Unsupported; };
-        let policy = serde_json::from_str::<GeneratedUiRuntimePolicy>(include_str!("../../../shared/generated-ui-runtime.json"));
-        if policy.ok().is_some_and(|policy| claim.matches_policy(&policy)) {
+        if GENERATED_UI_RUNTIME_POLICY.as_ref().is_some_and(|policy| claim.matches_policy(policy)) {
             GeneratedUiCapability::Verified
         } else {
             GeneratedUiCapability::Unsupported
@@ -196,15 +204,17 @@ impl GeneratedUiClientCapability {
             && self.adapter_version == policy.adapter_version
             && self.security_policy_version == policy.security_policy_version
             && policy.verified_runtime_builds.iter().any(|build|
-                self.electron_version == build.electron_version && self.chromium_version == build.chromium_version)
+                self.electron_version == build.electron_version && self.chromium_version == build.chromium_version
+                && self.platform == build.platform && self.arch == build.arch)
     }
 }
 
 /// Verified only for a client whose hello named a tuple in shared/generated-ui-runtime.json.
-pub fn answers_system_for_capability(capability: GeneratedUiCapability) -> String {
+pub fn answers_system_for_capability(capability: GeneratedUiCapability) -> &'static str {
+    static VERIFIED: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!("{ANSWERS_SYSTEM}{GENERATED_ANSWERS_SYSTEM}"));
     match capability {
-        GeneratedUiCapability::Unsupported => ANSWERS_SYSTEM.to_string(),
-        GeneratedUiCapability::Verified => format!("{ANSWERS_SYSTEM}{GENERATED_ANSWERS_SYSTEM}"),
+        GeneratedUiCapability::Unsupported => ANSWERS_SYSTEM,
+        GeneratedUiCapability::Verified => &VERIFIED,
     }
 }
 
@@ -306,13 +316,13 @@ mod tests {
 
     #[test]
     fn capability_accepts_only_an_exact_reviewed_policy_and_runtime_tuple() {
-        let claim = serde_json::json!({"protocolVersion":1,"adapterVersion":"open-intelligent-ui-8391a94-deck-1","securityPolicyVersion":"generated-ui-deny-all-1","electronVersion":"44.5.1","chromiumVersion":"152.0.7977.130"});
+        let claim = serde_json::json!({"protocolVersion":1,"adapterVersion":"open-intelligent-ui-8391a94-deck-1","securityPolicyVersion":"generated-ui-deny-all-1","electronVersion":"44.5.1","chromiumVersion":"152.0.7977.130","platform":"darwin","arch":"arm64"});
         // A controlled policy fixture tests tuple matching; it does not modify
         // the production registry or expose an override to the daemon.
-        let policy: GeneratedUiRuntimePolicy = serde_json::from_value(serde_json::json!({"protocolVersion":1,"adapterVersion":"open-intelligent-ui-8391a94-deck-1","securityPolicyVersion":"generated-ui-deny-all-1","verifiedRuntimeBuilds":[{"electronVersion":"44.5.1","chromiumVersion":"152.0.7977.130"}]})).unwrap();
+        let policy: GeneratedUiRuntimePolicy = serde_json::from_value(serde_json::json!({"protocolVersion":1,"adapterVersion":"open-intelligent-ui-8391a94-deck-1","securityPolicyVersion":"generated-ui-deny-all-1","verifiedRuntimeBuilds":[{"electronVersion":"44.5.1","chromiumVersion":"152.0.7977.130","platform":"darwin","arch":"arm64"}]})).unwrap();
         let parsed: GeneratedUiClientCapability = serde_json::from_value(claim.clone()).unwrap();
         assert!(parsed.matches_policy(&policy));
-        for (key, wrong) in [("protocolVersion", serde_json::json!(2)), ("adapterVersion", serde_json::json!("old")), ("securityPolicyVersion", serde_json::json!("old")), ("electronVersion", serde_json::json!("44.5.2")), ("chromiumVersion", serde_json::json!("152.0.7977.131"))] {
+        for (key, wrong) in [("protocolVersion", serde_json::json!(2)), ("adapterVersion", serde_json::json!("old")), ("securityPolicyVersion", serde_json::json!("old")), ("electronVersion", serde_json::json!("44.5.2")), ("chromiumVersion", serde_json::json!("152.0.7977.131")), ("platform", serde_json::json!("linux")), ("arch", serde_json::json!("x64"))] {
             let mut value = claim.clone(); value[key] = wrong;
             assert!(!serde_json::from_value::<GeneratedUiClientCapability>(value).unwrap().matches_policy(&policy), "mismatched {key}");
         }
@@ -320,19 +330,27 @@ mod tests {
         assert_eq!(capabilities.generated_ui_capability(), GeneratedUiCapability::Unsupported, "an older adapter and policy stay unapproved");
         // The shared registry approves the reviewed adapter and policy on the reviewed runtime only.
         let registry: GeneratedUiRuntimePolicy = serde_json::from_str(include_str!("../../../shared/generated-ui-runtime.json")).unwrap();
-        let current = |electron: &str, chromium: &str| ClientCapabilities { generated_ui: Some(GeneratedUiClientCapability {
+        let current = |electron: &str, chromium: &str, platform: &str, arch: &str| ClientCapabilities { generated_ui: Some(GeneratedUiClientCapability {
             protocol_version: registry.protocol_version, adapter_version: registry.adapter_version.clone(),
             security_policy_version: registry.security_policy_version.clone(), electron_version: electron.into(), chromium_version: chromium.into(),
+            platform: platform.into(), arch: arch.into(),
         }) }.generated_ui_capability();
-        assert_eq!(current("44.5.1", "152.0.7977.130"), GeneratedUiCapability::Verified);
-        assert_eq!(current("44.5.2", "152.0.7977.130"), GeneratedUiCapability::Unsupported);
-        assert_eq!(current("44.5.1", "152.0.7977.131"), GeneratedUiCapability::Unsupported);
+        assert_eq!(current("44.5.1", "152.0.7977.130", "darwin", "arm64"), GeneratedUiCapability::Verified);
+        assert_eq!(current("44.5.2", "152.0.7977.130", "darwin", "arm64"), GeneratedUiCapability::Unsupported);
+        assert_eq!(current("44.5.1", "152.0.7977.131", "darwin", "arm64"), GeneratedUiCapability::Unsupported);
+        assert_eq!(current("44.5.1", "152.0.7977.130", "darwin", "x64"), GeneratedUiCapability::Unsupported, "an unexercised architecture stays unapproved");
+        assert_eq!(current("44.5.1", "152.0.7977.130", "linux", "arm64"), GeneratedUiCapability::Unsupported, "an unexercised platform stays unapproved");
         let mut extra = claim.clone(); extra["verified"] = serde_json::json!(true);
         assert!(serde_json::from_value::<GeneratedUiClientCapability>(extra).is_err());
         let mut missing = claim.clone(); missing.as_object_mut().unwrap().remove("chromiumVersion");
         assert!(serde_json::from_value::<GeneratedUiClientCapability>(missing).is_err());
         let mut wrong_type = claim; wrong_type["protocolVersion"] = serde_json::json!("1");
         assert!(serde_json::from_value::<GeneratedUiClientCapability>(wrong_type).is_err());
+    }
+
+    #[test]
+    fn registry_parses() {
+        assert!(GENERATED_UI_RUNTIME_POLICY.is_some(), "shared/generated-ui-runtime.json must match GeneratedUiRuntimePolicy");
     }
 
     #[test]

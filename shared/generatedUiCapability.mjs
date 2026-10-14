@@ -6,7 +6,7 @@ export const GENERATED_UI_RUNTIME_POLICY = Object.freeze({
   ...policy,
   verifiedRuntimeBuilds: Object.freeze(policy.verifiedRuntimeBuilds.map(build => Object.freeze({ ...build }))),
 });
-const keys = ['protocolVersion', 'adapterVersion', 'securityPolicyVersion', 'electronVersion', 'chromiumVersion'];
+const keys = ['protocolVersion', 'adapterVersion', 'securityPolicyVersion', 'electronVersion', 'chromiumVersion', 'platform', 'arch'];
 export function readGeneratedUiCapability(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || Object.keys(value).length !== keys.length || !keys.every(key => Object.hasOwn(value, key))) return undefined;
@@ -14,7 +14,7 @@ export function readGeneratedUiCapability(value) {
       || value.securityPolicyVersion !== GENERATED_UI_RUNTIME_POLICY.securityPolicyVersion
       || typeof value.electronVersion !== 'string' || typeof value.chromiumVersion !== 'string') return undefined;
   if (!GENERATED_UI_RUNTIME_POLICY.verifiedRuntimeBuilds.some(build => build.electronVersion === value.electronVersion
-      && build.chromiumVersion === value.chromiumVersion)) return undefined;
+      && build.chromiumVersion === value.chromiumVersion && build.platform === value.platform && build.arch === value.arch)) return undefined;
   return Object.fromEntries(keys.map(key => [key, value[key]]));
 }
 

@@ -32,7 +32,7 @@ test('only the reviewed adapter, policy, runtime and platform enable Run', () =>
   const versions = { electron: '44.5.1', chrome: '152.0.7977.130' };
   const enabled = runtimeCapability(code, versions, 'darwin', 'arm64');
   assert.equal(enabled.enabled, true);
-  assert.deepEqual(enabled.guidance, { protocolVersion: 1, ...code, electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130' });
+  assert.deepEqual(enabled.guidance, { protocolVersion: 1, ...code, electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130', platform: 'darwin', arch: 'arm64' });
   // A changed adapter or policy is unreviewed even though the registry still names its old pair.
   for (const changed of [{ ...code, adapterVersion: `${ADAPTER_VERSION}-next` }, { ...code, securityPolicyVersion: `${SECURITY_POLICY_VERSION}-next` }, undefined]) {
     assert.equal(runtimeCapability(changed, versions, 'darwin', 'arm64').enabled, false);

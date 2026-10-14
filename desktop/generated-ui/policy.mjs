@@ -14,13 +14,14 @@ export const WRAPPER_HEADERS = Object.freeze({
 export function runtimeCapability(code, versions = process.versions, platform = process.platform, architecture = process.arch) {
   const unsupported = { enabled: false, reason: 'This runtime is not approved for generated interfaces. The text answer remains available.' };
   // Renderer ownership/termination and native authority gates were exercised
-  // on this platform only. Runtime upgrades and other platforms fail closed.
-  if (platform !== 'darwin' || architecture !== 'arm64') return unsupported;
+  // only on the registry's platforms. Runtime upgrades and other platforms fail
+  // closed, and the daemon checks the same platform in the hello claim.
   const guidance = readGeneratedUiCapability({
     protocolVersion: GENERATED_UI_RUNTIME_POLICY.protocolVersion,
     adapterVersion: code?.adapterVersion,
     securityPolicyVersion: code?.securityPolicyVersion,
     electronVersion: versions.electron, chromiumVersion: versions.chrome,
+    platform, arch: architecture,
   });
   return guidance ? { enabled: true, reason: 'Run starts this revision in the isolated local sandbox.', guidance } : unsupported;
 }

@@ -727,7 +727,7 @@ impl Room {
 
     pub(crate) fn request_for_capability(&self, id: &ParticipantId, answers: bool, capability: GeneratedUiCapability) -> Option<(Arc<dyn Participant>, TurnRequest)> {
         let participant = self.roster.iter().find(|p| &p.config().id == id)?.clone();
-        let answer_guidance = if answers { answers_system_for_capability(capability) } else { String::new() };
+        let answer_guidance = if answers { answers_system_for_capability(capability) } else { "" };
         let configs = self.configs();
         // What the summary covers counts as seen.
         let start = self.compacted_upto();
@@ -744,7 +744,7 @@ impl Room {
                 crate::server_request::prompt_section(&m.text)
             }).unwrap_or_default()
                 // Before Plan mode's text: next_steps_request cuts that off the end.
-                + &answer_guidance,
+                + answer_guidance,
             turns: render_view_after(self.summary(), &self.transcript[start..], id, &configs),
             unseen,
             plan: false,
@@ -760,7 +760,12 @@ impl Room {
     /// What to send `id` for suggested next prompts after its latest reply:
     /// its own view of the chat, then the next-steps question, read-only.
     pub fn next_steps_request(&self, id: &ParticipantId) -> Option<(Arc<dyn Participant>, TurnRequest)> {
-        let (participant, mut request) = self.request_for(id)?;
+        self.next_steps_request_with_answers(id, self.answers.load(Ordering::SeqCst))
+    }
+
+    /// As `next_steps_request`, keeping the answers preference of the chain that just replied.
+    pub fn next_steps_request_with_answers(&self, id: &ParticipantId, answers: bool) -> Option<(Arc<dyn Participant>, TurnRequest)> {
+        let (participant, mut request) = self.request_for_capability(id, answers, GeneratedUiCapability::Unsupported)?;
         // Suggesting is not planning, even while the thread plans.
         if request.plan {
             request.plan = false;
@@ -1003,6 +1008,8 @@ mod approver_tests {
         assert!(request.system.ends_with(PLAN_SYSTEM), "Plan mode's text stays last");
         let (_, steps) = room.next_steps_request(&id).unwrap();
         assert!(steps.system.ends_with(ANSWERS_SYSTEM), "next steps drop only Plan mode's text");
+        let (_, off) = room.next_steps_request_with_answers(&id, false).unwrap();
+        assert!(!off.system.contains("apex-ui"), "next steps keep a chain's answers-off preference");
     }
     use super::*;
     use crate::approval::ActionKind;

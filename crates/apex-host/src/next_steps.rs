@@ -16,7 +16,8 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// `revision` is the room's revision when the replies began: a Stop, a new
 /// message or another turn since then means there is nothing to suggest.
-pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64) {
+/// `answers` is the finished chain's interactive-answers preference.
+pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revision: u64, answers: bool) {
     let runtime = host.runtime().clone();
     runtime.spawn(async move {
         if revision != handle.observation_revision.load(Ordering::SeqCst) { return; }
@@ -24,7 +25,7 @@ pub(crate) fn suggest(host: Arc<Host>, room: String, handle: RoomHandle, revisio
             let current = handle.room.lock().await;
             current.transcript().last().and_then(|last| match &last.speaker {
                 Speaker::Bot(id) if last.text.chars().count() >= next_steps::MIN_REPLY_CHARS => {
-                    current.next_steps_request(id).map(|prepared| (id.clone(), prepared))
+                    current.next_steps_request_with_answers(id, answers).map(|prepared| (id.clone(), prepared))
                 }
                 _ => None,
             })

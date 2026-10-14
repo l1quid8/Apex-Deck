@@ -82,7 +82,7 @@ test('start says hello first, sends nothing else until the welcome, and resolves
 
 test('each new session queries trusted client capabilities before hello and never carries a stale reconnect claim', async () => {
   const daemon = fakeDaemon(); const timers = fakeTimers();
-  let available = { generated_ui: { protocolVersion: 1, adapterVersion: 'open-intelligent-ui-8391a94-deck-1', securityPolicyVersion: 'generated-ui-deny-all-1', electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130' } };
+  let available = { generated_ui: { protocolVersion: 1, adapterVersion: 'open-intelligent-ui-8391a94-deck-1', securityPolicyVersion: 'generated-ui-deny-all-1', electronVersion: '44.5.1', chromiumVersion: '152.0.7977.130', platform: 'darwin', arch: 'arm64' } };
   const client = new DaemonClient(daemon.connect, { timers, clientCapabilities: async () => available });
   const started = client.start(); await tick();
   const first = daemon.last();
