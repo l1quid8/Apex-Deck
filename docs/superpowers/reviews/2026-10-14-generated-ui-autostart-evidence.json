@@ -1,0 +1,999 @@
+{
+  "schemaVersion": 1,
+  "branch": "feat/generated-ui-autostart",
+  "baseCommit": "988458f",
+  "productCommit": "278fc5d",
+  "typescript": "npx tsc --noEmit exit 0",
+  "scoped": {
+    "passed": 109,
+    "failed": 0,
+    "log": "/tmp/apex-autostart-scoped.log"
+  },
+  "rust": {
+    "passed": 144,
+    "failed": 0,
+    "log": "/tmp/apex-autostart-rust.log"
+  },
+  "fullJs": {
+    "passed": 1421,
+    "failed": 12,
+    "total": 1433,
+    "baselineFailureNames": [
+      "a bot's model and reasoning read in a few words, and the phone only writes what it changed",
+      "a rendered sidebar chat drag carries its owning folder and machine",
+      "a stale callback after workspace host rebinding cannot clear the new host blocker",
+      "a successful host monitor snapshot adds attention and an empty snapshot clears that host",
+      "an ApexAgent callback from a removed workspace is ignored, including null",
+      "an ApexAgent callback from an old workspace path cannot add or clear attention",
+      "an ApexAgent callback from before host reconnection cannot clear the current blocker",
+      "host monitor snapshots reconcile only their own host across multiple workspaces",
+      "monitor blockers survive conversation visits and pane attention cleanup, then clear on resolution",
+      "monitor snapshots are accepted only for the rendered workspace, host, and path",
+      "the rendered Mark ready as seen button clears ordinary Ready flags but keeps the ApexAgent blocker",
+      "the rendered attention menu and sidebar badge keep an unresolved ApexAgent blocker after the conversation is read"
+    ],
+    "identicalToBaseline": true,
+    "command": "node --experimental-strip-types --test --test-concurrency=4 tests/*.test.mjs",
+    "log": "/tmp/apex-autostart-full-final.log",
+    "transient": "The default full run timed out the existing quick-selector Electron test. Its isolated rerun passed, and the final full run at concurrency 4 has exactly the 12 existing baseline failures."
+  },
+  "lifecycle": {
+    "root": "/tmp/deck-generated-lifecycle-dZ1iJZ",
+    "method": "Temporary instrumented copy of the shipped Electron runtime, current production modules and compiled UI, unchanged sandbox and real daemon integration.",
+    "phases": {
+      "automatic": {
+        "passed": true,
+        "versions": {
+          "electron": "44.5.1",
+          "chromium": "152.0.7977.130"
+        },
+        "checks": [
+          {
+            "name": "partial generated stream stays inert; complete valid card is eligible for automatic opening",
+            "passed": true
+          },
+          {
+            "name": "newest interface opens without any launch click and controls work",
+            "passed": true
+          },
+          {
+            "name": "explicit Stop stays stopped; Restart creates fresh contents",
+            "passed": true
+          },
+          {
+            "name": "only newest different-id card automatically opens without replacement churn",
+            "passed": true
+          },
+          {
+            "name": "new revision automatically replaces the old run and keeps historical code inert",
+            "passed": true
+          },
+          {
+            "name": "automatic frozen fixture is terminated and never retries itself",
+            "passed": true
+          }
+        ],
+        "allRecordedPidsExited": true
+      },
+      "lifecycle": {
+        "passed": true,
+        "versions": {
+          "electron": "44.5.1",
+          "chromium": "152.0.7977.130"
+        },
+        "checks": [
+          {
+            "name": "partial generated stream stays inert; complete valid card is eligible for automatic opening",
+            "passed": true
+          },
+          {
+            "name": "native interface renders a working SVG flowchart; Stop and Restart work",
+            "passed": true
+          },
+          {
+            "name": "Discuss preview does not modify or send a draft; trusted Discuss appends",
+            "passed": true
+          },
+          {
+            "name": "scroll disposes generated view and stale Discuss",
+            "passed": true
+          },
+          {
+            "name": "trusted modal overlay disposes generated view and stale Discuss",
+            "passed": true
+          },
+          {
+            "name": "ApexAgent partial overlay disposes generated view and stale Discuss",
+            "passed": true
+          },
+          {
+            "name": "connection resync disposes generated view and stale Discuss",
+            "passed": true
+          },
+          {
+            "name": "ordinary disconnect disposes generated view and stale Discuss",
+            "passed": true
+          },
+          {
+            "name": "resize and owner focus loss dispose; another window cannot stop owner run",
+            "passed": true
+          },
+          {
+            "name": "suspend invalidates all run authority without sleeping the machine",
+            "passed": true
+          },
+          {
+            "name": "owner zoom uses native DIP bounds and changing it revokes the old run",
+            "passed": true
+          },
+          {
+            "name": "revised payload stops the old run; old card remains text-only",
+            "passed": true
+          },
+          {
+            "name": "fork and renderer reload dispose old execution and open a fresh validated host",
+            "passed": true
+          },
+          {
+            "name": "calculator local controls, keyboard labels and Reset work in chat",
+            "passed": true
+          },
+          {
+            "name": "chart local controls, keyboard labels and Reset work in chat",
+            "passed": true
+          },
+          {
+            "name": "captured claude flowchart renders and its Next/Reset controls work",
+            "passed": true
+          },
+          {
+            "name": "captured codex flowchart renders and its Next/Reset controls work",
+            "passed": true
+          },
+          {
+            "name": "chat Revert and Retry stop a running interface; the isolated daemon remains usable",
+            "passed": true
+          },
+          {
+            "name": "freeze-init watchdog recovers chat and terminates generated PIDs",
+            "passed": true
+          },
+          {
+            "name": "freeze-after watchdog recovers chat and terminates generated PIDs",
+            "passed": true
+          },
+          {
+            "name": "freeze-micro watchdog recovers chat and terminates generated PIDs",
+            "passed": true
+          },
+          {
+            "name": "freeze-allocation watchdog recovers chat and terminates generated PIDs",
+            "passed": true
+          },
+          {
+            "name": "trusted Stop terminates a frozen OOPIF run",
+            "passed": true
+          },
+          {
+            "name": "quit event disposes generated PIDs while isolated daemon and chat still answer",
+            "passed": true
+          }
+        ],
+        "allRecordedPidsExited": true
+      },
+      "cycles": {
+        "passed": true,
+        "versions": {
+          "electron": "44.5.1",
+          "chromium": "152.0.7977.130"
+        },
+        "checks": [
+          {
+            "name": "partial generated stream stays inert; complete valid card is eligible for automatic opening",
+            "passed": true
+          },
+          {
+            "name": "32 fresh real sessions dispose all PIDs and then fail closed",
+            "passed": true
+          }
+        ],
+        "allRecordedPidsExited": true
+      },
+      "quit": {
+        "passed": true,
+        "versions": {
+          "electron": "44.5.1",
+          "chromium": "152.0.7977.130"
+        },
+        "checks": [
+          {
+            "name": "partial generated stream stays inert; complete valid card is eligible for automatic opening",
+            "passed": true
+          },
+          {
+            "name": "actual app.quit reaches production app.exit; outer runner confirms generated PIDs exit",
+            "passed": true
+          }
+        ],
+        "allRecordedPidsExited": true,
+        "outerQuitCheck": {
+          "code": 0,
+          "remaining": [],
+          "passed": true
+        }
+      }
+    }
+  },
+  "review": "Independent read-only product and test-harness review: no remaining blocker.",
+  "primaryPackage": {
+    "path": "/Users/tylercaldwell/Downloads/apex-deck/release/Apex-Deck_0.7.0_arm64.dmg",
+    "productCommit": "278fc5db66ea",
+    "daemonVersion": "apex-daemon 0.7.0 (278fc5db66ea)",
+    "bytes": 143603949,
+    "sha256": "fb33e171843d59f949bc7f689e0f4fbb13e7af084a6c801d16c98ee5a70fd91c",
+    "archiveSha256": "d41a1444baecf047b4343718dccaaded721098005a6aa66981fa7470912615b4",
+    "dmgIntegrityPassed": true,
+    "mountedSignaturePassed": true,
+    "mountedArchiveMatchesCandidate": true,
+    "developerIdSigned": true,
+    "notarized": false,
+    "buildLog": "/tmp/apex-autostart-dmg.log",
+    "verifiedAutomatic": {
+      "root": "/tmp/deck-generated-lifecycle-VgJACe",
+      "passed": true,
+      "versions": {
+        "electron": "44.5.1",
+        "chromium": "152.0.7977.130"
+      },
+      "checks": [
+        {
+          "name": "partial generated stream stays inert; complete valid card is eligible for automatic opening",
+          "passed": true
+        },
+        {
+          "name": "newest interface opens without any launch click and controls work",
+          "passed": true
+        },
+        {
+          "name": "explicit Stop stays stopped; Restart creates fresh contents",
+          "passed": true
+        },
+        {
+          "name": "only newest different-id card automatically opens without replacement churn",
+          "passed": true
+        },
+        {
+          "name": "new revision automatically replaces the old run and keeps historical code inert",
+          "passed": true
+        },
+        {
+          "name": "automatic frozen fixture is terminated and never retries itself",
+          "passed": true
+        }
+      ],
+      "allRecordedPidsExited": true,
+      "productionCapabilityUnmodified": true,
+      "sourceCodeMatchesProduction": true,
+      "sourceCode": [
+        {
+          "file": "desktop/main.mjs",
+          "production": "2798e7bab257c3734bf28bfe9011feb9f629c22758cc32488b3bd4731159d4e1",
+          "checkout": "2798e7bab257c3734bf28bfe9011feb9f629c22758cc32488b3bd4731159d4e1"
+        },
+        {
+          "file": "desktop/preload.cjs",
+          "production": "c076aa98a2e78dee0f3384835ad7f0ce66667d86a90cb13f59a97e01ffcc6ddd",
+          "checkout": "c076aa98a2e78dee0f3384835ad7f0ce66667d86a90cb13f59a97e01ffcc6ddd"
+        },
+        {
+          "file": "desktop/generated-ui/host.mjs",
+          "production": "b2faeb3fab2d3b263cd76215bb47578f1757e181e75ebb548c9cd24f0ada71ae",
+          "checkout": "b2faeb3fab2d3b263cd76215bb47578f1757e181e75ebb548c9cd24f0ada71ae"
+        },
+        {
+          "file": "desktop/generated-ui/frame-content.mjs",
+          "production": "c27165df9fd1614f1bf0e6fef34b5ccd202fe943118d6fb9a20478ef1bd151b8",
+          "checkout": "c27165df9fd1614f1bf0e6fef34b5ccd202fe943118d6fb9a20478ef1bd151b8"
+        },
+        {
+          "file": "desktop/generated-ui/policy.mjs",
+          "production": "095a3254c9e65314b558b17f4fa4ca0c9ff2d61604c2a18a842f0b0fd4970cd0",
+          "checkout": "095a3254c9e65314b558b17f4fa4ca0c9ff2d61604c2a18a842f0b0fd4970cd0"
+        },
+        {
+          "file": "desktop/generated-ui/preload.cjs",
+          "production": "b397e11216ef689b6eb1e7966a3162f094a2364b60e1f90a86bda1d4922aeb56",
+          "checkout": "b397e11216ef689b6eb1e7966a3162f094a2364b60e1f90a86bda1d4922aeb56"
+        },
+        {
+          "file": "desktop/generated-ui/protocol.mjs",
+          "production": "3eaac2178636adf774cc348957dc3f633f68a6cd2825d1137f445a543bf43229",
+          "checkout": "3eaac2178636adf774cc348957dc3f633f68a6cd2825d1137f445a543bf43229"
+        },
+        {
+          "file": "shared/generatedCard.mjs",
+          "production": "47b509b1bc59a05e2589784de50e2ed2ddbda83015dd63587b4a91f0a331c848",
+          "checkout": "47b509b1bc59a05e2589784de50e2ed2ddbda83015dd63587b4a91f0a331c848"
+        },
+        {
+          "file": "shared/generatedUiCapability.mjs",
+          "production": "be3847ec856080e251ab0d316b73c12b5e6a87b74c47d9577940f2fcc716ef11",
+          "checkout": "be3847ec856080e251ab0d316b73c12b5e6a87b74c47d9577940f2fcc716ef11"
+        },
+        {
+          "file": "shared/generated-ui-runtime.json",
+          "production": "62e8bf81ad6e1c54da323a33d5f623d2cd7b050f925a677885d3d86352225305",
+          "checkout": "62e8bf81ad6e1c54da323a33d5f623d2cd7b050f925a677885d3d86352225305"
+        },
+        {
+          "file": "dist/index.html",
+          "production": "8ff5b427b121408499b5912b2fcb7e8ae015804075f8850dc849d8ce98c7ca18",
+          "checkout": "8ff5b427b121408499b5912b2fcb7e8ae015804075f8850dc849d8ce98c7ca18"
+        },
+        {
+          "file": "dist/assets/apl-gfMMiTNf.js",
+          "production": "9619f3fb6609168d82b468b6f950530bd23fafbc261f7b56696b10c483522d93",
+          "checkout": "9619f3fb6609168d82b468b6f950530bd23fafbc261f7b56696b10c483522d93"
+        },
+        {
+          "file": "dist/assets/asciiarmor-C_eisQCp.js",
+          "production": "d0d548398b732306f912bbd8cd04486543520e3882a05e98b20a86bfa2b70089",
+          "checkout": "d0d548398b732306f912bbd8cd04486543520e3882a05e98b20a86bfa2b70089"
+        },
+        {
+          "file": "dist/assets/asn1-DCl_8MCW.js",
+          "production": "ecd2d25e2e3152f480db9d3e698b2ac94f01fc3dc90d7f51d53d71f5c2a0db33",
+          "checkout": "ecd2d25e2e3152f480db9d3e698b2ac94f01fc3dc90d7f51d53d71f5c2a0db33"
+        },
+        {
+          "file": "dist/assets/asterisk-BEn0Cwpx.js",
+          "production": "2a2f286533f7527943a00fba13a31187ca2ddfdd1d8dac717175eb734f0dd14e",
+          "checkout": "2a2f286533f7527943a00fba13a31187ca2ddfdd1d8dac717175eb734f0dd14e"
+        },
+        {
+          "file": "dist/assets/brainfuck-D5EjA2JK.js",
+          "production": "5475a1a35d2dd641d8cd989a938161509774ccd2b76150b09c4058185476df6e",
+          "checkout": "5475a1a35d2dd641d8cd989a938161509774ccd2b76150b09c4058185476df6e"
+        },
+        {
+          "file": "dist/assets/clike-D_6L3tnO.js",
+          "production": "208321c3862b7a7f18613d56e7e6b0c63687b8bf4f6e90cb421c40d1e9444ad8",
+          "checkout": "208321c3862b7a7f18613d56e7e6b0c63687b8bf4f6e90cb421c40d1e9444ad8"
+        },
+        {
+          "file": "dist/assets/clojure-BflJGmDX.js",
+          "production": "3ccea67a7d55baa7ada3701e3382834b1c4b98caad17385635495df8ecf1b075",
+          "checkout": "3ccea67a7d55baa7ada3701e3382834b1c4b98caad17385635495df8ecf1b075"
+        },
+        {
+          "file": "dist/assets/cmake-84nbDH0I.js",
+          "production": "b04b2d247760958ea0055bc5f2e6b71768ce16eb6c4c9ef107f9756832a49fbf",
+          "checkout": "b04b2d247760958ea0055bc5f2e6b71768ce16eb6c4c9ef107f9756832a49fbf"
+        },
+        {
+          "file": "dist/assets/cobol-DHLQUbN7.js",
+          "production": "dbabfa9a971f5684d1ec67be806185042bec8f381ddc8d72f29671d403741e3d",
+          "checkout": "dbabfa9a971f5684d1ec67be806185042bec8f381ddc8d72f29671d403741e3d"
+        },
+        {
+          "file": "dist/assets/coffeescript-De_zI4J0.js",
+          "production": "036cefc2b4652f1513a94c360f9131b00d05c2b91f8d1e1de998075eb2bb802c",
+          "checkout": "036cefc2b4652f1513a94c360f9131b00d05c2b91f8d1e1de998075eb2bb802c"
+        },
+        {
+          "file": "dist/assets/commonlisp-DgAKBe0r.js",
+          "production": "a5cf5425784f04223503bbebd02c95a25190604640b15c238143c65585dd3146",
+          "checkout": "a5cf5425784f04223503bbebd02c95a25190604640b15c238143c65585dd3146"
+        },
+        {
+          "file": "dist/assets/crystal-Bsdphhtm.js",
+          "production": "13bbc57de4aebda33b48734f2b181e8f46383f7f4cd991c854fa30c3b63cf15a",
+          "checkout": "13bbc57de4aebda33b48734f2b181e8f46383f7f4cd991c854fa30c3b63cf15a"
+        },
+        {
+          "file": "dist/assets/css-CnaYoQib.js",
+          "production": "196216d43c6f0da651aed4b274a684b1ccb5b693a057e26e01ac66002f5434f6",
+          "checkout": "196216d43c6f0da651aed4b274a684b1ccb5b693a057e26e01ac66002f5434f6"
+        },
+        {
+          "file": "dist/assets/cypher-p9eYesGn.js",
+          "production": "cd05736f31fba1aa9830d94e6b3799236e0b8cd2b989674fb9b074532a8bb42c",
+          "checkout": "cd05736f31fba1aa9830d94e6b3799236e0b8cd2b989674fb9b074532a8bb42c"
+        },
+        {
+          "file": "dist/assets/d-DWkQyNnU.js",
+          "production": "eb4116d03dcda3c7dcb1f8681fe9858eb6f7c7b24213a8397c4862151627d532",
+          "checkout": "eb4116d03dcda3c7dcb1f8681fe9858eb6f7c7b24213a8397c4862151627d532"
+        },
+        {
+          "file": "dist/assets/diff-ChtP43wD.js",
+          "production": "cf4c32c773b4aec08498fd170b7f74733a695fdbcbb18170413e05c8d64d4848",
+          "checkout": "cf4c32c773b4aec08498fd170b7f74733a695fdbcbb18170413e05c8d64d4848"
+        },
+        {
+          "file": "dist/assets/dist-B5G9d-OO.js",
+          "production": "d4d48cc88237636ce37bed94aed578ae6359ea31acd03d980134d4d9b0f088c2",
+          "checkout": "d4d48cc88237636ce37bed94aed578ae6359ea31acd03d980134d4d9b0f088c2"
+        },
+        {
+          "file": "dist/assets/dist-BCV86p7v.js",
+          "production": "7a6a8f1537d319c54e350a06bcb2efc1731ef47075fafbb49a0573ff2ea81bd5",
+          "checkout": "7a6a8f1537d319c54e350a06bcb2efc1731ef47075fafbb49a0573ff2ea81bd5"
+        },
+        {
+          "file": "dist/assets/dist-BF7ESRAj.js",
+          "production": "e368fe2c1e10f235d87d71ad135f113c0b679425c4082ae9d36ff0a9f728ecf9",
+          "checkout": "e368fe2c1e10f235d87d71ad135f113c0b679425c4082ae9d36ff0a9f728ecf9"
+        },
+        {
+          "file": "dist/assets/dist-BN2DPrnX.js",
+          "production": "bedb3d7d7483125cab37c46515f07c78df555cbb1a38d854a2c69fccd7c35cda",
+          "checkout": "bedb3d7d7483125cab37c46515f07c78df555cbb1a38d854a2c69fccd7c35cda"
+        },
+        {
+          "file": "dist/assets/dist-BOvDh6Wk.js",
+          "production": "1143840052aef878001eb002af9609005e32253f70e889ba7676c79e5508d5b5",
+          "checkout": "1143840052aef878001eb002af9609005e32253f70e889ba7676c79e5508d5b5"
+        },
+        {
+          "file": "dist/assets/dist-BdUYHAZP.js",
+          "production": "c55e8f58f26b773abf08cf8eff4835399e3a121f4ac1bcdbad73c4285c6c1c22",
+          "checkout": "c55e8f58f26b773abf08cf8eff4835399e3a121f4ac1bcdbad73c4285c6c1c22"
+        },
+        {
+          "file": "dist/assets/dist-Bpi6jVOV.js",
+          "production": "3908821c7b63e9906162d72c096568cfd1631cc186c82f017a5dada10c60b3d8",
+          "checkout": "3908821c7b63e9906162d72c096568cfd1631cc186c82f017a5dada10c60b3d8"
+        },
+        {
+          "file": "dist/assets/dist-Bry_2xpE.js",
+          "production": "b1d66c2756c4d80b46e4c45c2dfc7ff5e6a190aad2c3728b83a57785aa0a86ba",
+          "checkout": "b1d66c2756c4d80b46e4c45c2dfc7ff5e6a190aad2c3728b83a57785aa0a86ba"
+        },
+        {
+          "file": "dist/assets/dist-C6-WWx1G.js",
+          "production": "1848abd0644e30bcb899869882f37b4a1b03ca8c190052e7f06d36376820b5e8",
+          "checkout": "1848abd0644e30bcb899869882f37b4a1b03ca8c190052e7f06d36376820b5e8"
+        },
+        {
+          "file": "dist/assets/dist-CE4Kbf6n.js",
+          "production": "cb5acfdfa59515b54497eea9a5afd07f99f862fcbad4be6f790a90f6e1b987e5",
+          "checkout": "cb5acfdfa59515b54497eea9a5afd07f99f862fcbad4be6f790a90f6e1b987e5"
+        },
+        {
+          "file": "dist/assets/dist-CT17A-dK.js",
+          "production": "9f65ff4d872edf6a0dd942265d2238ce364ddfcceeb60919c1b684e408ed7024",
+          "checkout": "9f65ff4d872edf6a0dd942265d2238ce364ddfcceeb60919c1b684e408ed7024"
+        },
+        {
+          "file": "dist/assets/dist-CVO_SmWM.js",
+          "production": "d8efc0c0b671d48c271c295c55eac2d734469fb129d804721cae20e5ec41867b",
+          "checkout": "d8efc0c0b671d48c271c295c55eac2d734469fb129d804721cae20e5ec41867b"
+        },
+        {
+          "file": "dist/assets/dist-CYKcdZSK.js",
+          "production": "3581a433ac2f287a6ea3aac99b7b542ab0001f771cf50107c3831750d9feeeb2",
+          "checkout": "3581a433ac2f287a6ea3aac99b7b542ab0001f771cf50107c3831750d9feeeb2"
+        },
+        {
+          "file": "dist/assets/dist-CpdTchkb.js",
+          "production": "9a5e6e8200becbf335fdb86f8b20c5205f3bd7f7a9fa48d7c8e71569bc0aed2e",
+          "checkout": "9a5e6e8200becbf335fdb86f8b20c5205f3bd7f7a9fa48d7c8e71569bc0aed2e"
+        },
+        {
+          "file": "dist/assets/dist-Cr0q-ctp.js",
+          "production": "a0b5328d92fc807eb878599724efe1cf716d1fadbe20fbabea52fa7560eb13f0",
+          "checkout": "a0b5328d92fc807eb878599724efe1cf716d1fadbe20fbabea52fa7560eb13f0"
+        },
+        {
+          "file": "dist/assets/dist-D-s4RQA4.js",
+          "production": "1621991c18547ed8d16b0d9754cc48ecf4219ace6573e15083b5827b49d499f8",
+          "checkout": "1621991c18547ed8d16b0d9754cc48ecf4219ace6573e15083b5827b49d499f8"
+        },
+        {
+          "file": "dist/assets/dist-D7vGb7ju.js",
+          "production": "c79a1a4018b349dfa5da41f58fbe8543303fa862eeee00e43fb4492dc91b6df0",
+          "checkout": "c79a1a4018b349dfa5da41f58fbe8543303fa862eeee00e43fb4492dc91b6df0"
+        },
+        {
+          "file": "dist/assets/dist-DDUxXEtS.js",
+          "production": "d5fef9b5e6532696a00f8a962477b241167e4d3c56951909e5f234276422b434",
+          "checkout": "d5fef9b5e6532696a00f8a962477b241167e4d3c56951909e5f234276422b434"
+        },
+        {
+          "file": "dist/assets/dist-DHPmi2XT.js",
+          "production": "5ec6220c2435eceea47322af0ada4d2695420542faac7ca9594b68a4b1eae8fc",
+          "checkout": "5ec6220c2435eceea47322af0ada4d2695420542faac7ca9594b68a4b1eae8fc"
+        },
+        {
+          "file": "dist/assets/dist-DM5oyWR3.js",
+          "production": "01bb9c3ba239d31f361faffa40ab2df70f2b8a4d841d1b9aa8caf42f2ab7e855",
+          "checkout": "01bb9c3ba239d31f361faffa40ab2df70f2b8a4d841d1b9aa8caf42f2ab7e855"
+        },
+        {
+          "file": "dist/assets/dist-DUwX5Mlv.js",
+          "production": "5fafd4350aa42ade63bb25ad61b103c07090ea406759ae5e1edc57638271616e",
+          "checkout": "5fafd4350aa42ade63bb25ad61b103c07090ea406759ae5e1edc57638271616e"
+        },
+        {
+          "file": "dist/assets/dist-Dduybs_t.js",
+          "production": "28bdda20c745bd671f4a69cd63fd2f91243a22f9c1b871cd694dd5837e04c982",
+          "checkout": "28bdda20c745bd671f4a69cd63fd2f91243a22f9c1b871cd694dd5837e04c982"
+        },
+        {
+          "file": "dist/assets/dist-Df9IM0o7.js",
+          "production": "4fb592ca5d555074d42437531052d7191d4cc598d49da4309f625d40c0dd29f4",
+          "checkout": "4fb592ca5d555074d42437531052d7191d4cc598d49da4309f625d40c0dd29f4"
+        },
+        {
+          "file": "dist/assets/dist-DxuxMq2r.js",
+          "production": "5a13ef8bb8e7de6b2572d129abb5c7e3795627b8698106993a1ed9ade5d96527",
+          "checkout": "5a13ef8bb8e7de6b2572d129abb5c7e3795627b8698106993a1ed9ade5d96527"
+        },
+        {
+          "file": "dist/assets/dist-On8J5AxG.js",
+          "production": "de8fd168db0d0d2558f58107924687166dbc115b63fabbed9eb1420df4a05ef4",
+          "checkout": "de8fd168db0d0d2558f58107924687166dbc115b63fabbed9eb1420df4a05ef4"
+        },
+        {
+          "file": "dist/assets/dist-PJPn-07I.js",
+          "production": "c8f173406a96ee5bd85b09153d6cfb71bbe6ff606036359d705d54e82ee94b5f",
+          "checkout": "c8f173406a96ee5bd85b09153d6cfb71bbe6ff606036359d705d54e82ee94b5f"
+        },
+        {
+          "file": "dist/assets/dist-TrdgFk9j.js",
+          "production": "aae6e8605674311556ca63b9f7eb4b5d1c01f5e02f8dca60001e81a298628c92",
+          "checkout": "aae6e8605674311556ca63b9f7eb4b5d1c01f5e02f8dca60001e81a298628c92"
+        },
+        {
+          "file": "dist/assets/dist-UXdEfoNO.js",
+          "production": "cdf3b47dc1153c66fbad6e342257a8f5505c7c4bb2a9af5c1b1a4610c37fe09f",
+          "checkout": "cdf3b47dc1153c66fbad6e342257a8f5505c7c4bb2a9af5c1b1a4610c37fe09f"
+        },
+        {
+          "file": "dist/assets/dist-i5gvNf5t.js",
+          "production": "9025e98fba05259923845f41cacb8cec6a49e14c031210e78a462bc9b3a5bd82",
+          "checkout": "9025e98fba05259923845f41cacb8cec6a49e14c031210e78a462bc9b3a5bd82"
+        },
+        {
+          "file": "dist/assets/dist-oow84x62.js",
+          "production": "987e61e061d76becc0e4fa17f17af05cd78d019fc658fe8f54a0d9cb1a9c2dbe",
+          "checkout": "987e61e061d76becc0e4fa17f17af05cd78d019fc658fe8f54a0d9cb1a9c2dbe"
+        },
+        {
+          "file": "dist/assets/dockerfile-DJkHQgkl.js",
+          "production": "c86168d3e36da3ebce319561f0be8af50366b8c9889ea2822b18aba45febe8fb",
+          "checkout": "c86168d3e36da3ebce319561f0be8af50366b8c9889ea2822b18aba45febe8fb"
+        },
+        {
+          "file": "dist/assets/dtd-DTF72YNO.js",
+          "production": "8f289b3c0a603c2de057f44cfb513dcb9e24dfeff1ac299a0acde4f1279385a9",
+          "checkout": "8f289b3c0a603c2de057f44cfb513dcb9e24dfeff1ac299a0acde4f1279385a9"
+        },
+        {
+          "file": "dist/assets/dylan-BCDoL_-p.js",
+          "production": "132d155483a1e5bd0998f45cebfb733412ec5f69514c1e6cb15e3164f139e438",
+          "checkout": "132d155483a1e5bd0998f45cebfb733412ec5f69514c1e6cb15e3164f139e438"
+        },
+        {
+          "file": "dist/assets/ebnf-D4c0_ac3.js",
+          "production": "e39d883c18e1d0436f36926b7b46617128b40cfd7ed0a10bd66af695fcadfe97",
+          "checkout": "e39d883c18e1d0436f36926b7b46617128b40cfd7ed0a10bd66af695fcadfe97"
+        },
+        {
+          "file": "dist/assets/ecl-BVIeWmwY.js",
+          "production": "fa4f1534359480b3174b2ca9ff915972f9475bdaa74aab645bfda1eca46074e9",
+          "checkout": "fa4f1534359480b3174b2ca9ff915972f9475bdaa74aab645bfda1eca46074e9"
+        },
+        {
+          "file": "dist/assets/eiffel-BEjRio4Q.js",
+          "production": "df2f416a891d40045c83ff1900af1cb87f72695ad4d87c50682738624c38a266",
+          "checkout": "df2f416a891d40045c83ff1900af1cb87f72695ad4d87c50682738624c38a266"
+        },
+        {
+          "file": "dist/assets/elm-Cshzl8qu.js",
+          "production": "7dc9b8c8a1289df3800c9ca773519840019d47deefb03dca7f7302b9882f12e9",
+          "checkout": "7dc9b8c8a1289df3800c9ca773519840019d47deefb03dca7f7302b9882f12e9"
+        },
+        {
+          "file": "dist/assets/erlang-BV0c4Hdn.js",
+          "production": "17d201413a70fc04906b3d0265bc6b80e7d8f176c38f46979c366ecbea144e77",
+          "checkout": "17d201413a70fc04906b3d0265bc6b80e7d8f176c38f46979c366ecbea144e77"
+        },
+        {
+          "file": "dist/assets/factor-LKH5gN8L.js",
+          "production": "985d490b848506f5c777d7a0584fc9343798e03d2a69c2a556a486d43db1237a",
+          "checkout": "985d490b848506f5c777d7a0584fc9343798e03d2a69c2a556a486d43db1237a"
+        },
+        {
+          "file": "dist/assets/fcl-ClOhbFR7.js",
+          "production": "08ce5e646edb4d614970bead56bd5b06f14093bc904af846e33b1d60fa142052",
+          "checkout": "08ce5e646edb4d614970bead56bd5b06f14093bc904af846e33b1d60fa142052"
+        },
+        {
+          "file": "dist/assets/forth-D6RzAl64.js",
+          "production": "89cdf42385551ba2c763602802e59a86ec8587db8f43527160095244e48552cd",
+          "checkout": "89cdf42385551ba2c763602802e59a86ec8587db8f43527160095244e48552cd"
+        },
+        {
+          "file": "dist/assets/fortran-Bt6PBEDR.js",
+          "production": "0ee1b38b1c87eddf928e6d11929c96ad15d006d477182f4d6fb181475cbaaa25",
+          "checkout": "0ee1b38b1c87eddf928e6d11929c96ad15d006d477182f4d6fb181475cbaaa25"
+        },
+        {
+          "file": "dist/assets/gas-BHEdbvp9.js",
+          "production": "72ce032bf8e2f97291cb8070c844d7a36255c89a0b32f65d8f2865b9344ef472",
+          "checkout": "72ce032bf8e2f97291cb8070c844d7a36255c89a0b32f65d8f2865b9344ef472"
+        },
+        {
+          "file": "dist/assets/gherkin-oBAE_ms0.js",
+          "production": "ca63055e8d4e39e3280607c357763a89ff08c3e719f48a2749f3d8cde1fea56d",
+          "checkout": "ca63055e8d4e39e3280607c357763a89ff08c3e719f48a2749f3d8cde1fea56d"
+        },
+        {
+          "file": "dist/assets/groovy-CUpZ7dEl.js",
+          "production": "3864499821a78f46e62c21582deb146e1bda1128068faca178f7b2d5a952397f",
+          "checkout": "3864499821a78f46e62c21582deb146e1bda1128068faca178f7b2d5a952397f"
+        },
+        {
+          "file": "dist/assets/haskell-BRsoo5mP.js",
+          "production": "868e8b21da5021140b51775df3d9ebb51bf5aa0925b2dba75b9923e71a717e6d",
+          "checkout": "868e8b21da5021140b51775df3d9ebb51bf5aa0925b2dba75b9923e71a717e6d"
+        },
+        {
+          "file": "dist/assets/haxe-DjVOVvNP.js",
+          "production": "d82d48ac4fdb69dd2dca969ecfb5e59dca97e15d10ec4872afe73d5ac1253325",
+          "checkout": "d82d48ac4fdb69dd2dca969ecfb5e59dca97e15d10ec4872afe73d5ac1253325"
+        },
+        {
+          "file": "dist/assets/http-CLVgA2GD.js",
+          "production": "94a0d68f2fa36fd78ed3f3c9483b33062fee90c694f4e70797d9cc5a6715b914",
+          "checkout": "94a0d68f2fa36fd78ed3f3c9483b33062fee90c694f4e70797d9cc5a6715b914"
+        },
+        {
+          "file": "dist/assets/idl-BUZw3wgd.js",
+          "production": "438714d3559726d0a0a3ac7a0a08267c929d0bb690fa2eef514b82322be2f6a4",
+          "checkout": "438714d3559726d0a0a3ac7a0a08267c929d0bb690fa2eef514b82322be2f6a4"
+        },
+        {
+          "file": "dist/assets/javascript-Bu8mWwtz.js",
+          "production": "df00507e8e79bde38a22326c6071437adceafe4b032ff92910b7ae51aaca5036",
+          "checkout": "df00507e8e79bde38a22326c6071437adceafe4b032ff92910b7ae51aaca5036"
+        },
+        {
+          "file": "dist/assets/julia-CQfgDRfP.js",
+          "production": "0c2cf72d1ac90213c3b42a91c800c587f75ee81e2bcde2712dddfd386d8967eb",
+          "checkout": "0c2cf72d1ac90213c3b42a91c800c587f75ee81e2bcde2712dddfd386d8967eb"
+        },
+        {
+          "file": "dist/assets/livescript-BXxG0Yva.js",
+          "production": "fe8dcb554ae3e959a556e5e0d4c1d6b186818e451a4269ae603062c478094f96",
+          "checkout": "fe8dcb554ae3e959a556e5e0d4c1d6b186818e451a4269ae603062c478094f96"
+        },
+        {
+          "file": "dist/assets/lua-DPCEkfD_.js",
+          "production": "2f4183f6b44b5ad6d9e5fe805a843c7d9336a4e95ef811b7bff81a03562295d6",
+          "checkout": "2f4183f6b44b5ad6d9e5fe805a843c7d9336a4e95ef811b7bff81a03562295d6"
+        },
+        {
+          "file": "dist/assets/main-BaksosKy.js",
+          "production": "e75608d288dc14213d6b677880d0b3497bd0490fc705fb5335d8467518147940",
+          "checkout": "e75608d288dc14213d6b677880d0b3497bd0490fc705fb5335d8467518147940"
+        },
+        {
+          "file": "dist/assets/main-BblAA_gr.css",
+          "production": "017d90cea9868594f59c680155e998036e194abdcde26f8f632cb15aaa49effe",
+          "checkout": "017d90cea9868594f59c680155e998036e194abdcde26f8f632cb15aaa49effe"
+        },
+        {
+          "file": "dist/assets/mathematica-u8YMmbU0.js",
+          "production": "84ae4ba6bf879a4608696af785e17cedd8b581bdbea0c90f856585d451b34190",
+          "checkout": "84ae4ba6bf879a4608696af785e17cedd8b581bdbea0c90f856585d451b34190"
+        },
+        {
+          "file": "dist/assets/mbox-BEMVcqjs.js",
+          "production": "44dc8f20f0534aa78d31245211628291e31351f36bee1ac1d7aeb8a59a11d254",
+          "checkout": "44dc8f20f0534aa78d31245211628291e31351f36bee1ac1d7aeb8a59a11d254"
+        },
+        {
+          "file": "dist/assets/mirc-C9zpzAZU.js",
+          "production": "edc1c63e88e0942b88240b589af3bc3e6ada91a4996eb5eff61d64d069d8085a",
+          "checkout": "edc1c63e88e0942b88240b589af3bc3e6ada91a4996eb5eff61d64d069d8085a"
+        },
+        {
+          "file": "dist/assets/mllike-B45xgp2S.js",
+          "production": "0530b163f7297af3234377ec8d70cc26919c6e38f3dd34c8069a30387ff666a0",
+          "checkout": "0530b163f7297af3234377ec8d70cc26919c6e38f3dd34c8069a30387ff666a0"
+        },
+        {
+          "file": "dist/assets/modelica-CqHI_q-D.js",
+          "production": "e620fa810ea18a71a5d491ea8da8638f6113f1ae435c7300b9a2f2d332c5691f",
+          "checkout": "e620fa810ea18a71a5d491ea8da8638f6113f1ae435c7300b9a2f2d332c5691f"
+        },
+        {
+          "file": "dist/assets/mscgen-qgSLujhx.js",
+          "production": "53b24ee7c56bc57af791aed5bc20b0cf51333dd20c6f48eb9dd7d7a222a4d96b",
+          "checkout": "53b24ee7c56bc57af791aed5bc20b0cf51333dd20c6f48eb9dd7d7a222a4d96b"
+        },
+        {
+          "file": "dist/assets/mumps-BSzj6Xyz.js",
+          "production": "b74f315529764ac8bd1dc5de0000a81e8ec336ca167b130a9380af3f8e2c2527",
+          "checkout": "b74f315529764ac8bd1dc5de0000a81e8ec336ca167b130a9380af3f8e2c2527"
+        },
+        {
+          "file": "dist/assets/nginx-8H7HVH4w.js",
+          "production": "2a52b1abff5c4f9cf1f947a23d2d810f69f5dc602ab9b715a0676b8faf7576e9",
+          "checkout": "2a52b1abff5c4f9cf1f947a23d2d810f69f5dc602ab9b715a0676b8faf7576e9"
+        },
+        {
+          "file": "dist/assets/nsis-viPvXFiq.js",
+          "production": "650cc541455f7d197edf02bba71ab1fcf7303a805d017b0b00c562bf4b2abfa9",
+          "checkout": "650cc541455f7d197edf02bba71ab1fcf7303a805d017b0b00c562bf4b2abfa9"
+        },
+        {
+          "file": "dist/assets/ntriples-B9h1VB_g.js",
+          "production": "4cbb7f70c5252f4f7411a7dcd77fbf2a7eeb3401217580ea58454dbf61b39f77",
+          "checkout": "4cbb7f70c5252f4f7411a7dcd77fbf2a7eeb3401217580ea58454dbf61b39f77"
+        },
+        {
+          "file": "dist/assets/octave-D2Q8cUp1.js",
+          "production": "435819b2e5cd3263138c94a8970bb09101e4c3f186594eb4649f8bc604eecad9",
+          "checkout": "435819b2e5cd3263138c94a8970bb09101e4c3f186594eb4649f8bc604eecad9"
+        },
+        {
+          "file": "dist/assets/oz-BwTct_5T.js",
+          "production": "122d799c67d18e54c5ef26e7786f81ae0fc4ce2dbdeb57aa2ff4b2e5f23fb0a8",
+          "checkout": "122d799c67d18e54c5ef26e7786f81ae0fc4ce2dbdeb57aa2ff4b2e5f23fb0a8"
+        },
+        {
+          "file": "dist/assets/pascal-Dp_KdFgX.js",
+          "production": "2d5e3c493596b6ffcc688ab63c6501d11be92ccb669d92b5c2a36cc876b7acdd",
+          "checkout": "2d5e3c493596b6ffcc688ab63c6501d11be92ccb669d92b5c2a36cc876b7acdd"
+        },
+        {
+          "file": "dist/assets/perl-BkSkiI9m.js",
+          "production": "efd47f9ae8043b2e00b8ac2ecf12d5b3916d049fd230d4e2de748e79c633d125",
+          "checkout": "efd47f9ae8043b2e00b8ac2ecf12d5b3916d049fd230d4e2de748e79c633d125"
+        },
+        {
+          "file": "dist/assets/phone-CSeT4ATV.css",
+          "production": "137b9299ea0eed556499821f587aeaa074cfb3730b8c8f078866f13df290fa0c",
+          "checkout": "137b9299ea0eed556499821f587aeaa074cfb3730b8c8f078866f13df290fa0c"
+        },
+        {
+          "file": "dist/assets/phone-VYWtMfxj.js",
+          "production": "484ad777e3d4a6787cc94e33111284e656b8e36324ac00c3d631158726096038",
+          "checkout": "484ad777e3d4a6787cc94e33111284e656b8e36324ac00c3d631158726096038"
+        },
+        {
+          "file": "dist/assets/pig-AF4Hwhju.js",
+          "production": "fff5fffe6757c1708a03dec395f9b3bd038d30fce56b70e00960da5ea203c78e",
+          "checkout": "fff5fffe6757c1708a03dec395f9b3bd038d30fce56b70e00960da5ea203c78e"
+        },
+        {
+          "file": "dist/assets/powershell-BcIto6Sf.js",
+          "production": "8024135b87241820f964efccd79e04a67b5a30366f474f54fdb5e63d8fb51a92",
+          "checkout": "8024135b87241820f964efccd79e04a67b5a30366f474f54fdb5e63d8fb51a92"
+        },
+        {
+          "file": "dist/assets/properties-C357ku5U.js",
+          "production": "265cd5a3bc8e8e1426825db6da7dfd6398db08f4ca5dc266b3f432a982868452",
+          "checkout": "265cd5a3bc8e8e1426825db6da7dfd6398db08f4ca5dc266b3f432a982868452"
+        },
+        {
+          "file": "dist/assets/protobuf-D1ij_kNL.js",
+          "production": "7c936836371bd94a649f756e6c07bb3f3139555c4a2c18c0ac6060ca26332d77",
+          "checkout": "7c936836371bd94a649f756e6c07bb3f3139555c4a2c18c0ac6060ca26332d77"
+        },
+        {
+          "file": "dist/assets/pug-3K-JMW4g.js",
+          "production": "dee0f76a800e3b447280716410840a3cbd5f73d3a1eeb5e81c2fc04b143cf00c",
+          "checkout": "dee0f76a800e3b447280716410840a3cbd5f73d3a1eeb5e81c2fc04b143cf00c"
+        },
+        {
+          "file": "dist/assets/puppet-BZyAS7I4.js",
+          "production": "a600a4c00b1745a13b1e619a137f2c67ae87352aa1ab57dad71cf94d633265a7",
+          "checkout": "a600a4c00b1745a13b1e619a137f2c67ae87352aa1ab57dad71cf94d633265a7"
+        },
+        {
+          "file": "dist/assets/python-B_1Jd8HM.js",
+          "production": "8e6518c2f97a6057d9801d6401b2da865382f8d54b8e718c794e011b74f3a53a",
+          "checkout": "8e6518c2f97a6057d9801d6401b2da865382f8d54b8e718c794e011b74f3a53a"
+        },
+        {
+          "file": "dist/assets/q-B9NhS7L_.js",
+          "production": "b1aacfc6dada3beff2530353c44dbd3b7c9fa39f6c315e27de6b44825fcd7cb4",
+          "checkout": "b1aacfc6dada3beff2530353c44dbd3b7c9fa39f6c315e27de6b44825fcd7cb4"
+        },
+        {
+          "file": "dist/assets/r-CxDmU1I4.js",
+          "production": "ce1385db9dc69828b103ea845015e5ebdad1b624eef79f4c9f5dc56d5d23a7ad",
+          "checkout": "ce1385db9dc69828b103ea845015e5ebdad1b624eef79f4c9f5dc56d5d23a7ad"
+        },
+        {
+          "file": "dist/assets/rpm-gpDK5sbt.js",
+          "production": "5ad9e795d1d7fe0390cc015a03d54aef739a2244340e2deaf5df4f6ed013a8df",
+          "checkout": "5ad9e795d1d7fe0390cc015a03d54aef739a2244340e2deaf5df4f6ed013a8df"
+        },
+        {
+          "file": "dist/assets/ruby-ChfNwlCY.js",
+          "production": "bf7640300ec2fcda90331b55594a232b76d5a3542be898d4b6565b6cb3a61ce7",
+          "checkout": "bf7640300ec2fcda90331b55594a232b76d5a3542be898d4b6565b6cb3a61ce7"
+        },
+        {
+          "file": "dist/assets/sas-C2OyD2Y6.js",
+          "production": "9c51535bc98848d00a7a16101ad2ff162cb44106468b7a7d595f04719e082cab",
+          "checkout": "9c51535bc98848d00a7a16101ad2ff162cb44106468b7a7d595f04719e082cab"
+        },
+        {
+          "file": "dist/assets/scheme-D9qYN0V5.js",
+          "production": "92e00992b5c67b8d38c35f9088b09ee58175c3dd1ea45f9d135fd95269bb0dbe",
+          "checkout": "92e00992b5c67b8d38c35f9088b09ee58175c3dd1ea45f9d135fd95269bb0dbe"
+        },
+        {
+          "file": "dist/assets/shell-DwuoZtxw.js",
+          "production": "eada594fb1134cc2dfb8874e055a8db889b2685fa6aa6342841343be30038937",
+          "checkout": "eada594fb1134cc2dfb8874e055a8db889b2685fa6aa6342841343be30038937"
+        },
+        {
+          "file": "dist/assets/sieve-tLWDfEkZ.js",
+          "production": "9e46e1396212c04e17b36ef6995ccff254c31c158ee297a17dce13a027cc968f",
+          "checkout": "9e46e1396212c04e17b36ef6995ccff254c31c158ee297a17dce13a027cc968f"
+        },
+        {
+          "file": "dist/assets/simple-mode-DXiLM1-G.js",
+          "production": "1da2ff3f952ded0f8e8080499e58b44d3b22bc7c5e2ae8db2f99a3a6105310b2",
+          "checkout": "1da2ff3f952ded0f8e8080499e58b44d3b22bc7c5e2ae8db2f99a3a6105310b2"
+        },
+        {
+          "file": "dist/assets/smalltalk-BLp5-jwC.js",
+          "production": "559d0a977880456b4f916cf9b1592b375c96047cd9dd0a13b3598b4369072553",
+          "checkout": "559d0a977880456b4f916cf9b1592b375c96047cd9dd0a13b3598b4369072553"
+        },
+        {
+          "file": "dist/assets/solr-B78wSQJQ.js",
+          "production": "b3d8aa05e7f39b5b77c41817b02ff8f0e8ec11e6b8f3a91a8ae260f91dd3b01a",
+          "checkout": "b3d8aa05e7f39b5b77c41817b02ff8f0e8ec11e6b8f3a91a8ae260f91dd3b01a"
+        },
+        {
+          "file": "dist/assets/sparql-Dz-mlCAC.js",
+          "production": "02e59f6539d324beb643eee727f0b4356549cafe15f7aaceb3d3c34ee5bdad0d",
+          "checkout": "02e59f6539d324beb643eee727f0b4356549cafe15f7aaceb3d3c34ee5bdad0d"
+        },
+        {
+          "file": "dist/assets/spreadsheet-CTIncYxj.js",
+          "production": "d3af197570b0a504e7c45dcd619b58422c5cb2f54b9028e556768e2213b070f6",
+          "checkout": "d3af197570b0a504e7c45dcd619b58422c5cb2f54b9028e556768e2213b070f6"
+        },
+        {
+          "file": "dist/assets/sql-DuQMFDvy.js",
+          "production": "648b34cda3d7da91025ed7ec142ffbd5bf26528407740383bdf690643a16c73c",
+          "checkout": "648b34cda3d7da91025ed7ec142ffbd5bf26528407740383bdf690643a16c73c"
+        },
+        {
+          "file": "dist/assets/stex-DNzd62Q_.js",
+          "production": "f12ad11c2bff04c45c80f79d02250c76f0b1d01b254d04da7b195f4ad15b556f",
+          "checkout": "f12ad11c2bff04c45c80f79d02250c76f0b1d01b254d04da7b195f4ad15b556f"
+        },
+        {
+          "file": "dist/assets/styles-Boe9npK_.js",
+          "production": "8f4aa91401bd117f759ddcb705dd951a7e39c839f08e10806cf68688311aa188",
+          "checkout": "8f4aa91401bd117f759ddcb705dd951a7e39c839f08e10806cf68688311aa188"
+        },
+        {
+          "file": "dist/assets/styles-Ci_Ru2Kj.css",
+          "production": "16aff85ed9cff961c9220c35de3573d520a7370cd2aeeef02e6acebb2bea048a",
+          "checkout": "16aff85ed9cff961c9220c35de3573d520a7370cd2aeeef02e6acebb2bea048a"
+        },
+        {
+          "file": "dist/assets/stylus-BOVgKnng.js",
+          "production": "8522dc37629aa3153da10fac7505ac8f289219c3eb79246bc6d9e05f1a5ed148",
+          "checkout": "8522dc37629aa3153da10fac7505ac8f289219c3eb79246bc6d9e05f1a5ed148"
+        },
+        {
+          "file": "dist/assets/swift-DKB6_1j6.js",
+          "production": "f0835c04896ba11cf7884b2175e31574762723655d4e6461ce6ec7046479eaa3",
+          "checkout": "f0835c04896ba11cf7884b2175e31574762723655d4e6461ce6ec7046479eaa3"
+        },
+        {
+          "file": "dist/assets/tcl-BGfruO1u.js",
+          "production": "3e07cc02b94880557cd297c19f467421a7f452c8240534e7e9e7dbc4607b1813",
+          "checkout": "3e07cc02b94880557cd297c19f467421a7f452c8240534e7e9e7dbc4607b1813"
+        },
+        {
+          "file": "dist/assets/textile-C4jVoHG1.js",
+          "production": "87165770d704543ebf20f4da7f1a84f4c97bd43dc707f71759b32239f9516f9e",
+          "checkout": "87165770d704543ebf20f4da7f1a84f4c97bd43dc707f71759b32239f9516f9e"
+        },
+        {
+          "file": "dist/assets/tiddlywiki-VlUiK86J.js",
+          "production": "1bd675104bdfd2ac7ec250cefe80d8f48581bf103519f1c7407b2a4e3502da93",
+          "checkout": "1bd675104bdfd2ac7ec250cefe80d8f48581bf103519f1c7407b2a4e3502da93"
+        },
+        {
+          "file": "dist/assets/tiki-AK6FwT8q.js",
+          "production": "40f9417ef31d3a2a2671e52e8cf0d2a62f60f6c3e928dbaa831817ecdd77eead",
+          "checkout": "40f9417ef31d3a2a2671e52e8cf0d2a62f60f6c3e928dbaa831817ecdd77eead"
+        },
+        {
+          "file": "dist/assets/toml-BPTmHmyx.js",
+          "production": "55c50c3d69b919264e6f1d9e6d9279d381d88c1c9a9e1cd4a75c82abe9680de8",
+          "checkout": "55c50c3d69b919264e6f1d9e6d9279d381d88c1c9a9e1cd4a75c82abe9680de8"
+        },
+        {
+          "file": "dist/assets/troff-C2dAgh7P.js",
+          "production": "46bba1f3f4223fd204bf913bbeebdbc0256db1e69bd9a2e804175c5841ec8fe5",
+          "checkout": "46bba1f3f4223fd204bf913bbeebdbc0256db1e69bd9a2e804175c5841ec8fe5"
+        },
+        {
+          "file": "dist/assets/ttcn-PPSTk1ow.js",
+          "production": "6d53eb1b3bceb8f3a212937286bfdaeed42149560fa0e815d735527686a7f6d2",
+          "checkout": "6d53eb1b3bceb8f3a212937286bfdaeed42149560fa0e815d735527686a7f6d2"
+        },
+        {
+          "file": "dist/assets/ttcn-cfg-2b4Gb5sE.js",
+          "production": "ac7fc0a6da171cc715153f966c7907e688604a7e78cc00db914af119e976eb68",
+          "checkout": "ac7fc0a6da171cc715153f966c7907e688604a7e78cc00db914af119e976eb68"
+        },
+        {
+          "file": "dist/assets/turtle-Cx3rYX2g.js",
+          "production": "ceb6ee2aef9f2a911bd3d33a4913af35ce960f77ce309d0e3173e5f257c50afc",
+          "checkout": "ceb6ee2aef9f2a911bd3d33a4913af35ce960f77ce309d0e3173e5f257c50afc"
+        },
+        {
+          "file": "dist/assets/vb-BthdM_4N.js",
+          "production": "e025945bc97ae2640b26c11b737636cc735b0600387077412dbbae1e488d2686",
+          "checkout": "e025945bc97ae2640b26c11b737636cc735b0600387077412dbbae1e488d2686"
+        },
+        {
+          "file": "dist/assets/vbscript-D9f6rSsU.js",
+          "production": "17756f99b070ecf14eb93e21030c15c6fb5f483d189b18d34943ebef3802b173",
+          "checkout": "17756f99b070ecf14eb93e21030c15c6fb5f483d189b18d34943ebef3802b173"
+        },
+        {
+          "file": "dist/assets/velocity-CqftRsjg.js",
+          "production": "73fe5a94c56d83b21ad4bca500a377e32d2ecaab55df875ecae446a65a680cbe",
+          "checkout": "73fe5a94c56d83b21ad4bca500a377e32d2ecaab55df875ecae446a65a680cbe"
+        },
+        {
+          "file": "dist/assets/verilog-CjI9Y6RI.js",
+          "production": "1b2591bfbefcfda9f59a0657cec762e2eae0fe3adb897dce65a68e119be58b9d",
+          "checkout": "1b2591bfbefcfda9f59a0657cec762e2eae0fe3adb897dce65a68e119be58b9d"
+        },
+        {
+          "file": "dist/assets/vhdl-kS471soi.js",
+          "production": "dcbd07bcd5b806eee08ab28b0b0819438abebb9b05aee10a5b983fec08e5b828",
+          "checkout": "dcbd07bcd5b806eee08ab28b0b0819438abebb9b05aee10a5b983fec08e5b828"
+        },
+        {
+          "file": "dist/assets/webidl-D5jiJvOU.js",
+          "production": "fc2dfdc276c574d2bbda79a675c05f6cebc4a24313b1c3a5743ef0b31290e05e",
+          "checkout": "fc2dfdc276c574d2bbda79a675c05f6cebc4a24313b1c3a5743ef0b31290e05e"
+        },
+        {
+          "file": "dist/assets/worker--_oJFfwh.js",
+          "production": "7146b47baebcae7c53297c18cff4e015e07d9f5df3ea9c3e35524881e28105c3",
+          "checkout": "7146b47baebcae7c53297c18cff4e015e07d9f5df3ea9c3e35524881e28105c3"
+        },
+        {
+          "file": "dist/assets/xquery-BKJx4mf9.js",
+          "production": "852b1dc43c633b82ad40b05b4175872080ca8df85e84b39a6005a55dbdb23c49",
+          "checkout": "852b1dc43c633b82ad40b05b4175872080ca8df85e84b39a6005a55dbdb23c49"
+        },
+        {
+          "file": "dist/assets/yacas-CXXgtw0p.js",
+          "production": "717ca22d8f94a5a221635a01bc506c11f0fe36088ed98f3a08532a7da9297831",
+          "checkout": "717ca22d8f94a5a221635a01bc506c11f0fe36088ed98f3a08532a7da9297831"
+        },
+        {
+          "file": "dist/assets/z80-Co3PbHdE.js",
+          "production": "8d4374929f96885f45950a5964b6aec62e4b769e2c62d2d76535b74b833330f9",
+          "checkout": "8d4374929f96885f45950a5964b6aec62e4b769e2c62d2d76535b74b833330f9"
+        }
+      ],
+      "retainedProductionArchiveSha256": "d41a1444baecf047b4343718dccaaded721098005a6aa66981fa7470912615b4",
+      "unchangedRuntimeBinary": true,
+      "unchangedBundledDaemon": true
+    }
+  }
+}
