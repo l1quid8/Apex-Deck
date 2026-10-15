@@ -567,6 +567,7 @@ impl Host {
             path: agents::login_path(),
             temp: thread_temp_dir(&id).ok(),
             media_dir: self.attachment_dir(&id).ok(),
+            attachment_roots: vec![self.attachment_dir(&id)?.canonicalize().map_err(|e| format!("Could not resolve the attachments folder: {e}"))?],
             process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
             cargo_target_dir,
         };
@@ -1450,8 +1451,46 @@ impl Host {
     /// Fork durable state without waiting for a model turn's live room lock.
     pub fn room_fork(&self, source: String, target: String, upto: Option<usize>) -> Result<(), String> {
         let cwd = self.room_context(&source)?.cwd.map(|p| p.to_string_lossy().into_owned());
+        let source_root = self.attachment_dir(&source)?.canonicalize().map_err(|e| format!("Could not resolve source attachments: {e}"))?;
+        self.store.fork_room_with_snapshot_transform(&source, &target, upto, cwd, |snapshot| {
+            let mut copied = HashMap::<PathBuf, String>::new();
+            for message in &mut snapshot.transcript {
+                let mut text = String::new();
+                for line in message.text.split_inclusive('\n') {
+                    let Some(raw) = line.strip_prefix("Attached image: ") else { text.push_str(line); continue; };
+                    let path = Path::new(raw.trim());
+                    // Only saved source-owned images gain authority in the new
+                    // room. Other transcript paths remain contextual text.
+                    let canonical = match path.canonicalize() {
+                        Ok(path) if path.starts_with(&source_root) => path,
+                        Ok(_) => { text.push_str(line); continue; }
+                        Err(error) if path.starts_with(self.attachment_dir(&source)?) || path.starts_with(&source_root) => {
+                            return Err(format!("Could not copy fork image {}: {error}", path.display()));
+                        }
+                        Err(_) => { text.push_str(line); continue; }
+                    };
+                    if !canonical.is_file() {
+                        return Err(format!("Could not copy fork image {}: not a regular file", canonical.display()));
+                    }
+                    let replacement = match copied.get(&canonical) {
+                        Some(path) => path.clone(),
+                        None => {
+                            let path = self.copy_attachment(target.clone(), canonical.to_string_lossy().into_owned())
+                                .map_err(|e| format!("Could not copy fork image: {e}"))?;
+                            copied.insert(canonical, path.clone());
+                            path
+                        }
+                    };
+                    text.push_str("Attached image: ");
+                    text.push_str(&replacement);
+                    if line.ends_with('\n') { text.push('\n'); }
+                }
+                message.text = text;
+            }
+            Ok(())
+        })?;
         self.snapshots.fork(&source, &target, upto);
-        self.store.fork_room(&source, &target, upto, cwd)
+        Ok(())
     }
 
     /// Make room `id` from a thread's snapshot: a fork to this machine, or a
@@ -2317,6 +2356,45 @@ mod host_tests {
         let now = handle.observation_revision.load(Ordering::SeqCst);
         crate::next_steps::suggest(Arc::clone(&host), "r".into(), host.handle("r").unwrap(), now, true);
         assert!(wait_for(&seen, |e| matches!(e, RoomEvent::NextSteps { pending: false, .. })).is_some(), "the same reply, not stopped, gets them");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn local_forks_copy_only_the_saved_source_rooms_images() {
+        let (host, _runtime, data) = host("fork-image-authority");
+        host.room_create("source".into(), vec![], RoomOptions::default(), None).unwrap();
+        let png = b"\x89PNG\r\n\x1a\nfixture";
+        let own = host.save_attachment("source", "own.png", png).unwrap();
+        let other = host.save_attachment("other", "private.png", png).unwrap();
+        let mut saved = host.store.room("source").unwrap().unwrap();
+        saved.snapshot.transcript.push(apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human,
+            text: format!("Attached image: {own}\nAttached image: {own}\nAttached image: {other}"), servers: vec![], at: None });
+        host.store.save_room("source", &saved).unwrap();
+        host.room_fork("source".into(), "fork".into(), None).unwrap();
+        let fork = host.store.room("fork").unwrap().unwrap();
+        let paths: Vec<_> = fork.snapshot.transcript[0].text.lines().map(|line| line.strip_prefix("Attached image: ").unwrap()).collect();
+        assert_ne!(paths[0], own, "a fork must receive its own saved copy");
+        assert_eq!(paths[0], paths[1], "duplicate refs share one copy");
+        assert!(Path::new(paths[0]).canonicalize().unwrap().starts_with(host.attachment_dir("fork").unwrap().canonicalize().unwrap()));
+        assert_eq!(std::fs::read(paths[0]).unwrap(), png);
+        assert_eq!(paths[2], other, "unowned references stay contextual, never become authorized copies");
+        host.room_import("imported".into(), saved.snapshot, None, false).unwrap();
+        assert!(host.store.room("imported").unwrap().unwrap().snapshot.transcript[0].text.contains(&own), "untrusted imports never copy local references");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn fork_image_copy_failure_does_not_save_a_partial_target() {
+        let (host, _runtime, data) = host("fork-image-missing");
+        host.room_create("source".into(), vec![], RoomOptions::default(), None).unwrap();
+        let image = host.save_attachment("source", "gone.png", b"image").unwrap();
+        let mut saved = host.store.room("source").unwrap().unwrap();
+        saved.snapshot.transcript.push(apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human,
+            text: format!("Attached image: {image}"), servers: vec![], at: None });
+        host.store.save_room("source", &saved).unwrap();
+        std::fs::remove_file(image).unwrap();
+        assert!(host.room_fork("source".into(), "fork".into(), None).unwrap_err().contains("Could not copy fork image"));
+        assert!(host.store.room("fork").unwrap().is_none());
         let _ = std::fs::remove_dir_all(data);
     }
 

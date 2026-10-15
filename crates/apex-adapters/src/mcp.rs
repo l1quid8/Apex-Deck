@@ -2,11 +2,32 @@
 use apex_core::{ActionKind, ProposedAction};
 use serde_json::{json, Value};
 
-const RISKY: &[&str] = &["order", "trade", "buy", "sell", "swap", "transfer", "withdraw", "deposit", "leverage", "cancel", "post", "tweet", "publish", "send", "reply", "delete", "exercise"];
+const RISKY: &[&str] = &["order", "trade", "buy", "sell", "swap", "transfer", "withdraw", "deposit", "leverage", "cancel", "post", "tweet", "publish", "send", "reply", "delete", "exercise", "create", "update", "archive", "execute", "write", "remove", "set_", "modify", "edit", "upload", "download", "install", "run_", "enable", "disable", "revoke", "approve", "submit", "save", "move", "copy", "restore", "reset", "start", "stop", "connect", "uninstall"];
 
 pub(crate) fn needs_approval(tool: &str) -> bool {
     let name = tool.to_ascii_lowercase();
-    RISKY.iter().any(|word| name.contains(word))
+    if RISKY.iter().any(|word| name.contains(word)) { return true; }
+    // Only ordinary query verbs are recognized. Unknown names fail closed.
+    let leaf = name.rsplit('.').next().unwrap_or(&name);
+    !["get", "read", "list", "search", "fetch", "find", "lookup", "inspect", "describe", "query"].iter()
+        .any(|verb| leaf == *verb || leaf.starts_with(&format!("{verb}_")))
+}
+
+/// Catalog annotations are transport metadata, never tool arguments or prose.
+/// Missing annotations retain conservative name classification.
+pub(crate) fn catalog_approval(servers: &[Value], server: &str, tool: &str) -> Option<bool> {
+    let entry = servers.iter().find(|entry| entry["name"] == server)?;
+    let tools = entry["tools"].as_object()?;
+    let definition = tools.get(tool).or_else(|| tools.values().find(|entry| entry["name"] == tool))?;
+    let annotations = &definition["annotations"];
+    if annotations["readOnlyHint"] == false || annotations["destructiveHint"] == true {
+        return Some(true);
+    }
+    if annotations["readOnlyHint"] == true {
+        // A misleadingly annotated mutation still asks.
+        return Some(RISKY.iter().any(|word| tool.to_ascii_lowercase().contains(word)));
+    }
+    None
 }
 
 pub(crate) fn claude_tool(tool: &str) -> Option<(&str, &str)> {
@@ -189,6 +210,27 @@ pub(crate) fn codex_policy(servers: &[Value]) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn catalog_annotations_come_only_from_definitions_and_fail_closed_on_mutations() {
+        let servers = vec![json!({"name":"probe", "tools": {
+            "weather":{"annotations":{"readOnlyHint":true}},
+            "get_state":{"annotations":{"readOnlyHint":false}},
+            "read_state":{"annotations":{"readOnlyHint":true,"destructiveHint":true}},
+            "create_event":{"annotations":{"readOnlyHint":true}}
+        }})];
+        assert_eq!(catalog_approval(&servers, "probe", "weather"), Some(false));
+        for tool in ["get_state", "read_state", "create_event"] {
+            assert_eq!(catalog_approval(&servers, "probe", tool), Some(true));
+        }
+        assert_eq!(catalog_approval(&servers, "other", "weather"), None);
+        assert_eq!(catalog_approval(&servers, "probe", "unknown"), None);
+    }
+    #[test]
+    fn unknown_and_mutating_tools_require_approval() {
+        for tool in ["create_event", "update_page", "archive_thread", "create_pull_request", "execute_command", "mystery", "get_and_delete"] {
+            assert!(needs_approval(tool), "{tool} must ask");
+        }
+    }
     #[test]
     fn a_tool_that_can_spend_money_or_publish_makes_a_risky_action() {
         assert!(action("x-mcp", "post_tweet", &json!({"text": "hi"})).risky);

@@ -214,12 +214,25 @@ impl Store {
 
     /// Reserve a new room id while serializing writes; never overwrite a thread.
     pub fn fork_room(&self, source: &str, target: &str, upto: Option<usize>, cwd: Option<String>) -> Result<(), String> {
+        self.fork_room_with_snapshot_transform(source, target, upto, cwd, |_| Ok(()))
+    }
+
+    /// Transform a trusted saved fork before reserving its durable snapshot.
+    /// Used by the host to copy owned attachments without trusting imported paths.
+    pub(crate) fn fork_room_with_snapshot_transform(
+        &self, source: &str, target: &str, upto: Option<usize>, cwd: Option<String>,
+        transform: impl FnOnce(&mut RoomSnapshot) -> Result<(), String>,
+    ) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         let saved = self.room(source)?.ok_or("send a message before forking this thread")?;
         let path = self.room_path(target);
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let fork = SavedRoom { cwd, snapshot: saved.snapshot.fork(upto.unwrap_or(saved.snapshot.transcript.len())) };
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Err("Could not save fork: a thread with that id already exists".into());
+        }
+        let mut fork = SavedRoom { cwd, snapshot: saved.snapshot.fork(upto.unwrap_or(saved.snapshot.transcript.len())) };
+        transform(&mut fork.snapshot)?;
         write_new(&path, &fork).map_err(|e| e.replace("Could not save", "Could not save fork"))?;
         // A fork keeps the thread's artifacts. Copied directly: the write lock is already held.
         match std::fs::copy(self.artifacts_path(source), self.artifacts_path(target)) {

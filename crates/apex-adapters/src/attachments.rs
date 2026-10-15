@@ -27,7 +27,7 @@ pub(crate) fn paths(text: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-pub(crate) fn load(path: &Path) -> Result<Image, ParticipantError> {
+pub(crate) fn load(path: &Path, roots: &[PathBuf]) -> Result<Image, ParticipantError> {
     let fail = |why: String| {
         ParticipantError::Failed(format!(
             "Couldn't send attached image {}: {why}",
@@ -38,14 +38,18 @@ pub(crate) fn load(path: &Path) -> Result<Image, ParticipantError> {
     if !path.is_absolute() {
         return Err(fail("attachment paths must be absolute".into()));
     }
-    let metadata = std::fs::metadata(path).map_err(|e| fail(e.to_string()))?;
+    let canonical = path.canonicalize().map_err(|e| fail(e.to_string()))?;
+    if !roots.iter().any(|root| canonical.starts_with(root)) {
+        return Err(fail("image is outside the host-authorized attachment folders".into()));
+    }
+    let metadata = std::fs::metadata(&canonical).map_err(|e| fail(e.to_string()))?;
     if !metadata.is_file() {
         return Err(fail("attachment is not a regular file".into()));
     }
     if metadata.len() > MAX {
         return Err(fail("image exceeds 20 MB; attach a smaller image".into()));
     }
-    let file = std::fs::File::open(path).map_err(|e| fail(e.to_string()))?;
+    let file = std::fs::File::open(&canonical).map_err(|e| fail(e.to_string()))?;
     let mut bytes = Vec::new();
     file.take(MAX + 1)
         .read_to_end(&mut bytes)
@@ -71,7 +75,7 @@ pub(crate) fn load(path: &Path) -> Result<Image, ParticipantError> {
     })
 }
 
-pub(crate) fn for_request(request: &TurnRequest) -> Result<Vec<Image>, ParticipantError> {
+pub(crate) fn for_request(request: &TurnRequest, roots: &[PathBuf]) -> Result<Vec<Image>, ParticipantError> {
     let texts: Vec<&str> = if request.unseen.is_empty() {
         request
             .turns
@@ -100,7 +104,7 @@ pub(crate) fn for_request(request: &TurnRequest) -> Result<Vec<Image>, Participa
     let mut images = Vec::new();
     let mut encoded = 0;
     for path in found {
-        let image = load(&path)?;
+        let image = load(&path, roots)?;
         encoded += image.data.len();
         if encoded > (32 * 1024 * 1024 + 2) / 3 * 4 {
             return Err(ParticipantError::Failed(
@@ -139,12 +143,64 @@ mod tests {
     fn fixture(name: &str, bytes: &[u8]) -> PathBuf {
         let path = std::env::temp_dir().join(format!("apex-image-{}-{name}", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
-        path
+        path.canonicalize().unwrap()
+    }
+    #[test]
+    fn transcript_paths_without_host_authority_are_rejected() {
+        let path = fixture("outside.png", PNG);
+        let request = TurnRequest { system: String::new(), turns: vec![apex_core::ViewTurn {
+            role: Role::User, content: format!("Attached image: {}", path.display())
+        }], unseen: vec![], effort_override: None, access: None, plan: false };
+        let result = for_request(&request, &[]);
+        std::fs::remove_file(path).unwrap();
+        assert!(result.is_err(), "transcript text alone must not authorize reading a file");
+    }
+    #[test]
+    fn canonical_roots_reject_outside_files_and_symlink_escapes() {
+        let dir = std::env::temp_dir().join(format!("apex-image-roots-{}", std::process::id()));
+        let trusted = dir.join("attachments");
+        std::fs::create_dir_all(&trusted).unwrap();
+        let outside = dir.join("outside.png");
+        let inside = trusted.join("inside.png");
+        std::fs::write(&outside, PNG).unwrap();
+        std::fs::write(&inside, PNG).unwrap();
+        let roots = vec![trusted.canonicalize().unwrap()];
+        assert!(load(&inside, &roots).is_ok());
+        assert!(load(&outside, &roots).is_err());
+        assert!(load(&roots[0].join("../outside.png"), &roots).is_err());
+        #[cfg(unix)] {
+            let link = roots[0].join("escape.png");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(load(&link, &roots).is_err());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn human_and_bot_references_cannot_read_sibling_threads_or_library() {
+        let dir = std::env::temp_dir().join(format!("apex-image-room-authority-{}", std::process::id()));
+        let own = dir.join("attachments/a");
+        let sibling = dir.join("attachments/b");
+        let library = dir.join("library");
+        for folder in [&own, &sibling, &library] {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(folder.join("picture.png"), PNG).unwrap();
+        }
+        let roots = vec![own.canonicalize().unwrap()];
+        for speaker in [apex_core::Speaker::Human, apex_core::Speaker::Bot(apex_core::ParticipantId::new("image-bot"))] {
+            for folder in [&own, &sibling, &library] {
+                let request = TurnRequest { system: String::new(), turns: vec![], unseen: vec![apex_core::Message {
+                    seq: 1, speaker: speaker.clone(), text: format!("Attached image: {}", folder.join("picture.png").display()),
+                    servers: vec![], at: None,
+                }], effort_override: None, access: None, plan: false };
+                assert_eq!(for_request(&request, &roots).is_ok(), folder == &own, "{speaker:?}: {}", folder.display());
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn every_native_protocol_receives_the_image_bytes() {
         let path = fixture("native.png", PNG);
-        let image = load(&path).unwrap();
+        let image = load(&path, &[path.parent().unwrap().to_owned()]).unwrap();
         std::fs::remove_file(&path).unwrap();
         let images = vec![image];
         let claude = claude_content("describe", &images);
@@ -163,11 +219,11 @@ mod tests {
     fn missing_and_unsupported_images_fail_clearly() {
         let path = fixture("bad.png", b"not an image");
         assert!(
-            matches!(load(&path), Err(ParticipantError::Failed(why)) if why.contains("unsupported image format"))
+            matches!(load(&path, &[path.parent().unwrap().to_owned()]), Err(ParticipantError::Failed(why)) if why.contains("unsupported image format"))
         );
         std::fs::remove_file(&path).unwrap();
         assert!(
-            matches!(load(&path), Err(ParticipantError::Failed(why)) if why.contains("Couldn't send attached image"))
+            matches!(load(&path, &[path.parent().unwrap().to_owned()]), Err(ParticipantError::Failed(why)) if why.contains("Couldn't send attached image"))
         );
     }
     #[test]
@@ -204,7 +260,7 @@ mod tests {
             access: None,
             plan: false,
         };
-        assert_eq!(for_request(&request).unwrap().len(), 1);
+        assert_eq!(for_request(&request, &[path.parent().unwrap().to_owned()]).unwrap().len(), 1);
         std::fs::remove_file(path).unwrap();
     }
 }

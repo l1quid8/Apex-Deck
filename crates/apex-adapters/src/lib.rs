@@ -88,12 +88,15 @@ pub struct BuildContext {
     /// The thread's attachments folder, where bots whose model makes
     /// pictures or videos save them. `None` turns those bots off.
     pub media_dir: Option<PathBuf>,
+    /// Canonical host-authorized folders for image input. Empty denies all local images.
+    /// These must come from host storage configuration, never transcript text.
+    pub attachment_roots: Vec<PathBuf>,
 }
 
 /// Create the participant described by `config`.
 pub fn build(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Participant> {
     match &config.backend {
-        Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config).with_media_dir(context.media_dir.clone())),
+        Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config).with_media_dir(context.media_dir.clone()).with_attachment_roots(context.attachment_roots.clone())),
         Backend::Cli { .. } | Backend::Agent { .. } => {
             Arc::new(CliParticipant::new(config).with_context(context))
         }

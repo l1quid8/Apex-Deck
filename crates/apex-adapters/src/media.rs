@@ -243,8 +243,8 @@ fn after_queue(error: ParticipantError, queue_id: &str) -> ParticipantError {
     }
 }
 
-fn data_url(path: &Path) -> Result<(String, String), ParticipantError> {
-    let image = crate::attachments::load(path)?;
+fn data_url(path: &Path, roots: &[PathBuf]) -> Result<(String, String), ParticipantError> {
+    let image = crate::attachments::load(path, roots)?;
     Ok((image.url(), image.data))
 }
 
@@ -299,6 +299,7 @@ pub(crate) struct Job<'a> {
     pub model: &'a ApiModel,
     pub settings: Option<&'a MediaSettings>,
     pub dir: &'a Path,
+    pub attachment_roots: &'a [PathBuf],
     /// How often a queued video is checked on. Tests make it short.
     pub poll: Duration,
     /// Asked before anything is paid for.
@@ -390,7 +391,7 @@ impl Job<'_> {
         }
         let bytes = if let (true, Some(picture), Some(edit_model)) = (editing, picture, spec.edit_model.as_deref()) {
             on_progress(Progress::Activity("Editing picture"));
-            let (_, b64) = data_url(picture)?;
+            let (_, b64) = data_url(picture, self.attachment_roots)?;
             let body = json!({ "model": edit_model, "prompt": prompt, "image": b64 });
             details.push("edit".into());
             self.send("image/edit", &body).await?.bytes().await.map_err(|e| failed(format!("the picture didn't arrive: {e}")))?.to_vec()
@@ -471,7 +472,7 @@ impl Job<'_> {
         let mut body = base.clone();
         body["prompt"] = json!(prompt);
         if let (true, Some(picture)) = (animating, picture) {
-            body["image_url"] = json!(data_url(picture)?.0);
+            body["image_url"] = json!(data_url(picture, self.attachment_roots)?.0);
         }
         on_progress(Progress::Activity("Making video"));
         let queued: Value = self.send("video/queue", &body).await?.json().await.map_err(|e| failed(format!("Venice's answer couldn't be read: {e}")))?;
@@ -548,7 +549,7 @@ pub async fn quote(base_url: &str, api_key_env: Option<&str>, model: &str, setti
     }
     let resolved = resolve(info.kind, info.media.as_ref().unwrap_or(&MediaSpec::default()), settings);
     let client = reqwest::Client::new();
-    let job = Job { client: &client, base_url, key: api_key_env.filter(|n| !n.is_empty()).and_then(crate::keys::lookup), model: &info, settings, dir: Path::new(""), poll: Duration::ZERO, approver: &apex_core::NoApprover, bot: &ParticipantId::new("") };
+    let job = Job { client: &client, base_url, key: api_key_env.filter(|n| !n.is_empty()).and_then(crate::keys::lookup), model: &info, settings, dir: Path::new(""), attachment_roots: &[], poll: Duration::ZERO, approver: &apex_core::NoApprover, bot: &ParticipantId::new("") };
     let response = job.send("video/quote", &job.video_body(model, &resolved, false)).await.map_err(|e| e.to_string())?;
     let answer: Value = response.json().await.map_err(|e| e.to_string())?;
     Ok(answer["quote"].as_f64())
@@ -777,7 +778,7 @@ mod tests {
         let sink = |p: Progress<'_>| if let Progress::Activity(a) = p { activity.lock().unwrap().push(a.to_string()) };
         let cards = Cards { approve, shown: Mutex::new(Vec::new()) };
         let bot = ParticipantId::new("allison");
-        let job = Job { client: &client, base_url: address, key: Some("k".into()), model, settings: None, dir, poll: Duration::from_millis(10), approver: &cards, bot: &bot };
+        let job = Job { client: &client, base_url: address, key: Some("k".into()), model, settings: None, dir, attachment_roots: &[dir.canonicalize().unwrap()], poll: Duration::from_millis(10), approver: &cards, bot: &bot };
         let result = job.run(&request, &sink).await;
         (result, activity.into_inner().unwrap(), cards.shown.into_inner().unwrap())
     }

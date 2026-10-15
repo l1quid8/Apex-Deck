@@ -311,7 +311,7 @@ async fn cli_runs_in_the_workspace_folder() {
     let dir = std::env::temp_dir().join(format!("apex-deck-cwd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let real = std::fs::canonicalize(&dir).unwrap();
-    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None };
+    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; pwd -P"))).with_context(&context);
     let (result, _) = ask(&bot, "where are you?").await;
     assert_eq!(result.unwrap().text, real.to_string_lossy());
@@ -323,7 +323,7 @@ async fn cli_runs_in_the_workspace_folder() {
 async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
     let dir = std::env::temp_dir().join(format!("apex-deck-tmp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let context = BuildContext { cwd: None, path: None, codex_hook: None, temp: Some(dir.clone()), process_registry: None, cargo_target_dir: None, media_dir: None };
+    let context = BuildContext { cwd: None, path: None, codex_hook: None, temp: Some(dir.clone()), process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; printf %s \"$TMPDIR\""))).with_context(&context);
     let (result, _) = ask(&bot, "where is scratch?").await;
     assert_eq!(result.unwrap().text, dir.to_string_lossy());
@@ -333,7 +333,7 @@ async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
 #[cfg(unix)]
 #[tokio::test]
 async fn cli_reports_a_workspace_folder_that_no_longer_exists() {
-    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None };
+    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
     let bot = CliParticipant::new(config("cli", sh("echo hi"))).with_context(&context);
     let (result, _) = ask(&bot, "hi").await;
     match result {
@@ -361,7 +361,7 @@ async fn cli_finds_the_program_on_the_path_it_is_given() {
     assert!(matches!(missing, Err(ParticipantError::NotConfigured(_))), "{missing:?}");
 
     let path = format!("{}:/usr/bin:/bin", dir.to_string_lossy());
-    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None };
+    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
     let bot = CliParticipant::new(config("cli", backend)).with_context(&context);
     let (found, _) = ask(&bot, "hi").await;
     assert_eq!(found.unwrap().text, "found-on-custom-path");
@@ -399,7 +399,7 @@ async fn codex_agent_refuses_exec_even_when_model_effort_and_access_are_configur
     let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: Some("some-model".into()) });
     cfg.access = Access::Edits;
     cfg.effort = Some("high".into());
-    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None };
+    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
     let bot = build(cfg, &context);
     let (result, _) = ask(bot.as_ref(), "hey, testing").await;
     assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
@@ -681,7 +681,7 @@ fn fake_tool(tag: &str, name: &str, script: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 fn context_in(dir: &std::path::Path) -> BuildContext {
-    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None }
+    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![dir.to_path_buf()] }
 }
 
 /// Run one turn the way the room does and collect text and activity.
@@ -1758,7 +1758,7 @@ async fn api_uploads_attached_image_bytes_with_the_message() {
     let path = std::env::temp_dir().join(format!("apex-api-upload-{}.png", std::process::id()));
     let png = b"\x89PNG\r\n\x1a\nfixture";
     std::fs::write(&path, png).unwrap();
-    let bot = OpenAiCompatParticipant::new(config("api", api(address, None)));
+    let bot = OpenAiCompatParticipant::new(config("api", api(address, None))).with_attachment_roots(vec![path.parent().unwrap().to_owned()]);
     let (result, _) = ask(&bot, &format!("Describe it without tools.\nAttached image: {}", path.display())).await;
     std::fs::remove_file(path).unwrap();
     assert_eq!(result.unwrap().text, "seen");
@@ -2024,5 +2024,66 @@ async fn live_muse_reads_at_read_only_and_writes_at_edits() {
             _ => { result.unwrap(); assert_eq!(std::fs::read_to_string(dir.join("hi.txt")).unwrap().trim(), "hi"); }
         }
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn explicit_stream_error_fails_after_partial_text() {
+    let (address, server) = serve_once("200 OK", vec![
+        b"data: {\"choices\":[{\"delta\":{\"content\":\"unfinished prefix\"}}]}\n\n",
+        b"data: {\"error\":{\"message\":\"quota exhausted\",\"code\":\"insufficient_quota\"}}\n\n",
+    ]).await;
+    let bot = OpenAiCompatParticipant::new(config("api", api(address, None)));
+    let (result, streamed) = ask(&bot, "hi").await;
+    assert_eq!(streamed, "unfinished prefix");
+    assert!(matches!(result, Err(ParticipantError::Failed(ref why)) if why.contains("quota exhausted")), "{result:?}");
+    server.await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_high_risk_metadata_requires_a_person_even_for_reads() {
+    use apex_core::AgentTool;
+    let script = FAKE_MCP_CODEX.replace("for tool in get_balance place_order place_order", "for tool in get_balance")
+        .replace(r#""codex_approval_kind":"mcp_tool_call","tool_params""#, r#""codex_approval_kind":"mcp_tool_call","riskLevel":"high","tool_params""#);
+    let dir = fake_tool("codex-high-risk-read", "codex", &script);
+    let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context_in(&dir));
+    let no = Fixed::new(Decision::Reject);
+    let (result, _, _) = work_asking(bot.as_ref(), &no).await;
+    assert_eq!(result.unwrap().text, "allowed=0 denied=1");
+    assert_eq!(no.asked.lock().unwrap().len(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_catalog_mutating_annotation_overrides_a_read_name() {
+    use apex_core::AgentTool;
+    let script = FAKE_MCP_CODEX.replace("for tool in get_balance place_order place_order", "for tool in get_balance")
+        .replace(r#""get_balance":{"name":"get_balance"}"#, r#""get_balance":{"name":"get_balance","annotations":{"readOnlyHint":false}}"#);
+    let dir = fake_tool("codex-mutating-annotation", "codex", &script);
+    let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context_in(&dir));
+    let no = Fixed::new(Decision::Reject);
+    let (result, _, _) = work_asking(bot.as_ref(), &no).await;
+    assert_eq!(result.unwrap().text, "allowed=0 denied=1");
+    assert_eq!(no.asked.lock().unwrap().len(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_high_risk_metadata_does_not_reuse_hook_approval() {
+    use apex_core::AgentTool;
+    let (dir, context) = hooked("codex-high-risk-hook", "trusted", "hook-first");
+    let path = dir.join("codex");
+    let script = std::fs::read_to_string(&path).unwrap().replace(
+        r#""codex_approval_kind":"mcp_tool_call","tool_params""#,
+        r#""codex_approval_kind":"mcp_tool_call","riskLevel":"high","tool_params""#);
+    std::fs::write(path, script).unwrap();
+    let bot = build(config("null", Backend::Agent { tool: AgentTool::Codex, model: None }), &context);
+    let yes = Fixed::new(Decision::Approve);
+    let (result, _) = work_hooked(bot.as_ref(), &yes).await;
+    assert_eq!(result.unwrap().text, "allowed=3 denied=0");
+    assert_eq!(yes.asked.lock().unwrap().len(), 5, "each high-risk Codex request needs a fresh person decision");
     std::fs::remove_dir_all(dir).unwrap();
 }

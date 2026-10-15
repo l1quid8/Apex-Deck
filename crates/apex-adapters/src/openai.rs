@@ -15,19 +15,26 @@ pub struct OpenAiCompatParticipant {
     client: reqwest::Client,
     /// Where pictures and videos this bot makes are saved (`media.rs`).
     media_dir: Option<std::path::PathBuf>,
+    attachment_roots: Vec<std::path::PathBuf>,
     /// How often a queued video is checked on.
     poll: std::time::Duration,
 }
 
 impl OpenAiCompatParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, client: reqwest::Client::new(), media_dir: None, poll: std::time::Duration::from_secs(5) }
+        Self { config, client: reqwest::Client::new(), media_dir: None, attachment_roots: Vec::new(), poll: std::time::Duration::from_secs(5) }
     }
 
     /// Let the bot make pictures and videos when its model does, saving
     /// them in `dir`.
     pub fn with_media_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
         self.media_dir = dir;
+        self
+    }
+
+    /// Configure host-authorized image input folders. Defaults to no local reads.
+    pub fn with_attachment_roots(mut self, roots: Vec<std::path::PathBuf>) -> Self {
+        self.attachment_roots = roots.into_iter().filter_map(|root| root.canonicalize().ok()).collect();
         self
     }
 
@@ -52,8 +59,8 @@ fn apply_speed(body: &mut Value, base_url: &str, speed: Option<apex_core::Speed>
 }
 
 /// The JSON body for one turn.
-pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequest) -> Result<Value, ParticipantError> {
-    let images = crate::attachments::for_request(request)?;
+pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequest, roots: &[std::path::PathBuf]) -> Result<Value, ParticipantError> {
+    let images = crate::attachments::for_request(request, roots)?;
     let mut messages = vec![json!({ "role": "system", "content": request.system })];
     for (index, turn) in request.turns.iter().enumerate() {
         let role = match turn.role {
@@ -85,6 +92,7 @@ pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequ
 #[derive(Debug, PartialEq)]
 pub(crate) enum SseLine {
     Text(String),
+    Error(String),
     Usage { input: Option<u64>, output: Option<u64>, cached: Option<u64>, cost_usd: Option<f64> },
     Done,
     Ignored,
@@ -102,6 +110,11 @@ pub(crate) fn parse_sse_line(line: &str) -> Vec<SseLine> {
         return vec![SseLine::Ignored];
     };
 
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+        let message = error["message"].as_str().or_else(|| error.as_str())
+            .unwrap_or("provider reported an error in its response stream");
+        return vec![SseLine::Error(message.to_owned())];
+    }
     let mut out = Vec::new();
     if let Some(text) = value["choices"][0]["delta"]["content"].as_str() {
         if !text.is_empty() {
@@ -212,14 +225,14 @@ impl Participant for OpenAiCompatParticipant {
                     Some(name) => Some(crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?),
                     None => None,
                 };
-                let job = crate::media::Job { client: &self.client, base_url, key, model: &info, settings: self.config.media.as_ref(), dir, poll: self.poll, approver, bot: &self.config.id };
+                let job = crate::media::Job { client: &self.client, base_url, key, model: &info, settings: self.config.media.as_ref(), dir, attachment_roots: &self.attachment_roots, poll: self.poll, approver, bot: &self.config.id };
                 return job.run(&request, on_progress).await;
             }
         }
 
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         let effort = request.effort_override.as_deref().or(self.config.effort.as_deref());
-        let mut body = request_body(model, effort, &request)?;
+        let mut body = request_body(model, effort, &request, &self.attachment_roots)?;
         apply_speed(&mut body, base_url, self.config.speed);
         let mut call = self.client.post(&url).json(&body);
         if let Some(name) = api_key_env.as_deref().filter(|n| !n.is_empty()) {
@@ -258,7 +271,7 @@ impl Participant for OpenAiCompatParticipant {
         let mut cached = None;
         let mut cost_usd = None;
 
-        let mut handle = |line: &str, reply: &mut Reply, done: &mut bool| {
+        let mut handle = |line: &str, reply: &mut Reply, done: &mut bool| -> Result<(), ParticipantError> {
             for item in parse_sse_line(line) {
                 match item {
                     SseLine::Text(text) => {
@@ -271,10 +284,12 @@ impl Participant for OpenAiCompatParticipant {
                         cached = c;
                         cost_usd = cost;
                     }
+                    SseLine::Error(message) => return Err(ParticipantError::Failed(format!("stream from {url} failed: {message}"))),
                     SseLine::Done => *done = true,
                     SseLine::Ignored => {}
                 }
             }
+            Ok(())
         };
 
         while let Some(chunk) = stream.next().await {
@@ -283,7 +298,7 @@ impl Participant for OpenAiCompatParticipant {
             line.push_str(&decoder.push(&chunk));
             while let Some(end) = line.find('\n') {
                 let complete: String = line.drain(..=end).collect();
-                handle(complete.trim_end_matches('\n'), &mut reply, &mut done);
+                handle(complete.trim_end_matches('\n'), &mut reply, &mut done)?;
             }
             if done {
                 break;
@@ -292,7 +307,7 @@ impl Participant for OpenAiCompatParticipant {
         if !done {
             line.push_str(&decoder.finish());
             if !line.is_empty() {
-                handle(&line, &mut reply, &mut done);
+                handle(&line, &mut reply, &mut done)?;
             }
         }
 
@@ -329,9 +344,9 @@ mod tests {
     #[test]
     fn effort_is_only_in_the_request_when_set() {
         let request = TurnRequest { effort_override: None, access: None, system: "s".into(), turns: vec![], unseen: vec![], plan: false };
-        assert!(request_body("m", None, &request).unwrap().get("reasoning_effort").is_none());
-        assert!(request_body("m", Some("  "), &request).unwrap().get("reasoning_effort").is_none());
-        assert_eq!(request_body("m", Some("high"), &request).unwrap()["reasoning_effort"], "high");
+        assert!(request_body("m", None, &request, &[]).unwrap().get("reasoning_effort").is_none());
+        assert!(request_body("m", Some("  "), &request, &[]).unwrap().get("reasoning_effort").is_none());
+        assert_eq!(request_body("m", Some("high"), &request, &[]).unwrap()["reasoning_effort"], "high");
     }
 
     #[test]
@@ -376,7 +391,7 @@ mod tests {
         let text = format!("Describe this\nAttached image: {}", path.display());
         let request = TurnRequest { effort_override: None, access: None, system: "s".into(),
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text }], unseen: vec![], plan: false };
-        let body = request_body("vision", None, &request).unwrap();
+        let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][0]["type"], "text");
         assert!(body["messages"][1]["content"][1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/png;base64,"));
@@ -391,7 +406,7 @@ mod tests {
             turns: vec![apex_core::ViewTurn { role: Role::User, content: text.clone() },
                 apex_core::ViewTurn { role: Role::Assistant, content: text.clone() }],
             unseen: vec![apex_core::Message { seq: 0, speaker: apex_core::Speaker::Human, text, servers: vec![], at: None }], plan: false };
-        let body = request_body("vision", None, &request).unwrap();
+        let body = request_body("vision", None, &request, &[path.parent().unwrap().canonicalize().unwrap()]).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");
         assert!(body["messages"][2]["content"].is_string());

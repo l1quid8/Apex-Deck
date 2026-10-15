@@ -61,11 +61,12 @@ pub struct CliParticipant {
     tools_disabled: bool,
     processes: Registry,
     cargo_target_dir: Option<PathBuf>,
+    attachment_roots: Vec<PathBuf>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, processes: Registry::default(), cargo_target_dir: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new() }
     }
 
     /// Start a text-only turn with tools disabled at both the CLI and
@@ -77,6 +78,7 @@ impl CliParticipant {
 
     /// Run the tool in the folder, and with the PATH, given by `context`.
     pub fn with_context(mut self, context: &BuildContext) -> Self {
+        self.attachment_roots = context.attachment_roots.iter().filter_map(|root| root.canonicalize().ok()).collect();
         self.cwd = context.cwd.clone();
         self.path = context.path.clone();
         self.codex_hook = context.codex_hook.clone();
@@ -568,7 +570,7 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone() };
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -579,7 +581,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone() };
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone() };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -590,12 +592,12 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
         let program = program.as_str();
-        let images = crate::attachments::for_request(&request)?;
+        let images = crate::attachments::for_request(&request, &self.attachment_roots)?;
         let mut prompt = render_prompt(&request.system, &request.turns);
         let mut staged = None;
         if !images.is_empty() {

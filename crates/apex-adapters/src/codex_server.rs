@@ -335,6 +335,7 @@ async fn mcp_inventory(
     (
         Value,
         Result<Vec<apex_core::server_request::ToolServer>, String>,
+        Vec<Value>,
     ),
     String,
 > {
@@ -386,7 +387,7 @@ async fn mcp_inventory(
             let menu = plugins
                 .map(|plugins| crate::mcp::menu_names(&servers, &plugins))
                 .map_err(|e| format!("Couldn't list Codex plugins: {e}"));
-            return Ok((policy, menu));
+            return Ok((policy, menu, servers));
         }
         if !cursor.is_string() || !cursors.insert(cursor.to_string()) {
             return Err("Invalid Codex MCP inventory cursor".into());
@@ -626,14 +627,16 @@ pub(crate) async fn run_with_images(
         }
         None => false,
     };
+    let mut tool_catalog = Vec::new();
     let policy = if hooked {
         // The hook asks about every MCP call, so no tool list is needed.
         crate::mcp::base_policy()
     } else {
         on_progress(Progress::Activity("Checking MCP tool approval policies"));
-        let (policy, menu) = mcp_inventory(&mut stdin, &mut lines)
+        let (policy, menu, catalog) = mcp_inventory(&mut stdin, &mut lines)
             .await
             .map_err(TurnError::Failed)?;
+        tool_catalog = catalog;
         // Without the plugins the list would be short, so keep the last one.
         if let Ok(servers) = &menu {
             on_progress(Progress::ToolServers(servers));
@@ -799,16 +802,31 @@ pub(crate) async fn run_with_images(
                             )));
                             approver.decide(action).await
                         } else if let Some(call) = mcp_call(params, &pending_mcp) {
-                            match gates.at_codex(&call) {
+                            let catalog_approval = crate::mcp::catalog_approval(&tool_catalog, &call.server, &call.tool);
+                            // High upstream risk and explicit mutating annotations must
+                            // reach the person before either automatic or cached approval.
+                            let automatic = if high_risk(params) || catalog_approval == Some(true) {
+                                None
+                            } else if catalog_approval == Some(false) {
+                                Some(Decision::Approve)
+                            } else {
+                                gates.at_codex(&call)
+                            };
+                            match automatic {
                                 Some(decision) => decision,
                                 None => {
-                                    let action = call_action(&call, params);
+                                    let mut action = call_action(&call, params);
+                                    action.risky |= catalog_approval == Some(true);
                                     on_progress(Progress::Activity(&format!(
                                         "Waiting for approval: {}",
                                         action.title
                                     )));
                                     let decision = approver.decide(action).await;
-                                    gates.answered_at_codex(call, decision);
+                                    // High-risk upstream decisions are specific to this
+                                    // request, never reusable permission for another hook.
+                                    if !high_risk(params) {
+                                        gates.answered_at_codex(call, decision);
+                                    }
                                     decision
                                 }
                             }
@@ -1434,7 +1452,7 @@ pub async fn list_servers(
         initialize(&mut stdin, &mut lines).await?;
         mcp_inventory(&mut stdin, &mut lines)
             .await
-            .and_then(|(_, names)| names)
+            .and_then(|(_, names, _)| names)
     }
     .await;
     let _ = child.kill().await;
