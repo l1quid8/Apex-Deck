@@ -236,8 +236,13 @@ mod tests {
         let folders = vec![root.to_string_lossy().into_owned()];
         let mut operation = op(&["grep", "-R", "scratch-secret", "."]);
         operation.cwd = folders[0].clone();
-        let output = std::process::Command::new("grep").args(&operation.argv[1..]).current_dir(&root).output().unwrap();
-        assert!(String::from_utf8_lossy(&output.stdout).contains("scratch-secret"));
+        // GNU grep -R follows internal symlinks; BSD grep differs. The
+        // approval policy rejects the form consistently on every platform.
+        #[cfg(target_os = "linux")]
+        {
+            let output = std::process::Command::new("grep").args(&operation.argv[1..]).current_dir(&root).output().unwrap();
+            assert!(String::from_utf8_lossy(&output.stdout).contains("scratch-secret"));
+        }
         assert_eq!(classify(&operation, &folders).0, ToolClass::Write);
         operation.argv[1] = "-r".into();
         let output = std::process::Command::new("grep").args(&operation.argv[1..]).current_dir(&root).output().unwrap();
