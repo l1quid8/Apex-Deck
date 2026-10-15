@@ -147,17 +147,22 @@ test('assistant delegates once, survives pane detach, holds review for phone acc
   assert.ok(events.length, 'phone receives task events');
   const registry = await phone.call('assistant_tasks_list', { owner });
   assert.equal(registry.executions[0].pane.executionPath, cwd);
-  await desktop.call('room_create', { id: 'other-writer', cwd, options, participants: [worker('other', "echo resumed > queued-writer.txt; echo resumed")] });
-  const queuedWrite = desktop.call('room_post', { id: 'other-writer', text: '@other write' });
-  await sleep(150);
-  assert.equal(fs.existsSync(path.join(cwd, 'queued-writer.txt')), false, 'another Deck writer waits through review');
+  // Ordinary chats deliberately run outside the task gate. Exercise that
+  // concurrency without changing the checkout this task is awaiting review of.
+  await desktop.call('room_create', { id: 'other-writer', cwd, options, participants: [worker('other', "test -f result.txt && echo observed")] });
+  await desktop.call('room_post', { id: 'other-writer', text: '@other inspect' });
+  const observed = await desktop.call('room_state', { id: 'other-writer' });
+  assert.ok(observed.snapshot.transcript.some(message => message.text.trim() === 'observed'), 'ordinary chats run while task review remains pending');
+  assert.equal((await list()).status, 'ready_for_review');
+  assert.equal((await list()).resultData.leaseHeld, true);
   const staged = fs.readFileSync(path.join(cwd, '.git/index'));
   await assert.rejects(phone.call('assistant_task_action', { taskId, owner, revision: ready.revision - 1, action: 'accept' }), /stale|changed|revision/i);
   const done = await phone.call('assistant_task_action', { taskId, owner, revision: ready.revision, action: 'accept' });
   assert.equal(done.status, 'done');
   assert.equal(done.resultData.leaseHeld, false);
   assert.deepEqual(fs.readFileSync(path.join(cwd, '.git/index')), staged);
-  await queuedWrite;
+  await desktop.call('room_update_participant', { id: 'other-writer', participant: worker('other', "echo resumed > queued-writer.txt; echo resumed") });
+  await desktop.call('room_post', { id: 'other-writer', text: '@other write' });
   assert.equal(fs.readFileSync(path.join(cwd, 'queued-writer.txt'), 'utf8').trim(), 'resumed');
   desktop.close(); phone.close(); await daemon.stop();
   daemon = await serve(data); desktop = connect(); phone = connect(); await Promise.all([desktop.start(), phone.start()]);
