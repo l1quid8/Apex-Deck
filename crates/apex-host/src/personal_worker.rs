@@ -132,6 +132,13 @@ pub(crate) async fn run_command(spec: OperationSpec, started: Started) -> Result
     let limit = timeout_of(&spec);
     let (program, args) = spec.argv.split_first().ok_or("The command is empty.")?;
     let mut command = tokio::process::Command::new(program);
+    if program == "git" && gateway::classify(&spec, &[]).0 == ToolClass::Read {
+        // Read approval must not authorize executable helpers from ambient Git
+        // configuration. Apply overrides to this process only; approved writes
+        // retain their original arguments and repository configuration.
+        command.args(["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false"]);
+    }
+
     command
         .args(args)
         .current_dir(&spec.cwd)

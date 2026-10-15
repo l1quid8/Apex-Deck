@@ -1246,3 +1246,37 @@ fn quiet_hours_and_dedupe_hold_for_notices() {
     assert!(deliver_due(&mut a, night + 3_600_000).is_empty());
     assert_eq!(deliver_due(&mut a, 31 * 3_600_000).len(), 1);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn automatic_git_status_disables_configured_fsmonitor_execution() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("apex-personal-git-hooks-{}-{}", std::process::id(), FIXTURE.fetch_add(1, Ordering::SeqCst)));
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&["init", "-q"]);
+    let script = dir.join("monitor.sh");
+    std::fs::write(&script, "#!/bin/sh\nprintf invoked > hook-marker\nprintf '\\0'\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(&["config", "core.fsmonitor", script.to_str().unwrap()]);
+    std::fs::write(dir.join("tracked"), "fixture").unwrap();
+    git(&["add", "tracked"]);
+    git(&["status", "--short"]);
+    assert!(dir.join("hook-marker").exists(), "fixture must actually invoke the configured helper");
+    std::fs::remove_file(dir.join("hook-marker")).unwrap();
+    let mut operation = OperationSpec { tool: COMMAND_TOOL.into(), host: "h".into(), cwd: dir.to_string_lossy().into(), argv: vec!["git".into(), "status".into(), "--short".into()], plan: None };
+    assert_eq!(gateway::classify(&operation, &[]).0, ToolClass::Read);
+    let output = run_command(operation.clone(), Arc::new(|_| {})).await.unwrap();
+    assert_eq!(output.exit_code, 0);
+    assert!(output.output.contains("tracked"));
+    assert!(!dir.join("hook-marker").exists());
+    // Unknown forms require approval and retain their original execution semantics.
+    operation.argv.push("--untracked-files=all".into());
+    assert_eq!(gateway::classify(&operation, &[]).0, ToolClass::Write);
+    assert_eq!(run_command(operation, Arc::new(|_| {})).await.unwrap().exit_code, 0);
+    assert!(dir.join("hook-marker").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
