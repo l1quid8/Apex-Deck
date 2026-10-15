@@ -155,7 +155,6 @@ textarea {
   -webkit-app-region: no-drag;
 }
 .titlebar > .titlebar-start > button,
-.titlebar > .titlebar-start > .attention > .attention-button,
 .titlebar > .section-navigation > .section-button,
 .titlebar > .titlebar-end > .layout-presets > button,
 .titlebar > .titlebar-end > .new-menu > button,
@@ -1682,19 +1681,6 @@ button.icon.small { min-width: 26px; min-height: 26px; }
 }
 .flag-count.needs_input { background: var(--warn); }
 .flag-count.failed { background: var(--danger); }
-.attention {
-  position: relative;
-}
-.attention-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.attention-button.needs_input { border-color: color-mix(in srgb, var(--warn) 55%, transparent); color: var(--warn); }
-.attention-button.failed { border-color: color-mix(in srgb, var(--danger) 55%, transparent); color: var(--danger); }
-.attention-button.done { border-color: color-mix(in srgb, var(--brand-cyan) 45%, transparent); color: var(--brand-cyan); }
 .attention-list {
   position: absolute;
   left: 0;
@@ -2305,7 +2291,7 @@ kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10
 .agents-empty { display: flex; flex-direction: column; align-items: stretch; gap: 10px; text-align: left; }
 .starters-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; }
 .welcome-note { font-size: 11px; margin-top: -6px; }
-.new-menu > .primary, .attention-button { white-space: nowrap; }
+.new-menu > .primary { white-space: nowrap; }
 /* Between the wrapped phone layout and a full window the title bar is tight: keep the mark, drop the name. */
 @media (max-width: 960px) and (min-width: 881px) {
   .titlebar-start > .brand { font-size: 0; gap: 0; }
@@ -2407,7 +2393,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
    of z-index. Expanding it underneath the switcher swallows Library clicks. */
 .titlebar-start, .titlebar-end { display: flex; align-items: center; gap: 10px; flex: 1 1 0; min-width: max-content; }
 .titlebar-end { justify-content: flex-end; flex: 0 0 auto; }
-.titlebar-start > .attention { margin-left: auto; }
 @media (min-width: 1051px) {
   .titlebar { position: relative; }
   .titlebar > .section-navigation {
@@ -2425,7 +2410,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 @media (max-width: 1050px) {
   .titlebar-start, .titlebar-end { flex: none; min-width: 0; gap: 8px; }
   .titlebar-end { margin-left: auto; }
-  .titlebar-start > .attention { margin-left: 0; }
   /* At this width the switcher is in the flex row, not the centered overlay.
      Keep it above the neighboring titlebar groups and wholly clickable. */
   .titlebar > .section-navigation { position: relative; z-index: 20; pointer-events: auto; }
@@ -2477,19 +2461,6 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   font-size: 12px;
 }
 .titlebar > .section-navigation > .section-button { border: 0; }
-.titlebar > .titlebar-start > .attention {
-  transform: translateY(3px);
-}
-.titlebar > .titlebar-start > .attention > .attention-button {
-  min-height: 28px;
-  padding: 4px 9px;
-  gap: 6px;
-  font-size: 12px;
-}
-.titlebar > .titlebar-start > .attention > .attention-button .dot {
-  width: 7px;
-  height: 7px;
-}
 .titlebar .section-button.selected {
   background: var(--accent);
   border: 0;

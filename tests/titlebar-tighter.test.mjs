@@ -48,7 +48,7 @@ test("panes sit closer to the window edge and to each other", () => {
 test("scaled title bar controls exclude nested menus and include pane presets", () => {
   assert.doesNotMatch(plain, /\.titlebar\s+button\s*\{/);
   assert.match(plain, /\.titlebar > \.titlebar-end > \.layout-presets > button\s*\{[^}]*padding:\s*calc\(8px \* var\(--tb-scale\)\)/);
-  assert.match(plain, /\.titlebar > \.titlebar-start > \.attention > \.attention-button/);
+  assert.doesNotMatch(plain, /\.attention-button|\.attention\s*[{>]/, "the old top-bar attention menu's styles are gone");
   assert.doesNotMatch(plain, /\.titlebar svg\s*\{/);
   assert.match(sectionNavigation, /className="attention-list section-alerts" role="dialog"/);
 });
