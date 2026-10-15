@@ -966,6 +966,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         case "idle": {
           setPendingSettings({});
           reportApprovals();
+          turnQueue.roomIdle();
           if (turnQueue.active) break;
           if (showChangesRef.current) refreshDiff.current();
           // A round the person stopped themselves needs no flag.
@@ -1317,7 +1318,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     id => current.current.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
-    error => { notify(`Could not send: ${String(error)}. Affected queues are paused.`, "error"); },
+    error => { notify(`Could not send: ${String(error)}. Affected queues are paused; the message is retained. Check whether it arrived before retrying.`, "error"); },
     () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
   ));
   useEffect(() => {
@@ -3031,7 +3032,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         })}
         {queued.map((item) => {
           const who = item.to.map((id) => names.get(id) ?? id).join(", ");
-          const steerable = item.kind === "message" && item.to.some((id) => working[id]);
+          const steerable = !item.failed && item.kind === "message" && item.to.some((id) => working[id]);
           return <div key={`q${item.id}`} className="queued-inline">
             {editingQueued === item.id
               ? <textarea className="q-edit" aria-label={`Edit queued message ${item.id}`} autoFocus rows={2} defaultValue={item.text}
@@ -3046,10 +3047,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   }} />
               : <button type="button" className="q-text" title="Edit" onClick={() => setEditingQueued(item.id)}>{splitTldr(item.text).text}</button>}
             <div className="q-meta">
-              <span className="q-for">{queuePaused ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span></span>
-              {queuePaused && <><i className="q-sep" /><button type="button" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume</button></>}
+              <span className="q-for">{item.failed ? "Send unconfirmed for" : queuePaused ? "Paused for" : "Queued for"} {item.to.slice(0, 1).map((id) => <Avatar key={id} seed={appearance(id).seed} color={color(id)} size="sm" />)}<span>{who}</span></span>
+              {queuePaused && !item.failed && <><i className="q-sep" /><button type="button" onClick={() => { setQueuePaused(false); turnQueue.resume(); }}>Resume</button></>}
               {steerable && <><i className="q-sep" /><button type="button" title={`Send to ${who} now, mid-turn (⌘↵)`} onClick={() => askToSteer(item)}>Steer <SteerArrow /></button></>}
               <i className="q-sep" />
+              {item.failed && <button type="button" title="The host may already have received this message. Check the chat before retrying." onClick={() => turnQueue.retry(item.id)}>Retry send</button>}
               <button type="button" className="q-trash" aria-label="Remove queued message" title="Remove" onClick={() => turnQueue.remove(item.id)}><TrashIcon /></button>
               {steerAsking === item.id && <div className="steer-pop" role="dialog" aria-label="Steer now?"
                 onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); answerSteer(item, "cancel"); } }}>

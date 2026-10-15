@@ -107,3 +107,11 @@ test('a queued TL;DR message shows as typed, without the hidden TL;DR line', asy
   const [view] = queuedViews(q.items, ['null'], [...q.paused], q.connectionPaused, (id) => names[id], 'Test Mac');
   assert.equal(view.text, 'How far along is the build?');
 });
+
+test('phone draft restoration mode does not also retain a duplicate failed queue item', async () => {
+  const restored = [];
+  const q = new ParticipantQueues(async () => ['null'], async text => { restored.push(text); throw Error('offline'); }, async () => {}, () => {}, () => {}, () => true, false);
+  await q.send('prompt with saved attachment');
+  assert.deepEqual(restored, ['prompt with saved attachment']);
+  assert.deepEqual(q.items, []);
+});

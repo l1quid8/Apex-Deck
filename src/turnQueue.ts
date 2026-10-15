@@ -47,13 +47,14 @@ export class TurnQueue {
   }
 }
 
-export interface ParticipantMessage extends QueuedMessage { to: string[] }
+export interface ParticipantMessage extends QueuedMessage { to: string[]; failed?: boolean }
 /** One FIFO per recipient. Multi-recipient messages wait until every target
  * is free, then post once. Other participants can continue independently. */
 export class ParticipantQueues {
   connectionPaused = false;
   private availabilityEpoch = 0;
   private available: () => boolean;
+  private retainFailed: boolean;
   items: ParticipantMessage[] = [];
   state: Record<string, "idle" | "working"> = {};
   paused = new Set<string>();
@@ -67,9 +68,9 @@ export class ParticipantQueues {
   private stop: (id?: string) => Promise<void>;
   private changed: (items: ParticipantMessage[]) => void;
   private failed: (error: unknown) => void;
-  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true) {
+  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true, retainFailed = true) {
     this.targets = targets; this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
-    this.available = available;
+    this.available = available; this.retainFailed = retainFailed;
   }
   private requireAvailable(epoch = this.availabilityEpoch) { if (!this.available() || epoch !== this.availabilityEpoch) throw new Error("Not connected to the host; nothing was queued."); }
   availabilityChanged() {
@@ -104,6 +105,21 @@ export class ParticipantQueues {
   }
   started(id: string) { this.state[id] = "working"; this.publish(); }
   idle(id: string) { this.state[id] = "idle"; this.publish(); void this.drain(); }
+  /** Room Idle is authoritative. Clear the complete old snapshot before
+   * draining, so a fresh multi-recipient dispatch cannot be cleared halfway. */
+  roomIdle() {
+    for (const id of Object.keys(this.state)) this.state[id] = "idle";
+    this.publish(); void this.drain();
+  }
+  /** A lost acknowledgement may already have committed. Retry only on an
+   * explicit person action, never as a side effect of Resume or Idle. */
+  retry(id: number) {
+    const item = this.items.find(item => item.id === id);
+    if (!item?.failed) return;
+    item.failed = false;
+    item.to.forEach(target => this.paused.delete(target));
+    this.publish(); void this.drain();
+  }
   error(id: string) { this.paused.add(id); this.publish(); }
   resume(id?: string) { if (!this.available()) return; this.connectionPaused = false; if (id) { this.paused.delete(id); this.halted.delete(id); } else { this.paused.clear(); this.halted.clear(); } this.publish(); void this.drain(); }
   async edit(id: number, text: string, kind: TurnKind = "message") {
@@ -157,7 +173,7 @@ export class ParticipantQueues {
       const blocked = new Set<string>();
       for (const item of [...this.items]) {
         if (!this.available() || this.connectionPaused) break;
-        if (item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working") || (item.kind === "compact" && this.active)) {
+        if (item.failed || item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working") || (item.kind === "compact" && this.active)) {
           if (item.kind === "compact") break;
           item.to.forEach(id => blocked.add(id)); continue;
         }
@@ -169,6 +185,9 @@ export class ParticipantQueues {
         }
         catch (error) {
           item.to.forEach(id => { this.state[id] = "idle"; this.paused.add(id); });
+          // Retain the exact wire text, including quotes and attachment paths.
+          // A rejected transport does not prove the host failed to commit it.
+          if (this.retainFailed) this.items.unshift({ ...item, failed: true });
           this.failed(error); this.publish();
         }
       }

@@ -82,7 +82,7 @@ test('failure pauses only the failed participant', async () => {
   const sent = [];
   const q = new ParticipantQueues(async text => [text.includes('jigga') ? 'jigga' : 'null'], async text => {sent.push(text); if(text==='@null fail') throw Error('offline')}, async()=>{}, ()=>{});
   await q.send('@null fail'); await q.send('@null later'); await q.send('@jigga plan');
-  assert.deepEqual(sent, ['@null fail', '@jigga plan']); assert.equal(q.items.length, 1);
+  assert.deepEqual(sent, ['@null fail', '@jigga plan']); assert.equal(q.items.length, 2); assert.equal(q.items[0].failed, true);
 });
 
 test('compaction waits for all models and blocks new participant turns until settled', async () => {
@@ -162,4 +162,48 @@ test('a next step goes to exactly the bot that suggested it, without working out
   await q.sendTo('commit it', ['jigga']);
   assert.deepEqual(sent, [{ text: 'commit it', to: ['jigga'], kind: 'message', manual: true }]);
   assert.equal(asked, 0);
+});
+
+test('failed dispatch retains serialized attachments and context without retrying an uncertain post', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  let calls = 0;
+  const q = new ParticipantQueues(async () => ['null'], async () => { calls++; throw Error('receipt lost'); }, async () => {}, () => {});
+  const text = '> quoted context\n\nimportant prompt\nAttached image: /saved/picture.png';
+  await q.send(text);
+  assert.equal(q.items[0]?.text, text);
+  assert.equal(q.items[0]?.failed, true);
+  q.resume(); q.idle('null'); await tick();
+  assert.equal(calls, 1);
+});
+
+test('room idle releases accepted Auto preparation canceled before turn_started', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async () => ['null'], async text => sent.push(text), async () => {}, () => {});
+  await q.send('first'); await q.halt();
+  q.roomIdle();
+  await q.send('next');
+  assert.deepEqual(sent, ['first', 'next']);
+});
+
+test('room idle reconciles all old recipients before draining fresh concurrent work', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const q = new ParticipantQueues(async () => ['null', 'jigga'], async () => {}, async () => {}, () => {});
+  q.started('null'); q.started('jigga'); await q.send('next');
+  q.roomIdle(); await tick();
+  assert.equal(q.state.null, 'working'); assert.equal(q.state.jigga, 'working');
+});
+
+test('later failed queued messages retain their context and require an explicit retry', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = []; let fail = true;
+  const q = new ParticipantQueues(async () => ['null'], async text => { sent.push(text); if (text === 'later with attachments' && fail) throw Error('lost receipt'); }, async () => {}, () => {});
+  await q.send('first');
+  const id = await q.send('later with attachments');
+  q.idle('null'); await tick();
+  assert.equal(q.items[0].id, id); assert.equal(q.items[0].failed, true);
+  q.resume(); await tick(); assert.equal(sent.length, 2);
+  fail = false; q.retry(id); await tick();
+  assert.deepEqual(sent, ['first', 'later with attachments', 'later with attachments']);
+  assert.deepEqual(q.items, []);
 });

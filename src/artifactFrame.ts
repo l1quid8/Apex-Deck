@@ -10,15 +10,8 @@ export function frameDocument(kind: "html" | "svg", source: string): string {
   if (kind === "svg") {
     return `<!doctype html><html><head>${META}<meta charset="utf-8"><style>html,body{margin:0;height:100%}body{display:grid;place-items:center;background:#fff}svg{max-width:100%;max-height:100vh}</style></head><body>${source}</body></html>`;
   }
-  const head = /<head(\s[^>]*)?>/i.exec(source);
-  if (head) {
-    const at = head.index + head[0].length;
-    return source.slice(0, at) + META + source.slice(at);
-  }
-  const html = /<html(\s[^>]*)?>/i.exec(source);
-  if (html) {
-    const at = html.index + html[0].length;
-    return `${source.slice(0, at)}<head>${META}</head>${source.slice(at)}`;
-  }
-  return META + source;
+  // Never search source markup for an insertion point: comments and raw-text
+  // elements can hide apparent head tags, and resources can load before them.
+  // The HTML parser establishes this trusted head before seeing any source.
+  return `<!doctype html><html><head>${META}<meta charset="utf-8"></head>${source}</html>`;
 }

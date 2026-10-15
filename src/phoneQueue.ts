@@ -16,7 +16,7 @@ export function queueHears(queue: ParticipantQueues, event: RoomEvent) {
     // A failed reply holds what waits for that bot until the person resumes it, as on the desktop.
     case "failed": queue.error(event.id); break;
     // The machine has nothing running; a turn it dropped before it started sends no idle of its own.
-    case "idle": for (const [id, state] of Object.entries(queue.state)) if (state === "working") queue.idle(id); break;
+    case "idle": queue.roomIdle(); break;
   }
 }
 

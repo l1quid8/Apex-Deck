@@ -607,6 +607,7 @@ export function PhoneApp() {
       (items) => setQueued((all) => ({ ...all, [paneId]: { items, paused: [...queue.paused], lost: queue.connectionPaused } })),
       (error) => setNotice(words(error)),
       () => { const found = host(); return queues.current.get(paneId) === queue && found !== null && toLink(found.connection.get().status) === "online"; },
+      false, // Phone restores the complete draft itself on dispatch failure.
     );
     for (const id of busyRef.current[paneId] ?? []) queue.started(id);
     queues.current.set(paneId, queue);

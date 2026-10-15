@@ -2,16 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { FRAME_POLICY, frameDocument } from "../src/artifactFrame.ts";
 
-test("the policy goes right after the document's head", () => {
-  const doc = frameDocument("html", '<!doctype html><html lang="en"><head><title>x</title></head><body>hi</body></html>');
-  assert.match(doc, /^<!doctype html><html lang="en"><head><meta http-equiv="Content-Security-Policy"/);
-  assert.equal(doc.split("Content-Security-Policy").length, 2);
-});
-
-test("a page without a head gets one, and a fragment gets the policy first", () => {
-  assert.match(frameDocument("html", "<html><body>hi</body></html>"), /^<html><head><meta http-equiv="Content-Security-Policy"[^>]*><\/head><body>/);
-  assert.match(frameDocument("html", "<p>hi</p>"), /^<meta http-equiv="Content-Security-Policy"[^>]*><p>hi<\/p>$/);
-  assert.match(frameDocument("html", "<body><header>x</header></body>"), /^<meta http-equiv="Content-Security-Policy"[^>]*><body><header>/);
+test("trusted policy precedes every byte of HTML source", () => {
+  for (const source of ['<!doctype html><html lang="en"><head><title>x</title></head><body>hi</body></html>', '<!-- <head> -->', '<textarea><head></textarea>', '<img src="https://example.com"><head>', '<p>hi</p>']) {
+    const doc = frameDocument("html", source);
+    assert.ok(doc.indexOf('Content-Security-Policy') < doc.indexOf(source));
+    assert.ok(doc.endsWith(source + '</html>'));
+    assert.match(doc, /^<!doctype html><html><head><meta http-equiv="Content-Security-Policy"/);
+  }
 });
 
 test("the policy blocks the network and allows inline code", () => {
