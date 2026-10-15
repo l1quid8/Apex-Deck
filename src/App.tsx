@@ -6,7 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 
 import { getBackend, type Backend, type HostEntry } from "./backend";
 import { connection, statusWords } from "./connection";
-import { SettingsPage, type SettingsSection } from "./SettingsPage";
+import { SettingsPage, type SettingsSection } from "./lazyViews";
 import { DEFAULT_SETTINGS, readSettings, type AppSettings } from "./settings";
 import { DEFAULT_APPEARANCE, themeMode, themeVariables } from "./themes";
 import { providerEnabled } from "./providers";
@@ -20,14 +20,14 @@ import { startHub } from "./hub";
 import { SectionNavigation, type AttentionItem, type SectionFlag } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { ApexAgentSources } from "./ApexAgentSources";
-import { ApexAgentTasks } from "./ApexAgentTasks";
+import { ApexAgentTasks } from "./lazyViews";
 import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
 import { ApexAgentAll } from "./ApexAgentAll";
 import { usePersonalAssistant } from "./personalAssistant";
 import { ApexAgentWidget } from "./ApexAgentWidget";
 import "./apex-agent-dock.css";
 import { widgetCoordinates, widgetSidePanelPosition, type AssistantSourceDrop, type WidgetPosition } from "./apexAgentWidgetModel.ts";
-import { LibraryView } from "./LibraryView";
+import { LibraryView } from "./lazyViews";
 import { DeckIcon } from "./DeckIcon";
 import { LayoutPicker } from "./LayoutPicker";
 import { NewMenu } from "./NewMenu";

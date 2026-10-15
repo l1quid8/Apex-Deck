@@ -21,10 +21,20 @@ export default defineConfig({
   clearScreen: false,
   server: { watch: { ignored: ["**/target/**"] } },
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         main: new URL("./index.html", import.meta.url).pathname,
         phone: new URL("./phone.html", import.meta.url).pathname,
+      },
+      // Large libraries get their own long-lived chunks, shared by the desktop
+      // and phone entries, instead of one oversized shared chunk.
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: "react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+            { name: "xterm", test: /node_modules[\\/]@xterm[\\/]/ },
+          ],
+        },
       },
     },
   },
