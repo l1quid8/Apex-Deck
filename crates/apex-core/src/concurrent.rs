@@ -425,20 +425,31 @@ impl ConcurrentRoom {
             ticket.previous.clone().await;
             None
         };
-        {
+        let cancelled = {
             // Start and stop share this short critical section; a start cannot
             // accidentally clear cancellation arriving between its checks.
             let _slots = self.slots.lock().unwrap();
             if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) {
-                return Vec::new();
+                true
+            } else {
+                ticket.slot.stop.store(false, Ordering::SeqCst);
+                false
             }
-            ticket.slot.stop.store(false, Ordering::SeqCst);
+        };
+        if cancelled {
+            // Notify outside the slot lock, while this ticket still owns FIFO.
+            sink(RoomEvent::ParticipantIdle { id: ticket.id.clone() });
+            return Vec::new();
         }
         let (participant, mut request, shown, desk) = if let Some(prepared) = prepared {
             prepared
         } else {
             let room = self.room.lock().await;
             let Some((participant, request)) = room.request_for_capability(&ticket.id, answers, generated_ui) else {
+                // Even a canceled/removed turn owns a recipient reservation.
+                // Release it before dropping the ticket, so clients can safely
+                // dispatch the next turn without relying on unversioned Idle.
+                sink(RoomEvent::ParticipantIdle { id: ticket.id.clone() });
                 return Vec::new();
             };
             (
@@ -451,7 +462,10 @@ impl ConcurrentRoom {
         if let Some(advisor) = advisor {
             let (messages, roster) = { let room = self.room.lock().await; (room.transcript()[..shown.min(room.transcript().len())].to_vec(), room.configs()) };
             request.effort_override = advisor.advise(participant.config(), messages, roster).await;
-            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) { return Vec::new(); }
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) {
+                sink(RoomEvent::ParticipantIdle { id: ticket.id.clone() });
+                return Vec::new();
+            }
         }
         let mut editor = {
             let mut held = self.editor.lock().unwrap();

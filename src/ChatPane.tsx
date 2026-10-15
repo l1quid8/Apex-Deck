@@ -1318,7 +1318,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     id => current.current.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
-    error => { notify(`Could not send: ${String(error)}. Affected queues are paused; the message is retained. Check whether it arrived before retrying.`, "error"); },
+    error => { notify(`Could not send: ${String(error)}. Affected queues are paused. Check whether it arrived before retrying.`, "error"); },
     () => !current.current.host || hostCanMutate(current.current.host.connection.get().status),
   ));
   useEffect(() => {

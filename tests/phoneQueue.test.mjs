@@ -52,11 +52,12 @@ test('a stopped bot holds what waits for it, and a failed reply pauses it too', 
   assert.deepEqual(sent, ['@null later'], 'a failed reply holds the next message');
 });
 
-test('the room going idle frees every bot, and a reload matches who the machine says is working', async () => {
+test('recipient idle frees a bot, stale room idle preserves new work, and reload matches activity', async () => {
   const sent = [];
   const q = new ParticipantQueues(async (t) => bots(t), async (text) => { sent.push(text); }, async () => {}, () => {});
   queueHears(q, { type: 'turn_started', id: 'null' });
   await q.send('@null one');
+  queueHears(q, { type: 'participant_idle', id: 'null' });
   queueHears(q, { type: 'idle' }); await tick();
   assert.deepEqual(sent, ['@null one']);
   queueSync(q, ['null']);

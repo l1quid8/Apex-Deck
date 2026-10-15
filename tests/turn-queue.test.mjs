@@ -176,21 +176,21 @@ test('failed dispatch retains serialized attachments and context without retryin
   assert.equal(calls, 1);
 });
 
-test('room idle releases accepted Auto preparation canceled before turn_started', async () => {
+test('recipient idle releases accepted Auto preparation canceled before turn_started', async () => {
   const { ParticipantQueues } = await import('../src/turnQueue.ts');
   const sent = [];
   const q = new ParticipantQueues(async () => ['null'], async text => sent.push(text), async () => {}, () => {});
   await q.send('first'); await q.halt();
-  q.roomIdle();
+  q.idle('null'); q.roomIdle();
   await q.send('next');
   assert.deepEqual(sent, ['first', 'next']);
 });
 
-test('room idle reconciles all old recipients before draining fresh concurrent work', async () => {
+test('old room idle preserves the next multi-recipient reservation', async () => {
   const { ParticipantQueues } = await import('../src/turnQueue.ts');
   const q = new ParticipantQueues(async () => ['null', 'jigga'], async () => {}, async () => {}, () => {});
   q.started('null'); q.started('jigga'); await q.send('next');
-  q.roomIdle(); await tick();
+  q.idle('null'); q.idle('jigga'); q.roomIdle(); await tick();
   assert.equal(q.state.null, 'working'); assert.equal(q.state.jigga, 'working');
 });
 
@@ -206,4 +206,58 @@ test('later failed queued messages retain their context and require an explicit 
   fail = false; q.retry(id); await tick();
   assert.deepEqual(sent, ['first', 'later with attachments', 'later with attachments']);
   assert.deepEqual(q.items, []);
+});
+
+test('a failed transient turn cannot hide a blocking item ahead of the next message', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const sent = [];
+  const q = new ParticipantQueues(async () => ['null'], async (text, _to, kind) => {
+    if (kind === 'turn') throw Error('turn refused');
+    sent.push(text);
+  }, async () => {}, () => {});
+  q.turn(['null'], 1);
+  await tick();
+  await q.send('next human message');
+  q.resume();
+  await tick();
+  assert.deepEqual(sent, ['next human message']);
+  assert.deepEqual(q.items, []);
+});
+
+test('failed compaction remains visible and requires an explicit retry', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  let fail = true;
+  const q = new ParticipantQueues(async () => ['null'], async () => {
+    if (fail) throw Error('compaction refused');
+  }, async () => {}, () => {});
+  const id = await q.send('/compact', 'compact');
+  assert.equal(q.items[0].kind, 'compact');
+  assert.equal(q.items[0].failed, true);
+  fail = false;
+  q.retry(id);
+  await tick();
+  assert.deepEqual(q.items, []);
+});
+
+test('a previous batch room Idle cannot release the next in-flight recipient reservation', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  const posts = []; let acknowledge;
+  const pending = new Promise(resolve => { acknowledge = resolve; });
+  const q = new ParticipantQueues(async () => ['a'], async text => { posts.push(text); if (text === 'second') await pending; }, async () => {}, () => {});
+  q.started('a'); await q.send('second'); await q.send('third');
+  q.idle('a'); q.roomIdle(); acknowledge(); await tick();
+  assert.deepEqual(posts, ['second']);
+  q.started('a'); q.idle('a'); await tick();
+  assert.deepEqual(posts, ['second', 'third']);
+});
+
+test('explicit retry after reconnection releases its connection hold, and offline retry changes nothing', async () => {
+  const { ParticipantQueues } = await import('../src/turnQueue.ts');
+  let online = true, fail = true; const posts = [];
+  const q = new ParticipantQueues(async () => ['a'], async text => { posts.push(text); if (fail) throw Error('offline'); }, async () => {}, () => {}, () => {}, () => online);
+  const id = await q.send('retry me');
+  online = false; q.availabilityChanged(); q.retry(id);
+  assert.equal(q.items[0].failed, true);
+  online = true; fail = false; q.retry(id); await tick();
+  assert.deepEqual(posts, ['retry me', 'retry me']); assert.equal(q.connectionPaused, false);
 });

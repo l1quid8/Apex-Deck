@@ -740,7 +740,9 @@ fn stop_during_auto_wait_never_starts_the_old_reply() {
         let (release, ready) = oneshot::channel();
         let advisor = Arc::new(HeldAdvice { release: Mutex::new(Some(ready)) });
         let batch = room.begin_post("@auto work", None, &|_| {}).await.unwrap().with_advisor(advisor);
-        let mut run = Box::pin(room.run(batch, &|_| {}));
+        let events = Mutex::new(Vec::new());
+        let sink = |event| events.lock().unwrap().push(event);
+        let mut run = Box::pin(room.run(batch, &sink));
         use futures::FutureExt;
         assert!(run.as_mut().now_or_never().is_none());
         room.stop(None);
@@ -748,6 +750,11 @@ fn stop_during_auto_wait_never_starts_the_old_reply() {
         run.await;
         assert!(auto.requests().is_empty());
         assert!(!room.busy());
+        let events = events.lock().unwrap();
+        assert_eq!(events.as_slice(), &[
+            RoomEvent::ParticipantIdle { id: ParticipantId::new("auto") },
+            RoomEvent::Idle,
+        ]);
     });
 }
 
@@ -790,5 +797,44 @@ fn a_task_room_runs_readers_while_its_writers_wait_for_the_checkout() {
         }).collect();
         assert_eq!(editors, vec!["writer", "writer2"], "both writers keep edit access and run in roster order");
         assert_eq!(gate.owner().as_deref(), Some("task-42"), "the task keeps the checkout after its batch");
+    });
+}
+
+#[test]
+fn a_turn_cancelled_before_running_releases_its_recipient_before_room_idle() {
+    block_on(async {
+        let bot = Arc::new(ScriptedParticipant::new("auto", &["must not run"]));
+        let room = ConcurrentRoom::new(Room::new(vec![bot.clone()], RoomOptions::default()));
+        let batch = room.begin_post("@auto work", None, &|_| {}).await.unwrap();
+        room.stop(None);
+        let events = Mutex::new(Vec::new());
+        let sink = |event| {
+            // A sink can stop again; terminal notification must not hold slots.
+            if matches!(&event, RoomEvent::ParticipantIdle { .. }) { room.stop(None); }
+            events.lock().unwrap().push(event);
+        };
+        room.run(batch, &sink).await;
+        assert!(bot.requests().is_empty());
+        assert_eq!(events.lock().unwrap().as_slice(), &[
+            RoomEvent::ParticipantIdle { id: ParticipantId::new("auto") },
+            RoomEvent::Idle,
+        ]);
+    });
+}
+
+#[test]
+fn a_removed_recipient_releases_its_reservation_before_room_idle() {
+    block_on(async {
+        let bot = Arc::new(ScriptedParticipant::new("auto", &["must not run"]));
+        let runtime = ConcurrentRoom::new(Room::new(vec![bot.clone()], RoomOptions::default()));
+        let batch = runtime.begin_post("@auto work", None, &|_| {}).await.unwrap();
+        runtime.room().lock().await.remove_participant(&ParticipantId::new("auto"));
+        let events = Mutex::new(Vec::new());
+        runtime.run(batch, &|event| events.lock().unwrap().push(event)).await;
+        assert!(bot.requests().is_empty());
+        assert_eq!(events.lock().unwrap().as_slice(), &[
+            RoomEvent::ParticipantIdle { id: ParticipantId::new("auto") },
+            RoomEvent::Idle,
+        ]);
     });
 }

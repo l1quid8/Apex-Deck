@@ -105,17 +105,17 @@ export class ParticipantQueues {
   }
   started(id: string) { this.state[id] = "working"; this.publish(); }
   idle(id: string) { this.state[id] = "idle"; this.publish(); void this.drain(); }
-  /** Room Idle is authoritative. Clear the complete old snapshot before
-   * draining, so a fresh multi-recipient dispatch cannot be cleared halfway. */
-  roomIdle() {
-    for (const id of Object.keys(this.state)) this.state[id] = "idle";
-    this.publish(); void this.drain();
-  }
+  /** Room Idle has no batch identity: it can arrive after ParticipantIdle
+   * already dispatched a newer turn. Only recipient terminal events release
+   * reservations (including turns canceled before TurnStarted). */
+  roomIdle() { this.publish(); void this.drain(); }
   /** A lost acknowledgement may already have committed. Retry only on an
    * explicit person action, never as a side effect of Resume or Idle. */
   retry(id: number) {
+    if (!this.available()) return;
     const item = this.items.find(item => item.id === id);
     if (!item?.failed) return;
+    this.connectionPaused = false;
     item.failed = false;
     item.to.forEach(target => this.paused.delete(target));
     this.publish(); void this.drain();
@@ -187,7 +187,9 @@ export class ParticipantQueues {
           item.to.forEach(id => { this.state[id] = "idle"; this.paused.add(id); });
           // Retain the exact wire text, including quotes and attachment paths.
           // A rejected transport does not prove the host failed to commit it.
-          if (this.retainFailed) this.items.unshift({ ...item, failed: true });
+          // A one-off turn has no draft and is hidden from the queued-message
+          // UI. Retaining it would leave an invisible, unretryable FIFO blocker.
+          if (this.retainFailed && item.kind !== "turn") this.items.unshift({ ...item, failed: true });
           this.failed(error); this.publish();
         }
       }
