@@ -29,6 +29,12 @@ fn read_only_use(argv: &[String]) -> bool {
     let name = program(argv);
     if name == "git" {
         let Some((sub, rest)) = args.split_first() else { return false };
+        // Patch rendering may invoke repository-configured external diff or
+        // textconv programs unless both execution paths are disabled explicitly.
+        if (matches!(*sub, "diff" | "show") || (*sub == "log" && rest.contains(&"-p")))
+            && !(rest.contains(&"--no-ext-diff") && rest.contains(&"--no-textconv")) {
+            return false;
+        }
         let flags: &[&str] = match *sub {
             "status" => &["--short", "-s", "--branch", "-b", "--porcelain", "--porcelain=v1", "--porcelain=v2"],
             "log" | "show" | "diff" => &["--oneline", "--stat", "--name-only", "--name-status", "--no-patch", "-p", "--cached", "--staged", "--no-ext-diff", "--no-textconv"],
@@ -41,11 +47,22 @@ fn read_only_use(argv: &[String]) -> bool {
         };
         return rest.iter().all(|a| !a.starts_with('-') || *a == "--" || flags.contains(a));
     }
+    // uniq's second positional operand is an output file, even without flags.
+    if name == "uniq" {
+        let mut operands = 0;
+        let mut options = true;
+        for arg in &args {
+            if options && *arg == "--" { options = false; continue; }
+            if options && arg.starts_with('-') && *arg != "-" { continue; }
+            operands += 1;
+        }
+        if operands > 1 { return false; }
+    }
     let flags: &[&str] = match name {
         "cat" => &["-n", "-b", "-s", "-v", "-e", "-t", "-A"],
         "head" | "tail" => &["-n", "-c", "-q", "-v"],
         "ls" => &["-l", "-a", "-la", "-al", "-h", "-lh", "-lah", "-R", "-d", "-1", "--all", "--long"],
-        "rg" | "grep" => &["-n", "-i", "-v", "-l", "-c", "-w", "-F", "-E", "-r", "-R", "--files", "--hidden", "--no-ignore", "--line-number", "--fixed-strings"],
+        "rg" | "grep" => &["-n", "-i", "-v", "-l", "-c", "-w", "-F", "-E", "-r", "--files", "--hidden", "--no-ignore", "--line-number", "--fixed-strings"],
         "sort" => &["-n", "-r", "-u", "-f", "-b", "-h", "-V"],
         "uniq" => &["-c", "-d", "-u"],
         "wc" => &["-l", "-w", "-c", "-m", "-L"],
@@ -203,6 +220,58 @@ mod tests {
         for argv in [vec!["git", "branch", "-f", "saved", "HEAD~1"], vec!["sort", "-oout", "input"], vec!["rg", "--pre", "script", "pattern", "input"], vec!["git", "diff", "--output=out"], vec!["git", "branch", "new-branch"]] {
             assert_eq!(classify(&op(&argv), &[]).0, ToolClass::Write, "{argv:?}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_grep_cannot_automatically_follow_internal_symlinks() {
+        let base = std::env::temp_dir().join(format!("gateway-recursive-{}", std::process::id()));
+        let root = base.join("allowed");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("private"), "scratch-secret").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked-dir")).unwrap();
+        std::os::unix::fs::symlink(outside.join("private"), root.join("linked-file")).unwrap();
+        let folders = vec![root.to_string_lossy().into_owned()];
+        let mut operation = op(&["grep", "-R", "scratch-secret", "."]);
+        operation.cwd = folders[0].clone();
+        let output = std::process::Command::new("grep").args(&operation.argv[1..]).current_dir(&root).output().unwrap();
+        assert!(String::from_utf8_lossy(&output.stdout).contains("scratch-secret"));
+        assert_eq!(classify(&operation, &folders).0, ToolClass::Write);
+        operation.argv[1] = "-r".into();
+        let output = std::process::Command::new("grep").args(&operation.argv[1..]).current_dir(&root).output().unwrap();
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("scratch-secret"));
+        assert_eq!(classify(&operation, &folders), (ToolClass::Read, false));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn automatic_git_patches_disable_external_diff_and_text_conversion() {
+        for sub in ["diff", "show"] {
+            assert_eq!(classify(&op(&["git", sub]), &[]).0, ToolClass::Write);
+            assert_eq!(classify(&op(&["git", sub, "--no-ext-diff", "--no-textconv"]), &[]).0, ToolClass::Read);
+        }
+        assert_eq!(classify(&op(&["git", "log", "-p"]), &[]).0, ToolClass::Write);
+    }
+
+    #[test]
+    fn uniq_output_operand_requires_approval() {
+        let base = std::env::temp_dir().join(format!("gateway-uniq-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("input"), "one\none\n").unwrap();
+        std::fs::write(base.join("output"), "keep").unwrap();
+        let mut operation = op(&["uniq", "input", "output"]);
+        operation.cwd = base.to_string_lossy().into_owned();
+        let folders = vec![operation.cwd.clone()];
+        if classify(&operation, &folders).0 == ToolClass::Read {
+            let result = std::process::Command::new("uniq").args(&operation.argv[1..]).current_dir(&base).output().unwrap();
+            assert!(result.status.success());
+        }
+        assert_eq!(std::fs::read_to_string(base.join("output")).unwrap(), "keep");
+        operation.argv = vec!["uniq".into(), "-c".into(), "input".into()];
+        assert_eq!(classify(&operation, &folders), (ToolClass::Read, false));
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

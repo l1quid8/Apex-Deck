@@ -683,6 +683,24 @@ pub fn apply_integration(plan: &IntegrationPlan, journal_path: &Path) -> Result<
                 std::fs::remove_file(&to).map_err(|e| e.to_string())?;
             }
         }
+        // A directory-to-file transition may leave several empty levels.
+        // Only prune empty real directories; never follow a symlink ancestor.
+        let mut parent = to.parent();
+        while let Some(dir) = parent {
+            if dir == plan.root || !dir.starts_with(&plan.root) { break; }
+            let mut safe = true;
+            let mut ancestor = Some(dir);
+            while let Some(candidate) = ancestor {
+                if candidate == plan.root { break; }
+                if !std::fs::symlink_metadata(candidate).map(|meta| meta.is_dir() && !meta.file_type().is_symlink()).unwrap_or(false) {
+                    safe = false;
+                    break;
+                }
+                ancestor = candidate.parent();
+            }
+            if !safe || std::fs::remove_dir(dir).is_err() { break; }
+            parent = dir.parent();
+        }
         journal.completed_paths.push(path.clone());
         write_journal(journal_path, &journal)?;
     }
@@ -984,8 +1002,8 @@ mod tests {
         for directory_first in [false, true] {
             let root = fixture();
             if directory_first {
-                std::fs::create_dir(root.join("a")).unwrap();
-                std::fs::write(root.join("a/child"), "old").unwrap();
+                std::fs::create_dir_all(root.join("a/sub")).unwrap();
+                std::fs::write(root.join("a/sub/child"), "old").unwrap();
             } else { std::fs::write(root.join("a"), "old").unwrap(); }
             git(&root, &["add", "."]).unwrap();
             git(&root, &["-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-qm", "shape"]).unwrap();
@@ -997,14 +1015,14 @@ mod tests {
                 std::fs::write(task.join("a"), "new").unwrap();
             } else {
                 std::fs::remove_file(task.join("a")).unwrap();
-                std::fs::create_dir(task.join("a")).unwrap();
-                std::fs::write(task.join("a/child"), "new").unwrap();
+                std::fs::create_dir_all(task.join("a/sub")).unwrap();
+                std::fs::write(task.join("a/sub/child"), "new").unwrap();
             }
             let result = capture_result(&task, "shape").unwrap();
             let index = std::fs::read(root.join(".git/index")).unwrap();
             let plan = stage_integration(&root, &baseline, &result.commit, "shape", &data).unwrap();
             apply_integration(&plan, &data.join("apply.json")).unwrap();
-            assert_eq!(std::fs::read_to_string(root.join(if directory_first { "a" } else { "a/child" })).unwrap(), "new");
+            assert_eq!(std::fs::read_to_string(root.join(if directory_first { "a" } else { "a/sub/child" })).unwrap(), "new");
             assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), index);
         }
     }
