@@ -239,7 +239,8 @@ test('a bot\'s model and reasoning read in a few words, and the phone only write
   assert.equal(settingsLine(claude, []), 'Latest Opus · High reasoning');
   assert.equal(settingsLine({ ...claude, backend: { ...claude.backend, model: null }, effort: null }, []), 'Default model · Default reasoning');
   assert.equal(settingsLine({ ...claude, backend: { ...claude.backend, model: 'haiku' } }, []), 'Latest Haiku');
-  assert.equal(settingsLine({ ...claude, backend: { kind: 'agent', tool: 'gemini', model: null }, effort: null }, []), 'Default model');
+  // Antigravity (agy) takes --effort, so its line names reasoning too.
+  assert.equal(settingsLine({ ...claude, backend: { kind: 'agent', tool: 'gemini', model: null }, effort: null }, []), 'Default model · Default reasoning');
   const { shown, extra } = modelChoices('claude_code', []);
   assert.deepEqual(shown.map((m) => m.id), ['opus', 'sonnet', 'haiku', 'fable']);
   assert.ok(extra.length > 0);
@@ -257,7 +258,7 @@ test('a bot\'s model and reasoning read in a few words, and the phone only write
   const gemini = { ...claude, backend: { kind: 'agent', tool: 'gemini', model: null } };
   assert.equal('speed' in withPhoneChange(gemini, { speed: 'fast' }, []), false);
   assert.equal(settingsLine({ ...claude, speed: 'fast' }, []).endsWith(' · Fast'), true);
-  assert.equal(settingsLine({ ...gemini, speed: 'fast' }, []), 'Default model');
+  assert.equal(settingsLine({ ...gemini, speed: 'fast' }, []).endsWith(' · Fast'), false, 'a tool without a fast option never shows Fast');
   assert.equal(withPhoneChange(claude, { effort: 'ultra' }, []).effort, null);
 });
 

@@ -184,15 +184,19 @@ function find(node, predicate) {
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const child = (tree, name) => find(tree, node => typeof node.type === 'function' && (node.type.displayName ?? node.type.name) === name);
-const attentionMenuOf = tree => find(tree, node => node.props?.items && node.props?.onMarkReadySeen);
-const hasMonitorAttention = tree => Boolean(attentionMenuOf(tree)?.props.items.some(item => item.monitor?.findings?.some(finding => finding.id === 'finding-a')));
+// Global attention lives in the section tabs' hover lists; a monitor blocker is
+// one Threads row keyed by its workspace.
+const attentionMenuOf = tree => child(tree, 'SectionNavigation');
+const monitorRowsOf = tree => (attentionMenuOf(tree)?.props.flags?.threads?.rows ?? []).filter(row => row.key.startsWith('apex-monitor:'));
+const monitorRowFor = (tree, workspaceId) => monitorRowsOf(tree).find(row => row.key === `apex-monitor:${workspaceId}`);
+const hasMonitorAttention = tree => Boolean(monitorRowFor(tree, project.id));
 // The avatar opens one conversation for every project; project setup opens from it.
 const agentOf = (h, tree) => {
   const all = child(tree, 'ApexAgentAll');
   if (all && !child(tree, 'ApexAgentSources')) { all.props.onSetUp(child(tree, 'ApexAgentWidget').props.workspaceId); tree = h.render(); }
   return child(tree, 'ApexAgentSources');
 };
-const monitorAttentionItem = tree => attentionMenuOf(tree)?.props.items.find(item => item.monitor?.findings?.some(finding => finding.id === 'finding-a'));
+const monitorAttentionItem = tree => monitorRowFor(tree, project.id);
 
 test('one widget stays mounted across pages and retains its explicit project selection', async () => {
   const h = appHarness(); let tree = h.render(); await tick(); tree = h.render();
@@ -280,22 +284,22 @@ test('monitor blockers survive conversation visits and pane attention cleanup, t
   assert.ok(apex, 'ApexAgent is present after opening its workspace');
   apex.props.onMonitorChange?.(project.id, project.hostId, blocker);
   tree = h.render();
-  const attentionMenu = find(tree, node => node.props?.items && node.props?.onMarkReadySeen);
-  assert.ok(attentionMenu?.props.items.some(item => item.monitor?.findings?.[0]?.id === 'finding-a'), 'App exposes the blocker in global attention');
+  const attentionMenu = attentionMenuOf(tree);
+  assert.ok(hasMonitorAttention(tree), 'App exposes the blocker in global attention');
   assert.equal(child(tree, 'ProjectSidebar')?.props.monitorAttention?.[project.id]?.blocking, true, 'the workspace sidebar marks the blocker before reading the conversation');
 
   attentionMenu.props.onMarkReadySeen();
   tree = h.render();
-  assert.ok(find(tree, node => node.props?.items && node.props?.onMarkReadySeen).props.items.some(item => item.monitor?.findings?.[0]?.id === 'finding-a'), 'clearing ordinary Ready flags leaves monitor attention');
+  assert.ok(hasMonitorAttention(tree), 'clearing ordinary Ready flags leaves monitor attention');
   assert.equal(child(tree, 'ProjectSidebar')?.props.monitorAttention?.[project.id]?.blocking, true, 'clearing Ready flags leaves the workspace blocker visible');
 
-  const monitorItem = find(tree, node => node.props?.items && node.props.items.some(item => item.monitor?.findings?.[0]?.id === 'finding-a')).props.items.find(item => item.monitor?.findings?.[0]?.id === 'finding-a');
-  const open = find(tree, node => node.props?.items && node.props.onOpen);
+  const monitorItem = monitorAttentionItem(tree);
+  const open = attentionMenuOf(tree);
   open.props.onOpen(monitorItem.paneId);
   tree = h.render();
   const openedAgent = agentOf(h, tree);
   openedAgent.props.onClose(); tree = h.render();
-  assert.ok(find(tree, node => node.props?.items && node.props.items.some(item => item.monitor?.findings?.[0]?.id === 'finding-a')), 'closing the monitor conversation leaves the blocker active');
+  assert.ok(hasMonitorAttention(tree), 'closing the monitor conversation leaves the blocker active');
   assert.equal(child(tree, 'ProjectSidebar')?.props.monitorAttention?.[project.id]?.blocking, true, 'opening and closing the conversation does not clear the workspace blocker');
 
   child(tree, 'ApexAgentWidget').props.onOpen(project.id);
@@ -303,7 +307,7 @@ test('monitor blockers survive conversation visits and pane attention cleanup, t
   const reopenedAgent = agentOf(h, tree);
   reopenedAgent.props.onMonitorChange?.(project.id, project.hostId, resolvedBlocker);
   tree = h.render();
-  assert.equal(find(tree, node => node.props?.items && node.props.onMarkReadySeen).props.items.some(item => item.monitor?.findings?.[0]?.id === 'finding-a'), false, 'an explicit resolved snapshot removes monitor attention');
+  assert.equal(hasMonitorAttention(tree), false, 'an explicit resolved snapshot removes monitor attention');
   h.unmount();
 });
 
@@ -394,7 +398,7 @@ test('a successful host monitor snapshot adds attention and an empty snapshot cl
 
   poll.props.onMonitors(project.hostId, [blocker]);
   tree = h.render();
-  assert.equal(monitorAttentionItem(tree)?.monitor?.findings?.[0]?.id, 'finding-a', 'a valid host snapshot adds global monitor attention');
+  assert.ok(monitorAttentionItem(tree), 'a valid host snapshot adds global monitor attention');
   assert.equal(child(tree, 'ProjectSidebar')?.props.monitorAttention?.[project.id]?.blocking, true, 'the valid snapshot marks its workspace as blocked');
 
   const currentPoll = child(tree, 'HostMonitors');
@@ -427,14 +431,14 @@ test('host monitor snapshots reconcile only their own host across multiple works
   polls.find(node => node.props.hostId === 'host-a').props.onMonitors('host-a', [blocker]);
   polls.find(node => node.props.hostId === 'host-b').props.onMonitors('host-b', [blockerB]);
   tree = h.render();
-  assert.deepEqual((attentionMenuOf(tree)?.props.items ?? []).filter(item => item.monitor).map(item => item.monitor.findings[0].id).sort(), ['finding-a', 'finding-b']);
+  assert.deepEqual(monitorRowsOf(tree).map(row => row.key).sort(), [`apex-monitor:${project.id}`, `apex-monitor:${secondProject.id}`]);
 
   const currentPolls = [];
   collect(tree);
   currentPolls.push(...polls.splice(0));
   currentPolls.find(node => node.props.hostId === 'host-a').props.onMonitors('host-a', []);
   tree = h.render();
-  assert.deepEqual((attentionMenuOf(tree)?.props.items ?? []).filter(item => item.monitor).map(item => item.monitor.findings[0].id), ['finding-b'], 'an empty host A snapshot preserves host B attention');
+  assert.deepEqual(monitorRowsOf(tree).map(row => row.key), [`apex-monitor:${secondProject.id}`], 'an empty host A snapshot preserves host B attention');
   h.unmount();
 });
 
@@ -483,12 +487,12 @@ test('a stale callback after workspace host rebinding cannot clear the new host 
   oldHostChange(project.id, 'host-a', null);
   tree = h.render();
 
-  assert.equal(monitorAttentionItem(tree)?.monitor?.hostId, 'host-b', 'a stale null from the prior host cannot clear the current host blocker');
+  assert.equal(monitorAttentionItem(tree)?.hostName, 'Host host-b', 'a stale null from the prior host cannot clear the current host blocker');
   h.unmount();
 });
 
 // The tests above stub every child of App and inspect the props it hands
-// them. These run the real AttentionMenu and ProjectSidebar code against
+// them. These run the real SectionNavigation and ProjectSidebar code against
 // those props, so they check what the screen would show.
 
 const answerStrip = await import('../src/answerStrip.ts');
@@ -515,7 +519,9 @@ function mountComponent(file, exportName, modules) {
     useSyncExternalStore(_subscribe, get) { cursor++; return get(); },
   };
   const globals = {
-    window: { addEventListener() {}, removeEventListener() {} },
+    window: { addEventListener() {}, removeEventListener() {}, setTimeout: () => 0, clearTimeout() {} },
+    // Vite defines these at build time.
+    __APP_VERSION__: '0.0.0-test', __APP_BUILD__: 'test',
     document: { activeElement: null, body: {} },
     navigator: { platform: 'Linux', userAgent: 'node' },
     requestAnimationFrame: fn => fn(), CSS: { escape: s => s },
@@ -533,14 +539,23 @@ function mountComponent(file, exportName, modules) {
 const textOf = node => node == null || typeof node === 'boolean' ? '' : typeof node !== 'object' ? String(node) : (node.children ?? []).map(textOf).join('');
 const classOf = node => String(node?.props?.className ?? '').split(/\s+/).filter(Boolean);
 
-function realAttentionMenu() {
-  return mountComponent('AttentionMenu.tsx', 'AttentionMenu', {
-    Diff: stubComponent('Diff'),
-    deadlineNote: approvals.deadlineNote,
-    listRows: answerStrip.listRows, nextLine: answerStrip.nextLine, nextStripPane: answerStrip.nextStripPane, stripView: answerStrip.stripView,
-    ago: attention.ago, label: attention.label, summarize: attention.summarize,
+function realSectionNavigation() {
+  return mountComponent('SectionNavigation.tsx', 'SectionNavigation', {
+    Diff: stubComponent('Diff'), nextLine: answerStrip.nextLine, stripView: answerStrip.stripView, ago: attention.ago,
   });
 }
+/** The Threads tab, and the hover list it opens when it has something waiting. */
+const threadsTab = nav => find(nav, node => node.type === 'button' && classOf(node).includes('section-button') && classOf(node).includes('threads'));
+function hoverThreads(drawNav, tree) {
+  const props = child(tree, 'SectionNavigation').props;
+  threadsTab(drawNav(props)).props.onMouseEnter?.({ currentTarget: { offsetLeft: 0 } });
+  return drawNav(props);
+}
+const attentionRows = nav => {
+  const rows = [];
+  (function collect(node) { if (node && typeof node === 'object') { if (classOf(node).includes('attention-row')) rows.push(node); (node.children ?? []).forEach(collect); } })(nav);
+  return rows;
+};
 
 function realSidebar() {
   return mountComponent('Sidebar.tsx', 'ProjectSidebar', {
@@ -548,6 +563,7 @@ function realSidebar() {
     workspaceHost: hostSession.workspaceHost,
     ageWords: sidebarModel.ageWords, hostTints: sidebarModel.hostTints, sidebarSections: sidebarModel.sidebarSections, twinPath: sidebarModel.twinPath,
     dotState: hostFacts.dotState,
+    DOT_WORDS: hostFacts.DOT_WORDS, DeckIcon: stubComponent('DeckIcon'),
     MenuList: stubComponent('MenuList'), HoverCard: stubComponent('HoverCard'), ProjectCard: stubComponent('ProjectCard'), ThreadCard: stubComponent('ThreadCard'),
     useHoverCard: () => ({ target: null, enter() {}, leave() {}, hide() {}, keep() {} }),
     Glyph: stubComponent('Glyph'), ProjectFolder: stubComponent('ProjectFolder'), ThreadName: stubComponent('ThreadName'), WorkspaceHostMenu: stubComponent('WorkspaceHostMenu'),
@@ -569,12 +585,12 @@ test('a rendered sidebar chat drag carries its owning folder and machine', async
   h.unmount();
 });
 
-test('the rendered attention menu and sidebar badge keep an unresolved ApexAgent blocker after the conversation is read', async () => {
+test('the rendered section alerts and sidebar badge keep an unresolved ApexAgent blocker after the conversation is read', async () => {
   const h = appHarness();
-  const drawMenu = realAttentionMenu();
+  const drawNav = realSectionNavigation();
   const drawSidebar = realSidebar();
   let tree = h.render(); await tick(); tree = h.render();
-  assert.equal(drawMenu(child(tree, 'AttentionMenu').props), null, 'nothing wants attention before ApexAgent reports');
+  assert.equal(classOf(threadsTab(drawNav(child(tree, 'SectionNavigation').props))).includes('has-attention'), false, 'nothing wants attention before ApexAgent reports');
   assert.equal(sidebarBadge(drawSidebar, tree), null, 'the project has no badge before ApexAgent reports');
 
   child(tree, 'ApexAgentWidget').props.onOpen(project.id);
@@ -582,21 +598,19 @@ test('the rendered attention menu and sidebar badge keep an unresolved ApexAgent
   agentOf(h, tree).props.onMonitorChange(project.id, project.hostId, blocker);
   tree = h.render();
 
-  // Closed menu: the button in the top bar.
-  let menu = drawMenu(child(tree, 'AttentionMenu').props);
-  let toggle = find(menu, node => classOf(node).includes('attention-button'));
-  assert.ok(classOf(toggle).includes('needs_input'), 'the attention button is coloured as needing you');
-  assert.equal(textOf(toggle), '1 needs you');
+  // The Threads tab is underlined as needing you.
+  let nav = drawNav(child(tree, 'SectionNavigation').props);
+  assert.ok(classOf(threadsTab(nav)).includes('has-attention'));
+  assert.ok(classOf(threadsTab(nav)).includes('needs_input'), 'the Threads tab is coloured as needing you');
 
-  // Open menu: the blocker's row.
-  toggle.props.onClick();
-  menu = drawMenu(child(tree, 'AttentionMenu').props);
-  let row = find(menu, node => node.type === 'button' && classOf(node).includes('attention-row'));
-  assert.ok(row, 'the open menu shows a row for the blocker');
-  assert.match(textOf(row), /Track release readiness/);
-  assert.match(textOf(row), /ApexAgent has 1 active blocker/);
-  assert.match(textOf(row), /Project A · Threads/);
-  assert.ok(classOf(find(row, node => classOf(node).includes('dot'))).includes('needs_input'), 'the row dot shows needs you');
+  // Hovering it lists the blocker.
+  nav = hoverThreads(drawNav, tree);
+  let rows = attentionRows(nav);
+  assert.equal(rows.length, 1, 'the hover list shows a row for the blocker');
+  assert.match(textOf(rows[0]), /Track release readiness/);
+  assert.match(textOf(rows[0]), /ApexAgent has 1 active blocker/);
+  assert.match(textOf(rows[0]), /Project A · Threads/);
+  assert.ok(classOf(find(rows[0], node => classOf(node).includes('dot'))).includes('needs_input'), 'the row dot shows needs you');
 
   // Sidebar badge on the project.
   let badge = sidebarBadge(drawSidebar, tree);
@@ -605,20 +619,16 @@ test('the rendered attention menu and sidebar badge keep an unresolved ApexAgent
   assert.equal(textOf(badge), '1');
   assert.equal(badge.props['aria-label'], '1 wants attention: 1 in Threads');
 
-  // Read the conversation: open it from the menu row, then close it.
-  row.props.onClick();
+  // Read the conversation: open it from the row, then close it.
+  rows[0].props.onClick();
   tree = h.render();
   const opened = agentOf(h, tree);
   assert.ok(opened, 'choosing the row opens the ApexAgent conversation');
   opened.props.onClose();
   tree = h.render();
 
-  menu = drawMenu(child(tree, 'AttentionMenu').props);
-  toggle = find(menu, node => classOf(node).includes('attention-button'));
-  assert.equal(textOf(toggle), '1 needs you', 'the attention button still shows the blocker after reading');
-  toggle.props.onClick();
-  menu = drawMenu(child(tree, 'AttentionMenu').props);
-  assert.match(textOf(find(menu, node => node.type === 'button' && classOf(node).includes('attention-row'))), /ApexAgent has 1 active blocker/, 'the row is still listed after reading');
+  assert.ok(classOf(threadsTab(drawNav(child(tree, 'SectionNavigation').props))).includes('needs_input'), 'the Threads tab still shows the blocker after reading');
+  assert.match(textOf(attentionRows(hoverThreads(drawNav, tree))[0]), /ApexAgent has 1 active blocker/, 'the row is still listed after reading');
   badge = sidebarBadge(drawSidebar, tree);
   assert.equal(textOf(badge), '1', 'the sidebar badge is still there after reading');
 
@@ -627,14 +637,14 @@ test('the rendered attention menu and sidebar badge keep an unresolved ApexAgent
   tree = h.render();
   agentOf(h, tree).props.onMonitorChange(project.id, project.hostId, resolvedBlocker);
   tree = h.render();
-  assert.equal(drawMenu(child(tree, 'AttentionMenu').props), null, 'the attention menu disappears once the blocker is resolved');
+  assert.equal(classOf(threadsTab(drawNav(child(tree, 'SectionNavigation').props))).includes('has-attention'), false, 'the Threads alert disappears once the blocker is resolved');
   assert.equal(sidebarBadge(drawSidebar, tree), null, 'the sidebar badge disappears once the blocker is resolved');
   h.unmount();
 });
 
 test('the rendered Mark ready as seen button clears ordinary Ready flags but keeps the ApexAgent blocker', async () => {
   const h = appHarness();
-  const drawMenu = realAttentionMenu();
+  const drawNav = realSectionNavigation();
   const drawSidebar = realSidebar();
   let tree = h.render(); await tick(); tree = h.render();
   child(tree, 'ApexAgentWidget').props.onOpen(project.id);
@@ -654,23 +664,18 @@ test('the rendered Mark ready as seen button clears ordinary Ready flags but kee
   chat.props.onSignal(pane.id, 'done', 'Finished');
   tree = h.render();
 
-  let menu = drawMenu(child(tree, 'AttentionMenu').props);
-  let toggle = find(menu, node => classOf(node).includes('attention-button'));
-  assert.equal(textOf(toggle), '1 needs you · 1 ready');
+  let nav = hoverThreads(drawNav, tree);
+  assert.ok(classOf(threadsTab(nav)).includes('needs_input'), 'the blocker outranks the ready thread');
+  assert.equal(attentionRows(nav).length, 2, 'the hover list shows the blocker and the ready thread');
   assert.equal(textOf(sidebarBadge(drawSidebar, tree)), '2', 'the project badge counts the blocker and the ready thread');
-  toggle.props.onClick();
-  menu = drawMenu(child(tree, 'AttentionMenu').props);
-  const markSeen = find(menu, node => node.type === 'button' && textOf(node) === 'Mark ready as seen');
-  assert.ok(markSeen, 'the open menu offers Mark ready as seen');
+  const markSeen = find(nav, node => node.type === 'button' && textOf(node) === 'Mark ready as seen');
+  assert.ok(markSeen, 'the hover list offers Mark ready as seen');
   markSeen.props.onClick();
   tree = h.render();
 
-  menu = drawMenu(child(tree, 'AttentionMenu').props);
-  toggle = find(menu, node => classOf(node).includes('attention-button'));
-  assert.equal(textOf(toggle), '1 needs you', 'only the blocker is left');
-  const rows = [];
-  (function collect(node) { if (node && typeof node === 'object') { if (node.type === 'button' && classOf(node).includes('attention-row')) rows.push(textOf(node)); (node.children ?? []).forEach(collect); } })(menu);
-  assert.equal(rows.length, 1);
+  nav = hoverThreads(drawNav, tree);
+  const rows = attentionRows(nav).map(textOf);
+  assert.equal(rows.length, 1, 'only the blocker is left');
   assert.match(rows[0], /ApexAgent has 1 active blocker/);
   assert.equal(textOf(sidebarBadge(drawSidebar, tree)), '1', 'the sidebar badge drops to just the blocker');
   h.unmount();
