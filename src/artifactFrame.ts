@@ -6,7 +6,7 @@ export const FRAME_POLICY = "default-src 'none'; script-src 'unsafe-inline'; sty
 
 const META = `<meta http-equiv="Content-Security-Policy" content="${FRAME_POLICY}">`;
 
-export function frameDocument(kind: "html" | "svg", source: string): string {
+function artifactDocument(kind: "html" | "svg", source: string): string {
   if (kind === "svg") {
     return `<!doctype html><html><head>${META}<meta charset="utf-8"><style>html,body{margin:0;height:100%}body{display:grid;place-items:center;background:#fff}svg{max-width:100%;max-height:100vh}</style></head><body>${source}</body></html>`;
   }
@@ -14,4 +14,16 @@ export function frameDocument(kind: "html" | "svg", source: string): string {
   // elements can hide apparent head tags, and resources can load before them.
   // The HTML parser establishes this trusted head before seeing any source.
   return `<!doctype html><html><head>${META}<meta charset="utf-8"></head>${source}</html>`;
+}
+
+/** The trusted parent governs child navigation: a CSP inside an artifact alone
+ * cannot stop that artifact replacing itself with a network document. The
+ * extra sandbox gives the child a different opaque origin, so source scripts
+ * cannot remove or relax the parent's policy. */
+export function frameDocument(kind: "html" | "svg", source: string): string {
+  const document = artifactDocument(kind, source)
+    .replaceAll("&", "&amp;").replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  const policy = `${FRAME_POLICY}; frame-src about:`;
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta charset="utf-8"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style></head><body><iframe title="Artifact content" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${document}"></iframe></body></html>`;
 }
