@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Diff } from "./ApprovalCard";
 import { nextLine, stripView } from "./answerStrip";
 import type { OpenCard } from "./approvals";
-import { ago, type Attention } from "./attention";
+import { ago, type Attention, type Signal } from "./attention";
 import type { AppSection } from "./types";
 
 const sections = [
@@ -17,6 +17,23 @@ export function SectionIcon({ section }: { section: AppSection }) {
   return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     {section === "agents" ? <><path d="M12 3v4M9 3h6M5 7h14v13H5zM2 11v5m20-5v5M9 17h6" /><path d="M9 11v2m6-2v2" /></> : section === "code" ? <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3m6 0h4" /></> : section === "library" ? <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="9.5" r="1.5" /><path d="m3 17 5-5 4 4 3-3 6 6" /></> : <><path d="M4 4h14v11H9l-5 4V4Z" /><path d="M18 9h3v12l-4-3h-5v-3" /></>}
   </svg>;
+}
+
+/** One pane or ApexAgent item that wants attention, before it is shown as a row. */
+export interface AttentionItem {
+  paneId: string;
+  title: string;
+  /** The workspace the pane belongs to. */
+  workspace: string;
+  /** "Code" or "Threads". */
+  where: string;
+  /** What a terminal's program says it is doing, shown muted after the name; "" when nothing. */
+  program?: string;
+  signal: Signal;
+  /** A thread's open approval cards, oldest first. */
+  cards?: readonly OpenCard[];
+  hostName?: string;
+  available?: boolean;
 }
 
 export interface SectionFlagRow {

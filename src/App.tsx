@@ -17,7 +17,7 @@ import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
 import { ModOverlays, ModStatuses, OPEN_SETTINGS_EVENT } from "./ModView";
 import { modHost } from "./mods/host";
 import { startHub } from "./hub";
-import { SectionNavigation, type SectionFlag } from "./SectionNavigation";
+import { SectionNavigation, type AttentionItem, type SectionFlag } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { ApexAgentSources } from "./ApexAgentSources";
 import { ApexAgentTasks } from "./ApexAgentTasks";
@@ -53,7 +53,6 @@ import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
-import type { AttentionItem } from "./AttentionMenu";
 import { monitorAttentionEntries, reconcileMonitorHost, withMonitorSnapshot, type MonitorAttentionState } from "./monitorAttention.ts";
 import { assistantTaskAttentionSignal } from "./monitorAttention.ts";
 import { currentAssistantRegistry as selectCurrentAssistantRegistry, emptyAssistantRegistry, mergeAssistantPanes, reduceAssistantSnapshot, type AssistantRegistryState } from "./assistantRegistry.ts";

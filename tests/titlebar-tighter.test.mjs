@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 const plain = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const glass = readFileSync(new URL("../src/glass-theme.css", import.meta.url), "utf8");
 const paneLayout = readFileSync(new URL("../src/PaneLayout.tsx", import.meta.url), "utf8");
-const attentionMenu = readFileSync(new URL("../src/AttentionMenu.tsx", import.meta.url), "utf8");
+const sectionNavigation = readFileSync(new URL("../src/SectionNavigation.tsx", import.meta.url), "utf8");
 const block = (css, selector) => {
   const start = css.indexOf(`${selector} {`);
   assert.notEqual(start, -1, `${selector} block missing`);
@@ -50,5 +50,5 @@ test("scaled title bar controls exclude nested menus and include pane presets", 
   assert.match(plain, /\.titlebar > \.titlebar-end > \.layout-presets > button\s*\{[^}]*padding:\s*calc\(8px \* var\(--tb-scale\)\)/);
   assert.match(plain, /\.titlebar > \.titlebar-start > \.attention > \.attention-button/);
   assert.doesNotMatch(plain, /\.titlebar svg\s*\{/);
-  assert.match(attentionMenu, /className="attention-list" role="dialog"/);
+  assert.match(sectionNavigation, /className="attention-list section-alerts" role="dialog"/);
 });
