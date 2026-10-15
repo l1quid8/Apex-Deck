@@ -313,9 +313,8 @@ impl Snapshots {
             if let Err(error) = result { return Err(format!("could not restore files: {error}")); }
         }
         for path in wanted.difference(&existed) {
-            let full = cwd.join(path);
-            match std::fs::remove_file(&full) {
-                Ok(()) => remove_empty_parents(cwd, &full),
+            match remove_project_file(cwd, path) {
+                Ok(()) => {},
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
                 Err(_) => failed.push(path.clone()),
             }
@@ -394,12 +393,40 @@ fn safe_path(path: &str) -> bool {
         && !p.components().any(|c| SKIPPED_FOLDERS.iter().any(|s| c.as_os_str() == *s))
 }
 
-fn remove_empty_parents(cwd: &Path, file: &Path) {
-    let mut dir = file.parent();
-    while let Some(d) = dir {
-        if d == cwd || !d.starts_with(cwd) || std::fs::remove_dir(d).is_err() { break; }
-        dir = d.parent();
+/// Walk and unlink relative to held directories, never following an ancestor
+/// link. A link replacement after opening cannot redirect the unlink outside.
+#[cfg(unix)]
+fn remove_project_file(cwd: &Path, relative: &str) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::ffi::CString;
+    let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid restore path");
+    let root = CString::new(cwd.as_os_str().as_bytes()).map_err(|_| invalid())?;
+    let fd = unsafe { libc::open(root.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 { return Err(std::io::Error::last_os_error()); }
+    let mut dirs = vec![unsafe { OwnedFd::from_raw_fd(fd) }];
+    let names: Vec<CString> = Path::new(relative).components().map(|c| {
+        if let std::path::Component::Normal(name) = c { CString::new(name.as_bytes()).map_err(|_| invalid()) } else { Err(invalid()) }
+    }).collect::<Result<_, _>>()?;
+    let (leaf, ancestors) = names.split_last().ok_or_else(invalid)?;
+    for name in ancestors {
+        let fd = unsafe { libc::openat(dirs.last().unwrap().as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+        if fd < 0 { return Err(std::io::Error::last_os_error()); }
+        dirs.push(unsafe { OwnedFd::from_raw_fd(fd) });
     }
+    if unsafe { libc::unlinkat(dirs.last().unwrap().as_raw_fd(), leaf.as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    for index in (0..ancestors.len()).rev() {
+        if unsafe { libc::unlinkat(dirs[index].as_raw_fd(), ancestors[index].as_ptr(), libc::AT_REMOVEDIR) } != 0 { break; }
+    }
+    Ok(())
+}
+
+// Fail closed on platforms without directory-relative no-follow deletion.
+#[cfg(not(unix))]
+fn remove_project_file(_cwd: &Path, _relative: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "safe checkpoint deletion is unavailable on this platform"))
 }
 
 #[cfg(test)]
@@ -415,6 +442,27 @@ mod tests {
     }
 
     fn bot() -> Option<ParticipantId> { Some(ParticipantId::new("jigga")) }
+
+    #[cfg(unix)]
+    #[test]
+    fn revert_does_not_follow_a_replaced_ancestor_symlink() {
+        let (cwd, snaps) = folder("ancestor-symlink");
+        snaps.take("t", &cwd, 0, Kind::Open, None).unwrap();
+        snaps.take("t", &cwd, 0, Kind::Send, None).unwrap();
+        std::fs::create_dir(cwd.join("sub")).unwrap();
+        std::fs::write(cwd.join("sub/victim"), "task").unwrap();
+        snaps.take("t", &cwd, 1, Kind::Idle, None).unwrap();
+        let plan = snaps.plan("t", &cwd, 0, None);
+        let outside = cwd.parent().unwrap().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("victim"), "keep").unwrap();
+        std::fs::remove_dir_all(cwd.join("sub")).unwrap();
+        std::os::unix::fs::symlink(&outside, cwd.join("sub")).unwrap();
+        let paths = plan.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>();
+        let failed = snaps.restore("t", &cwd, 0, None, &paths).unwrap();
+        assert_eq!(std::fs::read_to_string(outside.join("victim")).unwrap(), "keep");
+        assert_eq!(failed, vec!["sub/victim"]);
+    }
 
     #[test]
     fn revert_puts_back_this_threads_files_and_leaves_others_alone() {

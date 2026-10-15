@@ -13,7 +13,7 @@ const READ_ONLY: &[&str] = &[
 ];
 /// Read-only programs that show a file's contents: pointed outside the
 /// assistant's folders, they always ask, whatever the rules say.
-const CONTENT_READERS: &[&str] = &["cat", "head", "tail", "grep", "rg", "find", "md5sum", "sha256sum", "wc", "tree", "ls", "stat", "file", "test", "["];
+const CONTENT_READERS: &[&str] = &["cat", "head", "tail", "grep", "rg", "find", "md5sum", "sha256sum", "wc", "tree", "ls", "stat", "file", "test", "[", "sort", "uniq", "git"];
 /// Programs that reach the network, refused in local-only mode.
 const NETWORK: &[&str] = &["ping", "dig", "nslookup", "host", "curl", "wget", "ssh", "scp", "rsync", "nc"];
 
@@ -21,31 +21,94 @@ fn program(argv: &[String]) -> &str {
     argv.first().map(|p| p.rsplit('/').next().unwrap_or(p)).unwrap_or("")
 }
 
-/// Subcommands that keep a read-only program read-only.
+/// Only positively recognized argument forms can run as reads. Unknown flags
+/// need approval: many otherwise read-only tools have output or execution hooks.
 fn read_only_use(argv: &[String]) -> bool {
-    let rest: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
-    let sub = rest.iter().find(|a| !a.starts_with('-')).copied().unwrap_or("");
-    match program(argv) {
-        "git" => matches!(sub, "status" | "log" | "diff" | "show" | "branch" | "remote" | "rev-parse" | "ls-files" | "describe" | "blame" | "shortlog")
-            && !rest.iter().any(|a| matches!(*a, "-d" | "-D" | "-m" | "-M" | "--delete" | "add" | "remove" | "rename" | "set-url")),
-        "systemctl" => matches!(sub, "status" | "is-active" | "is-enabled" | "is-failed" | "list-units" | "list-timers" | "show"),
-        "docker" => matches!(sub, "ps" | "images" | "logs" | "inspect" | "stats" | "version" | "info"),
-        "ip" => matches!(sub, "addr" | "address" | "route" | "link" | "a" | "r") && !rest.iter().any(|a| matches!(*a, "add" | "del" | "delete" | "set" | "flush" | "change" | "replace")),
-        "find" => !rest.iter().any(|a| matches!(*a, "-exec" | "-execdir" | "-delete" | "-ok" | "-okdir" | "-fprint" | "-fprintf" | "-fls" | "-fprint0")),
-        "journalctl" => !rest.iter().any(|a| a.starts_with("--vacuum") || *a == "--rotate" || *a == "--flush"),
-        "top" => rest.contains(&"-b") || rest.contains(&"-bn1"),
-        "date" => !rest.iter().any(|a| *a == "-s" || a.starts_with("--set")),
-        "hostname" => rest.iter().all(|a| a.starts_with('-')),
-        "sort" => !rest.iter().any(|a| *a == "-o" || a.starts_with("--output")),
-        _ => true,
+    if argv.first().is_some_and(|p| p.contains('/') || p.contains('\\')) { return false; }
+    let args: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+    let name = program(argv);
+    if name == "git" {
+        let Some((sub, rest)) = args.split_first() else { return false };
+        let flags: &[&str] = match *sub {
+            "status" => &["--short", "-s", "--branch", "-b", "--porcelain", "--porcelain=v1", "--porcelain=v2"],
+            "log" | "show" | "diff" => &["--oneline", "--stat", "--name-only", "--name-status", "--no-patch", "-p", "--cached", "--staged", "--no-ext-diff", "--no-textconv"],
+            "branch" => return rest.iter().all(|a| matches!(*a, "--list" | "-l" | "-a" | "--all" | "-r" | "--remotes" | "--show-current" | "-v" | "-vv")),
+            "remote" => return rest.iter().all(|a| *a == "-v" || *a == "--verbose"),
+            "ls-files" => &["--stage", "-s", "--cached", "--others", "--exclude-standard", "-z"],
+            "rev-parse" => &["--show-toplevel", "--git-dir", "--show-prefix", "--abbrev-ref", "--verify", "--short"],
+            "describe" => &["--always", "--tags", "--dirty"],
+            _ => return false,
+        };
+        return rest.iter().all(|a| !a.starts_with('-') || *a == "--" || flags.contains(a));
     }
+    let flags: &[&str] = match name {
+        "cat" => &["-n", "-b", "-s", "-v", "-e", "-t", "-A"],
+        "head" | "tail" => &["-n", "-c", "-q", "-v"],
+        "ls" => &["-l", "-a", "-la", "-al", "-h", "-lh", "-lah", "-R", "-d", "-1", "--all", "--long"],
+        "rg" | "grep" => &["-n", "-i", "-v", "-l", "-c", "-w", "-F", "-E", "-r", "-R", "--files", "--hidden", "--no-ignore", "--line-number", "--fixed-strings"],
+        "sort" => &["-n", "-r", "-u", "-f", "-b", "-h", "-V"],
+        "uniq" => &["-c", "-d", "-u"],
+        "wc" => &["-l", "-w", "-c", "-m", "-L"],
+        "find" => &["-name", "-iname", "-path", "-type", "-maxdepth", "-mindepth", "-print", "-print0"],
+        "test" | "[" => &["-e", "-f", "-d", "-r", "-s", "-L", "-h", "-n", "-z"],
+        "df" | "du" => &["-h", "-k", "-m", "-s", "-a", "--human-readable"],
+        "uname" => &["-a", "-s", "-r", "-m"],
+        "date" => return args.iter().all(|a| matches!(*a, "-u" | "--utc" | "--iso-8601") || a.starts_with('+')),
+        "hostname" => return args.is_empty(),
+        "echo" => &["-n"],
+        "stat" | "file" | "md5sum" | "sha256sum" | "tree" | "which" => &[],
+        "whoami" | "id" | "uptime" | "free" | "nproc" | "true" => return args.is_empty(),
+        // Network commands are classified as Send separately.
+        "ping" | "dig" | "nslookup" | "host" => return true,
+        _ => return false,
+    };
+    args.iter().all(|a| !a.starts_with('-') || *a == "--" || *a == "-" || flags.contains(a))
 }
 
-fn inside(path: &str, folders: &[String]) -> bool {
-    if path.contains("..") {
-        return false;
+fn resolved(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::{Component, PathBuf};
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => { result.pop(); }
+            Component::CurDir => {},
+            other => { result.push(other.as_os_str()); }
+        }
+        // Resolve each existing prefix before consuming .., matching filesystem semantics.
+        if std::fs::symlink_metadata(&result).is_ok() {
+            result = std::fs::canonicalize(&result).ok()?;
+        }
     }
-    folders.iter().any(|folder| path == folder || path.starts_with(&format!("{}/", folder.trim_end_matches('/'))))
+    result.is_absolute().then_some(result)
+}
+
+/// Extract operands without mistaking a search pattern or option value for a file.
+fn file_operands(op: &OperationSpec) -> Vec<&str> {
+    let name = program(&op.argv);
+    let mut pattern = matches!(name, "rg" | "grep") && !op.argv.iter().any(|a| a == "--files");
+    let mut value = false;
+    let mut options = true;
+    let mut paths = Vec::new();
+    for arg in op.argv.iter().skip(1).map(String::as_str) {
+        if value { value = false; continue; }
+        if options && arg == "--" { options = false; continue; }
+        if options && arg.starts_with('-') && arg != "-" {
+            value = matches!((name, arg), ("head" | "tail", "-n" | "-c") | ("find", "-name" | "-iname" | "-path" | "-type" | "-maxdepth" | "-mindepth"));
+            continue;
+        }
+        if pattern { pattern = false; continue; }
+        if name == "[" && arg == "]" { continue; }
+        paths.push(arg);
+    }
+    paths
+}
+
+fn inside(path: &str, cwd: &str, folders: &[String]) -> bool {
+    if path.starts_with('~') { return false; }
+    let path = std::path::Path::new(path);
+    let full = if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(cwd).join(path) };
+    let Some(full) = resolved(&full) else { return false };
+    folders.iter().filter_map(|f| resolved(std::path::Path::new(f))).any(|folder| full.starts_with(folder))
 }
 
 /// The action class of an operation, and whether it reads something
@@ -63,7 +126,7 @@ pub fn classify(op: &OperationSpec, folders: &[String]) -> (ToolClass, bool) {
                 return (ToolClass::Send, false);
             }
             let private = CONTENT_READERS.contains(&name)
-                && op.argv.iter().skip(1).filter(|a| !a.starts_with('-')).any(|a| (a.starts_with('/') || a.starts_with('~')) && !inside(a, folders));
+                && (!inside(&op.cwd, &op.cwd, folders) || file_operands(op).iter().any(|a| !inside(a, &op.cwd, folders)));
             (ToolClass::Read, private)
         }
         // Opening any address the model picks can carry data to that site.
@@ -133,6 +196,42 @@ mod tests {
 
     fn op(argv: &[&str]) -> OperationSpec {
         OperationSpec { tool: crate::personal_worker::COMMAND_TOOL.into(), host: "h".into(), cwd: "/srv/a".into(), argv: argv.iter().map(|s| s.to_string()).collect(), plan: None }
+    }
+
+    #[test]
+    fn unsafe_read_arguments_require_write_approval() {
+        for argv in [vec!["git", "branch", "-f", "saved", "HEAD~1"], vec!["sort", "-oout", "input"], vec!["rg", "--pre", "script", "pattern", "input"], vec!["git", "diff", "--output=out"], vec!["git", "branch", "new-branch"]] {
+            assert_eq!(classify(&op(&argv), &[]).0, ToolClass::Write, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn date_setting_and_disguised_executables_are_not_automatic_reads() {
+        assert_eq!(classify(&op(&["date", "101512002026"]), &[]).0, ToolClass::Write);
+        assert_eq!(classify(&op(&["/tmp/cat", "notes"]), &[]).0, ToolClass::Write);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_and_symlink_reads_respect_folder_boundary() {
+        let base = std::env::temp_dir().join(format!("gateway-paths-{}", std::process::id()));
+        let root = base.join("allowed");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("local"), "ok").unwrap();
+        std::fs::write(base.join("outside"), "private").unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), root.join("linked")).unwrap();
+        let folders = vec![root.to_string_lossy().into_owned()];
+        for (arg, private) in [("local", false), ("../outside", true), ("linked", true)] {
+            let mut operation = op(&["cat", arg]);
+            operation.cwd = root.to_string_lossy().into_owned();
+            assert_eq!(classify(&operation, &folders), (ToolClass::Read, private), "{arg}");
+        }
+        for argv in [vec!["rg", "nonexistent-pattern", "local"], vec!["head", "-n", "2", "local"], vec!["find", ".", "-name", "*.txt"]] {
+            let mut operation = op(&argv);
+            operation.cwd = root.to_string_lossy().into_owned();
+            assert_eq!(classify(&operation, &folders), (ToolClass::Read, false));
+        }
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

@@ -651,6 +651,11 @@ pub fn apply_integration(plan: &IntegrationPlan, journal_path: &Path) -> Result<
     if scratch.tree != git(&plan.root, &["rev-parse", &format!("{}^{{tree}}", plan.merged_commit)])?.trim() {
         return Err("The integration scratch files changed after verification. Re-stage before accepting.".into());
     }
+    // Git's merged tree defines file leaves. A deleted file can now be a
+    // directory in scratch, and a deleted child can have a file ancestor.
+    let merged_leaves: std::collections::BTreeSet<Vec<u8>> = run_git(
+        &plan.root, None, &["ls-tree", "-r", "--name-only", "-z", &plan.merged_commit], None
+    )?.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| p.to_vec()).collect();
     let mut journal = ApplyJournal {
         version: 1,
         task_id: plan.task_id.clone(),
@@ -662,7 +667,7 @@ pub fn apply_integration(plan: &IntegrationPlan, journal_path: &Path) -> Result<
     for path in plan
         .changed_paths
         .iter()
-        .filter(|p| std::fs::symlink_metadata(plan.scratch_path.join(p)).is_err())
+        .filter(|p| !merged_leaves.contains(p.as_bytes()))
     {
         let relative = safe_relative(path)?;
         let to = plan.root.join(&relative);
@@ -684,7 +689,7 @@ pub fn apply_integration(plan: &IntegrationPlan, journal_path: &Path) -> Result<
     for path in plan
         .changed_paths
         .iter()
-        .filter(|p| std::fs::symlink_metadata(plan.scratch_path.join(p)).is_ok())
+        .filter(|p| merged_leaves.contains(p.as_bytes()))
     {
         let relative = safe_relative(path)?;
         let from = plan.scratch_path.join(&relative);
@@ -974,6 +979,36 @@ mod tests {
         .unwrap();
         root
     }
+    #[test]
+    fn integration_accepts_file_directory_transitions_and_preserves_index() {
+        for directory_first in [false, true] {
+            let root = fixture();
+            if directory_first {
+                std::fs::create_dir(root.join("a")).unwrap();
+                std::fs::write(root.join("a/child"), "old").unwrap();
+            } else { std::fs::write(root.join("a"), "old").unwrap(); }
+            git(&root, &["add", "."]).unwrap();
+            git(&root, &["-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "commit", "-qm", "shape"]).unwrap();
+            let data = root.with_extension("data");
+            let baseline = capture(&root, "shape", "baseline").unwrap();
+            let task = prepare_worktree(&baseline, "shape", &data).unwrap();
+            if directory_first {
+                std::fs::remove_dir_all(task.join("a")).unwrap();
+                std::fs::write(task.join("a"), "new").unwrap();
+            } else {
+                std::fs::remove_file(task.join("a")).unwrap();
+                std::fs::create_dir(task.join("a")).unwrap();
+                std::fs::write(task.join("a/child"), "new").unwrap();
+            }
+            let result = capture_result(&task, "shape").unwrap();
+            let index = std::fs::read(root.join(".git/index")).unwrap();
+            let plan = stage_integration(&root, &baseline, &result.commit, "shape", &data).unwrap();
+            apply_integration(&plan, &data.join("apply.json")).unwrap();
+            assert_eq!(std::fs::read_to_string(root.join(if directory_first { "a" } else { "a/child" })).unwrap(), "new");
+            assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), index);
+        }
+    }
+
     #[test]
     fn dirty_snapshot_captures_staged_unstaged_and_new_files_without_changing_index() {
         let root = fixture();
