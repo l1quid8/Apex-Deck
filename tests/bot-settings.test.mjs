@@ -22,7 +22,10 @@ test('Model switching and supported speed selections persist when the quick sele
     const backend={decisionKeyStatus:async()=>false,agentModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},apiModels:async()=>{if(window.fixture.fail)throw Error('offline');return models;},roomCreate:async()=>({participants:[window.fixture.config]})};
     window.ready=true;
   </script></body></html>`;
-  const server = await createServer({ server: { port: 0 }, logLevel: 'error', plugins: [{ name: 'bot-settings-test', configureServer(server) { server.middlewares.use('/__bot_settings_test', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/__bot_settings_test', html)); }); } }] });
+  // Each parallel test file gets its own dependency cache: Vite servers sharing
+  // node_modules/.vite race renaming deps_temp into deps (ENOTEMPTY), and the
+  // loser's page never finishes loading.
+  const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { port: 0 }, logLevel: 'error', plugins: [{ name: 'bot-settings-test', configureServer(server) { server.middlewares.use('/__bot_settings_test', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/__bot_settings_test', html)); }); } }] });
   await server.listen();
   const url = `http://localhost:${server.httpServer.address().port}/__bot_settings_test`;
   const main = path.join(temp, 'main.cjs');

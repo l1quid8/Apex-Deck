@@ -22,7 +22,10 @@ test('Library controls stay outside media and navigation resets the active previ
     createRoot(document.getElementById('test-root')).render(React.createElement(LibraryView,{machines:[{id:'local',name:'Test Mac',offline:false}],backendOf:()=>backend,threads:[],workspaces:[],onOpenThread(){}}));
     window.ready=true;
   </script></body></html>`;
-  const server = await createServer({ server: { port: 0 }, logLevel: 'error', plugins: [{ name: 'library-test', configureServer(server) { server.middlewares.use('/__library_test', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/__library_test', html)); }); } }] });
+  // Each parallel test file gets its own dependency cache: Vite servers sharing
+  // node_modules/.vite race renaming deps_temp into deps (ENOTEMPTY), and the
+  // loser's page never finishes loading.
+  const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { port: 0 }, logLevel: 'error', plugins: [{ name: 'library-test', configureServer(server) { server.middlewares.use('/__library_test', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml('/__library_test', html)); }); } }] });
   await server.listen();
   const url = `http://localhost:${server.httpServer.address().port}/__library_test`;
   const main = path.join(temp, 'main.cjs');

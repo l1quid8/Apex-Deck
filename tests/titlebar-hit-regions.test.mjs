@@ -21,7 +21,10 @@ function readRegions() {
 // Exercise the real App layout; inspecting the button's CSS alone misses this.
 test('the right toolbar drag region never covers the section switcher', { timeout: 60000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'titlebar-hit-regions-'));
-  const server = await createServer({ server: { port: 0 }, logLevel: 'error' });
+  // Each parallel test file gets its own dependency cache: Vite servers sharing
+  // node_modules/.vite race renaming deps_temp into deps (ENOTEMPTY), and the
+  // loser's page never finishes loading.
+  const server = await createServer({ cacheDir: path.join(temp, 'vite-cache'), server: { port: 0 }, logLevel: 'error' });
   await server.listen();
   const url = `http://localhost:${server.httpServer.address().port}/`;
   const main = path.join(temp, 'main.cjs');
