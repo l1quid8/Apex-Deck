@@ -111,6 +111,8 @@ interface Props {
   agents: AgentInfo[];
   backend: Backend;
   focused: boolean;
+  /** Keep background subscriptions active without rendering hidden transcripts. */
+  visible?: boolean;
   /** The workspace's name, for the details sidebar heading. */
   workspaceName?: string;
   /** What the thread reports to App: the pane head's words, and who is replying or waiting on a card. */
@@ -442,7 +444,11 @@ function fitHead(head: HTMLElement) {
   head.toggleAttribute("data-flag-hidden", Boolean(head.querySelector(".flag")) && head.scrollWidth > head.clientWidth);
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, profileMode = false, details }: Props) {
+  // Hydrate on first display, then keep the DOM so switching chats preserves
+  // selection, scroll position, expanded messages and loaded media.
+  const transcriptMounted = useRef(visible);
+  if (visible) transcriptMounted.current = true;
   // Read when a thread is first made, so changing settings never restarts an open one.
   const defaults = useRef({ newThread, newBotAccess });
   defaults.current = { newThread, newBotAccess };
@@ -1130,7 +1136,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     measureCards();
   };
   // Before paint, so following the bottom never flickers.
-  useLayoutEffect(() => settle.current(), [entries, drafts, asks, dividerAt]);
+  useLayoutEffect(() => settle.current(), [entries, drafts, asks, dividerAt, visible]);
   // Showing the pane, or a composer that grows, changes the transcript's
   // height without any scrolling: stay at the bottom if you were there.
   useEffect(() => {
@@ -2917,7 +2923,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </div>
         )}
         {pane.fork && pane.fork.at === 0 && forkLine}
-        {entries.flatMap((entry) => {
+        {transcriptMounted.current && entries.flatMap((entry) => {
           const item = entry.kind === "notice" ? (
             <p key={`n${entry.notice.key}`} className={`notice ${entry.notice.tone}${entry.notice.action ? " with-action" : ""}`}>
               <span>{entry.notice.text}</span>
@@ -2973,7 +2979,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             ? [<div key={`u${entry.message.seq}`} className="unseen-divider" role="separator" aria-label="New since you looked"><span>New since you looked</span></div>, item, ...after]
             : [item, ...after];
         })}
-        {Object.entries(drafts).map(([id, partial]) => {
+        {transcriptMounted.current && Object.entries(drafts).map(([id, partial]) => {
           const turn = working[id];
           const steps = turn?.steps ?? [];
           // Long turns take many steps; the latest few say where it is.

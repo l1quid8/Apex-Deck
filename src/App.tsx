@@ -17,6 +17,7 @@ import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
 import { ModOverlays, ModStatuses, OPEN_SETTINGS_EVENT } from "./ModView";
 import { modHost } from "./mods/host";
 import { startHub } from "./hub";
+import { loadStartupState } from "./startupState.ts";
 import { SectionNavigation, type AttentionItem, type SectionFlag } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
 import { ApexAgentSources } from "./ApexAgentSources";
@@ -459,10 +460,9 @@ export function App() {
     getBackend().then(async (b) => {
       await startHub(b);
       if (!b.demo) modHost.start();
-      const found = await (b.machines ? b.machines.discover() : b.detectAgents()).catch(() => []);
-      const folders = await b.startupFolders().catch(() => []);
-      const saved = await b.sessionLoad();
-      const savedSettings = await b.settingsLoad().then((raw) => ({ raw }), (error) => ({ error }));
+      const { folders, saved, savedSettings } = await loadStartupState(b, agents => {
+        if (alive) setAgents(agents);
+      });
       if (!alive) return;
       if ("raw" in savedSettings) {
         setSettings(readSettings(savedSettings.raw, saved?.disabledProviders));
@@ -471,7 +471,6 @@ export function App() {
         setSettings(readSettings(null, saved?.disabledProviders));
         setStorageError(`Could not read settings: ${String(savedSettings.error)}. Defaults are in use and the file has been kept.`);
       }
-      setAgents(found);
       const known = normalizeWorkspaces(saved?.workspaces ?? loadWorkspaces());
       setWorkspaces(known);
       const loaded = loadedPanes(saved?.panes ?? [], known.map((w) => w.id));
@@ -2193,7 +2192,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>

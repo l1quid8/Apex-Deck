@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import { transform } from 'sucrase';
 import * as attention from '../src/attention.ts';
+import { loadStartupState } from '../src/startupState.ts';
 import * as monitorAttention from '../src/monitorAttention.ts';
 import * as canvasPanes from '../src/canvasPanes.ts';
 import * as layout from '../src/layout.ts';
@@ -122,6 +123,7 @@ function appHarness() {
     ...monitorAttention,
     ...canvasPanes,
     ...layout,
+    loadStartupState,
     ...paneHost,
     ...themes,
     ...assistantRegistry,
