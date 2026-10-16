@@ -9,7 +9,7 @@ import { createServer } from 'vite';
 
 test('ComposerPanel controls detents, preserves scroll, handles picker callbacks, revokes previews and restores focus', { timeout: 60000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-composer-panel-'));
-  const html = `<html><body><div id="frame" class="phone-frame ph-app"><button class="ph-add" id="trigger">+</button><div id="root"></div></div><script type="module">
+  const html = `<html><body><div id="frame" class="phone-frame ph-app" style="position:relative;width:320px;height:430px;overflow:hidden"><button class="ph-add" id="trigger">+</button><div id="root"></div></div><script type="module">
     import React,{useState} from 'react'; import {createRoot} from 'react-dom/client';
     import {ComposerPanel} from '/src/phone/ComposerPanel.tsx'; import '/src/phone/composer-panel.css'; import '/src/phone/phone-themes.css'; import '/src/glass-theme.css';
     const root=createRoot(document.getElementById('root')); window.calls=[]; window.created=[]; window.revoked=[]; URL.createObjectURL=()=>{const url='blob:fixture-'+window.created.length;window.created.push(url);return url;}; URL.revokeObjectURL=url=>window.revoked.push(url);
@@ -24,7 +24,7 @@ test('ComposerPanel controls detents, preserves scroll, handles picker callbacks
   fs.writeFileSync(main, `
     const {app,BrowserWindow}=require('electron'); const assert=require('node:assert/strict');
     app.whenReady().then(async()=>{const win=new BrowserWindow({show:true,width:360,height:600,webPreferences:{contextIsolation:true,backgroundThrottling:false}});win.webContents.debugger.attach('1.3');win.webContents.on('console-message',(_e,...args)=>console.log(...args));const run=fn=>win.webContents.executeJavaScript('('+fn.toString()+')()');const wait=async fn=>{for(let i=0;i<150;i++){if(await run(fn))return;await new Promise(r=>setTimeout(r,20));}throw Error('Timed out: '+fn+'; active='+await run(()=>document.activeElement.outerHTML)+'; panel='+await run(()=>document.querySelector('.ph-composer-panel')?.parentElement.outerHTML.slice(0,100))+'; state='+await run(()=>window.openState)+'; calls='+await run(()=>JSON.stringify(window.calls)));};
-      try{await win.loadURL(${JSON.stringify(url)});win.show();await wait(()=>window.ready&&document.querySelector('.ph-composer-panel'));await win.webContents.executeJavaScript('document.getElementById("frame").style.cssText="position:relative;width:320px;height:430px;overflow:hidden"');
+      try{await win.loadURL(${JSON.stringify(url)});win.show();await wait(()=>window.ready&&document.querySelector('.ph-composer-panel'));await win.webContents.executeJavaScript('document.querySelector(".ph-composer-panel").style.transition="none"');
         assert.equal(await run(()=>document.querySelector('.ph-composer-panel')?.classList.contains('compact')),true,'starts compact');
         assert.equal(await run(()=>document.querySelector('.ph-composer-grip').getAttribute('aria-label')),'Expand panel');
         assert.equal(await run(()=>document.documentElement.dataset.deckTheme),'glass','glass theme attribute is active');assert.match(await run(()=>getComputedStyle(document.querySelector('.phone-frame')).backgroundImage),/radial-gradient/,'glass backdrop is active');await run(()=>document.documentElement.dataset.deckTheme='flat');assert.equal(await run(()=>getComputedStyle(document.querySelector('.phone-frame')).backgroundImage),'none','flat theme removes glass backdrop');await run(()=>document.documentElement.dataset.deckTheme='glass');
