@@ -1,14 +1,22 @@
 import { createRoot } from "react-dom/client";
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Keyboard } from "@capacitor/keyboard";
 
 import "../styles.css";
+import "../glass-theme.css";
+import "../appearance-settings.css";
 import { PhoneApp } from "./PhoneApp";
+import { watchPhoneTransparency, type PhoneTransparency } from "./appearance";
 // Phone overrides follow the shared components' styles in both dev and bundled builds.
 import "./phone.css";
+import "./phone-themes.css";
 
 const root = document.documentElement;
 const view = window.visualViewport;
+
+if (Capacitor.isPluginAvailable("ApexAppearance")) {
+  watchPhoneTransparency(registerPlugin<PhoneTransparency>("ApexAppearance"), reduced => root.toggleAttribute("data-phone-solid", reduced));
+}
 
 if (Capacitor.isPluginAvailable("Keyboard")) {
   // In the iPhone app the web view is the screen's root view, so iOS resets

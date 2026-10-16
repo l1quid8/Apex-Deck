@@ -75,10 +75,11 @@ function GlowColorRow({ index, color, onCommit }: { index: number; color: string
 }
 
 /** Appearance controls for the glass skin system. The parent owns persistence. */
-export function AppearanceSettings({ value, onChange }: { value: AppearanceState; onChange: (value: AppearanceState) => void }) {
+export function AppearanceSettings({ value, onChange, textTransfer = false }: { value: AppearanceState; onChange: (value: AppearanceState) => void; textTransfer?: boolean }) {
   const picker = useRef<HTMLInputElement>(null);
   const [skinName, setSkinName] = useState("");
   const [description, setDescription] = useState("");
+  const [transferText, setTransferText] = useState("");
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>({ text: "" });
   const current = value.current;
   const appearance = current.appearance;
@@ -130,6 +131,11 @@ export function AppearanceSettings({ value, onChange }: { value: AppearanceState
     }
   };
   const exportSkin = () => {
+    if (textTransfer) {
+      setTransferText(JSON.stringify(current, null, 2));
+      setNotice({ text: "Skin JSON ready below. Copy it to share or import on another device." });
+      return;
+    }
     try {
       const blob = new Blob([JSON.stringify(current, null, 2) + "\n"], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -306,10 +312,22 @@ export function AppearanceSettings({ value, onChange }: { value: AppearanceState
     <section className="appearance-section" aria-labelledby="appearance-share-title">
       <div className="appearance-section-heading"><div><h3 id="appearance-share-title">Share a skin</h3><p>Skin files contain the supported appearance values only.</p></div></div>
       <div className="appearance-actions">
-        <button type="button" onClick={exportSkin}>Export current skin</button>
+        <button type="button" onClick={exportSkin}>{textTransfer ? "Show current skin JSON" : "Export current skin"}</button>
         <button type="button" onClick={() => picker.current?.click()}>Import JSON skin</button>
         <input ref={picker} className="visually-hidden" type="file" accept="application/json,.json" aria-label="Choose a skin JSON file" onChange={(event) => void importFile(event)} />
       </div>
+      {textTransfer && <div className="appearance-prompt">
+        <label htmlFor="appearance-transfer">Skin JSON</label>
+        <p>Copy a skin to another device, or paste one here to import it.</p>
+        <textarea id="appearance-transfer" rows={5} maxLength={FILE_LIMIT} value={transferText} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={(event) => setTransferText(event.currentTarget.value)} />
+        <div className="appearance-actions">
+          <button type="button" disabled={!transferText.trim()} onClick={() => void copyText(transferText, "Skin JSON copied.")}>Copy JSON</button>
+          <button type="button" disabled={!transferText.trim()} onClick={() => {
+            try { importText(transferText); }
+            catch (error) { setNotice({ text: error instanceof Error ? error.message : String(error), error: true }); }
+          }}>Import pasted JSON</button>
+        </div>
+      </div>}
       <div className="appearance-prompt">
         <label htmlFor="appearance-prompt-description">Copy an AI prompt</label>
         <p>Describe a look, then copy a prompt that explains Deck’s skin file format. Deck does not generate the skin for you.</p>

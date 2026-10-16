@@ -1,6 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 import { botChangeGate, botSendGate } from "../phoneBots";
+import { AppearanceSettings } from "../AppearanceSettings";
+import { defaultAppearanceSettings, type AppearanceSettings as AppearanceState } from "../themes";
+import { applyPhoneTheme, loadPhoneAppearance, savePhoneAppearance } from "./appearance";
 import { ApprovalCard } from "../ApprovalCard";
 import { Avatar } from "../Avatar";
 import { ApexAgentSources } from "../ApexAgentSources";
@@ -80,7 +83,7 @@ const FOLDS_KEY = "apex-deck.phone.folds.v1";
 const CREW_KEY = "apex-deck.phone.crew.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
-type Tab = "threads" | "agents" | "code" | "library" | "machines";
+type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
 type Draft = { text: string; files: { name: string; bytes: Uint8Array }[] };
 type Pending = { id: string; workspaceId: string };
 type Ask = { paneId: string; workspaceId: string };
@@ -199,6 +202,17 @@ function usePillPress() {
 }
 
 export function PhoneApp() {
+  const [appearance, setAppearance] = useState<AppearanceState>(() => {
+    try { return loadPhoneAppearance(localStorage); } catch { return defaultAppearanceSettings(); }
+  });
+  const [appearanceSaveError, setAppearanceSaveError] = useState(false);
+  const settingsReturn = useRef<Tab>("threads");
+  useLayoutEffect(() => applyPhoneTheme(document.documentElement, appearance.current.appearance), [appearance]);
+  const changeAppearance = (next: AppearanceState) => {
+    setAppearance(next);
+    try { setAppearanceSaveError(!savePhoneAppearance(localStorage, next)); }
+    catch { setAppearanceSaveError(true); }
+  };
   const [machines, setMachines] = useState<Machine[]>(() => loadMachines(typeof localStorage === "undefined" ? null : localStorage.getItem(machinesKey())));
   const [hosts, setHosts] = useState<PhoneHost[]>([]);
   const plugin = useMemo(() => remotePlugin(), []);
@@ -1206,12 +1220,16 @@ export function PhoneApp() {
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
-            {tab === "machines"
+            {tab === "appearance"
+              ? <button type="button" className="ph-back" onClick={() => setTab("settings")}><ArrowLeft size={20} />Settings</button>
+              : tab === "settings"
+              ? <button type="button" className="ph-back" onClick={() => setTab(settingsReturn.current)}><ArrowLeft size={20} />{settingsReturn.current[0].toUpperCase() + settingsReturn.current.slice(1)}</button>
+              : tab === "machines"
               ? <button type="button" className="ph-back" onClick={() => { setOpenId(null); setSheet(null); setTab("threads"); }}><ArrowLeft size={20} />Threads</button>
               : <h1 className="ph-large"><img className="ph-mark" src="/branding/mark.svg" alt="" width="26" height="26" />{tab[0].toUpperCase() + tab.slice(1)}</h1>}
             <span className="ph-head-actions">
               {tab === "threads" && newAllowed && <button type="button" className="ph-icon" aria-label="New thread" onClick={() => { setQuery(""); setMenu({ kind: "new" }); }}><Plus size={22} /></button>}
-              {tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings and Machines" onClick={() => { setTab("machines"); setOpenId(null); }}><Settings size={20} /></button>}
+              {tab !== "settings" && tab !== "appearance" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
         )}
@@ -1313,6 +1331,22 @@ export function PhoneApp() {
             archived={sections.archived.length}
             onArchived={() => setMenu({ kind: "archived" })}
           />
+        ) : tab === "settings" ? (
+          <main className="ph-content" inert={covered}>
+            <h2>Settings</h2>
+            <p className="ph-intro">Preferences for this phone.</p>
+            <div className="ph-group">
+              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={18} /></button>
+              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("machines")}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={18} /></button>
+            </div>
+          </main>
+        ) : tab === "appearance" ? (
+          <main className="ph-content ph-appearance" inert={covered}>
+            <h2>Appearance</h2>
+            <p className="ph-intro">Saved on this phone. Your Mac keeps its own appearance.</p>
+            {appearanceSaveError && <p className="ph-banner" role="alert">This appearance is active, but couldn't be saved on this phone. Storage may be full or unavailable.</p>}
+            <AppearanceSettings value={appearance} onChange={changeAppearance} textTransfer />
+          </main>
         ) : tab === "machines" ? (
           <Machines
             machines={machines}

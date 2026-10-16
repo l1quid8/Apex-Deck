@@ -1,0 +1,80 @@
+/* Shared Mac palettes, with glass confined to a few phone surfaces. The
+   backdrop is static; scrolling messages never get an individual blur layer. */
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .ph-app {
+  --accent: var(--deck-accent);
+  --accent-ink: var(--deck-accent-ink);
+  --mint: var(--deck-accent);
+  --amber: var(--deck-warning);
+  --brand-gradient: linear-gradient(135deg, var(--deck-accent), color-mix(in srgb, var(--deck-accent) 70%, var(--deck-text)));
+  background: var(--deck-bg);
+}
+:root[data-deck-theme="glass"] .phone-frame {
+  background-color: var(--deck-bg);
+  background-image: var(--deck-backdrop-image);
+  background-size: var(--deck-backdrop-size, auto);
+  --phone-glass: rgb(var(--deck-panel) / max(.62, var(--deck-opacity, .76)));
+  --phone-sheet: rgb(var(--deck-panel) / max(.86, var(--deck-opacity, .86)));
+}
+:root[data-deck-theme="glass"] .ph-app :is(.ph-head, .ph-nav, .ph-tabs, .ph-composer) {
+  background: var(--phone-glass);
+  border-color: var(--deck-edge);
+  -webkit-backdrop-filter: blur(var(--deck-blur)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur)) saturate(1.2);
+}
+:root[data-deck-theme="glass"] .ph-app :is(.ph-group, .ph-msg.human, .appearance-section) {
+  background: var(--phone-glass);
+  border-color: var(--deck-edge);
+  border-radius: var(--deck-radius);
+  /* The parent background provides the glass color without a blur per row. */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-deck-theme="glass"] .ph-app :is(.ph-sheet, .ph-toast, .ph-undo) {
+  background: var(--phone-sheet);
+  border-color: var(--deck-edge);
+  -webkit-backdrop-filter: blur(var(--deck-blur)) saturate(1.2);
+  backdrop-filter: blur(var(--deck-blur)) saturate(1.2);
+}
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .ph-app .ph-tabs button.on svg { color: var(--accent); }
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .ph-app .ph-msg { margin-bottom: calc(18px * var(--deck-density, 1)); }
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .ph-app .ph-item { padding-block: max(8px, calc(11px * var(--deck-density, 1))); }
+:root[data-deck-light="true"] .ph-app .ph-content.ph-tl { --tl-faint: var(--muted); }
+
+/* Preferences and the same full editor used on the Mac, adapted for thumbs. */
+.ph-app .ph-preference { width: 100%; padding: 14px; text-align: left; background: transparent; color: var(--text); border: 0; border-radius: 0; }
+.ph-preference .ph-grow { display: flex; flex-direction: column; gap: 3px; }
+.ph-preference small { font-size: 13px; color: var(--muted); }
+.ph-appearance .appearance-settings { margin-top: 12px; padding-bottom: 20px; }
+.ph-appearance .appearance-settings :is(p, small, label, output) { font-size: 14px; }
+.ph-appearance .appearance-settings .appearance-section-heading h3 { font-size: 18px; }
+.ph-appearance .appearance-settings :is(button, input:not([type="checkbox"]), textarea) { min-height: 44px; }
+.ph-appearance .appearance-settings :is(input:not([type="checkbox"]), textarea, select) { font-size: 16px; }
+.ph-appearance .appearance-settings .appearance-slider { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
+.ph-appearance .appearance-settings .appearance-slider input[type="range"] { grid-row: 2; grid-column: 1 / -1; height: 44px; }
+.ph-appearance .appearance-settings .appearance-slider output { grid-row: 1; grid-column: 2; }
+.ph-appearance .appearance-settings .appearance-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ph-appearance .appearance-settings .appearance-pattern-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ph-appearance .appearance-settings .appearance-inline-form { flex-wrap: wrap; }
+.ph-appearance .appearance-settings .appearance-inline-form input { flex-basis: 100%; }
+.ph-appearance .appearance-settings .appearance-option { flex-wrap: wrap; }
+.ph-appearance .appearance-settings .appearance-color-inputs { max-width: 100%; }
+.ph-appearance .appearance-settings .appearance-section { padding: 14px; }
+.ph-appearance .appearance-settings .appearance-preview { pointer-events: none; }
+.ph-appearance .appearance-settings input[type="checkbox"] { width: 24px; height: 24px; }
+
+/* Keep solid controls and readable text when the system requests it, or the
+   web view cannot composite backdrop-filter. The selected skin is retained. */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-deck-theme="glass"] .ph-app :is(.ph-head, .ph-nav, .ph-tabs, .ph-composer, .ph-group, .ph-msg.human, .ph-sheet, .ph-toast, .ph-undo, .appearance-section) {
+    background: var(--panel);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  :root[data-deck-theme="glass"] .phone-frame { background-image: none; }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-deck-theme="glass"] .phone-frame { --phone-glass: var(--panel); --phone-sheet: var(--panel); }
+}
+:root[data-phone-solid][data-deck-theme="glass"] .phone-frame { background-image: none; }
+:root[data-phone-solid][data-deck-theme="glass"] .ph-app :is(.ph-head, .ph-nav, .ph-tabs, .ph-composer, .ph-group, .ph-msg.human, .ph-sheet, .ph-toast, .ph-undo, .appearance-section) { background: var(--panel); }
+:root[data-phone-solid] .ph-app * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
