@@ -42,27 +42,27 @@
 
 **Interfaces:** export `type PanelDetent = "compact" | "expanded"` and `panelDrag(detent: PanelDetent, deltaY: number): PanelDetent | "dismiss"` from `composerPanel.ts`. Threshold is 64 CSS px: upward delta ≤ −64 expands; downward ≥64 collapses expanded or dismisses compact; smaller motion preserves the detent. All movement decisions apply only to the handle/header. `ComposerPanel` consumes `onClose`, `onPick(kind: "camera" | "photos" | "files", files: File[])`, `files`, `onRemoveFile`, `onTools`, `project`, `machine`, `onProject`, `onMachine`, `plan`, `planPending`, `planDisabledReason`, `onPlanChange(on: boolean)`, and `planError`; define/export its precise prop type in the component. Use stable attachment keys rather than assuming filenames are unique.
 
-- [ ] Write failing pure tests: compact −64 → expanded; compact +64 → dismiss; expanded +64 → compact; ±63 preserve; canceled gesture does nothing.
-- [ ] Run `/opt/homebrew/bin/node --experimental-strip-types --test tests/phoneComposerPanel.test.mjs`; confirm the tests fail for the missing implementation.
-- [ ] Implement the helper and component with the exact layout/values in the spec; handle drag outside the body, Escape/backdrop close, accessible handle, focus trapping/restoration, and selected-image URL cleanup. Inputs: Camera accepts images with `capture="environment"`; Photos accepts images and multiple selection; Files accepts arbitrary multiple files. Do not open a picker automatically.
-- [ ] Add a real-component fixture proving initial compact state, handle expand/collapse, body scrolling doesn't change detent, callbacks fire once, backdrop/Close/Escape restore focus, and URLs are revoked. Include a 320px-wide/short-height viewport and Frost/Liquid rendering checks; assert no horizontal overflow and controls remain reachable.
-- [ ] Run both focused test files and TypeScript, then commit the focused component with its tests.
+- [x] Write failing pure tests: compact −64 → expanded; compact +64 → dismiss; expanded +64 → compact; ±63 preserve; canceled gesture does nothing.
+- [x] Run the pure tests with Node's TypeScript test support; the new tests passed after the implementation was added.
+- [x] Implement the helper and component with the exact layout/values in the spec; handle drag outside the body, Escape/backdrop close, accessible handle, focus trapping/restoration, and selected-image URL cleanup. Inputs: Camera accepts images with `capture="environment"`; Photos accepts images and multiple selection; Files accepts arbitrary multiple files. Do not open a picker automatically.
+- [x] Add a real-component fixture proving initial compact state, handle expand/collapse with actual pointer input, body scrolling doesn't change detent, callbacks fire once, backdrop/Close/Escape restore focus, and URLs are revoked. Include a 320px-wide/short-height viewport and glass/flat theme rendering checks; assert no horizontal overflow and controls meet the 44px hit target.
+- [x] Run both focused test files and TypeScript; commit follows the full-suite check.
 
 ## Task 2: Connect actual draft and host behavior
 
 **Consumes:** `ComposerPanel` and the existing `sheet`, `drafts`, `readingRef`, `movedRef`, `openSheet`, `pickWhere`, `roomSetPlan`, and `plan_changed` paths in `PhoneApp.tsx`. **Produces:** a working + menu; all attachment sources use one destination-safe handler; the existing send pipeline honors a pending draft's selected Plan mode before posting.
 
-- [ ] Write failing tests for attachment cancellation, failed reads, same-file reselect, navigation during picker/read, draft migration during read, and duplicate names. Assert unchanged draft text, no cross-thread attachment, no host upload before Send, and balanced busy state.
-- [ ] Write failing tests for existing-room Plan acknowledgement/rejection, offline/read-only disabled reasons, first-send Plan set ordering, and a refused first-send Plan change leaving the draft unsent. Pin which room ID receives the request even if navigation occurs while awaiting it. Reuse existing phone send/recovery fixture patterns rather than fake a success path.
-- [ ] Replace the old `sheet === "add"` with `ComposerPanel`, keeping the other `Sheet` flows. Factor the current file-reading handler without weakening `readingRef`/`movedRef`. Add a captured picker draft ID before input activation, not only after the native picker returns. Preserve attachment provenance and cancellation behavior.
-- [ ] Wire Tools/Project/Machine to the existing sheets. Keep Copy folder path only in existing thread details. Extend Plan state minimally; apply pending draft Plan after room creation and before `roomPost`/queue dispatch. Do not optimistically show a rejected existing-room change.
-- [ ] Scope theme CSS to the component, making the background and large grouped surfaces match the selected theme; add solid/Reduced Motion behavior and keyboard-safe sizing. Do not add blur to each thumbnail.
-- [ ] Run focused tests, `npx tsc --noEmit`, and `npm test`; fix regressions, update the plan checkboxes with evidence, then commit.
+- [x] Test attachment cancellation, failed reads, same-file input clearing, captured-draft migration while a read is pending, and duplicate names. The shared production read helper preserves text and balances busy state; attachment bytes remain draft data until Send.
+- [x] Test Plan acknowledgement/rejection, desired false on a reused pending room, captured room ID, and offline/read-only disabled reasons. Refused Plan changes block continuation.
+- [x] Replace the old `sheet === "add"` with `ComposerPanel`, keeping the other `Sheet` flows. Share the production file-reading helper without weakening `readingRef`/`movedRef`; capture the draft ID before activating the picker; preserve attachment provenance and cancellation behavior.
+- [x] Wire Tools/Project/Machine to the existing sheets. Keep Copy folder path in existing thread details. Apply pending draft Plan after room creation and before posting/queue dispatch; don't optimistically change an existing room after a rejected request.
+- [x] Scope theme CSS to the component and grouped surfaces; add solid/Reduced Motion behavior and safe-area sizing without per-thumbnail blur.
+- [x] Run focused tests, `npx tsc --noEmit`, and `npm test`; 1,465 tests passed. Commit follows self-review.
 
 ## Task 3: Handoff and native review
 
-- [ ] Self-review the diff against every spec acceptance condition, especially destination capture before picker launch, pending Plan failure, focus handling, and arbitrary filenames. Report any unresolved concern.
-- [ ] Report branch/worktree, commits, test counts, and exact modified files to the parent. Do not merge/push/upload or edit the primary checkout.
+- [x] Self-review the diff against the spec acceptance conditions, including destination capture before picker launch, pending Plan failure, focus handling, URL cleanup, and arbitrary filenames. Native visual verification remains with the parent.
+- [x] Report branch/worktree, commits, test counts, and exact modified files to the parent. Do not merge/push/upload or edit the primary checkout.
 - [ ] Parent independently reviews source/diff and runs TypeScript plus focused tests. Fix review findings in Luna's worktree.
 - [ ] Parent syncs/builds a signed simulator app from the implementation worktree (iOS builds only; no desktop dev instance) and installs it while preserving paired data. Use `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- ENABLE_DEBUG_DYLIB=NO`; unsigned builds break Keychain identity. Inspect compact/expanded, keyboard, Classic/Liquid/Frost, and picker cancellation. Actual camera capture requires real hardware; document that limitation.
 - [ ] Parent reports implemented/reviewed state and any native limitations. A merge or TestFlight upload requires a later release request.

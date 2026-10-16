@@ -51,6 +51,8 @@ import { irohConnect } from "../daemon/irohLink";
 import { remotePlugin, type RemoteMode, type Route } from "./remotePlugin";
 import { PairSheet, RemoteSettings } from "./PairSheet";
 import { PhoneLibrary } from "./PhoneLibrary";
+import { ComposerPanel, type ComposerAttachment } from "./ComposerPanel";
+import { composerPlanDisabledReason, readCapturedFiles, setPlanBeforeContinuation } from "./composerPanelModel";
 import { ThreadList, useLongPress } from "./ThreadList";
 import { forkedPane, forkUpto, messagePreview } from "./messageFork";
 import { archivedDetail, foldChoice, readFolds } from "./threadListRules";
@@ -70,7 +72,7 @@ import { mergePlan, percent } from "../battery";
 import type { AgentTool, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
-  ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Copy, Folder, Globe, Laptop, Lock, MessageSquare,
+  ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Folder, Globe, Laptop, Lock, MessageSquare,
   More, Paperclip, Plug, Plus, Settings, Terminal, X,
 } from "./icons";
 
@@ -84,10 +86,10 @@ const CREW_KEY = "apex-deck.phone.crew.v1";
 const NEW_THREAD: RoomOptions = { policy: "mention", max_bot_hops: 3 };
 
 type Tab = "threads" | "agents" | "code" | "library" | "machines" | "settings" | "appearance";
-type Draft = { text: string; files: { name: string; bytes: Uint8Array }[] };
+type Draft = { text: string; files: ComposerAttachment[] };
 type Pending = { id: string; workspaceId: string };
 type Ask = { paneId: string; workspaceId: string };
-type SheetKind = "project" | "where" | "add" | "tools";
+type SheetKind = "project" | "where" | "tools";
 /** A bot in the open thread, with the pattern and colour it has on the desktop. */
 type Person = { id: string; display_name: string; look: { seed: string; color: string } };
 const NO_CUTS: PhoneCuts = {};
@@ -267,6 +269,13 @@ export function PhoneApp() {
   const [botChange, setBotChange] = useState<{ roomId: string; botId: string; error: string; pending: boolean } | null>(null);
   const botChangeLock = useRef(false);
   const [sheet, setSheet] = useState<SheetKind | null>(null);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const composerDestination = useRef<{ id: string | null; workspaceId: string | null } | null>(null);
+  const pickerDraft = useRef<string | null>(null);
+  const [pendingDraftPlans, setPendingDraftPlans] = useState<Record<string, boolean>>({});
+  const pendingRoomIds = useRef<Record<string, Pane>>({});
+  const [composerPlan, setComposerPlan] = useState<{ roomId: string | null; pending: boolean; error: string | null }>({ roomId: null, pending: false, error: null });
+  const composerPlanLock = useRef(false);
   const [menu, setMenu] = useState<Menu | null>(null);
   /** The bot whose details are open, from holding it in the bot bar. */
   const [botSheet, setBotSheet] = useState<string | null>(null);
@@ -821,10 +830,16 @@ export function PhoneApp() {
       let transcriptLength = loaded ? loaded.messages.length : 0;
       if (viewingPending && pending) {
         if (!starter) { setNotice("This phone has no saved bot to start a thread with. Add one on the Mac first."); return; }
-        const made: Pane = { id: `pane-${Date.now().toString(36)}`, workspaceId: pending.workspaceId, kind: "chat", title: "New thread" };
+        const made = pendingRoomIds.current[pending.id] ?? { id: `pane-${Date.now().toString(36)}`, workspaceId: pending.workspaceId, kind: "chat" as const, title: "New thread" };
+        pendingRoomIds.current[pending.id] = made;
         // Open the room before saving or showing it, so a second open keeps this bot.
         const state = await loadRoomState(host.backend, made.id, [starter], NEW_THREAD, openPath);
-        await saveSession((current) => ({ ...current, panes: [...current.panes, made] }));
+        await setPlanBeforeContinuation(
+          made.id,
+          pendingDraftPlans[pending.id] ?? false,
+          (roomId, enabled) => host.backend.roomSetPlan(roomId, enabled),
+          () => saveSession((current) => ({ ...current, panes: [...current.panes, made] })).then(() => undefined),
+        );
         pane = made;
         participants = state.snapshot.participants.map(toPerson);
         transcriptLength = state.snapshot.transcript.length;
@@ -832,6 +847,8 @@ export function PhoneApp() {
         setDrafts((all) => { const next = { ...all, [made.id]: all[pending.id] ?? draft }; delete next[pending.id]; return next; });
         if (tldrOf(pending.id)) { setTldr(made.id, true); setTldr(pending.id, false); }
         setPending(null);
+        delete pendingRoomIds.current[pending.id];
+        setPendingDraftPlans((all) => { const next = { ...all }; delete next[pending.id]; return next; });
         setOpenId(made.id);
       } else if (pane && room?.id !== pane.id) {
         const state = await loadRoomState(host.backend, pane.id, [], NEW_THREAD, openPath);
@@ -972,10 +989,63 @@ export function PhoneApp() {
       .catch(() => setTools([]));
   }
 
+  function openComposer() {
+    composerDestination.current = { id: openId, workspaceId: openWorkspace?.id ?? null };
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    setComposerOpen(true);
+  }
+
+  useEffect(() => {
+    const destination = composerDestination.current;
+    if (composerOpen && destination && (destination.id !== openId || destination.workspaceId !== (openWorkspace?.id ?? null))) setComposerOpen(false);
+  }, [composerOpen, openId, openWorkspace?.id]);
+
+  function startPicker() {
+    // This runs from the picker button, before the native picker can suspend the page.
+    pickerDraft.current = openId;
+  }
+
+  async function readAttachments(_kind: "camera" | "photos" | "files", selected: File[]) {
+    const capturedId = pickerDraft.current;
+    pickerDraft.current = null;
+    await readCapturedFiles({
+      capturedId, moved: movedRef.current, files: selected,
+      makeAttachment: async (file) => ({ id: crypto.randomUUID(), name: file.name, type: file.type, bytes: new Uint8Array(await file.arrayBuffer()) }),
+      onStart: () => { readingRef.current += 1; setReading(readingRef.current); },
+      onAdd: (target, added) => setDrafts((all) => { const now = all[target] ?? emptyDraft(); return { ...all, [target]: { ...now, files: [...now.files, ...added] } }; }),
+      onError: (error) => setNotice(words(error)),
+      onFinish: () => { readingRef.current -= 1; setReading(readingRef.current); },
+    });
+  }
+
   async function stopPlanning() {
     if (!openPane || !openLink) return;
     try { await phoneHost(openLink.id)?.backend.roomSetPlan(openPane.id, false); }
     catch (error) { setNotice(words(error)); }
+  }
+
+  async function changeComposerPlan(on: boolean) {
+    if (pending && openId === pending.id) {
+      if (sendingRef.current) return;
+      setPendingDraftPlans((all) => ({ ...all, [pending.id]: on }));
+      return;
+    }
+    if (!openPane || !openLink) return;
+    if (composerPlanLock.current) return;
+    const roomId = openPane.id;
+    const host = phoneHost(openLink.id);
+    if (!host || openLink.status !== "online" || host.access()?.tier === "read_only") return;
+    composerPlanLock.current = true;
+    setComposerPlan({ roomId, pending: true, error: null });
+    try {
+      await setPlanBeforeContinuation(roomId, on, (targetRoomId, enabled) => host.backend.roomSetPlan(targetRoomId, enabled), async () => {
+        setComposerPlan({ roomId, pending: false, error: null });
+      });
+    } catch (error) {
+      setComposerPlan({ roomId, pending: false, error: words(error) });
+    } finally {
+      composerPlanLock.current = false;
+    }
   }
 
   /** Rejects when the answer did not reach the machine, so the card stays open to try again. */
@@ -1203,7 +1273,7 @@ export function PhoneApp() {
     : <span className="ph-host-icon" style={{ color: tints.get(hostId) ?? "var(--brand-cyan)" }} title={linkOf(hostId)?.name}><Globe size={size} /></span>;
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
-  const covered = sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
+  const covered = composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -1283,8 +1353,8 @@ export function PhoneApp() {
             onBack={() => { setOpenId(null); setSheet(null); }}
             onMenu={() => { if (openPane && !openPane.assistantTaskId) setMenu({ kind: "thread", id: openPane.id }); }}
             onMessageMenu={viewingPending || openPane?.assistantTaskId ? undefined : (seq) => setMenu({ kind: "message", seq })}
-            onDraft={(text) => openId && setDraft(openId, { ...draft, text })}
-            onRemoveFile={(name) => openId && setDraft(openId, { ...draft, files: draft.files.filter((file) => file.name !== name) })}
+            onDraft={(text) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, text } }; })}
+            onRemoveFile={(id) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
             onSend={() => { void send(); }}
             onDecide={decide}
             form={<QuestionForm phone view={formView(room?.asks)} nameOf={(pid) => room?.participants.find((p) => p.id === pid)?.display_name ?? pid}
@@ -1305,6 +1375,7 @@ export function PhoneApp() {
               else setNotice("That machine has no thread to open.");
             }}
             onSheet={openSheet}
+            onOpenComposer={openComposer}
           />
         ) : tab === "threads" ? (
           <ThreadList
@@ -1431,6 +1502,23 @@ export function PhoneApp() {
             }} />
           </Sheet>
         )}
+        {composerOpen && openWorkspace && openLink && <ComposerPanel
+          onClose={() => setComposerOpen(false)}
+          onPickerStart={startPicker}
+          onPick={readAttachments}
+          files={draft.files}
+          onRemoveFile={(id) => openId && setDrafts((all) => { const now = all[openId] ?? emptyDraft(); return { ...all, [openId]: { ...now, files: now.files.filter((file) => file.id !== id) } }; })}
+          onTools={() => { setComposerOpen(false); openSheet("tools"); }}
+          project={openWorkspace.name}
+          machine={openLink.name}
+          onProject={() => { setComposerOpen(false); openSheet("project"); }}
+          onMachine={() => { setComposerOpen(false); openSheet("where"); }}
+          plan={pending && openId === pending.id ? pendingDraftPlans[pending.id] ?? false : openRoom?.plan ?? false}
+          planPending={(composerPlan.pending && composerPlan.roomId === openPane?.id) || sending}
+          planDisabledReason={composerPlanDisabledReason({ pendingDraft: Boolean(pending && openId === pending.id), sending, online: openLink.status === "online", readOnly: phoneHost(openLink.id)?.access()?.tier === "read_only", offlineReason: downLine(openLink) })}
+          onPlanChange={(on) => { void changeComposerPlan(on); }}
+          planError={composerPlan.roomId === openPane?.id ? composerPlan.error : null}
+        />}
         {ask && openPane && askTarget && (
           <Sheet title="Work on another machine?" onClose={() => setAsk(null)}>
             <p className="ph-sheet-text">“{openPane.title}” has started on {openLink?.name ?? "this machine"}, and a started thread stays on its machine. Open {askTarget.name} on {linkOf(workspaceHost(askTarget))?.name ?? "that machine"} as:</p>
@@ -1440,7 +1528,7 @@ export function PhoneApp() {
           </Sheet>
         )}
         {sheet && openWorkspace && openLink && (
-          <Sheet title={sheet === "project" ? "Project" : sheet === "where" ? "Where this runs" : sheet === "add" ? "Add to message" : "Tools"} onClose={() => setSheet(null)}>
+          <Sheet title={sheet === "project" ? "Project" : sheet === "where" ? "Where this runs" : "Tools"} onClose={() => setSheet(null)}>
             {sheet === "project" && <ProjectSheet rows={pickerRows(workspaces, panes, openWorkspace.id, (id) => linkOf(id)?.status !== "online")} links={links} query={query} machineIcon={machineIcon} onQuery={setQuery} onPick={pickWhere} />}
             {sheet === "where" && (
               <WorkSheet
@@ -1457,43 +1545,6 @@ export function PhoneApp() {
                 onProject={() => openSheet("project")}
               />
             )}
-            {sheet === "add" && <>
-              <p className="ph-sheet-text">A file you attach is copied to {openLink.name} with the message. Nothing is copied until you send.</p>
-              {draft.files.map((file) => <div key={file.name} className="ph-srow"><span className="ph-srow-icon"><Check size={18} /></span><span className="ph-grow"><strong>{file.name}</strong><small>Attached · sends with your next message</small></span></div>)}
-              <label className="ph-srow ph-tap">
-                <span className="ph-srow-icon"><Paperclip size={18} /></span>
-                <span className="ph-grow"><strong>Attach a file…</strong><small>Photos, camera or Files</small></span>
-                <input type="file" multiple hidden onChange={async (event) => {
-                  // Copy the list first: clearing the input empties its live FileList.
-                  const list = [...(event.target.files ?? [])];
-                  event.target.value = "";
-                  const id = openId;
-                  if (list.length === 0 || !id) return;
-                  readingRef.current += 1;
-                  setReading(readingRef.current);
-                  try {
-                    const added = await Promise.all(list.map(async (file) => ({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })));
-                    // If the draft was sent meanwhile, the file goes to the thread it became.
-                    const target = movedRef.current[id] ?? id;
-                    setDrafts((all) => { const now = all[target] ?? emptyDraft(); return { ...all, [target]: { ...now, files: [...now.files, ...added] } }; });
-                  } catch (error) {
-                    setNotice(words(error));
-                  } finally {
-                    readingRef.current -= 1;
-                    setReading(readingRef.current);
-                  }
-                }} />
-              </label>
-              <button type="button" className="ph-srow" onClick={() => openSheet("tools")}>
-                <span className="ph-srow-icon"><Plug size={18} /></span>
-                <span className="ph-grow"><strong>Tools…</strong><small>Put a tool's name in your message</small></span>
-                <ChevronRight size={16} />
-              </button>
-              <button type="button" className="ph-srow" onClick={() => copyPath(openWorkspace.path)}>
-                <span className="ph-srow-icon"><Copy size={18} /></span>
-                <span className="ph-grow"><strong>Copy folder path</strong><small>{openWorkspace.path || "No folder"}</small></span>
-              </button>
-            </>}
             {sheet === "tools" && (tools === null
               ? <p className="ph-sheet-text">Looking for tools on {openLink.name}…</p>
               : tools.length === 0
@@ -1928,9 +1979,9 @@ function ThreadView(props: {
   /** Each bot's context hairline and plan dot, for its pill. */
   meters: Record<string, PillMeter>;
   fork?: Pane["fork"]; approvalStays: boolean; other: LinkView | null; endRef: RefObject<HTMLDivElement | null>;
-  onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(name: string): void; onScrolled(near: boolean): void; onResized(chat: HTMLElement): void;
+  onBack(): void; onMenu(): void; onDraft(text: string): void; onRemoveFile(id: string): void; onScrolled(near: boolean): void; onResized(chat: HTMLElement): void;
   sending: boolean; attaching: boolean; onSend(): void; onDecide(request: string, approve: boolean, always: boolean): Promise<void>; onRetry(): void;
-  onStop(id: string): void; onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void;
+  onStop(id: string): void; onOpenOther(hostId: string): void; onSheet(sheet: SheetKind): void; onOpenComposer(): void;
   /** Messages waiting on the phone for a bot to finish, oldest first. */
   queued: QueuedView[];
   /** Everyone the next message goes to is mid-reply, so Send queues it. */
@@ -2240,7 +2291,7 @@ function ThreadView(props: {
         {props.draft.files.length > 0 && (
           <div className="ph-chips">
             {props.draft.files.map((file) => (
-              <span key={file.name} className="ph-chip"><Paperclip size={13} />{file.name}<button type="button" aria-label={`Remove ${file.name}`} onClick={() => props.onRemoveFile(file.name)}><X size={14} /></button></span>
+              <span key={file.id} className="ph-chip"><Paperclip size={13} />{file.name}<button type="button" aria-label={`Remove ${file.name}`} onClick={() => props.onRemoveFile(file.id)}><X size={14} /></button></span>
             ))}
           </div>
         )}
@@ -2263,7 +2314,7 @@ function ThreadView(props: {
         )}
         {/* One row, as in Messages: + for files and tools, then the message box. */}
         <div className="ph-compose-row">
-          <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={() => props.onSheet("add")}>
+          <button type="button" className="ph-add" aria-label={props.draft.files.length > 0 ? `Add files or tools. ${props.draft.files.length} attached` : "Add files or tools"} onClick={props.onOpenComposer}>
             <Plus size={22} />
             {props.draft.files.length > 0 && <b className="ph-count">{props.draft.files.length}</b>}
           </button>
