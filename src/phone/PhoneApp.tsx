@@ -1511,8 +1511,7 @@ export function PhoneApp() {
           onTools={() => { setComposerOpen(false); openSheet("tools"); }}
           project={openWorkspace.name}
           machine={openLink.name}
-          onProject={() => { setComposerOpen(false); openSheet("project"); }}
-          onMachine={() => { setComposerOpen(false); openSheet("where"); }}
+          onLocation={() => { setComposerOpen(false); openSheet("where"); }}
           plan={pending && openId === pending.id ? pendingDraftPlans[pending.id] ?? false : openRoom?.plan ?? false}
           planPending={(composerPlan.pending && composerPlan.roomId === openPane?.id) || sending}
           planDisabledReason={composerPlanDisabledReason({ pendingDraft: Boolean(pending && openId === pending.id), sending, online: openLink.status === "online", readOnly: phoneHost(openLink.id)?.access()?.tier === "read_only", offlineReason: downLine(openLink) })}

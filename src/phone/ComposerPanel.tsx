@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { Camera, ChevronRight, Files, Folder, Image, Laptop, Plan, Plug, X } from "./icons";
+import { Camera, ChevronRight, Files, Folder, Image, Plan, Plug, X } from "./icons";
 import { panelDrag, type PanelDetent } from "./composerPanelModel";
 
 export type ComposerAttachment = { id: string; name: string; bytes: Uint8Array; type?: string };
@@ -12,8 +12,7 @@ export type ComposerPanelProps = {
   onTools(): void;
   project: string;
   machine: string;
-  onProject(): void;
-  onMachine(): void;
+  onLocation(): void;
   plan: boolean;
   planPending: boolean;
   planDisabledReason: string | null;
@@ -113,8 +112,7 @@ export function ComposerPanel(props: ComposerPanelProps) {
           <button type="button" className="ph-composer-row" onClick={props.onTools}><span className="ph-composer-icon"><Plug size={20} /></span><strong>Tools</strong><ChevronRight size={18} /></button>
         </div>
         <div className="ph-composer-group">
-          <button type="button" className="ph-composer-row" onClick={props.onProject}><span className="ph-composer-icon"><Folder size={20} /></span><span className="ph-composer-copy"><strong>Project</strong><small>{props.project}</small></span><ChevronRight size={18} /></button>
-          <button type="button" className="ph-composer-row" onClick={props.onMachine}><span className="ph-composer-icon"><Laptop size={20} /></span><span className="ph-composer-copy"><strong>Machine</strong><small>{props.machine}</small></span><ChevronRight size={18} /></button>
+          <button type="button" className="ph-composer-row ph-composer-destination" onClick={props.onLocation}><span className="ph-composer-icon"><Folder size={20} /></span><span className="ph-composer-copy"><strong>Project &amp; machine</strong><small>{props.project} · {props.machine}</small></span><ChevronRight size={18} /></button>
           <div className="ph-composer-row ph-composer-plan-row"><span className="ph-composer-icon"><Plan size={20} /></span><span className="ph-composer-copy"><strong>Plan mode</strong>{props.planError && <small className="ph-composer-error" role="alert">{props.planError}</small>}{props.planDisabledReason && <small>{props.planDisabledReason}</small>}</span><button type="button" role="switch" aria-checked={props.plan} aria-label="Plan mode" disabled={props.planPending || Boolean(props.planDisabledReason)} onClick={() => props.onPlanChange(!props.plan)} className={`ph-composer-switch${props.plan ? " on" : ""}`}><span /></button></div>
         </div>
         {props.files.length > 0 && <div className="ph-composer-attachments" aria-label="Attached files">
