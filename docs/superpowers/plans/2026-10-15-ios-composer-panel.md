@@ -30,7 +30,7 @@
 ## File Map
 
 - Create `src/phone/ComposerPanel.tsx`: isolated presentation, dialog focus, detents, local image previews, media inputs, action rows.
-- Create `src/phone/composerPanel.ts`: pure detent/gesture decisions and captured attachment destination helper if useful.
+- Create `src/phone/composerPanelModel.ts`: pure detent/gesture decisions and captured attachment destination helper if useful.
 - Create `src/phone/composer-panel.css`: phone panel layout and compact/expanded treatment, scoped to this component.
 - Modify `src/phone/PhoneApp.tsx`: replace only `sheet === "add"`, share attachment handling, delegate navigation, add acknowledged Plan toggle and pending-draft preference.
 - Modify `src/phone/main.tsx`: import the component stylesheet after shared phone styles; keep `phone-themes.css` last.
@@ -40,7 +40,7 @@
 
 ## Task 1: Panel shell and interaction
 
-**Interfaces:** export `type PanelDetent = "compact" | "expanded"` and `panelDrag(detent: PanelDetent, deltaY: number): PanelDetent | "dismiss"` from `composerPanel.ts`. Threshold is 64 CSS px: upward delta ≤ −64 expands; downward ≥64 collapses expanded or dismisses compact; smaller motion preserves the detent. All movement decisions apply only to the handle/header. `ComposerPanel` consumes `onClose`, `onPick(kind: "camera" | "photos" | "files", files: File[])`, `files`, `onRemoveFile`, `onTools`, `project`, `machine`, `onProject`, `onMachine`, `plan`, `planPending`, `planDisabledReason`, `onPlanChange(on: boolean)`, and `planError`; define/export its precise prop type in the component. Use stable attachment keys rather than assuming filenames are unique.
+**Interfaces:** export `type PanelDetent = "compact" | "expanded"` and `panelDrag(detent: PanelDetent, deltaY: number): PanelDetent | "dismiss"` from `composerPanelModel.ts`. Threshold is 64 CSS px: upward delta ≤ −64 expands; downward ≥64 collapses expanded or dismisses compact; smaller motion preserves the detent. All movement decisions apply only to the handle/header. `ComposerPanel` consumes `onClose`, `onPickerStart`, `onPick(kind: "camera" | "photos" | "files", files: File[])`, `files`, `onRemoveFile`, `onTools`, `project`, `machine`, `onProject`, `onMachine`, `plan`, `planPending`, `planDisabledReason`, `onPlanChange(on: boolean)`, and `planError`; define/export its precise prop type in the component. Use stable attachment keys rather than assuming filenames are unique.
 
 - [x] Write failing pure tests: compact −64 → expanded; compact +64 → dismiss; expanded +64 → compact; ±63 preserve; canceled gesture does nothing.
 - [x] Run the pure tests with Node's TypeScript test support; the new tests passed after the implementation was added.
@@ -63,9 +63,9 @@
 
 - [x] Self-review the diff against the spec acceptance conditions, including destination capture before picker launch, pending Plan failure, focus handling, URL cleanup, and arbitrary filenames. Native visual verification remains with the parent.
 - [x] Report branch/worktree, commits, test counts, and exact modified files to the parent. Do not merge/push/upload or edit the primary checkout.
-- [ ] Parent independently reviews source/diff and runs TypeScript plus focused tests. Fix review findings in Luna's worktree.
-- [ ] Parent syncs/builds a signed simulator app from the implementation worktree (iOS builds only; no desktop dev instance) and installs it while preserving paired data. Use `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- ENABLE_DEBUG_DYLIB=NO`; unsigned builds break Keychain identity. Inspect compact/expanded, keyboard, Classic/Liquid/Frost, and picker cancellation. Actual camera capture requires real hardware; document that limitation.
-- [ ] Parent reports implemented/reviewed state and any native limitations. A merge or TestFlight upload requires a later release request.
+- [x] Parent independently reviews source/diff and reruns TypeScript, all 12 focused tests, and all 1,465 suite tests. Luna addressed review findings before commit `293c240`.
+- [x] Parent syncs/builds and installs the signed simulator app while preserving pairing. Exact final build: `CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- ENABLE_DEBUG_DYLIB=NO`; all 13 bundled web assets match `dist-phone`, and strict codesign verification passes. Native inspection covered compact/expanded, handle tap and downward drag, compact body scrolling, Classic/Liquid/Frost, and Photos cancellation. Typed hardware-keyboard draft text survived panel opening; software-keyboard geometry and physical camera capture remain device checks.
+- [x] Parent records evidence and limitations in `docs/qa/2026-10-15-ios-composer-panel.md` and leaves Frost restored with the final panel open. No merge or TestFlight upload occurred in this task.
 
 ## Reference files supplied by the user
 
