@@ -21,7 +21,7 @@
   -webkit-backdrop-filter: blur(var(--deck-blur)) saturate(1.2);
   backdrop-filter: blur(var(--deck-blur)) saturate(1.2);
 }
-:root[data-deck-theme="glass"] .ph-app :is(.ph-group, .ph-composer-group, .ph-composer-attachments, .ph-msg.human, .appearance-section) {
+:root[data-deck-theme="glass"] .ph-app :is(.ph-group, .ph-location-group, .ph-composer-group, .ph-composer-attachments, .ph-msg.human, .appearance-section) {
   background: var(--phone-glass);
   border-color: var(--deck-edge);
   border-radius: var(--deck-radius);
@@ -29,6 +29,7 @@
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+:root[data-deck-theme="glass"] .ph-app .ph-location-group { border-radius: 16px; }
 :root[data-deck-theme="glass"] .ph-app :is(.ph-sheet, .ph-composer-panel, .ph-toast, .ph-undo) {
   background: var(--phone-sheet);
   border-color: var(--deck-edge);
@@ -65,7 +66,7 @@
 /* Keep solid controls and readable text when the system requests it, or the
    web view cannot composite backdrop-filter. The selected skin is retained. */
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-deck-theme="glass"] .ph-app :is(.ph-head, .ph-nav, .ph-tabs, .ph-composer, .ph-group, .ph-composer-panel, .ph-composer-group, .ph-composer-attachments, .ph-msg.human, .ph-sheet, .ph-toast, .ph-undo, .appearance-section) {
+  :root[data-deck-theme="glass"] .ph-app :is(.ph-head, .ph-nav, .ph-tabs, .ph-composer, .ph-group, .ph-location-group, .ph-composer-panel, .ph-composer-group, .ph-composer-attachments, .ph-msg.human, .ph-sheet, .ph-toast, .ph-undo, .appearance-section) {
     background: var(--panel);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
@@ -76,5 +77,5 @@
   :root[data-deck-theme="glass"] .phone-frame { --phone-glass: var(--panel); --phone-sheet: var(--panel); }
 }
 :root[data-phone-solid][data-deck-theme="glass"] .phone-frame { background-image: none; }
-:root[data-phone-solid][data-deck-theme="glass"] .ph-app :is(.ph-head, .ph-nav, .ph-tabs, .ph-composer, .ph-group, .ph-composer-panel, .ph-composer-group, .ph-composer-attachments, .ph-msg.human, .ph-sheet, .ph-toast, .ph-undo, .appearance-section) { background: var(--panel); }
+:root[data-phone-solid][data-deck-theme="glass"] .ph-app :is(.ph-head, .ph-nav, .ph-tabs, .ph-composer, .ph-group, .ph-location-group, .ph-composer-panel, .ph-composer-group, .ph-composer-attachments, .ph-msg.human, .ph-sheet, .ph-toast, .ph-undo, .appearance-section) { background: var(--panel); }
 :root[data-phone-solid] .ph-app * { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }

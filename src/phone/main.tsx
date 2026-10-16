@@ -10,6 +10,7 @@ import { watchPhoneTransparency, type PhoneTransparency } from "./appearance";
 // Phone overrides follow the shared components' styles in both dev and bundled builds.
 import "./phone.css";
 import "./composer-panel.css";
+import "./work-location.css";
 import "./phone-themes.css";
 
 const root = document.documentElement;

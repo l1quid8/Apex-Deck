@@ -1,0 +1,30 @@
+.ph-sheet-location { padding: 8px 16px 0; }
+.ph-sheet-title-location { display: grid; grid-template-columns: 44px minmax(0,1fr) 44px; align-items: center; gap: 8px; }
+.ph-sheet-title-location h3 { grid-column: 2; grid-row: 1; text-align: center; font-size: 18px; }
+.ph-sheet-title-location button { grid-column: 1; grid-row: 1; width: 44px; height: 44px; min-width: 44px; min-height: 44px; justify-self: start; border-radius: 50%; background: var(--panel-2); }
+.ph-sheet-body.ph-sheet-body-location { padding: 0 2px 8px; }
+.ph-location-options { display: flex; flex-direction: column; gap: 12px; padding-bottom: 4px; }
+.ph-location-group { margin: 0; border-radius: 16px; background: var(--phone-glass, var(--panel)); }
+.ph-location-label { padding: 12px 14px 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.ph-location-choice { width: 100%; min-width: 0; min-height: 68px; display: flex; align-items: center; gap: 12px; padding: 10px 14px; color: var(--text); text-align: left; border: 0; border-radius: 0; background: transparent; }
+.ph-location-choice:focus-visible { outline-offset: -3px; }
+.ph-location-choice + .ph-location-choice { border-top: 1px solid var(--line); }
+.ph-location-choice > svg:last-child { flex: none; color: var(--muted); }
+.ph-location-project > svg:last-child { margin-left: auto; }
+.ph-location-badge, .ph-location-machine-icon { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 12px; color: var(--accent, var(--mint)); background: var(--panel-2); }
+.ph-location-machine-icon svg { color: inherit; }
+.ph-location-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.ph-location-copy strong { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 600; }
+.ph-location-copy small { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.35; }
+.ph-location-copy .ph-location-status { color: var(--accent, var(--mint)); }
+.ph-location-copy .ph-location-status.offline { color: var(--deck-danger, var(--red)); }
+.ph-location-machine.current { background: color-mix(in srgb, var(--accent, var(--mint)) 8%, transparent); }
+.ph-location-machine.current > svg:last-child { color: var(--accent, var(--mint)); }
+.ph-location-machine:disabled { opacity: .58; }
+.ph-location-note { display: flex; align-items: flex-start; gap: 7px; margin: 0 4px !important; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.ph-location-lock { margin-top: 2px !important; }
+.ph-location-lock svg { flex: none; margin-top: 1px; }
+@media (max-height: 520px) {
+  .ph-sheet-location { max-height: 96%; }
+  .ph-location-choice { min-height: 60px; }
+}

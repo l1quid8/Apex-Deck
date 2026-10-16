@@ -72,7 +72,7 @@ import { mergePlan, percent } from "../battery";
 import type { AgentTool, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
-  ArrowLeft, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Folder, Globe, Laptop, Lock, MessageSquare,
+  ArrowLeft, ArrowUp, Check, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Folder, Globe, Laptop, Lock, MessageSquare,
   More, Paperclip, Plug, Plus, Settings, Terminal, X,
 } from "./icons";
 
@@ -1528,7 +1528,7 @@ export function PhoneApp() {
           </Sheet>
         )}
         {sheet && openWorkspace && openLink && (
-          <Sheet title={sheet === "project" ? "Project" : sheet === "where" ? "Where this runs" : "Tools"} onClose={() => setSheet(null)}>
+          <Sheet title={sheet === "project" ? "Project" : sheet === "where" ? "Where this runs" : "Tools"} onClose={() => setSheet(null)} variant={sheet === "where" ? "location" : undefined}>
             {sheet === "project" && <ProjectSheet rows={pickerRows(workspaces, panes, openWorkspace.id, (id) => linkOf(id)?.status !== "online")} links={links} query={query} machineIcon={machineIcon} onQuery={setQuery} onPick={pickWhere} />}
             {sheet === "where" && (
               <WorkSheet
@@ -1536,12 +1536,10 @@ export function PhoneApp() {
                 links={links}
                 workspaces={workspaces}
                 project={openWorkspace.name}
-                mac={mac ?? null}
                 stays={started ? openLink.name : null}
                 machineIcon={machineIcon}
                 onPick={pickWhere}
                 onBrowse={(hostId) => { void openBrowse(hostId, openWorkspace, openPane?.id ?? null); setSheet(null); }}
-                onNone={() => setNotice(mac && mac.status !== "online" ? downLine(mac) : "Working outside a project isn't in this phone build yet.")}
                 onProject={() => openSheet("project")}
               />
             )}
@@ -1761,18 +1759,18 @@ export function PhoneApp() {
   );
 }
 
-function Sheet({ title, onClose, children }: { title: string; onClose(): void; children: ReactNode }) {
+function Sheet({ title, onClose, children, variant }: { title: string; onClose(): void; children: ReactNode; variant?: "location" }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.focus(); }, []);
   return (
     <div className="ph-sheet-back" onClick={onClose}>
-      <div className="ph-sheet" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={ref} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
+      <div className={`ph-sheet${variant ? ` ph-sheet-${variant}` : ""}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={ref} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
         <div className="ph-handle" />
-        <div className="ph-sheet-title">
+        <div className={`ph-sheet-title${variant ? ` ph-sheet-title-${variant}` : ""}`}>
           <h3>{title}</h3>
           <button type="button" className="ph-icon" aria-label="Close" onClick={onClose}><X size={20} /></button>
         </div>
-        <div className="ph-sheet-body">{children}</div>
+        <div className={`ph-sheet-body${variant ? ` ph-sheet-body-${variant}` : ""}`}>{children}</div>
       </div>
     </div>
   );
@@ -2361,36 +2359,38 @@ function ProjectSheet({ rows, links, query, machineIcon, onQuery, onPick }: { ro
   );
 }
 
-function WorkSheet({ rows, links, workspaces, project, mac, stays, machineIcon, onPick, onBrowse, onNone, onProject }: {
-  rows: ReturnType<typeof workInRows>; links: LinkView[]; workspaces: Workspace[]; project: string; mac: LinkView | null; stays: string | null;
-  machineIcon(hostId: string, size?: number): ReactNode; onPick(workspace: Workspace): void; onBrowse(hostId: string): void; onNone(): void; onProject(): void;
+function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPick, onBrowse, onProject }: {
+  rows: ReturnType<typeof workInRows>; links: LinkView[]; workspaces: Workspace[]; project: string; stays: string | null;
+  machineIcon(hostId: string, size?: number): ReactNode; onPick(workspace: Workspace): void; onBrowse(hostId: string): void; onProject(): void;
 }) {
   return (
-    <>
-      <button type="button" className="ph-srow" onClick={onProject}>
-        <span className="ph-srow-icon"><Folder size={18} /></span>
-        <span className="ph-grow"><strong>{project}</strong><small>Project · tap to switch</small></span>
-        <ChevronRight size={16} />
-      </button>
-      <div className="ph-section">Machine</div>
-      {stays && <p className="ph-sheet-text"><Lock size={13} /> This thread stays on {stays}. Picking another machine offers a new thread or a fork.</p>}
-      <p className="ph-sheet-text">Each machine keeps its own copy of {project}. Nothing is copied between them.</p>
-      {rows.map((row) => {
-        const link = links.find((item) => item.id === row.hostId);
-        const workspace = row.workspaceId ? workspaces.find((item) => item.id === row.workspaceId) ?? null : null;
-        return (
-          <button key={`${row.hostId}:${row.path}`} type="button" className="ph-srow" disabled={row.offline && !row.current} onClick={() => workspace ? onPick(workspace) : onBrowse(row.hostId)}>
-            {machineIcon(row.hostId, 18)}
-            <span className="ph-grow">
-              <strong><i className={`ph-dot${link?.status === "online" ? " on" : row.offline ? " off" : ""}`} />{link?.name ?? row.hostId}</strong>
-              <small>{row.path ? homeShort(row.path) : "No copy yet · choose a folder"}{row.offline && link ? ` · ${downLine(link)}` : ""}</small>
-            </span>
-            {row.current ? <span className="ph-srow-icon"><Check size={18} /></span> : <ChevronRight size={16} />}
-          </button>
-        );
-      })}
-      <button type="button" className="ph-plain ph-wide" onClick={onNone}>Don't work in a project{mac && mac.status !== "online" ? ` · ${downLine(mac)}` : ""}</button>
-    </>
+    <div className="ph-location-options">
+      <div className="ph-group ph-location-group">
+        <div className="ph-location-label">Project</div>
+        <button type="button" className="ph-location-choice ph-location-project" onClick={onProject}>
+          <span className="ph-location-badge"><Folder size={20} /></span>
+          <span className="ph-location-copy"><strong>{project}</strong><small>Change project</small></span>
+          <ChevronRight size={18} />
+        </button>
+      </div>
+      <div className="ph-group ph-location-group">
+        <div className="ph-location-label">Machine</div>
+        <div className="ph-location-machine-list">{rows.map((row) => {
+          const link = links.find((item) => item.id === row.hostId);
+          const workspace = row.workspaceId ? workspaces.find((item) => item.id === row.workspaceId) ?? null : null;
+          const status = link?.status === "online" ? "Online" : link ? downLine(link) : "Unavailable";
+          return (
+            <button key={`${row.hostId}:${row.path}`} type="button" aria-current={row.current ? "true" : undefined} className={`ph-location-choice ph-location-machine${row.current ? " current" : ""}`} disabled={row.offline && !row.current} onClick={() => workspace ? onPick(workspace) : onBrowse(row.hostId)}>
+              <span className="ph-location-machine-icon">{machineIcon(row.hostId, 20)}</span>
+              <span className="ph-location-copy"><strong>{link?.name ?? row.hostId}</strong><small>{row.path ? homeShort(row.path) : "No copy yet · choose a folder"}</small><small className={`ph-location-status${row.offline ? " offline" : ""}`}>{status}</small></span>
+              {row.current ? <CheckCircle size={22} /> : <ChevronRight size={18} />}
+            </button>
+          );
+        })}</div>
+      </div>
+      {stays && <p className="ph-location-note ph-location-lock"><Lock size={14} /> <span>This thread stays on {stays}. Choose another to start a new thread or fork.</span></p>}
+      <p className="ph-location-note">Files stay on each machine.</p>
+    </div>
   );
 }
 
