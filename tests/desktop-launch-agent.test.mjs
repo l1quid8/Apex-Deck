@@ -264,3 +264,27 @@ test('the agent\'s daemon serving without Remote access is not reported as on', 
   await assert.rejects(start(mac), /started without Remote access/);
   assert.equal(mac.removes, 1);
 });
+
+test('replacement bootstrap retries launchd removal-in-progress instead of entering a 15-second wait', async () => {
+  const { dir, plistPath } = scratchPlist(); let attempts = 0; let waits = 0;
+  const run = async ([verb]) => {
+    if (verb === 'bootstrap' && ++attempts < 3) throw Object.assign(new Error('Bootstrap failed: 5: Input/output error'), { code: 5 });
+    return '';
+  };
+  try {
+    await installAgent({ plistPath, plist: 'NEW', uid: UID, run, wait: async () => { waits++; } });
+    assert.equal(attempts, 3); assert.equal(waits, 2);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('replacement retries are bounded and permission failures are never retried', async () => {
+  const { dir, plistPath } = scratchPlist();
+  try {
+    for (const code of [5, 1]) {
+      let attempts = 0;
+      await assert.rejects(installAgent({ plistPath, plist: `NEW-${code}`, uid: UID,
+        run: async ([verb]) => { if (verb === 'bootstrap') { attempts++; throw Object.assign(new Error(`bootstrap ${code}`), { code }); } return ''; }, wait: async () => {} }), /didn't start/);
+      assert.equal(attempts, code === 5 ? 21 : 1);
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

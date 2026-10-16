@@ -83,7 +83,7 @@ ${items}
 export function launchctl(args) {
   return new Promise((resolve, reject) => {
     execFile('/bin/launchctl', args, (error, stdout, stderr) => {
-      if (error) reject(new Error(stderr.trim() || error.message));
+      if (error) reject(Object.assign(new Error(stderr.trim() || error.message), { code: error.code }));
       else resolve(stdout);
     });
   });
@@ -128,7 +128,7 @@ async function bootout(uid, run) {
  * Write the plist and load it. Nothing is rewritten or reloaded when the file
  * already matches and launchd has the agent loaded.
  */
-export async function installAgent({ plistPath, plist, uid, run = launchctl, fs: files = fs }) {
+export async function installAgent({ plistPath, plist, uid, run = launchctl, fs: files = fs, wait = sleep }) {
   let current = null;
   try { current = files.readFileSync(plistPath, 'utf8'); } catch { /* not installed yet */ }
   if (current === plist && await loaded(uid, run)) return;
@@ -136,11 +136,20 @@ export async function installAgent({ plistPath, plist, uid, run = launchctl, fs:
   const temp = `${plistPath}.${process.pid}.tmp`;
   files.writeFileSync(temp, plist);
   files.renameSync(temp, plistPath);
-  await bootout(uid, run);
-  try {
-    await run(['bootstrap', `gui/${uid}`, plistPath]);
-  } catch (error) {
-    throw new Error(`The background service didn't start: ${error.message}`);
+  const replacing = await bootout(uid, run);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await run(['bootstrap', `gui/${uid}`, plistPath]);
+      return;
+    } catch (error) {
+      // bootout acknowledges removal before launchd has fully unregistered
+      // the old job. Immediate bootstrap can fail with EIO (5) in that gap.
+      // Retry only that replacement race, never permissions or a first install.
+      if (!replacing || error.code !== 5 || attempt >= 20) {
+        throw new Error(`The background service didn't start: ${error.message}`);
+      }
+      await wait(50);
+    }
   }
 }
 
