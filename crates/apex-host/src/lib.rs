@@ -34,6 +34,7 @@ pub mod documents;
 pub mod folders;
 pub mod project_files;
 pub mod worktrees;
+pub mod phone;
 pub mod lock;
 
 pub use command::Command;
