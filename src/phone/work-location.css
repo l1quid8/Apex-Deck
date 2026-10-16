@@ -1,8 +1,9 @@
 .ph-sheet-location { padding: 8px 16px 0; }
 .ph-sheet-title-location { display: grid; grid-template-columns: 44px minmax(0,1fr) 44px; align-items: center; gap: 8px; }
 .ph-sheet-title-location h3 { grid-column: 2; grid-row: 1; text-align: center; font-size: 18px; }
-.ph-sheet-title-location button { grid-column: 1; grid-row: 1; width: 44px; height: 44px; min-width: 44px; min-height: 44px; justify-self: start; border-radius: 50%; background: var(--panel-2); }
-.ph-sheet-body.ph-sheet-body-location { padding: 0 2px 8px; }
+.ph-sheet-title-location .ph-icon { grid-column: 1; grid-row: 1; width: 44px; height: 44px; min-width: 44px; min-height: 44px; justify-self: start; border-radius: 50%; background: var(--panel-2); }
+.ph-sheet-title-location .ph-icon:hover:not(:disabled), .ph-sheet-title-location .ph-icon:active { background: var(--panel-2); }
+.ph-sheet-body.ph-sheet-body-location { padding: 0 2px calc(20px + env(safe-area-inset-bottom)); }
 .ph-location-options { display: flex; flex-direction: column; gap: 12px; padding-bottom: 4px; }
 .ph-location-group { margin: 0; border-radius: 16px; background: var(--phone-glass, var(--panel)); }
 .ph-location-label { padding: 12px 14px 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
