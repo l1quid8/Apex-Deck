@@ -15,6 +15,7 @@ pub mod pair_commands;
 pub mod paths;
 #[cfg(feature = "remote")]
 pub mod pairing;
+pub mod phone_cli;
 pub mod protocol;
 #[cfg(feature = "remote")]
 pub mod remote;
