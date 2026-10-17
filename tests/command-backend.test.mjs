@@ -187,9 +187,21 @@ test('apiBalance returns a finite number or null', async () => {
   }
 });
 
+test('phone methods send the phone commands', async () => {
+  const transport = recording();
+  const { phone } = commandBackend(transport, stubShell());
+  await phone.status(); await phone.start(); await phone.stop(); await phone.view(4);
+  await phone.input({ kind: 'tap', x: 1, y: 2 }); await phone.giveBack(); await phone.chatQueued('r');
+  assert.deepEqual(transport.calls, [
+    { cmd: 'phone_status', args: undefined }, { cmd: 'phone_start', args: undefined }, { cmd: 'phone_stop', args: undefined },
+    { cmd: 'phone_view', args: { since: 4 } }, { cmd: 'phone_human', args: { input: { kind: 'tap', x: 1, y: 2 } } },
+    { cmd: 'phone_give_back', args: undefined }, { cmd: 'phone_chat_queued', args: { room: 'r' } },
+  ]);
+});
+
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });

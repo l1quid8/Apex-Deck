@@ -8,7 +8,7 @@ import type { ToolServer } from "./types";
 import { mergeParticipant } from "./participantSettings";
 import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
-import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
+import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PhoneInput, PhoneStatus, PhoneView, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
 
 type Unlisten = () => void;
 
@@ -207,6 +207,8 @@ export interface Backend {
   /** Settings → Remote access for this Mac's daemon; the Electron app only. */
   remoteAccess?: RemoteAccessApi;
   browser?: BrowserApi;
+  /** The shared simulated iPhone on this Mac. */
+  phone?: PhoneApi;
 }
 
 /** This Mac, or a saved host reached over SSH. */
@@ -252,6 +254,19 @@ export interface BrowserApi {
   onState(cb: (pane: string, state: BrowserState) => void): () => void;
   /** The window's zoom, to turn CSS pixels into window pixels. */
   zoom(): number;
+}
+
+/** The one simulated iPhone that the person and the bots share. */
+export interface PhoneApi {
+  status(): Promise<PhoneStatus>;
+  start(): Promise<PhoneStatus>;
+  stop(): Promise<PhoneStatus>;
+  /** The latest status, and the latest picture when its `seq` differs from `since`. */
+  view(since: number): Promise<PhoneView>;
+  input(input: PhoneInput): Promise<PhoneStatus>;
+  giveBack(): Promise<PhoneStatus>;
+  /** A chat message was queued while the person may hold the phone. */
+  chatQueued(room: string): Promise<void>;
 }
 
 /** The Remote access switch, saved with the app's settings. `owned`: Deck started the daemon, so can restart it with the change. */
