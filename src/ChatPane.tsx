@@ -31,7 +31,8 @@ export const INSERT_COMPOSER_EVENT = "deck:insert-composer";
 import { createPortal } from "react-dom";
 import { ThreadDetails, type DetailsHost } from "./ThreadDetails";
 import type { Backend, KeyState } from "./backend";
-import { keyNameFor } from "./settings";
+import { DEFAULT_LANDING_TEXTURE, keyNameFor, type LandingTextureSettings } from "./settings";
+import { LandingTexture } from "./landing/LandingTexture";
 import { providerEnabled, providerForConfig } from "./providers";
 import { registerRoom, startHub } from "./hub";
 import { rememberModel, rememberedModels } from "./modelMemory";
@@ -155,6 +156,8 @@ interface Props {
   confirmSteer?: boolean;
   /** What the bot chips show (Settings). */
   chipParts?: ChipParts;
+  /** The glyph field behind an empty thread (Settings › Appearance). */
+  landingTexture?: LandingTextureSettings;
   /** "Always" in the steer prompt turns the setting off everywhere. */
   onConfirmSteer?: (confirm: boolean) => void;
   details?: DetailsHost;
@@ -447,7 +450,7 @@ function fitHead(head: HTMLElement) {
   head.toggleAttribute("data-flag-hidden", Boolean(head.querySelector(".flag")) && head.scrollWidth > head.clientWidth);
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, profileMode = false, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, details }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -2917,6 +2920,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
       {profileMode && !adding && <div className="agent-library">
         {participants.length === 0 && <div className="empty agents-empty">
+          <LandingTexture settings={landingTexture} />
           <h3>No agents yet</h3>
           <p>Build one from scratch — give it a name, a model, and a brief.</p>
           <div className="starters-foot">
@@ -2941,6 +2945,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </span>}
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
           <div className="empty">
+            <LandingTexture settings={landingTexture} />
             <div className="empty-emblem"><DeckIcon name="chat" size={26} /></div>
             <span className="eyebrow">A fresh perspective starts here</span>
             {work ? <>

@@ -1,0 +1,26 @@
+/* Landing texture: fills the nearest positioned ancestor (the chat body
+   for an empty thread, the card for the agents empty state), behind the
+   empty-state copy, and never takes pointer events. */
+.landing-texture-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.landing-texture {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.transcript .empty > *:not(.landing-texture-wrap) {
+  position: relative;
+  z-index: 1;
+}
+.agents-empty {
+  position: relative;
+}
+.agents-empty > *:not(.landing-texture-wrap) {
+  position: relative;
+  z-index: 1;
+}

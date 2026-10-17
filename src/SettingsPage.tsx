@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
-import { DEFAULT_DECISION, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
+import { DEFAULT_DECISION, DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
 import { ModsSettings } from "./ModsSettings";
 import { PairedDevicesSettings } from "./PairedDevicesSettings";
@@ -85,7 +85,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
           {LEADS[section] && <p>{LEADS[section]}</p>}
         </header>
         {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} />}
-        {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} />}
+        {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onLandingTexture={(landingTexture) => onChange({ ...settings, landingTexture })} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
         {section === "remote" && backend.remoteAccess && <RemoteAccessSettings backend={backend} remote={backend.remoteAccess} />}
         {section === "devices" && backend.hosts && <PairedDevicesSettings backend={backend} />}

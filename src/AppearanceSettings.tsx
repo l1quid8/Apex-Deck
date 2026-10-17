@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { BACKDROP_PATTERNS, BUILTIN_SKINS, MAX_GLOWS, MIN_GLOWS, accentHex, backdropLayers, backgroundPatch, colorAppearance, glowColorList, parseSkin, shuffledGlowColors, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
+import type { LandingTextureSettings } from "./settings";
 
 const FILE_LIMIT = 32_000;
 const SLIDERS: { key: "glow" | "blur" | "opacity" | "radius" | "backdrop"; label: string; help: string; min: number; max: number; suffix: string }[] = [
@@ -74,8 +75,64 @@ function GlowColorRow({ index, color, onCommit }: { index: number; color: string
   </>;
 }
 
+/** Controls for the glyph field behind empty threads. Rendered only where the parent passes them. */
+function LandingTextureControls({ value, onChange }: { value: LandingTextureSettings; onChange: (value: LandingTextureSettings) => void }) {
+  const [hexText, setHexText] = useState(value.color);
+  const [hexBad, setHexBad] = useState(false);
+  useEffect(() => { setHexText(value.color); setHexBad(false); }, [value.color]);
+  const patch = (next: Partial<LandingTextureSettings>) => onChange({ ...value, ...next });
+  const commitHex = () => {
+    const hex = normalizeHex(hexText);
+    if (!hex) { setHexBad(true); return; }
+    setHexText(hex);
+    setHexBad(false);
+    if (hex !== value.color) patch({ color: hex });
+  };
+  const rainbow = value.mode === "rainbow";
+  return <section className="appearance-section" aria-labelledby="appearance-landing-title">
+    <div className="appearance-section-heading"><div><h3 id="appearance-landing-title">Empty thread field</h3><p>Tiny glyphs drift behind a new thread. Fast pointer moves warm them; clicks ripple — every third click takes the chosen shape.</p></div></div>
+    <div className="appearance-controls">
+      <label className="appearance-option">
+        <span className="appearance-control-copy"><strong>Show the field</strong><small>Behind empty threads only, never behind messages.</small></span>
+        <input type="checkbox" role="switch" checked={value.enabled} onChange={(event) => patch({ enabled: event.currentTarget.checked })} />
+      </label>
+      <div className="appearance-option">
+        <div className="appearance-control-copy"><strong>Color</strong><small>Rainbow cycles hues across the field, or pick one color.</small></div>
+        <div className="appearance-segment" role="group" aria-label="Field color mode">
+          <button type="button" aria-pressed={rainbow} disabled={!value.enabled} onClick={() => patch({ mode: "rainbow" })}>Rainbow</button>
+          <button type="button" aria-pressed={!rainbow} disabled={!value.enabled} onClick={() => patch({ mode: "single" })}>One color</button>
+        </div>
+      </div>
+      <div className="appearance-option appearance-color">
+        <div className="appearance-control-copy"><label htmlFor="appearance-landing-color">Field color</label><small>Used in One color mode. Ripples brighten it toward white.</small></div>
+        <div className="appearance-color-inputs">
+          <input id="appearance-landing-color" type="color" value={value.color} disabled={!value.enabled || rainbow} onChange={(event) => { setHexBad(false); patch({ color: event.currentTarget.value }); }} />
+          <input aria-label="Field hex color" type="text" value={hexText} spellCheck={false} maxLength={7} disabled={!value.enabled || rainbow} aria-invalid={hexBad} aria-describedby={hexBad ? "appearance-landing-color-error" : undefined}
+            onChange={(event) => { setHexText(event.currentTarget.value); setHexBad(false); }}
+            onBlur={commitHex}
+            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+        </div>
+      </div>
+      {hexBad && <p id="appearance-landing-color-error" role="alert">Enter a hex color such as #35aabb.</p>}
+      <div className="appearance-slider">
+        <div className="appearance-control-copy"><label htmlFor="appearance-landing-speed">Rainbow speed</label><small>How fast the hues cycle. Zero freezes the gradient.</small></div>
+        <input id="appearance-landing-speed" type="range" min={0} max={3} step={0.1} value={value.rainbowSpeed} disabled={!value.enabled || !rainbow} onChange={(event) => patch({ rainbowSpeed: Number(event.currentTarget.value) })} />
+        <output htmlFor="appearance-landing-speed">{value.rainbowSpeed.toFixed(1)}×</output>
+      </div>
+      <div className="appearance-option">
+        <div className="appearance-control-copy"><label htmlFor="appearance-landing-shape">Third-click ripple</label><small>The shape every third click makes. The Apex logo arrives in a later update.</small></div>
+        <select id="appearance-landing-shape" value={value.rippleShape} disabled={!value.enabled} onChange={(event) => patch({ rippleShape: event.currentTarget.value as LandingTextureSettings["rippleShape"] })}>
+          <option value="diamond">Diamond</option>
+          <option value="circle">Circle</option>
+          <option value="logo" disabled>Apex logo (coming later)</option>
+        </select>
+      </div>
+    </div>
+  </section>;
+}
+
 /** Appearance controls for the glass skin system. The parent owns persistence. */
-export function AppearanceSettings({ value, onChange, textTransfer = false }: { value: AppearanceState; onChange: (value: AppearanceState) => void; textTransfer?: boolean }) {
+export function AppearanceSettings({ value, onChange, textTransfer = false, landingTexture, onLandingTexture }: { value: AppearanceState; onChange: (value: AppearanceState) => void; textTransfer?: boolean; landingTexture?: LandingTextureSettings; onLandingTexture?: (value: LandingTextureSettings) => void }) {
   const picker = useRef<HTMLInputElement>(null);
   const [skinName, setSkinName] = useState("");
   const [description, setDescription] = useState("");
@@ -299,6 +356,8 @@ export function AppearanceSettings({ value, onChange, textTransfer = false }: { 
         <button type="button" onClick={() => tuneBackground({ backdropPattern: undefined, glowColors: undefined, glowCount: undefined, glowSize: undefined })}>Reset background</button>
       </div>
     </section>
+
+    {landingTexture && onLandingTexture && <LandingTextureControls value={landingTexture} onChange={onLandingTexture} />}
 
     <section className="appearance-section appearance-save" aria-labelledby="appearance-save-title">
       <div className="appearance-section-heading"><div><h3 id="appearance-save-title">Save this skin</h3><p>Keep a named copy in your appearance gallery.</p></div></div>

@@ -10,10 +10,40 @@ import { readAppearance, type AppearanceSettings } from "./themes.ts";
 export interface DecisionSettings { enabled: boolean; provider: "jev" | "openrouter" | "cloudflare"; accountId: string; }
 export const DEFAULT_DECISION: DecisionSettings = { enabled: false, provider: "jev", accountId: "" };
 
+/** The glyph field behind empty threads. Saved only after a user changes it; older files omit it. */
+export interface LandingTextureSettings {
+  enabled: boolean;
+  mode: "rainbow" | "single";
+  color: string;
+  rainbowSpeed: number;
+  rippleShape: "diamond" | "logo" | "circle";
+}
+export const DEFAULT_LANDING_TEXTURE: LandingTextureSettings = {
+  enabled: true, mode: "rainbow", color: "#3def91", rainbowSpeed: 1, rippleShape: "diamond",
+};
+
+/** Read the landing texture settings, dropping each bad value on its own. */
+export function readLandingTexture(raw: unknown): LandingTextureSettings {
+  const saved = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const d = DEFAULT_LANDING_TEXTURE;
+  const color = typeof saved.color === "string" && /^#[0-9a-f]{6}$/i.test(saved.color.trim()) ? saved.color.trim().toLowerCase() : d.color;
+  return {
+    enabled: typeof saved.enabled === "boolean" ? saved.enabled : d.enabled,
+    mode: saved.mode === "rainbow" || saved.mode === "single" ? saved.mode : d.mode,
+    color,
+    rainbowSpeed: typeof saved.rainbowSpeed === "number" && Number.isFinite(saved.rainbowSpeed)
+      ? Math.min(3, Math.max(0, saved.rainbowSpeed)) : d.rainbowSpeed,
+    rippleShape: saved.rippleShape === "diamond" || saved.rippleShape === "logo" || saved.rippleShape === "circle"
+      ? saved.rippleShape : d.rippleShape,
+  };
+}
+
 export interface AppSettings {
   decision?: DecisionSettings;
   /** Saved only after a user changes Appearance; older settings files omit it. */
   appearance?: AppearanceSettings;
+  /** Saved only after a user changes the landing texture; older settings files omit it. */
+  landingTexture?: LandingTextureSettings;
   version: 1;
   /** Tools hidden from the add menus and bot form. */
   disabledProviders: string[];
@@ -91,6 +121,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       usage: typeof chips.usage === "boolean" ? chips.usage : d.botChips.usage,
     },
     ...(saved.appearance !== null && typeof saved.appearance === "object" && !Array.isArray(saved.appearance) ? { appearance: readAppearance(saved.appearance) } : {}),
+    ...(saved.landingTexture !== null && typeof saved.landingTexture === "object" && !Array.isArray(saved.landingTexture) ? { landingTexture: readLandingTexture(saved.landingTexture) } : {}),
   };
 }
 
