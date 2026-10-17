@@ -63,7 +63,9 @@ pub fn pick(list_json: &str) -> Result<(String, String), String> {
     }
 }
 
-/// The udid of the device with this name, from `simctl list devices -j`.
+/// The udid of the usable device with this name, from `simctl list devices -j`.
+/// A device marked `isAvailable: false` (its runtime was removed) is skipped; a
+/// missing `isAvailable` counts as available.
 pub fn find_udid(devices_json: &str, name: &str) -> Option<String> {
     let list: Value = serde_json::from_str(devices_json).ok()?;
     list["devices"]
@@ -71,7 +73,7 @@ pub fn find_udid(devices_json: &str, name: &str) -> Option<String> {
         .values()
         .filter_map(Value::as_array)
         .flatten()
-        .find(|d| d["name"] == name)?["udid"]
+        .find(|d| d["name"] == name && d["isAvailable"] != false)?["udid"]
         .as_str()
         .map(String::from)
 }
@@ -132,6 +134,14 @@ mod tests {
         let devices = r#"{"devices":{"rt-a":[{"udid":"A","name":"iPhone 17 Pro"}],"rt-b":[{"udid":"B","name":"Apex Deck Phone 1a2b"}]}}"#;
         assert_eq!(find_udid(devices, "Apex Deck Phone 1a2b"), Some("B".into()));
         assert_eq!(find_udid(devices, "Apex Deck Phone ffff"), None);
+    }
+
+    #[test]
+    fn ignores_devices_that_are_no_longer_available() {
+        let gone = r#"{"devices":{"rt-old":[{"udid":"OLD","name":"Apex Deck Phone 1a2b","isAvailable":false,"availabilityError":"runtime profile not found"}]}}"#;
+        assert_eq!(find_udid(gone, "Apex Deck Phone 1a2b"), None);
+        let both = r#"{"devices":{"rt-old":[{"udid":"OLD","name":"Apex Deck Phone 1a2b","isAvailable":false}],"rt-new":[{"udid":"NEW","name":"Apex Deck Phone 1a2b","isAvailable":true}]}}"#;
+        assert_eq!(find_udid(both, "Apex Deck Phone 1a2b"), Some("NEW".into()));
     }
 
     #[test]
