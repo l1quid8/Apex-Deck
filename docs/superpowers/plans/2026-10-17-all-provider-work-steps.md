@@ -53,12 +53,12 @@
 **Interfaces:**
 - Produces: `pub(crate) fn agy_stdin_line(prompt: &str) -> String` in `presets.rs`, used by `cli.rs` when the program is `agy`/`antigravity`.
 
-- [ ] **Step 1: Find the stdin message shape.** In `/tmp/probe-all`, run `agy --input-format stream-json --output-format stream-json -p ""` (and without `-p`) and feed one line on stdin, trying the Claude shape `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"The secret word is PELICAN. Reply with only the secret word."}]}}`, then `agy --help` for the documented shape. Done when the `result.response` says PELICAN. Write the working line and flags into `probe-notes-all-providers.md` under "Gemini". If no stdin form works, use the fallback in Step 3 and say so in the notes.
-- [ ] **Step 2: Write failing tests.** `agy_reads_the_chat_from_stdin_as_a_message`: for program `agy`, args contain `["--input-format","stream-json"]` and the `-p` value is not `STDIN_INSTRUCTION`; `agy_stdin_line("hi")` parses as JSON with the Step 1 shape. Keep the existing `gemini` (legacy program) assertions unchanged. Run `TMPDIR=/tmp cargo test -p apex-adapters agy_` → FAIL.
-- [ ] **Step 3: Implement.** Gemini arm pushes the Step 1 flags for `agy`/`antigravity`. `cli.rs` writes `agy_stdin_line(&prompt)` instead of the raw prompt for those programs. Fallback if Step 1 failed: pass the prompt as the `-p` value when it is at most 256 KB, otherwise write it to the staged temp folder (`attachments::Staged`) and pass `-p "Read the group chat in <file> and reply to it. Follow the instructions at its top."` with `--add-dir` for that folder.
-- [ ] **Step 4: Run tests** → PASS, then the gates.
-- [ ] **Step 5: Live check.** Run the built line by hand (as in Step 1) with a rendered two-message prompt; the reply must quote the secret word.
-- [ ] **Step 6: Commit** `fix(gemini): deliver the chat to agy 1.4, which ignores stdin in -p mode`.
+- [x] **Step 1: Find the stdin message shape.** In `/tmp/probe-all`, run `agy --input-format stream-json --output-format stream-json -p ""` (and without `-p`) and feed one line on stdin, trying the Claude shape `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"The secret word is PELICAN. Reply with only the secret word."}]}}`, then `agy --help` for the documented shape. Done when the `result.response` says PELICAN. Write the working line and flags into `probe-notes-all-providers.md` under "Gemini". If no stdin form works, use the fallback in Step 3 and say so in the notes.
+- [x] **Step 2: Write failing tests.** `agy_reads_the_chat_from_stdin_as_a_message`: for program `agy`, args contain `["--input-format","stream-json"]` and the `-p` value is not `STDIN_INSTRUCTION`; `agy_stdin_line("hi")` parses as JSON with the Step 1 shape. Keep the existing `gemini` (legacy program) assertions unchanged. Run `TMPDIR=/tmp cargo test -p apex-adapters agy_` → FAIL.
+- [x] **Step 3: Implement.** Gemini arm pushes the Step 1 flags for `agy`/`antigravity`. `cli.rs` writes `agy_stdin_line(&prompt)` instead of the raw prompt for those programs. Fallback if Step 1 failed: pass the prompt as the `-p` value when it is at most 256 KB, otherwise write it to the staged temp folder (`attachments::Staged`) and pass `-p "Read the group chat in <file> and reply to it. Follow the instructions at its top."` with `--add-dir` for that folder.
+- [x] **Step 4: Run tests** → PASS, then the gates.
+- [x] **Step 5: Live check.** Run the built line by hand (as in Step 1) with a rendered two-message prompt; the reply must quote the secret word.
+- [x] **Step 6: Commit** `fix(gemini): deliver the chat to agy 1.4, which ignores stdin in -p mode`.
 
 ### Task 2: The floor: activity lines become steps
 
