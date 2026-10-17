@@ -30,8 +30,11 @@ pub struct DriverLock {
     last_human: Option<(u64, u64)>,
     /// Chat messages queued behind a running turn during the person's current or latest turn, per room.
     queued: HashMap<String, u32>,
-    /// Bots refused because the person had the phone, not yet told it's back.
+    /// Bots that missed a turn of the person's: refused while the person had
+    /// the phone, or had driven it before the person took over. Not yet told.
     paused: Vec<BotId>,
+    /// Bots given the phone since the last reset.
+    drivers: Vec<BotId>,
 }
 
 impl DriverLock {
@@ -50,7 +53,14 @@ impl DriverLock {
         self.tick(now);
         match &mut self.holder {
             Holder::Human { last, .. } => *last = now,
-            _ => { self.queued.clear(); self.holder = Holder::Human { since: now, last: now }; }
+            _ => {
+                self.queued.clear();
+                self.holder = Holder::Human { since: now, last: now };
+                // The screen is about to change under every bot that has driven it.
+                for driver in &self.drivers {
+                    if !self.paused.contains(driver) { self.paused.push(driver.clone()); }
+                }
+            }
         }
     }
 
@@ -73,7 +83,10 @@ impl DriverLock {
             if busy == Busy::Human && !self.paused.contains(who) { self.paused.push(who.clone()); }
             return Err(busy);
         }
+        // A free phone still isn't this bot's until `wait_outcome` tells it about the person's turn.
+        if self.paused.contains(who) { return Err(Busy::Human); }
         self.holder = Holder::Bot { who: who.clone(), last: now };
+        if !self.drivers.contains(who) { self.drivers.push(who.clone()); }
         Ok(())
     }
 
@@ -220,6 +233,22 @@ mod tests {
         assert_eq!(lock.view(59_999), HolderView::Bot { name: "Ann".into() });
         assert_eq!(lock.view(60_000), HolderView::Free);
         assert_eq!(lock.bot_act(&bo, 60_000), Ok(()));
+    }
+
+    #[test]
+    fn a_bot_that_missed_the_persons_turn_hears_about_it_before_acting() {
+        let mut lock = DriverLock::default();
+        let (ann, bo) = (bot("r1", "a", "Ann"), bot("r1", "b", "Bo"));
+        lock.bot_act(&ann, 0).unwrap();
+        lock.human_input(1_000);
+        lock.chat_queued("r1");
+        lock.give_back(4_000);
+        assert_eq!(lock.bot_act(&ann, 5_000), Err(Busy::Human));
+        assert_eq!(lock.wait_outcome(&ann, 5_000, 5_100), Some(WaitOutcome { human_seconds: Some(3), queued: 1 }));
+        assert_eq!(lock.bot_act(&ann, 5_200), Ok(()));
+        // Bo never had the phone, so there's nothing it missed.
+        lock.bot_done(&ann);
+        assert_eq!(lock.bot_act(&bo, 5_300), Ok(()));
     }
 
     #[test]

@@ -747,6 +747,21 @@ esac
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_bot_that_missed_the_persons_turn_must_look_again() {
+        let (data, tools) = fake("missed");
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools);
+        on(&phone).await;
+        assert_eq!(phone.bot(ann(), BotRequest::Act { input: Input::Tap { x: 1, y: 1 } }).await.unwrap().code, ReplyCode::Ok);
+        phone.human(Input::Tap { x: 10, y: 10 }).await.unwrap();
+        phone.give_back();
+        // Looking doesn't count as hearing about the person's turn.
+        assert_eq!(phone.bot(ann(), BotRequest::Look).await.unwrap().code, ReplyCode::Ok);
+        assert_eq!(phone.bot(ann(), BotRequest::Act { input: Input::Tap { x: 1, y: 1 } }).await.unwrap().code, ReplyCode::Wait);
+        let reply = phone.bot(ann(), BotRequest::Wait).await.unwrap();
+        assert!(reply.text.contains("run phone look first"), "{}", reply.text);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn bots_take_turns_and_done_hands_over() {
         let (data, tools) = fake("turns");
         let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools);
