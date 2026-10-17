@@ -28,6 +28,7 @@ mod openai;
 mod owned_process;
 mod plan_cache;
 mod presets;
+mod step_labels;
 
 use std::path::PathBuf;
 use std::sync::Arc;
