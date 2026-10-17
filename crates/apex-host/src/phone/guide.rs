@@ -69,13 +69,18 @@ pub fn wait_text(outcome: Option<&WaitOutcome>) -> String {
     format!("{used} and sent {sent} meanwhile. End this turn now with one short line saying where you stopped. {theirs} next, and you'll pick up from there.")
 }
 
+/// Who has the phone, as one sentence.
+pub(crate) fn holder_text(holder: &HolderView) -> String {
+    match holder {
+        HolderView::Free => "Nobody is using it.".to_string(),
+        HolderView::Human { .. } => "The person is using it.".to_string(),
+        HolderView::Bot { name } => format!("{name} is using it."),
+    }
+}
+
 pub fn status_text(status: &Status) -> String {
     if status.on {
-        let holder = match &status.holder {
-            HolderView::Free => "Nobody is using it.".to_string(),
-            HolderView::Human { .. } => "The person is using it.".to_string(),
-            HolderView::Bot { name } => format!("{name} is using it."),
-        };
+        let holder = holder_text(&status.holder);
         format!(
             "The phone is on: {}, UDID {}. Pictures are {}×{} pixels. {holder}",
             status.device.as_deref().unwrap_or("unnamed"),
