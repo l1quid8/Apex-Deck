@@ -28,6 +28,7 @@ pub enum Command {
     ArtifactsLoad { room: String },
     ArtifactsSave { room: String, artifacts: Value },
     AnswersLoad { room: String },
+    RoomSteps { room: String, #[serde(default)] seq: Option<usize> },
     AnswerSave { room: String, key: String, fingerprint: String, inputs: serde_json::Map<String, Value>, revision: u64 },
     MonitorList {},
     MonitorGet { workspace_id: String },
@@ -209,6 +210,7 @@ impl Host {
             ArtifactsLoad { room } => reply(self.artifacts_load(room)?),
             ArtifactsSave { room, artifacts } => reply(self.artifacts_save(room, artifacts)?),
             AnswersLoad { room } => reply(self.answers_load(room)?),
+            RoomSteps { room, seq } => reply(self.steps_load(room, seq)?),
             AnswerSave { room, key, fingerprint, inputs, revision } => reply(self.answer_save(room, key, fingerprint, inputs, revision)?),
             MonitorList {} => reply(self.monitor_list()?),
             MonitorGet { workspace_id } => reply(self.monitor_get(&workspace_id)?),
@@ -464,10 +466,11 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 138);
+        assert_eq!(names.len(), 139);
         assert!(names.contains(&"file_write".to_string()));
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
+        assert!(names.contains(&"room_steps".to_string()));
         assert!(names.contains(&"personal_send".to_string()));
         assert!(names.contains(&"personal_react".to_string()));
         assert!(names.contains(&"monitor_react".to_string()));

@@ -106,6 +106,8 @@ pub struct Host {
     pub(crate) personal_worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// One stop signal per running personal-assistant operation, keyed `<assistant>:<task>`.
     pub(crate) personal_stops: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    /// Each bot's work steps during its turn, saved beside the thread with its reply.
+    steps: crate::step_buffers::StepBuffers,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -168,6 +170,7 @@ impl Host {
             personal_wake: Arc::new(tokio::sync::Notify::new()),
             personal_worker: Mutex::new(None),
             personal_stops: Mutex::default(),
+            steps: Default::default(),
         });
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
             if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
@@ -643,6 +646,7 @@ impl Host {
             if let RoomEvent::ToolServers { id: agent, servers } = &event {
                 self.tool_servers.lock().unwrap().insert(format!("{id}:{}", agent.as_str()), servers.clone());
             }
+            let record = self.steps.observe(id, &event);
             if let Err(why) = self.persist_and_emit(id, handle, event) {
                 *error.lock().unwrap() = Some(why.clone());
                 handle.runtime.stop(None);
@@ -650,6 +654,18 @@ impl Host {
                 self.room_event(id, RoomEvent::Failed { id: ParticipantId::new("storage"), error: why });
                 return;
             }
+            if let Some(record) = record { self.save_steps(id, handle, &record); }
+        }
+    }
+
+    /// Save a reply's steps once the reply itself is saved. Steps are extra:
+    /// a failure is logged and the turn goes on.
+    fn save_steps(&self, id: &str, handle: &RoomHandle, record: &apex_core::work_steps::ReplySteps) {
+        // Held like a checkpoint save, so a deleted thread never gets its steps file back.
+        let _checkpoint = handle.checkpoint.lock().unwrap();
+        if handle.deleted.load(Ordering::SeqCst) { return; }
+        if let Err(why) = self.store.save_steps(id, record) {
+            eprintln!("[apex-deck] could not save the steps behind reply {} in {id}: {why}", record.seq);
         }
     }
 
@@ -1186,6 +1202,17 @@ impl Host {
     /// The settings people chose on the cards in a thread's replies (src/interactiveAnswers).
     pub fn answers_load(&self, room: String) -> Result<Option<crate::storage::AnswersFile>, String> {
         self.store.answers(&room)
+    }
+
+    /// The steps saved with a thread's replies. Without `seq`, the index of
+    /// replies that have steps; with it, that reply's steps. Null when
+    /// there are none, the thread included.
+    pub fn steps_load(&self, room: String, seq: Option<usize>) -> Result<serde_json::Value, String> {
+        let value = match seq {
+            None => serde_json::to_value(self.store.steps_index(&room)?),
+            Some(seq) => serde_json::to_value(self.store.steps(&room, seq)?),
+        };
+        value.map_err(|e| e.to_string())
     }
 
     /// Save one card's settings. See `Store::save_answer`.

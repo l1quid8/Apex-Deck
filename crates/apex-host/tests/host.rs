@@ -509,3 +509,82 @@ fn a_replace_that_cannot_be_saved_leaves_the_thread_open_and_saved_where_it_was(
     host.host.shutdown();
     let _ = std::fs::remove_dir_all(data);
 }
+
+fn steps_host(name: &str) -> (Running, PathBuf) {
+    let data = std::env::temp_dir().join(format!("apex-host-steps-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    (Running::start(&data), data)
+}
+
+fn idle(host: &Running, id: &str) -> bool {
+    host.wait_for(Duration::from_secs(5), |e| matches!(e, HostEvent::Room { room, event: apex_core::RoomEvent::Idle, .. } if room == id))
+}
+
+fn step_keys(record: &Value) -> Vec<String> {
+    record["steps"].as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn steps_saved_under_the_reply_seq() {
+    let (host, data) = steps_host("saved");
+    host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("bot", &["!work a,b,c done"])],"options":RoomOptions::default()}})).unwrap();
+    host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot go"}})).unwrap();
+    assert!(idle(&host, "r"));
+    let index = host.call(json!({"cmd":"room_steps","args":{"room":"r","seq":null}})).unwrap();
+    assert_eq!(index["replies"]["1"]["count"], 3);
+    assert_eq!(index["replies"]["1"]["by"], "bot");
+    let record = host.call(json!({"cmd":"room_steps","args":{"room":"r","seq":1}})).unwrap();
+    assert_eq!(step_keys(&record), ["a", "b", "c"]);
+    assert_eq!(record["seq"], 1);
+    assert_eq!(host.call(json!({"cmd":"room_steps","args":{"room":"r","seq":0}})).unwrap(), Value::Null);
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn steps_without_a_reply_are_not_saved() {
+    let (host, data) = steps_host("failed");
+    host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("bot", &["!work a,b !fail boom", "!work c ok"])],"options":RoomOptions::default()}})).unwrap();
+    host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot go"}})).unwrap();
+    assert!(idle(&host, "r"));
+    assert_eq!(host.call(json!({"cmd":"room_steps","args":{"room":"r"}})).unwrap(), Value::Null);
+    // The failed turn's steps don't leak into the next reply.
+    host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@bot again"}})).unwrap();
+    let state = host.call(json!({"cmd":"room_state","args":{"id":"r"}})).unwrap();
+    let seq = state["snapshot"]["transcript"].as_array().unwrap().iter().rposition(|m| m["text"] == "ok").unwrap();
+    let record = host.call(json!({"cmd":"room_steps","args":{"room":"r","seq":seq}})).unwrap();
+    assert_eq!(step_keys(&record), ["c"]);
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn two_bots_keep_separate_steps() {
+    let (host, data) = steps_host("two");
+    host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[scripted("ada", &["!work a1,a2 from ada"]), scripted("bob", &["!work b1 from bob"])],"options":RoomOptions::default()}})).unwrap();
+    host.call(json!({"cmd":"room_post","args":{"id":"r","text":"@ada @bob go"}})).unwrap();
+    assert!(idle(&host, "r"));
+    let index = host.call(json!({"cmd":"room_steps","args":{"room":"r"}})).unwrap();
+    let replies = index["replies"].as_object().unwrap();
+    assert_eq!(replies.len(), 2);
+    for (seq, entry) in replies {
+        let record = host.call(json!({"cmd":"room_steps","args":{"room":"r","seq":seq.parse::<usize>().unwrap()}})).unwrap();
+        match entry["by"].as_str().unwrap() {
+            "ada" => assert_eq!(step_keys(&record), ["a1", "a2"]),
+            "bob" => assert_eq!(step_keys(&record), ["b1"]),
+            other => panic!("unexpected speaker {other}"),
+        }
+    }
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}
+
+#[test]
+fn room_steps_on_unknown_room_is_null() {
+    let (host, data) = steps_host("unknown");
+    assert_eq!(host.call(json!({"cmd":"room_steps","args":{"room":"nobody"}})).unwrap(), Value::Null);
+    assert_eq!(host.call(json!({"cmd":"room_steps","args":{"room":"nobody","seq":3}})).unwrap(), Value::Null);
+    assert_eq!(host.call(json!({"cmd":"room_steps","args":{"room":"../../etc","seq":3}})).unwrap(), Value::Null);
+    host.host.shutdown();
+    let _ = std::fs::remove_dir_all(data);
+}

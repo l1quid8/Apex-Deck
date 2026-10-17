@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::participant::{DeltaSink, Participant, ParticipantError, Reply, TurnRequest};
+use crate::participant::{DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest};
 use crate::types::{Access, Backend, ParticipantConfig, ParticipantId};
 use crate::view::PASS_TOKEN;
 
@@ -70,11 +70,34 @@ impl Participant for ScriptedParticipant {
         request: TurnRequest,
         on_delta: DeltaSink<'_>,
     ) -> Result<Reply, ParticipantError> {
+        self.answer(request, &|_| {}, on_delta)
+    }
+
+    /// A line that starts `!work a,b,c ` reports one finished step per key
+    /// before the rest of the line is handled.
+    async fn respond_with_progress(
+        &self,
+        request: TurnRequest,
+        on_progress: ProgressSink<'_>,
+    ) -> Result<Reply, ParticipantError> {
+        self.answer(request, on_progress, &|text: &str| on_progress(Progress::Text(text)))
+    }
+}
+
+impl ScriptedParticipant {
+    fn answer(&self, request: TurnRequest, on_progress: ProgressSink<'_>, on_delta: DeltaSink<'_>) -> Result<Reply, ParticipantError> {
         self.requests.lock().unwrap().push(request);
         let line = self.lines.lock().unwrap().pop_front();
-        let Some(line) = line else {
+        let Some(mut line) = line else {
             return Ok(Reply::text(PASS_TOKEN));
         };
+        if let Some(rest) = line.strip_prefix("!work ") {
+            let (keys, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+            for key in keys.split(',').filter(|k| !k.is_empty()) {
+                on_progress(Progress::Work(&work_step(key)));
+            }
+            line = rest.to_string();
+        }
         if let Some(message) = line.strip_prefix("!fail ") {
             return Err(ParticipantError::Failed(message.to_string()));
         }
@@ -85,5 +108,21 @@ impl Participant for ScriptedParticipant {
             on_delta(word);
         }
         Ok(Reply::text(line))
+    }
+}
+
+fn work_step(key: &str) -> crate::work_steps::WorkStep {
+    crate::work_steps::WorkStep {
+        key: key.to_string(),
+        parent: None,
+        kind: crate::work_steps::StepKind::Command,
+        label: key.to_string(),
+        folder: None,
+        detail: String::new(),
+        output: None,
+        status: crate::work_steps::StepStatus::Done,
+        exit_code: None,
+        duration_ms: None,
+        output_cut: false,
     }
 }

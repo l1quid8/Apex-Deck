@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use apex_core::RoomSnapshot;
+use apex_core::work_steps::{ReplySteps, StepKind};
+use apex_core::{ParticipantId, RoomSnapshot};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -35,6 +36,25 @@ pub enum AnswerSave {
     Conflict(AnswerEntry),
 }
 
+/// One reply's place in a thread's steps file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepsIndexEntry {
+    pub by: ParticipantId,
+    /// Every step, helpers' own steps included.
+    pub count: usize,
+    pub helpers: usize,
+    /// Where the reply's line starts in "<hex id>.steps.jsonl", and its length without the newline.
+    pub offset: u64,
+    pub len: u64,
+}
+
+/// The replies a thread has saved steps for, by reply seq.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepsIndex {
+    pub version: u32,
+    pub replies: std::collections::BTreeMap<usize, StepsIndexEntry>,
+}
+
 /// The most cards one thread keeps settings for.
 pub const MAX_SAVED_CARDS: usize = 500;
 
@@ -65,6 +85,21 @@ impl Store {
         self.room_path(id).with_extension("answers.json")
     }
 
+    /// The steps behind a thread's replies, one `ReplySteps` per line: "<hex id>.steps.jsonl".
+    fn steps_path(&self, id: &str) -> PathBuf {
+        self.room_path(id).with_extension("steps.jsonl")
+    }
+
+    /// Where each reply's steps are in the steps file: "<hex id>.steps.index.json".
+    fn steps_index_path(&self, id: &str) -> PathBuf {
+        self.room_path(id).with_extension("steps.index.json")
+    }
+
+    /// Every file that belongs to a thread.
+    fn thread_paths(&self, id: &str) -> [PathBuf; 5] {
+        [self.room_path(id), self.artifacts_path(id), self.answers_path(id), self.steps_path(id), self.steps_index_path(id)]
+    }
+
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<Option<T>, String> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -81,8 +116,12 @@ impl Store {
 
     /// Write while the caller holds the write lock.
     fn write_held<T: Serialize>(&self, path: &Path, data: &T) -> Result<(), String> {
-        use std::io::Write;
         let bytes = serde_json::to_vec_pretty(data).map_err(|e| e.to_string())?;
+        self.write_bytes_held(path, &bytes)
+    }
+
+    fn write_bytes_held(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write;
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let temp = path.with_extension("tmp");
@@ -94,7 +133,7 @@ impl Store {
                 options.mode(0o600);
             }
             let mut file = options.open(&temp)?;
-            file.write_all(&bytes)?;
+            file.write_all(bytes)?;
             file.sync_all()?;
             std::fs::rename(&temp, path)?;
             std::fs::File::open(parent)?.sync_all()?;
@@ -160,7 +199,11 @@ impl Store {
         let previous = self.room(id)?.map(|saved| saved.snapshot.transcript.len()).unwrap_or(0);
         self.write_held(&self.room_path(id), room)?;
         let upto = room.snapshot.transcript.len();
-        if upto < previous || upto == 0 { self.prune_answers_held(id, upto)?; }
+        if upto < previous || upto == 0 {
+            self.prune_answers_held(id, upto)?;
+            // Steps are extra: a damaged steps file never stops the thread saving.
+            if let Err(why) = self.copy_steps_held(id, id, upto) { eprintln!("[apex-deck] could not prune saved steps for {id}: {why}"); }
+        }
         Ok(())
     }
 
@@ -212,6 +255,85 @@ impl Store {
         } else { self.write_held(&path, &file) }
     }
 
+    /// Where each reply's saved steps are. None when the thread has none.
+    pub fn steps_index(&self, id: &str) -> Result<Option<StepsIndex>, String> {
+        self.read(&self.steps_index_path(id))
+    }
+
+    /// The steps saved for the reply at `seq`, if any.
+    pub fn steps(&self, id: &str, seq: usize) -> Result<Option<ReplySteps>, String> {
+        let Some(index) = self.steps_index(id)? else { return Ok(None); };
+        let Some(entry) = index.replies.get(&seq) else { return Ok(None); };
+        let record: ReplySteps = serde_json::from_slice(&self.steps_line(id, entry)?).map_err(|e| format!("Could not read saved steps: {e}"))?;
+        if record.seq != seq { return Err("Could not read saved steps: the steps file and its index disagree".into()); }
+        Ok(Some(record))
+    }
+
+    fn steps_line(&self, id: &str, entry: &StepsIndexEntry) -> Result<Vec<u8>, String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(self.steps_path(id)).map_err(|e| format!("Could not read saved steps: {e}"))?;
+        let mut bytes = vec![0; entry.len as usize];
+        file.seek(SeekFrom::Start(entry.offset)).and_then(|_| file.read_exact(&mut bytes)).map_err(|e| format!("Could not read saved steps: {e}"))?;
+        Ok(bytes)
+    }
+
+    /// Append one reply's steps, then point the index at them. A reply
+    /// saved again at the same seq replaces the earlier record. An index
+    /// that can't be read is never written over.
+    pub fn save_steps(&self, id: &str, record: &ReplySteps) -> Result<(), String> {
+        use std::io::Write;
+        let _guard = self.writes.lock().unwrap();
+        let index_path = self.steps_index_path(id);
+        let mut index: StepsIndex = self.read(&index_path)?.unwrap_or(StepsIndex { version: 1, replies: Default::default() });
+        let mut line = serde_json::to_vec(record).map_err(|e| e.to_string())?;
+        let len = line.len() as u64;
+        line.push(b'\n');
+        let path = self.steps_path(id);
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        let offset = (|| -> std::io::Result<u64> {
+            let mut options = std::fs::OpenOptions::new();
+            options.append(true).create(true);
+            #[cfg(unix)] {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&path)?;
+            let offset = file.metadata()?.len();
+            file.write_all(&line)?;
+            file.sync_all()?;
+            Ok(offset)
+        })().map_err(|e| format!("Could not save steps: {e}"))?;
+        index.replies.insert(record.seq, steps_entry(record, offset, len));
+        self.write_held(&index_path, &index)
+    }
+
+    /// Save `source`'s steps for replies before `upto` as `target`'s,
+    /// rewriting both files. With no reply left, both files are removed.
+    fn copy_steps_held(&self, source: &str, target: &str, upto: usize) -> Result<(), String> {
+        let Some(index) = self.steps_index(source)? else { return Ok(()); };
+        if source == target && index.replies.keys().all(|seq| *seq < upto) { return Ok(()); }
+        let mut kept = StepsIndex { version: 1, replies: Default::default() };
+        let mut lines = Vec::new();
+        for (seq, entry) in index.replies.range(..upto) {
+            let line = self.steps_line(source, entry)?;
+            kept.replies.insert(*seq, StepsIndexEntry { offset: lines.len() as u64, len: line.len() as u64, ..entry.clone() });
+            lines.extend_from_slice(&line);
+            lines.push(b'\n');
+        }
+        if kept.replies.is_empty() {
+            for path in [self.steps_index_path(target), self.steps_path(target)] {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(format!("Could not remove saved steps: {e}")),
+                }
+            }
+            return Ok(());
+        }
+        self.write_bytes_held(&self.steps_path(target), &lines)?;
+        self.write_held(&self.steps_index_path(target), &kept)
+    }
+
     /// Reserve a new room id while serializing writes; never overwrite a thread.
     pub fn fork_room(&self, source: &str, target: &str, upto: Option<usize>, cwd: Option<String>) -> Result<(), String> {
         self.fork_room_with_snapshot_transform(source, target, upto, cwd, |_| Ok(()))
@@ -246,17 +368,21 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("Could not copy the thread's card settings: {e}")),
         }
+        // And the steps behind its replies, which never stop a fork.
+        if let Err(why) = self.copy_steps_held(source, target, fork.snapshot.transcript.len()) {
+            eprintln!("[apex-deck] could not copy saved steps from {source} to {target}: {why}");
+        }
         std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string())
     }
 
     /// Save a new room `id`. Refuses an id that already has a saved room, or
-    /// only its artifacts or card settings: a failed move deletes what it made, and they're not.
+    /// only its artifacts, card settings or steps: a failed move deletes what it made, and they're not.
     pub fn import_room(&self, id: &str, saved: &SavedRoom) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
         let path = self.room_path(id);
         let parent = path.parent().unwrap();
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        if [self.artifacts_path(id), self.answers_path(id)].iter().any(|leftover| std::fs::symlink_metadata(leftover).is_ok()) {
+        if self.thread_paths(id)[1..].iter().any(|leftover| std::fs::symlink_metadata(leftover).is_ok()) {
             return Err("a thread with that id already exists".into());
         }
         write_new(&path, saved)?;
@@ -265,7 +391,7 @@ impl Store {
 
     pub fn delete_room(&self, id: &str) -> Result<(), String> {
         let _guard = self.writes.lock().unwrap();
-        for path in [self.room_path(id), self.artifacts_path(id), self.answers_path(id)] {
+        for path in self.thread_paths(id) {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -273,6 +399,16 @@ impl Store {
             }
         }
         Ok(())
+    }
+}
+
+fn steps_entry(record: &ReplySteps, offset: u64, len: u64) -> StepsIndexEntry {
+    StepsIndexEntry {
+        by: record.by.clone(),
+        count: record.steps.len(),
+        helpers: record.steps.iter().filter(|step| step.kind == StepKind::Helper).count(),
+        offset,
+        len,
     }
 }
 
@@ -452,6 +588,112 @@ mod tests {
         room.clear();
         store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
         assert!(store.answers("source").unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn reply_steps(by: &str, seq: usize, keys: &[&str]) -> apex_core::work_steps::ReplySteps {
+        use apex_core::work_steps::{StepKind, StepStatus, WorkStep};
+        let steps = keys.iter().map(|key| WorkStep {
+            key: key.to_string(), parent: None, kind: if key.starts_with("helper") { StepKind::Helper } else { StepKind::Command },
+            label: key.to_string(), folder: None, detail: String::new(), output: Some(format!("{key} output")),
+            status: StepStatus::Done, exit_code: Some(0), duration_ms: Some(5), output_cut: false,
+        }).collect();
+        apex_core::work_steps::ReplySteps { by: apex_core::ParticipantId::new(by), seq, steps, todo: vec![], dropped: 0 }
+    }
+
+    async fn saved_room_with(store: &Store, id: &str, messages: usize) -> Room {
+        let mut room = Room::new(vec![], RoomOptions::default());
+        for _ in 0..messages { room.post_human("message", &|_| {}).await; }
+        store.save_room(id, &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        room
+    }
+
+    #[test]
+    fn steps_are_indexed_by_reply_and_read_back_whole() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        assert!(store.steps_index("chat-1").unwrap().is_none());
+        assert!(store.steps("chat-1", 1).unwrap().is_none());
+        let first = reply_steps("null", 1, &["a", "helper-1", "b"]);
+        let second = reply_steps("jigga", 3, &["c"]);
+        store.save_steps("chat-1", &first).unwrap();
+        store.save_steps("chat-1", &second).unwrap();
+        let index = Store::new(root.clone()).steps_index("chat-1").unwrap().unwrap();
+        assert_eq!(index.version, 1);
+        assert_eq!(index.replies.keys().copied().collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!((index.replies[&1].by.as_str(), index.replies[&1].count, index.replies[&1].helpers), ("null", 3, 1));
+        assert_eq!(store.steps("chat-1", 1).unwrap().unwrap(), first);
+        assert_eq!(store.steps("chat-1", 3).unwrap().unwrap(), second);
+        assert!(store.steps("chat-1", 2).unwrap().is_none());
+        let on_disk = serde_json::to_value(&index).unwrap();
+        assert_eq!(on_disk["replies"]["1"]["count"], 3);
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [store.steps_path("chat-1"), store.steps_index_path("chat-1")] {
+                assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn truncate_and_fork_prune_steps() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        let mut room = saved_room_with(&store, "source", 4).await;
+        store.save_steps("source", &reply_steps("null", 1, &["a"])).unwrap();
+        store.save_steps("source", &reply_steps("null", 3, &["b", "c"])).unwrap();
+        store.fork_room("source", "fork", Some(2), None).unwrap();
+        let fork = store.steps_index("fork").unwrap().unwrap();
+        assert_eq!(fork.replies.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(store.steps("fork", 1).unwrap().unwrap(), reply_steps("null", 1, &["a"]));
+        assert_eq!(store.steps_index("source").unwrap().unwrap().replies.len(), 2, "the source keeps its own");
+
+        room.rewind(2);
+        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        let source = store.steps_index("source").unwrap().unwrap();
+        assert_eq!(source.replies.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(store.steps("source", 1).unwrap().unwrap(), reply_steps("null", 1, &["a"]));
+        assert!(store.steps("source", 3).unwrap().is_none());
+        // A later reply at a removed seq gets its own record.
+        store.save_steps("source", &reply_steps("jigga", 3, &["d"])).unwrap();
+        assert_eq!(store.steps("source", 3).unwrap().unwrap(), reply_steps("jigga", 3, &["d"]));
+
+        room.clear();
+        store.save_room("source", &SavedRoom { cwd: None, snapshot: room.snapshot() }).unwrap();
+        assert!(store.steps_index("source").unwrap().is_none());
+        assert!(!store.steps_path("source").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn steps_file_removed_with_room() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        saved_room_with(&store, "chat-1", 2).await;
+        store.save_steps("chat-1", &reply_steps("null", 1, &["a"])).unwrap();
+        store.delete_room("chat-1").unwrap();
+        assert!(!store.steps_path("chat-1").exists());
+        assert!(!store.steps_index_path("chat-1").exists());
+
+        let saved = SavedRoom { cwd: None, snapshot: Room::new(vec![], RoomOptions::default()).snapshot() };
+        store.save_steps("leftover", &reply_steps("null", 1, &["a"])).unwrap();
+        std::fs::remove_file(store.steps_index_path("leftover")).unwrap();
+        assert!(store.import_room("leftover", &saved).is_err(), "a leftover steps file keeps the id taken");
+        assert!(store.room("leftover").unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_steps_index_is_reported_and_never_written_over() {
+        let root = temp();
+        let store = Store::new(root.clone());
+        store.save_steps("chat-1", &reply_steps("null", 1, &["a"])).unwrap();
+        let path = store.steps_index_path("chat-1");
+        std::fs::write(&path, "broken").unwrap();
+        assert!(store.steps_index("chat-1").is_err());
+        assert!(store.save_steps("chat-1", &reply_steps("null", 2, &["b"])).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken");
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -67,6 +67,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomDiff { id } => read(thread(id)),
         ArtifactsLoad { room } => read(thread(room)),
         AnswersLoad { room } => read(thread(room)),
+        RoomSteps { room, .. } => read(thread(room)),
         AgentsDetect {} => read(GlobalRead),
         AgentModels { .. } => read(GlobalRead),
 
@@ -293,6 +294,7 @@ mod tests {
             ("room_diff", Some((ReadOnly, "thread")), json!({ "id": "mine" })),
             ("artifacts_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
             ("answers_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
+            ("room_steps", Some((ReadOnly, "thread")), json!({"room":"mine"})),
             ("answer_save", Some((Chat, "thread")), json!({ "room": "mine", "key": "1:hosting", "fingerprint": "0a1b2c3d", "inputs": {}, "revision": 0 })),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
             ("agent_models", Some((ReadOnly, "global_read")), json!({ "tool": "codex" })),
