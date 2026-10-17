@@ -673,6 +673,9 @@ impl Participant for CliParticipant {
                 }
                 return Ok(reply);
             }
+            if matches!(&self.config.backend, Backend::Agent { tool: AgentTool::Gemini, .. }) && program != "gemini" {
+                return self.run(program, &args, format, crate::presets::agy_stdin_line(&prompt), on_progress).await;
+            }
             self.run(program, &args, format, prompt, on_progress).await
         };
         // The time limit is on silence, not on the whole turn. Time spent

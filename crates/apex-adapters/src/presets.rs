@@ -69,6 +69,14 @@ pub(crate) fn codex_service_tier(speed: Speed) -> &'static str {
     }
 }
 
+/// The chat as the one stream-json message agy reads on standard input
+/// with `--input-format stream-json`.
+pub(crate) fn agy_stdin_line(prompt: &str) -> String {
+    let mut line = serde_json::json!({ "event": "user", "message": { "role": "user", "content": prompt } }).to_string();
+    line.push('\n');
+    line
+}
+
 pub(crate) fn resolve_gemini_program(path: Option<&str>) -> &'static str {
     let check_path = |p_str: &str| -> Option<&'static str> {
         for dir in std::env::split_paths(p_str) {
@@ -252,10 +260,13 @@ pub fn agent_command_in(
                     }
                 }
             }
-            if program != "gemini" {
-                push(&["--output-format", "stream-json"]);
+            if program == "gemini" {
+                push(&["-p", STDIN_INSTRUCTION]);
+            } else {
+                // agy 1.4 ignores plain standard input in `-p` mode, so the
+                // chat goes in as one stream-json message (`agy_stdin_line`).
+                push(&["--output-format", "stream-json", "--input-format", "stream-json"]);
             }
-            push(&["-p", STDIN_INSTRUCTION]);
             program
         }
         AgentTool::Grok => {
@@ -403,16 +414,27 @@ mod tests {
         let (program, args) = agent_command(AgentTool::Gemini, Some("some-model"), Some("high"), Access::Read);
         assert!(program == "gemini" || program == "agy" || program == "antigravity");
         if program == "agy" || program == "antigravity" {
-            assert_eq!(args, ["--model", "some-model", "--effort", "high", "--sandbox", "--output-format", "stream-json", "-p", STDIN_INSTRUCTION]);
+            assert_eq!(args, ["--model", "some-model", "--effort", "high", "--sandbox", "--output-format", "stream-json", "--input-format", "stream-json"]);
         } else {
             assert_eq!(args, ["--model", "some-model", "--effort", "high", "-p", STDIN_INSTRUCTION]);
         }
         let (_, args) = agent_command(AgentTool::Gemini, None, None, Access::Full);
         if program == "agy" || program == "antigravity" {
-            assert_eq!(args, ["--dangerously-skip-permissions", "--output-format", "stream-json", "-p", STDIN_INSTRUCTION]);
+            assert_eq!(args, ["--dangerously-skip-permissions", "--output-format", "stream-json", "--input-format", "stream-json"]);
         } else {
             assert_eq!(args, ["-p", STDIN_INSTRUCTION]);
         }
+    }
+
+    #[test]
+    fn agy_reads_the_chat_from_stdin_as_a_message() {
+        let line = agy_stdin_line("[Human]: hi \"there\"\nsecond line");
+        assert!(line.ends_with('\n'));
+        assert_eq!(line.matches('\n').count(), 1, "one NDJSON line");
+        let value: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(value["event"], "user");
+        assert_eq!(value["message"]["role"], "user");
+        assert_eq!(value["message"]["content"], "[Human]: hi \"there\"\nsecond line");
     }
 
     #[test]
