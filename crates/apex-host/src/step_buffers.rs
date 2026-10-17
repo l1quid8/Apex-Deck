@@ -89,4 +89,25 @@ mod tests {
         assert!(buffers.observe("r", &reply("ada", 4)).is_none(), "Stop drops every bot's steps in the room");
         assert_eq!(buffers.observe("other", &reply("ada", 1)).unwrap().steps[0].key, "x");
     }
+
+    #[test]
+    fn reply_record_over_limit_drops_oldest_outputs() {
+        use apex_core::work_steps::{cut_output, REPLY_STEPS_BYTES_MAX};
+        let buffers = StepBuffers::default();
+        // 200 steps of ~12 KB output each: about 2.4 MB before fitting.
+        let output = cut_output(&"x".repeat(64 * 1024));
+        for n in 0..200 {
+            let mut s = step(&n.to_string(), StepStatus::Done);
+            s.output = Some(output.clone());
+            buffers.observe("r", &work("bot", s));
+        }
+        let record = buffers.observe("r", &reply("bot", 9)).unwrap();
+        assert!(serde_json::to_vec(&record).unwrap().len() <= REPLY_STEPS_BYTES_MAX);
+        assert_eq!(record.steps.len(), 200);
+        assert_eq!(record.steps[0].output, None);
+        assert!(record.steps[0].output_cut);
+        let newest = record.steps.last().unwrap();
+        assert_eq!(newest.output.as_deref(), Some(output.as_str()));
+        assert!(!newest.output_cut);
+    }
 }
