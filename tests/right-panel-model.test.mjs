@@ -58,6 +58,13 @@ test('worktrees is a single-instance tab and survives saved-panel parsing', () =
   assert.deepEqual(kinds(restored), ['dashboard', 'tasks', 'details', 'worktrees']);
 });
 
+test('a saved Phone tab is kept', () => {
+  assert.deepEqual(parsePanel(JSON.stringify({ open: true, tabs: [{ id: 'phone', kind: 'phone', usedAt: 1 }], active: 'phone' })).active, 'phone');
+  let s = openTab(defaultPanel(), 'phone', 1);
+  s = openTab(s, 'phone', 2);
+  assert.equal(s.tabs.filter((tab) => tab.kind === 'phone').length, 1);
+});
+
 test('damaged saves fall back safely', () => {
   assert.deepEqual(kinds(parsePanel(null)), ['dashboard', 'tasks', 'details']);
   assert.deepEqual(kinds(parsePanel('nope')), ['dashboard', 'tasks', 'details']);

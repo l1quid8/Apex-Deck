@@ -9,7 +9,10 @@ import * as model from '../src/rightPanelModel.ts';
 
 const source = await fs.readFile(new URL('../src/RightPanel.tsx', import.meta.url), 'utf8');
 const code = transform(source.replace(/^import .*;\n/gm, '').replace(/export (function|const)/g, '$1'), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-const { RightPanel } = new Function('React', 'model', 'useRef', 'useState', `const {FIXED, KINDS, openTab, closeTab, activate, moveTab} = model; ${code}; return { RightPanel };`)(React, model, React.useRef, React.useState);
+const build = (useState) => new Function('React', 'model', 'useRef', 'useState', `const {FIXED, KINDS, openTab, closeTab, activate, moveTab} = model; ${code}; return { RightPanel };`)(React, model, React.useRef, useState).RightPanel;
+const RightPanel = build(React.useState);
+// The add menu opens on a click, which a static render can't make, so this copy starts with it open.
+const RightPanelMenuOpen = build(() => [true, () => {}]);
 
 const render = (state, bodies = {}) => renderToStaticMarkup(React.createElement(RightPanel, { state, onChange() {}, onClose() {}, bodies }));
 
@@ -39,4 +42,16 @@ test('the expand button sits before the hide button and says what it will do', (
   assert.ok(docked.indexOf('Expand side panel') < docked.indexOf('Hide side panel'));
   const full = render({ ...model.defaultPanel(), open: true, full: true });
   assert.match(full, /aria-label="Collapse side panel" aria-pressed="true"/);
+});
+
+test('the add menu lists Phone', () => {
+  const html = renderToStaticMarkup(React.createElement(RightPanelMenuOpen, { state: { ...model.defaultPanel(), open: true }, onChange() {}, onClose() {}, bodies: {} }));
+  const menu = html.slice(html.indexOf('role="menu"'));
+  assert.match(menu, /role="menuitem"[^>]*><svg[^>]*>.*?<\/svg>Phone</);
+});
+
+test('a Phone tab is labelled Phone', () => {
+  const html = render({ ...model.openTab(model.defaultPanel(), 'phone', 1), open: true });
+  assert.match(html, /aria-label="Phone"/);
+  assert.match(html, />Phone</);
 });
