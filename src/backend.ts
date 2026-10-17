@@ -50,6 +50,8 @@ export interface Backend {
   artifactsSave(room: string, artifacts: unknown): Promise<void>;
   /** Settings chosen on the cards in a thread's replies (rooms/<hex id>.answers.json); answerStore.ts reads them. Null when there are none. */
   answersLoad(room: string): Promise<unknown>;
+  /** Saved work steps. With no `seq`: the thread's steps index (null when none). With a reply's `seq`: that reply's steps (null when none). Read the result with workSteps.ts; an older daemon rejects. */
+  roomSteps(room: string, seq: number | null): Promise<unknown>;
   /** Save one card's settings. `revision` is the saved revision they were changed from, 0 for none; see AnswerSaveResult. */
   answerSave(room: string, key: string, fingerprint: string, inputs: InputValues, revision: number): Promise<AnswerSaveResult>;
   /** Ask where to save an artifact and write it there. Null when you cancel. */
@@ -607,6 +609,7 @@ function demoBackend(): Backend {
     artifactsLoad: async (room) => JSON.parse(localStorage.getItem(`apex-deck.demo.artifacts.${room}`) ?? "null"),
     artifactsSave: async (room, artifacts) => { localStorage.setItem(`apex-deck.demo.artifacts.${room}`, JSON.stringify(artifacts)); },
     answersLoad: async (room) => JSON.parse(localStorage.getItem(`apex-deck.demo.answers.${room}`) ?? "null"),
+    roomSteps: async () => null,
     answerSave: async (room, key, fingerprint, inputs, revision) => {
       // As answer_save does: a stale revision changes nothing and gets the newer entry back.
       const name = `apex-deck.demo.answers.${room}`;

@@ -264,6 +264,10 @@ export type RoomEvent = { recovery_seq?: number } & (
   | { type: "delta"; id: string; text: string }
   /** What a participant is doing mid-turn, such as reading a file. */
   | { type: "activity"; id: string; text: string }
+  /** A step of the work behind a reply, new or updated (same `step.key`). */
+  | { type: "work_step"; id: string; step: WorkStep }
+  /** A participant's whole to-do list. */
+  | { type: "todo"; id: string; items: TodoItem[] }
   /** A bot wants to do something. Its turn waits for `roomDecide` with this `request`. */
   | { type: "approval_requested"; id: string; request: string; action: ProposedAction }
   | { type: "approval_resolved"; id: string; request: string; approved: boolean }
@@ -412,3 +416,36 @@ export type Layout = "top" | "left";
 
 /** What a pane's dot shows. The last three ask for attention; see attention.ts. */
 export type PaneStatus = "working" | "idle" | "exited" | "needs_input" | "failed" | "done";
+
+/** Mirrors crates/apex-core/src/work_steps.rs. */
+export type StepKind = "command" | "read" | "search" | "list" | "edit" | "web" | "tool" | "helper" | "thinking" | "other";
+export type StepStatus = "running" | "done" | "failed" | "stopped";
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+/** One thing a bot did while writing a reply. */
+export interface WorkStep {
+  key: string;
+  /** Key of the helper step this step ran under. */
+  parent: string | null;
+  kind: StepKind;
+  label: string;
+  folder: string | null;
+  detail: string;
+  output: string | null;
+  status: StepStatus;
+  exit_code: number | null;
+  duration_ms: number | null;
+  /** Omitted by the daemon when false. */
+  output_cut?: boolean;
+}
+
+export interface TodoItem { text: string; status: TodoStatus }
+
+/** Everything recorded about the work behind one reply. */
+export interface ReplySteps { by: string; seq: number; steps: WorkStep[]; todo: TodoItem[]; dropped: number }
+
+/** One reply's place in a thread's steps file. */
+export interface StepsIndexEntry { by: string; count: number; helpers: number; offset: number; len: number }
+
+/** The replies a thread has saved steps for; keys are reply seq numbers as strings. */
+export interface StepsIndex { version: number; replies: Record<string, StepsIndexEntry> }

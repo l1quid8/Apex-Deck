@@ -39,6 +39,7 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     artifactsLoad: (room) => call<unknown>("artifacts_load", { room }),
     artifactsSave: (room, artifacts) => call("artifacts_save", { room, artifacts }),
     answersLoad: (room) => call<unknown>("answers_load", { room }),
+    roomSteps: (room, seq) => call<unknown>("room_steps", { room, seq }),
     answerSave: (room, key, fingerprint, inputs, revision) => call<AnswerSaveResult>("answer_save", { room, key, fingerprint, inputs, revision }),
     dataFolder: () => call<string>("data_folder"),
     envPresent: (names) => call<boolean[]>("env_present", { names }),
