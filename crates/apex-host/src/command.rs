@@ -65,6 +65,14 @@ pub enum Command {
     PersonalBrowserView {},
     PersonalBrowserTakeOver { on: bool },
     PersonalBrowserInput { input: crate::personal_worker::browser::Input },
+    PhoneStatus {},
+    PhoneStart {},
+    PhoneStop {},
+    PhoneView { since: u64 },
+    PhoneHuman { input: crate::phone::Input },
+    PhoneGiveBack {},
+    PhoneBot { room: String, bot: String, name: String, request: crate::phone::BotRequest },
+    PhoneChatQueued { room: String },
     MonitorAssign { workspace_id: String, cwd: String, host_id: String, text: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, profile: apex_core::ParticipantConfig, #[serde(default)] only_if_absent: bool },
     MonitorSourcesUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, #[serde(default)] files: Vec<String>, #[serde(default)] threads: Vec<String>, mode: String },
     MonitorProfileUpdate { workspace_id: String, cwd: String, host_id: String, conversation_id: String, revision: u64, profile: ParticipantConfig },
@@ -255,6 +263,17 @@ impl Host {
             PersonalBrowserView {} => reply(self.personal_browser_view().await?),
             PersonalBrowserTakeOver { on } => reply(self.personal_browser_take_over(on).await?),
             PersonalBrowserInput { input } => reply(self.personal_browser_input(input).await?),
+            PhoneStatus {} => reply(self.phone.status()),
+            PhoneStart {} => reply(self.phone.start()),
+            PhoneStop {} => reply(self.phone.stop().await?),
+            PhoneView { since } => reply(self.phone.view(since)),
+            PhoneHuman { input } => reply(self.phone.human(input).await?),
+            PhoneGiveBack {} => reply(self.phone.give_back()),
+            PhoneBot { room, bot, name, request } => reply(self.phone.bot(crate::phone::BotId { room, bot, name }, request).await?),
+            PhoneChatQueued { room } => {
+                self.phone.chat_queued(&room);
+                reply(())
+            }
             MonitorSuggestSources { cwd } => reply(serde_json::json!({ "files": self.monitor_suggest_sources(&cwd)? })),
             MonitorAssign { workspace_id, cwd, host_id, text, files, threads, profile, only_if_absent } => {
                 let host = Arc::clone(self);
@@ -409,6 +428,14 @@ mod tests {
     }
 
     #[test]
+    fn phone_commands_parse() {
+        let bot = Command::from_json(json!({"cmd": "phone_bot", "args": {"room": "r", "bot": "a", "name": "Ann", "request": {"kind": "act", "input": {"kind": "tap", "x": 5, "y": 6}}}})).unwrap();
+        assert!(matches!(bot, Command::PhoneBot { ref room, ref request, .. } if room == "r" && *request == crate::phone::BotRequest::Act { input: crate::phone::Input::Tap { x: 5, y: 6 } }));
+        assert!(matches!(Command::from_json(json!({"cmd": "phone_view", "args": {"since": 3}})).unwrap(), Command::PhoneView { since: 3 }));
+        assert!(matches!(Command::from_json(json!({"cmd": "phone_give_back", "args": {}})).unwrap(), Command::PhoneGiveBack {}));
+    }
+
+    #[test]
     fn arguments_use_the_names_the_desktop_ui_sends() {
         let command = Command::from_json(json!({ "cmd": "api_models", "args": { "baseUrl": "http://x", "apiKeyEnv": "KEY" } })).unwrap();
         assert!(matches!(command, Command::ApiModels { base_url, api_key_env: Some(key) } if base_url == "http://x" && key == "KEY"));
@@ -464,7 +491,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 138);
+        assert_eq!(names.len(), 146);
         assert!(names.contains(&"file_write".to_string()));
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"answer_save".to_string()));
@@ -482,6 +509,9 @@ mod tests {
         assert!(names.contains(&"mod_env_get".to_string()));
         assert!(names.contains(&"monitor_list".to_string()));
         assert!(names.contains(&"monitor_get".to_string()));
+        for phone in ["phone_status", "phone_start", "phone_stop", "phone_view", "phone_human", "phone_give_back", "phone_bot", "phone_chat_queued"] {
+            assert!(names.contains(&phone.to_string()), "{phone}");
+        }
         assert!(names.contains(&"monitor_suggest_sources".to_string()));
         for write in ["monitor_assign", "monitor_sources_update", "monitor_message", "monitor_pause", "monitor_check_now", "monitor_resolve"] {
             assert!(names.contains(&write.to_string()), "{write}");

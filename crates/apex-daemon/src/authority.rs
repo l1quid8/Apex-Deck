@@ -139,6 +139,8 @@ pub fn command_needs(command: &Command) -> Need {
         // Fetch arbitrary addresses.
         ApiModels { .. } | ApiBalance { .. } | ApiQuote { .. } => Need::Never,
         PreviewProbe { .. } => Need::Never,
+        // The phone is this Mac's simulator; paired devices can't drive it.
+        PhoneStatus {} | PhoneStart {} | PhoneStop {} | PhoneView { .. } | PhoneHuman { .. } | PhoneGiveBack {} | PhoneBot { .. } | PhoneChatQueued { .. } => Need::Never,
         ModRead { .. } | ModInstall { .. } | ModProcessRun { .. } | ModHttpFetch { .. } | ModFsWrite { .. } | ModFsStat { .. } | ModEnvGet { .. } => Need::Never,
     }
 }
@@ -382,6 +384,15 @@ mod tests {
             ("mod_fs_write", None, json!({ "path": "x", "text": "" })),
             ("mod_fs_stat", None, json!({ "path": "x" })),
             ("mod_env_get", None, json!({ "name": "HOME" })),
+            // The phone is this Mac's simulator; paired devices can't drive it.
+            ("phone_status", None, json!({})),
+            ("phone_start", None, json!({})),
+            ("phone_stop", None, json!({})),
+            ("phone_view", None, json!({ "since": 0 })),
+            ("phone_human", None, json!({ "input": { "kind": "tap", "x": 1, "y": 1 } })),
+            ("phone_give_back", None, json!({})),
+            ("phone_bot", None, json!({ "room": "mine", "bot": "a", "name": "A", "request": { "kind": "look" } })),
+            ("phone_chat_queued", None, json!({ "room": "mine" })),
         ]
     }
 

@@ -106,6 +106,8 @@ pub struct Host {
     pub(crate) personal_worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// One stop signal per running personal-assistant operation, keyed `<assistant>:<task>`.
     pub(crate) personal_stops: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    /// The one shared simulator that the person and the bots take turns driving.
+    pub(crate) phone: Arc<crate::phone::Phone>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -144,6 +146,7 @@ impl Host {
         std::thread::spawn(move || compacting.compact());
         apex_adapters::allow_reading(&paths.data.join("attachments"));
         apex_adapters::keys::use_folder(&paths.data);
+        let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
         let host = Arc::new(Host {
             paths,
             runtime,
@@ -168,6 +171,7 @@ impl Host {
             personal_wake: Arc::new(tokio::sync::Notify::new()),
             personal_worker: Mutex::new(None),
             personal_stops: Mutex::default(),
+            phone,
         });
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
             if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
