@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use apex_core::work_steps::{StepStatus, TodoItem, WorkStep};
+use apex_core::work_steps::{StepStatus, TodoItem, WorkStep, STEPS_PER_REPLY_MAX};
 use apex_core::{
     ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction,
 };
@@ -307,7 +307,12 @@ impl EventReader {
     }
 
     /// Report a work step unless it is what was last reported for its key.
+    /// Past `STEPS_PER_REPLY_MAX` steps a new key is neither kept nor sent;
+    /// the daemon would not keep it either.
     fn work_step(&mut self, step: WorkStep, steps: &mut Vec<Step>) {
+        if !self.work.contains_key(&step.key) && self.work.len() >= STEPS_PER_REPLY_MAX {
+            return;
+        }
         if self.work.get(&step.key) != Some(&step) {
             self.work.insert(step.key.clone(), step.clone());
             steps.push(Step::Work(step));
@@ -1073,16 +1078,20 @@ impl EventReader {
     }
 
     /// The step for a Codex item, if it is work. A completion keeps how the
-    /// step was named when it started and adds the result.
+    /// step was named when it started and adds the result, unless the start
+    /// left the detail empty (a web search before its query is known) and
+    /// the completion has it.
     fn codex_item_step(&mut self, item: &Value, parent: Option<&str>, done: bool, steps: &mut Vec<Step>) {
         let Some(mut step) = work_feed::codex_step(item, parent, self.cwd.as_deref(), done) else {
             return;
         };
         if let Some(started) = self.work.get(&step.key).filter(|_| done) {
             step.kind = started.kind;
-            step.label = started.label.clone();
+            if !started.detail.is_empty() || step.detail.is_empty() {
+                step.label = started.label.clone();
+                step.detail = started.detail.clone();
+            }
             step.folder = started.folder.clone();
-            step.detail = started.detail.clone();
             step.parent = started.parent.clone();
         }
         self.work_step(step, steps);
@@ -2564,6 +2573,42 @@ mod tests {
         assert_eq!(tool.output.as_deref(), Some("no table"));
         // Activity lines are as before.
         assert_eq!(activity(&steps), ["Thinking", "Editing src/lib.rs", "Searching the web for rust serde", "Using db query"]);
+    }
+
+    #[test]
+    fn codex_web_search_takes_the_query_from_its_completion() {
+        let stream = r#"{"method":"item/started","params":{"item":{"type":"webSearch","id":"w","query":""}}}
+{"method":"item/completed","params":{"item":{"type":"webSearch","id":"w","query":"rust serde"}}}
+"#;
+        let (steps, _) = read(OutputFormat::CodexServer, &[stream]);
+        let web = step(&work(&steps), "w").clone();
+        assert_eq!(web.label, "Search the web for rust serde");
+        assert_eq!(web.detail, "rust serde");
+        assert_eq!(web.status, StepStatus::Done);
+    }
+
+    #[test]
+    fn steps_past_the_reply_limit_are_not_kept_or_sent() {
+        let limit = apex_core::work_steps::STEPS_PER_REPLY_MAX;
+        let mut stream = String::new();
+        for n in 0..limit + 3 {
+            stream.push_str(&format!(
+                "{}\n",
+                serde_json::json!({"method":"item/started","params":{"item":{"type":"webSearch","id":format!("w{n}"),"query":"q"}}})
+            ));
+        }
+        // The last kept step still finishes.
+        stream.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"method":"item/completed","params":{"item":{"type":"webSearch","id":format!("w{}", limit - 1),"query":"q"}}})
+        ));
+        let mut reader = EventReader::new(OutputFormat::CodexServer, Some("/work/project".into()));
+        let steps = reader.push(&stream);
+        let all = work(&steps);
+        assert_eq!(all.len(), limit);
+        assert!(all.iter().all(|s| s.key != format!("w{limit}")));
+        assert_eq!(step(&all, &format!("w{}", limit - 1)).status, StepStatus::Done);
+        assert_eq!(reader.work.len(), limit);
     }
 
     #[test]
