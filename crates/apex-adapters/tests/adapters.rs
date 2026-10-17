@@ -311,7 +311,7 @@ async fn cli_runs_in_the_workspace_folder() {
     let dir = std::env::temp_dir().join(format!("apex-deck-cwd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let real = std::fs::canonicalize(&dir).unwrap();
-    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
+    let context = BuildContext { cwd: Some(dir.clone()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; pwd -P"))).with_context(&context);
     let (result, _) = ask(&bot, "where are you?").await;
     assert_eq!(result.unwrap().text, real.to_string_lossy());
@@ -323,7 +323,7 @@ async fn cli_runs_in_the_workspace_folder() {
 async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
     let dir = std::env::temp_dir().join(format!("apex-deck-tmp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let context = BuildContext { cwd: None, path: None, codex_hook: None, temp: Some(dir.clone()), process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
+    let context = BuildContext { cwd: None, path: None, codex_hook: None, temp: Some(dir.clone()), process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
     let bot = CliParticipant::new(config("cli", sh("cat >/dev/null; printf %s \"$TMPDIR\""))).with_context(&context);
     let (result, _) = ask(&bot, "where is scratch?").await;
     assert_eq!(result.unwrap().text, dir.to_string_lossy());
@@ -333,7 +333,7 @@ async fn cli_gets_the_threads_temp_folder_as_tmpdir() {
 #[cfg(unix)]
 #[tokio::test]
 async fn cli_reports_a_workspace_folder_that_no_longer_exists() {
-    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
+    let context = BuildContext { cwd: Some("/no/such/apex-deck/folder".into()), path: None, codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
     let bot = CliParticipant::new(config("cli", sh("echo hi"))).with_context(&context);
     let (result, _) = ask(&bot, "hi").await;
     match result {
@@ -361,7 +361,7 @@ async fn cli_finds_the_program_on_the_path_it_is_given() {
     assert!(matches!(missing, Err(ParticipantError::NotConfigured(_))), "{missing:?}");
 
     let path = format!("{}:/usr/bin:/bin", dir.to_string_lossy());
-    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
+    let context = BuildContext { cwd: None, path: Some(path), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
     let bot = CliParticipant::new(config("cli", backend)).with_context(&context);
     let (found, _) = ask(&bot, "hi").await;
     assert_eq!(found.unwrap().text, "found-on-custom-path");
@@ -399,7 +399,7 @@ async fn codex_agent_refuses_exec_even_when_model_effort_and_access_are_configur
     let mut cfg = config("null", Backend::Agent { tool: AgentTool::Codex, model: Some("some-model".into()) });
     cfg.access = Access::Edits;
     cfg.effort = Some("high".into());
-    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![] };
+    let context = BuildContext { cwd: Some(dir.clone()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![], phone: None };
     let bot = build(cfg, &context);
     let (result, _) = ask(bot.as_ref(), "hey, testing").await;
     assert!(result.unwrap_err().to_string().contains("MCP approvals require it"));
@@ -681,7 +681,7 @@ fn fake_tool(tag: &str, name: &str, script: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 fn context_in(dir: &std::path::Path) -> BuildContext {
-    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![dir.to_path_buf()] }
+    BuildContext { cwd: Some(dir.to_path_buf()), path: Some(format!("{}:/usr/bin:/bin", dir.to_string_lossy())), codex_hook: None, temp: None, process_registry: None, cargo_target_dir: None, media_dir: None, attachment_roots: vec![dir.to_path_buf()], phone: None }
 }
 
 /// Run one turn the way the room does and collect text and activity.
@@ -911,6 +911,60 @@ async fn codex_turn_runs_when_the_plugin_list_fails_and_leaves_the_menu_alone() 
     assert_eq!(result.unwrap().text, "done");
     assert!(servers.is_empty(), "a partial list would hide plugin names: {servers:?}");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Run one turn against a fake `claude` or `codex` that saves the
+/// environment it was started with and the prompt it was sent. Returns
+/// `(environment, prompt)`.
+#[cfg(unix)]
+async fn phone_probe(tool: apex_core::AgentTool, phone: Option<apex_adapters::PhoneEnv>) -> (String, String) {
+    let (name, script) = match tool {
+        apex_core::AgentTool::ClaudeCode => ("claude", r#"#!/bin/sh
+env > "$PWD/env.txt"
+IFS= read -r prompt
+printf '%s\n' "$prompt" > "$PWD/prompt.txt"
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+"#.to_string()),
+        _ => ("codex", FAKE_CODEX_SERVER
+            .replace("#!/bin/sh\n", "#!/bin/sh\nenv > \"$PWD/env.txt\"\n")
+            .replace("  *'\"turn/start\"'*)\n", "  *'\"turn/start\"'*)\n    printf '%s\\n' \"$line\" > \"$PWD/prompt.txt\"\n")),
+    };
+    let script = script.replace("env > \"$PWD/env.txt\"", "env > \"$PWD/env.txt\"\nprintf 'arg:%s\\n' \"$@\" >> \"$PWD/env.txt\"");
+    let dir = fake_tool(&format!("phone-probe-{name}-{}", phone.is_some()), name, &script);
+    let mut cfg = config("jig", Backend::Agent { tool, model: None });
+    cfg.display_name = "Jigga".into();
+    let bot = build(cfg, &BuildContext { phone, ..context_in(&dir) });
+    let (result, _, _) = work(bot.as_ref()).await;
+    result.unwrap();
+    let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
+    let seen = (read("env.txt"), read("prompt.txt"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    seen
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_and_codex_processes_get_the_phone_variables_and_the_hint() {
+    use apex_core::AgentTool;
+    let phone = || Some(apex_adapters::PhoneEnv { bin: "/A/apex-daemon".into(), socket: "/D/daemon.sock".into(), room: "room-9".into() });
+    let names = ["APEX_DECK_BIN", "APEX_DECK_PHONE_SOCKET", "APEX_DECK_ROOM", "APEX_DECK_BOT", "APEX_DECK_BOT_NAME"];
+    for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {
+        let (env, prompt) = phone_probe(tool, phone()).await;
+        for line in ["APEX_DECK_BIN=/A/apex-daemon", "APEX_DECK_PHONE_SOCKET=/D/daemon.sock", "APEX_DECK_ROOM=room-9", "APEX_DECK_BOT=jig", "APEX_DECK_BOT_NAME=Jigga"] {
+            assert!(env.lines().any(|seen| seen == line), "{tool:?} did not get {line}: {env}");
+        }
+        assert!(prompt.contains("Deck's Phone tab") && prompt.contains("phone help"), "{tool:?} prompt had no hint: {prompt}");
+        if tool == AgentTool::Codex {
+            assert!(env.lines().any(|seen| seen == "arg:shell_environment_policy.set.APEX_DECK_BIN=\"/A/apex-daemon\""), "Codex shells would lose their phone variables: {env}");
+        }
+
+        let (env, prompt) = phone_probe(tool, None).await;
+        // Other tests in this file set unrelated APEX_DECK_* variables, so
+        // look for the five phone names only.
+        assert!(!env.lines().any(|seen| names.iter().any(|name| seen.starts_with(&format!("{name}=")))), "{tool:?} got phone variables with the phone off: {env}");
+        assert!(!prompt.contains("Phone tab"), "{tool:?} got the hint with the phone off: {prompt}");
+        assert!(!env.contains("shell_environment_policy.set.APEX_DECK_"));
+    }
 }
 
 #[cfg(unix)]

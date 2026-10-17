@@ -449,3 +449,17 @@ export interface StepsIndexEntry { by: string; count: number; helpers: number; o
 
 /** The replies a thread has saved steps for; keys are reply seq numbers as strings. */
 export interface StepsIndex { version: number; replies: Record<string, StepsIndexEntry> }
+/** A key the phone's keyboard understands beyond typed characters. */
+export type PhoneKey = "enter" | "backspace" | "tab" | "escape" | "space" | "up" | "down" | "left" | "right";
+/** Who has the shared simulated iPhone. */
+export type PhoneHolder = { kind: "free" } | { kind: "human"; secondsLeft: number } | { kind: "bot"; name: string };
+export interface PhoneStatus { on: boolean; starting: boolean; device: string | null; udid: string | null; holder: PhoneHolder; width: number; height: number; problem: string | null }
+/** One picture of the phone's screen: a base64 JPEG. */
+export interface PhoneFrame { seq: number; image: string; width: number; height: number }
+export interface PhoneView { status: PhoneStatus; frame: PhoneFrame | null }
+export type PhoneInput =
+  | { kind: "tap"; x: number; y: number }
+  | { kind: "swipe"; x1: number; y1: number; x2: number; y2: number; ms: number }
+  | { kind: "type"; text: string }
+  | { kind: "key"; key: PhoneKey }
+  | { kind: "button"; button: "home" | "lock" };

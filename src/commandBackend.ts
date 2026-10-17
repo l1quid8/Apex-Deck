@@ -5,7 +5,7 @@ import type { AnswerSaveResult } from "./interactiveAnswers/contract.ts";
 
 import type { Backend, KeyState, LibraryItem } from "./backend";
 import { apiModelList } from "./models.ts";
-import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListing, ModelChoice, PersonaDraftResult, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
+import type { AgentInfo, AppSession, FilePreview, FileSearchResult, FolderListing, ModelChoice, PersonaDraftResult, PhoneStatus, PhoneView, PreviewProbe, RevertPlan, RoomEvent, RoomSnapshot, ThreadDiff, ToolServer, WorktreeList, Worktree } from "./types";
 
 /** How commands reach the host and its events come back. */
 export interface Transport {
@@ -26,6 +26,15 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
     demo: false,
     ...shell,
     call,
+    phone: {
+      status: () => call<PhoneStatus>("phone_status"),
+      start: () => call<PhoneStatus>("phone_start"),
+      stop: () => call<PhoneStatus>("phone_stop"),
+      view: (since) => call<PhoneView>("phone_view", { since }),
+      input: (input) => call<PhoneStatus>("phone_human", { input }),
+      giveBack: () => call<PhoneStatus>("phone_give_back"),
+      chatQueued: (room) => call<void>("phone_chat_queued", { room }),
+    },
     listToolServers: (room, agent) => call<ToolServer[]>("list_tool_servers", { room, agent }),
     detectAgents: () => call<AgentInfo[]>("agents_detect"),
     sessionLoad: () => call<AppSession | null>("session_load"),

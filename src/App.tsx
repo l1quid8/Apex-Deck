@@ -72,6 +72,7 @@ import { activeAfter, addFolders, listedPanes, openThreadIds, pickWorkspaceFolde
 import { RightPanel } from "./RightPanel";
 import { RightDashboard } from "./RightDashboard";
 import { RightBrowser } from "./RightBrowser";
+import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
 import { closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
@@ -2270,6 +2271,7 @@ export function App() {
                 return <ApexAgentTasks key={`side:${monitor.workspaceId}:${monitor.hostId}:${monitor.cwd}:${monitor.conversationId}`} backend={route} projectName={workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name} owner={overviewOwner(monitor)} panes={viewPanes} profiles={profiles} view="conversation" clearedAt={apexAgentClearedAt} onSelectTask={(task, send) => setAssistantTaskContext({ id: task.id, project: workspaces.find((workspace) => workspace.id === monitor.workspaceId)?.name ?? "Project", label: task.originalRequest, owner: task.owner, send })} onTaskClosed={(id) => setAssistantTaskContext((current) => current?.id === id ? null : current)} onOpenThread={(id) => { const pane = viewPanes.find((item) => item.id === id && item.workspaceId === monitor.workspaceId); if (pane) focusPane(pane); }} onMonitorUpdate={guardedMonitorChange({ workspaceId: monitor.workspaceId, hostId: monitor.hostId, cwd: monitor.cwd, version: monitorOwnerVersion(monitor.workspaceId) }).bind(null, monitor.workspaceId, monitor.hostId)} />;
               },
               browser: (tab, visible) => <RightBrowser id={tab.id} url={tab.url ?? ""} browser={backend.browser} visible={visible} onUrl={(url) => setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => item.id === tab.id ? { ...item, url } : item) }))} />,
+              phone: (_tab, visible) => <RightPhone phone={backend.phone} visible={visible} />,
               files: (_tab, visible) => {
                 const pane = listed.find((item) => item.id === focusedPane);
                 const workspace = workspaces.find((item) => item.id === (pane?.workspaceId ?? activeWorkspace)) ?? null;

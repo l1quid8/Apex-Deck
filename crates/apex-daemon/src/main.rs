@@ -7,6 +7,11 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some(apex_adapters::CODEX_HOOK_ARG) {
         std::process::exit(apex_adapters::codex_hook_main());
     }
+    // Claude and Codex bots run `apex-daemon phone <verb>` to use the shared phone.
+    if std::env::args().nth(1).as_deref() == Some("phone") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(apex_daemon::phone_cli::main(&args));
+    }
     apex_daemon::log_time::start();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = match cli::parse(&args) {

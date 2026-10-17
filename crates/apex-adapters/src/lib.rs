@@ -26,6 +26,7 @@ pub mod media;
 mod muse_server;
 mod openai;
 mod owned_process;
+mod phone_env;
 mod plan_cache;
 mod presets;
 mod step_labels;
@@ -43,6 +44,7 @@ pub use codex_hook::{codex_hook_main, hook_command as codex_hook_command, HOOK_A
 pub use api_info::{balance as api_balance, model as api_model, ApiModel, MediaSpec, ModelKind};
 pub use cli::CliParticipant;
 pub use openai::{list_models, OpenAiCompatParticipant};
+pub use phone_env::{PhoneEnv, DAEMON_SOCKET, PHONE_HINT};
 pub use presets::{agent_command, allow_reading};
 pub use owned_process::{OwnedChild as OwnedProcessChild, Registry as OwnedProcessRegistry};
 
@@ -96,6 +98,8 @@ pub struct BuildContext {
     /// Canonical host-authorized folders for image input. Empty denies all local images.
     /// These must come from host storage configuration, never transcript text.
     pub attachment_roots: Vec<PathBuf>,
+    /// Deck's shared phone, for Claude and Codex bots on a Mac. None turns it off.
+    pub phone: Option<PhoneEnv>,
 }
 
 /// Create the participant described by `config`.

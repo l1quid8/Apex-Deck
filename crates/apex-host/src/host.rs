@@ -108,6 +108,8 @@ pub struct Host {
     pub(crate) personal_stops: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
     /// Each bot's work steps during its turn, saved beside the thread with its reply.
     steps: crate::step_buffers::StepBuffers,
+    /// The one shared simulator that the person and the bots take turns driving.
+    pub(crate) phone: Arc<crate::phone::Phone>,
 }
 
 /// Counts one running chain for as long as it lives.
@@ -146,6 +148,7 @@ impl Host {
         std::thread::spawn(move || compacting.compact());
         apex_adapters::allow_reading(&paths.data.join("attachments"));
         apex_adapters::keys::use_folder(&paths.data);
+        let phone = crate::phone::Phone::new(paths.data.clone(), runtime.clone());
         let host = Arc::new(Host {
             paths,
             runtime,
@@ -171,6 +174,7 @@ impl Host {
             personal_worker: Mutex::new(None),
             personal_stops: Mutex::default(),
             steps: Default::default(),
+            phone,
         });
         for task in host.assistant_tasks.list(None).map_err(|e| e.to_string())? {
             if task.mode == crate::assistant_tasks::TaskMode::InPlace && task.result_data.as_ref().is_some_and(|data| data["leaseHeld"] == true) {
@@ -573,6 +577,7 @@ impl Host {
             attachment_roots: vec![self.attachment_dir(&id)?.canonicalize().map_err(|e| format!("Could not resolve the attachments folder: {e}"))?],
             process_registry: Some(self.paths.data.join("worker-processes").join(export::safe_file_name(&id)?)),
             cargo_target_dir,
+            phone: if cfg!(target_os = "macos") { std::env::current_exe().ok().map(|bin| apex_adapters::PhoneEnv { bin, socket: self.paths.data.join(apex_adapters::DAEMON_SOCKET), room: id.clone() }) } else { None },
         };
         let mut seen: Vec<&ParticipantId> = Vec::new();
         for config in &participants {
