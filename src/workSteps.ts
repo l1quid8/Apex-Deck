@@ -165,3 +165,8 @@ export function savedEntry(index: StepsIndex | null, seq: number): StepsIndexEnt
   const entry = index?.replies[String(seq)];
   return entry && entry.count > 0 ? entry : null;
 }
+
+/** A reply that arrives after the person switched threads must not land in the new thread's cache. */
+export function rememberSteps(cache: Map<number, ReplySteps>, openPane: string | null, fromPane: string, seq: number, reply: ReplySteps | null): void {
+  if (reply && openPane === fromPane) cache.set(seq, reply);
+}

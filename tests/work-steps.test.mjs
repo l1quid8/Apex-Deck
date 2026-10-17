@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyStepEvent, emptyTurnSteps, isUnknownStepsCommand, readReplySteps, readStepsIndex, stepTree, stepsCountLabel } from '../src/workSteps.ts';
+import { rememberSteps, applyStepEvent, emptyTurnSteps, isUnknownStepsCommand, readReplySteps, readStepsIndex, stepTree, stepsCountLabel } from '../src/workSteps.ts';
 
 const step = (key, extra = {}) => ({ key, parent: null, kind: 'command', label: key, folder: null, detail: key, output: null, status: 'running', exit_code: null, duration_ms: null, ...extra });
 const ev = (s) => ({ type: 'work_step', id: 'null', step: s });
@@ -61,4 +61,15 @@ test('readReplySteps drops damaged steps and rejects damaged records', () => {
 test('old-daemon rejection is recognised', () => {
   assert.equal(isUnknownStepsCommand(new Error('unknown variant `room_steps`, expected one of')), true);
   assert.equal(isUnknownStepsCommand(new Error('disk failure')), false);
+});
+
+test('rememberSteps only keeps a reply for the thread that is still open', () => {
+  const cache = new Map();
+  const reply = { by: 'null', seq: 3, steps: [], todo: [], dropped: 0 };
+  rememberSteps(cache, 'b', 'a', 3, reply);
+  assert.equal(cache.size, 0);
+  rememberSteps(cache, 'a', 'a', 3, null);
+  assert.equal(cache.size, 0);
+  rememberSteps(cache, 'a', 'a', 3, reply);
+  assert.equal(cache.get(3), reply);
 });

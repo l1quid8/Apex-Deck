@@ -18,7 +18,7 @@ import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
 import { Markdown } from "../Markdown";
 import { SavedSteps, WorkSteps } from "../WorkSteps.tsx";
-import { createStepsIndexLoader, readReplySteps, savedEntry } from "../workSteps.ts";
+import { createStepsIndexLoader, readReplySteps, rememberSteps, savedEntry } from "../workSteps.ts";
 import { PreparingCard } from "../interactiveAnswers/AnswerCard.tsx";
 import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
 import { cardVersions } from "../interactiveAnswers/share.ts";
@@ -690,6 +690,8 @@ export function PhoneApp() {
   // The phone has no Retry, Revert or Clear chat, so nothing here has to forget steps when a thread is cut back.
   const [savedSteps, setSavedSteps] = useState<SavedStepsFor | null>(null);
   const loadedSteps = useRef(new Map<number, import("../types").ReplySteps>());
+  const openPaneRef = useRef<string | null>(null);
+  openPaneRef.current = openPane?.id ?? null;
   useEffect(() => {
     if (!openPane || !openWorkspace) { if (!viewingPending) setRoom(null); return; }
     const host = phoneHost(openHostId);
@@ -1349,13 +1351,16 @@ export function PhoneApp() {
               ? recipientName({ targets: answerers.ids, roster: room.participants.map((p) => ({ id: p.id, name: p.display_name })), policy: room.policy })
               : null}
             working={room && openPane && room.id === openPane.id ? room.working : {}}
+            paneId={openPane?.id ?? ""}
             stepsIndex={openPane && savedSteps?.id === openPane.id ? savedSteps.index : null}
             loadedSteps={loadedSteps.current}
             loadSteps={async (seq) => {
               const host = phoneHost(openHostId);
               if (!host || !openPane) return null;
-              const reply = readReplySteps(await host.backend.roomSteps(openPane.id, seq));
-              if (reply) loadedSteps.current.set(seq, reply);
+              const fromPane = openPane.id;
+              const cache = loadedSteps.current;
+              const reply = readReplySteps(await host.backend.roomSteps(fromPane, seq));
+              rememberSteps(cache, openPaneRef.current, fromPane, seq, reply);
               return reply;
             }}
             cut={(openPane && cuts[openPane.id]) || NO_CUTS}
@@ -1996,7 +2001,7 @@ function ThreadView(props: {
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
   participants: Person[]; working: PhoneWorking; cut: PhoneCuts;
-  stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; gate: { enabled: boolean; reason: string };
+  paneId: string; stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; gate: { enabled: boolean; reason: string };
   /** Who a message without an @name goes to: "Null", "everyone"; null while unknown. */
   to: string | null;
   /** The same, as bot ids, for the bar to light up. */
@@ -2228,7 +2233,7 @@ function ThreadView(props: {
               : undefined)} /></div>
             {(() => {
               const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
-              return saved ? <SavedSteps count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
+              return saved ? <SavedSteps key={`${props.paneId}:${message.seq}`} count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
             })()}
           </section>
         ))}
