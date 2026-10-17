@@ -463,6 +463,59 @@ test('the key waits for the typed text to be accepted', async (t) => {
   ui.unmount();
 });
 
+test('a restart clears the old picture and asks for a fresh one', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const phone = fakePhone();
+  let first = true;
+  phone.view = async (since) => { phone.calls.push(['view', since]); const image = first ? frame(7) : null; first = false; return { status: on(), frame: image }; };
+  const ui = mount({ phone, visible: true });
+  ui.render(); await settle();
+  assert.ok(screen(ui.render()));
+  button(ui.render(), 'Turn off').props.onClick(); await settle();
+  button(ui.render(), 'Turn on').props.onClick(); await settle();
+  assert.equal(screen(ui.render()), null, 'the previous session must not be shown as live');
+  t.mock.timers.tick(phoneModel.POLL_MS); await settle();
+  assert.deepEqual(views(phone).at(-1), ['view', 0]);
+  ui.unmount();
+});
+
+test('continuous typing is split into accepted chunks of at most 500 characters', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  const phone = fakePhone({ view: async () => ({ status: on(), frame: frame(1) }) });
+  const ui = mount({ phone, visible: true });
+  ui.render(); await settle();
+  const img = screen(ui.render());
+  for (let i = 0; i < 501; i++) img.props.onKeyDown(key('a'));
+  await settle();
+  assert.deepEqual(inputs(phone), [{ kind: 'type', text: 'a'.repeat(500) }]);
+  t.mock.timers.tick(phoneModel.TYPE_FLUSH_MS); await settle();
+  assert.deepEqual(inputs(phone), [{ kind: 'type', text: 'a'.repeat(500) }, { kind: 'type', text: 'a' }]);
+  ui.unmount();
+});
+
+test('typing is sent before a tap, Home, Lock or Give back changes the screen or driver', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  for (const action of ['tap', 'Home', 'Lock', 'Give back']) {
+    const phone = fakePhone({ view: () => Promise.resolve({ status: on({ kind: 'human', secondsLeft: 10 }), frame: frame(1) }) });
+    const ui = mount({ phone, visible: true, initial: on({ kind: 'human', secondsLeft: 10 }) });
+    ui.render(); await settle();
+    const tree = ui.render();
+    const img = screen(tree);
+    img.props.onKeyDown(key('a'));
+    if (action === 'tap') {
+      img.props.onPointerDown(pointer(250, 300));
+      img.props.onPointerUp(pointer(250, 300));
+    } else { button(tree, action).props.onClick(); }
+    await settle();
+    const calls = phone.calls.filter(([name]) => name !== 'view');
+    assert.deepEqual(calls[0], ['input', { kind: 'type', text: 'a' }], `${action} overtook typing`);
+    assert.equal(calls.length, 2);
+    t.mock.timers.tick(200); await settle();
+    assert.equal(phone.calls.filter(([name]) => name !== 'view').length, 2, 'no delayed duplicate typing');
+    ui.unmount();
+  }
+});
+
 test('keys the phone does not use are left alone, and Shift+Tab leaves the screen', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
   const phone = fakePhone({ view: () => Promise.resolve({ status: on(), frame: frame(1) }) });

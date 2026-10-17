@@ -109,6 +109,9 @@ impl CliParticipant {
                 }
                 let (program, mut args) =
                     agent_command_in(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.speed, self.config.access, self.plan.is_some(), self.path.as_deref());
+                if *tool == AgentTool::Codex {
+                    args.splice(1..1, phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
+                }
                 if self.tools_disabled {
                     let mut safe = Vec::with_capacity(args.len());
                     let mut i = 0;
@@ -191,6 +194,7 @@ impl CliParticipant {
     ) -> Result<Reply, ParticipantError> {
         let program = "codex";
         let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
+        args.extend(phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
         // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
         // has gone would make Codex run every tool unasked, so check first.
         let hook = self.codex_hook.as_deref().filter(|helper| helper.is_file()).and_then(|helper| {

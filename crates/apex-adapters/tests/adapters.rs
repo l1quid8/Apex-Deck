@@ -929,6 +929,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
             .replace("#!/bin/sh\n", "#!/bin/sh\nenv > \"$PWD/env.txt\"\n")
             .replace("  *'\"turn/start\"'*)\n", "  *'\"turn/start\"'*)\n    printf '%s\\n' \"$line\" > \"$PWD/prompt.txt\"\n")),
     };
+    let script = script.replace("env > \"$PWD/env.txt\"", "env > \"$PWD/env.txt\"\nprintf 'arg:%s\\n' \"$@\" >> \"$PWD/env.txt\"");
     let dir = fake_tool(&format!("phone-probe-{name}-{}", phone.is_some()), name, &script);
     let mut cfg = config("jig", Backend::Agent { tool, model: None });
     cfg.display_name = "Jigga".into();
@@ -953,12 +954,16 @@ async fn claude_and_codex_processes_get_the_phone_variables_and_the_hint() {
             assert!(env.lines().any(|seen| seen == line), "{tool:?} did not get {line}: {env}");
         }
         assert!(prompt.contains("Deck's Phone tab") && prompt.contains("phone help"), "{tool:?} prompt had no hint: {prompt}");
+        if tool == AgentTool::Codex {
+            assert!(env.lines().any(|seen| seen == "arg:shell_environment_policy.set.APEX_DECK_BIN=\"/A/apex-daemon\""), "Codex shells would lose their phone variables: {env}");
+        }
 
         let (env, prompt) = phone_probe(tool, None).await;
         // Other tests in this file set unrelated APEX_DECK_* variables, so
         // look for the five phone names only.
         assert!(!env.lines().any(|seen| names.iter().any(|name| seen.starts_with(&format!("{name}=")))), "{tool:?} got phone variables with the phone off: {env}");
         assert!(!prompt.contains("Phone tab"), "{tool:?} got the hint with the phone off: {prompt}");
+        assert!(!env.contains("shell_environment_policy.set.APEX_DECK_"));
     }
 }
 

@@ -35,12 +35,14 @@ pub struct DriverLock {
     paused: Vec<BotId>,
     /// Bots given the phone since the last reset.
     drivers: Vec<BotId>,
+    /// Accepted human inputs still queued or running. Their turn cannot idle out.
+    human_inputs: u32,
 }
 
 impl DriverLock {
     pub fn tick(&mut self, now: u64) {
         if let Holder::Human { since, last } = self.holder {
-            if now.saturating_sub(last) >= HUMAN_IDLE_MS { self.end_human(since, last + HUMAN_IDLE_MS); }
+            if self.human_inputs == 0 && now.saturating_sub(last) >= HUMAN_IDLE_MS { self.end_human(since, last + HUMAN_IDLE_MS); }
         }
     }
 
@@ -64,11 +66,22 @@ impl DriverLock {
         }
     }
 
+    pub fn begin_human_input(&mut self, now: u64) {
+        self.human_input(now);
+        self.human_inputs += 1;
+    }
+
+    pub fn end_human_input(&mut self, now: u64) {
+        self.human_inputs = self.human_inputs.saturating_sub(1);
+        if let Holder::Human { last, .. } = &mut self.holder { *last = now; }
+    }
+
     pub fn give_back(&mut self, now: u64) {
         if let Holder::Human { since, .. } = self.holder { self.end_human(since, now); }
     }
 
     fn bot_may(&self, who: &BotId, now: u64) -> Result<(), Busy> {
+        if self.human_inputs > 0 { return Err(Busy::Human); }
         match &self.holder {
             Holder::Free => Ok(()),
             Holder::Human { .. } => Err(Busy::Human),
@@ -115,7 +128,7 @@ impl DriverLock {
         self.tick(now);
         match &self.holder {
             Holder::Free => HolderView::Free,
-            Holder::Human { last, .. } => HolderView::Human { seconds_left: (last + HUMAN_IDLE_MS).saturating_sub(now).div_ceil(1000) },
+            Holder::Human { last, .. } => HolderView::Human { seconds_left: if self.human_inputs > 0 { 10 } else { (last + HUMAN_IDLE_MS).saturating_sub(now).div_ceil(1000) } },
             Holder::Bot { who, last } if now.saturating_sub(*last) < BOT_IDLE_MS => HolderView::Bot { name: who.name.clone() },
             Holder::Bot { .. } => HolderView::Free,
         }
@@ -130,6 +143,32 @@ mod tests {
 
     fn bot(room: &str, id: &str, name: &str) -> BotId {
         BotId { room: room.into(), bot: id.into(), name: name.into() }
+    }
+
+    #[test]
+    fn pending_human_inputs_cannot_expire_before_they_run() {
+        let mut lock = DriverLock::default();
+        let bo = bot("r", "b", "Bo");
+        lock.begin_human_input(0);
+        assert_eq!(lock.bot_act(&bo, 30_000), Err(Busy::Human));
+        assert_eq!(lock.view(30_000), HolderView::Human { seconds_left: 10 });
+        lock.end_human_input(30_000);
+        assert_eq!(lock.view(39_999), HolderView::Human { seconds_left: 1 });
+        assert_eq!(lock.view(40_000), HolderView::Free);
+    }
+
+    #[test]
+    fn a_new_human_input_after_idle_starts_a_fresh_turn() {
+        let mut lock = DriverLock::default();
+        lock.begin_human_input(0);
+        lock.chat_queued("r");
+        lock.end_human_input(1);
+        lock.begin_human_input(20_000);
+        lock.end_human_input(20_001);
+        lock.give_back(20_002);
+        let outcome = lock.wait_outcome(&bot("r", "a", "Ann"), 19_000, 20_003).unwrap();
+        assert_eq!(outcome.queued, 0, "the previous turn's messages must not carry into this turn");
+        assert_eq!(outcome.human_seconds, Some(1));
     }
 
     #[test]

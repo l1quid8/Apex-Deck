@@ -24,6 +24,17 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
   const typeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The person's inputs go one after another, so typed text always lands before the key that follows it.
   const queue = useRef<Promise<void>>(Promise.resolve());
+  const acceptStatus = (next: PhoneStatus) => {
+    setStatus(next);
+    if (!next.on) {
+      seq.current = 0;
+      setShown(null);
+      press.current = null;
+      if (typeTimer.current !== null) clearTimeout(typeTimer.current);
+      typeTimer.current = null;
+      typed.current = "";
+    }
+  };
 
   useEffect(() => {
     if (!phone || !visible) return;
@@ -35,8 +46,8 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
       try {
         const view = await phone.view(seq.current);
         if (live) {
-          setStatus(view.status);
-          if (view.frame) {
+          acceptStatus(view.status);
+          if (view.status.on && view.frame) {
             seq.current = view.frame.seq;
             setShown({ src: `data:image/jpeg;base64,${view.frame.image}`, width: view.frame.width, height: view.frame.height });
           }
@@ -66,7 +77,7 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
 
   const act = (work: () => Promise<PhoneStatus>) => {
     queue.current = queue.current.then(work).then(
-      (next) => { setStatus(next); setProblem(null); },
+      (next) => { acceptStatus(next); setProblem(null); },
       (cause) => setProblem({ text: wordsOf(cause), fromPoll: false }),
     );
   };
@@ -77,6 +88,7 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
     typed.current = "";
     if (text) act(() => api.input({ kind: "type", text }));
   };
+  const afterTyping = (work: () => Promise<PhoneStatus>) => { sendTyped(); act(work); };
   // Where a pointer is on the phone's screen. With `toEdge`, a point off the picture counts as its nearest edge.
   const pointAt = (event: PointerEvent<HTMLImageElement>, toEdge: boolean) => {
     if (!shown) return null;
@@ -107,13 +119,14 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
   return <div className="right-phone">
     <p role="status" className="right-phone-state">{holderLine(status)}</p>
     <div className="right-phone-actions">
-      {status.holder.kind === "human" && <button onClick={() => act(() => api.giveBack())}>Give back</button>}
-      <button onClick={() => act(() => api.input({ kind: "button", button: "home" }))}>Home</button>
-      <button onClick={() => act(() => api.input({ kind: "button", button: "lock" }))}>Lock</button>
-      <button onClick={() => act(() => api.stop())}>Turn off</button>
+      {status.holder.kind === "human" && <button onClick={() => afterTyping(() => api.giveBack())}>Give back</button>}
+      <button onClick={() => afterTyping(() => api.input({ kind: "button", button: "home" }))}>Home</button>
+      <button onClick={() => afterTyping(() => api.input({ kind: "button", button: "lock" }))}>Lock</button>
+      <button onClick={() => afterTyping(() => api.stop())}>Turn off</button>
     </div>
     {alert}
-    {shown && <img className="right-phone-screen" src={shown.src} tabIndex={0} draggable={false}
+    {shown && <div className="right-phone-picture"><img className="right-phone-screen" src={shown.src} tabIndex={0} draggable={false}
+      style={{ width: `min(100cqw, calc(100cqh * ${shown.width / shown.height}))` }}
       alt="Phone screen. Click to tap, drag to swipe, type while it's selected."
       onPointerDown={(event) => {
         // Only the main button presses the screen.
@@ -130,7 +143,7 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
         const start = press.current;
         press.current = null;
         const end = start && pointAt(event, true);
-        if (start && end) act(() => api.input(gesture(start, { x: end.x, y: end.y, at })));
+        if (start && end) afterTyping(() => api.input(gesture(start, { x: end.x, y: end.y, at })));
       }}
       onPointerCancel={forgetPress}
       onLostPointerCapture={forgetPress}
@@ -141,12 +154,13 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
         if ("text" in action) {
           typed.current += action.text;
           if (typeTimer.current !== null) clearTimeout(typeTimer.current);
-          typeTimer.current = setTimeout(sendTyped, TYPE_FLUSH_MS);
+          if (typed.current.length >= 500) sendTyped();
+          else typeTimer.current = setTimeout(sendTyped, TYPE_FLUSH_MS);
         } else {
           sendTyped();
           act(() => api.input({ kind: "key", key: action.key }));
         }
-      }} />}
+      }} /></div>}
     <p className="right-phone-state">Typing works while the screen is selected. Plain keyboard characters only.</p>
   </div>;
 }

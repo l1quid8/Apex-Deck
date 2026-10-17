@@ -42,6 +42,16 @@ pub fn phone_vars(phone: Option<&PhoneEnv>, config: &ParticipantConfig) -> Vec<(
     ]
 }
 
+/// Codex filters inherited variables before running shell commands. Keep the
+/// phone's five values explicitly, without broadening the person's env policy.
+pub(crate) fn codex_shell_flags(phone: Option<&PhoneEnv>, config: &ParticipantConfig) -> Vec<String> {
+    if !matches!(config.backend, Backend::Agent { tool: AgentTool::Codex, .. }) { return Vec::new(); }
+    phone_vars(phone, config).into_iter().flat_map(|(name, value)| {
+        let quoted = serde_json::to_string(&value.to_string_lossy()).expect("an environment string serializes");
+        ["-c".into(), format!("shell_environment_policy.set.{name}={quoted}")]
+    }).collect()
+}
+
 /// `system` with the phone line added, when this bot has the phone.
 pub fn with_hint(system: &str, phone: Option<&PhoneEnv>, config: &ParticipantConfig) -> String {
     if phone.is_some() && uses_phone(config) {
@@ -73,6 +83,16 @@ mod tests {
         assert_eq!(phone_vars(Some(&env()), &bot(AgentTool::Codex)).len(), 5);
         assert!(phone_vars(Some(&env()), &bot(AgentTool::Gemini)).is_empty());
         assert!(phone_vars(None, &bot(AgentTool::ClaudeCode)).is_empty());
+    }
+
+    #[test]
+    fn codex_shell_settings_keep_only_the_five_phone_variables() {
+        let flags = codex_shell_flags(Some(&env()), &bot(AgentTool::Codex));
+        assert_eq!(flags.len(), 10);
+        assert_eq!(&flags[..2], &["-c", "shell_environment_policy.set.APEX_DECK_BIN=\"/A/apex-daemon\""]);
+        assert!(flags.contains(&"shell_environment_policy.set.APEX_DECK_BOT_NAME=\"Jigga\"".to_string()));
+        assert!(codex_shell_flags(None, &bot(AgentTool::Codex)).is_empty());
+        assert!(codex_shell_flags(Some(&env()), &bot(AgentTool::ClaudeCode)).is_empty());
     }
 
     #[test]

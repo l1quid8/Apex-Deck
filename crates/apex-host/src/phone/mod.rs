@@ -92,6 +92,8 @@ pub struct Phone {
     actions: tokio::sync::Mutex<()>,
     /// Held while the simulator shuts down, so a quick Turn on waits for it before booting.
     shutting_down: tokio::sync::Mutex<()>,
+    /// A cancelled start must finish before the next start uses the tools or device.
+    starting: tokio::sync::Mutex<()>,
 }
 
 /// What an input needs: the phone on, its screen size in points, and a picture.
@@ -101,6 +103,15 @@ struct Ready {
     points: (f64, f64),
     width: u32,
     height: u32,
+}
+
+/// Finish a human input even when its request is cancelled while queued.
+struct HumanInput<'a>(&'a Phone, u64);
+impl Drop for HumanInput<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state();
+        if state.starts == self.1 { state.lock.end_human_input(self.0.now()); }
+    }
 }
 
 impl Ready {
@@ -167,6 +178,7 @@ impl Phone {
             seq: Arc::new(AtomicU64::new(0)),
             actions: tokio::sync::Mutex::new(()),
             shutting_down: tokio::sync::Mutex::new(()),
+            starting: tokio::sync::Mutex::new(()),
             data,
         })
     }
@@ -242,6 +254,8 @@ impl Phone {
     }
 
     async fn turn_on(self: Arc<Self>, start: u64) {
+        let _starting = self.starting.lock().await;
+        if !self.is_current(start) { return; }
         let result = self.bring_up(start).await;
         let leftover = {
             let mut state = self.state();
@@ -270,7 +284,10 @@ impl Phone {
             }
         };
         if let Some(udid) = leftover {
-            let _ = self.shut_down(&udid).await;
+            let _shutting = self.shutting_down.lock().await;
+            // A new start may have arrived while the shutdown barrier was busy.
+            let still_off = { let state = self.state(); state.power == Power::Off && state.starts == start };
+            if still_off { let _ = self.shut_down_locked(&udid).await; }
         }
     }
 
@@ -348,9 +365,8 @@ impl Phone {
     }
 
     /// `simctl shutdown`, counting an already shut down simulator as done.
-    async fn shut_down(&self, udid: &str) -> Result<(), String> {
+    async fn shut_down_locked(&self, udid: &str) -> Result<(), String> {
         let xcrun = self.state().tools.as_ref().map_or_else(|| PathBuf::from(XCRUN), |t| t.xcrun.clone());
-        let _shutting = self.shutting_down.lock().await;
         match simctl(&xcrun, &["shutdown", udid], axe::SIMCTL_LIMIT).await {
             Err(problem) if !problem.contains("current state: Shutdown") => Err(problem),
             _ => Ok(()),
@@ -359,6 +375,9 @@ impl Phone {
 
     /// Turns the phone off: ends the picture, shuts the simulator down and frees the phone.
     pub async fn stop(&self) -> Result<Status, String> {
+        // Reserve shutdown before publishing Off, so a new start cannot boot
+        // between this stop's stream cleanup and simulator shutdown.
+        let _shutting = self.shutting_down.lock().await;
         // Off first, so a start still in progress gives up instead of turning it on.
         let (stream, udid) = {
             let mut state = self.state();
@@ -373,7 +392,7 @@ impl Phone {
         }
         *locked(&self.frame) = None;
         if let Some(udid) = udid {
-            self.shut_down(&udid).await?;
+            self.shut_down_locked(&udid).await?;
         }
         Ok(self.status())
     }
@@ -419,15 +438,21 @@ impl Phone {
             Input::Key { key } => (axe::key_args(udid, *key), None, format!("Pressed {}.", wire_name(key))),
             Input::Button { button } => (axe::button_args(udid, *button), None, format!("Pressed the {} button.", wire_name(button))),
         };
-        let _turn = self.actions.lock().await;
         axe::run_tool(&ready.tools.axe, &args, stdin, axe::INPUT_LIMIT).await?;
         Ok(done)
     }
 
     /// The person's tap, swipe, typing, key or button. The person always gets the phone.
     pub async fn human(&self, input: Input) -> Result<Status, String> {
+        self.running()?;
         let now = self.now();
-        self.state().lock.human_input(now);
+        let generation = {
+            let mut state = self.state();
+            state.lock.begin_human_input(now);
+            state.starts
+        };
+        let _human = HumanInput(self, generation);
+        let _turn = self.actions.lock().await;
         self.act(&input).await?;
         Ok(self.status())
     }
@@ -447,7 +472,13 @@ impl Phone {
     /// One request from a bot. A busy phone is a `Wait` reply; `Err` is a problem to show the bot.
     pub async fn bot(&self, who: BotId, request: BotRequest) -> Result<BotReply, String> {
         use BotRequest as R;
+        // Claim the phone only when this action can actually run. A person
+        // taking over while it was queued must be able to refuse it.
+        let _turn = if matches!(request, R::Act { .. } | R::TapLabel { .. } | R::Launch { .. } | R::Open { .. }) {
+            Some(self.actions.lock().await)
+        } else { None };
         if matches!(request, R::Act { .. } | R::TapLabel { .. } | R::Install { .. } | R::Launch { .. } | R::Open { .. }) {
+            self.running()?;
             let now = self.now();
             let turn = self.state().lock.bot_act(&who, now);
             if let Err(busy) = turn {
@@ -463,7 +494,6 @@ impl Phone {
             R::Act { input } => self.act(&input).await.map(BotReply::ok),
             R::TapLabel { text } => {
                 let (tools, udid) = self.running()?;
-                let _turn = self.actions.lock().await;
                 axe::run_tool(&tools.axe, &axe::tap_label_args(&udid, &text), None, axe::INPUT_LIMIT).await?;
                 Ok(BotReply::ok(format!("Tapped \"{text}\".")))
             }
@@ -475,13 +505,11 @@ impl Phone {
             }
             R::Launch { bundle } => {
                 let (tools, udid) = self.running()?;
-                let _turn = self.actions.lock().await;
                 simctl(&tools.xcrun, &["launch", "--terminate-running-process", &udid, &bundle], axe::SIMCTL_LIMIT).await?;
                 Ok(BotReply::ok(format!("Launched {bundle}.")))
             }
             R::Open { url } => {
                 let (tools, udid) = self.running()?;
-                let _turn = self.actions.lock().await;
                 simctl(&tools.xcrun, &["openurl", &udid, &url], axe::SIMCTL_LIMIT).await?;
                 Ok(BotReply::ok(format!("Opened {url}.")))
             }
@@ -500,10 +528,10 @@ impl Phone {
         let began = self.now();
         loop {
             let status = self.status();
-            if status.on {
+            if status.on && status.width > 0 && status.height > 0 {
                 return Ok(BotReply::ok(guide::status_text(&status)));
             }
-            if !status.starting {
+            if !status.on && !status.starting {
                 if let Some(problem) = status.problem {
                     return Err(problem);
                 }
@@ -685,6 +713,112 @@ esac
         let log = calls(&tools);
         assert!(log.contains("xcrun simctl create"), "{log}");
         assert!(log.contains("xcrun simctl bootstatus FAKE-UDID -b"), "{log}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bot_start_waits_for_the_first_picture_before_reporting_ready() {
+        let (data, tools) = fake("start-picture");
+        let script = std::fs::read_to_string(&tools.axe).unwrap().replace(
+            "stream-video) cat",
+            "stream-video) while [ ! -f \"$dir/release-frame\" ]; do sleep 0.02; done; cat",
+        );
+        std::fs::write(&tools.axe, script).unwrap();
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
+        let starting = {
+            let phone = Arc::clone(&phone);
+            tokio::spawn(async move { phone.bot(ann(), BotRequest::Start).await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !phone.status().on { tokio::time::sleep(Duration::from_millis(20)).await; }
+        }).await.unwrap();
+        tokio::time::sleep(START_EVERY * 2).await;
+        assert!(!starting.is_finished(), "start returned before the screen picture arrived");
+        std::fs::write(tools.axe.parent().unwrap().join("release-frame"), "").unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(5), starting).await.unwrap().unwrap().unwrap();
+        assert!(reply.text.contains("603×1311 pixels"), "{}", reply.text);
+        assert!(phone.bot(ann(), BotRequest::Look).await.unwrap().image.is_some());
+        phone.stop().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_bot_actions_are_refused_after_human_takeover() {
+        let requests = [
+            BotRequest::Act { input: Input::Tap { x: 150, y: 300 } },
+            BotRequest::TapLabel { text: "Continue".into() },
+            BotRequest::Launch { bundle: "test.app".into() },
+            BotRequest::Open { url: "https://example.com".into() },
+        ];
+        for (index, request) in requests.into_iter().enumerate() {
+            let (data, tools) = fake(&format!("queued-{index}"));
+            let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
+            on(&phone).await;
+            let held = phone.actions.lock().await;
+            let bot = phone.bot(ann(), request);
+            tokio::pin!(bot);
+            tokio::select! {
+                reply = &mut bot => panic!("bot did not queue: {reply:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+            }
+            let human = phone.human(Input::Key { key: Key::Enter });
+            tokio::pin!(human);
+            tokio::select! {
+                reply = &mut human => panic!("human did not queue: {reply:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+            }
+            assert!(matches!(phone.status().holder, HolderView::Human { .. }));
+            // A slow in-flight tool can outlast the person's idle timeout.
+            phone.state().lock.tick(lock::HUMAN_IDLE_MS + 100);
+            drop(held);
+            let (bot, human) = tokio::join!(bot, human);
+            assert_eq!(bot.unwrap().code, ReplyCode::Wait, "request {index} ran after takeover");
+            human.unwrap();
+            let log = calls(&tools);
+            assert!(!log.contains("axe tap") && !log.contains("simctl launch") && !log.contains("simctl openurl"), "{log}");
+            phone.stop().await.unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_reserves_shutdown_before_allowing_a_restart() {
+        let (data, tools) = fake("stop-barrier");
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools);
+        on(&phone).await;
+        let barrier = phone.shutting_down.lock().await;
+        let stop = phone.stop();
+        tokio::pin!(stop);
+        tokio::select! {
+            result = &mut stop => panic!("stop bypassed shutdown barrier: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+        }
+        assert!(phone.status().on, "Off must not be published before reserving shutdown");
+        drop(barrier);
+        assert!(!stop.await.unwrap().on);
+        assert!(phone.view(0).frame.is_none());
+        phone.bot(ann(), BotRequest::Start).await.unwrap();
+        assert!(phone.bot(ann(), BotRequest::Look).await.unwrap().image.is_some());
+        phone.stop().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restart_waits_for_the_cancelled_start_to_finish() {
+        let (data, tools) = fake("restart-boot");
+        let script = std::fs::read_to_string(&tools.xcrun).unwrap().replace(
+            "  *) : ;;",
+            "  simctl\\ bootstatus*) while [ ! -f \"$dir/release-boot\" ]; do sleep 0.02; done ;;\n  *) : ;;",
+        );
+        std::fs::write(&tools.xcrun, script).unwrap();
+        let phone = Phone::with_tools(data, tokio::runtime::Handle::current(), tools.clone());
+        phone.start();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !calls(&tools).contains("simctl bootstatus") { tokio::time::sleep(Duration::from_millis(20)).await; }
+        }).await.unwrap();
+        phone.stop().await.unwrap();
+        phone.start();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(calls(&tools).matches("simctl bootstatus").count(), 1, "two starts booted concurrently");
+        std::fs::write(tools.xcrun.parent().unwrap().join("release-boot"), "").unwrap();
+        on(&phone).await;
+        phone.stop().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

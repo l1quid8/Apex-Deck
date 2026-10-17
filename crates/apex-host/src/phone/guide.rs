@@ -38,6 +38,7 @@ Building
   Testing Apex Deck's own phone app: pair it only with a throwaway daemon, never the person's real one.
   New apps: write a project.yml and run xcodegen generate. XcodeGen must be installed (brew install xcodegen).
   Never use the person's own simulators or real iPhone unless they ask.
+  Codex phone control needs Full access on this Mac. Ask and Edits use a sandbox that blocks the phone's local connection. Ask the person to change access; do not bypass the sandbox.
 
 Checking your work
   After each change: build, install, launch, look. Say what you see before calling it done.
