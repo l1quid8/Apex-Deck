@@ -21,6 +21,7 @@ use crate::codex_server::{self, TurnError};
 use crate::muse_server;
 use crate::presets::{agent_command_in, clean_effort, clean_model, codex_service_tier, output_format};
 use crate::codex_hook;
+use crate::phone_env::{self, PhoneEnv};
 use crate::{claude_session, report, BuildContext, Utf8Chunks};
 use crate::owned_process::{OwnedChild, Registry};
 
@@ -62,11 +63,13 @@ pub struct CliParticipant {
     processes: Registry,
     cargo_target_dir: Option<PathBuf>,
     attachment_roots: Vec<PathBuf>,
+    /// Deck's shared phone, for Claude and Codex bots. See phone_env.rs.
+    phone: Option<PhoneEnv>,
 }
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new() }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None }
     }
 
     /// Start a text-only turn with tools disabled at both the CLI and
@@ -85,6 +88,7 @@ impl CliParticipant {
         self.temp = context.temp.clone();
         self.processes = Registry::new(context.process_registry.clone());
         self.cargo_target_dir = context.cargo_target_dir.clone();
+        self.phone = context.phone.clone();
         self
     }
 
@@ -131,6 +135,9 @@ impl CliParticipant {
         let mut command = Command::new(program);
         command.args(args);
         command.envs(env.iter().map(|(name, value)| (*name, value)));
+        // Claude and Codex bots get the phone command; see phone_env.rs.
+        // A text-only monitor turn has no tools, so it gets nothing.
+        command.envs(phone_env::phone_vars(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
         // An API key overrides Muse's subscription sign-in and bills per
         // use, so a Muse bot never sees one.
         if program == "muse" {
@@ -570,7 +577,7 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone() };
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -581,7 +588,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone() };
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -592,13 +599,13 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
         let program = program.as_str();
         let images = crate::attachments::for_request(&request, &self.attachment_roots)?;
-        let mut prompt = render_prompt(&request.system, &request.turns);
+        let mut prompt = render_prompt(&phone_env::with_hint(&request.system, self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config), &request.turns);
         let mut staged = None;
         if !images.is_empty() {
             match &self.config.backend {

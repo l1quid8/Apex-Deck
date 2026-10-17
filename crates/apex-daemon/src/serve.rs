@@ -180,3 +180,13 @@ async fn serve_local(daemon: Arc<Daemon>, stream: UnixStream) {
     let (input, output) = protocol::lines(read, write);
     protocol::serve(daemon, Trust::Local, input, output).await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bots_are_pointed_at_the_socket_the_daemon_listens_on() {
+        assert_eq!(SOCKET, apex_adapters::DAEMON_SOCKET);
+    }
+}
