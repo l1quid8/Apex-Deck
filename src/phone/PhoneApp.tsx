@@ -17,6 +17,8 @@ import { latestSaveQueue } from "../settingsSave";
 import { elapsed } from "../composerStatus";
 import { legacyAppearance } from "../identicon";
 import { Markdown } from "../Markdown";
+import { SavedSteps, WorkSteps } from "../WorkSteps.tsx";
+import { createStepsIndexLoader, readReplySteps, savedEntry } from "../workSteps.ts";
 import { PreparingCard } from "../interactiveAnswers/AnswerCard.tsx";
 import { CARD_LANGUAGE } from "../interactiveAnswers/contract.ts";
 import { cardVersions } from "../interactiveAnswers/share.ts";
@@ -95,6 +97,7 @@ type Person = { id: string; display_name: string; look: { seed: string; color: s
 const NO_CUTS: PhoneCuts = {};
 /** An open working line shows a bot's latest steps; older ones fold into a count. */
 const MAX_STEPS_SHOWN = 6;
+type SavedStepsFor = { id: string; index: import("../types").StepsIndex | null };
 type Room = {
   id: string; messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[]; participants: Person[]; asks: ThreadAsks; plan: boolean; policy: TurnPolicy;
   /** Each bot's turn in progress, with its reply so far. */
@@ -683,6 +686,10 @@ export function PhoneApp() {
     setNotice("");
   }
 
+  // Saved steps per finished reply: the index says which replies have them; a reply's own steps load when its line is opened.
+  // The phone has no Retry, Revert or Clear chat, so nothing here has to forget steps when a thread is cut back.
+  const [savedSteps, setSavedSteps] = useState<SavedStepsFor | null>(null);
+  const loadedSteps = useRef(new Map<number, import("../types").ReplySteps>());
   useEffect(() => {
     if (!openPane || !openWorkspace) { if (!viewingPending) setRoom(null); return; }
     const host = phoneHost(openHostId);
@@ -699,10 +706,21 @@ export function PhoneApp() {
     }
     let live = true;
     let stop = () => {};
+    const paneId = openPane.id;
+    loadedSteps.current.clear();
+    const stepsLoader = createStepsIndexLoader(
+      () => host.backend.roomSteps(paneId, null),
+      (index) => {
+        if (!live) return;
+        for (const seq of [...loadedSteps.current.keys()]) if (!index?.replies[String(seq)]) loadedSteps.current.delete(seq);
+        setSavedSteps({ id: paneId, index });
+      },
+    );
     const settingsHeard = new Map<string, ParticipantConfig>();
     let rosterHeard: ParticipantConfig[] | null = null;
     const applyState = (state: RoomState) => {
       if (!live) return;
+      void stepsLoader.refresh();
       setWaiting((all) => ({ ...all, [openPane.id]: state.approvals.map((card) => card.request) }));
       setBusy((all) => ({ ...all, [openPane.id]: state.active }));
       const queue = queues.current.get(openPane.id);
@@ -727,6 +745,8 @@ export function PhoneApp() {
     const applyEvent = (event: RoomEvent) => {
       if (!live) return;
       const id = openPane.id;
+      // The host saves a reply's steps just after it announces the reply, so look again when the bot or the thread goes idle.
+      if (event.type === "participant_idle" || event.type === "idle") void stepsLoader.refresh();
       if (event.type === "participants_changed") { rosterHeard = event.participants; settingsHeard.clear(); }
       if (event.type === "participants_changed") setRoom((current) => current && current.id === id ? { ...current, configs: event.participants, participants: event.participants.map(toPerson) } : current);
       if (event.type === "participant_changed") settingsHeard.set(event.participant.id, event.participant);
@@ -802,7 +822,7 @@ export function PhoneApp() {
   // Follow the newest message and a reply as it streams in, unless the person scrolled up to read.
   const stuckRef = useRef(true);
   const shownRef = useRef<string | null>(null);
-  const streamed = room ? Object.values(room.working).reduce((sum, turn) => sum + turn.text.length + turn.steps.length + 1, 0) : 0;
+  const streamed = room ? Object.values(room.working).reduce((sum, turn) => sum + turn.text.length + turn.steps.length + turn.work.steps.length + turn.work.todo.length + 1, 0) : 0;
   useEffect(() => {
     if (shownRef.current !== openId) stuckRef.current = true;
     shownRef.current = openId;
@@ -1329,6 +1349,15 @@ export function PhoneApp() {
               ? recipientName({ targets: answerers.ids, roster: room.participants.map((p) => ({ id: p.id, name: p.display_name })), policy: room.policy })
               : null}
             working={room && openPane && room.id === openPane.id ? room.working : {}}
+            stepsIndex={openPane && savedSteps?.id === openPane.id ? savedSteps.index : null}
+            loadedSteps={loadedSteps.current}
+            loadSteps={async (seq) => {
+              const host = phoneHost(openHostId);
+              if (!host || !openPane) return null;
+              const reply = readReplySteps(await host.backend.roomSteps(openPane.id, seq));
+              if (reply) loadedSteps.current.set(seq, reply);
+              return reply;
+            }}
             cut={(openPane && cuts[openPane.id]) || NO_CUTS}
             onStop={(id) => { void stopBot(id); }}
             queued={queuedRows}
@@ -1966,7 +1995,8 @@ function ThreadView(props: {
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
-  participants: Person[]; working: PhoneWorking; cut: PhoneCuts; draft: Draft; gate: { enabled: boolean; reason: string };
+  participants: Person[]; working: PhoneWorking; cut: PhoneCuts;
+  stepsIndex: import("../types").StepsIndex | null; loadedSteps: Map<number, import("../types").ReplySteps>; loadSteps(seq: number): Promise<import("../types").ReplySteps | null>; draft: Draft; gate: { enabled: boolean; reason: string };
   /** Who a message without an @name goes to: "Null", "everyone"; null while unknown. */
   to: string | null;
   /** The same, as bot ids, for the bar to light up. */
@@ -2196,6 +2226,10 @@ function ThreadView(props: {
             <div className="ph-md"><Markdown text={message.text} onOpen={(target) => { if (!press.held.current && /^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE
               ? <ThreadCard source={code.text} seq={message.seq} author={message.speaker.kind === "bot" ? person(message.speaker.id).display_name : "Human"} versions={versions} answers={null} readOnly onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} />
               : undefined)} /></div>
+            {(() => {
+              const saved = message.speaker.kind === "bot" ? savedEntry(props.stepsIndex, message.seq) : null;
+              return saved ? <SavedSteps count={saved.count} cached={props.loadedSteps.get(message.seq) ?? null} load={() => props.loadSteps(message.seq)} /> : null;
+            })()}
           </section>
         ))}
         {/* Cut off mid-reply: what it had written stays, dimmed, until its reply lands, even after a reload. */}
@@ -2216,12 +2250,13 @@ function ThreadView(props: {
           const doing = /^(Thinking|Writing|Working|Planning|Waiting for you)$/.test(words) ? `${name} is ${words.toLowerCase()}…` : words;
           const shown = turn.steps.slice(-MAX_STEPS_SHOWN);
           const earlier = turn.steps.length - shown.length;
+          const stepCount = turn.work.structured ? turn.work.steps.length : turn.steps.length;
           return (
             <section key={`w-${id}`} className={`ph-msg ph-live${open ? " open" : ""}`} aria-busy="true">
               {by(id, true)}
               <div className={`ph-working${asking(id) ? " asking" : ""}`}>
                 <button type="button" className="ph-working-toggle" aria-expanded={open} aria-controls={`ph-progress-${id}`}
-                  aria-label={`${name}: ${doing.replace(/…$/, "")}. ${open ? "Hide" : "Show"} progress${turn.steps.length > 0 ? `, ${turn.steps.length === 1 ? "1 step" : `${turn.steps.length} steps`}` : ""}`}
+                  aria-label={`${name}: ${doing.replace(/…$/, "")}. ${open ? "Hide" : "Show"} progress${stepCount > 0 ? `, ${stepCount === 1 ? "1 step" : `${stepCount} steps`}` : ""}`}
                   onClick={() => watch(id)}>
                   <span className="working-dots" aria-hidden="true"><i /><i /><i /></span>
                   <span className="ph-grow ph-ellipsis" role="status">{doing}</span>
@@ -2232,7 +2267,8 @@ function ThreadView(props: {
               </div>
               {open && (
                 <div id={`ph-progress-${id}`} className="ph-progress">
-                  {turn.steps.length > 0 && (
+                  {turn.work.structured && <WorkSteps turn={turn.work} live maxShown={MAX_STEPS_SHOWN} />}
+                  {!turn.work.structured && turn.steps.length > 0 && (
                     <ol className="ph-steps" aria-label={`${name}'s steps so far`}>
                       {earlier > 0 && <li className="ph-step done">{earlier === 1 ? "1 earlier step" : `${earlier} earlier steps`}</li>}
                       {shown.map((step, i) => (
@@ -2242,7 +2278,7 @@ function ThreadView(props: {
                   )}
                   {turn.text
                     ? <div className="ph-md ph-draft"><Markdown text={turn.text} onOpen={(target) => { if (/^https?:/i.test(target)) window.open(target, "_blank", "noopener"); }} fence={(code) => (code.language === CARD_LANGUAGE ? <PreparingCard author={name} /> : undefined)} /></div>
-                    : turn.steps.length === 0 && <p className="ph-progress-none">Nothing to show yet. Steps and the reply appear here as {name} works.</p>}
+                    : turn.steps.length === 0 && !turn.work.structured && <p className="ph-progress-none">Nothing to show yet. Steps and the reply appear here as {name} works.</p>}
                 </div>
               )}
             </section>

@@ -6,7 +6,7 @@ const bot = (id, text = 'done') => ({ type: 'message_added', message: { seq: 1, 
 
 test('a bot shows as working from turn start, with its reply filling in, until the reply lands', () => {
   let w = applyTurnEvent({}, { type: 'turn_started', id: 'null' }, 100);
-  assert.deepEqual(w.null, { startedAt: 100, phase: 'thinking', step: '', steps: [], text: '' });
+  assert.deepEqual(w.null, { startedAt: 100, phase: 'thinking', step: '', steps: [], text: '', work: { steps: [], todo: [], structured: false } });
   w = applyTurnEvent(w, { type: 'activity', id: 'null', text: 'Reading PhoneApp.tsx' }, 200);
   assert.equal(turnWords(w.null, false, false), 'Reading PhoneApp.tsx');
   w = applyTurnEvent(w, { type: 'delta', id: 'null', text: 'Hel' }, 300);
@@ -107,4 +107,39 @@ test('a second drop in the same turn keeps both parts of the reply', () => {
   // A turn that already ended doesn't get the next turn's text glued on.
   const ended = { null: { text: 'Old turn', after: 4, ended: true } };
   assert.deepEqual(cutOff(ended, writing('New turn'), 8), { null: { text: 'New turn', after: 8 } });
+});
+
+const wstep = (key, label = key, extra = {}) => ({ type: 'work_step', id: 'null', step: { key, parent: null, kind: 'read', label, detail: '', output: '', status: 'running', ...extra } });
+
+test('work_step events upsert into the turn work, and todo replaces the checklist', () => {
+  let w = applyTurnEvent({}, { type: 'turn_started', id: 'null' }, 1);
+  w = applyTurnEvent(w, wstep('a', 'Reading a.ts'), 2);
+  assert.equal(w.null.work.structured, true);
+  assert.equal(w.null.work.steps.length, 1);
+  w = applyTurnEvent(w, wstep('a', 'Reading a.ts', { status: 'done' }), 3);
+  assert.equal(w.null.work.steps.length, 1);
+  assert.equal(w.null.work.steps[0].status, 'done');
+  w = applyTurnEvent(w, wstep('b'), 4);
+  assert.deepEqual(w.null.work.steps.map((s) => s.key), ['a', 'b']);
+  w = applyTurnEvent(w, { type: 'todo', id: 'null', items: [{ text: 'x', status: 'pending' }] }, 5);
+  assert.deepEqual(w.null.work.todo, [{ text: 'x', status: 'pending' }]);
+  // The same step again changes nothing, so React can skip a render.
+  const same = applyTurnEvent(w, wstep('b'), 6);
+  assert.equal(same, w);
+  // A new turn forgets the old one's work.
+  w = applyTurnEvent(w, { type: 'turn_started', id: 'null' }, 7);
+  assert.equal(w.null.work.structured, false);
+  assert.deepEqual(w.null.work.steps, []);
+});
+
+test('work events for a bot with no running turn are ignored, and the old step line still caps at MAX_STEPS', () => {
+  const none = applyTurnEvent({}, wstep('a'), 1);
+  assert.deepEqual(none, {});
+  let w = applyTurnEvent({}, { type: 'turn_started', id: 'null' }, 1);
+  for (let i = 0; i < MAX_STEPS + 5; i++) {
+    w = applyTurnEvent(w, { type: 'activity', id: 'null', text: `step ${i}` }, 2);
+    w = applyTurnEvent(w, wstep(`k${i}`), 3);
+  }
+  assert.equal(w.null.steps.length, MAX_STEPS);
+  assert.equal(w.null.work.steps.length, MAX_STEPS + 5);
 });

@@ -1220,3 +1220,22 @@
 .ph-speed { padding: 6px 14px 10px; display: grid; gap: 8px; }
 .ph-speed .ph-segment { margin-bottom: 0; }
 .ph-speed small { color: var(--muted); font-size: 12px; }
+
+/* Work steps (WorkSteps.tsx) on the phone: plain rows, bigger to tap. A helper's steps are an indented group
+   with a thin rule on the left, not a bordered card, and command output is a quiet tinted block, not a boxed one. */
+.ph-msg .work-steps { font-size: 13px; margin: 4px 0 8px; gap: 0; }
+.ph-progress .work-steps { margin-top: 2px; }
+.ph-msg .work-steps button { border: 0; border-radius: 0; }
+.ph-msg .work-steps-step, .ph-msg .work-steps-helper-head, .ph-msg .work-steps-more { min-height: 32px; align-items: center; }
+.ph-msg .work-steps-step:hover:not(:disabled), .ph-msg .work-steps-helper-head:hover:not(:disabled), .ph-msg .work-steps-more:hover:not(:disabled) { background: transparent; }
+.ph-msg .work-steps-step:active, .ph-msg .work-steps-helper-head:active, .ph-msg .work-steps-more:active, .ph-msg .work-steps-toggle:active { opacity: .6; }
+.ph-msg .work-steps-helper { border: 0; border-left: 2px solid var(--line); border-radius: 0; background: transparent; margin: 4px 0 4px 6px; padding: 0 0 0 8px; }
+.ph-msg .work-steps-helper-head { padding-left: 0; }
+.ph-msg .work-steps-helper > .work-steps-list { margin-left: 0; }
+.ph-msg .work-steps-detail { margin-left: 6px; padding-left: 8px; }
+.ph-msg .work-steps-output { border: 0; border-radius: 6px; background: var(--panel-2); max-height: 200px; }
+.ph-msg .work-steps-toggle { min-height: 32px; padding: 0 6px; border: 0; font-size: 13px; }
+.ph-msg .work-steps-saved { margin: 2px 0 0; }
+.ph-msg .work-steps-note { font-size: 12px; }
+:root[data-deck-theme="glass"] .ph-msg :is(.work-steps-helper, .work-steps-detail) { border-color: var(--line); }
+:root[data-deck-theme="glass"] .ph-msg .work-steps-output { background: var(--panel-2); border: 0; }

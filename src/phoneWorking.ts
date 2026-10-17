@@ -4,6 +4,7 @@
 // turn until its reply lands or the turn ends some other way.
 
 import type { RoomEvent } from "./types";
+import { applyStepEvent, emptyTurnSteps, type TurnSteps } from "./workSteps.ts";
 
 export interface PhoneTurn {
   startedAt: number;
@@ -14,11 +15,13 @@ export interface PhoneTurn {
   steps: string[];
   /** The reply so far. */
   text: string;
+  /** The full step list from the daemon: commands, outputs, helpers and the to-do list. Empty from an older daemon. */
+  work: TurnSteps;
 }
 
 export type PhoneWorking = Record<string, PhoneTurn>;
 
-const fresh = (now: number): PhoneTurn => ({ startedAt: now, phase: "thinking", step: "", steps: [], text: "" });
+const fresh = (now: number): PhoneTurn => ({ startedAt: now, phase: "thinking", step: "", steps: [], text: "", work: emptyTurnSteps });
 
 /** A long turn keeps only its latest steps, so the phone's memory stays small. */
 export const MAX_STEPS = 50;
@@ -47,6 +50,14 @@ export function applyTurnEvent(working: PhoneWorking, event: RoomEvent, now: num
       const turn = working[event.id] ?? fresh(now);
       const steps = turn.steps[turn.steps.length - 1] === event.text ? turn.steps : [...turn.steps, event.text].slice(-MAX_STEPS);
       return { ...working, [event.id]: { ...turn, phase: "tool", step: event.text, steps } };
+    }
+    case "work_step":
+    case "todo": {
+      // A helper reporting after its turn ended must not bring the working line back.
+      const turn = working[event.id];
+      if (!turn) return working;
+      const work = applyStepEvent(turn.work, event);
+      return work === turn.work ? working : { ...working, [event.id]: { ...turn, work } };
     }
     case "message_added":
       return event.message.speaker.kind === "bot" ? without(working, event.message.speaker.id) : working;
