@@ -13,6 +13,8 @@ pub const STEP_OUTPUT_HEAD: usize = 6_144;
 pub const STEP_OUTPUT_TAIL: usize = 6_144;
 /// Most steps kept for one reply. Later ones are counted in `dropped`.
 pub const STEPS_PER_REPLY_MAX: usize = 2_000;
+/// Bytes a `detail` is cut to when removing outputs did not make a reply fit.
+pub const STEP_DETAIL_CUT: usize = 512;
 /// Largest serialized size of one reply's steps before outputs are removed.
 pub const REPLY_STEPS_BYTES_MAX: usize = 1_048_576;
 
@@ -153,7 +155,8 @@ impl ReplySteps {
     }
 
     /// Removes outputs, oldest first, until the serialized size fits
-    /// `REPLY_STEPS_BYTES_MAX`.
+    /// `REPLY_STEPS_BYTES_MAX`. If it still does not fit with every output
+    /// gone, cuts details to `STEP_DETAIL_CUT` bytes, oldest first.
     pub fn fit(&mut self) {
         let mut total = json_len(self);
         for step in self.steps.iter_mut() {
@@ -166,6 +169,18 @@ impl ReplySteps {
             let before = json_len(step);
             step.output = None;
             step.output_cut = true;
+            total = total - before + json_len(step);
+        }
+        for step in self.steps.iter_mut() {
+            if total <= REPLY_STEPS_BYTES_MAX {
+                break;
+            }
+            if step.detail.len() <= STEP_DETAIL_CUT {
+                continue;
+            }
+            let before = json_len(step);
+            let end = floor_boundary(&step.detail, STEP_DETAIL_CUT - '…'.len_utf8());
+            step.detail = format!("{}…", &step.detail[..end]);
             total = total - before + json_len(step);
         }
     }
@@ -247,5 +262,22 @@ mod tests {
         assert!(r.steps.last().unwrap().output.is_some());
         assert_eq!(r.steps[0].output, None);
         assert!(r.steps[0].output_cut);
+    }
+
+    #[test]
+    fn fit_cuts_details_oldest_first_when_outputs_are_not_enough() {
+        let mut r = empty();
+        for n in 0..400 {
+            let mut s = step(&n.to_string(), Some("out".into()), StepStatus::Done);
+            s.detail = "é".repeat(STEP_DETAIL_MAX / 2);
+            r.push(s);
+        }
+        assert!(json_len(&r) > REPLY_STEPS_BYTES_MAX);
+        r.fit();
+        assert!(json_len(&r) <= REPLY_STEPS_BYTES_MAX);
+        assert!(r.steps.iter().all(|s| s.output.is_none()));
+        assert!(r.steps[0].detail.len() <= STEP_DETAIL_CUT);
+        assert!(r.steps[0].detail.ends_with('…'));
+        assert_eq!(r.steps.last().unwrap().detail.len(), STEP_DETAIL_MAX);
     }
 }
