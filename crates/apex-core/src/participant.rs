@@ -85,6 +85,10 @@ pub enum Progress<'a> {
     Context(ContextUse),
     /// How much of the provider account's plan is used.
     Plan(&'a PlanUsage),
+    /// A step of the work behind the reply, new or updated by key.
+    Work(&'a crate::work_steps::WorkStep),
+    /// The participant's to-do list, whole.
+    Todo(&'a [crate::work_steps::TodoItem]),
 }
 
 /// Receives progress while a reply is being worked on.

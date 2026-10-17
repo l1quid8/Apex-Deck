@@ -75,6 +75,10 @@ pub enum RoomEvent {
     /// What a participant is doing while it works on its reply, such as
     /// reading a file or running a command.
     Activity { id: ParticipantId, text: String },
+    /// A step of the work behind a reply, new or updated (same `step.key`).
+    WorkStep { id: ParticipantId, step: crate::work_steps::WorkStep },
+    /// A participant's whole to-do list.
+    Todo { id: ParticipantId, items: Vec<crate::work_steps::TodoItem> },
     /// A participant wants to do something and is waiting for a yes or no.
     /// `request` names it when the answer is given.
     ApprovalRequested { id: ParticipantId, request: String, action: ProposedAction },
@@ -156,6 +160,8 @@ pub(crate) fn progress_event(id: &ParticipantId, update: Progress<'_>) -> RoomEv
             RoomEvent::ContextUsage { id: id.clone(), used_tokens: use_.used_tokens, window_tokens: use_.window_tokens }
         }
         Progress::Plan(plan) => plan_event(plan),
+        Progress::Work(step) => RoomEvent::WorkStep { id: id.clone(), step: step.clone() },
+        Progress::Todo(items) => RoomEvent::Todo { id: id.clone(), items: items.to_vec() },
     }
 }
 

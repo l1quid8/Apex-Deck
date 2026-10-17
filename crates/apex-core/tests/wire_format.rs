@@ -296,3 +296,37 @@ fn auto_settings_round_trip_without_changing_the_backup() {
     parsed.auto_effort = false;
     assert!(to_value(&parsed).unwrap().get("auto_effort").is_none());
 }
+
+#[test]
+fn work_step_and_todo_events_round_trip() {
+    use apex_core::work_steps::{StepKind, StepStatus, TodoItem, TodoStatus, WorkStep};
+    let step = WorkStep {
+        key: "t1".into(),
+        parent: None,
+        kind: StepKind::Command,
+        label: "git status".into(),
+        folder: None,
+        detail: "git status".into(),
+        output: None,
+        status: StepStatus::Running,
+        exit_code: None,
+        duration_ms: None,
+        output_cut: false,
+    };
+    let event = RoomEvent::WorkStep { id: ParticipantId::new("opus"), step };
+    let value = to_value(&event).unwrap();
+    assert_eq!(value["type"], "work_step");
+    assert_eq!(value["step"]["kind"], "command");
+    assert_eq!(value["step"]["status"], "running");
+    assert!(value["step"].get("output_cut").is_none());
+    assert_eq!(serde_json::from_value::<RoomEvent>(value).unwrap(), event);
+
+    let todo = RoomEvent::Todo {
+        id: ParticipantId::new("opus"),
+        items: vec![TodoItem { text: "Write tests".into(), status: TodoStatus::InProgress }],
+    };
+    let value = to_value(&todo).unwrap();
+    assert_eq!(value["type"], "todo");
+    assert_eq!(value["items"][0]["status"], "in_progress");
+    assert_eq!(serde_json::from_value::<RoomEvent>(value).unwrap(), todo);
+}

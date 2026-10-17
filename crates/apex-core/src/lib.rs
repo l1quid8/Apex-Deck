@@ -18,6 +18,7 @@ pub mod testing;
 mod types;
 mod view;
 mod write_gate;
+pub mod work_steps;
 
 pub use concurrent::{ConcurrentRoom, TurnBatch};
 pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
