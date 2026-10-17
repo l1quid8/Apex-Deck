@@ -1068,6 +1068,167 @@ textarea {
 .step.current::before {
   content: "\203A";
 }
+/* The full step list (WorkSteps.tsx), when the daemon sends structured steps.
+   Each row opens to its command and output; a helper's steps sit in a box. */
+.work-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 8px;
+  min-width: 0;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: normal;
+}
+.work-steps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.work-steps-item { min-width: 0; }
+.work-steps button {
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+.work-steps-step {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 6px 0 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.work-steps-step:hover:not(:disabled), .work-steps-helper-head:hover:not(:disabled), .work-steps-more:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: transparent;
+}
+.work-steps-step[aria-expanded="true"], .work-steps-step.work-steps-running { color: var(--text); }
+.work-steps-step::before {
+  content: "\2022";
+  flex: none;
+  width: 1.4em;
+  text-align: center;
+  color: var(--accent);
+}
+.work-steps-step[data-kind="command"]::before { content: "$"; }
+.work-steps-step[data-kind="read"]::before { content: "\2261"; }
+.work-steps-step[data-kind="search"]::before { content: "\2315"; }
+.work-steps-step[data-kind="list"]::before { content: "\2630"; }
+.work-steps-step[data-kind="edit"]::before { content: "\270E"; }
+.work-steps-step[data-kind="web"]::before { content: "\25CE"; }
+.work-steps-step[data-kind="tool"]::before { content: "\2699"; }
+.work-steps-step[data-kind="thinking"]::before { content: "\2026"; }
+.work-steps-step.work-steps-failed::before { color: var(--danger); }
+.work-steps-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.work-steps-folder {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  opacity: 0.7;
+}
+.work-steps-step > :is(.work-steps-spinner, .work-steps-fail-mark, .work-steps-stop-mark) { margin-left: auto; flex: none; padding-left: 6px; }
+.work-steps-fail-mark { color: var(--danger); }
+.work-steps-stop-mark { color: var(--muted); }
+.work-steps-spinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: work-steps-spin 0.9s linear infinite;
+  align-self: center;
+}
+@keyframes work-steps-spin { to { transform: rotate(360deg); } }
+.work-steps-detail {
+  margin: 2px 0 6px 0.7em;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.work-steps-command, .work-steps-output {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.work-steps-command { color: var(--text); }
+.work-steps-output {
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+}
+.work-steps-meta { font-size: 11px; color: var(--muted); }
+.work-steps-more {
+  align-self: flex-start;
+  padding: 0 6px;
+  color: var(--muted);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.work-steps-helper {
+  margin: 2px 0;
+  padding: 2px 4px 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-width: 0;
+}
+.work-steps-helper-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 10px;
+  width: 100%;
+  padding: 2px 4px;
+  color: var(--text);
+}
+.work-steps-helper-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-steps-helper-title::before { content: "\25C7"; display: inline-block; width: 1.4em; color: var(--accent); }
+.work-steps-helper-state { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.work-steps-helper.work-steps-failed > .work-steps-helper-head .work-steps-helper-state { color: var(--danger); }
+.work-steps-helper-latest {
+  grid-column: 1 / -1;
+  padding-left: 1.4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.work-steps-helper > .work-steps-list { margin: 2px 0 0 4px; }
+.work-steps-todo {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.work-steps-todo-item { color: var(--muted); overflow-wrap: anywhere; }
+.work-steps-todo-mark { display: inline-block; width: 1.4em; text-align: center; color: var(--accent); }
+.work-steps-todo-in_progress { color: var(--text); font-weight: 600; }
+.work-steps-todo-completed { opacity: 0.7; }
+.work-steps-todo-pending .work-steps-todo-mark { color: var(--muted); }
+
 .working-line {
   display: flex;
   align-items: center;
@@ -1081,6 +1242,7 @@ textarea {
   white-space: nowrap;
 }
 .steps + .working-line,
+.work-steps + .working-line,
 .speaker + .working-line {
   border-top: 0;
   padding-top: 0;

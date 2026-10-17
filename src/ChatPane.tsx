@@ -64,6 +64,8 @@ import { recentFiles } from "./recentFiles.ts";
 export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown" | "copy_reply";
 import { DiffPanel } from "./DiffPanel";
 import { ChangedFilesStrip } from "./ChangedFilesStrip";
+import { MAX_STEPS_SHOWN, WorkSteps } from "./WorkSteps.tsx";
+import { applyStepEvent, emptyTurnSteps, type TurnSteps } from "./workSteps.ts";
 import { turnFilesFor } from "./turnChanges";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
@@ -344,10 +346,11 @@ interface TurnProgress {
   startedAt: number;
   /** What the bot has done so far, oldest first. */
   steps: string[];
+  /** The same work as structured steps, when the daemon sends them. */
+  work: TurnSteps;
   phase: "thinking" | "tool" | "writing";
 }
 
-const MAX_STEPS_SHOWN = 4;
 /** How long Copy reads "Copied". */
 const COPIED_MS = 1500;
 
@@ -869,7 +872,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           turnQueue.started(event.id);
           setDrafts((d) => ({ ...d, [event.id]: "" }));
           setNow(Date.now());
-          setWorking((w) => ({ ...w, [event.id]: { startedAt: Date.now(), steps: [], phase: "thinking" } }));
+          setWorking((w) => ({ ...w, [event.id]: { startedAt: Date.now(), steps: [], work: emptyTurnSteps, phase: "thinking" } }));
           break;
         case "delta":
           setDrafts((d) => ({ ...d, [event.id]: (d[event.id] ?? "") + event.text }));
@@ -877,8 +880,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           break;
         case "activity":
           setWorking((w) => {
-            const turn = w[event.id] ?? { startedAt: Date.now(), steps: [], phase: "thinking" as const };
+            const turn = w[event.id] ?? { startedAt: Date.now(), steps: [], work: emptyTurnSteps, phase: "thinking" as const };
             return { ...w, [event.id]: { ...turn, steps: [...turn.steps, event.text], phase: "tool" } };
+          });
+          break;
+        case "work_step":
+        case "todo":
+          // A helper can report after its bot's turn ended; only a running turn shows steps.
+          setWorking((w) => {
+            const turn = w[event.id];
+            if (!turn) return w;
+            const work = applyStepEvent(turn.work, event);
+            return work === turn.work ? w : { ...w, [event.id]: { ...turn, work } };
           });
           break;
         case "approval_requested":
@@ -1012,7 +1025,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           flashForm(`${nameOf(before.ask.id)}'s question was dropped when Deck restarted`);
         }
         reportApprovals();
-        setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], phase: "thinking" as const }])));
+        setWorking(Object.fromEntries(state.active.map(id => [id, { startedAt: Date.now(), steps: [], work: emptyTurnSteps, phase: "thinking" as const }])));
         turnQueue.state = {}; state.active.forEach(id => turnQueue.started(id));
         setBusy(state.active.length > 0 || turnQueue.active);
         setDrafts(Object.fromEntries(state.active.map(id => [id, ""])));
@@ -2994,7 +3007,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 <span className="speaker" style={{ color: color(id) }}>
                   {names.get(id) ?? id}
                 </span>
-                {steps.length > 0 && (
+                {turn?.work.structured ? (
+                  <WorkSteps turn={turn.work} live />
+                ) : steps.length > 0 && (
                   <ul className="steps" aria-label="Steps so far">
                     {hidden > 0 && <li className="step done">{hidden === 1 ? "1 earlier step" : `${hidden} earlier steps`}</li>}
                     {shown.map((step, i) => (

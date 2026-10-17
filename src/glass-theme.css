@@ -245,6 +245,15 @@
 :root[data-deck-theme="glass"] :is(.rail-row[aria-current="page"], .chip.to, .pin, .folder-chip, .tray, .steps .step) {
   border-radius: max(5px, calc(var(--deck-radius, 12px) * .48));
 }
+:root[data-deck-theme="glass"] :is(.work-steps button, .work-steps-output, .work-steps-helper) {
+  border-radius: max(5px, calc(var(--deck-radius, 12px) * .48));
+}
+:root[data-deck-theme="glass"] .work-steps-output {
+  background: color-mix(in srgb, var(--deck-code) 88%, transparent);
+  border-color: var(--deck-edge);
+  color: var(--deck-muted);
+}
+:root[data-deck-theme="glass"] :is(.work-steps-helper, .work-steps-detail) { border-color: var(--deck-edge); }
 :root[data-deck-theme="glass"] :is(.pane, .rail, .thread-details, .thread, .bubble, .composer-box, .pin, .details-bot, .md-code, .quote-preview, .folder-chip, .chip) {
   border-radius: var(--deck-radius, 12px);
 }
