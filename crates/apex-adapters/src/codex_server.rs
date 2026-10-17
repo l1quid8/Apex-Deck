@@ -50,7 +50,9 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// so the turn does not wait on them for long.
 const LIMITS_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) const ARGS: &[&str] = &["app-server"];
+/// How Deck starts the server. The plan tool is off unless asked for, and
+/// without it Codex sends no `turn/plan/updated`, so no to-do list.
+pub(crate) const ARGS: &[&str] = &["app-server", "-c", "tools.update_plan.enabled=true"];
 
 /// What a turn needs besides the prompt.
 pub(crate) struct Turn<'a> {
@@ -978,6 +980,11 @@ fn ended_early(reader: EventReader) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_server_starts_with_the_plan_tool_on() {
+        assert_eq!(super::ARGS, ["app-server", "-c", "tools.update_plan.enabled=true"]);
+    }
+
     #[test]
     fn a_codex_command_rule_covers_that_command_whatever_the_reason_and_nothing_longer() {
         let reader = EventReader::new(OutputFormat::CodexServer, None);

@@ -1,5 +1,3 @@
-// Task 4 wires these label helpers into the event parser.
-#![allow(dead_code)]
 //! Pure helpers that turn a raw shell command into a short, readable step label.
 
 use apex_core::work_steps::StepKind;

@@ -14,10 +14,13 @@
 
 use std::collections::{HashMap, HashSet};
 
+use apex_core::work_steps::{StepStatus, TodoItem, WorkStep};
 use apex_core::{
     ActionKind, AgentTool, ContextUse, FileChange, PlanUsage, PlanWindow, ProposedAction,
 };
 use serde_json::Value;
+
+use crate::work_feed;
 
 /// How a tool's standard output should be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +54,10 @@ pub(crate) enum Step {
     Context(ContextUse),
     /// How much of the account's plan is used.
     Plan(PlanUsage),
+    /// A step of the work, new or updated by key.
+    Work(WorkStep),
+    /// The tool's to-do list, whole.
+    Todo(Vec<TodoItem>),
 }
 
 /// What a finished stream amounted to.
@@ -116,6 +123,23 @@ pub(crate) struct EventReader {
     /// The reply so far, kept when a follow-up turn starts after helpers
     /// report back. The follow-up's text is added to it.
     earlier: Option<String>,
+    /// Each work step as last reported, by key, so a result only fills in
+    /// what it adds and an unchanged step is not reported again.
+    work: HashMap<String, WorkStep>,
+    /// Claude Code: to-do tool calls waiting for their result, by tool-use
+    /// id, with the tool's name and input.
+    todo_calls: HashMap<String, (String, Value)>,
+    /// Claude Code: the to-do list built from `TaskCreate` / `TaskUpdate`,
+    /// as (task id, item).
+    tasks: Vec<(String, TodoItem)>,
+    /// Claude Code: helper calls running in the background, by tool-use id.
+    /// Their tool result is only a launch notice.
+    background_calls: HashSet<String>,
+    /// Claude Code: the tool-use id of each background helper, by task id.
+    background_tasks: HashMap<String, String>,
+    /// Codex app server: every helper thread this thread started, finished
+    /// or not, so the helper's work is kept under it.
+    known_helpers: HashSet<String>,
 }
 
 impl EventReader {
@@ -143,6 +167,12 @@ impl EventReader {
             thread: None,
             helper_threads: HashSet::new(),
             earlier: None,
+            work: HashMap::new(),
+            todo_calls: HashMap::new(),
+            tasks: Vec::new(),
+            background_calls: HashSet::new(),
+            background_tasks: HashMap::new(),
+            known_helpers: HashSet::new(),
         }
     }
 
@@ -276,6 +306,22 @@ impl EventReader {
         }
     }
 
+    /// Report a work step unless it is what was last reported for its key.
+    fn work_step(&mut self, step: WorkStep, steps: &mut Vec<Step>) {
+        if self.work.get(&step.key) != Some(&step) {
+            self.work.insert(step.key.clone(), step.clone());
+            steps.push(Step::Work(step));
+        }
+    }
+
+    /// End a step that is still running.
+    fn end_step(&mut self, key: &str, status: StepStatus, steps: &mut Vec<Step>) {
+        if let Some(step) = self.work.get(key).filter(|s| s.status == StepStatus::Running) {
+            let step = WorkStep { status, ..step.clone() };
+            self.work_step(step, steps);
+        }
+    }
+
     /// Start a new message of the reply, set apart from the one before it.
     fn new_message(&mut self, steps: &mut Vec<Step>) {
         if !self.streamed.is_empty() && !self.streamed.ends_with("\n\n") {
@@ -351,6 +397,10 @@ impl EventReader {
                             if let (Some(id), false) = (block["id"].as_str(), changes.is_empty()) {
                                 self.edits.insert(id.to_string(), changes);
                             }
+                            if let Some(id) = block["id"].as_str() {
+                                let parent = event["parent_tool_use_id"].as_str();
+                                self.claude_tool_use(id, parent, name, &block["input"], steps);
+                            }
                         }
                         // Without piece-by-piece output the complete message
                         // is the first we see of this text.
@@ -379,6 +429,9 @@ impl EventReader {
                         (done, block["is_error"].as_bool().unwrap_or(false))
                     {
                         steps.extend(changes.into_iter().map(Step::Change));
+                    }
+                    if let Some(id) = block["tool_use_id"].as_str() {
+                        self.claude_tool_result(id, block, &event["tool_use_result"], steps);
                     }
                 }
             }
@@ -442,6 +495,60 @@ impl EventReader {
                         })
                         .count()
                 });
+                // A background helper that has left the list is finished.
+                let listed: HashSet<&str> = event["tasks"]
+                    .as_array()
+                    .map(|tasks| tasks.iter().filter_map(|t| t["task_id"].as_str()).collect())
+                    .unwrap_or_default();
+                let gone: Vec<String> = self
+                    .background_tasks
+                    .keys()
+                    .filter(|task| !listed.contains(task.as_str()))
+                    .cloned()
+                    .collect();
+                for task in gone {
+                    if let Some(call) = self.background_tasks.remove(&task) {
+                        self.background_calls.remove(&call);
+                        self.end_step(&call, StepStatus::Done, steps);
+                    }
+                }
+            }
+            // Links a helper's task to the tool call that started it.
+            Some("system") if event["subtype"] == "task_started" => {
+                if let (Some(task), Some(call)) =
+                    (event["task_id"].as_str(), event["tool_use_id"].as_str())
+                {
+                    if event["is_backgrounded"].as_bool() == Some(true)
+                        || self.background_calls.contains(call)
+                    {
+                        self.background_calls.insert(call.to_string());
+                        self.background_tasks.insert(task.to_string(), call.to_string());
+                    }
+                }
+            }
+            // A background helper reporting back.
+            Some("system") if event["subtype"] == "task_notification" => {
+                let Some(call) = event["task_id"]
+                    .as_str()
+                    .and_then(|task| self.background_tasks.remove(task))
+                else {
+                    return;
+                };
+                self.background_calls.remove(&call);
+                let status = match event["status"].as_str() {
+                    Some("completed") => StepStatus::Done,
+                    Some("failed") => StepStatus::Failed,
+                    _ => StepStatus::Stopped,
+                };
+                let summary = event["summary"].as_str().unwrap_or("");
+                if let Some(step) = self.work.get(&call).filter(|s| s.status == StepStatus::Running) {
+                    let step = if summary.is_empty() {
+                        WorkStep { status, ..step.clone() }
+                    } else {
+                        work_feed::with_output(step.clone(), summary, status)
+                    };
+                    self.work_step(step, steps);
+                }
             }
             Some("rate_limit_event") => {
                 if let Some(plan) = claude_plan(&event["rate_limit_info"]) {
@@ -450,6 +557,59 @@ impl EventReader {
             }
             _ => {}
         }
+    }
+
+    /// A Claude Code tool call: a work step, or a change to the to-do list.
+    fn claude_tool_use(
+        &mut self,
+        id: &str,
+        parent: Option<&str>,
+        name: &str,
+        input: &Value,
+        steps: &mut Vec<Step>,
+    ) {
+        if work_feed::claude_todo_tool(name) {
+            match name {
+                // A helper's list would replace the bot's own.
+                "TodoWrite" if parent.is_none() => steps.push(Step::Todo(work_feed::todo_write(input))),
+                "TaskCreate" | "TaskUpdate" => {
+                    self.todo_calls.insert(id.to_string(), (name.to_string(), input.clone()));
+                }
+                _ => {}
+            }
+            return;
+        }
+        if matches!(name, "Agent" | "Task") && input["run_in_background"].as_bool() == Some(true) {
+            self.background_calls.insert(id.to_string());
+        }
+        let step = work_feed::claude_step(id, parent, name, input, self.cwd.as_deref());
+        self.work_step(step, steps);
+    }
+
+    /// The result of a Claude Code tool call. `meta` is the event's
+    /// `tool_use_result`, which says what id a new task got.
+    fn claude_tool_result(&mut self, id: &str, block: &Value, meta: &Value, steps: &mut Vec<Step>) {
+        let failed = block["is_error"].as_bool().unwrap_or(false);
+        let text = work_feed::claude_result_text(&block["content"]);
+        if let Some((tool, input)) = self.todo_calls.remove(id) {
+            if !failed && work_feed::fold_task(&mut self.tasks, &tool, &input, meta, &text) {
+                steps.push(Step::Todo(self.tasks.iter().map(|(_, item)| item.clone()).collect()));
+            }
+            return;
+        }
+        let Some(step) = self.work.get(id).cloned() else {
+            return;
+        };
+        let status = if failed {
+            self.background_calls.remove(id);
+            StepStatus::Failed
+        } else if self.background_calls.contains(id) {
+            // Only the launch notice; the helper is still at work.
+            StepStatus::Running
+        } else {
+            StepStatus::Done
+        };
+        self.work_step(work_feed::with_output(step, &text, status), steps);
     }
 
     /// Remember what one request of the turn was given. The result's totals
@@ -717,12 +877,29 @@ impl EventReader {
         let kind = item["type"].as_str();
         if let (Some(own), Some(from)) = (&self.thread, params["threadId"].as_str()) {
             if own != from {
+                let from = from.to_string();
                 // A helper's thread closing means it will not report back.
                 if message["method"] == "thread/closed" {
-                    self.helper_threads.remove(from);
+                    self.helper_threads.remove(&from);
+                    self.end_step(&from, StepStatus::Stopped, steps);
+                }
+                // A helper's work is kept under its box, but its messages,
+                // usage and turn end are not this reply's.
+                if self.known_helpers.contains(&from) {
+                    self.codex_helper_event(&from, message, steps);
                 }
                 return;
             }
+        }
+        match message["method"].as_str() {
+            Some(method @ ("item/started" | "item/completed")) => {
+                let done = method == "item/completed";
+                self.codex_item_step(item, None, done, steps);
+                if kind == Some("subAgentActivity") {
+                    self.codex_helper_box(item, steps);
+                }
+            }
+            _ => {}
         }
         match message["method"].as_str() {
             Some("item/agentMessage/delta") => {
@@ -858,6 +1035,9 @@ impl EventReader {
                     }));
                 }
             }
+            Some("turn/plan/updated") => {
+                steps.push(Step::Todo(work_feed::codex_plan(&params["plan"])));
+            }
             Some("account/rateLimits/updated") => {
                 // Updates are sparse: a window left out has not changed.
                 if let Some(plan) = codex_plan(&params["rateLimits"], false) {
@@ -888,6 +1068,59 @@ impl EventReader {
                     (failure, _) => self.failure = failure.or(self.failure.take()),
                 }
             }
+            _ => {}
+        }
+    }
+
+    /// The step for a Codex item, if it is work. A completion keeps how the
+    /// step was named when it started and adds the result.
+    fn codex_item_step(&mut self, item: &Value, parent: Option<&str>, done: bool, steps: &mut Vec<Step>) {
+        let Some(mut step) = work_feed::codex_step(item, parent, self.cwd.as_deref(), done) else {
+            return;
+        };
+        if let Some(started) = self.work.get(&step.key).filter(|_| done) {
+            step.kind = started.kind;
+            step.label = started.label.clone();
+            step.folder = started.folder.clone();
+            step.detail = started.detail.clone();
+            step.parent = started.parent.clone();
+        }
+        self.work_step(step, steps);
+    }
+
+    /// A `subAgentActivity` item: a helper starting or finishing.
+    fn codex_helper_box(&mut self, item: &Value, steps: &mut Vec<Step>) {
+        let Some(helper) = item["agentThreadId"].as_str() else {
+            return;
+        };
+        match item["kind"].as_str() {
+            Some("started") => {
+                self.known_helpers.insert(helper.to_string());
+                if !self.work.contains_key(helper) {
+                    let step = work_feed::codex_helper_step(helper, item["agentPath"].as_str());
+                    self.work_step(step, steps);
+                }
+            }
+            Some("completed") => self.end_step(helper, StepStatus::Done, steps),
+            Some("interrupted") => self.end_step(helper, StepStatus::Stopped, steps),
+            _ => {}
+        }
+    }
+
+    /// An event from a helper's own thread: its work steps, and how its
+    /// turn ended. Nothing in it is reply text, usage or context.
+    fn codex_helper_event(&mut self, helper: &str, message: &Value, steps: &mut Vec<Step>) {
+        let params = &message["params"];
+        match message["method"].as_str() {
+            Some(method @ ("item/started" | "item/completed")) => {
+                let done = method == "item/completed";
+                self.codex_item_step(&params["item"], Some(helper), done, steps);
+            }
+            Some("turn/completed") => match params["turn"]["status"].as_str() {
+                Some("failed") => self.end_step(helper, StepStatus::Failed, steps),
+                Some("interrupted") => self.end_step(helper, StepStatus::Stopped, steps),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -1210,6 +1443,7 @@ pub(crate) fn attach_images(text: &mut String, paths: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apex_core::work_steps::{StepKind, TodoStatus};
     use serde_json::json;
 
     fn read(format: OutputFormat, chunks: &[&str]) -> (Vec<Step>, Outcome) {
@@ -1998,6 +2232,387 @@ mod tests {
                 used_tokens: 15_000,
                 window_tokens: 1_000_000,
             }]
+        );
+    }
+
+    // ------------------------------------------------------------ work steps
+    //
+    // Recorded from Claude Code 2.1.302 and codex-cli 0.162.1; see
+    // tests/fixtures/work_steps/probe-notes.md.
+
+    const CLAUDE_FIXTURE: &str = include_str!("../tests/fixtures/work_steps/claude_turn.jsonl");
+    const CLAUDE_BACKGROUND: &str =
+        include_str!("../tests/fixtures/work_steps/claude_background.jsonl");
+    const CODEX_FIXTURE: &str = include_str!("../tests/fixtures/work_steps/codex_turn.jsonl");
+    const CODEX_PLAN_ONLY: &str = include_str!("../tests/fixtures/work_steps/codex_plan_only.jsonl");
+    const CODEX_MAIN: &str = "01a14863-3c1a-76f2-a8b5-d5b52a9af162";
+    const CODEX_HELPER: &str = "01a14863-5be9-75b1-ad9d-4cedc4b0b31d";
+
+    /// Every `Work` step as it was last reported, in the order first seen.
+    fn work(steps: &[Step]) -> Vec<WorkStep> {
+        let mut out: Vec<WorkStep> = Vec::new();
+        for step in steps {
+            if let Step::Work(w) = step {
+                match out.iter_mut().find(|o| o.key == w.key) {
+                    Some(old) => *old = w.clone(),
+                    None => out.push(w.clone()),
+                }
+            }
+        }
+        out
+    }
+
+    fn step<'a>(all: &'a [WorkStep], key: &str) -> &'a WorkStep {
+        all.iter().find(|s| s.key == key).unwrap_or_else(|| panic!("no step {key}: {all:#?}"))
+    }
+
+    fn todos(steps: &[Step]) -> Vec<Vec<(String, TodoStatus)>> {
+        steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Todo(items) => {
+                    Some(items.iter().map(|i| (i.text.clone(), i.status)).collect())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn claude_steps(stream: &str, cwd: &str) -> Vec<Step> {
+        let mut reader = EventReader::new(OutputFormat::ClaudeStream, Some(cwd.into()));
+        let mut steps = reader.push(stream);
+        steps.extend(reader.finish());
+        steps
+    }
+
+    fn codex_reader(cwd: &str) -> EventReader {
+        let mut reader = EventReader::new(OutputFormat::CodexServer, Some(cwd.into()));
+        reader.own_thread(CODEX_MAIN);
+        reader
+    }
+
+    #[test]
+    fn claude_fixture_steps_have_output_and_clean_labels() {
+        let all = work(&claude_steps(CLAUDE_FIXTURE, "/tmp/probe1"));
+        let ls = step(&all, "toolu_01EwDEgK7zs3Eu6JrA2YNM3M");
+        assert_eq!((ls.kind, ls.label.as_str(), ls.folder.as_deref()), (StepKind::Command, "ls", None));
+        assert_eq!(ls.detail, "cd /tmp/probe1 && ls");
+        assert_eq!(ls.output.as_deref(), Some("a.txt\nh.txt"));
+        let read = step(&all, "toolu_01BkEqwZ6MTA15AwLNLeksdR");
+        assert_eq!((read.kind, read.label.as_str()), (StepKind::Read, "Read a.txt"));
+        assert!(read.output.as_deref().unwrap().contains("beta needle gamma"));
+        let failed = step(&all, "toolu_012siJY36jGo8iToMLgLn1zp");
+        assert_eq!(failed.status, StepStatus::Failed);
+        assert!(failed.output.as_deref().unwrap().contains("No such file"));
+        let search = step(&all, "toolu_0154iNqTk1wwaX6ENeUtrEy6");
+        assert_eq!((search.kind, search.label.as_str()), (StepKind::Tool, "ToolSearch select:Grep"));
+        for s in &all {
+            assert!(matches!(s.status, StepStatus::Done | StepStatus::Failed), "{s:?}");
+            assert!(s.label.chars().count() <= 120, "{s:?}");
+        }
+        // Run outside the room folder, the folder is noted.
+        let all = work(&claude_steps(CLAUDE_FIXTURE, "/work/other"));
+        assert_eq!(step(&all, "toolu_01EwDEgK7zs3Eu6JrA2YNM3M").folder.as_deref(), Some("probe1"));
+    }
+
+    #[test]
+    fn claude_helper_steps_hang_under_their_helper() {
+        let agent = "toolu_01BUHf3htVv5zFV1QmHyiTVd";
+        let all = work(&claude_steps(CLAUDE_FIXTURE, "/tmp/probe1"));
+        let helper = step(&all, agent);
+        assert_eq!(
+            (helper.kind, helper.label.as_str(), helper.status, helper.parent.as_deref()),
+            (StepKind::Helper, "Read h.txt and report", StepStatus::Done, None)
+        );
+        assert!(helper.output.as_deref().unwrap().contains("Subagent hand-back"));
+        let read = step(&all, "toolu_01CnLaX8mL3u6vg54tJrzfXr");
+        assert_eq!((read.label.as_str(), read.parent.as_deref()), ("Read h.txt", Some(agent)));
+        assert_eq!(all.iter().filter(|s| s.parent.is_some()).count(), 1);
+    }
+
+    #[test]
+    fn claude_todo_becomes_todo_not_a_step() {
+        let steps = claude_steps(CLAUDE_FIXTURE, "/tmp/probe1");
+        let one = "Read helper file via agent".to_string();
+        let two = "Finish probe steps 1-5".to_string();
+        assert_eq!(
+            todos(&steps),
+            [
+                vec![(one.clone(), TodoStatus::Pending)],
+                vec![(one.clone(), TodoStatus::Pending), (two.clone(), TodoStatus::Pending)],
+                vec![(one.clone(), TodoStatus::Pending), (two.clone(), TodoStatus::Completed)],
+                vec![(one, TodoStatus::Completed), (two, TodoStatus::Completed)],
+            ]
+        );
+        let all = work(&steps);
+        for key in ["toolu_011xQjbhXnzqKosxnVsusqQ4", "toolu_01T9tfNcug66Tfbegqtx1bCW", "toolu_01FiannS5P5LA6id63DwPW4x"] {
+            assert!(all.iter().all(|s| s.key != key), "{key} became a step");
+        }
+
+        let write = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"TodoWrite","input":{"todos":[{"content":"Look","status":"completed","activeForm":"Looking"},{"content":"Fix","status":"in_progress","activeForm":"Fixing"},{"content":"Test","status":"pending","activeForm":"Testing"}]}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+"#;
+        let steps = claude_steps(write, "/w");
+        assert_eq!(
+            todos(&steps),
+            [vec![
+                ("Look".to_string(), TodoStatus::Completed),
+                ("Fix".to_string(), TodoStatus::InProgress),
+                ("Test".to_string(), TodoStatus::Pending),
+            ]]
+        );
+        assert!(work(&steps).is_empty());
+    }
+
+    #[test]
+    fn claude_task_tools_fold_into_todo() {
+        // The id may only be in the result text; a refused call changes
+        // nothing; TaskGet and TaskList are not steps either.
+        let stream = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c1","name":"TaskCreate","input":{"subject":"Build","description":"d","activeForm":"Building"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c1","content":"Task #7 created successfully: Build"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c2","name":"TaskCreate","input":{"subject":"Nope"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c2","content":"failed","is_error":true}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"u1","name":"TaskUpdate","input":{"taskId":"7","status":"in_progress"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"u1","content":"Updated task #7 status"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"g1","name":"TaskList","input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g1","content":"#7 Build"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"g2","name":"TaskGet","input":{"taskId":"7"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g2","content":"#7 Build"}]}}
+"##;
+        let steps = claude_steps(stream, "/w");
+        assert_eq!(
+            todos(&steps),
+            [
+                vec![("Build".to_string(), TodoStatus::Pending)],
+                vec![("Build".to_string(), TodoStatus::InProgress)],
+            ]
+        );
+        assert!(work(&steps).is_empty());
+    }
+
+    #[test]
+    fn claude_background_helper_done_on_notification() {
+        let agent = "toolu_01BE3XrCoJzmLMDPG1M9LAVq";
+        let steps = claude_steps(CLAUDE_BACKGROUND, "/tmp/probe2");
+        // The launch notice is kept as output, but the helper is still working.
+        let launched = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Work(w) if w.key == agent && w.output.is_some() => Some(w),
+                _ => None,
+            })
+            .next()
+            .unwrap();
+        assert_eq!(launched.status, StepStatus::Running);
+        assert!(launched.output.as_deref().unwrap().contains("Async agent launched"));
+        let all = work(&steps);
+        let helper = step(&all, agent);
+        assert_eq!((helper.kind, helper.status), (StepKind::Helper, StepStatus::Done));
+        let read = step(&all, "toolu_01UXd4WqaaYxBNtJgvyJ8PPE");
+        assert_eq!((read.parent.as_deref(), read.status), (Some(agent), StepStatus::Done));
+
+        // Without the notification, leaving the background list ends it too.
+        let quiet: String = CLAUDE_BACKGROUND
+            .lines()
+            .filter(|l| !l.contains("\"task_notification\""))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let all = work(&claude_steps(&quiet, "/tmp/probe2"));
+        assert_eq!(step(&all, agent).status, StepStatus::Done);
+    }
+
+    #[test]
+    fn codex_fixture_reads_are_labelled_read() {
+        let mut reader = codex_reader("/tmp/probe3");
+        let all = work(&reader.push(CODEX_FIXTURE));
+        let missing = step(&all, "exec-133dd8aa-f5fd-4217-ba52-86bceef8698b");
+        assert_eq!(
+            (missing.kind, missing.label.as_str(), missing.status, missing.exit_code),
+            (StepKind::Read, "Read missing.txt", StepStatus::Failed, Some(1))
+        );
+        assert_eq!(missing.folder, None);
+        let search = step(&all, "exec-e3818cc5-15e1-4f91-89da-7c312e926133");
+        assert_eq!((search.kind, search.label.as_str()), (StepKind::Search, "Search needle in probe3"));
+        let list = step(&all, "exec-05389622-bbaf-429b-bf1c-32cc7162e089");
+        assert_eq!((list.kind, list.label.as_str()), (StepKind::List, "List sub"));
+        let both = step(&all, "exec-89ef202e-1e20-4e75-95f0-896d906aba4b");
+        assert_eq!(both.label, "cat /tmp/probe3/a.txt /tmp/probe3/b.txt");
+        assert_eq!(both.detail, "cat /tmp/probe3/a.txt /tmp/probe3/b.txt");
+        // Somewhere else, the folder is noted.
+        let mut reader = codex_reader("/work/project");
+        let all = work(&reader.push(CODEX_FIXTURE));
+        assert_eq!(step(&all, "exec-133dd8aa-f5fd-4217-ba52-86bceef8698b").folder.as_deref(), Some("probe3"));
+    }
+
+    #[test]
+    fn codex_command_output_exit_and_duration() {
+        let mut reader = codex_reader("/tmp/probe3");
+        let steps = reader.push(CODEX_FIXTURE);
+        let git = "exec-052f7958-d13c-400a-b6d4-866af86bc587";
+        let first = steps
+            .iter()
+            .find_map(|s| match s {
+                Step::Work(w) if w.key == git => Some(w.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!((first.status, first.output.as_deref()), (StepStatus::Running, None));
+        let all = work(&steps);
+        let git = step(&all, git);
+        assert_eq!(
+            (git.kind, git.label.as_str(), git.status, git.exit_code, git.duration_ms),
+            (StepKind::Command, "git status", StepStatus::Done, Some(0), Some(0))
+        );
+        assert!(git.output.as_deref().unwrap().starts_with("On branch main"));
+        // Reasoning is not a step.
+        assert!(all.iter().all(|s| s.kind != StepKind::Thinking));
+    }
+
+    #[test]
+    fn codex_helper_steps_are_kept_and_parented() {
+        let mut reader = codex_reader("/tmp/probe3");
+        let (body, last) = CODEX_FIXTURE.trim_end().rsplit_once('\n').unwrap();
+        let mut steps = reader.push(&format!("{body}\n"));
+        // The helper's own turn end is not the end of this turn.
+        assert!(!reader.turn_over());
+        steps.extend(reader.push(&format!("{last}\n")));
+        assert!(reader.turn_over());
+        let all = work(&steps);
+        let helper = step(&all, CODEX_HELPER);
+        assert_eq!(
+            (helper.kind, helper.label.as_str(), helper.status, helper.parent.as_deref()),
+            (StepKind::Helper, "read_b", StepStatus::Done, None)
+        );
+        let read = step(&all, "exec-e5a16fd3-5427-4e31-9d78-5db46d96d369");
+        assert_eq!(
+            (read.label.as_str(), read.parent.as_deref(), read.status),
+            ("Read b.txt", Some(CODEX_HELPER), StepStatus::Done)
+        );
+        assert_eq!(all.iter().filter(|s| s.parent.is_some()).count(), 1);
+        assert!(!text(&steps).contains("Exact content"));
+        assert!(!activity(&steps).contains(&"Running: /bin/zsh -lc 'cat /tmp/probe3/b.txt'"));
+        assert_eq!(reader.outcome().text, "done");
+    }
+
+    #[test]
+    fn codex_helper_box_fails_or_stops_with_its_thread() {
+        let mut reader = EventReader::new(OutputFormat::CodexServer, None);
+        reader.own_thread("T");
+        let helper = |kind: &str, id: &str, path: &str| {
+            format!(
+                r#"{{"method":"item/completed","params":{{"threadId":"T","item":{{"type":"subAgentActivity","id":"x","kind":"{kind}","agentThreadId":"{id}","agentPath":"{path}"}}}}}}"#
+            )
+        };
+        let mut steps = reader.push(&format!(
+            "{}\n{}\n",
+            helper("started", "H1", "/root/fix_tests"),
+            helper("started", "H2", "/root/look")
+        ));
+        assert_eq!(step(&work(&steps), "H1").status, StepStatus::Running);
+        steps.extend(reader.push(concat!(
+            r#"{"method":"turn/completed","params":{"threadId":"H1","turn":{"status":"failed"}}}"#, "\n",
+            r#"{"method":"turn/completed","params":{"threadId":"H2","turn":{"status":"interrupted"}}}"#, "\n",
+        )));
+        steps.extend(reader.push(&format!("{}\n", helper("completed", "H1", "/root/fix_tests"))));
+        let all = work(&steps);
+        assert_eq!((step(&all, "H1").label.as_str(), step(&all, "H1").status), ("fix_tests", StepStatus::Failed));
+        assert_eq!(step(&all, "H2").status, StepStatus::Stopped);
+        assert!(!reader.turn_over() && !reader.failed());
+    }
+
+    #[test]
+    fn codex_plan_updates_todo() {
+        let mut reader = EventReader::new(OutputFormat::CodexServer, None);
+        let lists = todos(&reader.push(CODEX_PLAN_ONLY));
+        assert!(lists.len() >= 2, "{lists:?}");
+        assert_eq!(
+            lists[0],
+            [
+                ("read /tmp/probe3/a.txt".to_string(), TodoStatus::InProgress),
+                ("ls /tmp/probe3".to_string(), TodoStatus::Pending),
+                ("done".to_string(), TodoStatus::Pending),
+            ]
+        );
+        assert_eq!(lists[1][0].1, TodoStatus::Completed);
+
+        let mut reader = codex_reader("/tmp/probe3");
+        let lists = todos(&reader.push(CODEX_FIXTURE));
+        assert_eq!(lists.len(), 4);
+        assert!(lists.last().unwrap().iter().all(|(_, s)| *s == TodoStatus::Completed), "{lists:?}");
+    }
+
+    #[test]
+    fn codex_other_items_become_steps() {
+        let stream = r#"{"method":"item/started","params":{"item":{"type":"reasoning","id":"r"}}}
+{"method":"item/started","params":{"item":{"type":"fileChange","id":"f","changes":[{"path":"/work/project/src/lib.rs","kind":"update","diff":"-a\n+b\n"}],"status":"inProgress"}}}
+{"method":"item/completed","params":{"item":{"type":"fileChange","id":"f","changes":[{"path":"/work/project/src/lib.rs","kind":"update","diff":"-a\n+b\n"}],"status":"declined"}}}
+{"method":"item/started","params":{"item":{"type":"webSearch","id":"w","query":"rust serde"}}}
+{"method":"item/completed","params":{"item":{"type":"webSearch","id":"w","query":"rust serde"}}}
+{"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"m","server":"db","tool":"query","arguments":{"sql":"select 1"},"status":"inProgress"}}}
+{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"m","server":"db","tool":"query","arguments":{"sql":"select 1"},"status":"failed","error":{"message":"no table"}}}}
+"#;
+        let (steps, _) = read(OutputFormat::CodexServer, &[stream]);
+        let all = work(&steps);
+        assert_eq!(all.len(), 3, "{all:#?}");
+        let edit = step(&all, "f");
+        assert_eq!((edit.kind, edit.label.as_str(), edit.status), (StepKind::Edit, "Edit lib.rs", StepStatus::Stopped));
+        let web = step(&all, "w");
+        assert_eq!((web.kind, web.status), (StepKind::Web, StepStatus::Done));
+        assert!(web.label.contains("rust serde"));
+        let tool = step(&all, "m");
+        assert_eq!((tool.kind, tool.label.as_str(), tool.status), (StepKind::Tool, "db query", StepStatus::Failed));
+        assert_eq!(tool.output.as_deref(), Some("no table"));
+        // Activity lines are as before.
+        assert_eq!(activity(&steps), ["Thinking", "Editing src/lib.rs", "Searching the web for rust serde", "Using db query"]);
+    }
+
+    #[test]
+    fn long_labels_are_capped_at_120_characters() {
+        let command = "é".repeat(500);
+        let stream = format!(
+            "{}\n",
+            serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":command}}]}})
+        );
+        let all = work(&claude_steps(&stream, "/w"));
+        assert_eq!(all[0].label.chars().count(), 120);
+        assert!(all[0].label.ends_with('…'));
+        assert_eq!(all[0].detail, command);
+    }
+
+    #[test]
+    fn activity_lines_unchanged() {
+        let steps = claude_steps(CLAUDE_FIXTURE, "/tmp/probe1");
+        assert_eq!(
+            activity(&steps),
+            [
+                "Running: cd /tmp/probe1 && ls",
+                "Reading a.txt",
+                "Using ToolSearch",
+                "Running: grep -rn \"needle\" /tmp/probe1",
+                "Running: cat /tmp/probe1/nonexistent_file",
+                "Using ToolSearch",
+                "Using TaskCreate",
+                "Using TaskUpdate",
+                "Starting a helper: Read h.txt and report",
+                "Reading h.txt",
+                "Using TaskUpdate",
+            ]
+        );
+        let steps = claude_steps(CLAUDE_BACKGROUND, "/tmp/probe1");
+        assert_eq!(
+            activity(&steps),
+            ["Starting a helper: Read /tmp/probe2/h.txt and report", "Reading /tmp/probe2/h.txt"]
+        );
+        let mut reader = codex_reader("/tmp/probe1");
+        assert_eq!(
+            activity(&reader.push(CODEX_FIXTURE)),
+            [
+                "Running: /bin/zsh -lc 'cat /tmp/probe3/a.txt /tmp/probe3/b.txt'",
+                "Running: /bin/zsh -lc 'rg \"needle\" /tmp/probe3'",
+                "Running: /bin/zsh -lc 'ls /tmp/probe3/sub'",
+                "Running: /bin/zsh -lc 'git status'",
+                "Running: /bin/zsh -lc 'cat /tmp/probe3/missing.txt'",
+            ]
         );
     }
 }

@@ -29,6 +29,7 @@ mod owned_process;
 mod plan_cache;
 mod presets;
 mod step_labels;
+mod work_feed;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,7 +46,8 @@ pub use openai::{list_models, OpenAiCompatParticipant};
 pub use presets::{agent_command, allow_reading};
 pub use owned_process::{OwnedChild as OwnedProcessChild, Registry as OwnedProcessRegistry};
 
-/// Pass on what a tool's output amounted to: text, activity and changes.
+/// Pass on what a tool's output amounted to: text, activity, changes,
+/// work steps and the to-do list.
 pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressSink<'_>) {
     use apex_core::Progress;
     for step in steps {
@@ -58,6 +60,8 @@ pub(crate) fn report(steps: Vec<events::Step>, on_progress: apex_core::ProgressS
                 plan_cache::remember(&plan);
                 on_progress(Progress::Plan(&plan))
             }
+            events::Step::Work(step) => on_progress(Progress::Work(&step)),
+            events::Step::Todo(items) => on_progress(Progress::Todo(&items)),
         }
     }
 }
