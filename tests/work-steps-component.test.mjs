@@ -278,3 +278,25 @@ test('an opened saved reply lists every step with no "Show fewer"', () => {
   assert.equal(rows(tree).length, 10);
   assert.ok(!buttons(tree).some((b) => /Show fewer|earlier/.test(text(b))));
 });
+
+test('an index of null (or one without the reply, or a zero count) shows no line', () => {
+  const entry = { by: 'bot', count: 83, helpers: 0, offset: 0, len: 1 };
+  assert.equal(model.savedEntry(null, 7), null);
+  assert.equal(model.savedEntry({ version: 1, replies: { 3: entry } }, 7), null);
+  assert.equal(model.savedEntry({ version: 1, replies: { 7: { ...entry, count: 0 } } }, 7), null);
+  assert.equal(model.savedEntry({ version: 1, replies: { 7: entry } }, 7).count, 83);
+});
+
+test('dropStepsFrom forgets loaded steps and index entries from the cut seq up', () => {
+  const entry = { by: 'bot', count: 3, helpers: 0, offset: 0, len: 1 };
+  const index = { version: 1, replies: { 2: entry, 5: entry, 9: entry } };
+  const cache = new Map([[2, reply({ seq: 2 })], [5, reply({ seq: 5 })], [9, reply({ seq: 9 })]]);
+  const next = model.dropStepsFrom(index, cache, 5);
+  assert.deepEqual(Object.keys(next.replies), ['2']);
+  assert.deepEqual([...cache.keys()], [2]);
+  assert.deepEqual(Object.keys(index.replies), ['2', '5', '9']);
+  const cleared = new Map([[0, reply()]]);
+  assert.equal(model.dropStepsFrom(null, cleared, 0), null);
+  assert.equal(cleared.size, 0);
+  assert.deepEqual(model.dropStepsFrom(index, new Map(), 0).replies, {});
+});

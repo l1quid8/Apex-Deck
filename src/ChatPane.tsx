@@ -65,7 +65,7 @@ export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown
 import { DiffPanel } from "./DiffPanel";
 import { ChangedFilesStrip } from "./ChangedFilesStrip";
 import { MAX_STEPS_SHOWN, SavedSteps, WorkSteps } from "./WorkSteps.tsx";
-import { applyStepEvent, createStepsIndexLoader, emptyTurnSteps, readReplySteps, type TurnSteps } from "./workSteps.ts";
+import { applyStepEvent, createStepsIndexLoader, dropStepsFrom, emptyTurnSteps, readReplySteps, savedEntry, type TurnSteps } from "./workSteps.ts";
 import { turnFilesFor } from "./turnChanges";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
@@ -1313,6 +1313,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       .then(() => {
         discardAnswerSettingsAfter(answerCurrent.current, 0);
         messageNumbers.truncate(0);
+        loadedSteps.current.clear();
+        setStepsIndex(null);
+        refreshSteps.current();
         setEntries([]);
         setPins(pinsAfterClear);
         setDividerAt(null);
@@ -1514,6 +1517,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
       if (request.chat) discardAnswerSettingsAfter(answerCurrent.current, message.seq);
       if (request.chat) messageNumbers.truncate(message.seq);
+      if (request.chat) {
+        setStepsIndex((index) => dropStepsFrom(index, loadedSteps.current, message.seq));
+        refreshSteps.current();
+      }
       if (request.chat) setPins(list => list.filter(pin => { const seq = pinSource(pin); return seq === null || seq < message.seq; }));
       if (request.chat) setEntries((list) => {
         const first = list.findIndex((e) => e.kind === "message" && e.message.seq >= message.seq);
@@ -3002,8 +3009,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 })()}
                 {(() => {
                   const seq = entry.message.seq;
-                  const saved = stepsIndex?.replies[String(seq)];
-                  if (!saved || saved.count === 0) return null;
+                  const saved = savedEntry(stepsIndex, seq);
+                  if (!saved) return null;
                   const load = async () => {
                     const reply = readReplySteps(await backend.roomSteps(pane.id, seq));
                     if (reply) loadedSteps.current.set(seq, reply);

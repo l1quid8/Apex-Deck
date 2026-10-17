@@ -146,3 +146,22 @@ export function createStepsIndexLoader(call: () => Promise<unknown>, apply: (ind
   };
   return { refresh, unsupported: () => unsupported };
 }
+
+/**
+ * After a Retry/Revert cuts the thread at `seq` (or Clear chat, seq 0), those
+ * replies are gone and their numbers get reused. Forget their loaded steps and
+ * their index entries so a new reply never shows an old one's steps or count.
+ */
+export function dropStepsFrom(index: StepsIndex | null, cache: Map<number, ReplySteps>, seq: number): StepsIndex | null {
+  for (const key of [...cache.keys()]) if (key >= seq) cache.delete(key);
+  if (!index) return index;
+  const replies: Record<string, StepsIndexEntry> = {};
+  for (const [key, entry] of Object.entries(index.replies)) if (Number(key) < seq) replies[key] = entry;
+  return { ...index, replies };
+}
+
+/** The index entry that earns a reply its "N steps" line; null shows no line. */
+export function savedEntry(index: StepsIndex | null, seq: number): StepsIndexEntry | null {
+  const entry = index?.replies[String(seq)];
+  return entry && entry.count > 0 ? entry : null;
+}
