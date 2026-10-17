@@ -5,3 +5,4 @@ dist/
 *.log
 release/
 dist-phone/
+build/DerivedData/
