@@ -167,3 +167,114 @@ test('durations read compactly', () => {
   const { formatDuration } = new Function('React', 'useState', 'stepTree', 'stepsCountLabel', `${compiled}\nreturn { formatDuration };`)(React, () => [], model.stepTree, model.stepsCountLabel);
   assert.deepEqual([400, 12_000, 65_000, 9_960, 59_700].map(formatDuration), ['0.4s', '12s', '1m 05s', '10s', '1m 00s']);
 });
+
+/** Mounts SavedSteps (the "83 steps" line) the same way. */
+function mountSaved(props) {
+  const slots = [];
+  let at = 0;
+  const useState = (initial) => {
+    const i = at++;
+    if (!(i in slots)) slots[i] = typeof initial === 'function' ? initial() : initial;
+    return [slots[i], (value) => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+  };
+  // A nested component is expanded in place, sharing the hook slots.
+  const Nested = { createElement: (type, p, ...kids) => (typeof type === 'function' ? type(p ?? {}) : React.createElement(type, p, ...kids)) };
+  const { SavedSteps } = new Function('React', 'useState', 'stepTree', 'stepsCountLabel', `${compiled}\nreturn { SavedSteps };`)(
+    Nested, useState, model.stepTree, model.stepsCountLabel,
+  );
+  return () => { at = 0; return SavedSteps(props); };
+}
+const reply = (extra = {}) => ({ by: 'bot', seq: 7, steps: [step(1), step(2)], todo: [], dropped: 0, ...extra });
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('a saved reply shows "83 steps", loads nothing until clicked, loads once, and folds on a second click', async () => {
+  let calls = 0;
+  const render = mountSaved({ count: 83, load: async () => { calls++; return reply(); } });
+  let tree = render();
+  assert.equal(text(button(tree, '83 steps')), '83 steps');
+  assert.equal(calls, 0);
+  assert.equal(rows(tree).length, 0);
+  button(tree, '83 steps').props.onClick();
+  tree = render();
+  assert.match(text(tree), /Loading steps…/);
+  await settle();
+  tree = render();
+  assert.equal(calls, 1);
+  assert.equal(rows(tree).length, 2);
+  assert.ok(!text(tree).includes('Loading steps'));
+  button(tree, '83 steps').props.onClick();
+  tree = render();
+  assert.equal(rows(tree).length, 0);
+  assert.equal(calls, 1);
+  button(tree, '83 steps').props.onClick();
+  assert.equal(rows(render()).length, 2);
+  assert.equal(calls, 1);
+});
+
+test('one step reads "1 step"; a cached reply opens without a call', () => {
+  let calls = 0;
+  const render = mountSaved({ count: 1, cached: reply(), load: async () => { calls++; return null; } });
+  button(render(), '1 step').props.onClick();
+  assert.equal(rows(render()).length, 2);
+  assert.equal(calls, 0);
+});
+
+test('a failed or empty load says the steps are not available', async () => {
+  for (const load of [async () => null, async () => { throw new Error('boom'); }]) {
+    const render = mountSaved({ count: 5, load });
+    button(render(), '5 steps').props.onClick();
+    await settle();
+    assert.match(text(render()), /Steps aren't available for this reply\./);
+  }
+});
+
+test('dropped steps are counted quietly after the list', async () => {
+  const render = mountSaved({ count: 9, load: async () => reply({ dropped: 12 }) });
+  button(render(), '9 steps').props.onClick();
+  await settle();
+  const tree = render();
+  assert.match(text(tree), /12 more steps weren't kept/);
+  const none = mountSaved({ count: 9, cached: reply() });
+  button(none(), '9 steps').props.onClick();
+  assert.ok(!text(none()).includes("weren't kept"));
+});
+
+test('the index loader coalesces, shuts off for an unknown command, and retries after other errors', async () => {
+  const indexOf = (n) => ({ version: 1, replies: { 3: { by: 'bot', count: n, helpers: 0, offset: 0, len: 1 } } });
+  // Coalescing: three requests while one is in flight make exactly one more call.
+  let calls = 0;
+  let release;
+  const seen = [];
+  const loader = model.createStepsIndexLoader(() => { calls++; return calls === 1 ? new Promise((r) => { release = () => r(indexOf(1)); }) : Promise.resolve(indexOf(calls)); }, (i) => seen.push(i));
+  const first = loader.refresh();
+  loader.refresh(); loader.refresh(); loader.refresh();
+  assert.equal(calls, 1);
+  release();
+  await first;
+  assert.equal(calls, 2);
+  assert.equal(seen.at(-1).replies[3].count, 2);
+  // Unknown command: no line, never called again.
+  let unknownCalls = 0;
+  const old = model.createStepsIndexLoader(async () => { unknownCalls++; throw new Error('unknown variant `room_steps`'); }, (i) => seen.push(i));
+  await old.refresh();
+  await old.refresh();
+  assert.equal(unknownCalls, 1);
+  assert.equal(old.unsupported(), true);
+  assert.equal(seen.at(-1), null);
+  // Other errors: no line now, retried on the next refresh.
+  let tries = 0;
+  const flaky = model.createStepsIndexLoader(async () => { if (tries++ === 0) throw new Error('offline'); return indexOf(4); }, (i) => seen.push(i));
+  await flaky.refresh();
+  assert.equal(seen.at(-1), null);
+  await flaky.refresh();
+  assert.equal(seen.at(-1).replies[3].count, 4);
+  assert.equal(flaky.unsupported(), false);
+});
+
+test('an opened saved reply lists every step with no "Show fewer"', () => {
+  const render = mountSaved({ count: 10, cached: reply({ steps: Array.from({ length: 10 }, (_, i) => step(i + 1)) }), load: async () => null });
+  button(render(), '10 steps').props.onClick();
+  const tree = render();
+  assert.equal(rows(tree).length, 10);
+  assert.ok(!buttons(tree).some((b) => /Show fewer|earlier/.test(text(b))));
+});

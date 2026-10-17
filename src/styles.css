@@ -1089,6 +1089,21 @@ textarea {
   min-width: 0;
 }
 .work-steps-item { min-width: 0; }
+.work-steps-saved { margin: 4px 0 2px; min-width: 0; }
+.work-steps-saved .work-steps { margin-top: 4px; }
+.work-steps-toggle {
+  font: 12px/1.5 inherit;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 1px 6px;
+  margin-left: -6px;
+  cursor: pointer;
+}
+.work-steps-toggle:hover { color: var(--text); }
+.work-steps-toggle[aria-expanded="true"] { color: var(--text); }
+.work-steps-note { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
 .work-steps button {
   font: inherit;
   text-align: left;

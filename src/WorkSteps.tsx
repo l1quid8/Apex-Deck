@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { StepStatus, TodoItem, WorkStep } from "./types.ts";
+import type { ReplySteps, StepStatus, TodoItem, WorkStep } from "./types.ts";
 import { stepTree, stepsCountLabel } from "./workSteps.ts";
 import type { StepNode, TurnSteps } from "./workSteps.ts";
 
@@ -107,6 +107,42 @@ export function WorkSteps({ turn, live, initiallyOpen, maxShown = MAX_STEPS_SHOW
         <button type="button" className="work-steps-more" onClick={() => setExpanded(false)}>Show fewer</button>
       )}
       {shown.length > 0 && <ul className="work-steps-list" aria-label="Steps so far">{shown.map(renderNode)}</ul>}
+    </div>
+  );
+}
+
+interface SavedProps {
+  /** Step count from the index, helpers' steps included. */
+  count: number;
+  /** Steps this pane already loaded for the reply. */
+  cached?: ReplySteps | null;
+  /** Fetch the reply's saved steps; null or a rejection means they can't be shown. */
+  load: () => Promise<ReplySteps | null>;
+}
+
+type Saved = { open: boolean; status: "idle" | "loading" | "ready" | "failed"; reply: ReplySteps | null };
+
+/** The quiet "83 steps" line under a finished reply; opens that reply's saved steps. */
+export function SavedSteps({ count, cached, load }: SavedProps) {
+  const [saved, setSaved] = useState<Saved>(() => ({ open: false, status: cached ? "ready" : "idle", reply: cached ?? null }));
+  const click = () => {
+    if (saved.open) { setSaved((s) => ({ ...s, open: false })); return; }
+    if (saved.status === "ready") { setSaved((s) => ({ ...s, open: true })); return; }
+    if (saved.status === "loading") return;
+    setSaved((s) => ({ ...s, open: true, status: "loading" }));
+    load().then(
+      (reply) => setSaved((s) => ({ ...s, status: reply ? "ready" : "failed", reply })),
+      () => setSaved((s) => ({ ...s, status: "failed", reply: null })),
+    );
+  };
+  const reply = saved.open && saved.status === "ready" ? saved.reply : null;
+  return (
+    <div className="work-steps-saved">
+      <button type="button" className="work-steps-toggle" aria-expanded={saved.open} onClick={click}>{stepsCountLabel(count)}</button>
+      {saved.open && saved.status === "loading" && <p className="work-steps-note">Loading steps…</p>}
+      {saved.open && saved.status === "failed" && <p className="work-steps-note">Steps aren't available for this reply.</p>}
+      {reply && <WorkSteps turn={{ steps: reply.steps, todo: reply.todo, structured: true }} live={false} initiallyOpen maxShown={Infinity} />}
+      {reply && reply.dropped > 0 && <p className="work-steps-note">{reply.dropped} more steps weren't kept</p>}
     </div>
   );
 }

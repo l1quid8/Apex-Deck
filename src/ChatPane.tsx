@@ -64,8 +64,8 @@ import { recentFiles } from "./recentFiles.ts";
 export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown" | "copy_reply";
 import { DiffPanel } from "./DiffPanel";
 import { ChangedFilesStrip } from "./ChangedFilesStrip";
-import { MAX_STEPS_SHOWN, WorkSteps } from "./WorkSteps.tsx";
-import { applyStepEvent, emptyTurnSteps, type TurnSteps } from "./workSteps.ts";
+import { MAX_STEPS_SHOWN, SavedSteps, WorkSteps } from "./WorkSteps.tsx";
+import { applyStepEvent, createStepsIndexLoader, emptyTurnSteps, readReplySteps, type TurnSteps } from "./workSteps.ts";
 import { turnFilesFor } from "./turnChanges";
 import { nextReviewNumber, reviewDraft, reviewFileNames, reviewPatch, reviewPatches, reviewerRows } from "./review";
 import { RichText } from "./RichText";
@@ -458,6 +458,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [participants, setParticipants] = useState<ParticipantConfig[]>(profileMode ? profiles : []);
   const [options, setOptions] = useState<RoomOptions>(newThread);
   const [entries, setEntries] = useState<Entry[]>([]);
+  // Saved steps per finished reply: the index says which replies have them; a reply's own steps load when its line is opened.
+  const [stepsIndex, setStepsIndex] = useState<import("./types").StepsIndex | null>(null);
+  const loadedSteps = useRef(new Map<number, import("./types").ReplySteps>());
+  const refreshSteps = useRef<() => void>(() => {});
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const [pins, setPins] = useState<string[]>([]);
@@ -796,6 +800,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     /** Tell the app what this thread's open cards want. The store has seen the event already (hub.ts). */
     const reportApprovals = () => approvals.current?.(pane.id, approvalSignal(openCards(pane.id), namesRef.current, Date.now()) ?? questionSignal(questionSnapshot()[pane.id], namesRef.current));
     let recoveredState: import("./types").RoomState | null = null;
+    loadedSteps.current.clear();
+    const stepsLoader = createStepsIndexLoader(
+      () => backend.roomSteps(pane.id, null),
+      (index) => {
+        if (!alive) return;
+        // A reply whose entry is gone (rewind, edit) must not keep showing old steps.
+        for (const seq of [...loadedSteps.current.keys()]) if (!index?.replies[String(seq)]) loadedSteps.current.delete(seq);
+        setStepsIndex(index);
+      },
+    );
+    refreshSteps.current = () => { void stepsLoader.refresh(); };
     const durableRecovery = createRoomTotalsRefresh({
       load: () => loadRoomTotals(backend, pane.id),
       apply: saved => {
@@ -867,6 +882,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           turnQueue.idle(event.id);
           heard.current.delete(event.id);
           collectWritten.current(event.id);
+          refreshSteps.current();
           break;
         case "turn_started":
           turnQueue.started(event.id);
@@ -986,6 +1002,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           setPendingSettings({});
           reportApprovals();
           turnQueue.roomIdle();
+          refreshSteps.current();
           if (turnQueue.active) break;
           if (showChangesRef.current) refreshDiff.current();
           // A round the person stopped themselves needs no flag.
@@ -1013,6 +1030,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         if (!alive) return;
         const saved = state.snapshot;
         recoveredState = state;
+        refreshSteps.current();
         messageNumbers.restore(saved.transcript);
         forgetRoom(pane.id);
         state.approvals.forEach(ask => recordApproval(pane.id, { type: "approval_requested", ...ask }, backend.host?.id));
@@ -2981,6 +2999,17 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                   const files = turnFiles.get(entry.message.seq);
                   if (!files?.length) return null;
                   return <ChangedFilesStrip files={files} onOpenFile={(path) => openTurnDiff(entry.message.seq, path)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />;
+                })()}
+                {(() => {
+                  const seq = entry.message.seq;
+                  const saved = stepsIndex?.replies[String(seq)];
+                  if (!saved || saved.count === 0) return null;
+                  const load = async () => {
+                    const reply = readReplySteps(await backend.roomSteps(pane.id, seq));
+                    if (reply) loadedSteps.current.set(seq, reply);
+                    return reply;
+                  };
+                  return <SavedSteps count={saved.count} cached={loadedSteps.current.get(seq) ?? null} load={load} />;
                 })()}
               </div>
               {messageActions(entry.message)}

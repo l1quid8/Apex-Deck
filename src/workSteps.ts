@@ -115,3 +115,34 @@ export function readReplySteps(value: unknown): ReplySteps | null {
     dropped: o.dropped,
   };
 }
+
+/**
+ * Keeps a pane's saved-steps index fresh. One call in flight at a time; a request
+ * made meanwhile runs once more afterwards. An older daemon that doesn't know
+ * `room_steps` switches it off for good; any other failure just hides the lines
+ * until the next refresh.
+ */
+export function createStepsIndexLoader(call: () => Promise<unknown>, apply: (index: StepsIndex | null) => void) {
+  let unsupported = false;
+  let running = false;
+  let again = false;
+  const refresh = async (): Promise<void> => {
+    if (unsupported) return;
+    if (running) { again = true; return; }
+    running = true;
+    try {
+      do {
+        again = false;
+        try {
+          apply(readStepsIndex(await call()));
+        } catch (error) {
+          apply(null);
+          if (isUnknownStepsCommand(error)) { unsupported = true; again = false; }
+        }
+      } while (again);
+    } finally {
+      running = false;
+    }
+  };
+  return { refresh, unsupported: () => unsupported };
+}

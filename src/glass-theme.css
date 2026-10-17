@@ -245,7 +245,7 @@
 :root[data-deck-theme="glass"] :is(.rail-row[aria-current="page"], .chip.to, .pin, .folder-chip, .tray, .steps .step) {
   border-radius: max(5px, calc(var(--deck-radius, 12px) * .48));
 }
-:root[data-deck-theme="glass"] :is(.work-steps button, .work-steps-output, .work-steps-helper) {
+:root[data-deck-theme="glass"] :is(.work-steps button, .work-steps-toggle, .work-steps-output, .work-steps-helper) {
   border-radius: max(5px, calc(var(--deck-radius, 12px) * .48));
 }
 :root[data-deck-theme="glass"] .work-steps-output {
