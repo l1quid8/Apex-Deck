@@ -15,11 +15,11 @@ const MIN_SWIPE_MS = 100;
 const MAX_SWIPE_MS = 1000;
 
 /**
- * The picture spot under a click. The picture is shown as large as fits in
- * `box`, centred, with empty bars on the sides it doesn't fill. Returns
- * `null` for a click on a bar, outside the box, or before there is a picture.
+ * The picture spot under a point, which may be off the picture. The picture is
+ * shown as large as fits in `box`, centred, with empty bars on the sides it
+ * doesn't fill. `null` when there is no usable box or picture yet.
  */
-export function toPicture(
+function spotOn(
   clientX: number,
   clientY: number,
   box: { left: number; top: number; width: number; height: number },
@@ -32,8 +32,34 @@ export function toPicture(
   const offsetY = (box.height - height * scale) / 2;
   const x = Math.floor((clientX - box.left - offsetX) / scale);
   const y = Math.floor((clientY - box.top - offsetY) / scale);
-  if (!(x >= 0 && x < width && y >= 0 && y < height)) return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
   return { x, y };
+}
+
+/** The picture spot under a click. `null` for a click on a bar, outside the box, or before there is a picture. */
+export function toPicture(
+  clientX: number,
+  clientY: number,
+  box: { left: number; top: number; width: number; height: number },
+  width: number,
+  height: number,
+): { x: number; y: number } | null {
+  const spot = spotOn(clientX, clientY, box, width, height);
+  if (!spot || spot.x < 0 || spot.x >= width || spot.y < 0 || spot.y >= height) return null;
+  return spot;
+}
+
+/** Like `toPicture`, but a point off the picture lands on its nearest edge. `null` only when there is no usable box or picture. */
+export function clampToPicture(
+  clientX: number,
+  clientY: number,
+  box: { left: number; top: number; width: number; height: number },
+  width: number,
+  height: number,
+): { x: number; y: number } | null {
+  const spot = spotOn(clientX, clientY, box, width, height);
+  if (!spot) return null;
+  return { x: Math.min(width - 1, Math.max(0, spot.x)), y: Math.min(height - 1, Math.max(0, spot.y)) };
 }
 
 /** A press that ended close to where it began taps; a longer one swipes, as slowly as the drag was. */
@@ -57,11 +83,15 @@ const NAMED_KEYS: Record<string, PhoneKey> = {
   ArrowRight: "right",
 };
 
-/** What a key press does on the phone: type a character, press a key, or nothing. */
+/**
+ * What a key press does on the phone: type a character, press a key, or nothing.
+ * Shift+Tab is left to the browser, so focus can always move back out of the screen.
+ */
 export function keyAction(
-  event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean },
+  event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey?: boolean },
 ): { text: string } | { key: PhoneKey } | null {
   if (event.metaKey || event.ctrlKey || event.altKey) return null;
+  if (event.shiftKey && event.key === "Tab") return null;
   const named = NAMED_KEYS[event.key];
   if (named) return { key: named };
   if (event.key.length === 1) {

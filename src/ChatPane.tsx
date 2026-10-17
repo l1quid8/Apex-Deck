@@ -2157,15 +2157,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (tldr) wiggle(field.current);
     // ⌘↵ queues it, then steers it from the queue, so a cancelled prompt leaves it queued.
     setSendingFirst(true);
-    const behindTurn = turnQueue.active;
     void turnQueue.send(message).then(id => {
-      // A message queued while the person holds the phone tells waiting bots to end their turn.
-      if (behindTurn) void backend.phone?.chatQueued(pane.id).catch(() => {});
       setText(current => current === text ? "" : current); setReplies([]);
       attached.forEach(a => a.preview && URL.revokeObjectURL(a.preview));
       setAttached(current => current.filter(a => !attached.includes(a)));
       const item = turnQueue.items.find(queuedItem => queuedItem.id === id);
       if (steer && item) askToSteer(item);
+      // A message queued while the person holds the phone tells waiting bots to end their turn.
+      // Only a message still in the queue counts: one to an idle bot was posted at once.
+      if (item) void backend.phone?.chatQueued(pane.id).catch(() => {});
     }).catch(error => { setSendingFirst(false); notify(String(error), "error"); });
   };
 

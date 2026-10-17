@@ -1,5 +1,5 @@
 // tests/right-phone-component.test.mjs
-import test, { mock } from 'node:test';
+import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import React from 'react';
@@ -68,6 +68,9 @@ test('a phone that is on shows who has it, its buttons and the typing note', () 
 
 // A small stand-in for React that keeps hook state between calls and runs effects with their cleanups,
 // so polling and typing can be driven with fake timers. Tests call render() after something changed.
+// A test that fails before it unmounts must not leave a polling loop running.
+const mounted = [];
+afterEach(() => { while (mounted.length) mounted.pop().unmount(); });
 function mount(props) {
   const Fake = { Fragment: 'fragment', createElement: (type, p, ...children) => ({ type, props: p ?? {}, children: children.flat(Infinity) }) };
   const slots = [];
@@ -97,6 +100,7 @@ function mount(props) {
     },
     unmount() { for (const slot of slots) slot?.cleanup?.(); },
   };
+  mounted.push(api);
   return api;
 }
 const textOf = (node) => typeof node === 'string' || typeof node === 'number' ? String(node) : node?.children?.map(textOf).join('') ?? '';
@@ -109,7 +113,8 @@ const frame = (seq) => ({ seq, image: `IMG${seq}`, width: 603, height: 1311 });
 const key = (name, extra = {}) => { const e = { key: name, metaKey: false, ctrlKey: false, altKey: false, prevented: false, preventDefault() { this.prevented = true; }, ...extra }; return e; };
 const BOX = { left: 0, top: 0, width: 400, height: 600 };
 let focused = 0;
-const pointer = (x, y) => ({ clientX: x, clientY: y, currentTarget: { getBoundingClientRect: () => BOX, focus() { focused++; } } });
+const captured = [];
+const pointer = (x, y, extra = {}) => ({ clientX: x, clientY: y, button: 0, pointerId: 7, ...extra, currentTarget: { getBoundingClientRect: () => BOX, focus() { focused++; }, setPointerCapture(id) { captured.push(id); } } });
 const views = (phone) => phone.calls.filter(([name]) => name === 'view');
 const inputs = (phone) => phone.calls.filter(([name]) => name === 'input').map(([, input]) => input);
 
@@ -263,8 +268,8 @@ test('Turn on, Turn off, Give back, Home and Lock call the phone', async () => {
   assert.deepEqual(phone.calls.map(([name, arg]) => name === 'input' ? `input:${arg.button}` : name), ['start', 'giveBack', 'input:home', 'input:lock', 'stop']);
 });
 
-test('a press and release on the picture tap or swipe; one outside does nothing', async (t) => {
-  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+test('a press and release on the picture tap or swipe; a press that starts outside does nothing', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1000 });
   const phone = fakePhone({ view: () => Promise.resolve({ status: on(), frame: frame(1) }) });
   const ui = mount({ phone, visible: true, initial: on() });
   ui.render();
@@ -273,20 +278,21 @@ test('a press and release on the picture tap or swipe; one outside does nothing'
   assert.equal(img.props.tabIndex, 0);
   assert.equal(img.props.draggable, false);
   assert.equal(img.props.alt, "Phone screen. Click to tap, drag to swipe, type while it's selected.");
-  focused = 0;
+  focused = 0; captured.length = 0;
   img.props.onPointerDown(pointer(250, 300));
   assert.equal(focused, 1, 'pressing focuses the screen');
+  assert.deepEqual(captured, [7], 'the press keeps the pointer until it is let go');
   t.mock.timers.tick(60);
   img.props.onPointerUp(pointer(250, 300));
   img.props.onPointerDown(pointer(250, 500));
   t.mock.timers.tick(400);
   img.props.onPointerUp(pointer(250, 100));
+  // Starts on a bar: nothing, even if it ends on the picture.
   img.props.onPointerDown(pointer(10, 300));
-  img.props.onPointerUp(pointer(10, 300));
-  img.props.onPointerDown(pointer(250, 300));
   img.props.onPointerUp(pointer(10, 300));
   img.props.onPointerDown(pointer(10, 300));
   img.props.onPointerUp(pointer(250, 300));
+  // A release with no press before it.
   img.props.onPointerUp(pointer(250, 300));
   await settle();
   assert.deepEqual(inputs(phone), [
@@ -294,6 +300,118 @@ test('a press and release on the picture tap or swipe; one outside does nothing'
     { kind: 'swipe', x1: 410, y1: 1092, x2: 410, y2: 218, ms: 400 },
   ]);
   assert.equal(find(ui.render(), (n) => n.props.role === 'alert'), null, 'a press outside the picture is not an error');
+  ui.unmount();
+});
+
+test('a drag that is let go outside the picture ends at its nearest edge', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1000 });
+  const phone = fakePhone({ view: () => Promise.resolve({ status: on(), frame: frame(1) }) });
+  const ui = mount({ phone, visible: true, initial: on() });
+  ui.render();
+  await settle();
+  const img = screen(ui.render());
+  // Up and off the top of the screen: the swipe still goes, to the top edge.
+  img.props.onPointerDown(pointer(250, 500));
+  t.mock.timers.tick(250);
+  img.props.onPointerUp(pointer(250, -40));
+  // Out onto the side bar.
+  img.props.onPointerDown(pointer(250, 300));
+  t.mock.timers.tick(250);
+  img.props.onPointerUp(pointer(5, 300));
+  // A tiny wobble over the edge is still a tap.
+  img.props.onPointerDown(pointer(63, 300));
+  t.mock.timers.tick(50);
+  img.props.onPointerUp(pointer(60, 300));
+  await settle();
+  assert.deepEqual(inputs(phone), [
+    { kind: 'swipe', x1: 410, y1: 1092, x2: 410, y2: 0, ms: 250 },
+    { kind: 'swipe', x1: 410, y1: 655, x2: 0, y2: 655, ms: 250 },
+    { kind: 'tap', x: 2, y: 655 },
+  ]);
+  ui.unmount();
+});
+
+test('only the main button presses the screen', async () => {
+  const phone = fakePhone({ view: () => Promise.resolve({ status: on(), frame: frame(1) }) });
+  const ui = mount({ phone, visible: true, initial: on() });
+  ui.render();
+  await settle();
+  const img = screen(ui.render());
+  focused = 0; captured.length = 0;
+  img.props.onPointerDown(pointer(250, 300, { button: 2 }));
+  img.props.onPointerUp(pointer(250, 300, { button: 2 }));
+  img.props.onPointerDown(pointer(250, 300, { button: 1 }));
+  img.props.onPointerUp(pointer(250, 300, { button: 1 }));
+  await settle();
+  assert.deepEqual(inputs(phone), [], 'a right or middle click sends nothing');
+  assert.deepEqual(captured, []);
+  assert.equal(focused, 0);
+  ui.unmount();
+});
+
+test('a press that was cancelled or lost cannot start a later swipe', async () => {
+  const phone = fakePhone({ view: () => Promise.resolve({ status: on(), frame: frame(1) }) });
+  const ui = mount({ phone, visible: true, initial: on() });
+  ui.render();
+  await settle();
+  const img = screen(ui.render());
+  img.props.onPointerDown(pointer(250, 500));
+  img.props.onPointerCancel();
+  img.props.onPointerUp(pointer(250, 100));
+  img.props.onPointerDown(pointer(250, 500));
+  img.props.onLostPointerCapture();
+  img.props.onPointerUp(pointer(250, 100));
+  await settle();
+  assert.deepEqual(inputs(phone), []);
+  // A finished press is not lost capture's to undo: the up came first, as in a browser.
+  img.props.onPointerDown(pointer(250, 300));
+  img.props.onPointerUp(pointer(250, 300));
+  img.props.onLostPointerCapture();
+  await settle();
+  assert.deepEqual(inputs(phone), [{ kind: 'tap', x: 410, y: 655 }]);
+  ui.unmount();
+});
+
+test('hiding the tab in the middle of a press forgets the press', async () => {
+  const phone = fakePhone({ view: () => Promise.resolve({ status: on(), frame: frame(1) }) });
+  const ui = mount({ phone, visible: true, initial: on() });
+  ui.render();
+  await settle();
+  screen(ui.render()).props.onPointerDown(pointer(250, 500));
+  ui.set({ visible: false });
+  ui.render();
+  ui.set({ visible: true });
+  ui.render();
+  await settle();
+  screen(ui.render()).props.onPointerUp(pointer(250, 100));
+  await settle();
+  assert.deepEqual(inputs(phone), []);
+  ui.unmount();
+});
+
+test('a swipe keeps the time it was let go, however long it waits in line', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1000 });
+  const waiting = [];
+  const phone = fakePhone({
+    view: () => Promise.resolve({ status: on(), frame: frame(1) }),
+    input: (input) => { phone.calls.push(['input', input]); return new Promise((resolve) => waiting.push(resolve)); },
+  });
+  const ui = mount({ phone, visible: true, initial: on() });
+  ui.render();
+  await settle();
+  const tree = ui.render();
+  const img = screen(tree);
+  // An earlier input is still waiting for the phone, so the flick queues behind it.
+  button(tree, 'Home').props.onClick();
+  await settle();
+  img.props.onPointerDown(pointer(250, 500));
+  t.mock.timers.tick(100);
+  img.props.onPointerUp(pointer(250, 100));
+  t.mock.timers.tick(900);
+  await settle();
+  waiting.shift()(on());
+  await settle();
+  assert.deepEqual(inputs(phone).slice(1), [{ kind: 'swipe', x1: 410, y1: 1092, x2: 410, y2: 218, ms: 100 }]);
   ui.unmount();
 });
 
@@ -345,7 +463,7 @@ test('the key waits for the typed text to be accepted', async (t) => {
   ui.unmount();
 });
 
-test('keys the phone does not use are left alone', async (t) => {
+test('keys the phone does not use are left alone, and Shift+Tab leaves the screen', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
   const phone = fakePhone({ view: () => Promise.resolve({ status: on(), frame: frame(1) }) });
   const ui = mount({ phone, visible: true, initial: on() });
@@ -354,13 +472,21 @@ test('keys the phone does not use are left alone', async (t) => {
   const img = screen(ui.render());
   const paste = key('v', { metaKey: true });
   const shift = key('Shift');
+  const back = key('Tab', { shiftKey: true });
   img.props.onKeyDown(paste);
   img.props.onKeyDown(shift);
+  img.props.onKeyDown(back);
   t.mock.timers.tick(1000);
   await settle();
   assert.equal(paste.prevented, false);
   assert.equal(shift.prevented, false);
+  assert.equal(back.prevented, false, 'Shift+Tab moves focus out of the screen');
   assert.deepEqual(inputs(phone), []);
+  const tab = key('Tab');
+  img.props.onKeyDown(tab);
+  await settle();
+  assert.equal(tab.prevented, true);
+  assert.deepEqual(inputs(phone), [{ kind: 'key', key: 'tab' }], 'plain Tab still goes to the phone');
   ui.unmount();
 });
 
@@ -403,4 +529,20 @@ test('typing dropped by hiding does not come back with the next typing', async (
   await settle();
   assert.deepEqual(inputs(phone), [{ kind: 'type', text: 'b' }]);
   ui.unmount();
+});
+
+test('the chat hook runs only for a message that stayed queued, and after the composer is cleared', async () => {
+  // ChatPane is too big to mount here, so this reads its source, as interactive-answers-wiring.test.mjs does.
+  const chat = await fs.readFile(new URL('../src/ChatPane.tsx', import.meta.url), 'utf8');
+  assert.equal((chat.match(/chatQueued/g) ?? []).length, 1, 'only the send path tells the phone');
+  assert.doesNotMatch(chat, /behindTurn/, 'whether anyone is working is not the same as being queued');
+  const start = chat.indexOf('void turnQueue.send(message).then(id => {');
+  assert.ok(start > 0);
+  const block = chat.slice(start, chat.indexOf('}).catch(', start));
+  const hook = block.indexOf('chatQueued');
+  assert.match(block, /if \(item\) void backend\.phone\?\.chatQueued\(pane\.id\)\.catch\(\(\) => \{\}\);/);
+  assert.match(block, /const item = turnQueue\.items\.find\(queuedItem => queuedItem\.id === id\);/);
+  assert.ok(block.indexOf('const item =') < hook, 'it asks the queue first');
+  assert.ok(block.indexOf('setText(') < hook && block.indexOf('setAttached(') < hook && block.indexOf('askToSteer') < hook, 'it comes last');
+  assert.ok(block.indexOf('A message queued while the person holds the phone tells waiting bots to end their turn.') > 0);
 });

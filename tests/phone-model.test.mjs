@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toPicture, gesture, keyAction, holderLine } from '../src/phoneModel.ts';
+import { toPicture, clampToPicture, gesture, keyAction, holderLine } from '../src/phoneModel.ts';
 
 test('a click maps into the picture, letterboxing included', () => {
   // A 603×1311 picture in a 400×600 box is height-limited: about 276 wide, with 62 px bars each side.
@@ -10,6 +10,22 @@ test('a click maps into the picture, letterboxing included', () => {
   assert.equal(toPicture(250, 601, box, 603, 1311), null);
   assert.deepEqual(toPicture(63, 1, box, 603, 1311), { x: 2, y: 2 });
   assert.equal(toPicture(1, 1, { left: 0, top: 0, width: 0, height: 0 }, 603, 1311), null);
+});
+
+test('a release outside the picture is moved to the nearest edge', () => {
+  const box = { left: 0, top: 0, width: 400, height: 600 };
+  // Inside the picture it is the same spot toPicture gives.
+  assert.deepEqual(clampToPicture(250, 300, box, 603, 1311), { x: 410, y: 655 });
+  // On the left bar, the right bar, above and below the box.
+  assert.deepEqual(clampToPicture(10, 300, box, 603, 1311), { x: 0, y: 655 });
+  assert.deepEqual(clampToPicture(390, 300, box, 603, 1311), { x: 602, y: 655 });
+  assert.deepEqual(clampToPicture(250, -50, box, 603, 1311), { x: 410, y: 0 });
+  assert.deepEqual(clampToPicture(250, 900, box, 603, 1311), { x: 410, y: 1310 });
+  assert.deepEqual(clampToPicture(-500, 9000, box, 603, 1311), { x: 0, y: 1310 });
+  // Nothing to clamp to without a usable box or picture, or a position that is not a number.
+  assert.equal(clampToPicture(1, 1, { left: 0, top: 0, width: 0, height: 0 }, 603, 1311), null);
+  assert.equal(clampToPicture(1, 1, box, 0, 0), null);
+  assert.equal(clampToPicture(NaN, 1, box, 603, 1311), null);
 });
 
 test('a short press taps, a drag swipes', () => {
@@ -28,6 +44,16 @@ test('keys become typing or key presses', () => {
   assert.equal(k('v', { metaKey: true }), null);
   assert.equal(k('é'), null);
   assert.equal(k('Shift'), null);
+});
+
+test('Shift+Tab is left to the browser so focus can leave the screen', () => {
+  const k = (key, extra = {}) => keyAction({ key, metaKey: false, ctrlKey: false, altKey: false, ...extra });
+  assert.equal(k('Tab', { shiftKey: true }), null);
+  assert.deepEqual(k('Tab', { shiftKey: false }), { key: 'tab' });
+  assert.deepEqual(k('Tab'), { key: 'tab' });
+  assert.deepEqual(k('Escape'), { key: 'escape' });
+  assert.deepEqual(k('A', { shiftKey: true }), { text: 'A' });
+  assert.deepEqual(k('Enter', { shiftKey: true }), { key: 'enter' });
 });
 
 test('who has the phone, in plain words', () => {

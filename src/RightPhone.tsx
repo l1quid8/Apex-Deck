@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 import type { PhoneApi } from "./backend";
 import type { PhoneStatus } from "./types";
-import { POLL_MS, TYPE_FLUSH_MS, gesture, holderLine, keyAction, toPicture } from "./phoneModel";
+import { POLL_MS, TYPE_FLUSH_MS, clampToPicture, gesture, holderLine, keyAction, toPicture } from "./phoneModel";
 
 /** The latest picture of the phone's screen, ready for an <img>. */
 interface Shown { src: string; width: number; height: number }
@@ -53,11 +53,12 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
     return () => { live = false; clearTimeout(timer); };
   }, [phone, visible]);
 
-  // Hiding or closing the tab drops typing that has not been sent yet.
+  // Hiding or closing the tab drops typing that has not been sent yet, and any press that was still going.
   useEffect(() => () => {
     if (typeTimer.current !== null) clearTimeout(typeTimer.current);
     typeTimer.current = null;
     typed.current = "";
+    press.current = null;
   }, [phone, visible]);
 
   if (!phone) return <p className="muted right-panel-empty">The phone needs the Deck app on a Mac.</p>;
@@ -76,9 +77,13 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
     typed.current = "";
     if (text) act(() => api.input({ kind: "type", text }));
   };
-  const pointAt = (event: PointerEvent<HTMLImageElement>) => shown
-    ? toPicture(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect(), shown.width, shown.height)
-    : null;
+  // Where a pointer is on the phone's screen. With `toEdge`, a point off the picture counts as its nearest edge.
+  const pointAt = (event: PointerEvent<HTMLImageElement>, toEdge: boolean) => {
+    if (!shown) return null;
+    const find = toEdge ? clampToPicture : toPicture;
+    return find(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect(), shown.width, shown.height);
+  };
+  const forgetPress = () => { press.current = null; };
 
   const words = problem?.text ?? status?.problem ?? null;
   const alert = words ? <p role="alert" className="right-phone-alert">{words}</p> : null;
@@ -111,16 +116,24 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
     {shown && <img className="right-phone-screen" src={shown.src} tabIndex={0} draggable={false}
       alt="Phone screen. Click to tap, drag to swipe, type while it's selected."
       onPointerDown={(event) => {
+        // Only the main button presses the screen.
+        if (event.button !== 0) return;
         event.currentTarget.focus();
-        const at = pointAt(event);
+        const at = pointAt(event, false);
         press.current = at && { x: at.x, y: at.y, at: Date.now() };
+        // Keep the pointer until it is let go, so a release off the screen still arrives here.
+        if (at) event.currentTarget.setPointerCapture(event.pointerId);
       }}
       onPointerUp={(event) => {
+        // The time is read now, not when the input gets its turn behind an earlier one.
+        const at = Date.now();
         const start = press.current;
         press.current = null;
-        const end = pointAt(event);
-        if (start && end) act(() => api.input(gesture(start, { x: end.x, y: end.y, at: Date.now() })));
+        const end = start && pointAt(event, true);
+        if (start && end) act(() => api.input(gesture(start, { x: end.x, y: end.y, at })));
       }}
+      onPointerCancel={forgetPress}
+      onLostPointerCapture={forgetPress}
       onKeyDown={(event: KeyboardEvent<HTMLImageElement>) => {
         const action = keyAction(event);
         if (!action) return;
