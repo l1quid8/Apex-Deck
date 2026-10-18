@@ -348,6 +348,29 @@ mod tests {
         all
     }
 
+    /// Poll a snapshot until `pred` holds or `timeout` passes. The reader
+    /// thread drains the pty after the child exits, so tests must wait for the
+    /// output they assert on instead of trusting the exit signal alone.
+    fn wait_for_snapshot(
+        manager: &PtyManager,
+        id: &str,
+        timeout: Duration,
+        mut pred: impl FnMut(&PtySnapshot) -> bool,
+    ) -> PtySnapshot {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let snapshot = manager.snapshot(id).unwrap();
+            if pred(&snapshot) {
+                return snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for pty output in `{id}`"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn output_and_exit_code_are_reported() {
         let manager = PtyManager::default();
@@ -424,15 +447,7 @@ mod tests {
         exit.recv_timeout(Duration::from_secs(10)).unwrap();
         // The child can exit before the reader thread drains the pty, so wait
         // for the trailing byte before asserting on truncated history.
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let snapshot = loop {
-            let snapshot = manager.snapshot("accents").unwrap();
-            if snapshot.output.ends_with('x') {
-                break snapshot;
-            }
-            assert!(std::time::Instant::now() < deadline, "timed out waiting for pty drain");
-            std::thread::sleep(Duration::from_millis(20));
-        };
+        let snapshot = wait_for_snapshot(&manager, "accents", Duration::from_secs(10), |snapshot| snapshot.output.ends_with('x'));
         assert!(!snapshot.output.contains('\u{FFFD}'));
         assert!(snapshot.output.starts_with('é') && snapshot.output.ends_with("éx"));
     }
@@ -442,12 +457,14 @@ mod tests {
         let manager = PtyManager::default();
         let (_out, exit) = spawn_sh(&manager, "again", "echo first");
         exit.recv_timeout(Duration::from_secs(5)).unwrap();
-        let before = manager.snapshot("again").unwrap().cursor;
-        assert!(before > 0);
+        // The exit signal can land before the reader thread drains the pty, so
+        // wait for the first run's output rather than asserting immediately.
+        let before = wait_for_snapshot(&manager, "again", Duration::from_secs(5), |snapshot| snapshot.cursor > 0).cursor;
         let (_out, exit) = spawn_sh(&manager, "again", "echo second");
         exit.recv_timeout(Duration::from_secs(5)).unwrap();
-        let after = manager.snapshot("again").unwrap();
-        assert!(after.cursor > before);
+        // The cursor keeps counting across the restart: wait for the second
+        // run's output to be drained, which also proves the counter advanced.
+        let after = wait_for_snapshot(&manager, "again", Duration::from_secs(5), |snapshot| snapshot.cursor > before);
         assert!(after.output.contains("second") && !after.output.contains("first"));
     }
 
