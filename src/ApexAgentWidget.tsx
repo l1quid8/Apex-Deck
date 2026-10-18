@@ -1,19 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent, type ReactNode } from 'react';
 import type { Workspace } from './types.ts';
 import type { ProjectMonitor } from './apexAgentModel.ts';
-import { ASSISTANT_SOURCE_MIME, activeMonitorFindings, aggregateFindingCount, assistantSourceOwnerKey, firstActiveFinding, isQuietHours, parseAssistantSourceDrop, sameWidgetPosition, shouldShowFindingBubble, widgetCoordinates, widgetSidePanelPosition, widgetStatus, widgetStatusLabel, checkFailureReason, type AssistantSourceDrop, type WidgetPosition } from './apexAgentWidgetModel.ts';
+import { AGENT_WIDGET_COLORS, ASSISTANT_SOURCE_MIME, activeMonitorFindings, aggregateFindingCount, assistantSourceOwnerKey, firstActiveFinding, isQuietHours, lookColor, normalizeHexColor, parseAssistantSourceDrop, sameWidgetPosition, shouldShowFindingBubble, widgetCoordinates, widgetSidePanelPosition, widgetStatus, widgetStatusLabel, checkFailureReason, type AssistantSourceDrop, type WidgetPosition } from './apexAgentWidgetModel.ts';
 import './apex-agent-widget.css';
 
 export type { AssistantSourceDrop } from './apexAgentWidgetModel.ts';
 export { ASSISTANT_SOURCE_MIME } from './apexAgentWidgetModel.ts';
 
-type Look = { name: string; color: 'mint' | 'cyan' | 'violet' | 'amber'; shape: 'orb' | 'bot' | 'blob' };
+type Look = { name: string; color: string; shape: 'orb' | 'bot' | 'blob' };
 const POS_KEY = 'apex-agent-widget-position-v2';
 const LOOK_KEY = 'apex-agent-widget-look-v2';
 const QUIET_KEY = 'apex-agent-widget-quiet-hours-v1';
-const colors: Look['color'][] = ['mint', 'cyan', 'violet', 'amber'];
 const shapes: Look['shape'][] = ['orb', 'bot', 'blob'];
-const defaultLook: Look = { name: 'Apex', color: 'mint', shape: 'orb' };
+const defaultLook: Look = { name: 'Apex', color: AGENT_WIDGET_COLORS[0], shape: 'orb' };
 type QuietHours = { enabled: boolean; start: string; end: string };
 const defaultQuietHours: QuietHours = { enabled: false, start: '22:00', end: '08:00' };
 const validClockTime = (value: unknown): value is string => typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
@@ -54,8 +53,10 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
   useEffect(() => { onPositionChange?.(position); }, [position, onPositionChange]);
   const [look, setLook] = useState<Look>(() => {
     const saved = readStored<Partial<Look>>(LOOK_KEY, {});
-    return { name: typeof saved.name === 'string' ? saved.name.slice(0, 20) || 'Apex' : 'Apex', color: colors.includes(saved.color as Look['color']) ? saved.color! : defaultLook.color, shape: shapes.includes(saved.shape as Look['shape']) ? saved.shape! : defaultLook.shape };
+    return { name: typeof saved.name === 'string' ? saved.name.slice(0, 20) || 'Apex' : 'Apex', color: lookColor(saved.color), shape: shapes.includes(saved.shape as Look['shape']) ? saved.shape! : defaultLook.shape };
   });
+  /** The hex text field's own draft, so typing can pause mid-hex. */
+  const [hexDraft, setHexDraft] = useState<string | null>(null);
   const [quietHours, setQuietHours] = useState<QuietHours>(() => {
     const saved = readStored<Partial<QuietHours>>(QUIET_KEY, {});
     return { enabled: saved.enabled === true, start: validClockTime(saved.start) ? saved.start : defaultQuietHours.start, end: validClockTime(saved.end) ? saved.end : defaultQuietHours.end };
@@ -96,7 +97,7 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
   const replyText = replyDrafts[bubbleKey] ?? '';
   const status = widgetStatus(selected, selectedMonitor, offlineWorkspaceIds);
   const coords = typeof window === 'undefined' ? { left: 16, top: position.y } : widgetCoordinates(position, { width: window.innerWidth, height: window.innerHeight });
-  const wrapStyle = { left: coords.left, top: coords.top, '--aa-color': `var(--apex-widget-${look.color})` } as CSSProperties;
+  const wrapStyle = { left: coords.left, top: coords.top, '--aa-color': look.color } as CSSProperties;
   const viewportHeight = typeof window === 'undefined' ? 800 : window.innerHeight;
   const viewportWidth = typeof window === 'undefined' ? 1200 : window.innerWidth;
   const panelTop = Math.max(12, Math.min(coords.top, viewportHeight - Math.min(panelHeight, viewportHeight - 32) - 12));
@@ -257,7 +258,7 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
   };
 
   return <div className={`apex-widget-root ${hidden ? 'is-hidden' : ''}`}>
-    <div className={`apex-widget-avatar edge-${position.edge} apex-widget-${look.shape} apex-color-${look.color} status-${status} ${findings > 0 ? 'tone-needs-you' : ''} ${open ? 'is-open' : ''} ${dropActive ? 'is-drop' : ''}`} style={wrapStyle} data-apex-agent-overlay="avatar" onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false); }} onDrop={(event) => void onDrop(event)}>
+    <div className={`apex-widget-avatar edge-${position.edge} apex-widget-${look.shape} status-${status} ${findings > 0 ? 'tone-needs-you' : ''} ${open ? 'is-open' : ''} ${dropActive ? 'is-drop' : ''}`} style={wrapStyle} data-apex-agent-overlay="avatar" onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false); }} onDrop={(event) => void onDrop(event)}>
       <button ref={avatarRef} type="button" className="apex-widget-hit" aria-label={`${look.name}, ${widgetStatusLabel(status)}${findings ? `, ${findings} items need attention` : ''}`} aria-haspopup="dialog" aria-expanded={open} onMouseEnter={() => setTipVisible(true)} onMouseLeave={() => setTipVisible(false)} onFocus={() => setTipVisible(true)} onBlur={() => setTipVisible(false)} onClick={activate} onContextMenu={(event) => { event.preventDefault(); setMenu((value) => !value); }} onKeyDown={(event) => {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); move(event.key === 'ArrowLeft' ? 'left' : 'right'); }
         else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); positionAvatar({ edge: position.edge, y: position.y + (event.key === 'ArrowUp' ? -24 : 24) }); }
@@ -277,7 +278,17 @@ export function ApexAgentWidget({ workspaces, workspaceId, open, monitors, onOpe
       {editing && <div className="apex-widget-editor" style={contextStyle} role="dialog" aria-label="Make Apex yours" data-apex-agent-overlay="editor">
         <button className="apex-widget-editor-close" onClick={() => setEditing(false)} aria-label="Close appearance editor">×</button>
         <label>Name <input value={look.name} maxLength={20} onChange={(event) => setLookValue({ name: event.target.value || 'Apex' })} /></label>
-        <label>Color <select value={look.color} onChange={(event) => setLookValue({ color: event.target.value as Look['color'] })}>{colors.map((color) => <option key={color}>{color}</option>)}</select></label>
+        <label>Color
+          <div className="apex-widget-colors" role="group" aria-label="Colour presets">
+            {AGENT_WIDGET_COLORS.map((color) => (
+              <button key={color} type="button" className={look.color === color ? 'selected' : ''} aria-label={`Colour ${color}`} aria-pressed={look.color === color} style={{ '--swatch': color } as CSSProperties} onClick={() => { setHexDraft(null); setLookValue({ color }); }} />
+            ))}
+          </div>
+          <div className="apex-widget-hexrow">
+            <input type="color" value={look.color} aria-label="Pick any colour" onChange={(event) => { setHexDraft(null); setLookValue({ color: normalizeHexColor(event.target.value) ?? look.color }); }} />
+            <input className="apex-widget-hextext" value={hexDraft ?? look.color} maxLength={7} spellCheck={false} autoComplete="off" aria-label="Hex colour" onFocus={() => setHexDraft(look.color)} onChange={(event) => { setHexDraft(event.target.value); const hex = normalizeHexColor(event.target.value); if (hex) setLookValue({ color: hex }); }} onBlur={() => setHexDraft(null)} />
+          </div>
+        </label>
         <label>Shape <select value={look.shape} onChange={(event) => setLookValue({ shape: event.target.value as Look['shape'] })}>{shapes.map((shape) => <option key={shape}>{shape}</option>)}</select></label>
         <div className="apex-widget-quiet-settings"><strong>Quiet hours</strong><button type="button" className={quietHours.enabled ? 'enabled' : ''} aria-pressed={quietHours.enabled} onClick={() => setQuietHours((current) => ({ ...current, enabled: !current.enabled }))}>{quietHours.enabled ? 'On' : 'Off'}</button></div>
         <div className="apex-widget-quiet-times"><label>From <input type="time" value={quietHours.start} onChange={(event) => { if (validClockTime(event.target.value)) setQuietHours((current) => ({ ...current, start: event.target.value })); }} /></label><label>Until <input type="time" value={quietHours.end} onChange={(event) => { if (validClockTime(event.target.value)) setQuietHours((current) => ({ ...current, end: event.target.value })); }} /></label></div>

@@ -15,6 +15,29 @@ export type WidgetStatus = 'offline' | 'failed' | 'paused' | 'complete' | 'check
 export const sameWidgetPosition = (a: WidgetPosition, b: WidgetPosition): boolean => a.edge === b.edge && a.y === b.y;
 export const shouldShowFindingBubble = (hasFinding: boolean, dismissed: boolean, quietHours: boolean, panelOpen: boolean): boolean => hasFinding && !dismissed && !quietHours && !panelOpen;
 
+/** Hex swatches for the agent avatar, in editor order. The first is the default. */
+export const AGENT_WIDGET_COLORS = ['#54efaa', '#43d8ed', '#b29aff', '#ffca57', '#f472b6', '#fb7185', '#60a5fa', '#a3e635'] as const;
+/** Older saved looks picked one of four named colours; map them to the same hex. */
+const LEGACY_WIDGET_COLORS: Record<string, string> = { mint: '#54efaa', cyan: '#43d8ed', violet: '#b29aff', amber: '#ffca57' };
+
+/** Accepts `#rgb` or `#rrggbb` (case-insensitive) and normalizes to lowercase
+ *  `#rrggbb`, which is what an `<input type="color">` expects. */
+export function normalizeHexColor(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value.trim());
+  if (!match) return null;
+  const hex = match[1];
+  const full = hex.length === 3 ? [...hex].map((digit) => digit + digit).join('') : hex;
+  return `#${full.toLowerCase()}`;
+}
+
+/** The avatar color for a saved look: legacy names become their hex, invalid
+ *  values fall back to the given default. */
+export function lookColor(value: unknown, fallback: string = AGENT_WIDGET_COLORS[0]): string {
+  const named = typeof value === 'string' ? LEGACY_WIDGET_COLORS[value] : undefined;
+  return normalizeHexColor(named ?? value) ?? normalizeHexColor(fallback) ?? AGENT_WIDGET_COLORS[0];
+}
+
 export function assistantSourceOwnerKey(workspace: Pick<Workspace, 'id' | 'hostId' | 'path'>): string {
   return JSON.stringify([workspace.hostId ?? 'local', workspace.id, workspace.path]);
 }
