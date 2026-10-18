@@ -285,9 +285,11 @@ impl Hook {
         use std::os::unix::fs::DirBuilderExt;
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        // Kept short: a socket path must fit in about 100 bytes.
-        let dir = std::env::temp_dir().join(format!("apex-hook-{}-{}-{nanos:x}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        // Kept short: a socket path must fit in about 100 bytes, and the
+        // temp folder itself can be long, so the per-turn folder is just the
+        // process id plus a per-process counter. That stays unique without
+        // pushing the socket path past the kernel limit.
+        let dir = std::env::temp_dir().join(format!("a{}{:x}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
         match tokio::net::UnixListener::bind(dir.join("s")) {
             Ok(listener) => Ok(Self { command: hook_command(helper), dir, listener }),
@@ -420,7 +422,7 @@ mod tests {
     #[cfg(unix)]
     fn deck(tag: &str, answer: Option<&'static str>) -> (PathBuf, std::thread::JoinHandle<String>) {
         use std::io::{BufRead, BufReader, Write};
-        let dir = std::env::temp_dir().join(format!("apex-hook-test-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("t{}{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("s");
