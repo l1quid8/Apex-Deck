@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import electron from 'electron';
 import { createServer } from 'vite';
+import { runElectronScenario } from './helpers/electron-test.mjs';
 
-test('ComposerPanel controls detents, preserves scroll, handles picker callbacks, revokes previews and restores focus', { timeout: 60000 }, async () => {
+test('ComposerPanel controls detents, preserves scroll, handles picker callbacks, revokes previews and restores focus', { timeout: 200000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-composer-panel-'));
   const html = `<html><body><div id="frame" class="phone-frame ph-app" style="position:relative;width:320px;height:430px;overflow:hidden"><button class="ph-add" id="trigger">+</button><div id="root"></div></div><script type="module">
     import React,{useState} from 'react'; import {createRoot} from 'react-dom/client';
@@ -47,7 +47,7 @@ test('ComposerPanel controls detents, preserves scroll, handles picker callbacks
       }catch(error){console.error(error.stack);app.exit(1);}});
   `);
   try {
-    const result = await new Promise((resolve, reject) => { const child = spawn(electron, [main, '--user-data-dir=' + path.join(temp, 'profile')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, stdio: ['ignore','pipe','pipe'] }); let output=''; child.stdout.on('data',b=>output+=b); child.stderr.on('data',b=>output+=b); const timer=setTimeout(()=>child.kill('SIGKILL'),50000); child.on('error',reject); child.on('exit',code=>{clearTimeout(timer);resolve({code,output});}); });
-    assert.equal(result.code,0,result.output);
+    const result = await runElectronScenario(electron, main, temp);
+    assert.equal(result.code, 0, result.output);
   } finally { await server.close(); fs.rmSync(temp,{recursive:true,force:true,maxRetries:5,retryDelay:100}); }
 });

@@ -2,15 +2,15 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { frameDocument } from '../src/artifactFrame.ts';
+import { runElectronScenario } from './helpers/electron-test.mjs';
 // Electron needs a graphical session on Linux, even for a hidden window.
 // macOS runs the regression normally; headless Linux still runs the pure tests.
 const headlessLinux = process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
 test('artifact isolation blocks parser and navigation escapes while interactive HTML and SVG render', {
   skip: headlessLinux ? 'Electron requires DISPLAY or WAYLAND_DISPLAY on Linux' : false,
-  timeout: 20000,
+  timeout: 200000,
 }, async () => {
   const require = createRequire(import.meta.url);
   const electron = require('electron');
@@ -60,11 +60,23 @@ test('artifact isolation blocks parser and navigation escapes while interactive 
         if (!inner) throw Error('Missing isolated child for ' + fixture.label);
         let ok;
         if (fixture.kind === 'navigation') {
+          // The artifact script announces the attempt, then navigates ~10ms
+          // later. The CSP rejection (a did-fail-load with ERR_BLOCKED_BY_CSP)
+          // can arrive well after the frame's URL settles — on a loaded machine
+          // it has shown up a full fixture later — so wait for it instead of
+          // sleeping a fixed amount and reading the racy frame URL.
+          const prefix = fixture.label === 'http' ? 'http://127.0.0.1:'
+            : fixture.label === 'data' ? 'data:text/html,' : 'blob:';
+          const deadline = Date.now() + 10000;
+          while (Date.now() < deadline) {
+            const attempts = await win.webContents.executeJavaScript('window.artifactAttempts');
+            if (attempts.includes('attempt:' + fixture.label)
+              && blocked.slice(blockedBefore).some(failure => failure.url.startsWith(prefix))) break;
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
           const attempts = await win.webContents.executeJavaScript('window.artifactAttempts');
-          // Electron retains the attempted URL on a blocked error document.
-          // Require the actual CSP load rejection, not the frame's URL alone.
-          ok = attempts.includes('attempt:' + fixture.label)
-            && blocked.slice(blockedBefore).some(failure => failure.url === inner.url);
+          const rejected = blocked.slice(blockedBefore).some(failure => failure.url.startsWith(prefix));
+          ok = attempts.includes('attempt:' + fixture.label) && rejected;
         } else {
           ok = await inner.executeJavaScript(fixture.kind === 'svg'
             ? '!!document.querySelector("svg circle")'
@@ -79,17 +91,7 @@ test('artifact isolation blocks parser and navigation escapes while interactive 
   });
   `);
   try {
-    const result = await new Promise((resolve, reject) => {
-      const child = spawn(electron, [path.join(temp, 'main.cjs'), '--user-data-dir=' + path.join(temp, 'profile')], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let output = '';
-      child.stdout.on('data', bytes => output += bytes);
-      child.stderr.on('data', bytes => output += bytes);
-      const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
-      child.on('error', error => { clearTimeout(timer); reject(error); });
-      child.on('exit', code => { clearTimeout(timer); resolve({ code, output }); });
-    });
+    const result = await runElectronScenario(electron, path.join(temp, 'main.cjs'), temp, { timeoutMs: 60000 });
     console.log(JSON.stringify(result));
     if (result.code !== 0) throw new Error('Artifact isolation/rendering regression: ' + result.output);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }

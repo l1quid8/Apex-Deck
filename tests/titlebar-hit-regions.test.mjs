@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import electron from 'electron';
 import { createServer } from 'vite';
+import { runElectronScenario } from './helpers/electron-test.mjs';
 
 function readRegions() {
   const header = document.querySelector('.titlebar');
@@ -19,7 +19,7 @@ function readRegions() {
 // A later sibling's inherited drag rectangle wins over a tab's no-drag
 // rectangle in Electron, even when the tab is visually above it (z-index).
 // Exercise the real App layout; inspecting the button's CSS alone misses this.
-test('the right toolbar drag region never covers the section switcher', { timeout: 60000 }, async () => {
+test('the right toolbar drag region never covers the section switcher', { timeout: 200000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'titlebar-hit-regions-'));
   // Each parallel test file gets its own dependency cache: Vite servers sharing
   // node_modules/.vite race renaming deps_temp into deps (ENOTEMPTY), and the
@@ -62,17 +62,7 @@ test('the right toolbar drag region never covers the section switcher', { timeou
     });
   `);
   try {
-    const result = await new Promise((resolve, reject) => {
-      const child = spawn(electron, [main, '--user-data-dir=' + path.join(temp, 'profile')], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let output = '';
-      child.stdout.on('data', bytes => output += bytes);
-      child.stderr.on('data', bytes => output += bytes);
-      const timer = setTimeout(() => child.kill('SIGKILL'), 50000);
-      child.on('error', reject);
-      child.on('exit', code => { clearTimeout(timer); resolve({ code, output }); });
-    });
+    const result = await runElectronScenario(electron, main, temp);
     assert.equal(result.code, 0, result.output);
   } finally {
     await server.close();
