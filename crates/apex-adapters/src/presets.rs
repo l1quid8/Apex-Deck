@@ -55,6 +55,11 @@ pub fn allow_reading(dir: &std::path::Path) {
     let _ = READABLE.set(dir.to_string_lossy().into_owned());
 }
 
+/// The folder set by `allow_reading`, if any.
+pub(crate) fn readable_dir() -> Option<&'static str> {
+    READABLE.get().map(String::as_str)
+}
+
 /// The program and arguments that run `tool` for one turn.
 ///
 /// `access` is turned into the tool's own permission flags where the tool

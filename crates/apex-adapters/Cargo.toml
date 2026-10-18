@@ -14,6 +14,10 @@ tokio.workspace = true
 reqwest = { version = "0.13", features = ["json", "stream"] }
 serde.workspace = true
 base64 = "0.22"
+# File search for API bots' tools: gitignore-aware walking and patterns.
+ignore = "0.4"
+globset = "0.4"
+regex = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

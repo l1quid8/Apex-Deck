@@ -1040,9 +1040,10 @@ impl Host {
             let mut room = room.lock().await;
             self.require_idle(&id)?;
             let mut config = room.summarizer().ok_or("add a participant before compacting")?;
-            // Writing a summary needs no edits or commands.
+            // Writing a summary needs no edits or commands, and an API bot
+            // needs no tools at all for it.
             config.access = Access::Read;
-            let summarizer = apex_adapters::build(config, &context);
+            let summarizer = apex_adapters::build_without_tools(config, &context);
             room.compact(summarizer.as_ref(), &|event| self.room_event(&id, event)).await?;
         }
         self.save_room(&id).await
