@@ -8,6 +8,7 @@
 //! [`installed_models`] reads the model list a tool keeps for its account.
 
 mod ansi;
+mod api_tools;
 mod attachments;
 mod api_info;
 mod catalog;
@@ -102,8 +103,23 @@ pub struct BuildContext {
     pub phone: Option<PhoneEnv>,
 }
 
-/// Create the participant described by `config`.
+/// Create the participant described by `config`. A bot reached through an
+/// API is given tools to work in `context`'s folder; see `api_tools`.
 pub fn build(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Participant> {
+    match &config.backend {
+        Backend::OpenAiCompatible { .. } => Arc::new(
+            OpenAiCompatParticipant::new(config)
+                .with_media_dir(context.media_dir.clone())
+                .with_attachment_roots(context.attachment_roots.clone())
+                .with_tools(context),
+        ),
+        _ => build_without_tools(config, context),
+    }
+}
+
+/// `build`, except that a bot reached through an API gets no tools. For
+/// turns that only write, such as summarizing the chat.
+pub fn build_without_tools(config: ParticipantConfig, context: &BuildContext) -> Arc<dyn Participant> {
     match &config.backend {
         Backend::OpenAiCompatible { .. } => Arc::new(OpenAiCompatParticipant::new(config).with_media_dir(context.media_dir.clone()).with_attachment_roots(context.attachment_roots.clone())),
         Backend::Cli { .. } | Backend::Agent { .. } => {

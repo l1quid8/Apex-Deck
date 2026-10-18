@@ -29,7 +29,8 @@ over SSH. Every thread shows where it runs. The work lives in `apex-daemon`,
 so a Linux server keeps working while your Mac sleeps.
 
 **Safe by default.** Four access levels per bot (Read only, Ask first, Can
-edit files, Full access), enforced by Claude Code and Codex themselves.
+edit files, Full access), enforced by Claude Code and Codex themselves, and by
+Apex Deck for bots reached through an API.
 Tools that can spend money or publish ask every time, even at Full access,
 unless you choose Always allow for that tool in that thread.
 
@@ -111,7 +112,7 @@ sample thread** opens one with two scripted bots.
 | Codex | `codex app-server` (falls back to `codex exec --json`) |
 | Gemini CLI | `gemini -p`, once per turn |
 | Ollama | Your local Ollama server |
-| Other API | Any OpenAI-compatible endpoint; model list, reasoning, context and balance shown where the provider reports them |
+| Other API | Any OpenAI-compatible endpoint, with tools Apex Deck runs for it (below); model list, reasoning, context and balance shown where the provider reports them |
 | Custom command | A command you enter |
 | Scripted | Canned lines for testing |
 
@@ -132,7 +133,29 @@ Keychain (or a file only you can read on Linux) and never shows it again.
 | Full access | Edit files and run commands without asking. |
 
 For Claude Code and Codex the level becomes the tool's own permission
-settings. For other presets it is an instruction to the model.
+settings. For a custom command it is an instruction to the model.
+
+**Tools for API bots.** Ollama and Other API bots get tools that Apex Deck
+runs for them in the thread's folder: read, find and search files, write and
+edit files, run shell commands (also in the background for the rest of the
+reply), fetch web pages, keep a to-do list, ask you questions, and use your MCP
+servers. The MCP servers are the ones Claude Code is set up with: user-wide and
+per-project entries in `~/.claude.json`, and a project's `.mcp.json` only for
+servers you approved there. A server starts the first time a bot uses it.
+The access level decides what each tool may do:
+
+| Level | Read and search | Edit files | Run commands |
+|---|---|---|---|
+| Read only | Yes | No | No |
+| Ask first | Yes | Asks | Asks |
+| Can edit files | Yes | Yes (outside the project: asks) | Asks |
+| Full access | Yes | Yes | Yes |
+
+At every level, reading outside the project and fetching a web page ask unless
+the bot has Full access, and so do edits to files that can start programs
+(`.mcp.json`, `.claude/`, `.git/`, `.codex/`, `.vscode/`), and MCP tools that can spend money or publish always
+ask. Plan mode allows reading only, until you approve the bot's plan. A model
+that doesn't take tools answers without them and is told it has none.
 
 **Thread commands.**
 

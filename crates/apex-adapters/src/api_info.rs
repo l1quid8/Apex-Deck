@@ -33,6 +33,9 @@ pub struct ApiModel {
     /// The settings an image or video model takes and what it costs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaSpec>,
+    /// Whether the model takes tool calls, when the server says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -185,6 +188,10 @@ fn parse_entry(item: &Value) -> Option<ApiModel> {
             ModelKind::Image => Some(image_spec(spec)),
             ModelKind::Video => Some(video_spec(spec)),
         },
+        // Venice says so in its capabilities, OpenRouter in the parameters it takes.
+        tools: capabilities["supportsFunctionCalling"].as_bool().or_else(|| {
+            item["supported_parameters"].as_array().map(|params| params.iter().any(|p| p == "tools"))
+        }),
         kind,
     })
 }
@@ -310,6 +317,13 @@ pub async fn model(base_url: &str, api_key_env: Option<&str>, id: &str) -> Optio
 pub fn cached_kind(base_url: &str, id: &str) -> Option<ModelKind> {
     let cache = CACHE.get()?.lock().unwrap();
     cache.get(base_url.trim_end_matches('/'))?.1.iter().find(|model| model.id == id).map(|model| model.kind)
+}
+
+/// Whether model `id` takes tool calls, from the last list fetched,
+/// however old. None until the list has been fetched or when it doesn't say.
+pub fn cached_tools(base_url: &str, id: &str) -> Option<bool> {
+    let cache = CACHE.get()?.lock().unwrap();
+    cache.get(base_url.trim_end_matches('/'))?.1.iter().find(|model| model.id == id).and_then(|model| model.tools)
 }
 
 /// The remaining account balance in US dollars, for the providers that

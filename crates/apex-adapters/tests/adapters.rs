@@ -156,8 +156,10 @@ async fn cli_timeout_terminates_the_process_tree_before_returning() {
     let dir = fake_tool("cli-tree-timeout", "unused", "");
     let pid_file = dir.join("descendant.pid");
     let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}' ; wait", pid_file.display());
+    // Long enough for a busy CI machine to start the descendant and record
+    // it before the timeout; 300 ms sometimes wasn't.
     let bot = CliParticipant::new(config("cli", sh(&script)))
-        .with_timeout(Duration::from_millis(300));
+        .with_timeout(Duration::from_millis(1500));
     let (result, _) = ask(&bot, "hi").await;
     assert!(matches!(result, Err(ParticipantError::Failed(_))), "{result:?}");
     let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
@@ -2140,4 +2142,330 @@ async fn codex_high_risk_metadata_does_not_reuse_hook_approval() {
     assert_eq!(result.unwrap().text, "allowed=3 denied=0");
     assert_eq!(yes.asked.lock().unwrap().len(), 5, "each high-risk Codex request needs a fresh person decision");
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+// ---------------------------------------------------------------- API bots with tools
+
+/// An HTTP server that answers each POST with the next of `answers` (a
+/// status and the event stream), refuses every GET (the model lookup), and
+/// keeps the bodies it was sent.
+async fn serve_answers(answers: Vec<(&'static str, String)>) -> (String, std::sync::Arc<Mutex<Vec<serde_json::Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let sent = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let kept = sent.clone();
+    tokio::spawn(async move {
+        let mut answers = answers.into_iter();
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let mut received = Vec::new();
+            let mut buffer = [0u8; 65536];
+            let (head, body) = loop {
+                let read = socket.read(&mut buffer).await.unwrap_or(0);
+                received.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&received).into_owned();
+                if let Some(split) = text.find("\r\n\r\n") {
+                    let length = text[..split]
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                        .unwrap_or(0);
+                    if received.len() >= split + 4 + length || read == 0 {
+                        break (text[..split].to_string(), text[split + 4..].to_string());
+                    }
+                }
+                if read == 0 {
+                    break (text.clone(), String::new());
+                }
+            };
+            if head.starts_with("GET") {
+                let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
+                continue;
+            }
+            kept.lock().unwrap().push(serde_json::from_str(&body).unwrap_or(serde_json::Value::Null));
+            let (status, stream) = answers.next().unwrap_or(("500 Internal Server Error", "no more answers".into()));
+            let kind = if status.starts_with("200") { "text/event-stream" } else { "application/json" };
+            let reply = format!("HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{stream}", stream.len());
+            let _ = socket.write_all(reply.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        }
+    });
+    (address, sent)
+}
+
+/// One event-stream line.
+fn event(value: serde_json::Value) -> String {
+    format!("data: {value}\n\n")
+}
+
+/// A streamed answer that calls one tool, its arguments split in two.
+fn calls(text: &str, id: &str, name: &str, arguments: &str) -> String {
+    let (first, second) = arguments.split_at(arguments.len() / 2);
+    let mut out = String::new();
+    if !text.is_empty() {
+        out += &event(serde_json::json!({"choices":[{"delta":{"content": text}}]}));
+    }
+    out += &event(serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":name,"arguments":first}}]}}]}));
+    out += &event(serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":second}}]},"finish_reason":"tool_calls"}]}));
+    out += &event(serde_json::json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10}}));
+    out + "data: [DONE]\n\n"
+}
+
+/// A streamed answer that is only text.
+fn says(text: &str) -> String {
+    event(serde_json::json!({"choices":[{"delta":{"content": text}}]}))
+        + &event(serde_json::json!({"choices":[],"usage":{"prompt_tokens":150,"completion_tokens":5}}))
+        + "data: [DONE]\n\n"
+}
+
+fn project(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("apex-api-tools-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.canonicalize().unwrap()
+}
+
+fn tool_bot(address: String, dir: &std::path::Path, access: Access) -> std::sync::Arc<dyn Participant> {
+    let mut config = config("api", api(address, None));
+    config.access = access;
+    build(config, &BuildContext { cwd: Some(dir.to_path_buf()), ..BuildContext::default() })
+}
+
+#[tokio::test]
+async fn an_api_bot_reads_a_file_with_its_tools_and_answers_from_it() {
+    let dir = project("read");
+    std::fs::write(dir.join("notes.txt"), "the launch is on friday\n").unwrap();
+    let (address, sent) = serve_answers(vec![
+        ("200 OK", calls("Let me look.", "call_1", "read_file", r#"{"path":"notes.txt"}"#)),
+        ("200 OK", says("It says the launch is on Friday.")),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Read);
+    let steps = Mutex::new(Vec::<apex_core::work_steps::WorkStep>::new());
+    let streamed = Mutex::new(String::new());
+    let reply = bot
+        .respond_with_approvals(request("when is the launch?"), &|update| match update {
+            apex_core::Progress::Text(t) => streamed.lock().unwrap().push_str(t),
+            apex_core::Progress::Work(step) => steps.lock().unwrap().push(step.clone()),
+            _ => {}
+        }, &apex_core::NoApprover)
+        .await
+        .unwrap();
+
+    assert_eq!(reply.text, "Let me look.\n\nIt says the launch is on Friday.");
+    assert_eq!(streamed.into_inner().unwrap(), reply.text, "what streamed is the reply");
+    assert_eq!((reply.input_tokens, reply.output_tokens), (Some(250), Some(15)), "both requests count");
+    let done = steps.lock().unwrap().iter().rev().find(|s| s.key == "call_1").unwrap().clone();
+    assert_eq!(done.label, "Read notes.txt");
+    assert_eq!(done.status, apex_core::work_steps::StepStatus::Done);
+
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    let offered: Vec<&str> = sent[0]["tools"].as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+    assert!(offered.contains(&"read_file") && offered.contains(&"grep"), "{offered:?}");
+    assert!(!offered.contains(&"run_command") && !offered.contains(&"write_file"), "read-only bots aren't offered changes: {offered:?}");
+    assert!(sent[0]["messages"][0]["content"].as_str().unwrap().contains("You have tools"), "the bot is told what it has");
+    let messages = sent[1]["messages"].as_array().unwrap();
+    let asked = &messages[messages.len() - 2];
+    assert_eq!(asked["role"], "assistant");
+    assert_eq!(asked["tool_calls"][0]["id"], "call_1");
+    assert_eq!(asked["tool_calls"][0]["function"]["arguments"], r#"{"path":"notes.txt"}"#);
+    let answered = &messages[messages.len() - 1];
+    assert_eq!(answered["role"], "tool");
+    assert_eq!(answered["tool_call_id"], "call_1");
+    assert!(answered["content"].as_str().unwrap().contains("the launch is on friday"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_api_bot_with_full_access_edits_and_runs_commands_and_ask_first_asks() {
+    let dir = project("full");
+    std::fs::write(dir.join("app.txt"), "version = 1\n").unwrap();
+    let (address, sent) = serve_answers(vec![
+        ("200 OK", calls("", "c1", "edit_file", r#"{"path":"app.txt","old_string":"version = 1","new_string":"version = 2"}"#)),
+        ("200 OK", calls("", "c2", "run_command", r#"{"command":"cat app.txt"}"#)),
+        ("200 OK", says("Bumped to 2.")),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Full);
+    let nobody = Fixed::new(Decision::Reject);
+    let (result, _, changes) = work_asking(bot.as_ref(), &nobody).await;
+    assert_eq!(result.unwrap().text, "Bumped to 2.");
+    assert!(nobody.asked.lock().unwrap().is_empty(), "full access asks for nothing here");
+    assert_eq!(std::fs::read_to_string(dir.join("app.txt")).unwrap(), "version = 2\n");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "app.txt");
+    assert_eq!((changes[0].added, changes[0].removed), (1, 1));
+    let output = sent.lock().unwrap()[2]["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().to_string();
+    assert!(output.contains("version = 2") && output.contains("[exit code 0]"), "{output}");
+
+    // Ask first: the same command is a card, and a refusal is reported back.
+    let (address, sent) = serve_answers(vec![
+        ("200 OK", calls("", "c1", "run_command", r#"{"command":"touch made.txt"}"#)),
+        ("200 OK", says("Okay, I won't.")),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Ask);
+    let no = Fixed::new(Decision::Reject);
+    let (result, _, _) = work_asking(bot.as_ref(), &no).await;
+    assert_eq!(result.unwrap().text, "Okay, I won't.");
+    let asked = no.asked.lock().unwrap();
+    assert_eq!((asked[0].kind, asked[0].detail.as_str()), (ActionKind::Command, "touch made.txt"));
+    assert!(!dir.join("made.txt").exists());
+    let told = sent.lock().unwrap()[1]["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().to_string();
+    assert!(told.contains("declined"), "{told}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_model_that_turns_tools_down_answers_without_them_and_is_told_so() {
+    let dir = project("refused");
+    let (address, sent) = serve_answers(vec![
+        ("400 Bad Request", r#"{"error":{"message":"This model does not support tools"}}"#.to_string()),
+        ("200 OK", says("Hello.")),
+        ("200 OK", says("Again.")),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Full);
+    let (first, _) = ask(bot.as_ref(), "hi").await;
+    assert_eq!(first.unwrap().text, "Hello.");
+    let (second, _) = ask(bot.as_ref(), "hi again").await;
+    assert_eq!(second.unwrap().text, "Again.");
+    let sent = sent.lock().unwrap();
+    assert!(sent[0].get("tools").is_some());
+    for body in &sent[1..] {
+        assert!(body.get("tools").is_none(), "no tools after the model turned them down");
+        assert!(body["messages"][0]["content"].as_str().unwrap().contains("You have no tools"));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn thinking_is_sent_back_with_the_tool_calls_it_led_to() {
+    let dir = project("thinking");
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    let thought = event(serde_json::json!({"choices":[{"delta":{"reasoning_content":"I should read a.txt"}}]}));
+    let (address, sent) = serve_answers(vec![
+        ("200 OK", thought + &calls("", "c1", "read_file", r#"{"path":"a.txt"}"#)),
+        ("200 OK", says("It holds x.")),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Read);
+    let (result, _) = ask(bot.as_ref(), "what's in a.txt?").await;
+    assert_eq!(result.unwrap().text, "It holds x.");
+    let sent = sent.lock().unwrap();
+    let messages = sent[1]["messages"].as_array().unwrap();
+    assert_eq!(messages[messages.len() - 2]["reasoning_content"], "I should read a.txt");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn bots_built_for_text_only_and_the_next_steps_question_get_no_tools() {
+    let dir = project("textonly");
+    let (address, sent) = serve_answers(vec![("200 OK", says("a")), ("200 OK", says("b"))]).await;
+    let plain = OpenAiCompatParticipant::new(config("api", api(address.clone(), None)));
+    let _ = ask(&plain, "hi").await;
+    let bot = tool_bot(address, &dir, Access::Full);
+    let mut next = request("hi");
+    next.turns.push(ViewTurn { role: Role::User, content: apex_core::next_steps::ASK.to_string() });
+    let _ = bot.respond(next, &|_| {}).await;
+    let sent = sent.lock().unwrap();
+    assert!(sent[0].get("tools").is_none() && sent[1].get("tools").is_none());
+    assert!(!sent[0]["messages"][0]["content"].as_str().unwrap().contains("tools"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_ends_a_command_an_api_bot_is_running() {
+    let dir = project("stop");
+    let (address, _sent) = serve_answers(vec![
+        ("200 OK", calls("", "c1", "run_command", r#"{"command":"echo started; sleep 60"}"#)),
+        ("200 OK", says("It was stopped.")),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Full);
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = running.clone();
+    let worker = bot.clone();
+    let started = std::time::Instant::now();
+    let turn = tokio::spawn(async move {
+        worker
+            .respond_with_approvals(request("run it"), &move |update| {
+                if let apex_core::Progress::Activity(text) = update {
+                    if text.starts_with("Running") {
+                        seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            }, &apex_core::NoApprover)
+            .await
+    });
+    while !running.load(std::sync::atomic::Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(bot.cancel_active_turn().await.unwrap(), "the command was running");
+    let reply = tokio::time::timeout(Duration::from_secs(15), turn).await.unwrap().unwrap().unwrap();
+    assert_eq!(reply.text, "It was stopped.");
+    assert!(started.elapsed() < Duration::from_secs(15));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_server_that_refuses_thinking_sent_back_gets_the_request_without_it() {
+    let dir = project("thinking-refused");
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    let thought = event(serde_json::json!({"choices":[{"delta":{"reasoning_content":"read it"}}]}));
+    let (address, sent) = serve_answers(vec![
+        ("200 OK", thought + &calls("", "c1", "read_file", r#"{"path":"a.txt"}"#)),
+        ("400 Bad Request", r#"{"error":{"message":"Extra inputs are not permitted: messages.2.reasoning_content"}}"#.to_string()),
+        ("200 OK", says("It holds x.")),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Read);
+    let (result, _) = ask(bot.as_ref(), "what's in a.txt?").await;
+    assert_eq!(result.unwrap().text, "It holds x.");
+    let sent = sent.lock().unwrap();
+    assert!(sent[1]["messages"].as_array().unwrap().iter().any(|m| m.get("reasoning_content").is_some()));
+    assert!(sent[2]["messages"].as_array().unwrap().iter().all(|m| m.get("reasoning_content").is_none()));
+    assert!(sent[2].get("tools").is_some(), "tools stay on");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn parallel_calls_without_indexes_and_gemini_signatures_round_trip() {
+    let dir = project("gemini");
+    std::fs::write(dir.join("a.txt"), "A").unwrap();
+    std::fs::write(dir.join("b.txt"), "B").unwrap();
+    let first = event(serde_json::json!({"choices":[{"delta":{"tool_calls":[{"id":"x","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.txt\"}"},"extra_content":{"google":{"thought_signature":"s1"}}}]}}]}))
+        + &event(serde_json::json!({"choices":[{"delta":{"tool_calls":[{"id":"y","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.txt\"}"}}]}}]}))
+        + "data: [DONE]\n\n";
+    let (address, sent) = serve_answers(vec![("200 OK", first), ("200 OK", says("A and B."))]).await;
+    let bot = tool_bot(address, &dir, Access::Read);
+    let (result, _) = ask(bot.as_ref(), "read both").await;
+    assert_eq!(result.unwrap().text, "A and B.");
+    let sent = sent.lock().unwrap();
+    let messages = sent[1]["messages"].as_array().unwrap();
+    let asked = &messages[messages.len() - 3];
+    assert_eq!(asked["tool_calls"].as_array().unwrap().len(), 2, "two calls, not one merged");
+    assert_eq!(asked["tool_calls"][0]["extra_content"]["google"]["thought_signature"], "s1");
+    assert!(messages[messages.len() - 1]["content"].as_str().unwrap().contains('B'));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_failure_after_tools_ran_keeps_the_reply_so_far() {
+    let dir = project("late-failure");
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    let (address, _sent) = serve_answers(vec![
+        ("200 OK", calls("Checking.", "c1", "read_file", r#"{"path":"a.txt"}"#)),
+        ("503 Service Unavailable", r#"{"error":"busy"}"#.to_string()),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Read);
+    let (result, _) = ask(bot.as_ref(), "check").await;
+    let reply = result.unwrap();
+    assert!(reply.text.starts_with("Checking.") && reply.text.contains("[The reply stopped early:"), "{}", reply.text);
+    assert_eq!(reply.input_tokens, Some(100), "the finished request still counts");
+    let _ = std::fs::remove_dir_all(dir);
 }

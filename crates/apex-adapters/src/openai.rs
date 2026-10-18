@@ -6,10 +6,26 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use crate::api_tools::{self, ToolBox, ToolCall};
 use crate::Utf8Chunks;
+
+/// Most times one reply may go back to its tools before it is stopped.
+const TOOL_ROUNDS_MAX: usize = 100;
+/// Recent replies whose thinking is kept for DeepSeek.
+const REASONING_KEPT: usize = 32;
+/// Most tool calls taken from one answer.
+const TOOL_CALLS_MAX: usize = 64;
 
 /// A participant backed by an HTTP API that speaks the OpenAI-style chat
 /// completions format with server-sent event streaming.
+///
+/// In a chat it is given tools (`api_tools`): files, a shell, web pages and
+/// the person's MCP servers, gated by its access level. Built with `new`
+/// alone, as for summaries and ApexAgent's checks, it has none.
 pub struct OpenAiCompatParticipant {
     config: ParticipantConfig,
     client: reqwest::Client,
@@ -18,11 +34,34 @@ pub struct OpenAiCompatParticipant {
     attachment_roots: Vec<std::path::PathBuf>,
     /// How often a queued video is checked on.
     poll: std::time::Duration,
+    tools: Option<Arc<ToolBox>>,
+    /// The server turned tools down once; later replies go without them.
+    tools_refused: AtomicBool,
+    /// The thinking behind this bot's recent replies, by reply text.
+    /// DeepSeek's own API refuses a request with tools unless the thinking
+    /// of earlier replies is sent back with them.
+    reasoning: Mutex<VecDeque<(String, String)>>,
 }
 
 impl OpenAiCompatParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, client: reqwest::Client::new(), media_dir: None, attachment_roots: Vec::new(), poll: std::time::Duration::from_secs(5) }
+        Self {
+            config,
+            client: reqwest::Client::new(),
+            media_dir: None,
+            attachment_roots: Vec::new(),
+            poll: std::time::Duration::from_secs(5),
+            tools: None,
+            tools_refused: AtomicBool::new(false),
+            reasoning: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Lend the bot tools to work in the chat's folder with, as `context`
+    /// describes it.
+    pub fn with_tools(mut self, context: &crate::BuildContext) -> Self {
+        self.tools = Some(Arc::new(ToolBox::new(context)));
+        self
     }
 
     /// Let the bot make pictures and videos when its model does, saving
@@ -92,6 +131,11 @@ pub(crate) fn request_body(model: &str, effort: Option<&str>, request: &TurnRequ
 #[derive(Debug, PartialEq)]
 pub(crate) enum SseLine {
     Text(String),
+    /// A piece of the model's thinking, which isn't part of the reply.
+    Reasoning(String),
+    /// A piece of a tool call. The first piece of each call has its id and
+    /// name; the arguments arrive in pieces after it.
+    Tool { index: Option<usize>, id: Option<String>, name: Option<String>, arguments: String, extra: Option<String> },
     Error(String),
     Usage { input: Option<u64>, output: Option<u64>, cached: Option<u64>, cost_usd: Option<f64> },
     Done,
@@ -116,10 +160,31 @@ pub(crate) fn parse_sse_line(line: &str) -> Vec<SseLine> {
         return vec![SseLine::Error(message.to_owned())];
     }
     let mut out = Vec::new();
-    if let Some(text) = value["choices"][0]["delta"]["content"].as_str() {
+    let delta = &value["choices"][0]["delta"];
+    // DeepSeek and vLLM call it reasoning_content; OpenRouter and Ollama, reasoning.
+    for key in ["reasoning_content", "reasoning"] {
+        if let Some(text) = delta[key].as_str().filter(|t| !t.is_empty()) {
+            out.push(SseLine::Reasoning(text.to_string()));
+        }
+    }
+    if let Some(text) = delta["content"].as_str() {
         if !text.is_empty() {
             out.push(SseLine::Text(text.to_string()));
         }
+    }
+    for call in delta["tool_calls"].as_array().into_iter().flatten() {
+        out.push(SseLine::Tool {
+            index: call["index"].as_u64().map(|i| i as usize),
+            extra: call.get("extra_content").filter(|v| !v.is_null()).map(Value::to_string),
+            id: call["id"].as_str().filter(|i| !i.is_empty()).map(str::to_string),
+            name: call["function"]["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string),
+            arguments: match &call["function"]["arguments"] {
+                Value::String(text) => text.clone(),
+                // Some servers send the arguments whole, as an object.
+                Value::Null => String::new(),
+                other => other.to_string(),
+            },
+        });
     }
     if value["usage"].is_object() {
         let usage = &value["usage"];
@@ -230,102 +295,384 @@ impl Participant for OpenAiCompatParticipant {
             }
         }
 
+        let key = match api_key_env.as_deref().filter(|n| !n.is_empty()) {
+            Some(name) => Some(crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?),
+            None => None,
+        };
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         let effort = request.effort_override.as_deref().or(self.config.effort.as_deref());
-        let mut body = request_body(model, effort, &request, &self.attachment_roots)?;
-        apply_speed(&mut body, base_url, self.config.speed);
-        let mut call = self.client.post(&url).json(&body);
-        if let Some(name) = api_key_env.as_deref().filter(|n| !n.is_empty()) {
-            let key = crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?;
-            call = call.bearer_auth(key);
-        }
+        let mut base = request_body(model, effort, &request, &self.attachment_roots)?;
+        apply_speed(&mut base, base_url, self.config.speed);
+        let mut messages: Vec<Value> = base["messages"].as_array().cloned().unwrap_or_default();
+        let system = request.system.clone();
 
-        let response = call
-            .send()
-            .await
-            .map_err(|e| ParticipantError::Failed(format!("request to {url} failed: {e}")))?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let snippet: String = body.chars().take(300).collect();
-            let hint = match status.as_u16() {
-                401 | 403 if api_key_env.as_deref().is_none_or(str::is_empty) => " This server wants an API key. Open this bot's settings and paste one into API key.",
-                401 | 403 => " The saved API key was refused. Open this bot's settings and paste a new one into API key.",
-                _ => "",
-            };
-            return Err(ParticipantError::Failed(format!("{url} returned {status}: {snippet}{hint}")));
-        }
-
-        // The model's context size and prices, looked up while the reply
-        // streams. The list is cached, so this rarely costs a request.
-        let info = tokio::spawn({
-            let (base_url, key, model) = (base_url.clone(), api_key_env.clone(), model.clone());
-            async move { crate::api_info::model(&base_url, key.as_deref(), &model).await }
-        });
-
-        let mut reply = Reply::default();
-        let mut decoder = Utf8Chunks::default();
-        let mut line = String::new();
-        let mut stream = response.bytes_stream();
-        let mut done = false;
-        let mut cached = None;
-        let mut cost_usd = None;
-
-        let mut handle = |line: &str, reply: &mut Reply, done: &mut bool| -> Result<(), ParticipantError> {
-            for item in parse_sse_line(line) {
-                match item {
-                    SseLine::Text(text) => {
-                        on_progress(Progress::Text(&text));
-                        reply.text.push_str(&text);
-                    }
-                    SseLine::Usage { input, output, cached: c, cost_usd: cost } => {
-                        reply.input_tokens = input;
-                        reply.output_tokens = output;
-                        cached = c;
-                        cost_usd = cost;
-                    }
-                    SseLine::Error(message) => return Err(ParticipantError::Failed(format!("stream from {url} failed: {message}"))),
-                    SseLine::Done => *done = true,
-                    SseLine::Ignored => {}
+        // Tools in a chat turn, unless the model can't take them or this is
+        // only the question about what the person will ask next.
+        let next_steps = request.turns.last().is_some_and(|t| t.role == Role::User && t.content == apex_core::next_steps::ASK);
+        let mut turn = match &self.tools {
+            Some(tools) if !next_steps && !self.tools_refused.load(Ordering::SeqCst) && crate::api_info::cached_tools(base_url, model) != Some(false) => {
+                let access = request.access.unwrap_or(self.config.access);
+                Some(api_tools::Turn::new(tools, access, request.plan, self.config.access, approver, on_progress))
+            }
+            _ => None,
+        };
+        let deepseek = is_deepseek(base_url);
+        match &turn {
+            Some(turn) => {
+                messages[0]["content"] = json!(format!("{system}{}", turn.instructions()));
+                if deepseek {
+                    self.restore_reasoning(&mut messages);
                 }
             }
-            Ok(())
-        };
+            None if self.tools.is_some() && !next_steps => messages[0]["content"] = json!(format!("{system}{}", api_tools::NO_TOOLS)),
+            None => {}
+        }
 
-        while let Some(chunk) = stream.next().await {
-            let chunk =
-                chunk.map_err(|e| ParticipantError::Failed(format!("stream from {url} broke: {e}")))?;
-            line.push_str(&decoder.push(&chunk));
-            while let Some(end) = line.find('\n') {
-                let complete: String = line.drain(..=end).collect();
-                handle(complete.trim_end_matches('\n'), &mut reply, &mut done)?;
+        let mut info: Option<tokio::task::JoinHandle<Option<crate::ApiModel>>> = None;
+        let mut reply = Reply::default();
+        let mut thinking = String::new();
+        let mut thinking_off = false;
+        // Thinking goes back with the tool calls it led to, unless the
+        // server turns that down.
+        let mut echo_thinking = true;
+        let mut rounds: Vec<Usage> = Vec::new();
+        let mut stopped_early = false;
+        let mut failure: Option<ParticipantError> = None;
+        'rounds: for round in 0.. {
+            // A failure after tools have run keeps what the reply did so far.
+            macro_rules! fail {
+                ($error:expr) => {{
+                    let error = $error;
+                    if round == 0 {
+                        return Err(error);
+                    }
+                    failure = Some(error);
+                    break 'rounds;
+                }};
             }
-            if done {
+            if round == TOOL_ROUNDS_MAX {
+                stopped_early = true;
                 break;
             }
-        }
-        if !done {
-            line.push_str(&decoder.finish());
-            if !line.is_empty() {
-                handle(&line, &mut reply, &mut done)?;
+            let response = loop {
+                let mut body = base.clone();
+                body["messages"] = json!(messages);
+                if let Some(turn) = &turn {
+                    body["tools"] = json!(turn.definitions());
+                    body["tool_choice"] = json!("auto");
+                }
+                if thinking_off {
+                    body["thinking"] = json!({"type": "disabled"});
+                }
+                let mut call = self.client.post(&url).json(&body);
+                if let Some(key) = &key {
+                    call = call.bearer_auth(key);
+                }
+                let response = match call.send().await {
+                    Ok(response) => response,
+                    Err(e) => fail!(ParticipantError::Failed(format!("request to {url} failed: {e}"))),
+                };
+                let status = response.status();
+                if status.is_success() {
+                    break response;
+                }
+                let text = response.text().await.unwrap_or_default();
+                let lower = text.to_ascii_lowercase();
+                // DeepSeek wants the thinking of every earlier reply back;
+                // when that isn't to hand, the turn goes on without thinking.
+                if deepseek && turn.is_some() && !thinking_off && lower.contains("reasoning_content") {
+                    thinking_off = true;
+                    strip_reasoning(&mut messages);
+                    continue;
+                }
+                // Another server that doesn't take thinking sent back.
+                if !deepseek && echo_thinking && lower.contains("reasoning") && messages.iter().any(|m| m.get("reasoning_content").is_some()) {
+                    echo_thinking = false;
+                    strip_reasoning(&mut messages);
+                    continue;
+                }
+                // A model that doesn't take tools: answer without them,
+                // and say so, so it doesn't pretend.
+                if turn.is_some() && round == 0 && matches!(status.as_u16(), 400 | 404 | 422 | 501) && refuses_tools(&lower) {
+                    eprintln!("[apex-deck] {model} turned tools down; answering without them: {}", text.chars().take(200).collect::<String>());
+                    self.tools_refused.store(true, Ordering::SeqCst);
+                    turn = None;
+                    strip_reasoning(&mut messages);
+                    messages[0]["content"] = json!(format!("{system}{}", api_tools::NO_TOOLS));
+                    continue;
+                }
+                let snippet: String = text.chars().take(300).collect();
+                let hint = match status.as_u16() {
+                    401 | 403 if key.is_none() => " This server wants an API key. Open this bot's settings and paste one into API key.",
+                    401 | 403 => " The saved API key was refused. Open this bot's settings and paste a new one into API key.",
+                    _ => "",
+                };
+                fail!(ParticipantError::Failed(format!("{url} returned {status}: {snippet}{hint}")));
+            };
+
+            // The model's context size and prices, looked up while the reply
+            // streams. The list is cached, so this rarely costs a request.
+            if info.is_none() {
+                info = Some(tokio::spawn({
+                    let (base_url, key, model) = (base_url.clone(), api_key_env.clone(), model.clone());
+                    async move { crate::api_info::model(&base_url, key.as_deref(), &model).await }
+                }));
+            }
+
+            // Later rounds continue the same reply: keep their text apart.
+            let gap = !reply.text.is_empty() && !reply.text.ends_with("\n\n");
+            let mut separated = !gap;
+            let mut on_text = |text: &str| {
+                if !separated {
+                    separated = true;
+                    let joint = if reply.text.ends_with('\n') { "\n" } else { "\n\n" };
+                    on_progress(Progress::Text(joint));
+                    reply.text.push_str(joint);
+                }
+                on_progress(Progress::Text(text));
+                reply.text.push_str(text);
+            };
+            let streamed = match read_stream(response, &url, &mut on_text).await {
+                Ok(streamed) => streamed,
+                Err(error) => fail!(error),
+            };
+            rounds.push(streamed.usage);
+            thinking.push_str(&streamed.reasoning);
+            let Some(turn) = turn.as_mut().filter(|_| !streamed.calls.is_empty()) else { break };
+
+            let mut said = json!({
+                "role": "assistant",
+                "content": streamed.text,
+                "tool_calls": streamed.calls.iter().map(|c| {
+                    let mut call = json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": {"name": c.name, "arguments": if c.arguments.trim().is_empty() { "{}" } else { c.arguments.as_str() }}
+                    });
+                    if let Some(extra) = c.extra.as_deref().and_then(|e| serde_json::from_str::<Value>(e).ok()) {
+                        call["extra_content"] = extra;
+                    }
+                    call
+                }).collect::<Vec<_>>()
+            });
+            if !streamed.reasoning.is_empty() && !thinking_off && echo_thinking {
+                said["reasoning_content"] = json!(streamed.reasoning);
+            }
+            messages.push(said);
+            for call in &streamed.calls {
+                let result = turn.run(call).await;
+                messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": result}));
             }
         }
+        if let Some(turn) = turn.as_mut() {
+            turn.finish().await;
+        }
+        if let Some(error) = failure {
+            let note = format!("\n\n[The reply stopped early: {error}]");
+            on_progress(Progress::Text(&note));
+            reply.text.push_str(&note);
+        }
+        if stopped_early {
+            let note = format!("\n\n[Stopped: this reply went back to its tools {TOOL_ROUNDS_MAX} times. Say continue to keep going.]");
+            on_progress(Progress::Text(&note));
+            reply.text.push_str(&note);
+        }
+        if deepseek && !thinking.is_empty() && !thinking_off {
+            self.remember_reasoning(&reply.text, thinking);
+        }
 
-        let info = info.await.ok().flatten();
-        reply.cost_micros = cost_micros(cost_usd, info.as_ref(), reply.input_tokens, cached, reply.output_tokens);
+        let info = match info {
+            Some(lookup) => lookup.await.ok().flatten(),
+            None => None,
+        };
+        let sum = |pick: fn(&Usage) -> Option<u64>| -> Option<u64> {
+            rounds.iter().filter_map(pick).reduce(|a, b| a.saturating_add(b))
+        };
+        reply.input_tokens = sum(|u| u.input);
+        reply.output_tokens = sum(|u| u.output);
+        reply.cost_micros = rounds
+            .iter()
+            .filter_map(|u| cost_micros(u.cost_usd, info.as_ref(), u.input, u.cached, u.output))
+            .reduce(|a, b| a.saturating_add(b));
         // The next request carries this whole exchange, so the context in
-        // use is what was sent plus what came back.
-        if let (Some(window), Some(input)) = (info.as_ref().and_then(|m| m.context_tokens), reply.input_tokens) {
-            let used = input.saturating_add(reply.output_tokens.unwrap_or(0));
-            on_progress(Progress::Context(ContextUse { used_tokens: used.min(window), window_tokens: window }));
+        // use is what the last request sent plus what came back.
+        if let (Some(window), Some(last)) = (info.as_ref().and_then(|m| m.context_tokens), rounds.last()) {
+            if let Some(input) = last.input {
+                let used = input.saturating_add(last.output.unwrap_or(0));
+                on_progress(Progress::Context(ContextUse { used_tokens: used.min(window), window_tokens: window }));
+            }
         }
         Ok(reply)
     }
+
+    async fn cancel_active_turn(&self) -> Result<bool, String> {
+        match &self.tools {
+            Some(tools) => tools.processes.terminate_all().await,
+            None => Ok(false),
+        }
+    }
 }
+
+/// What one request used, as the server reported it.
+#[derive(Debug, Default, Clone, Copy)]
+struct Usage {
+    input: Option<u64>,
+    output: Option<u64>,
+    cached: Option<u64>,
+    cost_usd: Option<f64>,
+}
+
+/// One streamed answer: its text, its thinking and any tool calls.
+#[derive(Debug, Default)]
+struct Streamed {
+    text: String,
+    reasoning: String,
+    calls: Vec<ToolCall>,
+    usage: Usage,
+}
+
+/// Read an event stream to its end, passing on the text as it arrives.
+async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn FnMut(&str) + Send)) -> Result<Streamed, ParticipantError> {
+    let mut out = Streamed::default();
+    let mut decoder = Utf8Chunks::default();
+    let mut line = String::new();
+    let mut stream = response.bytes_stream();
+    let mut done = false;
+    let mut handle = |line: &str, out: &mut Streamed, done: &mut bool| -> Result<(), ParticipantError> {
+        for item in parse_sse_line(line) {
+            match item {
+                SseLine::Text(text) => {
+                    on_text(&text);
+                    out.text.push_str(&text);
+                }
+                SseLine::Reasoning(text) => out.reasoning.push_str(&text),
+                SseLine::Tool { index, id, name, arguments, extra } => {
+                    // Without an index, a new id starts a new call; anything
+                    // else continues the last one.
+                    let index = match index {
+                        Some(i) => i,
+                        None => match (&id, out.calls.last()) {
+                            (Some(new), Some(last)) if !last.id.is_empty() && last.id != *new => out.calls.len(),
+                            (_, Some(_)) => out.calls.len() - 1,
+                            (_, None) => 0,
+                        },
+                    };
+                    if index >= TOOL_CALLS_MAX {
+                        return Err(ParticipantError::Failed(format!("stream from {url} sent more than {TOOL_CALLS_MAX} tool calls at once")));
+                    }
+                    while out.calls.len() <= index {
+                        out.calls.push(ToolCall::default());
+                    }
+                    let call = &mut out.calls[index];
+                    if extra.is_some() {
+                        call.extra = extra;
+                    }
+                    if let Some(id) = id {
+                        call.id = id;
+                    }
+                    if let Some(name) = name {
+                        call.name = name;
+                    }
+                    call.arguments.push_str(&arguments);
+                }
+                SseLine::Usage { input, output, cached, cost_usd } => out.usage = Usage { input, output, cached, cost_usd },
+                SseLine::Error(message) => return Err(ParticipantError::Failed(format!("stream from {url} failed: {message}"))),
+                SseLine::Done => *done = true,
+                SseLine::Ignored => {}
+            }
+        }
+        Ok(())
+    };
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| ParticipantError::Failed(format!("stream from {url} broke: {e}")))?;
+        line.push_str(&decoder.push(&chunk));
+        while let Some(end) = line.find('\n') {
+            let complete: String = line.drain(..=end).collect();
+            handle(complete.trim_end_matches('\n'), &mut out, &mut done)?;
+        }
+        if done {
+            break;
+        }
+    }
+    if !done {
+        line.push_str(&decoder.finish());
+        if !line.is_empty() {
+            handle(&line, &mut out, &mut done)?;
+        }
+    }
+    // A call without a name can't be run; one without an id gets one, since
+    // its result has to point back at it.
+    out.calls.retain(|c| !c.name.is_empty());
+    for (n, call) in out.calls.iter_mut().enumerate() {
+        if call.id.is_empty() {
+            call.id = format!("call_{n}");
+        }
+    }
+    Ok(out)
+}
+
+/// Whether an error says the model doesn't take tools at all, as opposed
+/// to some other complaint that happens to mention them.
+fn refuses_tools(lower: &str) -> bool {
+    let about_tools = lower.contains("tool") || lower.contains("function call");
+    let refusal = ["not support", "unsupported", "doesn't support", "not supported", "not available for this model", "not enabled for this model"];
+    about_tools && refusal.iter().any(|r| lower.contains(r))
+}
+
+/// DeepSeek's own API, the one that wants earlier thinking sent back.
+fn is_deepseek(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url.trim()).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).as_deref() == Some("api.deepseek.com")
+}
+
+/// Take the thinking out of every message, for a request without it.
+fn strip_reasoning(messages: &mut [Value]) {
+    for message in messages {
+        if let Some(fields) = message.as_object_mut() {
+            fields.remove("reasoning_content");
+        }
+    }
+}
+
+impl OpenAiCompatParticipant {
+    fn remember_reasoning(&self, reply: &str, thinking: String) {
+        let mut kept = self.reasoning.lock().unwrap();
+        kept.push_back((reply.trim().to_string(), thinking));
+        while kept.len() > REASONING_KEPT {
+            kept.pop_front();
+        }
+    }
+
+    /// Put the thinking back on this bot's earlier replies. A reply from
+    /// before the chat was opened has none to hand, and gets an empty one.
+    fn restore_reasoning(&self, messages: &mut [Value]) {
+        let kept = self.reasoning.lock().unwrap();
+        for message in messages.iter_mut().filter(|m| m["role"] == "assistant") {
+            let text = message["content"].as_str().unwrap_or("").trim().to_string();
+            let thinking = kept.iter().rev().find(|(reply, _)| *reply == text).map(|(_, t)| t.clone()).unwrap_or_default();
+            message["reasoning_content"] = json!(thinking);
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_real_refusal_turns_tools_off() {
+        assert!(refuses_tools("this model does not support tools"));
+        assert!(refuses_tools("registry.ollama.ai/library/x does not support tools"));
+        assert!(refuses_tools("function calling is not supported for this model"));
+        assert!(!refuses_tools("this model's maximum context length is 8192 tokens. however, you requested 9000 tokens (8000 in the messages, 1000 in the functions)"));
+        assert!(!refuses_tools("invalid schema for function 'grep'"));
+    }
+
+    #[test]
+    fn tool_calls_without_an_index_are_kept_apart_by_id() {
+        let one = parse_sse_line(r#"data: {"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"read_file","arguments":"{}"},"extra_content":{"google":{"thought_signature":"sig"}}}]}}]}"#);
+        assert_eq!(one, vec![SseLine::Tool { index: None, id: Some("a".into()), name: Some("read_file".into()), arguments: "{}".into(), extra: Some(r#"{"google":{"thought_signature":"sig"}}"#.into()) }]);
+    }
 
     #[test]
     fn speed_is_sent_only_to_the_direct_openai_api_when_explicit() {

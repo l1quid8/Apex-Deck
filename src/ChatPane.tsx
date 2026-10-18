@@ -283,10 +283,21 @@ interface Draft {
   access: Access;
 }
 
+/** Whether access is enforced: by an agent's own permission settings, or,
+ * for a bot reached through an API, by Apex Deck, which runs its tools. */
+function enforcesAccess(preset?: Preset): boolean {
+  return !!(preset?.agent?.enforcesAccess || preset?.api);
+}
+
+/** Whether the backend can stop and ask before an edit or command. */
+function asksFirst(preset?: Preset): boolean {
+  return !!(preset?.agent?.asksFirst || preset?.api);
+}
+
 /** `access` is the default from settings; a tool that can't ask first gets Read only. */
 function emptyDraft(preset: PresetKey, access: Access = "read"): Draft {
   const found = PRESETS.find((p) => p.key === preset);
-  const allowed = access === "ask" && !found?.agent?.asksFirst ? "read" : access;
+  const allowed = access === "ask" && !asksFirst(found) ? "read" : access;
   return { name: "", preset, model: "", effort: "", baseUrl: found?.api?.baseUrl ?? "", keyEnv: "", command: "", persona: "", access: allowed };
 }
 
@@ -2276,7 +2287,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const choosePreset = (key: PresetKey) => {
     const next = PRESETS.find((p) => p.key === key)!;
     // Only tools that enforce access themselves can stop and ask.
-    setDraft((d) => ({ ...emptyDraft(key), appearance: d.appearance, name: d.name, persona: d.persona, access: d.access === "ask" && !next.agent?.asksFirst ? "read" : d.access }));
+    setDraft((d) => ({ ...emptyDraft(key), appearance: d.appearance, name: d.name, persona: d.persona, access: d.access === "ask" && !asksFirst(next) ? "read" : d.access }));
     // Model and effort names differ between backends, so they start empty.
     setApiModels([]);
     setModelNote("");
@@ -2452,7 +2463,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   const accessNote = preset.agent?.enforcesAccess
     ? "Enforced with the tool's own permission settings."
-    : "Stated to the model as an instruction. Not enforced.";
+    : enforcesAccess(preset)
+      ? "Enforced by Apex Deck, which runs this bot's tools: files, commands, web pages and your MCP servers."
+      : "Stated to the model as an instruction. Not enforced.";
 
   /** Open the full form for a new bot or agent. */
   function openNewForm() {
@@ -2616,7 +2629,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 onChange={(v) => set("access", v as Access)}
                 options={[
                   { value: "read", text: "Read only" },
-                  ...(preset.agent?.asksFirst ? [{ value: "ask", text: "Ask first" } as const] : []),
+                  ...(asksFirst(preset) ? [{ value: "ask", text: "Ask first" } as const] : []),
                   { value: "edits", text: "Can edit files" },
                   { value: "full", text: "Full access" },
                 ]}
@@ -2712,7 +2725,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <label>Access
           <select name="quick-access" value={draft.access} onChange={(e) => set("access", e.target.value as Access)}>
             <option value="read">Read only</option>
-            {preset.agent?.asksFirst && <option value="ask">Ask first</option>}
+            {asksFirst(preset) && <option value="ask">Ask first</option>}
             <option value="edits">Can edit files</option>
             <option value="full">Full access</option>
           </select>
