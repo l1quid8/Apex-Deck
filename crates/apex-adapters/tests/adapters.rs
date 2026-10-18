@@ -156,8 +156,10 @@ async fn cli_timeout_terminates_the_process_tree_before_returning() {
     let dir = fake_tool("cli-tree-timeout", "unused", "");
     let pid_file = dir.join("descendant.pid");
     let script = format!("sleep 30 & echo $! > '{0}.tmp' && mv '{0}.tmp' '{0}' ; wait", pid_file.display());
+    // Long enough for a busy CI machine to start the descendant and record
+    // it before the timeout; 300 ms sometimes wasn't.
     let bot = CliParticipant::new(config("cli", sh(&script)))
-        .with_timeout(Duration::from_millis(300));
+        .with_timeout(Duration::from_millis(1500));
     let (result, _) = ask(&bot, "hi").await;
     assert!(matches!(result, Err(ParticipantError::Failed(_))), "{result:?}");
     let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
