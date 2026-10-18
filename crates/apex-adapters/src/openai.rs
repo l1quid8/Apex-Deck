@@ -17,6 +17,8 @@ use crate::Utf8Chunks;
 const TOOL_ROUNDS_MAX: usize = 100;
 /// Recent replies whose thinking is kept for DeepSeek.
 const REASONING_KEPT: usize = 32;
+/// Most tool calls taken from one answer.
+const TOOL_CALLS_MAX: usize = 64;
 
 /// A participant backed by an HTTP API that speaks the OpenAI-style chat
 /// completions format with server-sent event streaming.
@@ -133,7 +135,7 @@ pub(crate) enum SseLine {
     Reasoning(String),
     /// A piece of a tool call. The first piece of each call has its id and
     /// name; the arguments arrive in pieces after it.
-    Tool { index: usize, id: Option<String>, name: Option<String>, arguments: String },
+    Tool { index: Option<usize>, id: Option<String>, name: Option<String>, arguments: String, extra: Option<String> },
     Error(String),
     Usage { input: Option<u64>, output: Option<u64>, cached: Option<u64>, cost_usd: Option<f64> },
     Done,
@@ -170,9 +172,10 @@ pub(crate) fn parse_sse_line(line: &str) -> Vec<SseLine> {
             out.push(SseLine::Text(text.to_string()));
         }
     }
-    for (position, call) in delta["tool_calls"].as_array().into_iter().flatten().enumerate() {
+    for call in delta["tool_calls"].as_array().into_iter().flatten() {
         out.push(SseLine::Tool {
-            index: call["index"].as_u64().map_or(position, |i| i as usize),
+            index: call["index"].as_u64().map(|i| i as usize),
+            extra: call.get("extra_content").filter(|v| !v.is_null()).map(Value::to_string),
             id: call["id"].as_str().filter(|i| !i.is_empty()).map(str::to_string),
             name: call["function"]["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string),
             arguments: match &call["function"]["arguments"] {
@@ -334,7 +337,19 @@ impl Participant for OpenAiCompatParticipant {
         let mut echo_thinking = true;
         let mut rounds: Vec<Usage> = Vec::new();
         let mut stopped_early = false;
-        for round in 0.. {
+        let mut failure: Option<ParticipantError> = None;
+        'rounds: for round in 0.. {
+            // A failure after tools have run keeps what the reply did so far.
+            macro_rules! fail {
+                ($error:expr) => {{
+                    let error = $error;
+                    if round == 0 {
+                        return Err(error);
+                    }
+                    failure = Some(error);
+                    break 'rounds;
+                }};
+            }
             if round == TOOL_ROUNDS_MAX {
                 stopped_early = true;
                 break;
@@ -353,7 +368,10 @@ impl Participant for OpenAiCompatParticipant {
                 if let Some(key) = &key {
                     call = call.bearer_auth(key);
                 }
-                let response = call.send().await.map_err(|e| ParticipantError::Failed(format!("request to {url} failed: {e}")))?;
+                let response = match call.send().await {
+                    Ok(response) => response,
+                    Err(e) => fail!(ParticipantError::Failed(format!("request to {url} failed: {e}"))),
+                };
                 let status = response.status();
                 if status.is_success() {
                     break response;
@@ -375,7 +393,7 @@ impl Participant for OpenAiCompatParticipant {
                 }
                 // A model that doesn't take tools: answer without them,
                 // and say so, so it doesn't pretend.
-                if turn.is_some() && round == 0 && matches!(status.as_u16(), 400 | 404 | 422 | 501) && (lower.contains("tool") || lower.contains("function")) {
+                if turn.is_some() && round == 0 && matches!(status.as_u16(), 400 | 404 | 422 | 501) && refuses_tools(&lower) {
                     eprintln!("[apex-deck] {model} turned tools down; answering without them: {}", text.chars().take(200).collect::<String>());
                     self.tools_refused.store(true, Ordering::SeqCst);
                     turn = None;
@@ -389,7 +407,7 @@ impl Participant for OpenAiCompatParticipant {
                     401 | 403 => " The saved API key was refused. Open this bot's settings and paste a new one into API key.",
                     _ => "",
                 };
-                return Err(ParticipantError::Failed(format!("{url} returned {status}: {snippet}{hint}")));
+                fail!(ParticipantError::Failed(format!("{url} returned {status}: {snippet}{hint}")));
             };
 
             // The model's context size and prices, looked up while the reply
@@ -414,7 +432,10 @@ impl Participant for OpenAiCompatParticipant {
                 on_progress(Progress::Text(text));
                 reply.text.push_str(text);
             };
-            let streamed = read_stream(response, &url, &mut on_text).await?;
+            let streamed = match read_stream(response, &url, &mut on_text).await {
+                Ok(streamed) => streamed,
+                Err(error) => fail!(error),
+            };
             rounds.push(streamed.usage);
             thinking.push_str(&streamed.reasoning);
             let Some(turn) = turn.as_mut().filter(|_| !streamed.calls.is_empty()) else { break };
@@ -422,11 +443,17 @@ impl Participant for OpenAiCompatParticipant {
             let mut said = json!({
                 "role": "assistant",
                 "content": streamed.text,
-                "tool_calls": streamed.calls.iter().map(|c| json!({
-                    "id": c.id,
-                    "type": "function",
-                    "function": {"name": c.name, "arguments": if c.arguments.trim().is_empty() { "{}" } else { c.arguments.as_str() }}
-                })).collect::<Vec<_>>()
+                "tool_calls": streamed.calls.iter().map(|c| {
+                    let mut call = json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": {"name": c.name, "arguments": if c.arguments.trim().is_empty() { "{}" } else { c.arguments.as_str() }}
+                    });
+                    if let Some(extra) = c.extra.as_deref().and_then(|e| serde_json::from_str::<Value>(e).ok()) {
+                        call["extra_content"] = extra;
+                    }
+                    call
+                }).collect::<Vec<_>>()
             });
             if !streamed.reasoning.is_empty() && !thinking_off && echo_thinking {
                 said["reasoning_content"] = json!(streamed.reasoning);
@@ -439,6 +466,11 @@ impl Participant for OpenAiCompatParticipant {
         }
         if let Some(turn) = turn.as_mut() {
             turn.finish().await;
+        }
+        if let Some(error) = failure {
+            let note = format!("\n\n[The reply stopped early: {error}]");
+            on_progress(Progress::Text(&note));
+            reply.text.push_str(&note);
         }
         if stopped_early {
             let note = format!("\n\n[Stopped: this reply went back to its tools {TOOL_ROUNDS_MAX} times. Say continue to keep going.]");
@@ -514,11 +546,27 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
                     out.text.push_str(&text);
                 }
                 SseLine::Reasoning(text) => out.reasoning.push_str(&text),
-                SseLine::Tool { index, id, name, arguments } => {
+                SseLine::Tool { index, id, name, arguments, extra } => {
+                    // Without an index, a new id starts a new call; anything
+                    // else continues the last one.
+                    let index = match index {
+                        Some(i) => i,
+                        None => match (&id, out.calls.last()) {
+                            (Some(new), Some(last)) if !last.id.is_empty() && last.id != *new => out.calls.len(),
+                            (_, Some(_)) => out.calls.len() - 1,
+                            (_, None) => 0,
+                        },
+                    };
+                    if index >= TOOL_CALLS_MAX {
+                        return Err(ParticipantError::Failed(format!("stream from {url} sent more than {TOOL_CALLS_MAX} tool calls at once")));
+                    }
                     while out.calls.len() <= index {
                         out.calls.push(ToolCall::default());
                     }
                     let call = &mut out.calls[index];
+                    if extra.is_some() {
+                        call.extra = extra;
+                    }
                     if let Some(id) = id {
                         call.id = id;
                     }
@@ -563,6 +611,14 @@ async fn read_stream(response: reqwest::Response, url: &str, on_text: &mut (dyn 
     Ok(out)
 }
 
+/// Whether an error says the model doesn't take tools at all, as opposed
+/// to some other complaint that happens to mention them.
+fn refuses_tools(lower: &str) -> bool {
+    let about_tools = lower.contains("tool") || lower.contains("function call");
+    let refusal = ["not support", "unsupported", "doesn't support", "not supported", "not available for this model", "not enabled for this model"];
+    about_tools && refusal.iter().any(|r| lower.contains(r))
+}
+
 /// DeepSeek's own API, the one that wants earlier thinking sent back.
 fn is_deepseek(base_url: &str) -> bool {
     reqwest::Url::parse(base_url.trim()).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).as_deref() == Some("api.deepseek.com")
@@ -602,6 +658,21 @@ impl OpenAiCompatParticipant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_real_refusal_turns_tools_off() {
+        assert!(refuses_tools("this model does not support tools"));
+        assert!(refuses_tools("registry.ollama.ai/library/x does not support tools"));
+        assert!(refuses_tools("function calling is not supported for this model"));
+        assert!(!refuses_tools("this model's maximum context length is 8192 tokens. however, you requested 9000 tokens (8000 in the messages, 1000 in the functions)"));
+        assert!(!refuses_tools("invalid schema for function 'grep'"));
+    }
+
+    #[test]
+    fn tool_calls_without_an_index_are_kept_apart_by_id() {
+        let one = parse_sse_line(r#"data: {"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"read_file","arguments":"{}"},"extra_content":{"google":{"thought_signature":"sig"}}}]}}]}"#);
+        assert_eq!(one, vec![SseLine::Tool { index: None, id: Some("a".into()), name: Some("read_file".into()), arguments: "{}".into(), extra: Some(r#"{"google":{"thought_signature":"sig"}}"#.into()) }]);
+    }
 
     #[test]
     fn speed_is_sent_only_to_the_direct_openai_api_when_explicit() {

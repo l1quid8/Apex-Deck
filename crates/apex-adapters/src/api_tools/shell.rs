@@ -196,6 +196,10 @@ pub(crate) async fn run(env: &Env, registry: &Registry, script: &str, timeout: D
         child.terminate_tree().await?;
         leftovers_stopped = !timed_out;
         let _ = tokio::time::timeout(DRAIN_WAIT, &mut readers).await;
+    } else {
+        // Done: end anything left in its group and clear its ownership
+        // record, so a later Stop never signals a reused process id.
+        child.terminate_tree().await?;
     }
     let output = output.lock().unwrap().whole();
     Ok(Finished { code, output, timed_out, leftovers_stopped })
@@ -310,6 +314,22 @@ mod tests {
         assert_eq!(finished.code, Some(3));
         assert!(finished.output.contains("out") && finished.output.contains("err"), "{}", finished.output);
         assert!(!finished.timed_out && !finished.leftovers_stopped);
+    }
+
+    #[tokio::test]
+    async fn a_finished_command_leaves_no_ownership_record() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("apex-shell-registry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let dir = base.join("workers");
+        let registry = Registry::new(Some(dir.clone()));
+        run(&env(), &registry, "echo hi", Duration::from_secs(10)).await.unwrap();
+        let left: Vec<_> = std::fs::read_dir(&dir).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).collect()).unwrap_or_default();
+        assert!(left.is_empty(), "records left: {left:?}");
+        assert!(!registry.terminate_all().await.unwrap(), "nothing is still owned, so Stop signals nobody");
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[tokio::test]

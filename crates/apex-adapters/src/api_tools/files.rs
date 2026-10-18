@@ -68,7 +68,17 @@ impl Roots {
                 self.workspace.as_ref().ok_or("This chat has no project folder. Give an absolute path.")?.join(path)
             }
         };
-        let path = real(&normal(&given));
+        let mut path = real(&normal(&given));
+        // A link to something that doesn't exist yet would otherwise count
+        // as the link's own place, and writing through it lands elsewhere.
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            if meta.file_type().is_symlink() {
+                if let Ok(target) = std::fs::read_link(&path) {
+                    let target = if target.is_absolute() { target } else { path.parent().map(|p| p.join(&target)).unwrap_or(target) };
+                    path = real(&normal(&target));
+                }
+            }
+        }
         let inside = self.workspace.as_ref().is_some_and(|w| path.starts_with(w));
         let readable = inside || self.readable.iter().any(|r| path.starts_with(r));
         let shown = match self.workspace.as_ref().and_then(|w| path.strip_prefix(w).ok()) {
@@ -498,6 +508,19 @@ mod tests {
         assert_eq!(through.path, other.join("secret.txt"));
         let readable = Roots::new(Some(&dir), std::slice::from_ref(&other)).resolve("door/secret.txt").unwrap();
         assert!(readable.readable && !readable.inside);
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(other);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_resolves_to_where_it_points() {
+        let dir = scratch("dangling");
+        let other = scratch("dangling-target");
+        std::os::unix::fs::symlink(other.join("not-yet.txt"), dir.join("notes.md")).unwrap();
+        let resolved = Roots::new(Some(&dir), &[]).resolve("notes.md").unwrap();
+        assert!(!resolved.inside, "{resolved:?}");
+        assert_eq!(resolved.path, other.join("not-yet.txt"));
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(other);
     }

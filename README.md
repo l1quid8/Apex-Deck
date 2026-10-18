@@ -152,7 +152,8 @@ The access level decides what each tool may do:
 | Full access | Yes | Yes | Yes |
 
 At every level, reading outside the project and fetching a web page ask unless
-the bot has Full access, and MCP tools that can spend money or publish always
+the bot has Full access, and so do edits to files that can start programs
+(`.mcp.json`, `.claude/`, `.git/`, `.codex/`, `.vscode/`), and MCP tools that can spend money or publish always
 ask. Plan mode allows reading only, until you approve the bot's plan. A model
 that doesn't take tools answers without them and is told it has none.
 

@@ -2431,3 +2431,41 @@ async fn a_server_that_refuses_thinking_sent_back_gets_the_request_without_it() 
     assert!(sent[2].get("tools").is_some(), "tools stay on");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn parallel_calls_without_indexes_and_gemini_signatures_round_trip() {
+    let dir = project("gemini");
+    std::fs::write(dir.join("a.txt"), "A").unwrap();
+    std::fs::write(dir.join("b.txt"), "B").unwrap();
+    let first = event(serde_json::json!({"choices":[{"delta":{"tool_calls":[{"id":"x","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.txt\"}"},"extra_content":{"google":{"thought_signature":"s1"}}}]}}]}))
+        + &event(serde_json::json!({"choices":[{"delta":{"tool_calls":[{"id":"y","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.txt\"}"}}]}}]}))
+        + "data: [DONE]\n\n";
+    let (address, sent) = serve_answers(vec![("200 OK", first), ("200 OK", says("A and B."))]).await;
+    let bot = tool_bot(address, &dir, Access::Read);
+    let (result, _) = ask(bot.as_ref(), "read both").await;
+    assert_eq!(result.unwrap().text, "A and B.");
+    let sent = sent.lock().unwrap();
+    let messages = sent[1]["messages"].as_array().unwrap();
+    let asked = &messages[messages.len() - 3];
+    assert_eq!(asked["tool_calls"].as_array().unwrap().len(), 2, "two calls, not one merged");
+    assert_eq!(asked["tool_calls"][0]["extra_content"]["google"]["thought_signature"], "s1");
+    assert!(messages[messages.len() - 1]["content"].as_str().unwrap().contains('B'));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn a_failure_after_tools_ran_keeps_the_reply_so_far() {
+    let dir = project("late-failure");
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    let (address, _sent) = serve_answers(vec![
+        ("200 OK", calls("Checking.", "c1", "read_file", r#"{"path":"a.txt"}"#)),
+        ("503 Service Unavailable", r#"{"error":"busy"}"#.to_string()),
+    ])
+    .await;
+    let bot = tool_bot(address, &dir, Access::Read);
+    let (result, _) = ask(bot.as_ref(), "check").await;
+    let reply = result.unwrap();
+    assert!(reply.text.starts_with("Checking.") && reply.text.contains("[The reply stopped early:"), "{}", reply.text);
+    assert_eq!(reply.input_tokens, Some(100), "the finished request still counts");
+    let _ = std::fs::remove_dir_all(dir);
+}

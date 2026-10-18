@@ -77,6 +77,9 @@ pub(crate) struct ToolCall {
     pub name: String,
     /// The arguments as the model wrote them: JSON, possibly broken.
     pub arguments: String,
+    /// What else the server put on the call (Gemini's thought signature),
+    /// as JSON, to be sent back with it unchanged.
+    pub extra: Option<String>,
 }
 
 fn tool(name: &str, description: &str, parameters: Value) -> Value {
@@ -292,14 +295,16 @@ impl<'a> Turn<'a> {
         }
     }
 
-    fn read_need(&self, resolved: &files::Resolved) -> Need {
+    /// `what` is the tool and its pattern, such as `grep "key"`, so the card
+    /// says what will be read and "Always allow" covers only that.
+    fn read_need(&self, resolved: &files::Resolved, what: &str) -> Need {
         if resolved.readable || (self.access == Access::Full && !self.plan) {
             Need::Free
         } else {
             Need::Ask(ProposedAction {
                 kind: ActionKind::Other,
-                title: format!("Read outside the project: {}", resolved.shown),
-                detail: resolved.path.display().to_string(),
+                title: format!("{what} outside the project: {}", resolved.shown),
+                detail: format!("{what} {}", resolved.path.display()),
                 expires_at: None,
                 risky: false,
             })
@@ -314,7 +319,9 @@ impl<'a> Turn<'a> {
         match self.access {
             Access::Read => Need::Refuse("This bot has read-only access, so it can't change files.".into()),
             Access::Ask => Need::Ask(card()),
-            Access::Edits if !resolved.inside => Need::Ask(card()),
+            // Settings that start programs (MCP servers, Claude Code hooks,
+            // git config) can turn an edit into a command, so they ask.
+            Access::Edits if !resolved.inside || starts_programs(&resolved.path) => Need::Ask(card()),
             Access::Edits | Access::Full => Need::Free,
         }
     }
@@ -374,7 +381,13 @@ impl<'a> Turn<'a> {
                 };
                 let step = self.step(call, kind, &label, &args.to_string());
                 (self.progress)(Progress::Work(&step));
-                if let Err(why) = self.allowed(self.read_need(&resolved)).await {
+                let what = match call.name.as_str() {
+                    "read_file" => "Read".to_string(),
+                    "list_dir" => "List".to_string(),
+                    "glob" => format!("Find files matching {:?}", s("pattern")),
+                    _ => format!("Search file contents for {:?}{}", s("pattern"), if args["output_mode"] == "content" { ", showing the lines" } else { "" }),
+                };
+                if let Err(why) = self.allowed(self.read_need(&resolved, &what)).await {
                     return (step, Err(why));
                 }
                 let path = resolved.path.clone();
@@ -683,6 +696,12 @@ impl<'a> Turn<'a> {
     }
 }
 
+/// A file whose contents can make Deck or another agent start a program.
+fn starts_programs(path: &std::path::Path) -> bool {
+    path.file_name().is_some_and(|n| n == ".mcp.json")
+        || path.components().any(|c| matches!(c.as_os_str().to_str(), Some(".git" | ".claude" | ".codex" | ".vscode")))
+}
+
 /// What a call came to.
 struct Done {
     text: String,
@@ -751,7 +770,7 @@ mod tests {
     }
 
     fn call(name: &str, arguments: Value) -> ToolCall {
-        ToolCall { id: format!("call-{name}"), name: name.into(), arguments: arguments.to_string() }
+        ToolCall { id: format!("call-{name}"), name: name.into(), arguments: arguments.to_string(), extra: None }
     }
 
     fn names(turn: &Turn<'_>) -> Vec<String> {
@@ -844,6 +863,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settings_that_start_programs_ask_even_when_edits_are_free() {
+        let dir = scratch("protected");
+        let tools = toolbox(&dir);
+        let quiet = |_: Progress<'_>| {};
+        let no = approver(Decision::Reject);
+        let mut edits = Turn::new(&tools, Access::Edits, false, Access::Edits, &no, &quiet);
+        for path in [".mcp.json", ".claude/settings.json", ".git/config"] {
+            let out = edits.run(&call("write_file", json!({"path": path, "content": "{}"}))).await;
+            assert!(out.contains("declined"), "{path}: {out}");
+            assert!(!dir.join(path).exists());
+        }
+        assert_eq!(no.asked.lock().unwrap().len(), 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn leaving_plan_mode_asks_and_then_allows_the_bots_own_access() {
         let dir = scratch("plan");
         let tools = toolbox(&dir);
@@ -868,7 +903,7 @@ mod tests {
         let tools = toolbox(&dir);
         let quiet = |_: Progress<'_>| {};
         let mut turn = Turn::new(&tools, Access::Full, false, Access::Full, &NoApprover, &quiet);
-        let bad = ToolCall { id: "1".into(), name: "read_file".into(), arguments: "{not json".into() };
+        let bad = ToolCall { id: "1".into(), name: "read_file".into(), arguments: "{not json".into(), extra: None };
         assert!(turn.run(&bad).await.contains("weren't valid JSON"));
         assert!(turn.run(&call("fly", json!({}))).await.contains("no tool called `fly`"));
         let _ = std::fs::remove_dir_all(dir);
