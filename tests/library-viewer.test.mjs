@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import electron from 'electron';
 import { createServer } from 'vite';
+import { runElectronScenario } from './helpers/electron-test.mjs';
 
 // Exercise the real React viewer and CSS in Chromium; only asset storage is faked.
-test('Library controls stay outside media and navigation resets the active preview', { timeout: 60000 }, async () => {
+test('Library controls stay outside media and navigation resets the active preview', { timeout: 200000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'library-viewer-'));
   const html = `<html><head><style>body{margin:0}</style></head><body><div id="test-root"></div><script type="module">
     import React from 'react'; import {createRoot} from 'react-dom/client';
@@ -80,12 +80,7 @@ test('Library controls stay outside media and navigation resets the active previ
     });
   `);
   try {
-    const result = await new Promise((resolve, reject) => {
-      const child = spawn(electron, [main, '--user-data-dir=' + path.join(temp, 'profile')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
-      let output = ''; child.stdout.on('data', bytes => output += bytes); child.stderr.on('data', bytes => output += bytes);
-      const timer = setTimeout(() => child.kill('SIGKILL'), 50000);
-      child.on('error', reject); child.on('exit', code => { clearTimeout(timer); resolve({ code, output }); });
-    });
+    const result = await runElectronScenario(electron, main, temp);
     assert.equal(result.code, 0, result.output);
   } finally { await server.close(); fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });

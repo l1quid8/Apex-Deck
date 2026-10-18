@@ -37,7 +37,6 @@
 .body.apex-agent-dock-narrow > .canvas { display: none; }
 .body.apex-agent-dock-narrow > .apex-agent-dock { flex: 1 1 auto; width: auto !important; }
 .body.apex-agent-dock-narrow .apex-agent-dock-resizer { display: none; }
-.apex-widget-avatar.is-open { --aa-color: var(--apex-widget-mint) !important; }
 
 @media (max-width: 720px) {
   .apex-agent-dock-resizer { width: 14px; left: -7px; }

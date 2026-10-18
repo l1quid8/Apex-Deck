@@ -1,7 +1,6 @@
 .apex-widget-root{--apex-widget-mint:#54efaa;--apex-widget-cyan:#43d8ed;--apex-widget-violet:#b29aff;--apex-widget-amber:#ffca57;position:fixed;inset:0;z-index:10000;pointer-events:none;color:var(--text,#edf2f7);font:13px/1.4 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .apex-widget-root *{box-sizing:border-box}
 .apex-widget-avatar{--apex-glow:var(--aa-color,var(--apex-widget-mint));position:fixed;width:56px;height:56px;z-index:4;pointer-events:auto}
-.apex-widget-avatar.apex-color-cyan{--aa-color:var(--apex-widget-cyan)}.apex-widget-avatar.apex-color-violet{--aa-color:var(--apex-widget-violet)}.apex-widget-avatar.apex-color-amber{--aa-color:var(--apex-widget-amber)}
 .apex-widget-hit{position:absolute;inset:0;width:56px;height:56px;padding:0;border:0;border-radius:50%;background:transparent;cursor:grab;touch-action:none;color:inherit;outline:none;-webkit-tap-highlight-color:transparent}
 .apex-widget-hit:focus-visible{box-shadow:0 0 0 2px #111923,0 0 0 4px var(--apex-glow)}.apex-widget-avatar.is-open .apex-widget-hit{cursor:pointer}
 .apex-widget-halo{position:absolute;inset:-14px;border-radius:50%;background:radial-gradient(circle,var(--apex-glow),transparent 70%);opacity:.38;filter:blur(5px);animation:apex-widget-breathe 3.5s ease-in-out infinite;pointer-events:none}
@@ -26,10 +25,12 @@
 @media(max-width:600px){.apex-widget-panel{max-height:calc(100vh - 24px);top:12px}.apex-widget-footer{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.apex-widget-root *, .apex-widget-root *:before,.apex-widget-root *:after{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.001ms!important}}
 .apex-widget-quiet-settings{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:8px;border-top:1px solid #2a3745;color:#e8eff7}.apex-widget-quiet-settings button{min-width:48px;min-height:28px;border:1px solid #405064;border-radius:8px;background:#202c38;color:#abb8c6;cursor:pointer}.apex-widget-quiet-settings button.enabled{border-color:#56d4a1;background:#173629;color:#75e7b4}.apex-widget-quiet-times{display:grid;grid-template-columns:1fr 1fr;gap:8px}.apex-widget-quiet-times input{width:100%;min-width:0;min-height:28px}.apex-widget-editor small{color:#9eacba;line-height:1.4}
+.apex-widget-colors{display:grid;grid-template-columns:repeat(8,1fr);gap:6px}.apex-widget-colors button{height:22px;padding:0;border:1px solid #354456;border-radius:6px;background:var(--swatch,#54efaa);cursor:pointer}.apex-widget-colors button.selected{outline:2px solid #e8eff7;outline-offset:1px}.apex-widget-colors button:focus-visible{outline:2px solid #67d8a5;outline-offset:1px}
+.apex-widget-hexrow{display:flex;align-items:center;gap:8px}.apex-widget-hexrow input[type=color]{width:38px;height:32px;flex:none;padding:2px;border:1px solid #354456;border-radius:7px;background:#0b1219;cursor:pointer}.apex-widget-hexrow input[type=color]::-webkit-color-swatch-wrapper{padding:0}.apex-widget-hexrow input[type=color]::-webkit-color-swatch{border:0;border-radius:5px}.apex-widget-hextext{min-width:0;flex:1;text-transform:uppercase;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .apex-widget-bubble-close{width:30px;height:30px;min-width:28px;min-height:28px;border-radius:7px}.apex-widget-drop-result>button{width:30px;height:30px;min-width:28px;min-height:28px;border-radius:7px}
 .apex-widget-status.status-complete{color:#98a5b4}
 .apex-widget-avatar.tone-needs-you{--apex-glow:#ffbf4f}
-.apex-widget-avatar.is-open.tone-needs-you{--apex-glow:var(--apex-widget-mint)}.apex-widget-avatar.is-open.status-needs-you .apex-widget-halo{background:radial-gradient(circle,var(--apex-widget-mint),transparent 72%);opacity:.38;animation:apex-widget-breathe 3.5s ease-in-out infinite}
+.apex-widget-avatar.is-open.tone-needs-you{--apex-glow:var(--aa-color,var(--apex-widget-mint))}.apex-widget-avatar.is-open.status-needs-you .apex-widget-halo{background:radial-gradient(circle,var(--aa-color,var(--apex-widget-mint)),transparent 72%);opacity:.38;animation:apex-widget-breathe 3.5s ease-in-out infinite}
 .apex-widget-root.is-hidden .apex-widget-hit{width:24px;left:-9px}
 .apex-widget-reply-error{display:block;margin-top:6px;color:#ffad9e}
 .apex-widget-panel{height:min(640px,calc(100vh - 32px))}

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { transform } from 'sucrase';
-import { aggregateFindingCount, assistantSourceOwnerKey, clampWidgetPosition, firstActiveFinding, isQuietHours, parseAssistantSourceDrop, sameWidgetPosition, shouldShowFindingBubble, widgetCoordinates, widgetSidePanelPosition, widgetStatus, widgetStatusLabel, checkFailureReason } from '../src/apexAgentWidgetModel.ts';
+import { AGENT_WIDGET_COLORS, aggregateFindingCount, assistantSourceOwnerKey, clampWidgetPosition, firstActiveFinding, isQuietHours, lookColor, normalizeHexColor, parseAssistantSourceDrop, sameWidgetPosition, shouldShowFindingBubble, widgetCoordinates, widgetSidePanelPosition, widgetStatus, widgetStatusLabel, checkFailureReason } from '../src/apexAgentWidgetModel.ts';
 
 const workspace = { id: 'project-a', name: 'Project A', path: '/work/a', hostId: 'host-a' };
 const finding = (id, status = 'open', snoozedUntil = null) => ({ id, summary: id, reason: '', confidence: 'observed', nextStep: '', evidence: [], status, firstSeenAt: 0, lastSeenAt: 0, lastNotifiedAt: 0, snoozedUntil });
@@ -94,6 +94,29 @@ test('quiet hours support overnight and daytime intervals and can be disabled', 
   assert.equal(isQuietHours(false, '22:00', '08:00', local(23, 0)), false);
 });
 
+test('hex color normalizes short and long forms and rejects bad input', () => {
+  assert.equal(normalizeHexColor('#AbC'), '#aabbcc');
+  assert.equal(normalizeHexColor(' #F00 '), '#ff0000');
+  assert.equal(normalizeHexColor('#a3e635'), '#a3e635');
+  assert.equal(normalizeHexColor('#a3e635FF'), null);
+  assert.equal(normalizeHexColor('a3e635'), null);
+  assert.equal(normalizeHexColor('#12g45f'), null);
+  assert.equal(normalizeHexColor(''), null);
+  assert.equal(normalizeHexColor(42), null);
+});
+
+test('lookColor maps legacy named colours and falls back to the default', () => {
+  assert.equal(lookColor('mint'), '#54efaa');
+  assert.equal(lookColor('cyan'), '#43d8ed');
+  assert.equal(lookColor('violet'), '#b29aff');
+  assert.equal(lookColor('amber'), '#ffca57');
+  assert.equal(lookColor('#Ff0'), '#ffff00');
+  assert.equal(lookColor('not-a-color'), '#54efaa');
+  assert.equal(lookColor(undefined), '#54efaa');
+  assert.equal(lookColor(null, '#a3e635'), '#a3e635');
+  assert.equal(AGENT_WIDGET_COLORS[0], '#54efaa');
+});
+
 test('finding bubble stays hidden while quiet, dismissed, or the conversation is open', () => {
   assert.equal(shouldShowFindingBubble(true, false, false, false), true);
   assert.equal(shouldShowFindingBubble(true, false, true, false), false);
@@ -107,11 +130,11 @@ function shellHarness() {
   let state = [], cursor = 0;
   const timeouts = [];
   const React = { createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }) };
-  const component = new Function('React', 'useState', 'useEffect', 'useMemo', 'useRef', 'useCallback', 'ASSISTANT_SOURCE_MIME', 'activeMonitorFindings', 'aggregateFindingCount', 'assistantSourceOwnerKey', 'firstActiveFinding', 'isQuietHours', 'parseAssistantSourceDrop', 'sameWidgetPosition', 'shouldShowFindingBubble', 'widgetCoordinates', 'widgetSidePanelPosition', 'widgetStatus', 'widgetStatusLabel', 'checkFailureReason', 'window', 'document', 'localStorage', `${componentCompiled}; return ApexAgentWidget;`)(
+  const component = new Function('React', 'useState', 'useEffect', 'useMemo', 'useRef', 'useCallback', 'AGENT_WIDGET_COLORS', 'ASSISTANT_SOURCE_MIME', 'activeMonitorFindings', 'aggregateFindingCount', 'assistantSourceOwnerKey', 'firstActiveFinding', 'isQuietHours', 'lookColor', 'normalizeHexColor', 'parseAssistantSourceDrop', 'sameWidgetPosition', 'shouldShowFindingBubble', 'widgetCoordinates', 'widgetSidePanelPosition', 'widgetStatus', 'widgetStatusLabel', 'checkFailureReason', 'window', 'document', 'localStorage', `${componentCompiled}; return ApexAgentWidget;`)(
     React,
     (initial) => { const index = cursor++; if (!(index in state)) state[index] = typeof initial === 'function' ? initial() : initial; return [state[index], (value) => { state[index] = typeof value === 'function' ? value(state[index]) : value; }]; },
     () => { cursor++; }, (fn) => { cursor++; return fn(); }, (initial) => { cursor++; return { current: initial }; }, (fn) => { cursor++; return fn; },
-    'application/x-apex-agent-source', (m) => m?.findings ?? [], aggregateFindingCount, assistantSourceOwnerKey, firstActiveFinding, isQuietHours, parseAssistantSourceDrop, sameWidgetPosition, shouldShowFindingBubble, widgetCoordinates, widgetSidePanelPosition, widgetStatus, widgetStatusLabel, checkFailureReason,
+    AGENT_WIDGET_COLORS, 'application/x-apex-agent-source', (m) => m?.findings ?? [], aggregateFindingCount, assistantSourceOwnerKey, firstActiveFinding, isQuietHours, lookColor, normalizeHexColor, parseAssistantSourceDrop, sameWidgetPosition, shouldShowFindingBubble, widgetCoordinates, widgetSidePanelPosition, widgetStatus, widgetStatusLabel, checkFailureReason,
     { innerWidth: 1200, innerHeight: 800, setTimeout: (callback, delay) => { timeouts.push({ callback, delay }); return timeouts.length; } }, { querySelector: () => null }, { getItem: () => null, setItem() {} },
   );
   let props;
@@ -145,6 +168,44 @@ test('dock mode keeps the floating avatar and source drop target but suppresses 
   const tree = harness.render(props);
   assert.ok(findNode(tree, (node) => node.props?.['data-apex-agent-overlay'] === 'avatar'));
   assert.equal(findNode(tree, (node) => node.props?.['data-apex-agent-overlay'] === 'panel'), null);
+});
+
+test('appearance editor hex field commits valid colors and keeps the avatar in sync', () => {
+  const harness = shellHarness();
+  const props = { workspaces: [workspace], workspaceId: workspace.id, open: false, monitors: [monitor()], onOpen() {}, onClose() {}, onSelect() {}, onAddSource: async () => {}, children: 'conversation' };
+  let tree = harness.render(props);
+  const hit = findNode(tree, (node) => node.type === 'button' && String(node.props.className).includes('apex-widget-hit'));
+  hit.props.onContextMenu({ preventDefault() {} });
+  tree = harness.render(props);
+  findNode(tree, (node) => node.type === 'button' && String(node.children).includes('Make it yours')).props.onClick();
+  tree = harness.render(props);
+  const hex = findNode(tree, (node) => node.type === 'input' && String(node.props.className).includes('apex-widget-hextext'));
+  assert.ok(hex, 'editor exposes the hex field');
+  hex.props.onFocus();
+  hex.props.onChange({ target: { value: '#336699' } });
+  tree = harness.render(props);
+  assert.equal(findNode(tree, (node) => node.props?.['data-apex-agent-overlay'] === 'avatar').props.style['--aa-color'], '#336699');
+  // An invalid partial keeps the last committed color.
+  const hexAgain = findNode(tree, (node) => node.type === 'input' && String(node.props.className).includes('apex-widget-hextext'));
+  hexAgain.props.onChange({ target: { value: '#33' } });
+  tree = harness.render(props);
+  assert.equal(findNode(tree, (node) => node.props?.['data-apex-agent-overlay'] === 'avatar').props.style['--aa-color'], '#336699');
+});
+
+test('appearance editor preset swatches switch the avatar color', () => {
+  const harness = shellHarness();
+  const props = { workspaces: [workspace], workspaceId: workspace.id, open: false, monitors: [monitor()], onOpen() {}, onClose() {}, onSelect() {}, onAddSource: async () => {}, children: 'conversation' };
+  let tree = harness.render(props);
+  const hit = findNode(tree, (node) => node.type === 'button' && String(node.props.className).includes('apex-widget-hit'));
+  hit.props.onContextMenu({ preventDefault() {} });
+  tree = harness.render(props);
+  findNode(tree, (node) => node.type === 'button' && String(node.children).includes('Make it yours')).props.onClick();
+  tree = harness.render(props);
+  const swatch = findNode(tree, (node) => node.type === 'button' && node.props['aria-label'] === 'Colour #a3e635');
+  assert.ok(swatch, 'a preset swatch for #a3e635 exists');
+  swatch.props.onClick();
+  tree = harness.render(props);
+  assert.equal(findNode(tree, (node) => node.props?.['data-apex-agent-overlay'] === 'avatar').props.style['--aa-color'], '#a3e635');
 });
 
 test('drop result remains with its captured project while the user switches projects mid-save', async () => {
