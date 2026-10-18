@@ -33,6 +33,7 @@ const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
 ];
 
 const EXTRAS = [
+  { key: "deepseek", label: "DeepSeek", detail: "DeepSeek API models" },
   { key: "ollama", label: "Ollama", detail: "Local models" },
   { key: "api", label: "Other API", detail: "OpenAI-compatible servers" },
   { key: "command", label: "Custom command", detail: "Your own command-line bot" },

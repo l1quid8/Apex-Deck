@@ -24,4 +24,6 @@ test("saved profiles use the same provider switches as new profiles", () => {
   assert.equal(providerEnabled(providerForConfig(config({kind:"agent",tool:"claude_code",model:null})), ["claude"]), false);
   assert.equal(providerForConfig(config({kind:"open_ai_compatible",base_url:"http://localhost:11434/v1/",model:"local",api_key_env:null})), "ollama");
   assert.equal(providerForConfig(config({kind:"open_ai_compatible",base_url:"https://example.com/v1",model:"hosted",api_key_env:null})), "api");
+  assert.equal(providerForConfig(config({kind:"open_ai_compatible",base_url:"https://api.deepseek.com/",model:"deepseek-flash",api_key_env:"DEEPSEEK_API_KEY"})), "deepseek");
+  assert.equal(providerEnabled(providerForConfig(config({kind:"open_ai_compatible",base_url:"https://api.deepseek.com/v1",model:"deepseek-v4-pro",api_key_env:null})), ["deepseek"]), false);
 });

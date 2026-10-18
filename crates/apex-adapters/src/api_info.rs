@@ -145,7 +145,8 @@ fn link_media_siblings(models: &mut Vec<ApiModel>, items: &[Value]) {
     models.retain(|m| !animated.contains(&m.id));
 }
 
-/// Read one entry, trying the Venice shape first and then the OpenRouter and Groq shapes.
+/// Read one entry, trying the Venice shape first and then the OpenRouter,
+/// Groq and DeepSeek shapes.
 fn parse_entry(item: &Value) -> Option<ApiModel> {
     let id = item["id"].as_str()?.to_string();
     let spec = &item["model_spec"];
@@ -167,15 +168,21 @@ fn parse_entry(item: &Value) -> Option<ApiModel> {
     let efforts = if capabilities["supportsReasoningEffort"].as_bool() == Some(false) {
         Some(Vec::new())
     } else {
-        capabilities["reasoningEffortOptions"]
-            .as_array()
+        // Venice lists the levels in its capabilities, DeepSeek under `effort`.
+        [&capabilities["reasoningEffortOptions"], &item["effort"]["supported_levels"]]
+            .into_iter()
+            .find_map(|levels| levels.as_array())
             .and_then(|levels| levels.iter().map(Value::as_str).map(|level| level.map(str::to_string)).collect())
     };
     Some(ApiModel {
         id,
         label,
         efforts,
-        default_effort: capabilities["defaultReasoningEffort"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+        default_effort: [capabilities["defaultReasoningEffort"].as_str(), item["effort"]["default_level"].as_str()]
+            .into_iter()
+            .flatten()
+            .find(|s| !s.is_empty())
+            .map(str::to_string),
         context_tokens: [item["context_length"].as_u64(), spec["availableContextTokens"].as_u64(), item["context_window"].as_u64()]
             .into_iter()
             .flatten()
@@ -336,9 +343,11 @@ pub async fn balance(base_url: &str, api_key_env: Option<&str>) -> Result<Option
     let (path, read): (&str, fn(&Value) -> Option<f64>) = match host.as_deref() {
         Some("api.venice.ai") => ("api_keys/rate_limits", parse_venice_balance),
         Some("openrouter.ai") => ("credits", parse_openrouter_balance),
+        // DeepSeek's balance sits at the root even when the address ends in /v1.
+        Some("api.deepseek.com") => ("https://api.deepseek.com/user/balance", parse_deepseek_balance),
         _ => return Ok(None),
     };
-    let url = format!("{}/{path}", base_url.trim_end_matches('/'));
+    let url = if path.starts_with("https://") { path.to_string() } else { format!("{}/{path}", base_url.trim_end_matches('/')) };
     let response = reqwest::Client::new()
         .get(&url)
         .bearer_auth(key)
@@ -358,6 +367,17 @@ pub async fn balance(base_url: &str, api_key_env: Option<&str>) -> Result<Option
 /// Venice's rate limit answer carries the USD balance under `data.balances`.
 pub fn parse_venice_balance(body: &Value) -> Option<f64> {
     body["data"]["balances"]["USD"].as_f64()
+}
+
+/// DeepSeek lists one balance per currency, as text.
+pub fn parse_deepseek_balance(body: &Value) -> Option<f64> {
+    body["balance_infos"]
+        .as_array()?
+        .iter()
+        .find(|info| info["currency"] == "USD")?["total_balance"]
+        .as_str()?
+        .parse()
+        .ok()
 }
 
 /// OpenRouter reports total credits bought and total used.
@@ -500,6 +520,31 @@ mod tests {
         let body = json!({"data":{"accessPermitted":true,"balances":{"USD":6.35657664,"DIEM":0}}});
         assert_eq!(parse_venice_balance(&body), Some(6.35657664));
         assert_eq!(parse_venice_balance(&json!({"data":{}})), None);
+    }
+
+    #[test]
+    fn a_deepseek_entry_gives_label_levels_and_context() {
+        let body = json!({ "object": "list", "data": [{
+            "id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek", "name": "DeepSeek-V4-Pro",
+            "context_window": 1048576, "max_output_tokens": 393216,
+            "effort": { "supported_levels": ["low", "high", "max"], "default_level": "high" }
+        }]});
+        let model = &parse_models(&body)[0];
+        assert_eq!(model.label.as_deref(), Some("DeepSeek-V4-Pro"));
+        assert_eq!(model.efforts.as_deref(), Some(&["low".to_string(), "high".into(), "max".into()][..]));
+        assert_eq!(model.default_effort.as_deref(), Some("high"));
+        assert_eq!(model.context_tokens, Some(1048576));
+        assert_eq!(model.kind, ModelKind::Text);
+    }
+
+    #[test]
+    fn deepseek_balance_is_the_usd_total() {
+        let body = json!({ "is_available": true, "balance_infos": [
+            { "currency": "CNY", "total_balance": "70.00" },
+            { "currency": "USD", "total_balance": "9.87", "granted_balance": "0.00", "topped_up_balance": "9.87" }
+        ]});
+        assert_eq!(parse_deepseek_balance(&body), Some(9.87));
+        assert_eq!(parse_deepseek_balance(&json!({ "balance_infos": [] })), None);
     }
 
     #[test]

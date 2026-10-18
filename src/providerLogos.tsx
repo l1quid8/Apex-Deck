@@ -57,6 +57,16 @@ export function ProviderLogo({ preset, label }: { preset: string; label: string 
           </svg>
         </Tile>
       );
+    case "deepseek":
+      // Original whale mark in DeepSeek's blue, not the brand logo.
+      return (
+        <Tile bg="#4D6BFE" label={label}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="#fff" aria-hidden="true">
+            <path d="M3 12.5c0-3.6 3.4-6.5 8-6.5 3.2 0 5.6 1.3 6.9 3.3l2.6-2.1c.4-.3.9.1.8.5l-.9 3.6.9 3.6c.1.4-.4.8-.8.5l-2.6-2.1C16.6 15.7 14 17.5 10.6 17.5c-.9 0-1.7-.1-2.5-.4L5.6 19c-.4.3-.9 0-.8-.5l.5-2.5C3.8 15 3 13.8 3 12.5Z" />
+            <circle cx="8" cy="11.2" r="1" fill="#4D6BFE" />
+          </svg>
+        </Tile>
+      );
     case "ollama":
       return (
         <Tile bg="#2B2B2E" label={label}>

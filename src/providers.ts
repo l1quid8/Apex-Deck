@@ -6,10 +6,16 @@ export function providerEnabled(id: string, disabled: readonly string[]): boolea
   return !disabled.includes(id);
 }
 
+export const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+
 export function providerForConfig(config: ParticipantConfig): string {
   const backend = config.backend;
   if (backend.kind === "agent") return backend.tool;
   if (backend.kind === "cli") return "command";
   if (backend.kind === "scripted") return "scripted";
-  return backend.base_url.replace(/\/$/, "") === "http://localhost:11434/v1" ? "ollama" : "api";
+  const url = backend.base_url.trim().replace(/\/$/, "");
+  if (url === "http://localhost:11434/v1") return "ollama";
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch { /* not a URL */ }
+  return host === "api.deepseek.com" ? "deepseek" : "api";
 }

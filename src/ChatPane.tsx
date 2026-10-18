@@ -33,7 +33,7 @@ import { ThreadDetails, type DetailsHost } from "./ThreadDetails";
 import type { Backend, KeyState } from "./backend";
 import { DEFAULT_LANDING_TEXTURE, keyNameFor, type LandingTextureSettings } from "./settings";
 import { LandingTexture } from "./landing/LandingTexture";
-import { providerEnabled, providerForConfig } from "./providers";
+import { DEEPSEEK_BASE_URL, providerEnabled, providerForConfig } from "./providers";
 import { registerRoom, startHub } from "./hub";
 import { rememberModel, rememberedModels } from "./modelMemory";
 import { AGENT_EFFORTS, AGENT_MODELS, API_EFFORTS, apiModelGroups, defaultEffortFor, effortLabel, effortsFor, findModel, modelGroups } from "./models";
@@ -210,7 +210,7 @@ export function splitArgs(line: string): string[] {
   return out;
 }
 
-type PresetKey = "claude_code" | "codex" | "gemini" | "grok" | "muse" | "ollama" | "api" | "command" | "scripted";
+type PresetKey = "claude_code" | "codex" | "gemini" | "grok" | "muse" | "deepseek" | "ollama" | "api" | "command" | "scripted";
 
 interface Preset {
   key: PresetKey;
@@ -219,8 +219,8 @@ interface Preset {
   efforts: string[];
   /** Set for presets that run a known coding agent. Its models are listed in models.ts. */
   agent?: { tool: AgentTool; detectKey: string; modelNote: string; enforcesAccess: boolean; asksFirst: boolean };
-  /** Set for presets that call an HTTP API. */
-  api?: { baseUrl: string; autoLoad: boolean };
+  /** Set for presets that call an HTTP API. `key` shows the API key box. */
+  api?: { baseUrl: string; autoLoad: boolean; key?: boolean };
 }
 
 // Model names and effort levels are suggestions. Both pickers also accept
@@ -256,8 +256,9 @@ export const PRESETS: Preset[] = [
     efforts: AGENT_EFFORTS.muse,
     agent: { tool: "muse", detectKey: "muse", modelNote: "Runs on your Muse Code subscription, never a Meta API key. Each message also sends about 24k tokens of Muse's built-in instructions, so an Everyday plan's 5-hour allowance can run out after a few busy chats. The list follows the models Muse offers your account.", enforcesAccess: true, asksFirst: false },
   },
+  { key: "deepseek", label: "DeepSeek", efforts: API_EFFORTS, api: { baseUrl: DEEPSEEK_BASE_URL, autoLoad: true, key: true } },
   { key: "ollama", label: "Ollama (local models)", efforts: API_EFFORTS, api: { baseUrl: "http://localhost:11434/v1", autoLoad: true } },
-  { key: "api", label: "Other API (OpenAI-compatible)", efforts: API_EFFORTS, api: { baseUrl: "", autoLoad: false } },
+  { key: "api", label: "Other API (OpenAI-compatible)", efforts: API_EFFORTS, api: { baseUrl: "", autoLoad: false, key: true } },
   { key: "command", label: "Custom command", efforts: [] },
   { key: "scripted", label: "Scripted (no model, for testing)", efforts: [] },
 ];
@@ -281,6 +282,11 @@ interface Draft {
   command: string;
   persona: string;
   access: Access;
+}
+
+/** Whether the preset's form asks for an API key. */
+function takesKey(key: PresetKey): boolean {
+  return !!PRESETS.find((p) => p.key === key)?.api?.key;
 }
 
 /** Whether access is enforced: by an agent's own permission settings, or,
@@ -324,7 +330,7 @@ export function configToDraft(config: ParticipantConfig): Draft {
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
-    const preset = b.base_url === PRESETS.find((p) => p.key === "ollama")!.api!.baseUrl ? "ollama" : "api";
+    const preset = providerForConfig(config) as PresetKey;
     return { ...base, preset, baseUrl: b.base_url, model: b.model, keyEnv: b.api_key_env ?? "" };
   }
   if (b.kind === "cli") return { ...base, preset: "command", command: [b.program, ...b.args].map(quoteArg).join(" ") };
@@ -1236,7 +1242,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   /** Save a typed key to this machine and point the draft at it. A draft with no key named picks up one already saved for its provider. */
   const withKey = async (draft: Draft): Promise<Draft> => {
-    if (draft.preset !== "api") return draft;
+    if (!takesKey(draft.preset)) return draft;
     const name = keyNameOf(draft);
     if (draft.apiKey?.trim()) {
       if (!name) throw new Error("Give the bot a name first, so its key can be saved.");
@@ -2234,7 +2240,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
-  const keyName = adding && draft.preset === "api" ? keyNameOf(draft) : "";
+  const keyName = adding && takesKey(draft.preset) ? keyNameOf(draft) : "";
   useEffect(() => {
     setKeyState(null);
     if (!keyName || backend.demo) return;
@@ -2280,7 +2286,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       if (found.length) setDraft((d) => (d.model ? d : { ...d, model: found[0].id, effort: found[0].efforts ? defaultEffortFor(found[0].efforts) : d.effort }));
     } catch (error) {
       setApiModels([]);
-      setModelNote(`Could not list models: ${String(error)}. You can still type a model name.`);
+      setModelNote(/\b401\b/.test(String(error))
+        ? "The server wants an API key before it lists models. Paste one under API key, then press List models."
+        : `Could not list models: ${String(error)}. You can still type a model name.`);
     }
   };
 
@@ -2292,7 +2300,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     setApiModels([]);
     setModelNote("");
     setFormError("");
-    if (next.api?.autoLoad) loadModels(next.api.baseUrl, "");
+    if (next.api?.autoLoad) loadModels(next.api.baseUrl, next.api.key ? keyNameFor(next.api.baseUrl) : "");
   };
 
   const agentGroups = preset.agent ? modelGroups(preset.agent.tool, reported[preset.agent.tool] ?? [], preset.label) : [];
@@ -2517,7 +2525,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               options={PRESETS.filter((p) => providerEnabled(p.key, disabledProviders) || (editing && p.key === draft.preset)).map((p) => ({
                 key: p.key,
                 label: p.label.replace(/ \(.*\)$/, ""),
-                hint: p.agent ? { claude_code: "Anthropic", codex: "OpenAI", gemini: "Google" }[p.agent.tool as "claude_code" | "codex" | "gemini"] ?? "xAI" : p.key === "ollama" ? "Runs on this machine" : p.key === "api" ? "Any OpenAI-style server" : p.key === "command" ? "Your own script" : "Canned replies for testing",
+                hint: p.agent ? { claude_code: "Anthropic", codex: "OpenAI", gemini: "Google" }[p.agent.tool as "claude_code" | "codex" | "gemini"] ?? "xAI" : p.key === "deepseek" ? "DeepSeek API" : p.key === "ollama" ? "Runs on this machine" : p.key === "api" ? "Any OpenAI-style server" : p.key === "command" ? "Your own script" : "Canned replies for testing",
                 installed: installed(p),
                 enabled: true,
               }))}
@@ -2557,7 +2565,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 </datalist>
                 {modelNote && <span className="hint">{modelNote}</span>}
               </label>
-              {draft.preset === "api" && (
+              {preset.api.key && (
                 <div className="key-field">
                 <label>
                   API key
@@ -2676,7 +2684,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const start = providerEnabled(draft.preset, disabledProviders) && installed(preset) ? draft.preset : firstPreset;
     setDraft({ ...emptyDraft(start), access: draft.access });
     const startPreset = PRESETS.find((p) => p.key === start);
-    if (startPreset?.api?.autoLoad) loadModels(startPreset.api.baseUrl, "");
+    if (startPreset?.api?.autoLoad) loadModels(startPreset.api.baseUrl, startPreset.api.key ? keyNameFor(startPreset.api.baseUrl) : "");
     setQuickAdd(where);
   };
   /** Up to three tools for the quick menu: installed coding agents, then local models. */
