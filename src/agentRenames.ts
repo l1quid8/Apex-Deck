@@ -12,9 +12,10 @@ export interface CopyRename {
   name: string;
 }
 
-/** What one chat did with a rename: `error` says why its copy kept the old name. */
+/** What one chat did with a rename: `from` is its copy's name before it, and `error` says why the copy kept that name. */
 export interface CopyOutcome {
   chat: string;
+  from: string;
   error: string | null;
 }
 
@@ -42,7 +43,7 @@ export function keptNameWhy(clash: MentionClash): string {
 export function renameSummary(from: string, name: string, outcomes: readonly CopyOutcome[]): string | null {
   const done = outcomes.filter((o) => !o.error).length;
   const parts = done ? [`Renamed ${from} to ${name} in ${done} ${done === 1 ? "chat" : "chats"}.`] : [];
-  for (const o of outcomes) if (o.error) parts.push(`"${o.chat}" still says ${from}: ${o.error}${/[.!?]$/.test(o.error) ? "" : "."}`);
+  for (const o of outcomes) if (o.error) parts.push(`"${o.chat}" still says ${o.from}: ${o.error}${/[.!?]$/.test(o.error) ? "" : "."}`);
   return parts.length ? parts.join(" ") : null;
 }
 
@@ -50,41 +51,37 @@ export function renameSummary(from: string, name: string, outcomes: readonly Cop
 export async function renameCopy<T extends Mentionable>(participants: readonly T[], rename: { id: string; name: string }, chat: string, save: (next: T, base: T) => Promise<unknown>): Promise<CopyOutcome | null> {
   const copy = renamedCopy(participants, rename);
   if (!copy) return null;
+  const from = copy.base.display_name;
   const clash = mentionClash(copy.next, participants);
-  if (clash) return { chat, error: keptNameWhy(clash) };
+  if (clash) return { chat, from, error: keptNameWhy(clash) };
   try {
     await save(copy.next, copy.base);
-    return { chat, error: null };
+    return { chat, from, error: null };
   } catch (error) {
-    return { chat, error: String(error).replace(/^Error: /, "") };
+    return { chat, from, error: String(error).replace(/^Error: /, "") };
   }
 }
 
-/** The renames for chats to apply, with `renamed` added: one per agent, its latest, so a chat that was away for many renames still gets each agent's. */
-export function latestRenames(list: readonly CopyRename[], renamed: readonly CopyRename[]): CopyRename[] {
-  return [...list.filter((r) => !renamed.some((n) => n.id === r.id)), ...renamed];
+/**
+ * The renames for chats to apply, with `renamed` added: every one, in order.
+ * A chat that was away replays them as they happened, because a swap needs
+ * the step between: Ada → Cy frees Ada for Bob, and only then can Cy be Bob.
+ */
+export function addRenames(list: readonly CopyRename[], renamed: readonly CopyRename[]): CopyRename[] {
+  return [...list, ...renamed];
 }
 
 /**
  * One chat's renamer: each call renames the chat's copies after the call
- * before it has saved, starting from the names this chat saved, which
- * `roster` (the chat's own list) may not show yet. So renaming an agent twice
- * while the first save is still out leaves the chat with the second name.
+ * before it has saved, starting from `roster`, the chat's own list. So
+ * renaming an agent twice while the first save is still out leaves the chat
+ * with the second name. `save` must leave `roster` showing the new name by
+ * the time it resolves: the next rename starts from that list.
  */
 export function copyRenamer<T extends Mentionable>(roster: () => readonly T[], save: (next: T, base: T) => Promise<unknown>, heard: (seq: number, outcome: CopyOutcome) => void) {
   let last: Promise<void> = Promise.resolve();
-  // Names this chat saved, until its own list shows them.
-  const saved = new Map<string, string>();
-  const known = () => roster().map((p) => {
-    const name = saved.get(p.id);
-    if (name === undefined || name === p.display_name) { saved.delete(p.id); return p; }
-    return { ...p, display_name: name };
-  });
   return (renames: readonly CopyRename[], chat: string): Promise<void> => {
-    const run = () => renameCopies(known(), renames, chat, async (next, base) => {
-      await save(next, base);
-      saved.set(next.id, next.display_name);
-    }, heard);
+    const run = () => renameCopies(roster(), renames, chat, save, heard);
     // A rename that went wrong never holds up the ones after it.
     last = last.then(run, run);
     return last;

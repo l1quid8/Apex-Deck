@@ -1327,12 +1327,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // An agent renamed in the Agents tab: rename this chat's copy of it, once,
   // when the chat can take changes. A chat opened after the rename skips it.
   // One rename at a time, so a second one made while the first saves isn't lost.
-  const renamedUpTo = useRef(Math.max(0, ...copyRenames.map((r) => r.seq)));
+  const renamedUpTo = useRef(copyRenames.at(-1)?.seq ?? 0);
   const renaming = useRef({ room: pane.id, participants, backend, onCopyRenamed });
   renaming.current = { room: pane.id, participants, backend, onCopyRenamed };
   const [renameCopies] = useState(() => copyRenamer(() => renaming.current.participants, async (next, base) => {
-    const saved = await renaming.current.backend.roomUpdateParticipant(renaming.current.room, next, base);
-    if (!saved) setParticipants((list) => list.map((p) => (p.id === next.id ? { ...p, display_name: next.display_name } : p)));
+    await renaming.current.backend.roomUpdateParticipant(renaming.current.room, next, base);
+    // The next rename starts from this list, so it shows the new name now, not once the chat's update arrives.
+    const named = (list: ParticipantConfig[]) => list.map((p) => (p.id === next.id ? { ...p, display_name: next.display_name } : p));
+    renaming.current.participants = named(renaming.current.participants);
+    setParticipants(named);
   }, (seq, outcome) => renaming.current.onCopyRenamed?.(seq, outcome)));
   useEffect(() => {
     if (profileMode || !ready) return;

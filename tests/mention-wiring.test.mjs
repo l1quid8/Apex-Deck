@@ -49,7 +49,9 @@ test("each chat renames its own copy when an agent is renamed in the Agents tab"
   assert.ok(!/onProfilesChange=\{setProfiles\}/.test(app) && /onProfilesChange=\{saveAgents\}/.test(app), "a rename saved to Agents from a chat reaches the other chats too");
   assert.ok(/renamedAgents\(profiles, next\)/.test(app), "the Agents tab's saves are checked for renames");
   assert.ok(/copyRenames=\{copyRenames\}/.test(app), "threads hear about renames");
-  assert.ok(/setCopyRenames\(\(list\) => latestRenames\(list, renamed\)\)/.test(app), "the latest rename of each agent is kept, none dropped");
+  assert.ok(/setCopyRenames\(\(list\) => addRenames\(list, renamed\)\)/.test(app), "every rename is kept, in order, so a chat that was away can replay a swap");
+  assert.ok(/renaming\.current\.participants = named\(renaming\.current\.participants\)/.test(chatPane) && /setParticipants\(named\)/.test(chatPane), "once a copy's rename saves, the chat's list shows it before the next rename starts");
+  assert.ok(!/if \(!saved\) setParticipants\(\(list\) => list\.map\(\(p\) => \(p\.id === next\.id/.test(chatPane), "whatever the machine answers");
   assert.ok(/onCopyRenamed=\{onCopyRenamed\}/.test(app), "and report back for the note");
 });
 
