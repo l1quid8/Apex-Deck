@@ -65,3 +65,24 @@ test("a tab restored after its slot moved is clamped, not lost", () => {
 test("taking out a missing tab returns null", () => {
   assert.equal(takeTabOut(defaultPanel(), "nope"), null);
 });
+
+test("a fixed tab pops out and comes back to its slot", () => {
+  const panel = defaultPanel();
+  const out = takeTabOut(panel, "details");
+  assert.ok(out);
+  assert.ok(!out.panel.tabs.some((t) => t.id === "details"));
+  const back = restoreTab(out.panel, out.tab, out.spot);
+  assert.deepEqual(back.tabs.map((t) => t.id), panel.tabs.map((t) => t.id));
+});
+
+test("a tab recreated while popped out stays; the popped copy is dropped", () => {
+  const panel = defaultPanel();
+  const opened = openTab(panel, "files", 1);
+  const out = takeTabOut(opened, "files");
+  assert.ok(out);
+  // Meanwhile the same Files tab was opened again in the main window.
+  const recreated = openTab(out.panel, "files", 2);
+  assert.ok(recreated.tabs.some((t) => t.id === "files"));
+  const back = restoreTab(recreated, out.tab, out.spot);
+  assert.equal(back.tabs.filter((t) => t.id === "files").length, 1);
+});

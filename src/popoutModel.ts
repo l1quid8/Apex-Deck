@@ -3,6 +3,9 @@
 
 import { addLeaf, insertBeside, leafIds, removeLeaf, type LayoutNode } from "./layout.ts";
 import type { PanelTab, RightPanelState, TabKind } from "./rightPanelModel.ts";
+import type { DashRow } from "./dashboardModel";
+import type { ServerChoice } from "./PreviewPane";
+import type { ParticipantConfig } from "./types";
 
 export type PopoutKind = "pane" | "tab";
 
@@ -26,6 +29,23 @@ export interface PopoutSnapshot {
   url?: string;
   /** Which project/pane is selected in the main window (Files/Details/Worktrees follow it). */
   activePaneId?: string;
+  /** A thread's bots and provider blocks, so a popped chat works like the owner's. */
+  chatConfig?: { profiles: ParticipantConfig[]; disabledProviders: string[]; workspaceName: string };
+  /** A preview's servers, source and host handling, so the page loads the same address. */
+  preview?: {
+    servers: ServerChoice[];
+    source: { title: string; kind: "terminal" | "chat"; running: boolean } | null;
+    servedBy?: string;
+    openExternally: string[];
+  };
+  /** A dashboard's rows at pop-out time; the owner keeps pushing them. */
+  dashboardRows?: DashRow[];
+  /** A tasks tab's conversation, so it watches the same project. */
+  conversationId?: string;
+  /** The workspace's display name, for tab titles. */
+  workspaceName?: string;
+  /** The focused chat thread at pop-out time, which Files and Details follow. */
+  activeChatId?: string | null;
 }
 
 /** Where a pane sat in its workspace layout. */
@@ -41,19 +61,39 @@ export interface TabSpot {
   active: string;
 }
 
-/** What a pop-out asks its owner to do. Restart and close run in the owner, never in the pop-out. */
+/** What a pop-out asks its owner to do. Starts, closes and saves run in the owner, never in the pop-out. */
 export type PopoutAction =
   | { type: "restart-terminal" }
+  | { type: "start-pane"; id: string }
+  | { type: "show-pane"; id: string }
   | { type: "close-pane" }
-  | { type: "rename"; title: string };
+  | { type: "rename"; title: string }
+  | { type: "preview-address"; address: string; servedBy?: string }
+  | { type: "open-externally"; hosts: string[] }
+  | { type: "profiles"; profiles: ParticipantConfig[] }
+  | { type: "tab-url"; url: string };
 
-/** What the owner pushes to a pop-out while it is open: titles, selection and the terminal run. */
+/** What the owner pushes to a pop-out while it is open: titles, selection, runs and rows. */
 export interface PopoutUpdate {
   title?: string;
   workspaceId?: string;
   activePaneId?: string;
+  /** The workspace folder, so selection-following tabs move projects with the main window. */
+  cwd?: string;
+  /** The followed workspace's daemon host, so tabs watch the right machine. */
+  hostId?: string;
+  /** The followed workspace's display name. */
+  workspaceName?: string;
+  /** The focused chat thread, if any, which Files and Details follow. */
+  activeChatId?: string | null;
   /** The terminal's current run id; the view re-attaches when the owner restarts it. */
   ptyId?: string;
+  /** A browser tab's address, when it changed in the main window. */
+  url?: string;
+  /** A dashboard's current rows. */
+  dashboardRows?: DashRow[];
+  /** A preview's source while it is still open. */
+  previewSource?: { title: string; kind: "terminal" | "chat"; running: boolean } | null;
 }
 
 export interface PaneTakeout {
