@@ -29,6 +29,7 @@ pub struct PtyManager {
 
 const HISTORY_LIMIT: usize = 256 * 1024;
 const EXIT_RETENTION_MS: u64 = 5 * 60 * 1000;
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -175,7 +176,11 @@ impl PtyManager {
         let records = Arc::clone(&self.records);
         let output_id = id.to_string();
         let output_generation = generation;
+        // Dropped when the reader thread ends, which tells the exit thread
+        // that all output has been read.
+        let (drained_tx, drained_rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
+            let _drained = drained_tx;
             let mut decoder = Utf8Stream::default();
             let mut buffer = [0u8; 8192];
             loop {
@@ -206,6 +211,11 @@ impl PtyManager {
         let exit_generation = generation;
         std::thread::spawn(move || {
             let code = child.wait().ok().map(|status| status.exit_code());
+            // Read all output before closing the session. Dropping its writer
+            // sends a newline and EOF, which Linux echoes back as output, and
+            // watchers should see the last output before the exit. A
+            // background job can keep the terminal open, so don't wait long.
+            let _ = drained_rx.recv_timeout(DRAIN_TIMEOUT);
             let mut sessions = sessions.lock().unwrap();
             if sessions.get(&id).is_some_and(|session| session.generation == exit_generation) {
                 sessions.remove(&id);
@@ -348,9 +358,9 @@ mod tests {
         all
     }
 
-    /// Poll a snapshot until `pred` holds or `timeout` passes. The reader
-    /// thread drains the pty after the child exits, so tests must wait for the
-    /// output they assert on instead of trusting the exit signal alone.
+    /// Poll a snapshot until `pred` holds or `timeout` passes. Exit waits for
+    /// the output to drain only up to `DRAIN_TIMEOUT`, so a loaded machine can
+    /// still report the exit first.
     fn wait_for_snapshot(
         manager: &PtyManager,
         id: &str,
@@ -445,8 +455,8 @@ mod tests {
         // bytes is dropped, so the kept history starts on the second byte of one.
         let (_out, exit) = spawn_sh(&manager, "accents", "awk 'BEGIN { for (i = 0; i < 150000; i++) printf \"\\303\\251\"; printf \"x\" }'");
         exit.recv_timeout(Duration::from_secs(10)).unwrap();
-        // The child can exit before the reader thread drains the pty, so wait
-        // for the trailing byte before asserting on truncated history.
+        // Ends in "x", not "x\r\n": the writer's closing newline must not be
+        // echoed into the history (it was on Linux).
         let snapshot = wait_for_snapshot(&manager, "accents", Duration::from_secs(10), |snapshot| snapshot.output.ends_with('x'));
         assert!(!snapshot.output.contains('\u{FFFD}'));
         assert!(snapshot.output.starts_with('é') && snapshot.output.ends_with("éx"));
@@ -457,8 +467,6 @@ mod tests {
         let manager = PtyManager::default();
         let (_out, exit) = spawn_sh(&manager, "again", "echo first");
         exit.recv_timeout(Duration::from_secs(5)).unwrap();
-        // The exit signal can land before the reader thread drains the pty, so
-        // wait for the first run's output rather than asserting immediately.
         let before = wait_for_snapshot(&manager, "again", Duration::from_secs(5), |snapshot| snapshot.cursor > 0).cursor;
         let (_out, exit) = spawn_sh(&manager, "again", "echo second");
         exit.recv_timeout(Duration::from_secs(5)).unwrap();
