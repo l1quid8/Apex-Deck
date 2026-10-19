@@ -91,6 +91,10 @@ export interface Backend {
   apiBalance(baseUrl: string, apiKeyEnv: string | null): Promise<number | null>;
   /** What one video from `model` costs with these choices, in US dollars, from the provider's own quote. Null when it gives none. */
   apiQuote(baseUrl: string, apiKeyEnv: string | null, model: string, media: import("./types").MediaSettings | null): Promise<number | null>;
+  /** Models offered to API bot `participant` in thread `room`, asked for with the bot's own saved address and key. */
+  roomBotModels?(room: string, participant: string): Promise<ApiModel[]>;
+  /** What is left on API bot `participant`'s account, in US dollars. Null when the provider has no balance check. */
+  roomBotBalance?(room: string, participant: string): Promise<number | null>;
   /** Models a coding agent lists for the account it is signed in to. Empty if it keeps no list. */
   agentModels(tool: AgentTool): Promise<ModelChoice[]>;
   /** Have `writer` write a name and persona for a new agent from `idea`. `taken` are names already in use. Nothing is saved. */

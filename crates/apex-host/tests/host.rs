@@ -588,3 +588,22 @@ fn room_steps_on_unknown_room_is_null() {
     host.host.shutdown();
     let _ = std::fs::remove_dir_all(data);
 }
+
+#[test]
+fn bot_models_and_balance_use_only_the_bots_saved_address() {
+    let data = std::env::temp_dir().join(format!("apex-bot-models-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data);
+    let host = Running::start(&data);
+    // Nothing listens on port 9, so the error shows which address was tried.
+    let api = json!({"id":"deep","display_name":"Deep","backend":{"kind":"open_ai_compatible","base_url":"http://127.0.0.1:9/v1","model":"m","api_key_env":null}});
+    host.call(json!({"cmd":"room_create","args":{"id":"r","participants":[api, scripted("bot", &["reply"])],"options":RoomOptions::default(),"cwd":null}})).unwrap();
+    let models = host.call(json!({"cmd":"room_bot_models","args":{"room":"r","participant":"deep"}})).unwrap_err();
+    assert!(models.contains("127.0.0.1:9"), "{models}");
+    // The balance check only knows a few providers, and this address isn't one.
+    assert_eq!(host.call(json!({"cmd":"room_bot_balance","args":{"room":"r","participant":"deep"}})).unwrap(), json!(null));
+    assert!(host.call(json!({"cmd":"room_bot_models","args":{"room":"r","participant":"bot"}})).unwrap_err().contains("API"));
+    assert!(host.call(json!({"cmd":"room_bot_models","args":{"room":"r","participant":"nobody"}})).is_err());
+    assert!(host.call(json!({"cmd":"room_bot_balance","args":{"room":"missing","participant":"deep"}})).is_err());
+    drop(host);
+    std::fs::remove_dir_all(data).unwrap();
+}

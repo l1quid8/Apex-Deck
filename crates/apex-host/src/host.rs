@@ -1071,6 +1071,33 @@ impl Host {
         apex_adapters::api_balance(&base_url, api_key_env.as_deref()).await
     }
 
+    /// The saved address and key name of API bot `participant` in thread `room`.
+    /// Read from the thread's checkpoint, so a model replying doesn't hold it up.
+    fn bot_api_account(&self, room: &str, participant: &ParticipantId) -> Result<(String, Option<String>), String> {
+        let handle = self.handle(room)?;
+        let saved = handle.checkpoint.lock().unwrap();
+        let config = saved.snapshot.participants.iter().find(|p| &p.id == participant)
+            .ok_or_else(|| format!("no participant with the id `{participant}` is in this chat"))?;
+        match &config.backend {
+            apex_core::Backend::OpenAiCompatible { base_url, api_key_env, .. } => Ok((base_url.clone(), api_key_env.clone())),
+            _ => Err(format!("`{participant}` doesn't run on an API")),
+        }
+    }
+
+    /// The models an API bot's own server offers. Unlike `api_models`, the
+    /// address and key are the bot's saved ones, so a remote device can't
+    /// send this machine's key anywhere else.
+    pub async fn room_bot_models(&self, room: &str, participant: &ParticipantId) -> Result<Vec<apex_adapters::ApiModel>, String> {
+        let (base_url, api_key_env) = self.bot_api_account(room, participant)?;
+        apex_adapters::list_models(&base_url, api_key_env.as_deref()).await
+    }
+
+    /// What is left on an API bot's account, in US dollars, read as `room_bot_models` is.
+    pub async fn room_bot_balance(&self, room: &str, participant: &ParticipantId) -> Result<Option<f64>, String> {
+        let (base_url, api_key_env) = self.bot_api_account(room, participant)?;
+        apex_adapters::api_balance(&base_url, api_key_env.as_deref()).await
+    }
+
     /// The models a coding agent lists for the account it is signed in to, for
     /// the model picker. Empty when the tool keeps no such list.
     pub fn agent_models(&self, tool: AgentTool) -> Vec<ModelChoice> {

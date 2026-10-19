@@ -188,6 +188,19 @@ test('apiBalance returns a finite number or null', async () => {
   }
 });
 
+test('a bot\'s models and balance are asked for by thread and bot, never by address', async () => {
+  const transport = recording();
+  transport.call = async (cmd, args) => { transport.calls.push({ cmd, args }); return cmd === 'room_bot_models' ? ['deepseek-flash', { nope: 1 }] : 9.87; };
+  const backend = commandBackend(transport, stubShell());
+  assert.deepEqual(await backend.roomBotModels('r', 'deep'), [{ id: 'deepseek-flash' }]);
+  assert.equal(await backend.roomBotBalance('r', 'deep'), 9.87);
+  assert.deepEqual(transport.calls, [
+    { cmd: 'room_bot_models', args: { room: 'r', participant: 'deep' } },
+    { cmd: 'room_bot_balance', args: { room: 'r', participant: 'deep' } },
+  ]);
+  assert.equal(await commandBackend({ ...transport, call: async () => 'x' }, stubShell()).roomBotBalance('r', 'deep'), null);
+});
+
 test('phone methods send the phone commands', async () => {
   const transport = recording();
   const { phone } = commandBackend(transport, stubShell());
@@ -203,6 +216,6 @@ test('phone methods send the phone commands', async () => {
 test('every method is accounted for in this file', () => {
   const backend = commandBackend(recording(), stubShell());
   const known = new Set([...COMMANDS.map(c => c[0]), ...SHELL_KEYS, 'onPtyData', 'onPtyExit', 'onRoomEvent', 'onSessionChanged', 'onAssistantTasksChanged',
-    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
+    'saveAttachment', 'readAttachment', 'call', 'demo', 'quitStopsWork', 'apiModels', 'apiBalance', 'apiQuote', 'roomBotModels', 'roomBotBalance', 'ptyList', 'ptyAttach', 'ptyRename', 'onPtyRenamed', 'phone']);
   assert.deepEqual(Object.keys(backend).filter(k => !known.has(k)), []);
 });

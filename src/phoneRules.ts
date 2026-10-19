@@ -4,10 +4,12 @@
 
 import { contextLevel, countdown, isLow, liveWindows, percent, planLevel, shortCount, windowLabel } from "./battery.ts";
 import { findTrigger, insertAt, menuItems, type Trigger } from "./composerMenu.ts";
-import { AGENT_EFFORTS, API_EFFORTS, effortLabel, effortsFor, findModel, modelGroups, type ModelGroup } from "./models.ts";
+import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, effortLabel, effortsFor, findModel, modelGroups, type ModelGroup } from "./models.ts";
+import { mediaKind } from "./media.ts";
+import { providerForConfig } from "./providers.ts";
 import { applyTurnChange, withTurnSettings } from "./participantSettings.ts";
 import { supportsSpeed } from "./speed.ts";
-import type { AgentTool, ModelChoice, ParticipantConfig, PlanWindow, Speed, ToolServer } from "./types.ts";
+import type { AgentTool, ApiModel, ModelChoice, ParticipantConfig, PlanWindow, Speed, ToolServer } from "./types.ts";
 
 export type MachineKind = "mac" | "server";
 export type LinkStatus = "online" | "offline" | "connecting";
@@ -329,6 +331,8 @@ export function botMeters(
   fill: { used: number; window: number } | undefined,
   windows: PlanWindow[] | undefined,
   now: Date,
+  /** Dollars left on an API bot's account, when its provider reports them. */
+  balance: number | null = null,
 ): MeterRow[] {
   const nowSeconds = now.getTime() / 1000;
   const context = contextLevel(fill);
@@ -340,6 +344,10 @@ export function botMeters(
     detail: fill ? `${shortCount(Math.max(0, fill.window - fill.used))} of ${shortCount(fill.window)} tokens left` : reportsContext(provider) ? "Shows after its next reply" : "Not reported by this provider",
     low: isLow(context),
   }];
+  if (balance !== null && Number.isFinite(balance)) {
+    rows.push({ key: "balance", label: "Balance", left: null, value: `$${balance.toFixed(2)}`, detail: "Prepaid balance on this provider account", low: false });
+    return rows;
+  }
   const live = provider ? liveWindows(windows ?? [], nowSeconds) : [];
   if (live.length === 0) {
     rows.push({ key: "plan", label: "Plan", left: null, value: "—", detail: provider ? "Shows after its next reply" : "Not reported by this provider", low: false });
@@ -386,22 +394,50 @@ export function modelChoices(tool: AgentTool, reported: ModelChoice[]): { shown:
   return { shown: all.slice(0, 4), extra: all.slice(4), groups };
 }
 
+/**
+ * The models an API bot can switch to on the phone, from what its provider lists: models that make
+ * the same kind of thing as the one it has now (text, picture or video), four first and the rest
+ * behind More models. Null while nothing is listed, so the sheet offers a box to type a name.
+ */
+export function apiModelChoices(models: ApiModel[], current: string): { shown: ModelChoice[]; extra: ModelChoice[]; groups: ModelGroup[] } | null {
+  const kind = mediaKind(models.find((m) => m.id === current));
+  const same = models.filter((m) => mediaKind(m) === kind);
+  if (same.length === 0) return null;
+  const groups = apiModelGroups(same);
+  const all = groups.flatMap((group) => group.models);
+  return { shown: all.slice(0, 4), extra: all.slice(4), groups };
+}
+
+/** The model groups a bot's settings are read against: its tool's for a coding agent, its provider's list for an API bot. */
+export function botGroups(config: ParticipantConfig, reported: ModelChoice[], apiModels: ApiModel[] = []): ModelGroup[] {
+  const backend = config.backend;
+  if (backend.kind === "agent") return modelGroups(backend.tool, reported, TOOL_LABELS[backend.tool]);
+  if (backend.kind === "open_ai_compatible") return apiModelGroups(apiModels);
+  return [];
+}
+
+/** Who serves an API bot, in a word: "DeepSeek", "Ollama", or null for any other server. */
+export function apiProviderName(config: ParticipantConfig): string | null {
+  const provider = providerForConfig(config);
+  return provider === "deepseek" ? "DeepSeek" : provider === "ollama" ? "Ollama" : null;
+}
+
 /** The reasoning levels a bot's model takes, least first. Empty when it has no such setting. */
 export function reasoningLevels(config: ParticipantConfig, groups: ModelGroup[], model: string): string[] {
   const backend = config.backend;
   if (backend.kind === "agent") return effortsFor(AGENT_EFFORTS[backend.tool], groups, model);
-  if (backend.kind === "open_ai_compatible") return API_EFFORTS;
+  if (backend.kind === "open_ai_compatible") return effortsFor(API_EFFORTS, groups, model);
   return [];
 }
 
 const modelOf = (config: ParticipantConfig) => "model" in config.backend ? config.backend.model ?? "" : "";
 
 /** "Latest Opus · High reasoning": a bot's model and reasoning in a few words, then "Fast" when it's set. */
-export function settingsLine(config: ParticipantConfig, reported: ModelChoice[]): string {
+export function settingsLine(config: ParticipantConfig, reported: ModelChoice[], apiModels: ApiModel[] = []): string {
   const backend = config.backend;
   if (backend.kind === "cli") return backend.program;
   if (backend.kind !== "agent" && backend.kind !== "open_ai_compatible") return "Scripted";
-  const groups = backend.kind === "agent" ? modelGroups(backend.tool, reported, TOOL_LABELS[backend.tool]) : [];
+  const groups = botGroups(config, reported, apiModels);
   const model = modelOf(config);
   const name = model ? findModel(groups, model)?.label ?? model : "Default model";
   const levels = reasoningLevels(config, groups, model);
@@ -417,9 +453,8 @@ export type TurnChange = { model?: string; effort?: string; speed?: Speed | "" }
  * The bot as saved on its machine with only the phone's changes laid over it, so a change made
  * on the Mac to the other field isn't undone. Reasoning the new model can't take goes back to Default.
  */
-export function withPhoneChange(saved: ParticipantConfig, change: TurnChange, reported: ModelChoice[]): ParticipantConfig {
-  const backend = saved.backend;
-  const groups = backend.kind === "agent" ? modelGroups(backend.tool, reported, TOOL_LABELS[backend.tool]) : [];
+export function withPhoneChange(saved: ParticipantConfig, change: TurnChange, reported: ModelChoice[], apiModels: ApiModel[] = []): ParticipantConfig {
+  const groups = botGroups(saved, reported, apiModels);
   const model = change.model ?? modelOf(saved);
   const effort = change.effort ?? saved.effort ?? "";
   const next = withTurnSettings(saved, model, effort, reasoningLevels(saved, groups, model));

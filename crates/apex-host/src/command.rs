@@ -147,6 +147,8 @@ pub enum Command {
     ApiBalance { base_url: String, api_key_env: Option<String> },
     ApiQuote { base_url: String, api_key_env: Option<String>, model: String, #[serde(default)] media: Option<apex_core::MediaSettings> },
     AgentModels { tool: AgentTool },
+    RoomBotModels { room: String, participant: ParticipantId },
+    RoomBotBalance { room: String, participant: ParticipantId },
     OpenTarget { target: String, cwd: Option<String>, reveal: Option<bool> },
     WorkspaceRead { target: String, cwd: Option<String> },
     PathsExist { targets: Vec<String>, cwd: Option<String> },
@@ -375,6 +377,8 @@ impl Host {
             ApiBalance { base_url, api_key_env } => reply(self.api_balance(base_url, api_key_env).await?),
             ApiQuote { base_url, api_key_env, model, media } => reply(self.api_quote(base_url, api_key_env, model, media).await?),
             AgentModels { tool } => reply(self.agent_models(tool)),
+            RoomBotModels { room, participant } => reply(self.room_bot_models(&room, &participant).await?),
+            RoomBotBalance { room, participant } => reply(self.room_bot_balance(&room, &participant).await?),
             OpenTarget { target, cwd, reveal } => reply(self.open_target(target, cwd, reveal)?),
             WorkspaceRead { target, cwd } => reply(self.workspace_read(target, cwd)),
             PathsExist { targets, cwd } => reply(self.paths_exist(targets, cwd)),
@@ -493,7 +497,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 147);
+        assert_eq!(names.len(), 149);
+        assert!(names.contains(&"room_bot_models".to_string()));
         assert!(names.contains(&"file_write".to_string()));
         assert!(names.contains(&"answers_load".to_string()));
         assert!(names.contains(&"answer_save".to_string()));

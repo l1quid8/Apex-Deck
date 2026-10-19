@@ -6,6 +6,7 @@ import { openPhoneHost } from '../src/phoneBackend.ts';
 import {
   addMachine, editMachine, approvalWhere, draftVisible, forkLine, loadMachines, newThreadGate,
   botMeters, crewOpen, modelChoices, pillDrag, pillMeter, settingsLine, toolLine, toolRows, toolSearch, toolWords, withPhoneChange, downLine, mentionPicks, pauseLine, pickMention, postRouted, pressNewThread, refusalLine, tagFromBar, threadSend, threadTitleFromMessage,
+  apiModelChoices, apiProviderName, reasoningLevels,
 } from '../src/phoneRules.ts';
 import { phoneShell } from '../src/phoneShell.ts';
 
@@ -310,4 +311,27 @@ test('phone speed saves for direct OpenAI and stays unavailable on other API end
   for (const base_url of ['https://api.openai.com.evil.test/v1', 'https://other.test/api.openai.com/v1', 'https://api.openai.com/proxy', 'invalid']) {
     assert.equal(withPhoneChange({ ...api, backend: { ...api.backend, base_url } }, { speed: 'fast' }, []).speed, undefined);
   }
+});
+
+
+test('a DeepSeek bot on the phone gets its provider\'s models, levels and balance', () => {
+  const deep = { id: 'deep', display_name: 'Deep', backend: { kind: 'open_ai_compatible', base_url: 'https://api.deepseek.com', model: 'deepseek-v4-pro', api_key_env: 'DEEPSEEK_API_KEY' }, effort: 'max' };
+  const listed = [
+    { id: 'deepseek-flash', label: 'DeepSeek-V4.1-Flash', efforts: ['low', 'high', 'max'], context_tokens: 1048576 },
+    { id: 'deepseek-v4-pro', label: 'DeepSeek-V4-Pro', efforts: ['low', 'high', 'max'], context_tokens: 1048576 },
+  ];
+  assert.equal(apiProviderName(deep), 'DeepSeek');
+  assert.equal(apiProviderName({ ...deep, backend: { ...deep.backend, base_url: 'https://api.venice.ai/api/v1' } }), null);
+  const choices = apiModelChoices(listed, 'deepseek-v4-pro');
+  assert.deepEqual(choices.shown.map((m) => m.id), ['deepseek-flash', 'deepseek-v4-pro']);
+  assert.equal(choices.shown[1].label, 'DeepSeek-V4-Pro · 1M context');
+  assert.equal(apiModelChoices([], 'deepseek-v4-pro'), null);
+  // DeepSeek's own levels, not the generic API ones.
+  assert.deepEqual(reasoningLevels(deep, choices.groups, 'deepseek-v4-pro'), ['low', 'high', 'max']);
+  assert.equal(settingsLine(deep, [], listed), 'DeepSeek-V4-Pro · 1M context · Max reasoning');
+  // A model change keeps Max, which the generic levels would have dropped.
+  assert.equal(withPhoneChange(deep, { model: 'deepseek-flash' }, [], listed).effort, 'max');
+  const meters = botMeters(null, undefined, undefined, new Date(), 9.87);
+  assert.deepEqual(meters.map((row) => [row.label, row.value]), [['Context', '—'], ['Balance', '$9.87']]);
+  assert.equal(botMeters(null, undefined, undefined, new Date()).at(-1).label, 'Plan');
 });

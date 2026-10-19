@@ -79,6 +79,11 @@ export function commandBackend(transport: Transport, shell: Shell): Backend {
       const amount = await call<unknown>("api_quote", { baseUrl, apiKeyEnv, model, media });
       return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
     },
+    roomBotModels: async (room, participant) => apiModelList(await call<unknown>("room_bot_models", { room, participant })),
+    roomBotBalance: async (room, participant) => {
+      const amount = await call<unknown>("room_bot_balance", { room, participant });
+      return typeof amount === "number" && Number.isFinite(amount) ? amount : null;
+    },
     agentModels: (tool) => call<ModelChoice[]>("agent_models", { tool }),
     personaDraft: (writer, idea, taken) => call<PersonaDraftResult>("persona_draft", { writer, idea, taken }),
     workspaceRead: (target, cwd) => call<string | null>("workspace_read", { target, cwd }),

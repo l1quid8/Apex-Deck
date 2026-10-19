@@ -40,7 +40,7 @@ import { ParticipantQueues, type ParticipantMessage } from "../turnQueue";
 import { applyCutEvent, applyTurnEvent, busyAfter, cutLine, cutOff, endedLine, resumeCut, turnWords, workingFrom, type PhoneCuts, type PhoneWorking } from "../phoneWorking";
 import {
   addMachine, editMachine, approvalWhere, botMeters, crewOpen, downLine, draftVisible, forkLine, loadMachines, machinesKey, mentionPicks, newThreadGate,
-  modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
+  apiModelChoices, apiProviderName, modelChoices, pickMention, pillMeter, pressNewThread, reasoningLevels, refusalLine, removeMachine, saveMachines, settingsLine, tagFromBar, threadCount,
   pillDrag, threadSend, threadTitleFromMessage, tokenWords, toolLine, toolRows, toolSearch, withPhoneChange, phoneSpeed,
   canSeeNewThread, connectionKey, isPaired, loadRemoteMode, remoteModeKey, withHints,
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
@@ -71,7 +71,7 @@ import type { ProjectMonitor } from "../apexAgentModel";
 import { folderCopyText, writeClipboard } from "../threadCopy";
 import { historyHasAttachments, placeThread, MoveRefused } from "../threadMove";
 import { mergePlan, percent } from "../battery";
-import type { AgentTool, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
+import type { AgentTool, ApiModel, AppSession, FolderListing, Message, ModelChoice, NextStep, Pane, ParticipantConfig, PlanWindow, RoomEvent, RoomOptions, RoomState, Speed, TokenTotals, ToolServer, TurnPolicy, Workspace } from "../types";
 import { addFolders } from "../workspaces";
 import {
   ArrowLeft, ArrowUp, Check, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Command, Folder, Globe, Laptop, Lock, MessageSquare,
@@ -163,7 +163,7 @@ const TOOL_WORDS: Record<string, string> = { claude_code: "Claude Code", codex: 
 function toolWords(config: ParticipantConfig): string {
   const backend = config.backend;
   if (backend.kind === "agent") return [TOOL_WORDS[backend.tool] ?? backend.tool, backend.model].filter(Boolean).join(" · ");
-  if (backend.kind === "open_ai_compatible") return backend.model;
+  if (backend.kind === "open_ai_compatible") return [apiProviderName(config), backend.model].filter(Boolean).join(" · ");
   if (backend.kind === "cli") return backend.program;
   return "Scripted";
 }
@@ -284,8 +284,10 @@ export function PhoneApp() {
   const [botSheet, setBotSheet] = useState<string | null>(null);
   /** Models each machine's tools offer, asked for when a bot's sheet opens. Keyed by machine and tool. */
   const [offered, setOffered] = useState<Record<string, ModelChoice[]>>({});
+  /** What each API account offers and has left, asked for through a bot on it. Keyed by machine and account. */
+  const [apiOffered, setApiOffered] = useState<Record<string, { models?: ApiModel[]; balance?: number | null }>>({});
   /** One save line per bot, so its model and reasoning reach the machine in the order they were picked. */
-  const turnSaves = useRef(new Map<string, (save: { change: TurnChange; reported: ModelChoice[] }) => Promise<void>>());
+  const turnSaves = useRef(new Map<string, (save: { change: TurnChange; reported: ModelChoice[]; apiModels: ApiModel[] }) => Promise<void>>());
   const [crewShut, setCrewShut] = useState(() => { try { return localStorage.getItem(CREW_KEY) === "shut"; } catch { return false; } });
   const foldCrew = (shut: boolean) => {
     setCrewShut(shut);
@@ -963,11 +965,20 @@ export function PhoneApp() {
   useEffect(() => {
     if (!botSheet || !room || !openLink || openLink.status !== "online") return;
     const backend = room.configs.find((config) => config.id === botSheet)?.backend;
+    const host = phoneHost(openLink.id)?.backend;
+    let live = true;
+    if (backend?.kind === "open_ai_compatible") {
+      // Asked through the bot, so the machine uses the bot's own address and key. The balance is read on each open.
+      const key = apiAccountKey(openLink.id, backend);
+      const keep = (patch: { models?: ApiModel[]; balance?: number | null }) => { if (live) setApiOffered((all) => ({ ...all, [key]: { ...all[key], ...patch } })); };
+      if (!apiOffered[key]?.models) host?.roomBotModels?.(room.id, botSheet).then((models) => keep({ models })).catch(() => {});
+      host?.roomBotBalance?.(room.id, botSheet).then((balance) => keep({ balance })).catch(() => {});
+      return () => { live = false; };
+    }
     if (backend?.kind !== "agent") return;
     const key = `${openLink.id}:${backend.tool}`;
     if (offered[key]) return;
-    let live = true;
-    phoneHost(openLink.id)?.backend.agentModels(backend.tool).then((list) => { if (live) setOffered((all) => ({ ...all, [key]: list })); }).catch(() => {});
+    host?.agentModels(backend.tool).then((list) => { if (live) setOffered((all) => ({ ...all, [key]: list })); }).catch(() => {});
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [botSheet, room?.id, openLink?.id, openLink?.status]);
@@ -980,14 +991,14 @@ export function PhoneApp() {
     const key = `${hostId}:${paneId}:${botId}`;
     let save = turnSaves.current.get(key);
     if (!save) {
-      save = latestSaveQueue<{ change: TurnChange; reported: ModelChoice[] }>(async ({ change, reported }) => {
+      save = latestSaveQueue<{ change: TurnChange; reported: ModelChoice[]; apiModels: ApiModel[] }>(async ({ change, reported, apiModels }) => {
         const host = phoneHost(hostId);
         const link = linkOf(hostId);
         if (!host || !link || link.status !== "online") throw new Error(link ? `${downLine(link)}. Nothing changed.` : "That machine isn't paired with this phone.");
         const now = await host.backend.roomCreate(paneId, [], { policy: "mention", max_bot_hops: 0 }, "");
         const saved = now.participants.find((config) => config.id === botId);
         if (!saved) throw new Error("This bot is no longer in the thread.");
-        const next = withPhoneChange(saved, change, reported);
+        const next = withPhoneChange(saved, change, reported, apiModels);
         const result = await host.backend.roomUpdateParticipant(paneId, next, saved);
         const actual = result || (await host.backend.roomCreate(paneId, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(config => config.id === botId) || next;
         if (!result) setRoom((current) => current && current.id === paneId ? { ...current, configs: current.configs.map((config) => config.id === botId ? actual : config) } : current);
@@ -1598,19 +1609,21 @@ export function PhoneApp() {
           if (!who || !config) return null;
           const provider = config.backend.kind === "agent" ? config.backend.tool : null;
           const reported = config.backend.kind === "agent" ? offered[`${openLink.id}:${config.backend.tool}`] ?? [] : [];
+          const account = config.backend.kind === "open_ai_compatible" ? apiOffered[apiAccountKey(openLink.id, config.backend)] : undefined;
+          const apiModels = account?.models ?? [];
           const turn = room.working[who.id];
           const asking = room.approvals.some((card) => card.id === who.id);
           const next = answerers?.paneId === room.id && answerers.ids.includes(who.id);
           const sharing = provider ? room.configs.filter((other) => other.backend.kind === "agent" && other.backend.tool === provider).length : 0;
           return (
-            <BotSheet key={`${room.id}:${who.id}`} who={who} config={config} reported={reported}
+            <BotSheet key={`${room.id}:${who.id}`} who={who} config={config} reported={reported} apiModels={apiModels}
               status={asking ? "Waiting on your answer" : turn ? `${toolLine(turnWords(turn, false, room.plan))} · ${elapsed(Math.max(0, Date.now() - turn.startedAt))}` : next ? "Answers your next message" : "Ready"}
               statusWarn={asking} working={Boolean(turn)} asking={asking}
-              meters={botMeters(provider, room.fill[who.id], provider ? room.plans[provider] : undefined, new Date())}
+              meters={botMeters(provider, room.fill[who.id], provider ? room.plans[provider] : undefined, new Date(), account?.balance ?? null)}
               shared={provider && sharing > 1 ? `The plan is shared by all ${sharing} ${TOOL_WORDS[provider] ?? provider} bots in this thread.` : ""}
               tokens={tokenWords(room.used[who.id])}
               offline={openLink.status !== "online" ? downLine(openLink) : ""}
-              onSave={(change) => saveTurn(room.id, openLink.id, who.id)({ change, reported })}
+              onSave={(change) => saveTurn(room.id, openLink.id, who.id)({ change, reported, apiModels })}
               onMention={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who.id) }); setBotSheet(null); }}
               onStop={() => { void stopBot(who.id); setBotSheet(null); }}
               onClose={() => setBotSheet(null)} />
@@ -1812,6 +1825,8 @@ function Sheet({ title, onClose, children, variant }: { title: string; onClose()
 /** A held bot: what it runs on, how much it has left, and its model and reasoning, which save as they're picked, as on the desktop. */
 function BotSheet(props: {
   who: Person; config: ParticipantConfig; reported: ModelChoice[];
+  /** What an API bot's provider lists; empty for other bots, or until the machine answers. */
+  apiModels: ApiModel[];
   status: string; statusWarn: boolean; working: boolean; asking: boolean;
   meters: MeterRow[]; shared: string; tokens: string;
   /** Why the bot's machine can't take changes right now; empty while it's online. */
@@ -1850,14 +1865,17 @@ function BotSheet(props: {
     if (!("effort" in touched.current)) setEffort(savedEffort);
     if (!("speed" in touched.current)) setSpeed(savedSpeed);
   }, [savedModel, savedEffort, savedSpeed, settled]);
-  const choices = tool ? modelChoices(tool, props.reported) : null;
+  const choices = tool ? modelChoices(tool, props.reported) : backend.kind === "open_ai_compatible" ? apiModelChoices(props.apiModels, savedModel) : null;
+  // Who lists an API bot's models, for the menu's note.
+  const lister = tool ? toolName(tool) : apiProviderName(props.config) ?? "this provider";
   const groups = choices?.groups ?? [];
   const all = choices ? [...choices.shown, ...choices.extra] : [];
   const [more, setMore] = useState(() => choices?.extra.some((m) => m.id === savedModel) ?? false);
   const levels = reasoningLevels(props.config, groups, model);
   const editable = backend.kind === "agent" || backend.kind === "open_ai_compatible";
   const name = props.who.display_name;
-  const modelName = (id: string) => id ? all.find((m) => m.id === id)?.label ?? id : "Default";
+  // The row is narrow, so an API model's context size is left to the line under the bot's name.
+  const modelName = (id: string) => id ? (tool ? all.find((m) => m.id === id)?.label : apiModelName(props.apiModels, id)) ?? id : "Default";
   const note = model ? all.find((m) => m.id === model)?.note : undefined;
 
   const apply = async (change: TurnChange) => {
@@ -1903,7 +1921,7 @@ function BotSheet(props: {
       <Sheet title="Model" onClose={props.onClose}>
         <button type="button" className="ph-back ph-sheet-back-link" onClick={() => setView("bot")}><ChevronLeft size={18} />{name}</button>
         <div className="ph-group" role="menu" aria-label={`Model for ${name}`}>
-          {modelRow({ id: "" })}
+          {tool && modelRow({ id: "" })}
           {model && !all.some((m) => m.id === model) && modelRow({ id: model })}
           {choices.shown.map(modelRow)}
           {choices.extra.length > 0 && (
@@ -1914,7 +1932,7 @@ function BotSheet(props: {
           )}
           {more && choices.extra.map(modelRow)}
         </div>
-        <p className="ph-sheet-text ph-quiet">{props.reported.length ? `The models ${toolName(tool!)} offers this account, then other known ones.` : `The models Deck knows for ${toolName(tool!)}.`}</p>
+        <p className="ph-sheet-text ph-quiet">{!tool ? `The models ${lister} offers this account.` : props.reported.length ? `The models ${lister} offers this account, then other known ones.` : `The models Deck knows for ${lister}.`}</p>
       </Sheet>
     );
   }
@@ -1925,7 +1943,7 @@ function BotSheet(props: {
         <Avatar seed={props.who.look.seed} color={props.who.look.color} size="lg" working={props.working && !props.asking} />
         <span className="ph-grow">
           <strong style={{ color: props.who.look.color }}>{name}</strong>
-          <small>{settingsLine({ ...props.config, backend: "model" in backend ? { ...backend, model: model || null } as ParticipantConfig["backend"] : backend, effort: effort || null, speed: speed || null }, props.reported)}</small>
+          <small>{settingsLine({ ...props.config, backend: "model" in backend ? { ...backend, model: model || null } as ParticipantConfig["backend"] : backend, effort: effort || null, speed: speed || null }, props.reported, props.apiModels)}</small>
           <small className={props.statusWarn ? "ph-amber" : undefined}>{props.status}</small>
         </span>
       </div>
@@ -1943,7 +1961,7 @@ function BotSheet(props: {
       {editable ? <>
         <div className="ph-section">Model and reasoning</div>
         <fieldset className="ph-group ph-turn" disabled={Boolean(props.offline)} aria-busy={result.saving}>
-          {tool ? (
+          {choices ? (
             <button type="button" className="ph-srow" aria-haspopup="menu" onClick={() => setView("models")}>
               <span className="ph-grow"><strong>Model</strong></span>
               <span className="ph-srow-value">{modelName(model)}</span>
@@ -1987,6 +2005,9 @@ function BotSheet(props: {
 }
 
 const toolName = (tool: AgentTool) => TOOL_WORDS[tool] ?? tool;
+const apiModelName = (models: ApiModel[], id: string) => models.find((m) => m.id === id)?.label || undefined;
+/** One API account on one machine: its address and the name its key is saved under. */
+const apiAccountKey = (hostId: string, backend: { base_url: string; api_key_env: string | null }) => `${hostId}:${backend.base_url.trim().replace(/\/+$/, "")}|${backend.api_key_env ?? ""}`;
 
 function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: string; danger?: boolean; onClick(): void }) {
   return (

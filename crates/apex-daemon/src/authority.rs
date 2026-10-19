@@ -70,6 +70,9 @@ pub fn command_needs(command: &Command) -> Need {
         RoomSteps { room, .. } => read(thread(room)),
         AgentsDetect {} => read(GlobalRead),
         AgentModels { .. } => read(GlobalRead),
+        // Only the bot's own saved address and key, so nothing leaves for elsewhere.
+        RoomBotModels { room, .. } => read(thread(room)),
+        RoomBotBalance { room, .. } => read(thread(room)),
 
         // Chat and approvals: posting wakes the thread's bots, which run with
         // the thread's own folder and permission mode.
@@ -297,6 +300,8 @@ mod tests {
             ("artifacts_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
             ("answers_load", Some((ReadOnly, "thread")), json!({ "room": "mine" })),
             ("room_steps", Some((ReadOnly, "thread")), json!({"room":"mine"})),
+            ("room_bot_models", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
+            ("room_bot_balance", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
             ("answer_save", Some((Chat, "thread")), json!({ "room": "mine", "key": "1:hosting", "fingerprint": "0a1b2c3d", "inputs": {}, "revision": 0 })),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
             ("agent_models", Some((ReadOnly, "global_read")), json!({ "tool": "codex" })),
