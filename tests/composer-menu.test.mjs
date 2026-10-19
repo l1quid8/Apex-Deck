@@ -28,11 +28,11 @@ test('items filter by kind and prefix', () => {
   assert.deepEqual(all, ['Photo or file', 'Folder', 'Tools', 'Plan', '@all', '@null', '@jigga', '/compact', '/clear', '/diff', '/fork', '/export', '/image', '/export json', '/plan']);
 });
 
-test('a renamed bot is offered and inserted by its new name, and its old id still finds it', () => {
+test('a renamed bot is offered and inserted by its new name only', () => {
   const renamed = [{ id: 'jigga', display_name: 'Atlas' }, { id: 'null', display_name: 'Null' }];
   const atlas = (query) => menuItems(findTrigger(query, query.length), renamed).filter(i => i.kind === 'mention').map(i => [i.id, i.label, i.detail]);
   assert.deepEqual(atlas('@at'), [['jigga', '@atlas', 'Atlas']]);
-  assert.deepEqual(atlas('@jig'), [['jigga', '@atlas', 'Atlas']]);
+  assert.deepEqual(atlas('@jig'), [], 'its old name finds nothing');
 });
 
 test('@all can be removed when the host cannot address every lane', () => {

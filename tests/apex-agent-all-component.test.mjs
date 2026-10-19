@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
+import { laneMentions, mentionedLane, mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
 import { TaskViewContext, personalTaskGroup, personalTaskKey } from '../src/apexAgentTaskView.ts';
 import { messageStateKey, retryMessageText } from '../src/apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from '../src/apexAgentQuote.ts';
-import { findTrigger } from '../src/composerMenu.ts';
+import { findTrigger, menuItems } from '../src/composerMenu.ts';
 import { mentionFor } from '../src/slug.ts';
 import { parseComposer } from '../src/commands.ts';
 
@@ -41,7 +41,7 @@ function harness(props) {
     useEffect() { cursor++; },
     useCallback(fn) { cursor++; return fn; },
   };
-  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
+  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
@@ -324,6 +324,28 @@ test('a project picked from the @ menu is reached by the mention the menu wrote'
   const h = harness({ workspaces: named, monitors: [monitor('ws-1'), monitor('ws-2')] });
   let tree = h.render();
   find(tree, node => node.type === 'textarea').props.onChange({ target: { value: '@billing-api check the totals' } });
+  tree = h.render(); find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.replies[0][0], 'ws-2');
+});
+
+test('an @mention picks the project it names in full, not one whose name starts the same way', async () => {
+  const named = [{ id: 'ws-1', name: 'Mobile' }, { id: 'ws-2', name: 'Mobile launch' }];
+  const h = harness({ workspaces: named, monitors: [monitor('ws-1'), monitor('ws-2')] });
+  let tree = h.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: '@mobile-launch check the totals' } });
+  tree = h.render(); find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.replies[0][0], 'ws-2');
+});
+
+test('two projects with one name are offered by their ids, so picking either one reaches it', async () => {
+  const twins = [{ id: 'ws-1', name: 'Mobile' }, { id: 'ws-2', name: 'Mobile' }, { id: 'ws-3', name: 'Billing API' }];
+  const h = harness({ workspaces: twins, monitors: twins.map(p => monitor(p.id)) });
+  let tree = h.render();
+  const people = find(tree, node => node.type === ApexAgentComposerToolsStub).props.participants;
+  assert.deepEqual(menuItems(findTrigger('@', 1), people, [], [], false, false).map(item => [item.id, item.label]), [['ws-1', '@ws-1'], ['ws-2', '@ws-2'], ['ws-3', '@billing-api']]);
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: '@ws-2 check the totals' } });
   tree = h.render(); find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.replies[0][0], 'ws-2');

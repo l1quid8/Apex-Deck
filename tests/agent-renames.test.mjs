@@ -19,8 +19,8 @@ test("a chat renames only its own copy, keeps the rest of its settings, and skip
 });
 
 test("a chat where another bot already has the name says so in plain words", () => {
-  assert.equal(renames.keptNameWhy({ mention: "atlas", by: { id: "atlas", display_name: "Atlas" } }), "Atlas there already answers to @atlas.");
-  assert.equal(renames.keptNameWhy({ mention: "all", by: null }), "@all already means everyone.");
+  assert.equal(renames.keptNameWhy({ kind: "taken", mention: "atlas", by: { id: "atlas", display_name: "Atlas" } }), "Atlas there already answers to @atlas.");
+  assert.equal(renames.keptNameWhy({ kind: "everyone", mention: "all" }), "@all already means everyone.");
 });
 
 test("the note counts the chats renamed and names any that kept the old name", () => {
@@ -78,6 +78,41 @@ test("renames that reach a chat together are applied in order, each seeing the n
   await renames.renameCopies(chat, renamesDue, "Plan", async (next) => { saves.push(`${next.id}:${next.display_name}`); }, (seq, outcome) => heard.push([seq, outcome]));
   assert.deepEqual(saves, ["a:Cy", "b:Ada"], "Bob may take Ada once Ada is Cy");
   assert.deepEqual(heard, [[1, { chat: "Plan", error: null }], [2, { chat: "Plan", error: null }]]);
+});
+
+test("the app keeps one rename per agent, the latest, so a chat that was offline for many renames still gets its own", () => {
+  const r = (seq, id, from, name) => ({ seq, id, from, name });
+  const first = renames.latestRenames([], [r(1, "jigga", "Jigga", "Atlas"), r(2, "null", "Null", "Nova")]);
+  assert.deepEqual(renames.latestRenames(first, [r(3, "jigga", "Atlas", "Zed")]), [r(2, "null", "Null", "Nova"), r(3, "jigga", "Atlas", "Zed")]);
+  let many = renames.latestRenames(first, [r(3, "jigga", "Atlas", "Zed")]);
+  for (let seq = 4; seq < 40; seq++) many = renames.latestRenames(many, [r(seq, "null", `N${seq - 1}`, `N${seq}`)]);
+  assert.deepEqual(many, [r(3, "jigga", "Atlas", "Zed"), r(39, "null", "N38", "N39")], "36 renames of Null never push out Jigga's");
+});
+
+test("a rename made while an earlier one is still saving starts from the name that one saved", async () => {
+  // The chat's own list hasn't heard about the first save yet, as when a save is slow.
+  const stale = [{ id: "jigga", display_name: "Jigga", persona: "kept" }, { id: "null", display_name: "Null" }];
+  const saves = [], heard = [];
+  let release;
+  const slow = new Promise((resolve) => { release = resolve; });
+  const rename = renames.copyRenamer(() => stale, async (next, base) => { saves.push([base.display_name, next.display_name, next.persona]); if (saves.length === 1) await slow; }, (seq, outcome) => heard.push([seq, outcome]));
+  const one = rename([{ seq: 1, id: "jigga", from: "Jigga", name: "Atlas" }], "Plan");
+  const two = rename([{ seq: 2, id: "jigga", from: "Atlas", name: "Jigga" }], "Plan");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(saves, [["Jigga", "Atlas", "kept"]], "the second waits for the first");
+  release();
+  await Promise.all([one, two]);
+  assert.deepEqual(saves, [["Jigga", "Atlas", "kept"], ["Atlas", "Jigga", "kept"]], "so the chat ends as Jigga, like the agent");
+  assert.deepEqual(heard, [[1, { chat: "Plan", error: null }], [2, { chat: "Plan", error: null }]]);
+});
+
+test("a rename that can't be saved doesn't hold up the next one", async () => {
+  const chat = [{ id: "jigga", display_name: "Jigga" }];
+  const heard = [];
+  const rename = renames.copyRenamer(() => chat, async (next) => { if (next.display_name === "Atlas") throw new Error("Hetzner is offline"); }, (seq, outcome) => heard.push([seq, outcome.error]));
+  await rename([{ seq: 1, id: "jigga", from: "Jigga", name: "Atlas" }], "Ops");
+  await rename([{ seq: 2, id: "jigga", from: "Atlas", name: "Zed" }], "Ops");
+  assert.deepEqual(heard, [[1, "Hetzner is offline"], [2, null]]);
 });
 
 test("saving a chat's bot to Agents replaces the agent with its id, unless another agent has its name", () => {

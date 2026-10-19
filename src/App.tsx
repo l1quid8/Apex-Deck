@@ -20,7 +20,7 @@ import { startHub } from "./hub";
 import { loadStartupState } from "./startupState.ts";
 import { SectionNavigation, type AttentionItem, type SectionFlag } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
-import { renamedAgents, renameNotes, type CopyOutcome, type CopyRename } from "./agentRenames";
+import { latestRenames, renamedAgents, renameNotes, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { ApexAgentSources } from "./ApexAgentSources";
 import { ApexAgentTasks } from "./lazyViews";
 import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
@@ -323,8 +323,8 @@ export function App() {
     setProfiles(next);
     if (renamed.length === 0) return;
     for (const rename of renamed) renameNote.current?.started(rename);
-    // Threads apply only renames newer than when they opened, so old ones can go.
-    setCopyRenames((list) => [...list, ...renamed].slice(-20));
+    // The latest rename of each agent, so a chat that was offline through many still gets its own.
+    setCopyRenames((list) => latestRenames(list, renamed));
   };
   /** Saved machines, for the sidebar's server names and Copy folder path. */
   const [hostList, setHostList] = useState<HostEntry[]>([]);

@@ -30,11 +30,12 @@ pub trait DecisionProvider: Send + Sync {
 }
 
 /// "Human", or a bot by the @mention it answers to now. A bot no longer in
-/// the room keeps its id.
+/// the room is a former participant, as the bots see it: its id may be an
+/// old name.
 fn speaker_label(speaker: &Speaker, roster: &[ParticipantConfig]) -> String {
     match speaker {
         Speaker::Human => "Human".to_string(),
-        Speaker::Bot(id) => format!("@{}", roster.iter().find(|bot| &bot.id == id).map_or_else(|| id.to_string(), crate::mention_for)),
+        Speaker::Bot(id) => roster.iter().find(|bot| &bot.id == id).map_or_else(|| "Former participant".to_string(), |bot| format!("@{}", crate::mention_for(bot))),
     }
 }
 

@@ -55,14 +55,14 @@ fn name_slug(name: &str) -> String {
 
 /// The `@handle` made from a participant's id: the id, lower-cased, with
 /// anything that is not a letter, digit, dash, underscore or dot removed.
-/// Messages written before a rename still reach the bot by it.
-pub fn handle_for(id: &ParticipantId) -> String {
+fn handle_for(id: &ParticipantId) -> String {
     id.as_str().chars().filter(|c| is_handle_char(*c)).collect::<String>().to_lowercase()
 }
 
-/// The `@mention` a participant answers to: made from its current name, so a
-/// rename changes it. A name with no letter or number left falls back to the
-/// id's handle. shared/mention-names.json holds the cases the app checks too.
+/// The `@mention` a participant answers to, and the only one: made from its
+/// current name, so a rename changes it and the old name reaches nobody. Only
+/// a name saved before names needed a letter or number falls back to the id's
+/// handle. shared/mention-names.json holds the cases the app checks too.
 pub fn mention_for(config: &ParticipantConfig) -> String {
     let slug = name_slug(&config.display_name);
     if slug.chars().any(letter_or_number) {
@@ -72,10 +72,14 @@ pub fn mention_for(config: &ParticipantConfig) -> String {
     }
 }
 
-/// Why `config` can't use its name next to `roster`: another participant
-/// already answers to the same mention, or the mention means everyone. A
-/// participant with the same id is `config` itself and doesn't count.
+/// Why `config` can't use its name next to `roster`: it has no letter or
+/// number to be mentioned by (the id, an old name, would stand in), another
+/// participant already answers to the same mention, or the mention means
+/// everyone. A participant with the same id is `config` itself and doesn't count.
 pub fn mention_clash(config: &ParticipantConfig, roster: &[ParticipantConfig]) -> Option<String> {
+    if !name_slug(&config.display_name).chars().any(letter_or_number) {
+        return Some("A name needs a letter or a number. Pick a different name.".into());
+    }
     let mention = mention_for(config);
     if mention == "all" || mention == "everyone" {
         return Some(format!("@{mention} already means everyone in the chat. Pick a different name."));
@@ -116,18 +120,18 @@ pub fn mentioned_words(text: &str) -> Vec<String> {
     words
 }
 
-/// The participant `word` names: the one whose mention it is, else the one
-/// whose old id handle it is, so a bot actually called that word wins.
+/// The participant whose mention `word` is. A bot's old name names nobody,
+/// unless another bot is called that now.
 fn named<'a>(word: &str, roster: &'a [ParticipantConfig]) -> Option<&'a ParticipantConfig> {
-    roster.iter().find(|c| mention_for(c) == word).or_else(|| roster.iter().find(|c| handle_for(&c.id) == word))
+    roster.iter().find(|c| mention_for(c) == word)
 }
 
 /// Find `@mention`s in `text` that match someone in `roster`.
 ///
 /// Matching ignores case. An `@` that follows a letter or digit (as in an
 /// email address) is not a mention. Trailing dots are treated as sentence
-/// punctuation, so "ask @opus." still finds `opus`. A bot's old id still
-/// reaches it, unless another bot is now called that.
+/// punctuation, so "ask @opus." still finds `opus`. A renamed bot answers to
+/// its new name only.
 pub fn parse_mentions(text: &str, roster: &[ParticipantConfig]) -> MentionTarget {
     let mut found: Vec<ParticipantId> = Vec::new();
     let mut everyone = false;
@@ -150,13 +154,10 @@ pub fn parse_mentions(text: &str, roster: &[ParticipantConfig]) -> MentionTarget
     }
 }
 
-/// Whether `text` names `me` itself, by the same rule as `parse_mentions`
-/// over `roster`. `@all` doesn't count.
-pub fn names(text: &str, me: &ParticipantConfig, roster: &[ParticipantConfig]) -> bool {
-    mentioned_words(text)
-        .iter()
-        .filter(|word| *word != "all" && *word != "everyone")
-        .any(|word| named(word, roster).is_some_and(|c| c.id == me.id))
+/// Whether `text` names `me` by its mention. `@all` doesn't count.
+pub fn names(text: &str, me: &ParticipantConfig) -> bool {
+    let mention = mention_for(me);
+    mentioned_words(text).iter().any(|word| *word == mention && word != "all" && word != "everyone")
 }
 
 #[cfg(test)]
@@ -212,10 +213,10 @@ mod tests {
     fn names_needs_the_bots_own_handle() {
         let roster = roster();
         let grok = &roster[2];
-        assert!(names("make one, @grok.", grok, &roster));
-        assert!(!names("@all make one", grok, &roster));
-        assert!(!names("mail me@grok.dev", grok, &roster));
-        assert!(!names("@grokker", grok, &roster));
+        assert!(names("make one, @grok.", grok));
+        assert!(!names("@all make one", grok));
+        assert!(!names("mail me@grok.dev", grok));
+        assert!(!names("@grokker", grok));
     }
 
     fn bot(id: &str, name: &str) -> ParticipantConfig {
@@ -239,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_matches_the_app_for_renamed_bots_and_old_ids() {
+    fn routing_matches_the_app_for_renamed_bots() {
         for case in shared()["routing"].as_array().unwrap() {
             let want = match &case["to"] {
                 serde_json::Value::String(s) if s == "everyone" => MentionTarget::Everyone,
@@ -252,19 +253,19 @@ mod tests {
     }
 
     #[test]
-    fn a_renamed_bot_is_named_by_its_new_mention_and_its_old_id() {
+    fn a_renamed_bot_is_named_by_its_new_mention_only() {
         let roster = vec![bot("jigga", "Atlas"), bot("null", "Null")];
-        assert!(names("@atlas make one", &roster[0], &roster));
-        assert!(names("@jigga make one", &roster[0], &roster));
-        assert!(!names("@all make one", &roster[0], &roster));
-        assert!(!names("@null make one", &roster[0], &roster));
+        assert!(names("@atlas make one", &roster[0]));
+        assert!(!names("@jigga make one", &roster[0]), "its old name is gone");
+        assert!(!names("@all make one", &roster[0]));
+        assert!(!names("@null make one", &roster[0]));
     }
 
     #[test]
-    fn an_old_id_names_nobody_once_another_bot_is_called_that() {
+    fn an_old_name_belongs_to_whoever_is_called_that_now() {
         let roster = vec![bot("jigga", "Atlas"), bot("jigga-2", "Jigga")];
-        assert!(!names("@jigga make one", &roster[0], &roster));
-        assert!(names("@jigga make one", &roster[1], &roster));
+        assert!(!names("@jigga make one", &roster[0]));
+        assert!(names("@jigga make one", &roster[1]));
     }
 
     #[test]
@@ -274,7 +275,10 @@ mod tests {
         assert_eq!(mention_clash(&bot("null", "Atlas!"), &roster).as_deref(), Some("Atlas in this chat already answers to @atlas. Pick a different name."));
         assert_eq!(mention_clash(&bot("new", "All"), &roster).as_deref(), Some("@all already means everyone in the chat. Pick a different name."));
         assert_eq!(mention_clash(&bot("new", "Everyone."), &roster).as_deref(), Some("@everyone already means everyone in the chat. Pick a different name."));
-        // A bot keeps its own mention, and another bot's old id is free to take.
+        // A name with nothing to mention it by would fall back on the id, an old name.
+        assert_eq!(mention_clash(&bot("jigga", "🤖"), &roster).as_deref(), Some("A name needs a letter or a number. Pick a different name."));
+        assert_eq!(mention_clash(&bot("new", "--"), &roster).as_deref(), Some("A name needs a letter or a number. Pick a different name."));
+        // A bot keeps its own mention, and another bot's old name is free to take.
         assert_eq!(mention_clash(&bot("jigga", "Atlas"), &roster), None);
         assert_eq!(mention_clash(&bot("jigga-2", "Jigga"), &roster), None);
     }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
+import { laneMentions, mentionedLane, mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
 
 const monitor = (workspaceId, messages) => ({ workspaceId, messages, findings: [] });
 const msg = (id, at, text = id) => ({ id, role: 'assistant', text, at, evidence: [] });
@@ -36,4 +36,14 @@ test('a project name must be a whole word to redirect a reply', () => {
   assert.equal(replyTarget('Build the revised plan', projects, 'billing'), 'billing');
   assert.equal(replyTarget('How is the UI going?', projects, 'billing'), 'ui');
   assert.equal(replyTarget('Check C++ (v2) status', [{ id: 'c', name: 'C++ (v2)' }, { id: 'd', name: 'Docs' }], 'd'), 'c');
+});
+
+test('a project answers to its name after @, or to its id when another project has that name or it means everyone', () => {
+  const lanes = [{ id: 'ws-1', name: 'Mobile' }, { id: 'ws-2', name: 'Mobile' }, { id: 'ws-3', name: 'All' }, { id: 'ws-4', name: 'Billing API' }];
+  assert.deepEqual([...laneMentions(lanes)], [['ws-1', 'ws-1'], ['ws-2', 'ws-2'], ['ws-3', 'ws-3'], ['ws-4', 'billing-api']]);
+  assert.equal(mentionedLane('is @billing-api. done?', lanes), 'ws-4', 'a full stop after it is punctuation');
+  assert.equal(mentionedLane('@billing-apis status', lanes), null, 'a longer word is another word');
+  assert.equal(mentionedLane('@mobile status', lanes), null, 'a shared name picks neither');
+  assert.equal(mentionedLane('mail me@billing-api.dev', lanes), null, 'an email address is no mention');
+  assert.equal(mentionedLane('@ws-2 then @billing-api', lanes), 'ws-2', 'the first one named');
 });

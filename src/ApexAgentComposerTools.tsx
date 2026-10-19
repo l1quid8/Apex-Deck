@@ -3,7 +3,7 @@ import type { RefObject } from 'react';
 import type { ToolServer } from './types';
 import type { Command } from './commands';
 import { ComposerMenu, type ComposerMenuHandle } from './ComposerTools';
-import { insertAt, type MenuItem, type Trigger } from './composerMenu';
+import { insertAt, type MenuItem, type MenuPerson, type Trigger } from './composerMenu';
 import { attachmentName, isImage, withAttachments } from './attachments';
 import './apex-agent-composer.css';
 
@@ -24,7 +24,7 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
   onChange: (value: string) => void;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   menuRef?: RefObject<ComposerMenuHandle | null>;
-  participants: { id: string; display_name: string }[];
+  participants: readonly MenuPerson[];
   servers?: (ToolServer & { agent: string })[];
   serverStatus?: string;
   mods?: { mod: string; name: string; description: string }[];

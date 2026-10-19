@@ -2070,7 +2070,7 @@ function ThreadView(props: {
   };
   const holdClass = props.onMessageMenu ? " ph-msg-hold" : "";
   const tag = (id: string) => {
-    const text = tagFromBar(props.draft.text, props.participants.find((p) => p.id === id) ?? { id, display_name: "" }, props.participants);
+    const text = tagFromBar(props.draft.text, props.participants.find((p) => p.id === id), props.participants);
     props.onDraft(text);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(text.length, text.length); });
   };

@@ -914,9 +914,9 @@ impl Host {
             if base.id != name { return Err("settings base belongs to another participant".into()); }
             merge_participant(&current, &base, &participant)?
         } else { participant };
-        // Only a new mention is checked, so a chat that already has two bots
+        // Only a new name is checked, so a chat that already has two bots
         // answering to one name can still save their other settings.
-        if apex_core::mention_for(&next) != apex_core::mention_for(&current) {
+        if next.display_name != current.display_name {
             if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
         }
         self.ensure_task_read_access(&id, &next)?;
@@ -2285,16 +2285,41 @@ mod host_tests {
     }
 
     #[test]
-    fn a_renamed_bot_answers_to_its_new_name_and_its_old_id() {
+    fn a_renamed_bot_answers_to_its_new_name_only() {
         let (host, runtime, data) = host("mention-rename");
-        host.room_create("r".into(), vec![named_bot("jigga", "Jigga"), named_bot("null", "Null")], RoomOptions::default(), None).unwrap();
+        // Null first: a message naming nobody goes to the first bot, so only a real match reaches Atlas.
+        host.room_create("r".into(), vec![named_bot("null", "Null"), named_bot("jigga", "Jigga")], RoomOptions::default(), None).unwrap();
         runtime.block_on(host.room_update_participant("r".into(), named_bot("jigga", "Atlas"))).unwrap();
         let targets = |text: &str| runtime.block_on(host.room_targets("r".into(), text.into())).unwrap();
         assert_eq!(targets("@atlas look"), vec![ParticipantId::new("jigga")]);
-        assert_eq!(targets("@jigga look"), vec![ParticipantId::new("jigga")], "old messages and old phone builds use the id");
-        // A new bot may now be called Jigga; the name beats the old id.
+        assert_eq!(targets("@jigga look"), vec![ParticipantId::new("null")], "its old name is gone, so the message names nobody");
+        // A new bot may now be called Jigga.
         runtime.block_on(host.room_add_participant("r".into(), named_bot("jigga-2", "Jigga"))).unwrap();
         assert_eq!(targets("@jigga look"), vec![ParticipantId::new("jigga-2")]);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_name_with_no_letter_or_number_is_refused() {
+        let (host, runtime, data) = host("mention-letterless");
+        host.room_create("r".into(), vec![named_bot("jigga", "Jigga")], RoomOptions::default(), None).unwrap();
+        let why = "A name needs a letter or a number. Pick a different name.";
+        // It would fall back on the id, which is the bot's first name.
+        assert_eq!(runtime.block_on(host.room_update_participant("r".into(), named_bot("jigga", "🤖"))).unwrap_err(), why);
+        assert_eq!(runtime.block_on(host.room_add_participant("r".into(), named_bot("robot", "🤖"))).unwrap_err(), why);
+        let names: Vec<_> = host.store.room("r").unwrap().unwrap().snapshot.participants.into_iter().map(|p| p.display_name).collect();
+        assert_eq!(names, ["Jigga"], "nothing was added or renamed");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_bot_saved_with_a_letterless_name_can_still_save_other_settings() {
+        let (host, runtime, data) = host("mention-old-letterless");
+        host.room_create("r".into(), vec![named_bot("robot", "🤖")], RoomOptions::default(), None).unwrap();
+        let mut persona = named_bot("robot", "🤖");
+        persona.persona = "Be brief.".into();
+        runtime.block_on(host.room_update_participant("r".into(), persona)).unwrap();
+        assert_eq!(host.store.room("r").unwrap().unwrap().snapshot.participants[0].persona, "Be brief.");
         let _ = std::fs::remove_dir_all(data);
     }
 

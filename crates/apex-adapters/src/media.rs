@@ -108,11 +108,11 @@ pub(crate) fn latest_ask(request: &TurnRequest) -> (String, Vec<PathBuf>) {
 }
 
 /// Whether this turn comes from a person's message that names `bot` by its
-/// `@mention` (or the old id it had before a rename). A message that names
-/// nobody, `@all`, another bot's mention, a retry and a suggestions request
-/// don't, so none of them can spend money.
+/// `@mention`. A message that names nobody, `@all`, another bot's mention or
+/// the bot's old name, a retry and a suggestions request don't, so none of
+/// them can spend money.
 pub(crate) fn named_by_person(request: &TurnRequest, bot: &ParticipantConfig) -> bool {
-    request.unseen.iter().rev().find(|m| m.speaker == Speaker::Human).is_some_and(|m| apex_core::names(&m.text, bot, std::slice::from_ref(bot)))
+    request.unseen.iter().rev().find(|m| m.speaker == Speaker::Human).is_some_and(|m| apex_core::names(&m.text, bot))
 }
 
 /// Where a media reply records the description it was made from.
@@ -640,11 +640,11 @@ mod tests {
     }
 
     #[test]
-    fn a_renamed_media_bot_is_named_by_its_new_mention_or_its_old_id() {
+    fn a_renamed_media_bot_is_named_by_its_new_mention_only() {
         let allison: apex_core::ParticipantConfig = serde_json::from_value(json!({"id":"venice","display_name":"Allison","backend":{"kind":"scripted","lines":[]}})).unwrap();
         let asked = |text: &str| named_by_person(&turn(vec![human(text)], vec![]), &allison);
         assert!(asked("@allison make it"));
-        assert!(asked("@venice make it"), "an old phone build tags the id");
+        assert!(!asked("@venice make it"), "its old name is gone, so it can't spend money");
         assert!(!asked("@all make it"));
         assert!(!asked("make it"));
     }

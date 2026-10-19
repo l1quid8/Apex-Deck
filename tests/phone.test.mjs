@@ -212,9 +212,9 @@ test('a renamed bot is picked and tagged by its new name', () => {
   assert.deepEqual(pickMention('ask @at', 7, typed.trigger, typed.picks[0].handle), { text: 'ask @atlas ', caret: 11 });
   assert.equal(tagFromBar('', atlas, people), '@atlas ');
   assert.equal(tagFromBar('@atlas fix it', atlas, people), '@atlas fix it');
-  assert.equal(tagFromBar('@jigga fix it', atlas, people), '@jigga fix it', 'the old id still names it');
-  const taken = [atlas, { id: 'jigga-2', display_name: 'Jigga' }];
-  assert.equal(tagFromBar('@jigga fix it', atlas, taken), '@atlas @jigga fix it', 'unless another bot is called that now');
+  assert.equal(tagFromBar('@jigga fix it', atlas, people), '@atlas @jigga fix it', 'its old name no longer names it');
+  assert.deepEqual(mentionPicks('ask @jig', 8, people).picks, [], 'and finds nothing in the @ list');
+  assert.equal(tagFromBar('fix it', undefined, people), 'fix it', 'a bot no longer here adds no tag');
 });
 
 test('the bot bar hides while the keyboard is up and comes back as it was chosen', () => {

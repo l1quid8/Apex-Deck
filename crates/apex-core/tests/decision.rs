@@ -11,7 +11,7 @@ fn a_renamed_bot_is_labelled_and_offered_by_its_new_mention() {
     let messages = vec![message(Speaker::Bot(ParticipantId::new("jigga")), "previous"), message(Speaker::Bot(ParticipantId::new("gone")), "left"), message(Speaker::Human, "@atlas go")];
     let request = routing_request(&messages, &[bot("jigga", "Atlas")]);
     assert!(request.state.contains("[@atlas]: previous"), "{}", request.state);
-    assert!(request.state.contains("[@gone]: left"), "a bot no longer here keeps its id");
+    assert!(request.state.contains("[Former participant]: left"), "a bot no longer here isn't shown by its id, an old name");
     assert_eq!(request.questions["who_replies"]["criteria"]["bot_0"], "Only @atlas should reply with useful new information.");
     assert_eq!(request.choices["bot_0"], vec![ParticipantId::new("jigga")]);
 }
@@ -63,7 +63,8 @@ fn observer_cuts_busy_replies_and_uses_chat_speakers() {
 fn thinking_question_includes_hard_short_prompts_and_bot_handoffs() {
     use apex_core::decision::thinking_request;
     let messages = vec![Message { at: None, seq: 0, servers: vec![], speaker: Speaker::Bot(ParticipantId::new("jigga")), text: "@null build it".into() }];
-    let request = thinking_request(&messages, &[bot("null", "Null")]);
+    // The room's whole roster, as the observer gets it: the bot handing off is in it.
+    let request = thinking_request(&messages, &[bot("jigga", "Jigga"), bot("null", "Null")]);
     assert!(request.state.contains("[@jigga]: @null build it"));
     assert_eq!(request.questions["thinking"]["criteria"].as_object().unwrap().len(), 3);
     assert!(request.questions["thinking"]["instructions"].as_str().unwrap().contains("length"));

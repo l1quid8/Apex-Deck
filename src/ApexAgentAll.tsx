@@ -5,7 +5,7 @@ import './apex-agent-panel.css';
 import './assistant-tasks.css';
 import './apex-agent-dock.css';
 import type { ToolServer, Workspace } from './types';
-import { mergeProjectConversations, replyTarget, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
+import { laneMentions, mentionedLane, mergeProjectConversations, replyTarget, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
 import { TaskViewContext, personalTaskGroup, personalTaskKey, type TaskGroup, type TaskSummary } from './apexAgentTaskView.ts';
 import type { PersonalLane, PersonalMessage, PersonalTask } from './personalAssistant.ts';
 import { PersonalPanels, type PanelName } from './PersonalPanels.tsx';
@@ -18,7 +18,6 @@ import { messageStateKey, retryMessageText } from './apexAgentMessageControls.ts
 import { formatApexAgentQuote } from './apexAgentQuote.ts';
 import { ApexAgentComposerTools, type ApexAgentComposerToolsHandle } from './ApexAgentComposerTools.tsx';
 import { findTrigger } from './composerMenu.ts';
-import { mentionFor } from './slug.ts';
 import type { ComposerMenuHandle } from './ComposerTools.tsx';
 import type { Command } from './commands.ts';
 import { parseComposer } from './commands.ts';
@@ -159,12 +158,10 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   // While filtering, the filtered project is the default target.
   const lastSpoken = filterWorkspaceId ?? allEntries[allEntries.length - 1]?.workspaceId ?? null;
   const fallbackLane = filterWorkspaceId ?? focus ?? draftFallback ?? lastSpoken ?? (assistant ? PERSONAL : null);
-  // By its id, or by the mention the @ menu writes for it (made from its name).
-  const mentionedLane = lanes.find((lane) => [lane.id, mentionFor({ id: lane.id, display_name: lane.name })].some((handle) => {
-    const escaped = handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(^|[^\\p{L}\\p{N}_])@${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(text);
-  }));
-  const target = replyQuotes[0]?.laneId ?? (filterWorkspaceId ? filterWorkspaceId : mentionedLane?.id ?? replyTarget(text, lanes, fallbackLane));
+  // The project the @ menu's handle names (see laneMentions), read like a room reads a mention.
+  const laneHandles = laneMentions(lanes);
+  const mentioned = mentionedLane(text, lanes);
+  const target = replyQuotes[0]?.laneId ?? (filterWorkspaceId ? filterWorkspaceId : mentioned ?? replyTarget(text, lanes, fallbackLane));
   // Consume longer names first so "Mobile launch" does not also select "Mobile".
   let unmatched = text;
   const namedProjects = [...lanes].sort((a, b) => b.name.length - a.name.length).filter((workspace) => {
@@ -580,7 +577,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       {selectedTaskContext && <div className="assistant-composer-heading"><strong>{selectedTaskContext.project} · {selectedTaskContext.label}</strong><button type="button" onClick={() => { setDraftTaskContext(null); setFocus(null); setDraftFallback(null); onClearTaskContext?.(); }}>New message</button></div>}
       <ApexAgentReplyQuote quotes={replyQuotes} onClear={() => setReplyQuotes([])} onRemove={(index) => setReplyQuotes((list) => list.filter((_, i) => i !== index))} />
       <div className="apex-agent-all-compose-box">
-        <ApexAgentComposerTools ref={composerTools} value={text} disabled={busy} onChange={(value) => { setText(value); setCaret(composerInput.current?.selectionStart ?? value.length); }} inputRef={composerInput} menuRef={composerMenu} participants={lanes.map((lane) => ({ id: lane.id, display_name: lane.name }))} servers={serversByLane[composerLane] ?? []} serverStatus={serverStatusByLane[composerLane]} includeAll={!!onOverview && !filterWorkspaceId} allMentionDetail="Ask across projects" onTools={composerLane === PERSONAL && assistant ? () => setPanelOpen('connections') : undefined} folderUnavailableReason={pickFolderUnavailableReason} filesUnavailableReason={!saveAttachment ? 'File attachments are unavailable on this destination.' : undefined} trigger={findTrigger(text, caret)}
+        <ApexAgentComposerTools ref={composerTools} value={text} disabled={busy} onChange={(value) => { setText(value); setCaret(composerInput.current?.selectionStart ?? value.length); }} inputRef={composerInput} menuRef={composerMenu} participants={lanes.map((lane) => ({ id: lane.id, display_name: lane.name, mention: laneHandles.get(lane.id) }))} servers={serversByLane[composerLane] ?? []} serverStatus={serverStatusByLane[composerLane]} includeAll={!!onOverview && !filterWorkspaceId} allMentionDetail="Ask across projects" onTools={composerLane === PERSONAL && assistant ? () => setPanelOpen('connections') : undefined} folderUnavailableReason={pickFolderUnavailableReason} filesUnavailableReason={!saveAttachment ? 'File attachments are unavailable on this destination.' : undefined} trigger={findTrigger(text, caret)}
           saveAttachment={saveAttachment && !selectedTaskContext ? (name, bytes) => {
             if (busy || sending.current) throw new Error('Wait until the current message finishes before adding attachments.');
             const lane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;

@@ -34,7 +34,8 @@ export function renamedCopy<T extends Mentionable>(participants: readonly T[], r
 
 /** Why a chat's copy kept its old name, when another bot there already has the new one. */
 export function keptNameWhy(clash: MentionClash): string {
-  return clash.by ? `${clash.by.display_name} there already answers to @${clash.mention}.` : `@${clash.mention} already means everyone.`;
+  if (clash.kind === "unmentionable") return "a name needs a letter or a number.";
+  return clash.kind === "taken" ? `${clash.by.display_name} there already answers to @${clash.mention}.` : `@${clash.mention} already means everyone.`;
 }
 
 /** The note once the chats have answered: how many were renamed, and which kept the old name. Null when no chat had a copy. */
@@ -57,6 +58,37 @@ export async function renameCopy<T extends Mentionable>(participants: readonly T
   } catch (error) {
     return { chat, error: String(error).replace(/^Error: /, "") };
   }
+}
+
+/** The renames for chats to apply, with `renamed` added: one per agent, its latest, so a chat that was away for many renames still gets each agent's. */
+export function latestRenames(list: readonly CopyRename[], renamed: readonly CopyRename[]): CopyRename[] {
+  return [...list.filter((r) => !renamed.some((n) => n.id === r.id)), ...renamed];
+}
+
+/**
+ * One chat's renamer: each call renames the chat's copies after the call
+ * before it has saved, starting from the names this chat saved, which
+ * `roster` (the chat's own list) may not show yet. So renaming an agent twice
+ * while the first save is still out leaves the chat with the second name.
+ */
+export function copyRenamer<T extends Mentionable>(roster: () => readonly T[], save: (next: T, base: T) => Promise<unknown>, heard: (seq: number, outcome: CopyOutcome) => void) {
+  let last: Promise<void> = Promise.resolve();
+  // Names this chat saved, until its own list shows them.
+  const saved = new Map<string, string>();
+  const known = () => roster().map((p) => {
+    const name = saved.get(p.id);
+    if (name === undefined || name === p.display_name) { saved.delete(p.id); return p; }
+    return { ...p, display_name: name };
+  });
+  return (renames: readonly CopyRename[], chat: string): Promise<void> => {
+    const run = () => renameCopies(known(), renames, chat, async (next, base) => {
+      await save(next, base);
+      saved.set(next.id, next.display_name);
+    }, heard);
+    // A rename that went wrong never holds up the ones after it.
+    last = last.then(run, run);
+    return last;
+  };
 }
 
 /** Rename a chat's copies one rename after another, each seeing the names the ones before it gave, and tell `heard` what each did. */

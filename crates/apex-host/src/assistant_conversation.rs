@@ -97,25 +97,43 @@ mod tests {
         assert_eq!(workers, vec!["null"]);
     }
 
-    #[test]
-    fn a_renamed_worker_is_reached_by_its_new_mention_and_its_old_id() {
-        // "Dr. Who" answers to @dr.-who, which isn't its name as written.
-        for text in ["Please fix the parser in chat Build Room and ask @dr.-who to handle it", "Please fix the parser in chat Build Room and ask @null to handle it"] {
-            let mut request = request();
-            request.text = text.into();
-            request.threads[0].snapshot.participants[0].display_name = "Dr. Who".into();
-            let intent = ConversationIntent::Handoff {
-                message: "Working".into(),
-                brief: "Fix parser".into(),
-                thread_id: "thread-build".into(),
-                workers: vec![],
-                review_criteria: vec![],
-            };
-            let ConversationDecision::Handoff { workers, .. } = authorize(&request, intent) else {
-                panic!("expected handoff for {text}")
-            };
-            assert_eq!(workers, vec!["null"], "{text}");
+    fn fix_the_parser() -> ConversationIntent {
+        ConversationIntent::Handoff {
+            message: "Working".into(),
+            brief: "Fix parser".into(),
+            thread_id: "thread-build".into(),
+            workers: vec![],
+            review_criteria: vec![],
         }
+    }
+
+    #[test]
+    fn a_renamed_worker_is_reached_by_its_new_mention_only() {
+        // "Dr. Who" answers to @dr.-who, which isn't its name as written.
+        let mut request = request();
+        request.text = "Please fix the parser in chat Build Room and ask @dr.-who to handle it".into();
+        request.threads[0].snapshot.participants[0].display_name = "Dr. Who".into();
+        let ConversationDecision::Handoff { workers, .. } = authorize(&request, fix_the_parser()) else {
+            panic!("expected handoff")
+        };
+        assert_eq!(workers, vec!["null"]);
+        // Its old name is gone: nobody answers to it, so ApexAgent asks.
+        request.text = "Please fix the parser in chat Build Room and ask @null to handle it".into();
+        assert!(matches!(authorize(&request, fix_the_parser()), ConversationDecision::Clarify { .. }));
+    }
+
+    #[test]
+    fn an_old_name_picks_no_saved_worker_and_does_not_make_its_new_owner_ambiguous() {
+        let mut request = request();
+        let named = |id: &str, name: &str| ParticipantConfig { display_name: name.into(), ..profile(id, false) };
+        request.text = "Please ask @jigga to fix the parser".into();
+        request.worker_profiles = vec![named("jigga", "Atlas")];
+        assert!(matches!(authorize(&request, fix_the_parser()), ConversationDecision::Clarify { .. }), "Atlas no longer answers to @jigga");
+        request.worker_profiles.push(named("jigga-2", "Jigga"));
+        let ConversationDecision::Handoff { workers, .. } = authorize(&request, fix_the_parser()) else {
+            panic!("expected a handoff to the bot called Jigga now")
+        };
+        assert_eq!(workers, vec!["jigga-2"]);
     }
 
     #[test]
@@ -132,7 +150,7 @@ mod tests {
         who.display_name = "Dr. Who".into();
         let roster = vec![who];
         assert!(!contains_unknown_handle("ask @dr.-who", &roster));
-        assert!(!contains_unknown_handle("ask @jigga", &roster), "its old id");
+        assert!(contains_unknown_handle("ask @jigga", &roster), "its old name is gone");
         assert!(contains_unknown_handle("ask @nobody", &roster));
     }
 
@@ -1490,12 +1508,9 @@ fn named_worker(
     }
     let matches: Vec<_> = roster
         .into_iter()
-        .filter(|p| {
-            exact_occurs(&request.text, &p.display_name)
-                || exact_occurs(&request.text, p.id.as_str())
-                || exact_occurs(&request.text, &format!("@{}", apex_core::handle_for(&p.id)))
-                || exact_occurs(&request.text, &format!("@{}", apex_core::mention_for(p)))
-        })
+        // By its name or its mention, with or without the @. Never by its id:
+        // a renamed bot's id is its old name.
+        .filter(|p| exact_occurs(&request.text, &p.display_name) || exact_occurs(&request.text, &apex_core::mention_for(p)))
         .collect();
     let ids: std::collections::HashSet<_> = matches.iter().map(|p| p.id.as_str()).collect();
     if ids.len() > 1 {
@@ -1626,7 +1641,7 @@ fn contains_unknown_handle(text: &str, roster: &[ParticipantConfig]) -> bool {
         !matches!(handle.as_str(), "all" | "everyone")
             && !roster
                 .iter()
-                .any(|p| apex_core::mention_for(p) == *handle || apex_core::handle_for(&p.id) == *handle)
+                .any(|p| apex_core::mention_for(p) == *handle)
     })
 }
 

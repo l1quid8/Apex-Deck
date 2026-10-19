@@ -41,7 +41,7 @@ test('a doubled slash escapes and is sent with one slash', () => {
 test('escape is normalized before adding quote context', async () => {
   const { replyText } = await import('../src/reply.ts');
   const parsed = parseComposer('//compact');
-  assert.equal(replyText(postable(parsed.text), {id:'bot',name:'Bot',text:'previous'}).split('\n')[0], '@bot /compact');
+  assert.equal(replyText(postable(parsed.text), {id:'bot',name:'Bot',text:'previous'}, [{id:'bot',display_name:'Bot'}]).split('\n')[0], '@bot /compact');
 });
 
 test('queued edits follow composer command and escape rules', async () => {

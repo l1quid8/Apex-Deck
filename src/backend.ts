@@ -417,7 +417,7 @@ function demoBackend(): Backend {
   const targetsFor = (id: string, text: string): string[] => {
     const room = rooms.get(id);
     if (!room) throw new Error(`no group chat with id ${id}`);
-    // By the daemon's rule: a bot's current name, else its old id.
+    // By the daemon's rule: a bot's current name, and nothing else.
     const target = mentionTarget(text, room.participants);
     const named = target === "everyone" ? [] : target;
     const all = room.participants.map(p => p.id);

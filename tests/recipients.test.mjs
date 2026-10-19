@@ -1,12 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { exampleRows, handleFor, hasMention, mentionTarget, recipientName } from "../src/recipients.ts";
+import { exampleRows, hasMention, mentionTarget, recipientName } from "../src/recipients.ts";
 
 const bots = (...ids) => ids.map((id) => ({ id, display_name: id }));
 
 test("mentions follow the room's rules", () => {
   const ids = bots("null", "jigga", "sol-6.1");
-  assert.equal(handleFor("Sol 6.1!"), "sol6.1");
   assert.deepEqual(mentionTarget("@jigga then @NULL, and @jigga again", ids), ["jigga", "null"]);
   assert.deepEqual(mentionTarget("what do you think, @sol-6.1.", ids), ["sol-6.1"]);
   assert.equal(mentionTarget("@all thoughts?", ids), "everyone");

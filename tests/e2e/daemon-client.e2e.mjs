@@ -197,7 +197,7 @@ test('phone roster edits reach an already open desktop room', { timeout: 30_000 
   assert.deepEqual(state.snapshot.participants, []);
 });
 
-test('a renamed bot answers to its new name, keeps its old id as a fallback, and a clashing name is refused', { timeout: 30_000 }, async t => {
+test('a renamed bot answers to its new name only, and a clashing or letterless name is refused', { timeout: 30_000 }, async t => {
   const data = fs.mkdtempSync('/tmp/ade-rename-');
   const daemon = await serve(data);
   const client = new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
@@ -213,13 +213,14 @@ test('a renamed bot answers to its new name, keeps its old id as a fallback, and
   const atlas = await client.call('room_update_participant', { id: 'rename', base: jigga, participant: { ...jigga, display_name: 'Atlas' } });
   assert.equal(atlas.id, 'jigga', 'the id it is saved under never changes');
   assert.deepEqual(await client.call('room_targets', { id: 'rename', text: '@atlas who are you?' }), ['jigga']);
-  assert.deepEqual(await client.call('room_targets', { id: 'rename', text: '@jigga still there?' }), ['jigga'], 'an old id still reaches it');
+  assert.deepEqual(await client.call('room_targets', { id: 'rename', text: '@jigga still there?' }), ['null'], 'its old name is gone, so the message names nobody');
   await client.call('room_post', { id: 'rename', text: '@atlas who are you?' });
   assert.match(replies.at(-1), /^You are Atlas \(@atlas\)/, 'its instructions use the new name');
   await assert.rejects(client.call('room_add_participant', { id: 'rename', participant: { ...shell('atlas', 'echo hi'), display_name: 'Atlas' } }), /Atlas in this chat already answers to @atlas/);
   await assert.rejects(client.call('room_update_participant', { id: 'rename', base: atlas, participant: { ...atlas, display_name: 'null' } }), /Null in this chat already answers to @null/);
+  await assert.rejects(client.call('room_update_participant', { id: 'rename', base: atlas, participant: { ...atlas, display_name: '-_-' } }), /A name needs a letter or a number/);
   await client.call('room_add_participant', { id: 'rename', participant: { ...shell('jigga-2', 'echo hi'), display_name: 'Jigga' } });
-  assert.deepEqual(await client.call('room_targets', { id: 'rename', text: '@jigga hi' }), ['jigga-2'], 'a bot named that now wins over an old id');
+  assert.deepEqual(await client.call('room_targets', { id: 'rename', text: '@jigga hi' }), ['jigga-2'], 'a bot called that now gets it');
 });
 
 test('a bot can be renamed while it is replying', { timeout: 30_000 }, async t => {

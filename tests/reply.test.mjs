@@ -5,18 +5,18 @@ import { foldsMessageActions, handOffChoices, handOffLabel, quoteFor, quoteLead,
 const bots = (...ids) => ids.map((id) => ({ id, display_name: id }));
 
 test('quote replies address the selected model and preserve multiline context', () => {
-  assert.equal(replyText('Thanks', { id: 'null', name: 'Null', text: 'First\n\nSecond' }), '@null Thanks\n\n> Null wrote:\n> First\n> \n> Second');
+  assert.equal(replyText('Thanks', { id: 'null', name: 'Null', text: 'First\n\nSecond' }, bots('null')), '@null Thanks\n\n> Null wrote:\n> First\n> \n> Second');
 });
 
 test('handles inside a quote cannot summon other models', () => {
-  const result = replyText('Yes', { id: 'jigga', name: 'Jigga', text: 'Ask @null or @all' });
+  const result = replyText('Yes', { id: 'jigga', name: 'Jigga', text: 'Ask @null or @all' }, bots('jigga', 'null'));
   assert.ok(result.startsWith('@jigga Yes'));
   assert.ok(!result.includes('@null'));
   assert.ok(!result.includes('@all'));
 });
 
 test('ordinary messages keep their existing behavior', () => {
-  assert.equal(replyText('  Hello @all  ', null), 'Hello @all');
+  assert.equal(replyText('  Hello @all  ', null, bots('null')), 'Hello @all');
 });
 
 test('your own @mention means the quote adds no handle', () => {
@@ -43,6 +43,13 @@ test('a quote of a renamed bot leads with its new name, even when another bot to
   assert.ok(replyText('Agreed?', quote, people).startsWith('@atlas Agreed?'));
   assert.ok(replyText('Check', { ...quote, to: 'jigga-2' }, people).startsWith('@jigga Check'));
   assert.equal(replyText('@atlas check this', quote, people), '@atlas check this\n\n> Atlas wrote:\n> Use a cache.', 'your own mention by the new name counts');
+});
+
+test('a quote of a bot that has left the chat leads with nobody, not with its old handle', () => {
+  const quote = { id: 'gone', name: 'Gone', text: 'Bye' };
+  assert.equal(replyText('Agreed?', quote, bots('null')), 'Agreed?\n\n> Gone wrote:\n> Bye');
+  assert.equal(quoteTarget('Agreed?', [quote], bots('null')), null, 'and the Send to button agrees');
+  assert.equal(replyText('Agreed?', { ...quote, to: 'gone' }, bots('null')), 'Agreed?\n\n> Gone wrote:\n> Bye', 'nor does a Send to picked before it left');
 });
 
 test('your own messages can be quoted and lead with nobody by default', () => {

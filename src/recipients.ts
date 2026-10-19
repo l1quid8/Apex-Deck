@@ -3,29 +3,39 @@
 
 import type { TurnPolicy } from "./types";
 import { joinNames } from "./composerStatus.ts";
-import { handleFor, mentionFor, type Mentionable } from "./slug.ts";
-
-export { handleFor };
+import { mentionFor, type Mentionable } from "./slug.ts";
 
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 
 /**
- * Who `text` @mentions, by the room's rules: "everyone" for @all or
- * @everyone, otherwise the bots mentioned, first mention first. A word is a
- * bot's current mention (see mentionFor), or else a bot's old id. An @ right
- * after a letter or digit (an email address) is not a mention, and trailing
- * dots are sentence punctuation.
+ * Every @word in `text`, lower-cased, in order, the way the room reads them
+ * (apex_core::mentioned_words). An @ right after a letter or digit (an email
+ * address) is not a mention, and trailing dots are sentence punctuation.
  */
-export function mentionTarget(text: string, people: readonly Mentionable[]): "everyone" | string[] {
-  const found: string[] = [];
-  let everyone = false;
+export function mentionedWords(text: string): string[] {
+  const words: string[] = [];
   for (const match of text.matchAll(/@([\p{L}\p{N}_.-]*)/gu)) {
     const at = match.index ?? 0;
     if (at > 0 && LETTER_OR_DIGIT.test(text[at - 1])) continue;
     const word = match[1].toLowerCase().replace(/\.+$/, "");
+    if (word) words.push(word);
+  }
+  return words;
+}
+
+/**
+ * Who `text` @mentions, by the room's rules: "everyone" for @all or
+ * @everyone, otherwise the bots mentioned, first mention first. A word is a
+ * bot's current mention (see mentionFor) and nothing else, so a renamed
+ * bot's old name reaches nobody.
+ */
+export function mentionTarget(text: string, people: readonly Mentionable[]): "everyone" | string[] {
+  const found: string[] = [];
+  let everyone = false;
+  for (const word of mentionedWords(text)) {
     if (word === "all" || word === "everyone") everyone = true;
     else {
-      const id = (people.find((p) => mentionFor(p) === word) ?? people.find((p) => handleFor(p.id) === word))?.id;
+      const id = people.find((p) => mentionFor(p) === word)?.id;
       if (id && !found.includes(id)) found.push(id);
     }
   }

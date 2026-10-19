@@ -11,8 +11,8 @@ export function slug(name: string): string {
 const HANDLE_CHAR = /[\p{L}\p{N}_.-]/u;
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 
-/** What a bot's id answers to: its letters, digits, dashes, underscores and dots, lower-cased. Old messages and older phone builds still use it. */
-export function handleFor(id: string): string {
+/** A bot's id as a handle: its letters, digits, dashes, underscores and dots, lower-cased. */
+function handleFor(id: string): string {
   return [...id].filter((c) => HANDLE_CHAR.test(c)).join("").toLowerCase();
 }
 
@@ -22,34 +22,41 @@ export interface Mentionable {
   display_name: string;
 }
 
+/** Whether a name has a letter or number to be @mentioned by. */
+export function mentionable(name: string): boolean {
+  return LETTER_OR_DIGIT.test(slug(name));
+}
+
 /**
- * A bot's @mention: its current name as slug() writes it, or its id's handle
- * when the name has no letter or digit. The id never changes, so a renamed
- * bot answers to its new name. The daemon has the same rule
- * (apex_core::mention); shared/mention-names.json keeps the two together.
+ * A bot's @mention, and the only one it answers to: its current name as
+ * slug() writes it. The id never changes, so a renamed bot answers to its new
+ * name and its old one reaches nobody. Only a name saved before names needed
+ * a letter or number falls back to the id's handle. The daemon has the same
+ * rule (apex_core::mention); shared/mention-names.json keeps the two together.
  */
 export function mentionFor(bot: Mentionable): string {
-  const fromName = slug(bot.display_name);
-  return LETTER_OR_DIGIT.test(fromName) ? fromName : handleFor(bot.id);
+  return mentionable(bot.display_name) ? slug(bot.display_name) : handleFor(bot.id);
 }
 
-/** A name that can't be used: the bot already answering to its mention, or null for @all and @everyone. */
-export interface MentionClash {
-  mention: string;
-  by: Mentionable | null;
-}
+/** A name that can't be used: another bot already answers to its mention, it means everyone, or it has no letter or number (the id, an old name, would stand in). */
+export type MentionClash =
+  | { kind: "taken"; mention: string; by: Mentionable }
+  | { kind: "everyone"; mention: string }
+  | { kind: "unmentionable" };
 
-/** Why `bot` can't have its name among `others`, or null when it can. Another bot's old id is no clash: a name beats an id. */
+/** Why `bot` can't have its name among `others`, or null when it can. Another bot's old name is free to take. */
 export function mentionClash(bot: Mentionable, others: readonly Mentionable[]): MentionClash | null {
+  if (!mentionable(bot.display_name)) return { kind: "unmentionable" };
   const mention = mentionFor(bot);
-  if (mention === "all" || mention === "everyone") return { mention, by: null };
+  if (mention === "all" || mention === "everyone") return { kind: "everyone", mention };
   const by = others.find((other) => other.id !== bot.id && mentionFor(other) === mention);
-  return by ? { mention, by } : null;
+  return by ? { kind: "taken", mention, by } : null;
 }
 
 /** The refusal for a clash, in a chat or in the Agents tab. The daemon words a chat's the same way. */
 export function clashMessage(clash: MentionClash, place: "chat" | "agents"): string {
-  if (!clash.by) return `@${clash.mention} already means everyone in the chat. Pick a different name.`;
+  if (clash.kind === "unmentionable") return "A name needs a letter or a number. Pick a different name.";
+  if (clash.kind === "everyone") return `@${clash.mention} already means everyone in the chat. Pick a different name.`;
   const who = place === "chat" ? `${clash.by.display_name} in this chat` : `Your agent ${clash.by.display_name}`;
   return `${who} already answers to @${clash.mention}. Pick a different name.`;
 }

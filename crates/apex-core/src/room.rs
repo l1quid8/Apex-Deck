@@ -702,7 +702,7 @@ impl Room {
         let configs = self.configs();
         // A bot that answers only when named is reached only by its handle.
         match parse_mentions(text, &configs) {
-            MentionTarget::Everyone => configs.iter().filter(|c| !self.named_only(&c.id) || crate::names(text, c, &configs)).map(|c| c.id.clone()).collect(),
+            MentionTarget::Everyone => configs.iter().filter(|c| !self.named_only(&c.id) || crate::names(text, c)).map(|c| c.id.clone()).collect(),
             MentionTarget::Some(ids) => ids,
             MentionTarget::None => match self.options.policy {
                 TurnPolicy::Everyone | TurnPolicy::RoundRobin => self.unnamed_ids(),
@@ -1141,7 +1141,7 @@ mod approver_tests {
     }
 
     #[test]
-    fn a_renamed_bot_that_answers_only_when_named_joins_all_by_its_new_mention() {
+    fn a_renamed_bot_that_answers_only_when_named_joins_all_by_its_new_mention_only() {
         let jigga = Arc::new(crate::testing::ScriptedParticipant::new("jigga", &[]));
         let mut config = crate::testing::ScriptedParticipant::new("venice", &[]).config().clone();
         config.display_name = "Allison".into();
@@ -1149,7 +1149,7 @@ mod approver_tests {
         let room = Room::new(vec![jigga, allison], RoomOptions { policy: TurnPolicy::Everyone, ..RoomOptions::default() });
         let (jigga, venice) = (ParticipantId::new("jigga"), ParticipantId::new("venice"));
         assert_eq!(room.resolve_targets("@all and @allison"), vec![jigga.clone(), venice.clone()]);
-        assert_eq!(room.resolve_targets("@all and @venice"), vec![jigga.clone(), venice.clone()], "its old id still names it");
+        assert_eq!(room.resolve_targets("@all and @venice"), vec![jigga.clone()], "its old name is gone");
         assert_eq!(room.resolve_targets("@all"), vec![jigga]);
     }
 

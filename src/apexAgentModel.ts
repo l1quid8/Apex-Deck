@@ -1,5 +1,7 @@
 import type { ParticipantConfig } from './types';
 import { assistantProfileChoices } from './assistantTaskModel.ts';
+import { mentionedWords } from './recipients.ts';
+import { mentionFor, slug } from './slug.ts';
 
 export interface MonitorEvidence {
   sourceId: string;
@@ -99,6 +101,29 @@ export function mergeProjectConversations(monitors: ProjectMonitor[], names: Rec
   return monitors
     .flatMap((monitor) => monitor.messages.map((message) => ({ workspaceId: monitor.workspaceId, project: names[monitor.workspaceId] ?? 'Project', message })))
     .sort((a, b) => a.message.at - b.message.at || a.workspaceId.localeCompare(b.workspaceId));
+}
+
+/**
+ * What each project answers to after @, by id: its name as a mention, or its
+ * id when another project's name gives the same mention or the name means
+ * everyone, so the @ list never offers one handle for two projects.
+ */
+export function laneMentions(projects: readonly { id: string; name: string }[]): Map<string, string> {
+  const fromName = projects.map((project) => mentionFor({ id: project.id, display_name: project.name }));
+  return new Map(projects.map((project, i) => {
+    const shared = fromName.filter((mention) => mention === fromName[i]).length > 1;
+    return [project.id, shared || fromName[i] === 'all' || fromName[i] === 'everyone' ? slug(project.id) : fromName[i]];
+  }));
+}
+
+/** The project `text` @mentions first: by what laneMentions says it answers to, or by its id. Null when it names none. */
+export function mentionedLane(text: string, projects: readonly { id: string; name: string }[]): string | null {
+  const mentions = laneMentions(projects);
+  for (const word of mentionedWords(text)) {
+    const project = projects.find((p) => mentions.get(p.id) === word) ?? projects.find((p) => slug(p.id) === word);
+    if (project) return project.id;
+  }
+  return null;
 }
 
 /** A reply goes to the project it names as a whole word ("UI" never matches "Build"); otherwise it continues the last project talked about. */

@@ -20,8 +20,8 @@ import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress"
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
 import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
-import { botIdentity, clashMessage, handleFor, mentionClash, mentionFor, slug } from "./slug";
-import { renameCopies, savedToAgents, type CopyOutcome, type CopyRename } from "./agentRenames";
+import { botIdentity, clashMessage, mentionable, mentionClash, mentionFor, slug } from "./slug";
+import { copyRenamer, savedToAgents, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { nameForModel, uniqueName } from "./quickAdd";
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
@@ -1326,17 +1326,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   // An agent renamed in the Agents tab: rename this chat's copy of it, once,
   // when the chat can take changes. A chat opened after the rename skips it.
+  // One rename at a time, so a second one made while the first saves isn't lost.
   const renamedUpTo = useRef(Math.max(0, ...copyRenames.map((r) => r.seq)));
+  const renaming = useRef({ room: pane.id, participants, backend, onCopyRenamed });
+  renaming.current = { room: pane.id, participants, backend, onCopyRenamed };
+  const [renameCopies] = useState(() => copyRenamer(() => renaming.current.participants, async (next, base) => {
+    const saved = await renaming.current.backend.roomUpdateParticipant(renaming.current.room, next, base);
+    if (!saved) setParticipants((list) => list.map((p) => (p.id === next.id ? { ...p, display_name: next.display_name } : p)));
+  }, (seq, outcome) => renaming.current.onCopyRenamed?.(seq, outcome)));
   useEffect(() => {
     if (profileMode || !ready) return;
     const due = copyRenames.filter((r) => r.seq > renamedUpTo.current);
     if (due.length === 0) return;
     renamedUpTo.current = due[due.length - 1].seq;
-    void renameCopies(participants, due, pane.title, async (next, base) => {
-      const saved = await backend.roomUpdateParticipant(pane.id, next, base);
-      if (!saved) setParticipants((list) => list.map((p) => (p.id === next.id ? { ...p, display_name: next.display_name } : p)));
-    }, (seq, outcome) => onCopyRenamed?.(seq, outcome));
-  }, [copyRenames, ready, participants]);
+    void renameCopies(due, pane.title);
+  }, [copyRenames, ready]);
 
   /** Counts finished saves, so the recipients are asked again once the room has the new Who answers. */
   const [optionsSaved, setOptionsSaved] = useState(0);
@@ -2037,7 +2041,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const fileNames = reviewFileNames(nextReviewNumber(taken), parts.length);
     parts.forEach((text, i) => track(fileNames[i], undefined, () => backend.saveAttachment(pane.id, fileNames[i], new TextEncoder().encode(text))));
     const reviewer = participants.find((p) => p.id === id);
-    setText((draft) => reviewDraft(reviewer ? mentionFor(reviewer) : handleFor(id), draft));
+    if (reviewer) setText((draft) => reviewDraft(mentionFor(reviewer), draft));
     // In a narrow window the sidebar covers the composer; get it out of the way.
     if (details?.overlay) details.close();
     input.current?.focus();
@@ -2528,6 +2532,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </button>);
   // Editing previews the saved look; a new agent previews what openNewForm seeded.
   const formAppearance = draft.appearance ?? (editing ? appearance(editing) : undefined);
+  const edited = editing ? participants.find((p) => p.id === editing) : undefined;
   const modelForm = (adding && (
         <form
           className="add-form"
@@ -2538,12 +2543,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         >
           <div className="wide form-head">
             <button type="button" className="ghost form-back" onClick={() => closeForm(draft.preset)}>← Back</button>
-            <p className="form-title">{editing ? `Change settings for @${mentionFor(participants.find((p) => p.id === editing) ?? { id: editing, display_name: "" })}` : "New agent"}</p>
+            <p className="form-title">{!editing ? "New agent" : edited ? `Change settings for @${mentionFor(edited)}` : "Change settings"}</p>
           </div>
           <label>
             Name
             <input name="name" value={draft.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Opus" autoFocus />
-            {draft.name && <span className="hint">Mention as @{mentionFor({ id: editing ?? slug(draft.name), display_name: draft.name })}</span>}
+            {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}
           </label>
           {formAppearance && <div className="appearance-controls">
             <Avatar seed={formAppearance.seed} color={formAppearance.color} />
@@ -2781,7 +2786,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </div>
       <label>Name
         <input name="quick-name" value={draft.name} onChange={(e) => { nameTouched.current = true; set("name", e.target.value); }} placeholder="e.g. Opus" />
-        {draft.name && <span className="hint">Mention as @{slug(draft.name)}</span>}
+        {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}
       </label>
       {formError && <p className="form-error">{formError}</p>}
       <div className="quick-add-foot">

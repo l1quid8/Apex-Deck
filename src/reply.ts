@@ -2,7 +2,7 @@
 
 import type { Message } from "./types";
 import { hasMention } from "./recipients.ts";
-import { handleFor, mentionFor, type Mentionable } from "./slug.ts";
+import { mentionFor, type Mentionable } from "./slug.ts";
 
 export interface ReplyQuote {
   /** The quoted bot's id, or "" for one of your own messages. */
@@ -13,22 +13,26 @@ export interface ReplyQuote {
   to?: string;
 }
 
+/** Whether a quote can lead with `id`: everyone, or a bot still in the chat. */
+const here = (id: string, people: readonly Mentionable[]) => id === "all" || people.some((p) => p.id === id);
+
 /**
  * The handle a quoted reply leads with: your choice in Send to ▾; else the
  * quoted bot, unless your own text already @mentions someone or the quote
  * is one of your messages. Null leads with nobody, and the room's policy or
- * your mention decides.
+ * your mention decides. A bot no longer in the chat leads with nobody: only
+ * its old name could be written for it.
  */
 export function quoteLead(body: string, quote: ReplyQuote, people: readonly Mentionable[]): string | null {
-  if (quote.to) return quote.to;
-  if (!quote.id || hasMention(body, people)) return null;
+  if (quote.to) return here(quote.to, people) ? quote.to : null;
+  if (!quote.id || !here(quote.id, people) || hasMention(body, people)) return null;
   return quote.id;
 }
 
 /** Who stacked quotes lead with: the first explicit Send to, else the first quote that names someone. */
 export function quoteTarget(body: string, quotes: ReplyQuote[], people: readonly Mentionable[]): string | null {
   for (const item of quotes) {
-    if (item.to) return item.to;
+    if (item.to && here(item.to, people)) return item.to;
   }
   for (const item of quotes) {
     const candidate = quoteLead(body, item, people);
@@ -38,8 +42,8 @@ export function quoteTarget(body: string, quotes: ReplyQuote[], people: readonly
 }
 
 /** Quote mentions are context, not instructions to summon another participant.
- *  The lead is written as the bot's current mention; a bot no longer here keeps its id's. */
-export function replyText(text: string, quote: ReplyQuote | ReplyQuote[] | null, people: readonly Mentionable[] = []): string {
+ *  The lead is written as the bot's current mention, so `people` is the chat's bots. */
+export function replyText(text: string, quote: ReplyQuote | ReplyQuote[] | null, people: readonly Mentionable[]): string {
   const body = text.trim();
   const quotes = !quote ? [] : Array.isArray(quote) ? quote : [quote];
   if (quotes.length === 0) return body;
@@ -48,7 +52,7 @@ export function replyText(text: string, quote: ReplyQuote | ReplyQuote[] | null,
   );
   const lead = quoteTarget(body, quotes, people);
   const bot = lead && lead !== "all" ? people.find((p) => p.id === lead) : undefined;
-  const handle = !lead ? null : lead === "all" ? "all" : bot ? mentionFor(bot) : handleFor(lead);
+  const handle = lead === "all" ? "all" : bot ? mentionFor(bot) : null;
   return `${handle ? `@${handle} ` : ""}${body}\n\n${blocks.join('\n> \n')}`;
 }
 

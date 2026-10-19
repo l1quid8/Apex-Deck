@@ -298,8 +298,9 @@ export function pickMention(text: string, caret: number, trigger: Trigger | null
   return insertAt(text, trigger, trigger ? caret : text.length, `@${handle} `);
 }
 
-/** Tapping a bot in the thread's bar: its @mention goes in front of what's typed, unless the text already names that bot. */
-export function tagFromBar(text: string, who: Mentionable, people: readonly Mentionable[]): string {
+/** Tapping a bot in the thread's bar: its @mention goes in front of what's typed, unless the text already names that bot or it has left. */
+export function tagFromBar(text: string, who: Mentionable | undefined, people: readonly Mentionable[]): string {
+  if (!who) return text;
   const named = mentionTarget(text, people);
   if (named !== "everyone" && named.includes(who.id)) return text;
   return `@${mentionFor(who)} ${text.replace(/^\s+/, "")}`;
