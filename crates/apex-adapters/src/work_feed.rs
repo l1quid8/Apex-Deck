@@ -3,8 +3,11 @@
 //! the state between events; everything here looks at one event at a time.
 //! Field shapes: tests/fixtures/work_steps/probe-notes.md.
 
+use std::collections::HashMap;
+
 use apex_core::work_steps::{
-    cut_detail, cut_output, StepKind, StepStatus, TodoItem, TodoStatus, WorkStep,
+    STEPS_PER_REPLY_MAX, cut_detail, cut_output, StepKind, StepStatus, TodoItem, TodoStatus,
+    WorkStep,
 };
 use serde_json::Value;
 
@@ -354,4 +357,194 @@ pub(crate) fn codex_plan(plan: &Value) -> Vec<TodoItem> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+// -------------------------------------------------------------------- Muse
+
+/// The step a Muse `toolCall` item starts, or `None` for items that are
+/// not work. `write_todos` keeps the to-do list instead of a step. `item`
+/// is a notification's `params.item`; `cwd` is the room folder.
+pub(crate) fn muse_step(item: &Value, cwd: Option<&str>) -> Option<WorkStep> {
+    let key = item["itemId"].as_str()?;
+    let tool = item["tool"].as_str().unwrap_or("");
+    if tool == "write_todos" {
+        return None;
+    }
+    let args: Value = item["args"]
+        .as_str()
+        .and_then(|a| serde_json::from_str(a).ok())
+        .unwrap_or(Value::Null);
+    let arg = |name: &str| args[name].as_str().map(str::trim).filter(|s| !s.is_empty());
+    let path = arg("path").or(arg("file_path"));
+    let named = |verb: &str| match path {
+        Some(p) => format!("{verb} {}", file_name(p)),
+        None => verb.to_string(),
+    };
+    match tool {
+        "bash" | "shell" => {
+            let command = arg("command").unwrap_or("");
+            let (dir, rest) = split_cd(command);
+            let label = match first_line(rest) {
+                "" => "Bash",
+                line => line,
+            };
+            let mut step = running(key, None, StepKind::Command, label, command);
+            step.folder = dir.and_then(|d| folder_note(d, cwd));
+            Some(step)
+        }
+        "read_file" => Some(running(key, None, StepKind::Read, &named("Read"), path.unwrap_or(""))),
+        "search" => {
+            let pattern = arg("pattern").or(arg("query")).unwrap_or("");
+            let label = match pattern.is_empty() {
+                true => "Search".to_string(),
+                false => format!("Search {}", first_line(pattern)),
+            };
+            Some(running(key, None, StepKind::Search, &label, pattern))
+        }
+        "edit_file" | "write_file" => {
+            Some(running(key, None, StepKind::Edit, &named("Edit"), path.unwrap_or("")))
+        }
+        "web_search" | "web_fetch" => {
+            let target = arg("url").or(arg("query")).unwrap_or("");
+            let label = match (tool, target.is_empty()) {
+                ("web_fetch", false) => format!("Fetch {target}"),
+                (_, false) => format!("Search the web for {target}"),
+                _ => "Search the web".to_string(),
+            };
+            Some(running(key, None, StepKind::Web, &label, target))
+        }
+        "workflow" => {
+            let name = arg("name").unwrap_or("Helper");
+            let detail = arg("script").or(arg("prompt")).unwrap_or(name);
+            Some(running(key, None, StepKind::Helper, name, detail))
+        }
+        _ => {
+            let main = ["command", "pattern", "query", "url", "path", "description"]
+                .iter()
+                .find_map(|name| arg(name));
+            let label = match main {
+                Some(main) => format!("{tool} {}", first_line(main)),
+                None if tool.is_empty() => "Tool".to_string(),
+                None => tool.to_string(),
+            };
+            let detail = match &args {
+                Value::Null => String::new(),
+                _ => serde_json::to_string(&args).unwrap_or_default(),
+            };
+            Some(running(key, None, StepKind::Tool, &label, &detail))
+        }
+    }
+}
+
+/// A finished Muse `toolCall` item's output text and exit code. Bash output
+/// is the `output` field inside the pretty-printed `visibleOutput` JSON;
+/// a failed helper reports its `failureReason`; everything else is
+/// `visibleOutput` as is.
+fn muse_output(tool: &str, item: &Value) -> (String, Option<i32>) {
+    let visible = item["visibleOutput"].as_str().unwrap_or("");
+    match tool {
+        "bash" | "shell" => match serde_json::from_str::<Value>(visible) {
+            Ok(parsed) => (
+                parsed["output"].as_str().unwrap_or("").to_string(),
+                parsed["exit_code"].as_i64().and_then(|c| i32::try_from(c).ok()),
+            ),
+            Err(_) => (visible.to_string(), None),
+        },
+        _ if item["status"] == "failed" => (
+            item["failureReason"].as_str().unwrap_or(visible).to_string(),
+            None,
+        ),
+        _ => (visible.to_string(), None),
+    }
+}
+
+/// The running steps of one Muse turn, keyed by `itemId`. Feeds one
+/// notification at a time; `item/updated` and `item/delta` never change
+/// anything visible because the final output comes from `item/completed`.
+pub(crate) struct MuseSteps {
+    cwd: Option<String>,
+    open: HashMap<String, WorkStep>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl MuseSteps {
+    pub(crate) fn new(cwd: Option<String>) -> Self {
+        Self { cwd, open: HashMap::new(), seen: std::collections::HashSet::new() }
+    }
+
+    /// Fold one notification into steps. Returns the new or updated steps
+    /// to report, if any. `method` is the JSON-RPC notification name and
+    /// `params` its params.
+    pub(crate) fn notice(&mut self, method: &str, params: &Value) -> Vec<WorkStep> {
+        let item = &params["item"];
+        if item["kind"] != "toolCall" {
+            return Vec::new();
+        }
+        match method {
+            "item/started" => {
+                let Some(step) = muse_step(item, self.cwd.as_deref()) else {
+                    return Vec::new();
+                };
+                // A repeated start, even for a finished step, is a duplicate.
+                // Past the cap a new key is neither kept nor sent.
+                if self.seen.contains(&step.key) || self.seen.len() >= STEPS_PER_REPLY_MAX {
+                    return Vec::new();
+                }
+                self.seen.insert(step.key.clone());
+                self.open.insert(step.key.clone(), step.clone());
+                vec![step]
+            }
+            "item/completed" => {
+                let key = match item["itemId"].as_str() {
+                    Some(key) => key,
+                    None => return Vec::new(),
+                };
+                if item["tool"] == "write_todos" {
+                    return Vec::new();
+                }
+                match self.open.remove(key) {
+                    Some(open) => {
+                        let tool = item["tool"].as_str().unwrap_or("");
+                        let (text, exit_code) = muse_output(tool, item);
+                        let mut done = open;
+                        done.output = output(&text);
+                        done.exit_code = exit_code;
+                        done.status = match item["status"].as_str() {
+                            Some("failed") => StepStatus::Failed,
+                            _ => StepStatus::Done,
+                        };
+                        vec![done]
+                    }
+                    None => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A `session/todoListChanged` notification's list, whole. `cancelled`
+    /// and unknown statuses are dropped.
+    pub(crate) fn todos(params: &Value) -> Option<Vec<TodoItem>> {
+        let items = params["items"].as_array()?;
+        Some(
+            items
+                .iter()
+                .filter_map(|t| {
+                    Some(TodoItem {
+                        text: t["text"].as_str()?.to_string(),
+                        status: todo_status(t["status"].as_str()?)?,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Close every still-running step with `status`: the turn is over, so
+    /// nothing may be left spinning.
+    pub(crate) fn finish(&mut self, status: StepStatus) -> Vec<WorkStep> {
+        self.open
+            .drain()
+            .map(|(_, step)| WorkStep { status, ..step })
+            .collect()
+    }
 }

@@ -24,11 +24,13 @@ use apex_core::{
     Access, ActionKind, AgentTool, Approver, ContextUse, Decision, PlanUsage, PlanWindow,
     Progress, ProgressSink, ProposedAction, Reply,
 };
+use apex_core::work_steps::StepStatus;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{ChildStdin, ChildStdout};
 
 use crate::owned_process::OwnedChild;
+use crate::work_feed::MuseSteps;
 
 /// How long the host may take to answer a setup request.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -405,15 +407,24 @@ pub(crate) async fn run(
     let mut next_id = 10u64;
     let mut failure: Option<String> = None;
     let mut checking = false;
+    let mut steps = MuseSteps::new(turn.cwd.clone());
     loop {
         let line = match lines.next_line().await {
             Ok(Some(line)) => line,
             Ok(None) => {
+                for step in steps.finish(StepStatus::Failed) {
+                    on_progress(Progress::Work(&step));
+                }
                 let log = log.await.unwrap_or_default();
                 let _ = child.terminate_tree().await;
                 return Err(TurnError::Failed(crate::cli::failure_summary(&log, "").replace("no error output", "Muse stopped before the turn finished")));
             }
-            Err(e) => return Err(TurnError::Failed(format!("reading output failed: {e}"))),
+            Err(e) => {
+                for step in steps.finish(StepStatus::Failed) {
+                    on_progress(Progress::Work(&step));
+                }
+                return Err(TurnError::Failed(format!("reading output failed: {e}")));
+            }
         };
         let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
         let method = message["method"].as_str().unwrap_or_default();
@@ -458,6 +469,31 @@ pub(crate) async fn run(
             "item/started" if item["kind"] == "toolCall" => {
                 if let Some(line) = activity(item) {
                     on_progress(Progress::Activity(&line));
+                }
+                for step in steps.notice("item/started", params) {
+                    on_progress(Progress::Work(&step));
+                }
+            }
+            "item/completed" if item["kind"] == "toolCall" => {
+                for step in steps.notice("item/completed", params) {
+                    on_progress(Progress::Work(&step));
+                }
+            }
+            // Partial tool output: the final text comes from
+            // `item/completed`, so this changes nothing visible.
+            "item/updated" if item["kind"] == "toolCall" => {
+                for step in steps.notice("item/updated", params) {
+                    on_progress(Progress::Work(&step));
+                }
+            }
+            "item/delta" if params["field"] == "output" => {
+                for step in steps.notice("item/delta", params) {
+                    on_progress(Progress::Work(&step));
+                }
+            }
+            "session/todoListChanged" => {
+                if let Some(items) = MuseSteps::todos(params) {
+                    on_progress(Progress::Todo(&items));
                 }
             }
             // Muse's own checks before it hands the reply in. Several run
@@ -522,6 +558,16 @@ pub(crate) async fn run(
                 }
             }
         }
+    }
+
+    // The turn is over, so no step may be left running.
+    let end = match failure.as_deref() {
+        None => StepStatus::Done,
+        Some("the turn was cancelled") => StepStatus::Stopped,
+        _ => StepStatus::Failed,
+    };
+    for step in steps.finish(end) {
+        on_progress(Progress::Work(&step));
     }
 
     // Closing its input tells the host to exit; do not wait long for it.
@@ -633,5 +679,154 @@ mod tests {
         assert_eq!(activity(&item("bash", json!({"command": "ls -la\necho hi"}))).unwrap(), "Running ls -la");
         assert_eq!(activity(&item("write_file", json!({"path": "a.txt", "content": "hi"}))).unwrap(), "Writing a.txt");
         assert_eq!(activity(&item("subagent_spawn", json!({}))).unwrap(), "Using subagent_spawn");
+    }
+
+    // Recorded from Muse Code 1.4.10; see
+    // tests/fixtures/work_steps/probe-notes-all-providers.md.
+    const MUSE_FIXTURE: &str = include_str!("../tests/fixtures/work_steps/muse_turn.jsonl");
+
+    use apex_core::work_steps::{StepKind, TodoStatus, WorkStep, STEPS_PER_REPLY_MAX};
+    use std::collections::HashMap;
+
+    /// Every `Work` step as last reported, in the order first seen, plus
+    /// each to-do list, driven the way `run()` drives them.
+    fn muse_feed() -> (Vec<WorkStep>, Vec<Vec<apex_core::work_steps::TodoItem>>) {
+        let mut feed = MuseSteps::new(Some("/tmp/probe-all".into()));
+        let mut order: Vec<String> = Vec::new();
+        let mut by_key: HashMap<String, WorkStep> = HashMap::new();
+        let mut lists = Vec::new();
+        let mut todo_writes: Vec<String> = Vec::new();
+        for line in MUSE_FIXTURE.lines() {
+            let message: Value = serde_json::from_str(line).unwrap();
+            let method = message["method"].as_str().unwrap_or("");
+            let params = &message["params"];
+            if method == "turn/completed" {
+                for step in feed.finish(StepStatus::Done) {
+                    if !by_key.contains_key(&step.key) {
+                        order.push(step.key.clone());
+                    }
+                    by_key.insert(step.key.clone(), step);
+                }
+                continue;
+            }
+            if method == "session/todoListChanged" {
+                lists.push(MuseSteps::todos(params).unwrap());
+                continue;
+            }
+            if method == "item/started"
+                && params["item"]["kind"] == "toolCall"
+                && params["item"]["tool"] == "write_todos"
+            {
+                todo_writes.push(params["item"]["itemId"].as_str().unwrap().to_string());
+            }
+            for step in feed.notice(method, params) {
+                if !by_key.contains_key(&step.key) {
+                    order.push(step.key.clone());
+                }
+                by_key.insert(step.key.clone(), step);
+            }
+        }
+        // The fixture's `write_todos` ids must never have become steps.
+        for id in &todo_writes {
+            assert!(!by_key.contains_key(id), "write_todos {id} became a step");
+        }
+        assert!(!todo_writes.is_empty(), "fixture has no write_todos to check");
+        (order.into_iter().map(|k| by_key.remove(&k).unwrap()).collect(), lists)
+    }
+
+    fn muse_step<'a>(all: &'a [WorkStep], label: &str) -> &'a WorkStep {
+        all.iter().find(|s| s.label == label).unwrap_or_else(|| panic!("no step {label}: {all:#?}"))
+    }
+
+    #[test]
+    fn muse_feed_makes_steps() {
+        let (all, lists) = muse_feed();
+        for s in &all {
+            assert!(matches!(s.status, StepStatus::Done | StepStatus::Failed), "{s:?}");
+            assert!(s.label.chars().count() <= 120, "{s:?}");
+        }
+
+        let cat = muse_step(&all, "cat missing.txt");
+        assert_eq!((cat.kind, cat.status, cat.exit_code), (StepKind::Command, StepStatus::Failed, Some(1)));
+        assert_eq!(cat.output.as_deref(), Some("cat: missing.txt: No such file or directory\n"));
+
+        // Overlapping calls keep their own outputs.
+        let read = muse_step(&all, "Read a.txt");
+        assert_eq!(read.status, StepStatus::Done);
+        assert!(read.output.as_deref().unwrap().starts_with("Read text file"));
+        let ls = muse_step(&all, "ls sub");
+        assert_eq!(ls.output.as_deref(), Some("b.txt\n"));
+
+        let search = muse_step(&all, "Search alpha");
+        assert_eq!((search.kind, search.status), (StepKind::Search, StepStatus::Done));
+        assert!(search.output.as_deref().unwrap().contains("alpha one"));
+
+        let edit = muse_step(&all, "Edit a.txt");
+        assert_eq!((edit.kind, edit.status), (StepKind::Edit, StepStatus::Done));
+        assert!(edit.output.as_deref().unwrap().starts_with("edited"));
+
+        let helper = all.iter().find(|s| s.kind == StepKind::Helper).expect("workflow helper step");
+        assert_eq!(helper.status, StepStatus::Failed);
+        assert_eq!(
+            helper.output.as_deref(),
+            Some("workflow_launch_unavailable: this client did not install a workflow launcher; no child work started")
+        );
+
+        assert_eq!(lists.len(), 3);
+        assert_eq!(
+            lists[0].iter().map(|t| (t.text.as_str(), t.status)).collect::<Vec<_>>(),
+            [
+                ("Read a.txt, ls sub, cat missing, search alpha, append probe", TodoStatus::InProgress),
+                ("Start helper subagent to count lines in a.txt", TodoStatus::Pending),
+            ]
+        );
+        // `cancelled` items are dropped.
+        assert_eq!(
+            lists[2].iter().map(|t| (t.text.as_str(), t.status)).collect::<Vec<_>>(),
+            [("Read a.txt, ls sub, cat missing, search alpha, append probe", TodoStatus::Completed)]
+        );
+    }
+
+    #[test]
+    fn muse_partial_updates_change_nothing_visible() {
+        let mut feed = MuseSteps::new(None);
+        for line in MUSE_FIXTURE.lines() {
+            let message: Value = serde_json::from_str(line).unwrap();
+            let method = message["method"].as_str().unwrap_or("");
+            if (method == "item/updated" || method == "item/delta") && message["params"]["item"]["kind"] == "toolCall" {
+                assert!(feed.notice(method, &message["params"]).is_empty(), "{line}");
+            } else {
+                feed.notice(method, &message["params"]);
+            }
+        }
+    }
+
+    #[test]
+    fn muse_finish_closes_open_steps() {
+        let mut feed = MuseSteps::new(None);
+        let started = feed.notice(
+            "item/started",
+            &json!({"item": {"itemId": "i1", "kind": "toolCall", "tool": "bash", "args": "{\"command\":\"sleep 60\"}"}}),
+        );
+        assert_eq!(started.len(), 1);
+        let stopped = feed.finish(StepStatus::Stopped);
+        assert_eq!(stopped.len(), 1);
+        assert_eq!((stopped[0].key.as_str(), stopped[0].status), ("i1", StepStatus::Stopped));
+        assert!(feed.finish(StepStatus::Stopped).is_empty());
+    }
+
+    #[test]
+    fn muse_steps_stop_at_the_reply_cap() {
+        let mut feed = MuseSteps::new(None);
+        let mut emitted = 0;
+        for n in 0..STEPS_PER_REPLY_MAX + 5 {
+            emitted += feed
+                .notice(
+                    "item/started",
+                    &json!({"item": {"itemId": format!("cap-{n}"), "kind": "toolCall", "tool": "bash", "args": "{\"command\":\"true\"}"}}),
+                )
+                .len();
+        }
+        assert_eq!(emitted, STEPS_PER_REPLY_MAX);
     }
 }
