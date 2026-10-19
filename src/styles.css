@@ -2192,7 +2192,20 @@ button.icon.small { min-width: 26px; min-height: 26px; }
   .chat-body { position: relative; }
 }
 
-.appearance-controls { display: flex; align-items: center; gap: 12px; }
+.appearance-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+.hex-picker { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.hex-picker-title { font-size: 12px; color: var(--muted); }
+.hex-picker-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.hex-swatch { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: none; cursor: pointer; }
+.hex-swatch > span { width: 14px; height: 14px; border-radius: 50%; background: var(--swatch); }
+.hex-swatch:hover { border-color: var(--muted); }
+.hex-swatch[aria-pressed="true"] { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
+.hex-swatch:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.hex-well { display: inline-flex; flex-shrink: 0; width: 24px; height: 24px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+.hex-well input { width: 200%; height: 200%; margin: -25%; padding: 0; border: 0; background: none; cursor: pointer; }
+.hex-text { width: 92px; padding: 3px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-transform: lowercase; }
+.hex-hint { margin: 0; max-width: 34ch; font-size: 11px; line-height: 1.35; color: var(--muted); }
 
 .thread-name-input { min-width: 0; width: 160px; max-width: 100%; padding: 3px 6px; font: inherit; }
 .pane-title[role="button"], .pane-row-title[role="button"] { cursor: text; }
