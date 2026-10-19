@@ -49,6 +49,7 @@ import { contextLevel, countdown, resetDate, contextLine, isLow, liveWindows, pe
 import { AGENT_LABEL, chipDescription, levelsShown, loadFolded, saveFolded, type ChipParts } from "./botChip";
 import { usePlans } from "./plans";
 import { AGENT_COLORS, createAppearance, legacyAppearance, type AgentAppearance } from "./identicon";
+import { HexColorPicker } from "./HexColorPicker";
 import { afterRound, type Attention, type Signal } from "./attention";
 import { ApprovalCard, type MadeChange } from "./ApprovalCard";
 import { QuestionForm } from "./QuestionForm";
@@ -2479,10 +2480,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   function openNewForm() {
     details?.show("form");
     if (preset.api?.autoLoad && apiModels.length === 0) loadModels(draft.baseUrl, draft.keyEnv);
-    if (!providerEnabled(draft.preset, disabledProviders)) setDraft(emptyDraft(firstPreset, defaults.current.newBotAccess));
+    setDraft((d) => {
+      const base = providerEnabled(d.preset, disabledProviders) ? d : emptyDraft(firstPreset, defaults.current.newBotAccess);
+      // A new agent picks its pattern and colour as soon as the form opens, so
+      // the preview is the look Save will keep rather than a second draw at save.
+      return base.appearance ? base : { ...base, appearance: createAppearance([...identities.current.values()]) };
+    });
     setEditing(null);
     setAdding(true);
   }
+  // Any other path that opens the new-agent form gets a picker too.
+  useEffect(() => {
+    if (adding && !editing && !draft.appearance) setDraft((d) => (d.appearance ? d : { ...d, appearance: createAppearance([...identities.current.values()]) }));
+  }, [adding, editing, draft.appearance]);
   const addButton = (<button
             className="ghost"
             onClick={() => {
@@ -2493,6 +2503,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           >
             {adding ? "Cancel" : profileMode ? "+ New agent" : "+ Add model"}
           </button>);
+  // Editing previews the saved look; a new agent previews what openNewForm seeded.
+  const formAppearance = draft.appearance ?? (editing ? appearance(editing) : undefined);
   const modelForm = (adding && (
         <form
           className="add-form"
@@ -2510,12 +2522,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <input name="name" value={draft.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Opus" autoFocus />
             {draft.name && <span className="hint">Mention as @{editing ?? slug(draft.name)}</span>}
           </label>
-          {editing && <div className="appearance-controls">
-            <Avatar seed={(draft.appearance ?? appearance(editing)).seed} color={(draft.appearance ?? appearance(editing)).color} />
-            <label>Color<select aria-label="Agent color" value={(draft.appearance ?? appearance(editing)).color} onChange={e => set("appearance", { ...(draft.appearance ?? appearance(editing)), color: e.target.value })}>
-              {AGENT_COLORS.map((c, i) => <option key={c} value={c}>{["Teal", "Amber", "Purple", "Pink", "Blue", "Lime", "Rose", "Cyan"][i]}</option>)}
-            </select></label>
-            <button type="button" className="ghost" onClick={() => set("appearance", { ...createAppearance([...identities.current.values()]), color: (draft.appearance ?? appearance(editing)).color })}>New pattern</button>
+          {formAppearance && <div className="appearance-controls">
+            <Avatar seed={formAppearance.seed} color={formAppearance.color} />
+            <HexColorPicker
+              label="Color"
+              value={formAppearance.color}
+              presets={AGENT_COLORS}
+              onChange={(color) => set("appearance", { ...formAppearance, color })}
+            />
+            <button type="button" className="ghost" onClick={() => set("appearance", { ...createAppearance([...identities.current.values()]), color: formAppearance.color })}>New pattern</button>
           </div>}
           <div className="wide provider-field">
             <span className="field-title" id={`provider-title-${pane.id}`}>Connect through</span>
@@ -2707,7 +2722,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <span>{p.label.replace(/\s*\(.*\)$/, "")}</span>
           </button>
         ))}
-        <button type="button" className="qa-more" title="Open the full new-agent form" onClick={() => { setQuickAdd(null); details?.show("form"); setAdding(true); }}>More…</button>
+        <button type="button" className="qa-more" title="Open the full new-agent form" onClick={() => { setQuickAdd(null); openNewForm(); }}>More…</button>
       </div>
       <div className="quick-add-grid">
         <label>Model
@@ -2745,7 +2760,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </label>
       {formError && <p className="form-error">{formError}</p>}
       <div className="quick-add-foot">
-        <button type="button" className="ghost" onClick={() => { setQuickAdd(null); details?.show("form"); setAdding(true); }}>More options</button>
+        <button type="button" className="ghost" onClick={() => { setQuickAdd(null); openNewForm(); }}>More options</button>
         <button className="primary" type="submit">Add to chat</button>
       </div>
     </form>
@@ -2908,7 +2923,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       })}
       {participants.length > 0 && (
         <span className="quick-add-wrap roster">
-          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { details?.show("form"); setAdding(true); } else { setRosterAnchor(aboveAnchor(e.currentTarget.getBoundingClientRect(), viewport(), QUICK_ADD_WIDTH, 8)); openQuickAdd("roster"); } }}>
+          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { openNewForm(); } else { setRosterAnchor(aboveAnchor(e.currentTarget.getBoundingClientRect(), viewport(), QUICK_ADD_WIDTH, 8)); openQuickAdd("roster"); } }}>
             <PersonPlus /><span className="chip-add-label">Add bot</span>
           </button>
         </span>
