@@ -4,7 +4,7 @@
 // relays lines and does what needs the machine with the screen. Each window
 // runs on one host, this Mac or another machine, so two can sit side by side.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, session, shell, WebContentsView, webContents } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, screen, session, shell, WebContentsView, webContents } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -194,16 +194,17 @@ const links = createHostLinks({
     });
   },
   emit: (contentsId, hostId, gen, channel, value) => {
-    const entry = [...windows.values()].find(e => e.win.webContents.id === contentsId);
+    const entry = [...windows.values(), ...popoutWindows.values()].find(e => e.win.webContents.id === contentsId);
     if (entry && !entry.win.webContents.isDestroyed()) entry.win.webContents.send(channel, hostId, gen, value);
   },
 });
 
-/** The Deck window event came from, never a docked page or child frame. */
+/** The Deck window event came from, never a docked page or child frame. Pop-outs count as Deck windows. */
 function deckWindow(event) {
   const frame = event.senderFrame;
   if (!frame || frame !== event.sender.mainFrame || !UI_ORIGINS.has(originOf(frame.url))) return null;
-  return windows.get(BrowserWindow.fromWebContents(event.sender)?.id) ?? null;
+  const id = BrowserWindow.fromWebContents(event.sender)?.id;
+  return windows.get(id) ?? popoutWindows.get(id) ?? null;
 }
 const fromUi = event => deckWindow(event) !== null;
 const watchedContents = new Set();
@@ -669,6 +670,7 @@ function createWindow(host, beside) {
   });
   win.on('closed', () => {
     browser.closeAll();
+    closePopoutsOf(win.id);
     windows.delete(win.id);
     // Windows closing as the app quits stay in the list, to open next time.
     if (!gate.confirmed && windows.size > 0) {
@@ -700,6 +702,146 @@ function createWindow(host, beside) {
   void win.loadURL(devUrl || 'app://deck/');
   return entry;
 }
+
+/** Every pop-out window by BrowserWindow id: `{ win, browser, ownerId, token }`. Kept apart from `windows`: pop-outs never save, never count for the badge, and never ask before quitting. */
+const popoutWindows = new Map();
+/** What the owner handed each pop-out, by token from its `?popout=` query. */
+const popoutSnapshots = new Map();
+
+/** A pop-out token looks like 32 hex characters. */
+const validToken = (token) => typeof token === 'string' && /^[0-9a-f]{32}$/.test(token);
+
+/** Where a pop-out opens: where it was dropped, else centred on a screen the Deck window isn't on. */
+function popoutBounds(ownerEntry, bounds) {
+  const wanted = bounds && Number.isFinite(bounds.width) && Number.isFinite(bounds.height) && bounds.width > 0 && bounds.height > 0
+    ? { x: Math.round(bounds.x ?? 0), y: Math.round(bounds.y ?? 0), width: Math.round(bounds.width), height: Math.round(bounds.height) }
+    : null;
+  if (wanted) return wanted;
+  const owner = !ownerEntry.win.isDestroyed() ? ownerEntry.win.getBounds() : null;
+  const displays = screen.getAllDisplays();
+  const here = owner ? screen.getDisplayMatching(owner) : screen.getPrimaryDisplay();
+  const elsewhere = displays.find((d) => d.id !== here.id) ?? here;
+  const width = 760;
+  const height = 560;
+  return {
+    x: elsewhere.bounds.x + Math.max(0, Math.round((elsewhere.bounds.width - width) / 2)),
+    y: elsewhere.bounds.y + Math.max(0, Math.round((elsewhere.bounds.height - height) / 2)),
+    width,
+    height,
+  };
+}
+
+/**
+ * Open one pane or side-panel tab in its own window. The owner stays the only
+ * saver of layout and session; the pop-out is a view that sends actions back.
+ */
+function createPopout(ownerEntry, snapshot, bounds) {
+  if (!snapshot || (snapshot.kind !== 'pane' && snapshot.kind !== 'tab') || typeof snapshot.id !== 'string' || typeof snapshot.title !== 'string') {
+    throw new Error('That pop-out has nothing to show.');
+  }
+  const token = crypto.randomBytes(16).toString('hex');
+  const at = popoutBounds(ownerEntry, bounds);
+  const win = new BrowserWindow({
+    ...at,
+    minWidth: 360,
+    minHeight: 240,
+    title: `Deck: ${snapshot.title}`,
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
+    show: !smoke,
+    webPreferences: {
+      preload: path.join(here, 'preload.cjs'),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+  win.on('page-title-updated', (event) => event.preventDefault());
+  win.webContents.on('will-navigate', (event, url) => {
+    if (UI_ORIGINS.has(originOf(url))) return;
+    event.preventDefault();
+    openExternally(url);
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    openExternally(url);
+    return { action: 'deny' };
+  });
+  const browser = dockedBrowser({
+    win,
+    send: (channel, ...args) => { if (!win.isDestroyed()) win.webContents.send(channel, ...args); },
+    downloads: () => app.getPath('downloads'),
+  });
+  const ownerId = ownerEntry.win.id;
+  popoutWindows.set(win.id, { win, browser, ownerId, token, role: 'popout' });
+  popoutSnapshots.set(token, snapshot);
+  win.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
+    if ((details.isMainFrame ?? mainFrame) && !(details.isSameDocument ?? inPlace)) browser.hideAll();
+  });
+  // A pop-out never asks before quitting; closing it returns the pane to the Deck window.
+  win.on('closed', () => {
+    browser.closeAll();
+    popoutWindows.delete(win.id);
+    popoutSnapshots.delete(token);
+    const owner = windows.get(ownerId);
+    if (owner && !owner.win.isDestroyed()) owner.win.webContents.send('popout:closed', token);
+  });
+  win.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      message: 'Discard unsaved changes?',
+      detail: "A file you're editing has changes that haven't been saved.",
+      buttons: ['Leave', 'Stay'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (choice === 0) event.preventDefault();
+  });
+  if (smoke) {
+    win.setOpacity(0);
+    win.setIgnoreMouseEvents(true);
+    win.showInactive();
+  }
+  const query = devUrl.includes('?') ? '&' : '?';
+  void win.loadURL(devUrl ? `${devUrl}${query}popout=${token}` : `app://deck/?popout=${token}`);
+  return token;
+}
+
+/** Close every pop-out owned by `ownerId`. Closing the Deck window returns its panes. */
+function closePopoutsOf(ownerId) {
+  for (const entry of [...popoutWindows.values()]) {
+    if (entry.ownerId === ownerId && !entry.win.isDestroyed()) entry.win.close();
+  }
+}
+
+handle('popout:open', async (entry, snapshot, bounds) => {
+  if (entry.role === 'popout') throw new Error('A pop-out cannot open another window.');
+  return { token: createPopout(entry, snapshot, bounds) };
+});
+handle('popout:snapshot', async (_entry, token) => {
+  if (!validToken(token)) throw new Error('That pop-out has nothing to show.');
+  const snapshot = popoutSnapshots.get(token);
+  if (!snapshot) throw new Error('That pop-out has nothing to show.');
+  return snapshot;
+});
+handle('popout:update', async (entry, token, patch) => {
+  if (!validToken(token)) return;
+  const popout = [...popoutWindows.values()].find((e) => e.token === token);
+  if (!popout || popout.win.isDestroyed()) return;
+  if (entry.role === 'popout') return;
+  popout.win.webContents.send('popout:update', patch ?? {});
+});
+handle('popout:action', async (entry, token, action) => {
+  if (!validToken(token)) return;
+  if (entry.role !== 'popout') return;
+  const owner = windows.get(entry.ownerId);
+  if (owner && !owner.win.isDestroyed()) owner.win.webContents.send('popout:action', token, action);
+});
+handle('popout:close', async (entry, token) => {
+  if (!validToken(token)) return;
+  // The owner closes its own pop-out (its pane is already back); a pop-out closes itself with its window.
+  if (entry.role === 'popout') return;
+  const popout = [...popoutWindows.values()].find((e) => e.token === token);
+  if (popout && !popout.win.isDestroyed()) popout.win.close();
+});
 
 /**
  * Whether no Tauri Apex Deck is open, asking for it to be quit while one is.

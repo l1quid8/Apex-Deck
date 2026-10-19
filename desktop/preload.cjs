@@ -104,5 +104,15 @@ contextBridge.exposeInMainWorld('apexDeck', {
     onShortcut: (cb) => subscribe('browser:shortcut', cb),
     zoom: () => webFrame.getZoomFactor(),
   },
+  popout: {
+    open: (snapshot, bounds) => ipcRenderer.invoke('popout:open', snapshot, bounds),
+    snapshot: (token) => ipcRenderer.invoke('popout:snapshot', token),
+    close: (token) => ipcRenderer.invoke('popout:close', token),
+    update: (token, patch) => ipcRenderer.invoke('popout:update', token, patch),
+    sendAction: (token, action) => ipcRenderer.invoke('popout:action', token, action),
+    onUpdate: (cb) => subscribe('popout:update', cb),
+    onAction: (cb) => subscribe('popout:action', cb),
+    onClosed: (cb) => subscribe('popout:closed', cb),
+  },
   smoke: ipcRenderer.sendSync('apex:smoke') === true,
 });
