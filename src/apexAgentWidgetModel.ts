@@ -1,5 +1,6 @@
 import type { ProjectMonitor, MonitorFinding } from './apexAgentModel.ts';
 import type { Workspace } from './types.ts';
+import { normalizeHexColor } from './hexColor.ts';
 
 export const ASSISTANT_SOURCE_MIME = 'application/x-apex-agent-source';
 export type AssistantSourceDrop = {
@@ -20,16 +21,7 @@ export const AGENT_WIDGET_COLORS = ['#54efaa', '#43d8ed', '#b29aff', '#ffca57', 
 /** Older saved looks picked one of four named colours; map them to the same hex. */
 const LEGACY_WIDGET_COLORS: Record<string, string> = { mint: '#54efaa', cyan: '#43d8ed', violet: '#b29aff', amber: '#ffca57' };
 
-/** Accepts `#rgb` or `#rrggbb` (case-insensitive) and normalizes to lowercase
- *  `#rrggbb`, which is what an `<input type="color">` expects. */
-export function normalizeHexColor(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value.trim());
-  if (!match) return null;
-  const hex = match[1];
-  const full = hex.length === 3 ? [...hex].map((digit) => digit + digit).join('') : hex;
-  return `#${full.toLowerCase()}`;
-}
+export { normalizeHexColor };
 
 /** The avatar color for a saved look: legacy names become their hex, invalid
  *  values fall back to the given default. */
