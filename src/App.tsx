@@ -34,7 +34,7 @@ import { LayoutPicker } from "./LayoutPicker";
 import { NewMenu } from "./NewMenu";
 import { TerminalPane } from "./TerminalPane";
 import { PreviewPane, type ServerChoice } from "./PreviewPane";
-import { isRunning, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
+import { isRunning, ptyIdFor, stateWord, terminalStatus, toolInstalled, toolName, type TerminalRun } from "./terminalRun";
 import { nextTitle, programTitle } from "./terminalTitle";
 import { hostLabel, sameServer } from "./previewAddress";
 import { copyMenuItems, paneMenuItems, projectMenuItems, type CopyKind, type PaneMenuAction, type ProjectMenuAction } from "./paneMenu";
@@ -51,6 +51,7 @@ import { MoveRefused, forkThread as importThreadFork, historyHasAttachments, pla
 import { flushAnswerStores } from "./interactiveAnswers/answerStore.ts";
 import { loadRoomState } from "./roomRecovery.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
+import { restorePane, takePaneOut, type PaneSpot, type PopoutAction, type PopoutSnapshot } from "./popoutModel.ts";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
 import { badgeCount, clearReady, label, seenFlags, summarize, urgency, withApprovals, withPaneSignal, type Attention, type Signal } from "./attention";
 import { cyclePane, shortcutFor } from "./shortcuts";
@@ -114,6 +115,14 @@ export function folderName(path: string): string {
 
 /** The layout of one section of one workspace is saved under this name. */
 const layoutKey = (workspace: string | null, section: AppSection) => `${workspace ?? ""}:${section}`;
+
+/** The layouts as saved: popped-out panes stay in place, so a relaunch puts them back in the deck. */
+function withPoppedOut(all: Record<string, LayoutNode>, out: { id: string; layoutKey: string; spot: PaneSpot }[]): Record<string, LayoutNode> {
+  if (out.length === 0) return all;
+  const next = { ...all };
+  for (const rec of out) next[rec.layoutKey] = restorePane(next[rec.layoutKey] ?? null, rec.id, rec.spot);
+  return next;
+}
 
 const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
 /** How long a toast without Undo stays up. */
@@ -286,6 +295,8 @@ export function App() {
   const [layoutPreset, setLayoutPreset] = useState<"grid" | Layout>("top");
   /** How the panes of each workspace section are arranged. */
   const [layouts, setLayouts] = useState<Record<string, LayoutNode>>({});
+  /** Panes showing in pop-out windows. Never saved: the session keeps them in place, so a relaunch puts them back. */
+  const [poppedOut, setPoppedOut] = useState<{ token: string; id: string; layoutKey: string; spot: PaneSpot }[]>([]);
   /** True while a divider is being dragged. */
   const [resizing, setResizing] = useState(false);
   const gridArea = useRef<HTMLDivElement>(null);
@@ -506,7 +517,7 @@ export function App() {
     };
   }, []);
 
-  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(layouts, workspaces.map(w => w.id)), rightPanel: panel, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
+  const currentSession: AppSession = { version: 1, workspaces, panes: savedPanes(panes), profiles, activeWorkspace, focusedPane, section, layout, layouts: savedLayouts(withPoppedOut(layouts, poppedOut), workspaces.map(w => w.id)), rightPanel: panel, threadDetailsOpen: detailsOpen, threadDetailsCollapsed: detailsCollapsed, importedHostSessions, canvasVersion: 1 };
   sessionRef.current = currentSession;
   useEffect(() => {
     if (!backend?.machines || !backend.hosts) return;
@@ -644,7 +655,9 @@ export function App() {
   /** Panes of listed workspaces. A removed workspace's threads are not mounted, so their rooms close. */
   const listed = useMemo(() => listedPanes(viewPanes, workspaces), [viewPanes, workspaces]);
   const currentMonitorAttention = useMemo(() => monitorAttentionEntries(monitorAttention, workspaces, Date.now()), [monitorAttention, workspaces, tick]);
-  const visiblePanes = useMemo(() => canvasPanes(viewPanes, workspaces, deleting, section), [viewPanes, workspaces, deleting, section]);
+  const poppedIds = useMemo(() => new Set(poppedOut.map((p) => p.id)), [poppedOut]);
+  // A popped-out pane leaves the layout but stays mounted and hidden, so its session keeps running.
+  const visiblePanes = useMemo(() => canvasPanes(viewPanes, workspaces, deleting, section).filter((p) => !poppedIds.has(p.id)), [viewPanes, workspaces, deleting, section, poppedIds]);
   const shown = maximized && visiblePanes.some((p) => p.id === maximized) ? visiblePanes.filter((p) => p.id === maximized) : visiblePanes;
   useEffect(() => {
     if (focusedPane && viewPanes.some((p) => p.id === focusedPane && p.kind === "chat")) setRecentThreads((recent) => (recent[0] === focusedPane ? recent : noteFocus(recent, focusedPane)));
@@ -1188,6 +1201,91 @@ export function App() {
   };
 
   /** Run what was chosen in a pane's ⋯ menu. */
+  /** Open a terminal pane in its own window. The leaf leaves the layout (remembered for return) but stays mounted and hidden, so its program keeps running. */
+  const popOutPane = (paneId: string) => {
+    const bridge = window.apexDeck?.popout;
+    if (!bridge) {
+      toast("Pop-outs need the Deck app.");
+      return;
+    }
+    if (poppedIds.has(paneId)) return;
+    const pane = listed.find((p) => p.id === paneId);
+    if (!pane || pane.kind !== "terminal") return;
+    const { workspace, hostId } = hostOfPane(pane);
+    const run = runs[paneId];
+    const snapshot: PopoutSnapshot = {
+      kind: "pane", id: pane.id, title: pane.title,
+      ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
+      workspaceId: pane.workspaceId, hostId,
+      ...(pane.agent ? { agent: pane.agent } : {}),
+      cwd: workspace?.path ?? "",
+    };
+    const takeout = takePaneOut(layouts[key] ?? null, pane.workspaceId, paneId);
+    void bridge.open(snapshot).then(({ token }) => {
+      setLayouts((all) => {
+        const next = { ...all };
+        if (takeout.layout) next[key] = takeout.layout;
+        else delete next[key];
+        return next;
+      });
+      setPoppedOut((list) => (list.some((p) => p.id === paneId) ? list : [...list, { token, id: paneId, layoutKey: key, spot: takeout.spot }]));
+    }, (error: unknown) => {
+      toast(error instanceof Error ? error.message : String(error));
+    });
+  };
+
+  /** The newest pop-outs and pane edits, for window events that arrive between renders. */
+  const popoutLive = useRef({ poppedOut, closePane, renamePane });
+  popoutLive.current = { poppedOut, closePane, renamePane };
+
+  useEffect(() => {
+    const bridge = window.apexDeck?.popout;
+    if (!bridge) return;
+    const offClosed = bridge.onClosed((token) => {
+      const rec = popoutLive.current.poppedOut.find((p) => p.token === token);
+      if (!rec) return;
+      // A pane closed from its pop-out stays closed; anything else goes back where it was.
+      const pane = latest.current.panes.find((p) => p.id === rec.id);
+      setPoppedOut((list) => list.filter((p) => p.token !== token));
+      if (pane && !pane.closed) {
+        setLayouts((all) => ({ ...all, [rec.layoutKey]: restorePane(all[rec.layoutKey] ?? null, rec.id, rec.spot) }));
+      }
+    });
+    const offAction = bridge.onAction((token, action: PopoutAction) => {
+      const rec = popoutLive.current.poppedOut.find((p) => p.token === token);
+      if (!rec) return;
+      if (action.type === "restart-terminal") {
+        setStartRequests((all) => ({ ...all, [rec.id]: (all[rec.id] ?? 0) + 1 }));
+      } else if (action.type === "close-pane") {
+        popoutLive.current.closePane(rec.id);
+        setPoppedOut((list) => list.filter((p) => p.token !== token));
+        void bridge.close(token).catch(() => {});
+      } else if (action.type === "rename") {
+        popoutLive.current.renamePane(rec.id, action.title);
+      }
+    });
+    return () => {
+      offClosed();
+      offAction();
+    };
+  }, []);
+
+  // Keep pop-outs current: titles and the terminal run id (a restart re-attaches the view).
+  useEffect(() => {
+    const bridge = window.apexDeck?.popout;
+    if (!bridge || poppedOut.length === 0) return;
+    for (const rec of poppedOut) {
+      const pane = panes.find((p) => p.id === rec.id);
+      if (!pane) continue;
+      const run = runs[rec.id];
+      void bridge.update(rec.token, {
+        title: pane.title,
+        workspaceId: pane.workspaceId,
+        ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
+      }).catch(() => {});
+    }
+  }, [poppedOut, panes, runs]);
+
   const runPaneMenu = (pane: Pane, action: PaneMenuAction, from: "rail" | "head" = "head") => {
     const bump = (all: Record<string, number>) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 });
     if ((pane as Pane & { assistantTaskId?: string }).assistantTaskId) {
@@ -1207,6 +1305,7 @@ export function App() {
     } else if (action === "pin") setPanes((list) => list.map((p) => (p.id === pane.id ? { ...p, pinned: p.pinned ? undefined : true } : p)));
     else if (action === "mark_unread") setPanes((list) => setUnread(list, pane.id, !pane.unread));
     else if (action === "start") setStartRequests(bump);
+    else if (action === "popout") popOutPane(pane.id);
     else if (action === "copy_path") {
       const path = workspaces.find((w) => w.id === pane.workspaceId)?.path;
       if (path) copyOut(path, "path");
