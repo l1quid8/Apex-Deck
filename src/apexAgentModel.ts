@@ -126,6 +126,13 @@ export function mentionedLane(text: string, projects: readonly { id: string; nam
   return null;
 }
 
+/** Whether the text means every project: a whole `@all`, never the start of a
+ *  project handle. A project called "All Hands" answers to `@all-hands`, and
+ *  naming it must not send to every project instead. */
+export function mentionsAll(text: string): boolean {
+  return mentionedWords(text).includes('all');
+}
+
 /** A reply goes to the project it names as a whole word ("UI" never matches "Build"); otherwise it continues the last project talked about. */
 export function replyTarget(text: string, projects: { id: string; name: string }[], fallback: string | null): string | null {
   const wholeWord = (name: string) => new RegExp(`(^|[^\\p{L}\\p{N}])${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'iu');

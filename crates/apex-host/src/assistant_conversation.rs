@@ -123,6 +123,53 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_handle_never_reaches_the_bot_that_holds_its_prefix() {
+        // Null's repro: the id is the old name "dr.-who-old", and the bot is
+        // now "Dr. Who", whose mention `dr.-who` is a prefix of that handle.
+        let mut request = request();
+        let mut who = profile("dr.-who-old", false);
+        who.display_name = "Dr. Who".into();
+        request.threads[0].snapshot.participants[0] = who;
+
+        for old in ["@dr.-who-old", "@dr.-who.old", "@dr.-who_old"] {
+            request.text = format!("Please fix the parser in chat Build Room and ask {old} to handle it");
+            let ConversationDecision::Clarify { message, .. } = authorize(&request, fix_the_parser()) else {
+                panic!("{old} holds its old name, so nobody answers to it")
+            };
+            assert!(!message.contains("Dr. Who"), "and the question doesn't name the bot by it either: {message}");
+        }
+
+        for new in ["ask @dr.-who to handle it", "ask @dr.-who.", "ask Dr. Who to handle it"] {
+            request.text = format!("Please fix the parser in chat Build Room and {new}");
+            let ConversationDecision::Handoff { workers, .. } = authorize(&request, fix_the_parser()) else {
+                panic!("expected a handoff for {new:?}")
+            };
+            assert_eq!(workers, vec!["dr.-who-old"]);
+        }
+    }
+
+    #[test]
+    fn an_old_name_written_without_the_at_picks_nobody_either() {
+        // Atlas was saved as "atlas-old", so "atlas-old" is its old name, not Atlas plus a word.
+        let mut request = request();
+        let mut atlas = profile("atlas-old", false);
+        atlas.display_name = "Atlas".into();
+        request.threads[0].snapshot.participants[0] = atlas;
+
+        request.text = "Please fix the parser in chat Build Room and ask atlas-old to handle it".into();
+        assert!(
+            matches!(authorize(&request, fix_the_parser()), ConversationDecision::Clarify { .. }),
+            "its old name picks nobody"
+        );
+
+        request.text = "Please fix the parser in chat Build Room and ask Atlas to handle it".into();
+        let ConversationDecision::Handoff { workers, .. } = authorize(&request, fix_the_parser()) else {
+            panic!("expected a handoff to Atlas by its name")
+        };
+        assert_eq!(workers, vec!["atlas-old"]);
+    }
+
+    #[test]
     fn an_old_name_picks_no_saved_worker_and_does_not_make_its_new_owner_ambiguous() {
         let mut request = request();
         let named = |id: &str, name: &str| ParticipantConfig { display_name: name.into(), ..profile(id, false) };
@@ -1508,9 +1555,13 @@ fn named_worker(
     }
     let matches: Vec<_> = roster
         .into_iter()
-        // By its name or its mention, with or without the @. Never by its id:
-        // a renamed bot's id is its old name.
-        .filter(|p| exact_occurs(&request.text, &p.display_name) || exact_occurs(&request.text, &apex_core::mention_for(p)))
+        // By its name or its mention, whole: with or without the @, and never
+        // inside a longer handle, so a retired id like `@dr.-who-old` names
+        // nobody when the bot is called "Dr. Who" (mention `dr.-who`).
+        .filter(|p| {
+            apex_core::mentions_handle(&request.text, &p.display_name)
+                || apex_core::mentions_handle(&request.text, &apex_core::mention_for(p))
+        })
         .collect();
     let ids: std::collections::HashSet<_> = matches.iter().map(|p| p.id.as_str()).collect();
     if ids.len() > 1 {
@@ -1599,9 +1650,10 @@ fn explicit_workers(text: &str, roster: &[ParticipantConfig]) -> Option<Option<V
         return Some(Some(handles));
     }
 
+    // A name is read whole, like a mention: "atlas-old" is not Atlas.
     let display_matches: Vec<_> = roster
         .iter()
-        .filter(|p| exact_occurs(text, &p.display_name))
+        .filter(|p| apex_core::mentions_handle(text, &p.display_name))
         .collect();
     if display_matches
         .iter()
@@ -1702,11 +1754,13 @@ fn clarification_message(request: &ConversationRequest) -> String {
             }
         }
     }
+    // Read like `named_worker`: by name or mention, whole, never by an id,
+    // which is a renamed bot's old name.
     let named: Vec<_> = workers
         .iter()
         .filter(|p| {
-            exact_occurs(&request.text, &p.display_name)
-                || exact_occurs(&request.text, p.id.as_str())
+            apex_core::mentions_handle(&request.text, &p.display_name)
+                || apex_core::mentions_handle(&request.text, &apex_core::mention_for(p))
         })
         .collect();
     if chats.len() == 1 && named.len() == 1 {

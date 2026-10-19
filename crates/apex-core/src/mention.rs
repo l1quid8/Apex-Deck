@@ -21,7 +21,7 @@ fn letter_or_number(c: char) -> bool {
     )
 }
 
-fn is_handle_char(c: char) -> bool {
+pub fn is_handle_char(c: char) -> bool {
     letter_or_number(c) || matches!(c, '-' | '_' | '.')
 }
 
@@ -118,6 +118,33 @@ pub fn mentioned_words(text: &str) -> Vec<String> {
         }
     }
     words
+}
+
+/// Whether `handle` sits in `text` as a whole `@mention`, which is how routing
+/// has to read one: a handle never reaches into a longer handle. `@dr.-who-old`
+/// does not carry `dr.-who` (a retired id), and `atlas-old` does not carry
+/// `atlas`. A name with spaces works too, since only the two ends need a
+/// boundary. Dots right after the match are sentence punctuation, so
+/// "ask @dr.-who." still carries `dr.-who`.
+pub fn mentions_handle(text: &str, handle: &str) -> bool {
+    let handle = handle.trim();
+    if handle.is_empty() {
+        return false;
+    }
+    let text = text.to_lowercase();
+    let handle = handle.to_lowercase();
+    text.match_indices(handle.as_str()).any(|(index, found)| {
+        let before = text[..index].char_indices().next_back();
+        let starts = before.is_none_or(|(at, c)| {
+            !is_handle_char(c)
+                // An @ inside a word is an email address, not a mention.
+                && !(c == '@' && text[..at].chars().next_back().is_some_and(letter_or_number))
+        });
+        let rest = &text[index + found.len()..];
+        let tail = rest.strip_prefix('.').map_or(rest, |after| after.trim_start_matches('.'));
+        let ends = tail.chars().next().is_none_or(|c| !is_handle_char(c));
+        starts && ends
+    })
 }
 
 /// The participant whose mention `word` is. A bot's old name names nobody,
@@ -259,6 +286,33 @@ mod tests {
         assert!(!names("@jigga make one", &roster[0]), "its old name is gone");
         assert!(!names("@all make one", &roster[0]));
         assert!(!names("@null make one", &roster[0]));
+    }
+
+    #[test]
+    fn a_handle_is_matched_whole_never_inside_a_longer_one() {
+        let who = bot("dr.-who-old", "Dr. Who");
+        let mention = mention_for(&who);
+        assert_eq!(mention, "dr.-who");
+        // The id it was saved under is its old name: gone.
+        assert!(!mentions_handle("ask @dr.-who-old to look", &mention));
+        assert!(!mentions_handle("ask @dr.-who-older to look", &mention));
+        assert!(!mentions_handle("ask @dr.-who.old to look", &mention));
+        assert!(!mentions_handle("ask @dr.-who_old to look", &mention));
+        assert!(!mentions_handle("ask @atlas-old to look", "atlas"));
+        // Its new mention, with or without the @, and before a full stop.
+        assert!(mentions_handle("ask @dr.-who to look", &mention));
+        assert!(mentions_handle("ask dr.-who to look", &mention));
+        assert!(mentions_handle("ask @dr.-who.", &mention));
+        assert!(mentions_handle("ask @DR.-WHO", &mention));
+        // A name with spaces is bounded at its ends the same way.
+        assert!(mentions_handle("ask Dr. Who to look.", "Dr. Who"));
+        assert!(!mentions_handle("ask Dr. Who-old to look", "Dr. Who"));
+        // A shorter handle is not found inside a longer id.
+        assert!(!mentions_handle("ask @sol-6.1", "sol-6"));
+        assert!(mentions_handle("ask @sol-6.1", "sol-6.1"));
+        // An @ inside a word is an email address, not a mention.
+        assert!(!mentions_handle("mail me@dr.-who.dev", &mention));
+        assert!(!mentions_handle("anything", ""));
     }
 
     #[test]

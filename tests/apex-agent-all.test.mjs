@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { laneMentions, mentionedLane, mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
+import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
 
 const monitor = (workspaceId, messages) => ({ workspaceId, messages, findings: [] });
 const msg = (id, at, text = id) => ({ id, role: 'assistant', text, at, evidence: [] });
@@ -46,4 +46,17 @@ test('a project answers to its name after @, or to its id when another project h
   assert.equal(mentionedLane('@mobile status', lanes), null, 'a shared name picks neither');
   assert.equal(mentionedLane('mail me@billing-api.dev', lanes), null, 'an email address is no mention');
   assert.equal(mentionedLane('@ws-2 then @billing-api', lanes), 'ws-2', 'the first one named');
+});
+
+test('naming a project called "All Hands" does not mean every project', () => {
+  const lanes = [{ id: 'ws-1', name: 'All Hands' }, { id: 'ws-2', name: 'Billing API' }];
+  // Null's repro: @all-hands routed to every project because "@all" is its prefix.
+  assert.equal(mentionedLane('@all-hands status?', lanes), 'ws-1');
+  assert.equal(mentionsAll('@all-hands status?'), false, 'a project handle is not @all');
+  assert.equal(mentionsAll('@all what now?'), true);
+  assert.equal(mentionsAll('@all, what now?'), true);
+  assert.equal(mentionsAll('@all.'), true, 'a full stop after it is punctuation');
+  assert.equal(mentionsAll('@allsorts please'), false, 'a longer word is another word');
+  assert.equal(mentionsAll('mail me@all.dev'), false, 'an email address is no mention');
+  assert.equal(mentionsAll('no mention here'), false);
 });
