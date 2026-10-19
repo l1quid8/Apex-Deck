@@ -5,7 +5,7 @@ import './apex-agent-panel.css';
 import './assistant-tasks.css';
 import './apex-agent-dock.css';
 import type { ToolServer, Workspace } from './types';
-import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
+import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget, withoutLaneMentions, type MonitorEvidence, type ProjectMonitor } from './apexAgentModel.ts';
 import { TaskViewContext, personalTaskGroup, personalTaskKey, type TaskGroup, type TaskSummary } from './apexAgentTaskView.ts';
 import type { PersonalLane, PersonalMessage, PersonalTask } from './personalAssistant.ts';
 import { PersonalPanels, type PanelName } from './PersonalPanels.tsx';
@@ -162,15 +162,17 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const laneHandles = laneMentions(lanes);
   const mentioned = mentionedLane(text, lanes);
   const target = replyQuotes[0]?.laneId ?? (filterWorkspaceId ? filterWorkspaceId : mentioned ?? replyTarget(text, lanes, fallbackLane));
+  // The every-project checks read plain words, never inside a project's @handle: "@all-hands" names All Hands only.
+  const prose = withoutLaneMentions(text, lanes);
   // Consume longer names first so "Mobile launch" does not also select "Mobile".
-  let unmatched = text;
+  let unmatched = prose;
   const namedProjects = [...lanes].sort((a, b) => b.name.length - a.name.length).filter((workspace) => {
     const name = workspace.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`(^|[^\\p{L}\\p{N}_])${name}(?=$|[^\\p{L}\\p{N}_])`, 'giu');
     if (!pattern.test(unmatched)) return false;
     unmatched = unmatched.replace(pattern, ' '); return true;
   });
-  const globalReply = !filterWorkspaceId && !replyQuotes.length && !attachmentLane && !!onOverview && (mentionsAll(text) || /\b(everywhere|all (?:my |the )?(?:projects|threads)|across (?:my |the )?projects|overall)\b/i.test(text) || namedProjects.length > 1 || (!mentioned && !namedProjects.length && (fallbackLane === '*' || !fallbackLane)));
+  const globalReply = !filterWorkspaceId && !replyQuotes.length && !attachmentLane && !!onOverview && (mentionsAll(text) || /\b(everywhere|all (?:my |the )?(?:projects|threads)|across (?:my |the )?projects|overall)\b/i.test(prose) || namedProjects.length > 1 || (!mentioned && !namedProjects.length && (fallbackLane === '*' || !fallbackLane)));
   const bottom = useRef<HTMLDivElement | null>(null);
   // `busy` only updates on the next render; this blocks a second Enter pressed before then.
   const sending = useRef(false);

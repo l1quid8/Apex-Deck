@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
+import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget, withoutLaneMentions } from '../src/apexAgentModel.ts';
 import { TaskViewContext, personalTaskGroup, personalTaskKey } from '../src/apexAgentTaskView.ts';
 import { messageStateKey, retryMessageText } from '../src/apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from '../src/apexAgentQuote.ts';
@@ -41,7 +41,7 @@ function harness(props) {
     useEffect() { cursor++; },
     useCallback(fn) { cursor++; return fn; },
   };
-  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
+  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'withoutLaneMentions', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
@@ -345,6 +345,35 @@ test('@all still asks every project when a project is named beside it', async ()
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(overviews, ['@all compare with @billing-api']);
   assert.equal(h.replies.length, 0, 'not sent to Billing alone');
+});
+
+test('a lane @name is read whole, so its words never name other projects or mean every project', async () => {
+  // Null's repros: beside projects called "All" and "Hands", "@all-hands" read as naming those two,
+  // and "@overall" read as the word "overall"; both went to every project.
+  const named = [{ id: 'ws-1', name: 'All Hands' }, { id: 'ws-2', name: 'All' }, { id: 'ws-3', name: 'Hands' }, { id: 'ws-4', name: 'Overall' }, { id: 'ws-5', name: 'Billing API' }];
+  const { calls, lane } = personalLane();
+  const overviews = [];
+  const h = harness({ workspaces: named, monitors: named.map(p => monitor(p.id)), personal: lane, onOverview: async text => overviews.push(text) });
+  const send = async (value) => {
+    let tree = h.render();
+    find(tree, node => node.type === 'textarea').props.onChange({ target: { value } });
+    tree = h.render();
+    const destination = textOf(find(tree, node => node.props?.className === 'apex-agent-muted apex-agent-all-destination'));
+    find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    return destination;
+  };
+  assert.match(await send('@all-hands status?'), /About All Hands/);
+  assert.match(await send('@overall status?'), /About Overall/);
+  // The @ menu writes @assistant for the assistant; that is no project named in passing.
+  assert.match(await send('@assistant remind me to check Billing API'), /To Assistant/);
+  assert.deepEqual(h.replies.map(reply => reply[0]), ['ws-1', 'ws-4']);
+  assert.deepEqual(calls, [['send', '@assistant remind me to check Billing API']]);
+  assert.deepEqual(overviews, []);
+  // Written as plain words, they still mean every project.
+  assert.match(await send('how is it going overall?'), /About all projects/);
+  assert.match(await send('compare All and Hands'), /About all projects/);
+  assert.deepEqual(overviews, ['how is it going overall?', 'compare All and Hands']);
 });
 
 test('a project picked from the @ menu is reached by the mention the menu wrote', async () => {

@@ -1,6 +1,6 @@
 import type { ParticipantConfig } from './types';
 import { assistantProfileChoices } from './assistantTaskModel.ts';
-import { mentionedWords } from './recipients.ts';
+import { mentionSpans, mentionedWords } from './recipients.ts';
 import { mentionFor, slug } from './slug.ts';
 
 export interface MonitorEvidence {
@@ -116,14 +116,30 @@ export function laneMentions(projects: readonly { id: string; name: string }[]):
   }));
 }
 
+/** The project an @word names: the one laneMentions says answers to it, else the one with that id. */
+function laneNamed(word: string, projects: readonly { id: string; name: string }[], mentions: Map<string, string>) {
+  return projects.find((p) => mentions.get(p.id) === word) ?? projects.find((p) => slug(p.id) === word);
+}
+
 /** The project `text` @mentions first: by what laneMentions says it answers to, or by its id. Null when it names none. */
 export function mentionedLane(text: string, projects: readonly { id: string; name: string }[]): string | null {
   const mentions = laneMentions(projects);
   for (const word of mentionedWords(text)) {
-    const project = projects.find((p) => mentions.get(p.id) === word) ?? projects.find((p) => slug(p.id) === word);
+    const project = laneNamed(word, projects, mentions);
     if (project) return project.id;
   }
   return null;
+}
+
+/**
+ * `text` with each project @mention blanked out, for the checks that read
+ * plain words: "@all-hands" names All Hands only, never projects called "All"
+ * and "Hands", and "@overall" is not the word "overall". An @word that names
+ * no project stays.
+ */
+export function withoutLaneMentions(text: string, projects: readonly { id: string; name: string }[]): string {
+  const mentions = laneMentions(projects);
+  return mentionSpans(text).reduceRight((rest, span) => laneNamed(span.word, projects, mentions) ? `${rest.slice(0, span.start)} ${rest.slice(span.end)}` : rest, text);
 }
 
 /** Whether the text means every project: a whole `@all`, never the start of a

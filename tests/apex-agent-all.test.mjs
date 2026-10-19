@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget } from '../src/apexAgentModel.ts';
+import { laneMentions, mentionedLane, mentionsAll, mergeProjectConversations, replyTarget, withoutLaneMentions } from '../src/apexAgentModel.ts';
 
 const monitor = (workspaceId, messages) => ({ workspaceId, messages, findings: [] });
 const msg = (id, at, text = id) => ({ id, role: 'assistant', text, at, evidence: [] });
@@ -59,4 +59,13 @@ test('naming a project called "All Hands" does not mean every project', () => {
   assert.equal(mentionsAll('@allsorts please'), false, 'a longer word is another word');
   assert.equal(mentionsAll('mail me@all.dev'), false, 'an email address is no mention');
   assert.equal(mentionsAll('no mention here'), false);
+});
+
+test('the every-project checks read a message with its project @names blanked out', () => {
+  const lanes = [{ id: 'ws-1', name: 'All Hands' }, { id: 'ws-2', name: 'All' }, { id: 'ws-3', name: 'Overall' }];
+  // Null's repros: the words inside @all-hands and @overall were read as other projects' names and as "overall".
+  assert.equal(withoutLaneMentions('@all-hands status?', lanes), '  status?');
+  assert.equal(withoutLaneMentions('ask @overall. then @ws-2', lanes), 'ask  . then  ', 'a full stop stays, and an id is a handle too');
+  assert.equal(withoutLaneMentions('@all, then @Overall', lanes), '@all, then  ', '@all names no project; case does not matter');
+  assert.equal(withoutLaneMentions('@jigga mail me@overall.dev', lanes), '@jigga mail me@overall.dev', 'a word naming no project, and an email address, stay');
 });

@@ -9,18 +9,24 @@ const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 
 /**
  * Every @word in `text`, lower-cased, in order, the way the room reads them
- * (apex_core::mentioned_words). An @ right after a letter or digit (an email
- * address) is not a mention, and trailing dots are sentence punctuation.
+ * (apex_core::mentioned_words), with where it was written: from the @ to the
+ * end of the word. An @ right after a letter or digit (an email address) is
+ * not a mention, and trailing dots are sentence punctuation.
  */
-export function mentionedWords(text: string): string[] {
-  const words: string[] = [];
+export function mentionSpans(text: string): { word: string; start: number; end: number }[] {
+  const spans: { word: string; start: number; end: number }[] = [];
   for (const match of text.matchAll(/@([\p{L}\p{N}_.-]*)/gu)) {
     const at = match.index ?? 0;
     if (at > 0 && LETTER_OR_DIGIT.test(text[at - 1])) continue;
-    const word = match[1].toLowerCase().replace(/\.+$/, "");
-    if (word) words.push(word);
+    const written = match[1].replace(/\.+$/, "");
+    if (written) spans.push({ word: written.toLowerCase(), start: at, end: at + 1 + written.length });
   }
-  return words;
+  return spans;
+}
+
+/** The @words mentionSpans reads, in order. */
+export function mentionedWords(text: string): string[] {
+  return mentionSpans(text).map((span) => span.word);
 }
 
 /**
