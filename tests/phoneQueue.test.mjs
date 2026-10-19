@@ -90,14 +90,14 @@ test('a message that could not be sent goes back in the box, ahead of newer typi
 
 test('an untagged message behind a queued tag goes where that tag goes', async () => {
   const { queuedSticky } = await import('../src/phoneQueue.ts');
-  const ids = ['null', 'jigga'];
+  const ids = [{ id: 'null', display_name: 'Null' }, { id: 'jigga', display_name: 'Jigga' }];
   const queued = [{ id: 1, text: '@null look', kind: 'message', to: ['null'] }];
   assert.deepEqual(queuedSticky('and this', ids, 'mention', queued), ['null']);
   assert.equal(queuedSticky('@jigga and this', ids, 'mention', queued), null, 'a tag in the text wins');
   assert.equal(queuedSticky('@everyone and this', ids, 'mention', queued), null);
   assert.equal(queuedSticky('and this', ids, 'everyone', queued), null, 'only the last-tagged policy follows tags');
   assert.equal(queuedSticky('and this', ids, 'mention', []), null, 'nothing queued: the thread knows');
-  assert.equal(queuedSticky('and this', ['jigga'], 'mention', queued), null, 'a bot that left the thread');
+  assert.equal(queuedSticky('and this', [{ id: 'jigga', display_name: 'Jigga' }], 'mention', queued), null, 'a bot that left the thread');
 });
 
 test('a queued TL;DR message shows as typed, without the hidden TL;DR line', async () => {

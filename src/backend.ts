@@ -6,6 +6,8 @@ import type { ToolServer } from "./types";
 // can be worked on without building the app.
 
 import { mergeParticipant } from "./participantSettings";
+import { mentionTarget } from "./recipients";
+import { mentionFor } from "./slug";
 import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
 import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PhoneInput, PhoneStatus, PhoneView, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
@@ -415,9 +417,11 @@ function demoBackend(): Backend {
   const targetsFor = (id: string, text: string): string[] => {
     const room = rooms.get(id);
     if (!room) throw new Error(`no group chat with id ${id}`);
-    const named = room.participants.filter(p => text.toLowerCase().match(/@[a-z0-9_-]+/g)?.includes(`@${p.id.toLowerCase()}`)).map(p => p.id);
+    // By the daemon's rule: a bot's current name, else its old id.
+    const target = mentionTarget(text, room.participants);
+    const named = target === "everyone" ? [] : target;
     const all = room.participants.map(p => p.id);
-    return /@(all|everyone)\b/i.test(text) || (!named.length && room.options.policy !== "mention") ? all : named.length ? named : room.last.length ? room.last : all.slice(0,1);
+    return target === "everyone" || (!named.length && room.options.policy !== "mention") ? all : named.length ? named : room.last.length ? room.last : all.slice(0,1);
   };
   /** One participant's turn. Resolves with the bots its reply addressed, so
    *  runChain can follow them the way the native room does. */
@@ -539,7 +543,7 @@ function demoBackend(): Backend {
           const others = room.participants.filter((x) => x.id !== p.id);
           const next = room.participants[(room.participants.findIndex((x) => x.id === p.id) + 1) % room.participants.length];
           const everyone = /\brelay all\b/i.test(lastHuman.text);
-          reply += everyone ? "\n\n@all your turn." : `\n\n@${next.id} your turn.`;
+          reply += everyone ? "\n\n@all your turn." : `\n\n@${mentionFor(next)} your turn.`;
           addressed = everyone ? others.map((x) => x.id) : [next.id];
         }
         for (const piece of reply.match(/\S+\s*/g) ?? []) {

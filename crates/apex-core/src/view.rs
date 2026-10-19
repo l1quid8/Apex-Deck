@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::mention::handle_for;
+use crate::mention::mention_for;
 use crate::types::{Access, Message, ParticipantConfig, ParticipantId, Speaker};
 
 /// A bot replies with exactly this when it has nothing to add. The room
@@ -48,13 +48,13 @@ pub fn system_prompt(me: &ParticipantConfig, roster: &[ParticipantConfig]) -> St
     out.push_str(&format!(
         "You are {} (@{}), one of several AI models in a group chat with a human.\n",
         me.display_name,
-        handle_for(&me.id)
+        mention_for(me)
     ));
 
     let others: Vec<String> = roster
         .iter()
         .filter(|c| c.id != me.id)
-        .map(|c| format!("{} (@{})", c.display_name, handle_for(&c.id)))
+        .map(|c| format!("{} (@{})", c.display_name, mention_for(c)))
         .collect();
     if others.is_empty() {
         out.push_str("You are the only model in the room right now.\n");
@@ -440,5 +440,15 @@ mod tests {
         assert!(prompt.contains(PASS_TOKEN));
         assert!(prompt.contains("You may edit files in the workspace."));
         assert!(prompt.trim_end().ends_with("Be blunt."));
+    }
+
+    #[test]
+    fn system_prompt_gives_a_renamed_bot_its_new_mention() {
+        let me = cfg("jigga", "Atlas");
+        let roster = vec![me.clone(), cfg("qwen3.5-9b--4-bit", "Gwen")];
+        let prompt = system_prompt(&me, &roster);
+        assert!(prompt.contains("You are Atlas (@atlas)"), "{prompt}");
+        assert!(prompt.contains("The other models are: Gwen (@gwen)."), "{prompt}");
+        assert!(!prompt.contains("@jigga") && !prompt.contains("@qwen"), "{prompt}");
     }
 }

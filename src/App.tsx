@@ -20,6 +20,7 @@ import { startHub } from "./hub";
 import { loadStartupState } from "./startupState.ts";
 import { SectionNavigation, type AttentionItem, type SectionFlag } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
+import { renamedAgents, renameNotes, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { ApexAgentSources } from "./ApexAgentSources";
 import { ApexAgentTasks } from "./lazyViews";
 import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
@@ -310,6 +311,21 @@ export function App() {
     setToasts((all) => [...all.slice(-2), { id, text, undo }]);
     setTimeout(() => setToasts((all) => all.filter((t) => t.id !== id)), undo ? UNDO_MS : TOAST_MS);
   }, []);
+  /** Agents renamed in the Agents tab, for every thread to rename its copy of. */
+  const [copyRenames, setCopyRenames] = useState<CopyRename[]>([]);
+  const renameSeq = useRef(0);
+  const renameNote = useRef<ReturnType<typeof renameNotes> | null>(null);
+  renameNote.current ??= renameNotes(toast);
+  const onCopyRenamed = useCallback((seq: number, outcome: CopyOutcome) => renameNote.current?.heard(seq, outcome), []);
+  /** The Agents tab saved. Renaming an agent there renames its copies in chats too. */
+  const saveAgents = (next: ParticipantConfig[]) => {
+    const renamed = renamedAgents(profiles, next).map((rename) => ({ ...rename, seq: ++renameSeq.current }));
+    setProfiles(next);
+    if (renamed.length === 0) return;
+    for (const rename of renamed) renameNote.current?.started(rename);
+    // Threads apply only renames newer than when they opened, so old ones can go.
+    setCopyRenames((list) => [...list, ...renamed].slice(-20));
+  };
   /** Saved machines, for the sidebar's server names and Copy folder path. */
   const [hostList, setHostList] = useState<HostEntry[]>([]);
   /** Edit connection… (or Add a server), while open. */
@@ -2097,7 +2113,7 @@ export function App() {
         )}
 
         <main ref={canvasRef} className={`canvas section-${section}`} inert={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined} aria-hidden={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined}>
-          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} addRequest={newAgentRequest} />}
+          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
           {(section === "code" || section === "threads") && !current && (
@@ -2193,7 +2209,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>

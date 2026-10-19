@@ -657,7 +657,7 @@ impl Participant for SettingsReply {
 }
 
 #[test]
-fn active_settings_cannot_change_access_identity_or_provider() {
+fn active_settings_cannot_change_access_or_provider() {
     block_on(async {
         let mut config = ScriptedParticipant::new("null", &[]).config().clone();
         config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("old-model".into()) };
@@ -669,11 +669,29 @@ fn active_settings_cannot_change_access_identity_or_provider() {
         assert!(!room.replace_turn_settings(Arc::new(SettingsReply { config: changed })));
         let mut changed = config.clone();
         changed.display_name = "Renamed".into();
+        changed.persona = "Be someone else.".into();
         assert!(!room.replace_turn_settings(Arc::new(SettingsReply { config: changed })));
         let mut changed = config.clone();
         changed.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::ClaudeCode, model: Some("new-model".into()) };
         assert!(!room.replace_turn_settings(Arc::new(SettingsReply { config: changed })));
         assert_eq!(room.configs()[0], config);
+    });
+}
+
+/// An Agents-tab rename reaches chats whose bots are busy replying.
+#[test]
+fn a_rename_can_land_while_bots_are_replying() {
+    block_on(async {
+        let mut config = ScriptedParticipant::new("jigga", &[]).config().clone();
+        config.backend = apex_core::Backend::Agent { tool: apex_core::AgentTool::Codex, model: Some("old-model".into()) };
+        let runtime = ConcurrentRoom::new(Room::new(vec![Arc::new(SettingsReply { config: config.clone() })], RoomOptions::default()));
+        let room = runtime.room();
+        let mut room = room.lock().await;
+        let mut renamed = config.clone();
+        renamed.display_name = "Atlas".into();
+        assert!(room.replace_turn_settings(Arc::new(SettingsReply { config: renamed.clone() })));
+        assert_eq!(room.configs()[0], renamed);
+        assert_eq!(room.resolve_targets("@atlas go"), vec![ParticipantId::new("jigga")]);
     });
 }
 

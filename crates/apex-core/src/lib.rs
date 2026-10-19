@@ -22,7 +22,7 @@ pub mod work_steps;
 
 pub use concurrent::{ConcurrentRoom, TurnBatch};
 pub use approval::{ActionKind, AllowedRule, ApprovalDesk, Approver, Decision, FileChange, NoApprover, ProposedAction};
-pub use mention::{handle_for, names, parse_mentions, MentionTarget};
+pub use mention::{handle_for, mention_clash, mention_for, mentioned_words, names, parse_mentions, MentionTarget};
 pub use participant::{
     DeltaSink, Participant, ParticipantError, Progress, ProgressSink, Reply, TurnRequest,
 };

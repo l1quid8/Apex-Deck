@@ -28,10 +28,16 @@ test("the button names one bot, or says them", () => {
 
 test("the asker is the latest reply since your message that mentions who is next", () => {
   const m = (seq, who, text) => ({ seq, speaker: who === "you" ? { kind: "human" } : { kind: "bot", id: who }, text });
-  const ids = ["null", "jigga", "ada"];
+  const ids = ["null", "jigga", "ada"].map((id) => ({ id, display_name: id }));
   assert.equal(askerOf([m(0, "you", "@jigga go"), m(1, "jigga", "@null your turn"), m(2, "ada", "agreed")], ["null"], ids), "jigga");
   assert.equal(askerOf([m(0, "jigga", "@null earlier"), m(1, "you", "go"), m(2, "ada", "no mention")], ["null"], ids), null);
   assert.equal(askerOf([m(0, "you", "go"), m(1, "ada", "@all thoughts?")], ["null", "jigga"], ids), "ada");
+});
+
+test("a bot asking a renamed bot by its new name is the asker", () => {
+  const m = (seq, who, text) => ({ seq, speaker: who === "you" ? { kind: "human" } : { kind: "bot", id: who }, text });
+  const people = [{ id: "null", display_name: "Null" }, { id: "jigga", display_name: "Atlas" }];
+  assert.equal(askerOf([m(0, "you", "go"), m(1, "null", "@atlas your turn")], ["jigga"], people), "null");
 });
 
 test("buttons go once used or once you send", () => {

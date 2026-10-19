@@ -98,6 +98,45 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_worker_is_reached_by_its_new_mention_and_its_old_id() {
+        // "Dr. Who" answers to @dr.-who, which isn't its name as written.
+        for text in ["Please fix the parser in chat Build Room and ask @dr.-who to handle it", "Please fix the parser in chat Build Room and ask @null to handle it"] {
+            let mut request = request();
+            request.text = text.into();
+            request.threads[0].snapshot.participants[0].display_name = "Dr. Who".into();
+            let intent = ConversationIntent::Handoff {
+                message: "Working".into(),
+                brief: "Fix parser".into(),
+                thread_id: "thread-build".into(),
+                workers: vec![],
+                review_criteria: vec![],
+            };
+            let ConversationDecision::Handoff { workers, .. } = authorize(&request, intent) else {
+                panic!("expected handoff for {text}")
+            };
+            assert_eq!(workers, vec!["null"], "{text}");
+        }
+    }
+
+    #[test]
+    fn a_handle_is_read_the_way_the_room_reads_it() {
+        // Lower-cased as a whole word, so a final sigma stays a final sigma.
+        let mut odos = profile("odos", false);
+        odos.display_name = "\u{39f}\u{394}\u{39f}\u{3a3}".into();
+        assert!(!contains_unknown_handle("ask @\u{39f}\u{394}\u{39f}\u{3a3}", &[odos]));
+    }
+
+    #[test]
+    fn a_renamed_bots_mention_is_not_an_unknown_handle() {
+        let mut who = profile("jigga", false);
+        who.display_name = "Dr. Who".into();
+        let roster = vec![who];
+        assert!(!contains_unknown_handle("ask @dr.-who", &roster));
+        assert!(!contains_unknown_handle("ask @jigga", &roster), "its old id");
+        assert!(contains_unknown_handle("ask @nobody", &roster));
+    }
+
+    #[test]
     fn first_worker_fallback_excludes_runtime_named_only_bots() {
         let mut request = request();
         request.text = "Please fix this in the Build Room".into();
@@ -1455,6 +1494,7 @@ fn named_worker(
             exact_occurs(&request.text, &p.display_name)
                 || exact_occurs(&request.text, p.id.as_str())
                 || exact_occurs(&request.text, &format!("@{}", apex_core::handle_for(&p.id)))
+                || exact_occurs(&request.text, &format!("@{}", apex_core::mention_for(p)))
         })
         .collect();
     let ids: std::collections::HashSet<_> = matches.iter().map(|p| p.id.as_str()).collect();
@@ -1582,37 +1622,12 @@ fn explicit_workers(text: &str, roster: &[ParticipantConfig]) -> Option<Option<V
 }
 
 fn contains_unknown_handle(text: &str, roster: &[ParticipantConfig]) -> bool {
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] != '@' || (i > 0 && chars[i - 1].is_alphanumeric()) {
-            i += 1;
-            continue;
-        }
-        let mut end = i + 1;
-        while end < chars.len()
-            && (chars[end].is_alphanumeric() || matches!(chars[end], '-' | '_' | '.'))
-        {
-            end += 1;
-        }
-        let mut handle: String = chars[i + 1..end]
-            .iter()
-            .flat_map(|c| c.to_lowercase())
-            .collect();
-        while handle.ends_with('.') {
-            handle.pop();
-        }
-        if !handle.is_empty()
-            && !matches!(handle.as_str(), "all" | "everyone")
+    apex_core::mentioned_words(text).iter().any(|handle| {
+        !matches!(handle.as_str(), "all" | "everyone")
             && !roster
                 .iter()
-                .any(|p| apex_core::handle_for(&p.id) == handle)
-        {
-            return true;
-        }
-        i = end.max(i + 1);
-    }
-    false
+                .any(|p| apex_core::mention_for(p) == *handle || apex_core::handle_for(&p.id) == *handle)
+    })
 }
 
 /// Apply authority from the human-bound request. A model-provided thread ID

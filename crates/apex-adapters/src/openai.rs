@@ -290,7 +290,7 @@ impl Participant for OpenAiCompatParticipant {
                     Some(name) => Some(crate::keys::lookup(name).ok_or_else(|| ParticipantError::NotConfigured(no_key(name)))?),
                     None => None,
                 };
-                let job = crate::media::Job { client: &self.client, base_url, key, model: &info, settings: self.config.media.as_ref(), dir, attachment_roots: &self.attachment_roots, poll: self.poll, approver, bot: &self.config.id };
+                let job = crate::media::Job { client: &self.client, base_url, key, model: &info, settings: self.config.media.as_ref(), dir, attachment_roots: &self.attachment_roots, poll: self.poll, approver, bot: &self.config };
                 return job.run(&request, on_progress).await;
             }
         }

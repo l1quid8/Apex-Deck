@@ -7,6 +7,7 @@ import { TaskViewContext, personalTaskGroup, personalTaskKey } from '../src/apex
 import { messageStateKey, retryMessageText } from '../src/apexAgentMessageControls.ts';
 import { formatApexAgentQuote } from '../src/apexAgentQuote.ts';
 import { findTrigger } from '../src/composerMenu.ts';
+import { mentionFor } from '../src/slug.ts';
 import { parseComposer } from '../src/commands.ts';
 
 const require = createRequire(import.meta.url);
@@ -40,7 +41,7 @@ function harness(props) {
     useEffect() { cursor++; },
     useCallback(fn) { cursor++; return fn; },
   };
-  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
+  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
   return { props, replies, mutations, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
@@ -315,6 +316,17 @@ test('composer @mentions route by selected lane id, and @all uses overview routi
   tree = h.render(); find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(overviews, ['@all summarize both projects']);
+});
+
+test('a project picked from the @ menu is reached by the mention the menu wrote', async () => {
+  // Real project ids look like ws-…, never the start of the project's name.
+  const named = [{ id: 'ws-1', name: 'Mobile launch' }, { id: 'ws-2', name: 'Billing API' }];
+  const h = harness({ workspaces: named, monitors: [monitor('ws-1'), monitor('ws-2')] });
+  let tree = h.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: '@billing-api check the totals' } });
+  tree = h.render(); find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.replies[0][0], 'ws-2');
 });
 
 test('reply quote freezes its lane, clears task context, and survives a failed send', async () => {

@@ -26,6 +26,12 @@ test('markdown has a title, pins and every message under its speaker', () => {
   assert.ok(!md.includes('secret summary'));
 });
 
+test('a renamed bot is listed with the mention it answers to now', () => {
+  const renamed = { ...thread, participants: [{ ...thread.participants[0], display_name: 'Atlas' }] };
+  assert.ok(exportMarkdown(renamed, at).includes('Participants: Atlas (@atlas).'));
+  assert.ok(exportHtml(renamed, at).includes('Atlas (@atlas)'));
+});
+
 test('json preserves the full thread for later re-import', () => {
   const data = JSON.parse(exportJson(thread, at));
   assert.equal(data.format, 'apex-deck-thread');

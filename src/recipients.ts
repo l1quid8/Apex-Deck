@@ -3,22 +3,20 @@
 
 import type { TurnPolicy } from "./types";
 import { joinNames } from "./composerStatus.ts";
+import { handleFor, mentionFor, type Mentionable } from "./slug.ts";
 
-const HANDLE_CHAR = /[\p{L}\p{N}_.-]/u;
+export { handleFor };
+
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
-
-/** The @handle the room matches for a participant id: its letters, digits, dashes, underscores and dots, lower-cased. */
-export function handleFor(id: string): string {
-  return [...id].filter((c) => HANDLE_CHAR.test(c)).join("").toLowerCase();
-}
 
 /**
  * Who `text` @mentions, by the room's rules: "everyone" for @all or
- * @everyone, otherwise the ids mentioned, first mention first. An @ right
+ * @everyone, otherwise the bots mentioned, first mention first. A word is a
+ * bot's current mention (see mentionFor), or else a bot's old id. An @ right
  * after a letter or digit (an email address) is not a mention, and trailing
  * dots are sentence punctuation.
  */
-export function mentionTarget(text: string, ids: string[]): "everyone" | string[] {
+export function mentionTarget(text: string, people: readonly Mentionable[]): "everyone" | string[] {
   const found: string[] = [];
   let everyone = false;
   for (const match of text.matchAll(/@([\p{L}\p{N}_.-]*)/gu)) {
@@ -27,7 +25,7 @@ export function mentionTarget(text: string, ids: string[]): "everyone" | string[
     const word = match[1].toLowerCase().replace(/\.+$/, "");
     if (word === "all" || word === "everyone") everyone = true;
     else {
-      const id = ids.find((candidate) => handleFor(candidate) === word);
+      const id = (people.find((p) => mentionFor(p) === word) ?? people.find((p) => handleFor(p.id) === word))?.id;
       if (id && !found.includes(id)) found.push(id);
     }
   }
@@ -35,8 +33,8 @@ export function mentionTarget(text: string, ids: string[]): "everyone" | string[
 }
 
 /** Whether `text` @mentions anyone in the room, or everyone. */
-export function hasMention(text: string, ids: string[]): boolean {
-  const target = mentionTarget(text, ids);
+export function hasMention(text: string, people: readonly Mentionable[]): boolean {
+  const target = mentionTarget(text, people);
   return target === "everyone" || target.length > 0;
 }
 
@@ -58,10 +56,10 @@ export function recipientName({ targets, roster, policy }: RecipientInput): stri
   return everyone ? "everyone" : joinNames(targets.map(name));
 }
 
-/** Starter rows for an empty room, built from a real handle. Clicking one puts `text` in the composer; it is never sent for you. */
-export function exampleRows(ids: string[]): { label: string; text: string }[] {
-  if (ids.length === 0) return [];
-  return ["@all what would you change first?", `@${handleFor(ids[0])} review the last commit`, "/export markdown"]
+/** Starter rows for an empty room, built from a real mention. Clicking one puts `text` in the composer; it is never sent for you. */
+export function exampleRows(people: readonly Mentionable[]): { label: string; text: string }[] {
+  if (people.length === 0) return [];
+  return ["@all what would you change first?", `@${mentionFor(people[0])} review the last commit`, "/export markdown"]
     .map((text) => ({ label: `e.g. ${text}`, text }));
 }
 

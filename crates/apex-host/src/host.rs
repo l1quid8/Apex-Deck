@@ -882,6 +882,9 @@ impl Host {
         let room = self.room(&id)?;
         let mut room = room.lock().await;
         self.require_idle(&id)?;
+        if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
+            return Err(why);
+        }
         if room.add_participant(apex_adapters::build(participant, &context)) {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
             self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
@@ -911,11 +914,16 @@ impl Host {
             if base.id != name { return Err("settings base belongs to another participant".into()); }
             merge_participant(&current, &base, &participant)?
         } else { participant };
+        // Only a new mention is checked, so a chat that already has two bots
+        // answering to one name can still save their other settings.
+        if apex_core::mention_for(&next) != apex_core::mention_for(&current) {
+            if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
+        }
         self.ensure_task_read_access(&id, &next)?;
         let replacement = apex_adapters::build(next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
-                return Err("Only model, reasoning and speed can change while models are replying".into());
+                return Err("Only the name, model, reasoning and speed can change while models are replying".into());
             }
         } else { room.replace_participant(replacement); }
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
@@ -2254,6 +2262,50 @@ mod host_tests {
         assert_eq!(rosters[0]["payload"]["event"]["participants"][0]["id"], "null");
         assert_eq!(rosters[1]["payload"]["event"]["participants"], serde_json::json!([]));
         drop(events);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    fn named_bot(id: &str, name: &str) -> ParticipantConfig {
+        serde_json::from_value(serde_json::json!({"id":id,"display_name":name,"backend":{"kind":"scripted","lines":["[pass]"]}})).unwrap()
+    }
+
+    #[test]
+    fn a_name_another_bot_in_the_chat_answers_to_is_refused() {
+        let (host, runtime, data) = host("mention-clash");
+        host.room_create("r".into(), vec![named_bot("jigga", "Atlas"), named_bot("null", "Null")], RoomOptions::default(), None).unwrap();
+        let added = runtime.block_on(host.room_add_participant("r".into(), named_bot("atlas", "ATLAS")));
+        assert_eq!(added.unwrap_err(), "Atlas in this chat already answers to @atlas. Pick a different name.");
+        let everyone = runtime.block_on(host.room_add_participant("r".into(), named_bot("all", "All")));
+        assert_eq!(everyone.unwrap_err(), "@all already means everyone in the chat. Pick a different name.");
+        let renamed = runtime.block_on(host.room_update_participant("r".into(), named_bot("null", "Atlas")));
+        assert_eq!(renamed.unwrap_err(), "Atlas in this chat already answers to @atlas. Pick a different name.");
+        let names: Vec<_> = host.store.room("r").unwrap().unwrap().snapshot.participants.into_iter().map(|p| p.display_name).collect();
+        assert_eq!(names, ["Atlas", "Null"], "nothing was added or renamed");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_renamed_bot_answers_to_its_new_name_and_its_old_id() {
+        let (host, runtime, data) = host("mention-rename");
+        host.room_create("r".into(), vec![named_bot("jigga", "Jigga"), named_bot("null", "Null")], RoomOptions::default(), None).unwrap();
+        runtime.block_on(host.room_update_participant("r".into(), named_bot("jigga", "Atlas"))).unwrap();
+        let targets = |text: &str| runtime.block_on(host.room_targets("r".into(), text.into())).unwrap();
+        assert_eq!(targets("@atlas look"), vec![ParticipantId::new("jigga")]);
+        assert_eq!(targets("@jigga look"), vec![ParticipantId::new("jigga")], "old messages and old phone builds use the id");
+        // A new bot may now be called Jigga; the name beats the old id.
+        runtime.block_on(host.room_add_participant("r".into(), named_bot("jigga-2", "Jigga"))).unwrap();
+        assert_eq!(targets("@jigga look"), vec![ParticipantId::new("jigga-2")]);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_chat_that_already_has_two_bots_answering_to_one_name_can_still_save_other_settings() {
+        let (host, runtime, data) = host("mention-old-clash");
+        host.room_create("r".into(), vec![named_bot("jigga", "Atlas"), named_bot("atlas", "Atlas")], RoomOptions::default(), None).unwrap();
+        let mut persona = named_bot("atlas", "Atlas");
+        persona.persona = "Be brief.".into();
+        runtime.block_on(host.room_update_participant("r".into(), persona)).unwrap();
+        assert_eq!(host.store.room("r").unwrap().unwrap().snapshot.participants[1].persona, "Be brief.");
         let _ = std::fs::remove_dir_all(data);
     }
 

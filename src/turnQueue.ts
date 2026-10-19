@@ -1,6 +1,7 @@
 /** Serializes a room's turns; queued context never overlaps an active turn. */
 import type { TurnPolicy } from "./types";
 import { hasMention } from "./recipients.ts";
+import type { Mentionable } from "./slug.ts";
 /** "turn" runs bots on the transcript as it is and posts no text (see ParticipantQueues.turn). */
 export type TurnKind = "message" | "compact" | "turn";
 /** `hops` is set on "turn" items only: the cap on bot-to-bot rounds, null for the room's own. */
@@ -208,9 +209,9 @@ export class ParticipantQueues {
  * thread's own answer stands: a tag in the text, a policy other than
  * last-tagged, or nothing queued.
  */
-export function queuedSticky(text: string, ids: readonly string[], policy: TurnPolicy, items: readonly ParticipantMessage[]): string[] | null {
-  if (policy !== "mention" || hasMention(text, [...ids])) return null;
+export function queuedSticky(text: string, people: readonly Mentionable[], policy: TurnPolicy, items: readonly ParticipantMessage[]): string[] | null {
+  if (policy !== "mention" || hasMention(text, people)) return null;
   const last = [...items].reverse().find((item) => item.kind === "message");
-  const to = last?.to.filter((id) => ids.includes(id)) ?? [];
+  const to = last?.to.filter((id) => people.some((p) => p.id === id)) ?? [];
   return to.length ? to : null;
 }

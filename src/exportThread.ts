@@ -5,6 +5,7 @@ import { cardFallbackSummary, cardMarkdown, withCardSummaries } from "./interact
 import { readCard } from "./interactiveAnswers/schema.ts";
 import { cardKey, fingerprint } from "./interactiveAnswers/contract.ts";
 import type { Compaction, Message, ParticipantConfig } from "./types";
+import { mentionFor } from "./slug.ts";
 
 /** Blocks remote loads. Inline styles are the only exception, and there is no script. */
 export const PDF_CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
@@ -35,7 +36,7 @@ function speakerName(message: Message, participants: ParticipantConfig[]): strin
 
 /** A readable copy of every saved message, without the model compaction summary. */
 export function exportMarkdown(t: ThreadExport, at: Date): string {
-  const who = t.participants.map((p) => `${p.display_name} (@${p.id})`).join(", ") || "none";
+  const who = t.participants.map((p) => `${p.display_name} (@${mentionFor(p)})`).join(", ") || "none";
   const parts = [`# ${t.title.trim() || "Thread"}`, `Exported from Apex Deck on ${day(at)}. Participants: ${who}.`];
   if (t.pins.length > 0) parts.push(`## Pinned\n\n${t.pins.map((p) => `- ${p}`).join("\n")}`);
   parts.push("---");
@@ -134,7 +135,7 @@ function avatarSvg(id: string, participants: ParticipantConfig[]): string {
 /** A printable page of the chat. No scripts, no remote URLs, no raw HTML from messages. */
 export function exportHtml(t: ThreadExport, at: Date): string {
   const title = t.title.trim() || "Thread";
-  const who = t.participants.map((p) => `${p.display_name} (@${p.id})`).join(", ") || "none";
+  const who = t.participants.map((p) => `${p.display_name} (@${mentionFor(p)})`).join(", ") || "none";
   const pins = t.pins.length
     ? `<section class="pins"><h2>Pinned</h2><ul>${t.pins.map((pin) => `<li>${esc(pin)}</li>`).join("")}</ul></section>`
     : "";

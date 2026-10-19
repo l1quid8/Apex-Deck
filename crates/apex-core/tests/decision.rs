@@ -1,9 +1,24 @@
 use apex_core::decision::routing_request;
-use apex_core::{ParticipantId, Message, Speaker};
+use apex_core::{ParticipantConfig, ParticipantId, Message, Speaker};
+
+fn bot(id: &str, name: &str) -> ParticipantConfig {
+    serde_json::from_value(serde_json::json!({"id":id,"display_name":name,"backend":{"kind":"scripted","lines":[]}})).unwrap()
+}
+
+#[test]
+fn a_renamed_bot_is_labelled_and_offered_by_its_new_mention() {
+    let message = |speaker, text: &str| Message { at: None, seq: 0, servers: vec![], speaker, text: text.into() };
+    let messages = vec![message(Speaker::Bot(ParticipantId::new("jigga")), "previous"), message(Speaker::Bot(ParticipantId::new("gone")), "left"), message(Speaker::Human, "@atlas go")];
+    let request = routing_request(&messages, &[bot("jigga", "Atlas")]);
+    assert!(request.state.contains("[@atlas]: previous"), "{}", request.state);
+    assert!(request.state.contains("[@gone]: left"), "a bot no longer here keeps its id");
+    assert_eq!(request.questions["who_replies"]["criteria"]["bot_0"], "Only @atlas should reply with useful new information.");
+    assert_eq!(request.choices["bot_0"], vec![ParticipantId::new("jigga")]);
+}
 #[test]
 fn dynamic_choices_and_current_message_first_with_bounded_state() {
     let messages = vec![Message { at: None, seq: 0, servers: vec![], speaker: Speaker::Human, text: "old".repeat(10000) }, Message { at: None, seq: 0, servers: vec![], speaker: Speaker::Human, text: "current".into() }];
-    let request = routing_request(&messages, &[ParticipantId::new("nobody"), ParticipantId::new("third")]);
+    let request = routing_request(&messages, &[bot("nobody", "Nobody"), bot("third", "Third")]);
     assert!(request.state.starts_with("Current message"));
     assert!(request.state.contains("current"));
     assert!(request.state.chars().count() <= 6000);
@@ -24,7 +39,7 @@ fn appended_bot_reply_is_valid_but_rewind_and_new_human_are_stale() {
 
 #[test]
 fn observer_only_asks_current_turn_questions() {
-    let request = routing_request(&[], &[ParticipantId::new("a")]);
+    let request = routing_request(&[], &[bot("a", "A")]);
     assert_eq!(request.questions.len(), 2);
     assert!(!request.questions.contains_key("duplicate_reply"));
 }
@@ -37,7 +52,7 @@ fn observer_cuts_busy_replies_and_uses_chat_speakers() {
         message(Speaker::Human, "current request"),
         message(Speaker::Bot(ParticipantId::new("jigga")), "racing reply"),
     ];
-    let request = routing_request(&messages, &[ParticipantId::new("jigga")]);
+    let request = routing_request(&messages, &[bot("jigga", "Jigga")]);
     assert!(request.state.contains("[Human]: current request"));
     assert!(request.state.contains("[@jigga]: previous"));
     assert!(!request.state.contains("racing reply"));
@@ -48,7 +63,7 @@ fn observer_cuts_busy_replies_and_uses_chat_speakers() {
 fn thinking_question_includes_hard_short_prompts_and_bot_handoffs() {
     use apex_core::decision::thinking_request;
     let messages = vec![Message { at: None, seq: 0, servers: vec![], speaker: Speaker::Bot(ParticipantId::new("jigga")), text: "@null build it".into() }];
-    let request = thinking_request(&messages, &[ParticipantId::new("null")]);
+    let request = thinking_request(&messages, &[bot("null", "Null")]);
     assert!(request.state.contains("[@jigga]: @null build it"));
     assert_eq!(request.questions["thinking"]["criteria"].as_object().unwrap().len(), 3);
     assert!(request.questions["thinking"]["instructions"].as_str().unwrap().contains("length"));

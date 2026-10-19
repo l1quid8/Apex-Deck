@@ -18,6 +18,7 @@ import { messageStateKey, retryMessageText } from './apexAgentMessageControls.ts
 import { formatApexAgentQuote } from './apexAgentQuote.ts';
 import { ApexAgentComposerTools, type ApexAgentComposerToolsHandle } from './ApexAgentComposerTools.tsx';
 import { findTrigger } from './composerMenu.ts';
+import { mentionFor } from './slug.ts';
 import type { ComposerMenuHandle } from './ComposerTools.tsx';
 import type { Command } from './commands.ts';
 import { parseComposer } from './commands.ts';
@@ -158,10 +159,11 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   // While filtering, the filtered project is the default target.
   const lastSpoken = filterWorkspaceId ?? allEntries[allEntries.length - 1]?.workspaceId ?? null;
   const fallbackLane = filterWorkspaceId ?? focus ?? draftFallback ?? lastSpoken ?? (assistant ? PERSONAL : null);
-  const mentionedLane = lanes.find((lane) => {
-    const id = lane.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(^|[^\\p{L}\\p{N}_])@${id}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(text);
-  });
+  // By its id, or by the mention the @ menu writes for it (made from its name).
+  const mentionedLane = lanes.find((lane) => [lane.id, mentionFor({ id: lane.id, display_name: lane.name })].some((handle) => {
+    const escaped = handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^\\p{L}\\p{N}_])@${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(text);
+  }));
   const target = replyQuotes[0]?.laneId ?? (filterWorkspaceId ? filterWorkspaceId : mentionedLane?.id ?? replyTarget(text, lanes, fallbackLane));
   // Consume longer names first so "Mobile launch" does not also select "Mobile".
   let unmatched = text;

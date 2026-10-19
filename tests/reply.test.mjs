@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { foldsMessageActions, handOffChoices, handOffLabel, quoteFor, quoteLead, quoteTarget, replyText } from '../src/reply.ts';
 
+const bots = (...ids) => ids.map((id) => ({ id, display_name: id }));
+
 test('quote replies address the selected model and preserve multiline context', () => {
   assert.equal(replyText('Thanks', { id: 'null', name: 'Null', text: 'First\n\nSecond' }), '@null Thanks\n\n> Null wrote:\n> First\n> \n> Second');
 });
@@ -19,26 +21,34 @@ test('ordinary messages keep their existing behavior', () => {
 
 test('your own @mention means the quote adds no handle', () => {
   const quote = { id: 'jigga', name: 'Jigga', text: 'Use a cache.' };
-  assert.equal(replyText('@null check this', quote, ['jigga', 'null']), '@null check this\n\n> Jigga wrote:\n> Use a cache.');
-  assert.ok(replyText('@all thoughts?', quote, ['jigga', 'null']).startsWith('@all thoughts?'));
+  assert.equal(replyText('@null check this', quote, bots('jigga', 'null')), '@null check this\n\n> Jigga wrote:\n> Use a cache.');
+  assert.ok(replyText('@all thoughts?', quote, bots('jigga', 'null')).startsWith('@all thoughts?'));
 });
 
 test('a mention inside the quoted text is not yours', () => {
   const quote = { id: 'jigga', name: 'Jigga', text: 'Ask @null about it' };
-  assert.ok(replyText('Agreed?', quote, ['jigga', 'null']).startsWith('@jigga Agreed?'));
+  assert.ok(replyText('Agreed?', quote, bots('jigga', 'null')).startsWith('@jigga Agreed?'));
 });
 
 test('Send to sets the leading handle', () => {
   const quote = { id: 'jigga', name: 'Jigga', text: 'Use a cache.', to: 'null' };
-  assert.ok(replyText('Check this', quote, ['jigga', 'null']).startsWith('@null Check this'));
-  assert.ok(replyText('Check this', { ...quote, to: 'all' }, ['jigga', 'null']).startsWith('@all Check this'));
-  assert.equal(quoteLead('Check this', quote, ['jigga', 'null']), 'null');
+  assert.ok(replyText('Check this', quote, bots('jigga', 'null')).startsWith('@null Check this'));
+  assert.ok(replyText('Check this', { ...quote, to: 'all' }, bots('jigga', 'null')).startsWith('@all Check this'));
+  assert.equal(quoteLead('Check this', quote, bots('jigga', 'null')), 'null');
+});
+
+test('a quote of a renamed bot leads with its new name, even when another bot took the old one', () => {
+  const people = [{ id: 'jigga', display_name: 'Atlas' }, { id: 'jigga-2', display_name: 'Jigga' }];
+  const quote = { id: 'jigga', name: 'Atlas', text: 'Use a cache.' };
+  assert.ok(replyText('Agreed?', quote, people).startsWith('@atlas Agreed?'));
+  assert.ok(replyText('Check', { ...quote, to: 'jigga-2' }, people).startsWith('@jigga Check'));
+  assert.equal(replyText('@atlas check this', quote, people), '@atlas check this\n\n> Atlas wrote:\n> Use a cache.', 'your own mention by the new name counts');
 });
 
 test('your own messages can be quoted and lead with nobody by default', () => {
   const quote = quoteFor({ seq: 4, speaker: { kind: 'human' }, text: 'Ship it' }, (id) => id);
   assert.deepEqual(quote, { id: '', name: 'I', text: 'Ship it' });
-  assert.equal(replyText('Still true?', quote, ['null']), 'Still true?\n\n> I wrote:\n> Ship it');
+  assert.equal(replyText('Still true?', quote, bots('null')), 'Still true?\n\n> I wrote:\n> Ship it');
   assert.deepEqual(quoteFor({ seq: 5, speaker: { kind: 'bot', id: 'null' }, text: 'Done' }, () => 'Null'), { id: 'null', name: 'Null', text: 'Done' });
 });
 
@@ -57,7 +67,7 @@ test('multiple Add to chat quotes stack instead of overwriting', () => {
     { id: 'jigga', name: 'Jigga', text: 'Second' },
   ];
   assert.equal(
-    replyText('Thanks', quotes, ['null', 'jigga']),
+    replyText('Thanks', quotes, bots('null', 'jigga')),
     '@null Thanks\n\n> Null wrote:\n> First\n> \n> Jigga wrote:\n> Second',
   );
 });
@@ -67,7 +77,7 @@ test('an explicit Send to wins across stacked quotes', () => {
     { id: 'null', name: 'Null', text: 'First' },
     { id: 'jigga', name: 'Jigga', text: 'Second', to: 'all' },
   ];
-  assert.ok(replyText('Check', quotes, ['null', 'jigga']).startsWith('@all Check'));
+  assert.ok(replyText('Check', quotes, bots('null', 'jigga')).startsWith('@all Check'));
 });
 
 test('preview and send agree when your own quote comes first', () => {
@@ -75,8 +85,8 @@ test('preview and send agree when your own quote comes first', () => {
     { id: '', name: 'I', text: 'Mine' },
     { id: 'muck', name: 'Muck', text: 'Hi' },
   ];
-  assert.equal(quoteTarget('', quotes, ['muck', 'null']), 'muck');
-  assert.ok(replyText('', quotes, ['muck', 'null']).startsWith('@muck '));
+  assert.equal(quoteTarget('', quotes, bots('muck', 'null')), 'muck');
+  assert.ok(replyText('', quotes, bots('muck', 'null')).startsWith('@muck '));
 });
 
 test('message actions fold into one menu in a pane under 360px wide', () => {
