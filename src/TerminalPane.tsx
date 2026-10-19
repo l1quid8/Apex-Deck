@@ -26,6 +26,10 @@ interface Props {
   toolLabel: string;
   /** Bumped by the ⋯ menu's Start again. */
   startRequest?: number;
+  /** Attach to this already-running PTY instead of starting one (the pop-out view). Never spawns or kills. */
+  attachPtyId?: string;
+  /** Start and Start again in attach mode: the owner runs them, which owns the run. */
+  onRestartRequest?: (paneId: string) => void;
   onActivity: (paneId: string) => void;
   /** Told each time the program starts or ends. */
   onRun: (paneId: string, run: TerminalRun) => void;
@@ -64,7 +68,7 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, onActivity, onRun, onTitle, onRenamePane, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, attachPtyId, onRestartRequest, onActivity, onRun, onTitle, onRenamePane, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
   const connection = useHostConnection(backend);
   const available = installed && hostCanMutate(connection.status);
   /** Fit the terminal to its pane and tell the program its new size. Set up with the terminal below. */
@@ -74,8 +78,8 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
   /** Where the program is, for the bar at the foot of the pane. */
   const [run, setRun] = useState<TerminalRun>(STOPPED);
   // Keep the latest callbacks and folder without restarting the terminal when they change.
-  const latest = useRef({ onActivity, onRun, onTitle, onRenamePane, onSignal, onRunStart, onServer, cwd, installed, title: pane.title });
-  latest.current = { onActivity, onRun, onTitle, onRenamePane, onSignal, onRunStart, onServer, cwd, installed, title: pane.title };
+  const latest = useRef({ onActivity, onRun, onTitle, onRenamePane, onSignal, onRunStart, onServer, onRestartRequest, cwd, installed, title: pane.title });
+  latest.current = { onActivity, onRun, onTitle, onRenamePane, onSignal, onRunStart, onServer, onRestartRequest, cwd, installed, title: pane.title };
   const currentPtyId = useRef<string | null>(null);
   const receivedRename = useRef<string | null>(null);
   const lastPaneTitle = useRef(pane.title);
@@ -150,15 +154,11 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       setRun(next);
       latest.current.onRun(pane.id, next);
     };
-    const ptyId = () => ptyIdFor(pane.id, current.generation);
+    const attached = attachPtyId;
+    const ptyId = () => attached ?? ptyIdFor(pane.id, current.generation);
 
-    start.current = () => {
-      if (backend.host && !hostCanMutate(backend.host.connection.get().status)) return;
-      if (!canStart(current) || !latest.current.installed) return;
-      const again = current.generation > 0;
-      const next = started(current, Date.now());
-      const id = ptyIdFor(pane.id, next.generation);
-      currentPtyId.current = id;
+    // Watch one run's output and exit. Starting watches the new run; attaching watches the owner's.
+    const watch = (id: string, run: TerminalRun) => {
       servers.reset();
       unregister();
       unregister = registerPty(id, {
@@ -177,7 +177,7 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
           quiet = setTimeout(settle, QUIET_MS);
         },
         onExit: (code) => {
-          const ended = exited(current, next.generation, code, Date.now());
+          const ended = exited(current, run.generation, code, Date.now());
           if (ended === current) return;
           clearTimeout(quiet);
           // The title belonged to the program that just ended.
@@ -191,6 +191,18 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
           waiting = false;
         },
       }, backend.host?.id);
+    };
+
+    start.current = () => {
+      // Attached to the owner's run: starting happens over there.
+      if (attached) { latest.current.onRestartRequest?.(pane.id); return; }
+      if (backend.host && !hostCanMutate(backend.host.connection.get().status)) return;
+      if (!canStart(current) || !latest.current.installed) return;
+      const again = current.generation > 0;
+      const next = started(current, Date.now());
+      const id = ptyIdFor(pane.id, next.generation);
+      currentPtyId.current = id;
+      watch(id, next);
       // Starting again deals with whatever the last run was flagged for.
       latest.current.onSignal(pane.id, null);
       waiting = false;
@@ -259,8 +271,24 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       }
       else recoveryPending = false;
     }, () => recoveryPending) ?? (() => {});
+    // Attached to the owner's run: replay what's on screen, then follow it live. Never starts or stops it.
+    if (attached) {
+      const gen = Number(attached.slice(attached.lastIndexOf(":") + 1));
+      const found: TerminalRun = { state: "running", generation: Number.isFinite(gen) ? gen : 0, code: null, at: Date.now() };
+      currentPtyId.current = attached;
+      watch(attached, found);
+      report(found);
+      void backend.ptyAttach(attached).then((snap) => {
+        if (current !== found || recoveryAlive === false) return;
+        if (snap.output) term.write(snap.output);
+        if (snap.state === "exited") report(exited(found, found.generation, snap.exitCode, Date.now()));
+        if (hasSize()) fit.fit();
+      }).catch((error) => {
+        term.write(`\x1b[31mCould not attach: ${String(error)}\x1b[0m\r\n`);
+      });
+    }
     // A terminal restored from the last session never starts by itself.
-    if (startOnMount) start.current();
+    else if (startOnMount) start.current();
     else report(STOPPED);
 
     return () => {
@@ -273,7 +301,8 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       typed.dispose();
       renameOff?.();
       unregister();
-      if (current.state === "running") backend.ptyKill(ptyId()).catch(() => {});
+      // The owner's run outlives its views: only a terminal of its own is stopped here.
+      if (current.state === "running" && !attached) backend.ptyKill(ptyId()).catch(() => {});
       currentPtyId.current = null;
       start.current = () => {};
       term.dispose();
@@ -281,15 +310,17 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
     };
     // The terminal lives as long as the pane; its inputs do not change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id]);
+  }, [pane.id, attachPtyId]);
 
   useEffect(() => {
     if (pane.title === lastPaneTitle.current) return;
     lastPaneTitle.current = pane.title;
     if (receivedRename.current === pane.title) { receivedRename.current = null; return; }
+    // Attached views never rename the owner's run; the owner pushes titles down.
+    if (attachPtyId) return;
     const id = currentPtyId.current;
     if (id) void backend.ptyRename(id, pane.title).catch(() => {});
-  }, [backend, pane.title]);
+  }, [backend, pane.title, attachPtyId]);
 
   // Settings › Terminal. A new font size changes how many cells fit, so refit.
   useEffect(() => {

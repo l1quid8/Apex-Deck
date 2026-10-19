@@ -35,9 +35,9 @@ test("a project's menu: Pin, Edit…, then Edit connection… for a server or Re
   assert.deepEqual(projectMenuItems({ remote: false, path: "/a", threads: 1 }).map((i) => i.action), ["pin", "edit", "reveal", "archive", "remove"]);
 });
 
-test("a terminal's menu offers Rename, Pin, Start again, Copy folder path, then Close", () => {
-  assert.deepEqual(summary(paneMenuItems("terminal", idle)), ["Rename", "Pin to top", "Start again", "Copy folder path", "| Close"]);
-  assert.deepEqual(paneMenuItems("terminal", idle).map((i) => i.action), ["rename", "pin", "start", "copy_path", "close"]);
+test("a terminal's menu offers Rename, Pin, Start again, Copy folder path, Open in new window, then Close", () => {
+  assert.deepEqual(summary(paneMenuItems("terminal", idle)), ["Rename", "Pin to top", "Start again", "Copy folder path", "Open in new window", "| Close"]);
+  assert.deepEqual(paneMenuItems("terminal", idle).map((i) => i.action), ["rename", "pin", "start", "copy_path", "popout", "close"]);
 });
 
 test("Start again is off while the program runs, and says why", () => {
