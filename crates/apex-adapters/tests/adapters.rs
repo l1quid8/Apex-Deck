@@ -962,8 +962,12 @@ async fn claude_and_codex_processes_get_the_phone_variables_and_the_hint() {
 
         let (env, prompt) = phone_probe(tool, None).await;
         // Other tests in this file set unrelated APEX_DECK_* variables, so
-        // look for the five phone names only.
-        assert!(!env.lines().any(|seen| names.iter().any(|name| seen.starts_with(&format!("{name}=")))), "{tool:?} got phone variables with the phone off: {env}");
+        // look for the five phone names only. When these tests run inside a
+        // Deck chat, the test itself already has the five set; a child that
+        // inherits those unchanged did not get them from the bot.
+        let inherited = |seen: &str| names.iter().any(|name| std::env::var(name).is_ok_and(|value| seen == format!("{name}={value}")));
+        let leaked = |seen: &str| names.iter().any(|name| seen.starts_with(&format!("{name}="))) && !inherited(seen);
+        assert!(!env.lines().any(leaked), "{tool:?} got phone variables with the phone off: {env}");
         assert!(!prompt.contains("Phone tab"), "{tool:?} got the hint with the phone off: {prompt}");
         assert!(!env.contains("shell_environment_policy.set.APEX_DECK_"));
     }
