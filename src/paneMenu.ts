@@ -50,6 +50,7 @@ export function paneMenuItems(kind: PaneKind, terminal: TerminalMenuState, previ
       item("copy", "Copy", { submenu: true }),
       item("fork", "Fork"),
       item("export", "Export"),
+      item("popout", "Open in new window"),
       item("archive", "Archive", { separated: true, keys: keys.archive }),
       item("delete", "Delete…", { danger: true }),
     ];
@@ -60,6 +61,7 @@ export function paneMenuItems(kind: PaneKind, terminal: TerminalMenuState, previ
       item("rename", "Rename"),
       pin,
       item("copy_address", "Copy address", { disabled: !preview.address, reason: preview.address ? "" : "No page yet." }),
+      item("popout", "Open in new window"),
       item("close", "Close", { separated: true }),
     ];
   }

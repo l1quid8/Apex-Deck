@@ -108,20 +108,29 @@ interface PaneDrag {
 /**
  * Dragging a pane by its title bar onto another pane. Dropping on a side
  * puts it there and splits the space; dropping on the middle swaps the two.
- * Escape, or releasing outside any pane, leaves things as they were.
+ * Escape, or releasing outside any pane, leaves things as they were, unless
+ * the pointer left the window: then the pane pops out where it was dropped.
  */
-export function usePaneDrag(tree: LayoutNode | null, area: RefObject<HTMLDivElement | null>, onChange: (tree: LayoutNode) => void): PaneDrag {
+export function usePaneDrag(tree: LayoutNode | null, area: RefObject<HTMLDivElement | null>, onChange: (tree: LayoutNode) => void, options?: { onDropOutside?: (id: string, x: number, y: number) => void }): PaneDrag {
   const [dragging, setDragging] = useState<string | null>(null);
   const [drop, setDrop] = useState<Drop | null>(null);
   // The listeners below outlive the render that attached them.
-  const latest = useRef({ tree, onChange });
-  latest.current = { tree, onChange };
-  const press = useRef<{ id: string; x: number; y: number; active: boolean; drop: Drop | null } | null>(null);
+  const latest = useRef({ tree, onChange, onDropOutside: options?.onDropOutside });
+  latest.current = { tree, onChange, onDropOutside: options?.onDropOutside };
+  const press = useRef<{ id: string; x: number; y: number; active: boolean; drop: Drop | null; el: HTMLElement; pid: number } | null>(null);
   const [pressed, setPressed] = useState(0);
 
   useEffect(() => {
     if (!press.current) return;
     const stop = () => {
+      const state = press.current;
+      if (state) {
+        try {
+          if (state.el.hasPointerCapture?.(state.pid)) state.el.releasePointerCapture(state.pid);
+        } catch {
+          // The element may be gone; nothing to release.
+        }
+      }
       press.current = null;
       setDragging(null);
       setDrop(null);
@@ -135,6 +144,12 @@ export function usePaneDrag(tree: LayoutNode | null, area: RefObject<HTMLDivElem
         if (Math.hypot(event.clientX - state.x, event.clientY - state.y) < DRAG_THRESHOLD) return;
         state.active = true;
         setDragging(state.id);
+        // Keep the moves and the release coming while the pointer is off the window.
+        try {
+          state.el.setPointerCapture(state.pid);
+        } catch {
+          // Capture can fail when the press is already over; the drag still works inside.
+        }
       }
       const point = pointIn(area.current, event.clientX, event.clientY);
       let next: Drop | null = null;
@@ -147,10 +162,16 @@ export function usePaneDrag(tree: LayoutNode | null, area: RefObject<HTMLDivElem
       state.drop = next;
       setDrop((old) => (old?.target === next?.target && old?.edge === next?.edge ? old : next));
     };
-    const up = () => {
+    const up = (event: PointerEvent) => {
       const state = press.current;
-      const { tree, onChange } = latest.current;
-      if (state?.active && state.drop && tree) onChange(moveLeaf(tree, state.id, state.drop.target, state.drop.edge));
+      const { tree, onChange, onDropOutside } = latest.current;
+      if (state?.active && tree) {
+        if (state.drop) {
+          onChange(moveLeaf(tree, state.id, state.drop.target, state.drop.edge));
+        } else if (onDropOutside && (event.clientX < 0 || event.clientY < 0 || event.clientX > window.innerWidth || event.clientY > window.innerHeight)) {
+          onDropOutside(state.id, event.screenX, event.screenY);
+        }
+      }
       stop();
     };
     const key = (event: KeyboardEvent) => event.key === "Escape" && stop();
@@ -173,7 +194,7 @@ export function usePaneDrag(tree: LayoutNode | null, area: RefObject<HTMLDivElem
     begin: (id, event) => {
       // Buttons in the title bar keep working, and only the main button drags.
       if (event.button !== 0 || (event.target as HTMLElement).closest("button, input, select, a")) return;
-      press.current = { id, x: event.clientX, y: event.clientY, active: false, drop: null };
+      press.current = { id, x: event.clientX, y: event.clientY, active: false, drop: null, el: event.currentTarget as HTMLElement, pid: event.pointerId };
       setPressed((n) => n + 1);
     },
   };

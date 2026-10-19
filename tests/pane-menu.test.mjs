@@ -5,11 +5,11 @@ import { paneMenuItems, copyMenuItems, projectMenuItems } from "../src/paneMenu.
 const idle = { running: false, installed: true, tool: "Codex", folder: "/Users/tyler/apex-deck" };
 const summary = (items) => items.map((i) => `${i.separated ? "| " : ""}${i.label}${i.disabled ? " (off)" : ""}${i.danger ? " (danger)" : ""}`);
 
-test("a thread's menu is Codex's, with Deck's Share as PDF, Copy ›, Fork, Export and Delete", () => {
+test("a thread's menu is Codex's, with Deck's Share as PDF, Copy ›, Fork, Export, Open in new window and Delete", () => {
   const items = paneMenuItems("chat", idle, { address: "" }, { mac: true });
-  assert.deepEqual(summary(items), ["Rename", "Pin", "Mark as unread", "Project", "| Share as PDF", "Copy", "Fork", "Export", "| Archive", "Delete… (danger)"]);
-  assert.deepEqual(items.map((i) => i.keys ?? ""), ["⌥⌘R", "⌥⌘P", "⇧⌘U", "", "", "", "", "", "⇧⌘A", ""]);
-  assert.deepEqual(items.map((i) => i.action), ["rename", "pin", "mark_unread", "project", "share_pdf", "copy", "fork", "export", "archive", "delete"]);
+  assert.deepEqual(summary(items), ["Rename", "Pin", "Mark as unread", "Project", "| Share as PDF", "Copy", "Fork", "Export", "Open in new window", "| Archive", "Delete… (danger)"]);
+  assert.deepEqual(items.map((i) => i.keys ?? ""), ["⌥⌘R", "⌥⌘P", "⇧⌘U", "", "", "", "", "", "", "⇧⌘A", ""]);
+  assert.deepEqual(items.map((i) => i.action), ["rename", "pin", "mark_unread", "project", "share_pdf", "copy", "fork", "export", "popout", "archive", "delete"]);
   assert.equal(items.find((i) => i.action === "copy").submenu, true);
   assert.equal(items.find((i) => i.action === "project").submenu, true);
   const marked = paneMenuItems("chat", idle, { address: "" }, { pinned: true, unread: true, mac: true });
@@ -64,10 +64,10 @@ test("Close is never turned off, so a busy terminal can always be closed (it ask
   assert.equal(close.danger, false);
 });
 
-test("a preview's menu renames, copies its address and closes", () => {
+test("a preview's menu renames, copies its address, opens in a new window and closes", () => {
   const terminal = { running: false, installed: true, tool: "", folder: "" };
   const items = paneMenuItems("preview", terminal, { address: "http://localhost:5173/" });
-  assert.deepEqual(items.map((i) => i.action), ["rename", "pin", "copy_address", "close"]);
+  assert.deepEqual(items.map((i) => i.action), ["rename", "pin", "copy_address", "popout", "close"]);
   const copy = items.find((i) => i.action === "copy_address");
   assert.equal(copy.disabled, false);
   const empty = paneMenuItems("preview", terminal, { address: "" }).find((i) => i.action === "copy_address");

@@ -28,13 +28,21 @@ interface Props {
   onClose: () => void;
   onFull: (full: boolean) => void;
   taskAttention?: { count: number; details: string };
+  /** Pop a tab out into its own window, from its right-click menu. */
+  onPopout?: (tabId: string) => void;
+  /** A tab dragged out past the window's edge, with where it was dropped. */
+  onPopoutDragOut?: (tabId: string, x: number, y: number) => void;
 }
 
 /** The right panel: a row of tabs and the tab in front. Hidden tabs stay mounted so pages and trees keep their place. */
-export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAttention }: Props) {
+export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAttention, onPopout, onPopoutDragOut }: Props) {
   const [adding, setAdding] = useState(false);
+  const [context, setContext] = useState<{ id: string; x: number; y: number } | null>(null);
   const dragging = useRef<string | null>(null);
   const now = () => Date.now();
+  const outsideWindow = (event: { screenX: number; screenY: number }) =>
+    event.screenX <= window.screenX || event.screenX >= window.screenX + window.outerWidth ||
+    event.screenY <= window.screenY || event.screenY >= window.screenY + window.outerHeight;
   return <div className="right-panel">
     <div className="right-panel-tabs" role="tablist" aria-label="Side panel">
       {state.tabs.map((tab, index) => {
@@ -45,7 +53,13 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
           draggable={!fixed}
           onDragStart={() => { dragging.current = tab.id; }}
           onDragOver={(e) => { if (dragging.current) e.preventDefault(); }}
-          onDrop={() => { if (dragging.current) onChange(moveTab(state, dragging.current, index)); dragging.current = null; }}>
+          onDrop={() => { if (dragging.current) onChange(moveTab(state, dragging.current, index)); dragging.current = null; }}
+          onDragEnd={(e) => {
+            const id = dragging.current;
+            dragging.current = null;
+            if (id && onPopoutDragOut && outsideWindow(e)) onPopoutDragOut(id, e.screenX, e.screenY);
+          }}
+          onContextMenu={onPopout ? (e) => { e.preventDefault(); setContext({ id: tab.id, x: e.clientX, y: e.clientY }); } : undefined}>
           <button role="tab" id={`right-tab-${tab.id}`} aria-selected={tab.id === state.active} aria-controls={`right-body-${tab.id}`} aria-label={flaggedTasks ? taskAttention?.details : label} title={flaggedTasks ? taskAttention?.details : label} onClick={() => onChange(activate(state, tab.id, now()))}><TabIcon kind={tab.kind} /><span className="right-panel-tab-label" aria-hidden="true">{label}</span></button>
           {!fixed && <button className="icon small" aria-label={`Close ${label}`} onClick={() => onChange(closeTab(state, tab.id))}>×</button>}
         </div>;
@@ -56,6 +70,11 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
     </div>
     {adding && <div className="right-panel-add" role="menu">
       {KINDS.filter((k) => !FIXED.includes(k)).map((kind) => <button key={kind} role="menuitem" onClick={() => { setAdding(false); onChange(openTab(state, kind, now())); }}><TabIcon kind={kind} />{TAB_LABEL[kind]}</button>)}
+    </div>}
+    {context && <div className="right-panel-context-backdrop" onClick={() => setContext(null)} onContextMenu={(e) => { e.preventDefault(); setContext(null); }}>
+      <div className="right-panel-context" role="menu" style={{ left: context.x, top: context.y }}>
+        <button role="menuitem" onClick={() => { const id = context.id; setContext(null); onPopout?.(id); }}>Open in new window</button>
+      </div>
     </div>}
     {state.tabs.map((tab) => {
       const visible = state.open && tab.id === state.active;
