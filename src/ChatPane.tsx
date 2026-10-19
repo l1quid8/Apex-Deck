@@ -20,7 +20,8 @@ import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress"
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
 import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
-import { slug } from "./slug";
+import { botIdentity, clashMessage, mentionable, mentionClash, mentionFor, slug } from "./slug";
+import { copyRenamer, savedToAgents, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { nameForModel, uniqueName } from "./quickAdd";
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
@@ -137,6 +138,10 @@ interface Props {
   profiles: ParticipantConfig[];
   onProfilesChange: (profiles: ParticipantConfig[]) => void;
   profileMode?: boolean;
+  /** Agents renamed in the Agents tab: this chat renames its copy of each, once. */
+  copyRenames?: CopyRename[];
+  /** What this chat did with a rename, for the note in the app. */
+  onCopyRenamed?: (seq: number, outcome: CopyOutcome) => void;
   onFork?: (title: string, upto: number | null, at: number) => Promise<string>;
   /** The Work bar above the message box: project, Files, Tools and where it runs. Threads only. */
   work?: WorkContext;
@@ -468,7 +473,10 @@ function fitHead(head: HTMLElement) {
   head.toggleAttribute("data-flag-hidden", Boolean(head.querySelector(".flag")) && head.scrollWidth > head.clientWidth);
 }
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, details }: Props) {
+/** No renames to apply: one array, so the default never looks like a change. */
+const NO_RENAMES: CopyRename[] = [];
+
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -795,7 +803,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // Who is at work right now, for the line above the composer: bots still
   // replying, and bots stopped on an approval card waiting for you.
   /** Who a quote will lead with right now, for its Send to ▾ button. */
-  const quoteTo = !replies.length ? null : quoteTarget(text.trim(), replies, participants.map((p) => p.id));
+  const quoteTo = !replies.length ? null : quoteTarget(text.trim(), replies, participants);
 
   // Keep the last context reading so the meters show it straight after a restart.
   const contextLoaded = useRef(false);
@@ -993,7 +1001,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           notify(`${nameOf(event.id)} could not reply: ${event.error}`, "error", retryFor(event.id, [...namesRef.current.keys()]) ?? undefined);
           break;
         case "hop_limit_reached": {
-          const roster = [...namesRef.current.keys()];
+          const roster = [...namesRef.current].map(([id, display_name]) => ({ id, display_name }));
           const action: NoticeAction | undefined = event.next.length > 0 ? { kind: "let", ids: event.next } : undefined;
           // Read the asker from the newest list: its reply may have landed in this same tick.
           setEntries((list) => {
@@ -1261,11 +1269,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     try { ready = await withKey(draft); } catch (error) { return setFormError(error instanceof Error ? error.message : String(error)); }
     const built = draftToConfig(ready);
     if (typeof built === "string") return setFormError(built);
-    // When editing, the @handle stays the same even if the name changes.
-    const config = { ...built, id: editing ?? built.id, appearance: built.appearance ?? (editing ? appearance(editing) : createAppearance([...identities.current.values()])) };
-    if (!editing && participants.some((p) => p.id === config.id)) {
-      return setFormError(`@${config.id} is already in this chat. Pick a different name.`);
-    }
+    // The id a bot is saved under never changes; its @mention follows its name.
+    const identity = botIdentity(built, { editing, others: participants, agents: profiles, place: profileMode ? "agents" : "chat" });
+    if ("error" in identity) return setFormError(identity.error);
+    const config = { ...built, id: identity.id, appearance: built.appearance ?? (editing ? appearance(editing) : createAppearance([...identities.current.values()])) };
     try {
       if (profileMode) {
         const next = editing ? participants.map((p) => p.id === editing ? config : p) : [...participants, config];
@@ -1316,6 +1323,27 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     setParticipants((list) => list.filter((q) => q.id !== p.id));
     notify(`${p.display_name} was kicked.`, "info", { kind: "rejoin", config: p });
   };
+
+  // An agent renamed in the Agents tab: rename this chat's copy of it, once,
+  // when the chat can take changes. A chat opened after the rename skips it.
+  // One rename at a time, so a second one made while the first saves isn't lost.
+  const renamedUpTo = useRef(copyRenames.at(-1)?.seq ?? 0);
+  const renaming = useRef({ room: pane.id, participants, backend, onCopyRenamed });
+  renaming.current = { room: pane.id, participants, backend, onCopyRenamed };
+  const [renameCopies] = useState(() => copyRenamer(() => renaming.current.participants, async (next, base) => {
+    await renaming.current.backend.roomUpdateParticipant(renaming.current.room, next, base);
+    // The next rename starts from this list, so it shows the new name now, not once the chat's update arrives.
+    const named = (list: ParticipantConfig[]) => list.map((p) => (p.id === next.id ? { ...p, display_name: next.display_name } : p));
+    renaming.current.participants = named(renaming.current.participants);
+    setParticipants(named);
+  }, (seq, outcome) => renaming.current.onCopyRenamed?.(seq, outcome)));
+  useEffect(() => {
+    if (profileMode || !ready) return;
+    const due = copyRenames.filter((r) => r.seq > renamedUpTo.current);
+    if (due.length === 0) return;
+    renamedUpTo.current = due[due.length - 1].seq;
+    void renameCopies(due, pane.title);
+  }, [copyRenames, ready]);
 
   /** Counts finished saves, so the recipients are asked again once the room has the new Who answers. */
   const [optionsSaved, setOptionsSaved] = useState(0);
@@ -1370,9 +1398,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const current = useRef(backend);
   current.current = backend;
   // The thread only hears a tag once its message is posted, so an untagged message behind a queued tag goes where that tag goes.
-  const routing = useRef({ ids: [] as string[], policy: options.policy });
-  routing.current = { ids: participants.map((p) => p.id), policy: options.policy };
-  const stickyFor = (message: string, items: readonly ParticipantMessage[]) => queuedSticky(message, routing.current.ids, routing.current.policy, items);
+  const routing = useRef({ people: [] as ParticipantConfig[], policy: options.policy });
+  routing.current = { people: participants, policy: options.policy };
+  const stickyFor = (message: string, items: readonly ParticipantMessage[]) => queuedSticky(message, routing.current.people, routing.current.policy, items);
   const [turnQueue] = useState(() => new ParticipantQueues(
     async (message): Promise<string[]> => stickyFor(message, turnQueue.items) ?? current.current.roomTargets(pane.id, message),
     (message, to, kind, hops, manual) => dispatch.current(message, to, kind, hops, manual),
@@ -1507,7 +1535,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   const explainPicked = () => {
     if (!picked || !ready || participants.length === 0) return;
-    const message = replyText("Explain this part in more detail.", pickedQuote(picked), participants.map((p) => p.id));
+    const message = replyText("Explain this part in more detail.", pickedQuote(picked), participants);
     setPicked(null);
     window.getSelection()?.removeAllRanges();
     stuck.current = true;
@@ -2015,7 +2043,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const taken = [...messagesOf(entries).filter((m) => m.speaker.kind === "human").map((m) => m.text), ...attached.map((a) => a.name)];
     const fileNames = reviewFileNames(nextReviewNumber(taken), parts.length);
     parts.forEach((text, i) => track(fileNames[i], undefined, () => backend.saveAttachment(pane.id, fileNames[i], new TextEncoder().encode(text))));
-    setText((draft) => reviewDraft(id, draft));
+    const reviewer = participants.find((p) => p.id === id);
+    if (reviewer) setText((draft) => reviewDraft(mentionFor(reviewer), draft));
     // In a narrow window the sidebar covers the composer; get it out of the way.
     if (details?.overlay) details.close();
     input.current?.focus();
@@ -2079,7 +2108,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     if (!ready || !participants.length) return;
     let live = true;
     // Ask about the message as it will be sent, with a quote's leading handle.
-    const outgoing = replies.length ? replyText(text, replies, participants.map((p) => p.id)) : text;
+    const outgoing = replies.length ? replyText(text, replies, participants) : text;
     const sticky = stickyFor(outgoing, queued);
     if (sticky) { setServerTargets(sticky); return; }
     // A slower answer for older text is ignored once the text has changed.
@@ -2211,7 +2240,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     // Mods allowed to see the session may rewrite the prompt or refuse it.
     const hooked = parsed.text ? await modHost.promptSubmit(pane.id, parsed.text) : { text: parsed.text };
     if (hooked.deny) { notify(hooked.deny, "error"); return; }
-    const message = withTldr(withAttachments(hooked.text && replyText(postable(hooked.text), replies.length ? replies : null, participants.map((p) => p.id)), sendable.map((a) => a.path!)), tldr);
+    const message = withTldr(withAttachments(hooked.text && replyText(postable(hooked.text), replies.length ? replies : null, participants), sendable.map((a) => a.path!)), tldr);
     if (!backend.host || hostCanMutate(backend.host.connection.get().status)) { /* rechecked by queue acceptance */ } else return;
     if (tldr) wiggle(field.current);
     // ⌘↵ queues it, then steers it from the queue, so a cancelled prompt leaves it queued.
@@ -2235,8 +2264,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     setCaret(next.length);
     requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.length, next.length); });
   };
-  const mention = (id: string) => {
-    setText((t) => (t && !t.endsWith(" ") ? `${t} @${id} ` : `${t}@${id} `));
+  const mention = (bot: ParticipantConfig) => {
+    const handle = mentionFor(bot);
+    setText((t) => (t && !t.endsWith(" ") ? `${t} @${handle} ` : `${t}@${handle} `));
     input.current?.focus();
   };
 
@@ -2366,7 +2396,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   useEffect(() => {
     if (!quickAdd || nameTouched.current) return;
     const tool = preset.agent?.tool ?? preset.key;
-    const name = uniqueName(nameForModel(tool, preset.label, draft.model), participants.map((p) => p.id), slug);
+    const name = uniqueName(nameForModel(tool, preset.label, draft.model), participants.map(mentionFor), slug);
     if (name !== draft.name) set("name", name);
   }, [quickAdd, draft.preset, draft.model, participants]);
 
@@ -2505,6 +2535,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </button>);
   // Editing previews the saved look; a new agent previews what openNewForm seeded.
   const formAppearance = draft.appearance ?? (editing ? appearance(editing) : undefined);
+  const edited = editing ? participants.find((p) => p.id === editing) : undefined;
   const modelForm = (adding && (
         <form
           className="add-form"
@@ -2515,12 +2546,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         >
           <div className="wide form-head">
             <button type="button" className="ghost form-back" onClick={() => closeForm(draft.preset)}>← Back</button>
-            <p className="form-title">{editing ? `Change settings for @${editing}` : "New agent"}</p>
+            <p className="form-title">{!editing ? "New agent" : edited ? `Change settings for @${mentionFor(edited)}` : "Change settings"}</p>
           </div>
           <label>
             Name
             <input name="name" value={draft.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Opus" autoFocus />
-            {draft.name && <span className="hint">Mention as @{editing ?? slug(draft.name)}</span>}
+            {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}
           </label>
           {formAppearance && <div className="appearance-controls">
             <Avatar seed={formAppearance.seed} color={formAppearance.color} />
@@ -2684,6 +2715,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </form>
       ));
   const addSaved = async (config: ParticipantConfig) => {
+    const clash = mentionClash(config, participants);
+    if (clash) { notify(clashMessage(clash, "chat"), "error"); return false; }
     try {
       await backend.roomAddParticipant(pane.id, config);
       setParticipants((list) => list.some(p => p.id === config.id) ? list : [...list, config]);
@@ -2756,7 +2789,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </div>
       <label>Name
         <input name="quick-name" value={draft.name} onChange={(e) => { nameTouched.current = true; set("name", e.target.value); }} placeholder="e.g. Opus" />
-        {draft.name && <span className="hint">Mention as @{slug(draft.name)}</span>}
+        {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}
       </label>
       {formError && <p className="form-error">{formError}</p>}
       <div className="quick-add-foot">
@@ -2834,7 +2867,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           <button className="icon small" aria-label={`Actions for ${p.display_name}`} aria-haspopup="menu" aria-expanded={botMenu === p.id} onClick={() => setBotMenu(open => open === p.id ? null : p.id)}>⋯</button>
           {botMenu === p.id && <span className="pane-menu" role="menu">
             <button role="menuitem" disabled={busy} aria-label={`Change settings for ${p.display_name}`} onClick={() => { setBotMenu(null); details?.show("form"); startEditing(p); }}>Edit</button>
-            <button role="menuitem" disabled={busy} aria-label={`Save ${p.display_name} to Agents`} onClick={() => { setBotMenu(null); onProfilesChange([...profiles.filter(profile => profile.id !== p.id), p]); }}>Save to Agents</button>
+            <button role="menuitem" disabled={busy} aria-label={`Save ${p.display_name} to Agents`} onClick={() => { setBotMenu(null); const saved = savedToAgents(profiles, p); if ("error" in saved) notify(saved.error, "error"); else onProfilesChange(saved.profiles); }}>Save to Agents</button>
             <span className="pane-menu-sep" role="separator" />
             <button role="menuitem" className="danger-text" disabled={busy} aria-label={`Remove ${p.display_name}`} onClick={() => { setBotMenu(null); removeParticipant(p.id); }}>Remove</button>
           </span>}
@@ -2898,7 +2931,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
                   setCard(null);
                   setQuickSettings(quickSettings?.id === p.id ? null : { id: p.id, anchor: event.currentTarget });
-                } else mention(p.id);
+                } else mention(p);
               }} title={lit.has(p.id) ? `${p.display_name} gets your message · model and reasoning` : `Model and reasoning for ${p.display_name}`}>
                 <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
                 <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
@@ -2966,7 +2999,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </div>}
         {participants.map((p) => <article className="agent-card" key={p.id}>
           <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="lg" />
-          <div className="agent-card-copy"><h2>{p.display_name}</h2><p className="muted">{chipDescription(p, ALL_PARTS)}</p><p>{p.persona || "No brief added yet."}</p><span className="hint">@{p.id} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
+          <div className="agent-card-copy"><h2>{p.display_name}</h2><p className="muted">{chipDescription(p, ALL_PARTS)}</p><p>{p.persona || "No brief added yet."}</p><span className="hint">@{mentionFor(p)} · {p.access === "read" ? "Read only" : p.access === "ask" ? "Asks first" : p.access === "edits" ? "Can edit files" : "Full access"}</span></div>
           <div className="agent-card-actions"><button onClick={() => startEditing(p)}>Edit</button><button className="ghost" onClick={() => removeParticipant(p.id)} aria-label={`Delete agent ${p.display_name}`}>Delete</button></div>
         </article>)}
       </div>}
@@ -2998,7 +3031,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             </p>
             {participants.length === 0 && quickAddButton("empty", true)}
             {participants.length > 0 && <div className="example-rows" aria-label="Examples">
-              {exampleRows(participants.map((p) => p.id)).map((row) => (
+              {exampleRows(participants).map((row) => (
                 <button key={row.text} type="button" className="example-row" onClick={() => insertExample(row.text)}>{row.label}</button>
               ))}
             </div>}

@@ -6,6 +6,7 @@
 import type { Message, ParticipantConfig } from "./types";
 import { joinNames } from "./composerStatus.ts";
 import { mentionTarget } from "./recipients.ts";
+import type { Mentionable } from "./slug.ts";
 
 /** What a notice's button does. */
 export type NoticeAction = { kind: "retry"; id: string } | { kind: "let"; ids: string[] } | { kind: "rejoin"; config: ParticipantConfig };
@@ -40,7 +41,7 @@ export function letLabel(names: string[]): string {
 }
 
 /** Who asked the cut-off bots: the latest bot reply since your last message that @mentions one of them, or everyone. */
-export function askerOf(messages: Message[], next: string[], roster: string[]): string | null {
+export function askerOf(messages: Message[], next: string[], roster: readonly Mentionable[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const speaker = messages[i].speaker;
     if (speaker.kind === "human") return null;

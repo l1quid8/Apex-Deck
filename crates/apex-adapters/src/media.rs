@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use apex_core::{ActionKind, Approver, MediaSettings, Message, ParticipantError, ParticipantId, Progress, ProgressSink, ProposedAction, Reply, Role, Speaker, TurnRequest, PASS_TOKEN};
+use apex_core::{ActionKind, Approver, MediaSettings, Message, ParticipantConfig, ParticipantError, ParticipantId, Progress, ProgressSink, ProposedAction, Reply, Role, Speaker, TurnRequest, PASS_TOKEN};
 use base64::Engine;
 use serde_json::{json, Value};
 
@@ -108,9 +108,10 @@ pub(crate) fn latest_ask(request: &TurnRequest) -> (String, Vec<PathBuf>) {
 }
 
 /// Whether this turn comes from a person's message that names `bot` by its
-/// `@handle`. A message that names nobody, `@all`, another bot's mention, a
-/// retry and a suggestions request don't, so none of them can spend money.
-pub(crate) fn named_by_person(request: &TurnRequest, bot: &ParticipantId) -> bool {
+/// `@mention`. A message that names nobody, `@all`, another bot's mention or
+/// the bot's old name, a retry and a suggestions request don't, so none of
+/// them can spend money.
+pub(crate) fn named_by_person(request: &TurnRequest, bot: &ParticipantConfig) -> bool {
     request.unseen.iter().rev().find(|m| m.speaker == Speaker::Human).is_some_and(|m| apex_core::names(&m.text, bot))
 }
 
@@ -305,7 +306,7 @@ pub(crate) struct Job<'a> {
     /// Asked before anything is paid for.
     pub approver: &'a dyn Approver,
     /// This bot, which a person's message must name.
-    pub bot: &'a ParticipantId,
+    pub bot: &'a ParticipantConfig,
 }
 
 impl Job<'_> {
@@ -332,7 +333,7 @@ impl Job<'_> {
     /// before paying, and puts a failure in the chat so it isn't lost.
     pub(crate) async fn run(&self, request: &TurnRequest, on_progress: ProgressSink<'_>) -> Result<Reply, ParticipantError> {
         if !named_by_person(request, self.bot) {
-            eprintln!("[apex-deck] media bot {} not named by a person's message, so it passed", self.bot.as_str());
+            eprintln!("[apex-deck] media bot {} not named by a person's message, so it passed", self.bot.id.as_str());
             return Ok(Reply::text(PASS_TOKEN));
         }
         let kind = if self.model.kind == ModelKind::Image { "picture" } else { "video" };
@@ -541,6 +542,11 @@ impl Job<'_> {
     }
 }
 
+/// Nobody: a price quote is not a turn, so no message names it.
+fn quote_bot() -> ParticipantConfig {
+    ParticipantConfig { id: ParticipantId::new(""), display_name: String::new(), backend: apex_core::Backend::Scripted { lines: vec![] }, persona: String::new(), access: apex_core::Access::Read, effort: None, auto_effort: false, speed: None, appearance: None, media: None }
+}
+
 /// What one video costs with these choices, from Venice's own quote.
 pub async fn quote(base_url: &str, api_key_env: Option<&str>, model: &str, settings: Option<&MediaSettings>) -> Result<Option<f64>, String> {
     let Some(info) = crate::api_info::model(base_url, api_key_env, model).await else { return Ok(None) };
@@ -549,7 +555,7 @@ pub async fn quote(base_url: &str, api_key_env: Option<&str>, model: &str, setti
     }
     let resolved = resolve(info.kind, info.media.as_ref().unwrap_or(&MediaSpec::default()), settings);
     let client = reqwest::Client::new();
-    let job = Job { client: &client, base_url, key: api_key_env.filter(|n| !n.is_empty()).and_then(crate::keys::lookup), model: &info, settings, dir: Path::new(""), attachment_roots: &[], poll: Duration::ZERO, approver: &apex_core::NoApprover, bot: &ParticipantId::new("") };
+    let job = Job { client: &client, base_url, key: api_key_env.filter(|n| !n.is_empty()).and_then(crate::keys::lookup), model: &info, settings, dir: Path::new(""), attachment_roots: &[], poll: Duration::ZERO, approver: &apex_core::NoApprover, bot: &quote_bot() };
     let response = job.send("video/quote", &job.video_body(model, &resolved, false)).await.map_err(|e| e.to_string())?;
     let answer: Value = response.json().await.map_err(|e| e.to_string())?;
     Ok(answer["quote"].as_f64())
@@ -631,6 +637,16 @@ mod tests {
         assert_eq!(images, [PathBuf::from("/a/fox.png")]);
         let from_view = turn(vec![], vec![ViewTurn { role: Role::User, content: "[Human]: first\n\n[Human]: a red bike".into() }]);
         assert_eq!(latest_ask(&from_view).0, "a red bike");
+    }
+
+    #[test]
+    fn a_renamed_media_bot_is_named_by_its_new_mention_only() {
+        let allison: apex_core::ParticipantConfig = serde_json::from_value(json!({"id":"venice","display_name":"Allison","backend":{"kind":"scripted","lines":[]}})).unwrap();
+        let asked = |text: &str| named_by_person(&turn(vec![human(text)], vec![]), &allison);
+        assert!(asked("@allison make it"));
+        assert!(!asked("@venice make it"), "its old name is gone, so it can't spend money");
+        assert!(!asked("@all make it"));
+        assert!(!asked("make it"));
     }
 
     #[test]
@@ -777,7 +793,7 @@ mod tests {
         let activity = Mutex::new(Vec::new());
         let sink = |p: Progress<'_>| if let Progress::Activity(a) = p { activity.lock().unwrap().push(a.to_string()) };
         let cards = Cards { approve, shown: Mutex::new(Vec::new()) };
-        let bot = ParticipantId::new("allison");
+        let bot: ParticipantConfig = serde_json::from_value(json!({"id":"allison","display_name":"Allison","backend":{"kind":"scripted","lines":[]}})).unwrap();
         let job = Job { client: &client, base_url: address, key: Some("k".into()), model, settings: None, dir, attachment_roots: &[dir.canonicalize().unwrap()], poll: Duration::from_millis(10), approver: &cards, bot: &bot };
         let result = job.run(&request, &sink).await;
         (result, activity.into_inner().unwrap(), cards.shown.into_inner().unwrap())

@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { exampleRows, handleFor, hasMention, mentionTarget, recipientName } from "../src/recipients.ts";
+import { exampleRows, hasMention, mentionTarget, recipientName } from "../src/recipients.ts";
+
+const bots = (...ids) => ids.map((id) => ({ id, display_name: id }));
 
 test("mentions follow the room's rules", () => {
-  const ids = ["null", "jigga", "sol-6.1"];
-  assert.equal(handleFor("Sol 6.1!"), "sol6.1");
+  const ids = bots("null", "jigga", "sol-6.1");
   assert.deepEqual(mentionTarget("@jigga then @NULL, and @jigga again", ids), ["jigga", "null"]);
   assert.deepEqual(mentionTarget("what do you think, @sol-6.1.", ids), ["sol-6.1"]);
   assert.equal(mentionTarget("@all thoughts?", ids), "everyone");
@@ -13,7 +14,7 @@ test("mentions follow the room's rules", () => {
 });
 
 test("an @ inside a word is not a mention", () => {
-  const ids = ["null", "opus"];
+  const ids = bots("null", "opus");
   assert.equal(hasMention("mail me at me@opus.dev", ids), false);
   assert.equal(hasMention("see x@all and a@null", ids), false);
   assert.equal(hasMention("@param is a JSDoc tag", ids), false);
@@ -47,11 +48,15 @@ test("bots mentioned together are joined like a sentence", () => {
 });
 
 test("examples use a real handle", () => {
-  assert.deepEqual(exampleRows(["Null", "jigga"]), [
+  assert.deepEqual(exampleRows(bots("Null", "jigga")), [
     { label: "e.g. @all what would you change first?", text: "@all what would you change first?" },
     { label: "e.g. @null review the last commit", text: "@null review the last commit" },
     { label: "e.g. /export markdown", text: "/export markdown" },
   ]);
   assert.deepEqual(exampleRows([]), []);
+});
+
+test("examples use a renamed bot's new name", () => {
+  assert.equal(exampleRows([{ id: "jigga", display_name: "Atlas" }])[1].text, "@atlas review the last commit");
 });
 

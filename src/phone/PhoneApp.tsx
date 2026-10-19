@@ -46,6 +46,7 @@ import {
   type DirectMachine, type Machine, type PairedMachine, type MeterRow, type TurnChange, type LinkStatus, type LinkView, type MachineKind,
 } from "../phoneRules";
 import { recipientName } from "../recipients";
+import { mentionFor } from "../slug";
 import { ageWords, homeShort, hostTints, noteActive, sidebarSections, unarchiveThreads } from "../sidebarModel";
 import { webSocketConnect } from "../daemon/webSocketLink";
 import { FinalError, type Connect } from "../daemon/client";
@@ -612,7 +613,7 @@ export function PhoneApp() {
     const queue: ParticipantQueues = new ParticipantQueues(
       async (text) => {
         const shown = roomRef.current;
-        const sticky = shown?.id === paneId ? queuedSticky(text, shown.participants.map((p) => p.id), shown.policy, queue.items) : null;
+        const sticky = shown?.id === paneId ? queuedSticky(text, shown.participants, shown.policy, queue.items) : null;
         return sticky ?? backend().roomTargets(paneId, text);
       },
       // Routed like a typed message unless it is a next step for the bot that offered it.
@@ -806,7 +807,7 @@ export function PhoneApp() {
     const host = phoneHost(openHostId);
     if (!host || toLink(host.connection.get().status) !== "online") return;
     // An untagged message behind a queued tag goes where that tag goes, before the thread has heard it.
-    const sticky = queuedSticky(typed, room.participants.map((p) => p.id), room.policy, queued[room.id]?.items ?? []);
+    const sticky = queuedSticky(typed, room.participants, room.policy, queued[room.id]?.items ?? []);
     if (sticky) { setAnswerers({ paneId: room.id, ids: sticky }); return; }
     let live = true;
     // A short wait so typing doesn't ask the machine on every key; a slower answer for older text is ignored.
@@ -1624,7 +1625,7 @@ export function PhoneApp() {
               tokens={tokenWords(room.used[who.id])}
               offline={openLink.status !== "online" ? downLine(openLink) : ""}
               onSave={(change) => saveTurn(room.id, openLink.id, who.id)({ change, reported, apiModels })}
-              onMention={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who.id) }); setBotSheet(null); }}
+              onMention={() => { if (openId) setDraft(openId, { ...draft, text: tagFromBar(draft.text, who, room.participants) }); setBotSheet(null); }}
               onStop={() => { void stopBot(who.id); setBotSheet(null); }}
               onClose={() => setBotSheet(null)} />
           );
@@ -1688,7 +1689,7 @@ export function PhoneApp() {
               <div className="ph-bot-row">
                 <button type="button" className="ph-bot-info" disabled={!member} onClick={() => { setMenu(null); setBotSheet(config.id); }}>
                   <Avatar seed={who.look.seed} color={who.look.color} size="sm" />
-                  <span className="ph-bot-label"><strong>{config.display_name}</strong><small>@{config.id}{member && "model" in config.backend && config.backend.model ? ` · ${config.backend.model}` : ""}</small></span>
+                  <span className="ph-bot-label"><strong>{config.display_name}</strong><small>@{mentionFor(config)}{member && "model" in config.backend && config.backend.model ? ` · ${config.backend.model}` : ""}</small></span>
                 </button>
                 <button type="button" className={`ph-bot-action${member ? " remove" : ""}`} aria-label={`${member ? "Remove" : "Add"} ${config.display_name}`} disabled={!!reason} title={reason} onClick={() => void change(config, member)}>
                   {state?.pending ? <span className="ph-bot-spinner" aria-label="Saving" /> : member ? <span aria-hidden="true">−</span> : <Plus size={18} />}
@@ -2069,7 +2070,7 @@ function ThreadView(props: {
   };
   const holdClass = props.onMessageMenu ? " ph-msg-hold" : "";
   const tag = (id: string) => {
-    const text = tagFromBar(props.draft.text, id);
+    const text = tagFromBar(props.draft.text, props.participants.find((p) => p.id === id), props.participants);
     props.onDraft(text);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(text.length, text.length); });
   };
@@ -2077,8 +2078,8 @@ function ThreadView(props: {
   // Typing @ offers the thread's bots above the box; only while the box has the keyboard.
   const [caret, setCaret] = useState<number | null>(null);
   const picking = caret !== null && !paused && props.participants.length > 0 ? mentionPicks(props.draft.text, caret, props.participants) : null;
-  const choose = (id: string) => {
-    const next = pickMention(props.draft.text, caret ?? props.draft.text.length, picking?.trigger ?? null, id);
+  const choose = (handle: string) => {
+    const next = pickMention(props.draft.text, caret ?? props.draft.text.length, picking?.trigger ?? null, handle);
     props.onDraft(next.text);
     setCaret(next.caret);
     requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.setSelectionRange(next.caret, next.caret); });
@@ -2362,7 +2363,7 @@ function ThreadView(props: {
               const who = pick.id === "all" ? null : person(pick.id);
               return (
                 // Keep the keyboard up: the box keeps focus while you pick.
-                <button key={pick.id} type="button" role="option" aria-selected="false" className="ph-mention" onMouseDown={(event) => event.preventDefault()} onClick={() => choose(pick.id)}>
+                <button key={pick.id} type="button" role="option" aria-selected="false" className="ph-mention" onMouseDown={(event) => event.preventDefault()} onClick={() => choose(pick.handle)}>
                   {who ? <Avatar seed={who.look.seed} color={who.look.color} size="sm" /> : <span className="ph-mention-all" aria-hidden="true">@</span>}
                   <span>{who ? who.display_name : "Everyone"}</span>
                   <small>{pick.label}</small>
