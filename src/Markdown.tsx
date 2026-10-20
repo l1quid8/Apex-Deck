@@ -7,8 +7,10 @@ interface Props {
   text: string;
   /** Open a file, folder or web address a link points at. */
   onOpen: (target: string, reveal?: boolean) => void;
-  /** Extra controls for a code block's header, beside Copy. */
-  codeAction?: (code: { language: string; text: string }) => ReactNode;
+  /** Extra controls for a code block's header, beside Copy. `index` is the block's place in the reply. */
+  codeAction?: (code: CodeInfo) => ReactNode;
+  /** Drawn under a code block, inside its frame, such as the output of running it. */
+  codeBelow?: (code: CodeInfo) => ReactNode;
   /** Whether a path in a code span exists; those that do become links. */
   pathExists?: (path: string) => Promise<boolean>;
   /** Draws a fenced block itself, as interactive answers do with apex-ui; undefined keeps the code view. */
@@ -22,13 +24,15 @@ interface Props {
  * Links are left to RichText, so they behave the same here as everywhere
  * else in the chat.
  */
-export function Markdown({ text, onOpen, codeAction, pathExists, fence }: Props) {
+export interface CodeInfo { language: string; text: string; index: number }
+
+export function Markdown({ text, onOpen, codeAction, codeBelow, pathExists, fence }: Props) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const inline = (source: string) => <InlineText source={source} onOpen={onOpen} pathExists={pathExists} />;
   return (
     <div className="md">
       {blocks.map((block, i) => (
-        <BlockView key={i} block={block} inline={inline} codeAction={codeAction} fence={fence} />
+        <BlockView key={i} index={i} block={block} inline={inline} codeAction={codeAction} codeBelow={codeBelow} fence={fence} />
       ))}
     </div>
   );
@@ -64,7 +68,7 @@ function PathCode({ path, onOpen, pathExists }: { path: string; onOpen: Props["o
   return <code>{real ? <RichText text={`[${path}](${path})`} onOpen={onOpen} /> : path}</code>;
 }
 
-function BlockView({ block, inline, codeAction, fence }: { block: Block; inline: (source: string) => ReactNode; codeAction?: Props["codeAction"]; fence?: Props["fence"] }) {
+function BlockView({ block, index, inline, codeAction, codeBelow, fence }: { block: Block; index: number; inline: (source: string) => ReactNode; codeAction?: Props["codeAction"]; codeBelow?: Props["codeBelow"]; fence?: Props["fence"] }) {
   switch (block.kind) {
     case "paragraph":
       return <p>{inline(block.text)}</p>;
@@ -77,7 +81,8 @@ function BlockView({ block, inline, codeAction, fence }: { block: Block; inline:
     case "code": {
       const drawn = fence?.({ language: block.language, text: block.text });
       if (drawn !== undefined) return <>{drawn}</>;
-      return <CodeBlock language={block.language} text={block.text} action={codeAction?.({ language: block.language, text: block.text })} />;
+      const code = { language: block.language, text: block.text, index };
+      return <CodeBlock language={block.language} text={block.text} action={codeAction?.(code)} below={codeBelow?.(code)} />;
     }
     case "quote":
       return <blockquote>{inline(block.text)}</blockquote>;
@@ -125,7 +130,7 @@ function BlockView({ block, inline, codeAction, fence }: { block: Block; inline:
   }
 }
 
-function CodeBlock({ language, text, action }: { language: string; text: string; action?: ReactNode }) {
+function CodeBlock({ language, text, action, below }: { language: string; text: string; action?: ReactNode; below?: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     navigator.clipboard
@@ -150,6 +155,7 @@ function CodeBlock({ language, text, action }: { language: string; text: string;
       <pre>
         <code>{text}</code>
       </pre>
+      {below}
     </div>
   );
 }

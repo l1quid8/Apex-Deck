@@ -3720,3 +3720,17 @@ button.mod-status:hover { color: var(--text); }
 }
 .agents-section .agent-card { background: var(--panel-2); }
 .agents-section .agent-library .empty { margin: 0; }
+
+/* Run a code block: the ▶ beside Copy, and the output box under the block. */
+.md-code-head .code-run-button { color: var(--accent); }
+.md-code-head .code-run-button.armed { color: var(--warn, #e0a030); font-weight: 600; }
+.md-code-run-box { border-top: 1px solid var(--line); font-size: 11px; }
+.md-code-run-bar { display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 12px; color: var(--muted); line-height: 1.6; flex-wrap: wrap; }
+.md-code-run-status { color: var(--text); font-weight: 500; }
+.md-code-run-box.failed .md-code-run-status { color: var(--danger, #e5534b); }
+.md-code-run-host { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-code-run-actions { display: flex; align-items: center; gap: 2px; }
+.md-code-run-actions button { border: 0; background: transparent; color: var(--muted); font-size: 11px; padding: 3px 8px; }
+.md-code-run-actions button:hover, .md-code-run-actions button:focus-visible { color: var(--text); }
+.md-code .md-code-run { max-height: 160px; overflow: auto; padding: 8px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 60%, transparent); white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+.md-code-run-cut, .md-code-run-empty { color: var(--muted); font-style: italic; }

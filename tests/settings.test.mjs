@@ -9,7 +9,7 @@ test("no settings file gives the defaults", () => {
 });
 
 test("saved values are kept", () => {
-  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false, botChips: { tool: false, effort: true, usage: false } };
+  const saved = { version: 1, disabledProviders: ["grok"], newThread: { policy: "round_robin", max_bot_hops: 5 }, newBotAccess: "ask", terminal: { fontSize: 15, scrollback: 10000 }, preview: { openExternally: ["github.com"] }, confirmSteer: false, codeRunButtons: false, botChips: { tool: false, effort: true, usage: false } };
   assert.deepEqual(readSettings(saved), saved);
 });
 
@@ -55,6 +55,13 @@ test("bot chips show everything until a part is turned off", () => {
   assert.deepEqual(DEFAULT_SETTINGS.botChips, { tool: true, effort: true, usage: true });
   assert.deepEqual(readSettings({ botChips: { tool: false } }).botChips, { tool: false, effort: true, usage: true });
   assert.deepEqual(readSettings({ botChips: { tool: "no", usage: 0 } }).botChips, { tool: true, effort: true, usage: true }, "only true or false count");
+});
+
+test("run buttons on code blocks are on until turned off", () => {
+  assert.equal(DEFAULT_SETTINGS.codeRunButtons, true);
+  assert.equal(readSettings({}).codeRunButtons, true, "an older file without the key keeps them on");
+  assert.equal(readSettings({ codeRunButtons: false }).codeRunButtons, false);
+  assert.equal(readSettings({ codeRunButtons: "no" }).codeRunButtons, true, "only true or false count");
 });
 
 test("a provider's key name comes from its address", () => {
