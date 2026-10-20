@@ -212,6 +212,9 @@ test("Clay reshapes the layout toward the mock, scoped and CSS-only", () => {
   const clay = ':root[data-deck-theme="clay"]';
   // Flush shell: no gutter frame, rail and Details split by hairlines.
   assert.match(css, /:root\[data-deck-theme="clay"\] \{ --deck-gap: 0px; \}/);
+  // The grid's -4px margin assumes an 8px gutter; with none it reaches 4px
+  // past the window, so the canvas clips it (clip, not hidden: no scroller).
+  assert.match(rule(`${clay} .canvas`), /overflow: clip/);
   assert.match(rule(`${clay} .rail`), /border-right: 1px solid var\(--line\)/);
   assert.match(rule(`${clay} .pane`), /border: 0/);
   // Classic's mint focused-pane border and cyan status color don't reach Clay.
@@ -223,6 +226,10 @@ test("Clay reshapes the layout toward the mock, scoped and CSS-only", () => {
   // Senders inline: the reply takes the whole column, the avatar is placed over the name line.
   assert.match(rule(`${clay} .bot-row`), /grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(rule(`${clay} .bot-row > .identicon`), /position: absolute/);
+  // In that grid a start-aligned reply is at least as wide as its longest
+  // unbroken line, and step rows never wrap, so a long command pushed the
+  // reply past the column and the thread scrolled sideways. It's clamped.
+  assert.match(rule(`${clay} .bot-row > .bubble`), /max-width: 100%/);
   // Two-row composer: text first, tools below.
   assert.match(rule(`${clay} .composer-box > .composer-field`), /order: -1; flex-basis: 100%/);
   // Sentence-case labels instead of uppercase tracking.

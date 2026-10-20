@@ -303,6 +303,9 @@
    hairlines; the title bar shares the rail's surface; the chat sits on
    the lighter canvas. */
 :root[data-deck-theme="clay"] { --deck-gap: 0px; }
+/* The grid's -4px margin cancels an 8px gutter; with none it would reach
+   4px past the window, so clip it here. clip, not hidden: no scroller. */
+:root[data-deck-theme="clay"] .canvas { overflow: clip; }
 :root[data-deck-theme="clay"] .titlebar {
   background: rgb(var(--deck-panel));
   border-bottom: 1px solid var(--line);
@@ -410,6 +413,11 @@
   position: relative;
 }
 :root[data-deck-theme="clay"] .bot-row > :is(.bubble, .message-actions) { grid-column: 1; }
+/* The grid sizes a start-aligned reply to at least its longest unbroken
+   line, and step rows never wrap, so a long command pushed the reply past
+   the column and the thread scrolled sideways. Clamped, the step's own
+   ellipsis takes the rest; the base's max-width: none allowed the overflow. */
+:root[data-deck-theme="clay"] .bot-row > .bubble { max-width: 100%; }
 :root[data-deck-theme="clay"] .bot-row > .identicon {
   position: absolute;
   left: 0;
