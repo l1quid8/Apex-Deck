@@ -13,7 +13,7 @@
   width: 100%;
   height: 100%;
 }
-.transcript .empty > *:not(.landing-texture-wrap) {
+.transcript .empty:not(.quick-add-wrap) > *:not(.landing-texture-wrap) {
   position: relative;
   z-index: 1;
 }
