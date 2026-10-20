@@ -1311,6 +1311,14 @@ impl Host {
         preview::probe(preview::client(), &address).await
     }
 
+    /// Drop `id`'s Retry/Revert snapshots. That waits for any snapshot the
+    /// thread is still taking, which can run for minutes in a large folder, so
+    /// it never holds `room_lifecycle` or a daemon worker meanwhile.
+    fn forget_snapshots(&self, id: &str) {
+        let (snapshots, thread) = (Arc::clone(&self.snapshots), id.to_string());
+        std::thread::spawn(move || snapshots.delete(&thread));
+    }
+
     pub fn room_delete(&self, id: String) -> Result<(), String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let handle = self.handle(&id).ok();
@@ -1318,7 +1326,7 @@ impl Host {
             if handle.as_ref().is_some_and(|h|h.busy()) { return Err("Stop this task and wait for its worker cleanup before deleting its chat.".into()); }
             self.assistant_tasks.tombstone_execution(&id).map_err(|e|e.to_string())?;
         }
-        self.snapshots.delete(&id);
+        self.forget_snapshots(&id);
         if let Some(handle) = &handle { handle.runtime.stop(None); handle.stop.store(true, Ordering::SeqCst); handle.approvals.reject_all(); }
         self.rooms.lock().unwrap().remove(&id);
         if let Ok(name) = export::safe_file_name(&id) {
@@ -1599,7 +1607,7 @@ impl Host {
             handle.approvals.reject_all();
         }
         // Its checkpoints are of the old folder.
-        self.snapshots.delete(&id);
+        self.forget_snapshots(&id);
         Ok(())
     }
 
@@ -2181,6 +2189,27 @@ mod host_tests {
         let _ = std::fs::remove_dir_all(&data);
         let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
         (host, runtime, data)
+    }
+
+    #[test]
+    fn deleting_a_thread_mid_snapshot_does_not_stall_opening_others() {
+        let (host, _runtime, data) = host("delete-mid-snapshot");
+        let folder = data.join("work");
+        std::fs::create_dir_all(&folder).unwrap();
+        host.room_create("a".into(), vec![], RoomOptions::default(), Some(folder.to_string_lossy().into_owned())).unwrap();
+        // "a" is partway through a snapshot that takes minutes, as in a folder with gigabytes of build output.
+        let snapshot = host.snapshots.hold_for_test("a");
+        let taking = snapshot.lock().unwrap();
+        let deleting = { let host = Arc::clone(&host); std::thread::spawn(move || host.room_delete("a".into())) };
+        // Let the delete get underway before the app opens another thread.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (done, opened) = std::sync::mpsc::channel();
+        { let host = Arc::clone(&host); std::thread::spawn(move || { let _ = done.send(host.room_create("b".into(), vec![], RoomOptions::default(), None).map(|_| ())); }); }
+        let opened = opened.recv_timeout(std::time::Duration::from_secs(10));
+        drop(taking);
+        assert!(opened.expect("opening a thread waited for another thread's snapshot").is_ok());
+        deleting.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(data);
     }
 
     #[test]
