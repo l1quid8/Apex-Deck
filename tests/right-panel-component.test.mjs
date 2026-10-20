@@ -16,11 +16,16 @@ const RightPanelMenuOpen = build(() => [true, () => {}]);
 
 const render = (state, bodies = {}) => renderToStaticMarkup(React.createElement(RightPanel, { state, onChange() {}, onClose() {}, bodies }));
 
-test('tab strip lists every tab; only non-fixed tabs have a close button', () => {
+test('tab strip lists every tab with one shared remove control and no individual close buttons', () => {
   const html = render({ ...model.defaultPanel(), open: true });
   assert.match(html, /role="tablist"/);
   for (const label of ['Dashboard', 'Tasks', 'Details']) assert.match(html, new RegExp(`>${label}<`));
-  assert.equal((html.match(/aria-label="Close /g) ?? []).length, 1);
+  assert.equal((html.match(/aria-label="Close /g) ?? []).length, 0);
+  assert.equal((html.match(/aria-label="Remove selected tool"/g) ?? []).length, 1);
+  assert.match(html, /aria-label="Remove selected tool"[^>]*disabled=""/);
+  const removable = render({ ...model.defaultPanel(), open: true, active: 'details' });
+  assert.match(removable, /aria-label="Remove selected tool" title="Remove Details"[^>]*>−<\/button>/);
+  assert.doesNotMatch(removable, /aria-label="Remove selected tool"[^>]*disabled/);
 });
 
 test('only the active tab body is shown, others stay mounted but hidden', () => {
