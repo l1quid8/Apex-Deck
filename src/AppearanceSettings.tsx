@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
-import { BACKDROP_PATTERNS, BUILTIN_SKINS, MAX_GLOWS, MIN_GLOWS, accentHex, backdropLayers, backgroundPatch, colorAppearance, glowColorList, parseSkin, shuffledGlowColors, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
+import { BACKDROP_PATTERNS, BUILTIN_SKINS, CLAY_ACCENT_PRESETS, MAX_GLOWS, MIN_GLOWS, accentHex, backdropLayers, backgroundPatch, colorAppearance, glowColorList, parseSkin, shuffledGlowColors, skinPrompt, themeMode, type AppearanceSettings as AppearanceState, type AppearanceValues, type SkinFile } from "./themes";
 import type { LandingTextureSettings } from "./settings";
 
 const FILE_LIMIT = 32_000;
@@ -30,7 +30,7 @@ function previewStyle(appearance: AppearanceValues): CSSProperties {
 
 function SkinPreview({ skin }: { skin: SkinFile }) {
   const appearance = skin.appearance;
-  return <span className="appearance-preview" aria-hidden="true" data-mode={themeMode(appearance)} style={previewStyle(appearance)}>
+  return <span className="appearance-preview" aria-hidden="true" data-mode={themeMode(appearance)} data-light={appearance.light} style={previewStyle(appearance)}>
     <span className="appearance-preview-field" />
     <span className="appearance-preview-lines"><i /><i className="short" /><b /><i className="short" /></span>
     <span className="appearance-preview-bubble"><i /></span>
@@ -140,6 +140,7 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
   const [notice, setNotice] = useState<{ text: string; error?: boolean }>({ text: "" });
   const current = value.current;
   const appearance = current.appearance;
+  const isClay = themeMode(appearance) === "clay";
   const saved = value.saved ?? [];
   const color = accentHex(appearance);
   const [hexInput, setHexInput] = useState(color);
@@ -288,7 +289,16 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
           </div>
         </div>
         {hexError && <p id="appearance-color-error" role="alert">Enter a hex color such as #35aabb.</p>}
-        {SLIDERS.map(({ key, label, help, min, max, suffix }) => <div className="appearance-slider" key={key}>
+        {isClay && <>
+          <div className="appearance-option">
+            <div className="appearance-control-copy"><strong>Clay accent</strong><small>Derived per mode so it stays readable as text on Ember and Paper. Picking an exact color above overrides it; an exact color is used as-is in both modes, so it may read poorly in one of them.</small></div>
+            <div className="appearance-segment" role="group" aria-label="Clay accent">
+              {CLAY_ACCENT_PRESETS.map((preset) => <button key={preset.id} type="button" aria-pressed={!appearance.accentColor && appearance.hue === preset.hue} onClick={() => tune({ hue: preset.hue, accentColor: undefined })}>{preset.name}</button>)}
+            </div>
+          </div>
+          <p>Clay is solid, with serif replies. Glow, Frost, Surface, Backdrop and the Background glows don’t apply. Light surfaces below switches Ember to Paper. The empty-thread field follows this accent while its own color is still the default mint.</p>
+        </>}
+        {(isClay ? SLIDERS.filter(({ key }) => key === "radius") : SLIDERS).map(({ key, label, help, min, max, suffix }) => <div className="appearance-slider" key={key}>
           <div className="appearance-control-copy"><label htmlFor={`appearance-${key}`}>{label}</label><small>{help}</small></div>
           <input id={`appearance-${key}`} type="range" min={min} max={max} step="1" value={appearance[key]} onChange={(event) => tune({ [key]: Number(event.currentTarget.value) })} />
           <output htmlFor={`appearance-${key}`}>{appearance[key]}{suffix}</output>
@@ -304,14 +314,14 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
           <span className="appearance-control-copy"><strong>Light surfaces</strong><small>Pale panels and dark text.</small></span>
           <input type="checkbox" role="switch" checked={appearance.light} onChange={(event) => tune({ light: event.currentTarget.checked })} />
         </label>
-        <label className="appearance-option">
+        {!isClay && <label className="appearance-option">
           <span className="appearance-control-copy"><strong>Flat surfaces</strong><small>Solid panels without the glass effect.</small></span>
           <input type="checkbox" role="switch" checked={appearance.flat} onChange={(event) => tune({ flat: event.currentTarget.checked })} />
-        </label>
+        </label>}
       </div>
     </section>
 
-    <section className="appearance-section" aria-labelledby="appearance-background-title">
+    {!isClay && <section className="appearance-section" aria-labelledby="appearance-background-title">
       <div className="appearance-section-heading"><div><h3 id="appearance-background-title">Background</h3><p>The colored glow behind the glass.</p></div></div>
       {appearance.flat && <p>Flat surfaces hide the background. Changing it here turns glass on.</p>}
       <div className="appearance-pattern-grid" role="group" aria-label="Background pattern">
@@ -355,7 +365,7 @@ export function AppearanceSettings({ value, onChange, textTransfer = false, land
         <button type="button" onClick={() => tuneBackground({ glowColors: shuffledGlowColors(glowCount, appearance.light) })}>Shuffle colors</button>
         <button type="button" onClick={() => tuneBackground({ backdropPattern: undefined, glowColors: undefined, glowCount: undefined, glowSize: undefined })}>Reset background</button>
       </div>
-    </section>
+    </section>}
 
     {landingTexture && onLandingTexture && <LandingTextureControls value={landingTexture} onChange={onLandingTexture} />}
 

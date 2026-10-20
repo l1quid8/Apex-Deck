@@ -5,7 +5,7 @@
 
 import type { Access, ParticipantConfig, RoomOptions, TurnPolicy } from "./types";
 import type { ChipParts } from "./botChip";
-import { readAppearance, type AppearanceSettings } from "./themes.ts";
+import { accentHex, readAppearance, themeMode, type AppearanceSettings, type AppearanceValues } from "./themes.ts";
 
 export interface DecisionSettings { enabled: boolean; provider: "jev" | "openrouter" | "cloudflare"; accountId: string; }
 export const DEFAULT_DECISION: DecisionSettings = { enabled: false, provider: "jev", accountId: "" };
@@ -36,6 +36,19 @@ export function readLandingTexture(raw: unknown): LandingTextureSettings {
     rippleShape: saved.rippleShape === "diamond" || saved.rippleShape === "logo" || saved.rippleShape === "circle"
       ? saved.rippleShape : d.rippleShape,
   };
+}
+
+/**
+ * What the empty-thread field actually draws. Under Clay, a one-color field
+ * still on the mint default follows the skin accent instead; any color the
+ * user picked (or rainbow mode, or another theme) is left alone. The saved
+ * settings are never rewritten, so leaving Clay restores the mint.
+ */
+export function effectiveLandingTexture(landing: LandingTextureSettings, appearance: AppearanceValues): LandingTextureSettings {
+  if (themeMode(appearance) === "clay" && landing.mode === "single" && landing.color.toLowerCase() === DEFAULT_LANDING_TEXTURE.color) {
+    return { ...landing, color: accentHex(appearance) };
+  }
+  return landing;
 }
 
 export interface AppSettings {

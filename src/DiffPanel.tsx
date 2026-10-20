@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Diff } from "./ApprovalCard";
 import { Avatar } from "./Avatar";
 import { groupDiff } from "./diffGroups";
@@ -123,7 +123,7 @@ export function DiffPanel({ diff, loading, order, nameOf, colorOf, appearanceOf,
       {!loading && files.length === 0 && <p className="muted changes-empty">Nothing has changed yet.</p>}
       {groupDiff(files, order).map((group) => (
         <section key={group.by ?? "none"} className="diff-group">
-          <h4 style={group.by ? { color: colorOf(group.by) } : undefined}>{group.by ? nameOf(group.by) : "Not reported by a model"}</h4>
+          <h4 style={group.by ? { "--agent-color": colorOf(group.by) } as CSSProperties : undefined}>{group.by ? nameOf(group.by) : "Not reported by a model"}</h4>
           {group.files.map((file) => {
             const key = `${group.by}:${file.path}`;
             return (

@@ -1,0 +1,488 @@
+/* Clay: a solid, warm theme layer beside glass and flat. Clean-room and
+   Claude-inspired in feel only — system/open fonts, no copied code or
+   assets. Classic, Glass and Flat have no matching selectors here and are
+   untouched. Surfaces are opaque (no blur, no backdrop glow), bot replies
+   set in a reading serif, and one hue-derived accent stays readable as
+   text in both modes: light with dark ink on Ember, dark with light ink
+   on Paper. Approval cards deliberately keep the shared amber safety
+   treatment in glass-theme.css. */
+:root[data-deck-theme="clay"] {
+  --deck-bg: #262421;
+  --deck-panel: 30 28 26;
+  --deck-panel-raised: 48 45 41;
+  --deck-code: #1b1917;
+  --deck-line: 239 233 224;
+  --deck-text: #efe9e0;
+  --deck-muted: #c2b9ad;
+  --deck-muted-2: #ada294;
+  --deck-warning: #e6b562;
+  --deck-danger: #f0907f;
+  --deck-success: #9dc79b;
+  --deck-accent: var(--deck-custom-accent, oklch(.83 .08 var(--deck-hue, 38)));
+  --deck-accent-ink: var(--deck-custom-accent-ink, #2a1e16);
+  --deck-accent-text: var(--deck-accent);
+  --deck-accent-soft: color-mix(in srgb, var(--deck-accent) 16%, var(--deck-bg));
+  --deck-selected: #3a3630;
+  --deck-human-fill: #38332d;
+  --deck-human-line: color-mix(in srgb, var(--deck-human-fill) 92%, var(--deck-text));
+  --deck-surface-sunken: var(--deck-code);
+  --deck-edge: #544e46;
+  --deck-glow: 0;
+  --deck-blur: 0px;
+  --deck-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --deck-font-reading: "Iowan Old Style", Charter, "Source Serif 4", Georgia, serif;
+  --deck-reading-size: calc(13px + 3px * var(--deck-density, 1));
+  --deck-message-width: 44rem;
+  --bg: var(--deck-bg);
+  --panel: rgb(var(--deck-panel));
+  --panel-2: rgb(var(--deck-panel-raised));
+  --line: #3b3732;
+  --text: var(--deck-text);
+  --muted: var(--deck-muted);
+  --accent: var(--deck-accent);
+  --accent-ink: var(--deck-accent-ink);
+  --warn: var(--deck-warning);
+  --danger: var(--deck-danger);
+  --radius: var(--deck-radius, 10px);
+  --plus: var(--deck-success);
+  --minus: var(--deck-danger);
+  color-scheme: dark;
+}
+
+:root[data-deck-light="true"][data-deck-theme="clay"] {
+  --deck-bg: #f8f5ee;
+  --deck-panel: 240 236 227;
+  --deck-panel-raised: 255 253 249;
+  --deck-code: #f0ebe1;
+  --deck-line: 41 37 31;
+  --deck-text: #29251f;
+  --deck-muted: #58514a;
+  --deck-muted-2: #6a6258;
+  --deck-warning: #865800;
+  --deck-danger: #ad3626;
+  --deck-success: #356b3a;
+  --deck-accent: var(--deck-custom-accent, oklch(.48 .1 var(--deck-hue, 38)));
+  --deck-accent-ink: var(--deck-custom-accent-ink, #fffaf3);
+  --deck-selected: #e5dfd2;
+  --deck-human-fill: #ebe4d7;
+  --deck-edge: #c9c0b1;
+  --line: #e1dacd;
+  color-scheme: light;
+}
+
+@media (prefers-contrast: more) {
+  :root[data-deck-theme="clay"] {
+    --deck-muted: #ddd4c6;
+    --deck-muted-2: #cfc4b4;
+    --line: var(--deck-edge);
+  }
+  :root[data-deck-light="true"][data-deck-theme="clay"] {
+    --deck-muted: #3d3831;
+    --deck-muted-2: #454037;
+    --line: var(--deck-edge);
+  }
+  :root[data-deck-theme="clay"] :is(button, input, select, textarea, [tabindex]):focus-visible {
+    outline-width: 3px;
+  }
+}
+
+/* Solid warm surfaces. Most components already paint from --panel,
+   --panel-2 and --line, so they follow the tokens above; these rules set
+   the radius and remove glass effects Clay never uses. */
+:root[data-deck-theme="clay"] body { background: var(--deck-bg); }
+:root[data-deck-theme="clay"] :is(.pane, .rail, .thread-details, .composer-box, .md-code, .quote-preview, .queued-inline) {
+  border-radius: var(--deck-radius, 10px);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+:root[data-deck-theme="clay"] .pane-head { border-color: var(--line); }
+:root[data-deck-theme="clay"] .titlebar { border-bottom-color: var(--line); }
+:root[data-deck-theme="clay"] button:hover:not(:disabled) { border-color: var(--deck-edge); }
+/* The base sheet hard-codes a navy button hover, a mint primary hover and
+   dark-green agent picker tiles. Low specificity, like glass, so component
+   hovers still win; the primary hover deepens on Paper and lifts on Ember. */
+:where(:root[data-deck-theme="clay"]) button:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--deck-text) 8%, rgb(var(--deck-panel-raised)));
+}
+:root[data-deck-theme="clay"] button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 86%, var(--text));
+  border-color: color-mix(in srgb, var(--accent) 86%, var(--text));
+  box-shadow: none;
+}
+:where(:root[data-deck-theme="clay"]) .picker-grid.single button {
+  background: color-mix(in srgb, var(--accent) 8%, rgb(var(--deck-panel-raised)));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+:where(:root[data-deck-theme="clay"]) .picker-grid.single button:hover {
+  background: color-mix(in srgb, var(--accent) 16%, rgb(var(--deck-panel-raised)));
+}
+/* Pastel +/− counts and server errors only suit dark surfaces. */
+:root[data-deck-theme="clay"] :is(.plus, .minus, .server-error) { color: var(--minus); }
+:root[data-deck-theme="clay"] .plus { color: var(--plus); }
+:root[data-deck-light="true"][data-deck-theme="clay"] :is(.details-backdrop, .artifacts-backdrop) { background: rgb(70 45 20 / .14); }
+:root[data-deck-theme="clay"] ::selection { background: color-mix(in srgb, var(--accent) 38%, transparent); color: inherit; }
+:root[data-deck-theme="clay"] .empty-emblem {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+:root[data-deck-theme="clay"] .empty h3 {
+  font-family: var(--deck-font-reading);
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+/* Reading layout: replies drop the bubble and set in the serif at a
+   measured width; your messages keep a soft tinted card in the UI sans.
+   Speaker names, steps and code keep their own sans/mono faces. */
+:root[data-deck-theme="clay"] .bubble.bot {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  padding: 2px 0;
+}
+/* Serif covers reply text only, never the controls that ride inside a
+   bubble (approvals, steps, file strips, code-head buttons). The reply
+   body is always a direct child of the bubble, so the child combinator
+   is what keeps a plan approval's Markdown in the safety treatment. */
+:root[data-deck-theme="clay"] .bubble.bot > :is(.md, .draft-text) {
+  font-family: var(--deck-font-reading);
+  font-size: var(--deck-reading-size);
+  line-height: 1.62;
+}
+:root[data-deck-theme="clay"] .bubble.bot :is(.md-code, .md-table) {
+  font-family: var(--deck-font-ui);
+  font-size: 13px;
+}
+:root[data-deck-theme="clay"] .bubble.bot .speaker { font-family: var(--deck-font-ui); }
+/* Agent names, in bubbles and in Details. The color-mix line is the
+   fallback: a gentle warm mute on Ember, a stronger pull toward the dark
+   text color on Paper, enough for the built-in palette. Where relative
+   oklch is supported the second line wins and clamps lightness per mode
+   (chroma capped so names stay muted), so any user-picked color — even
+   black, white or the background itself — remains readable. */
+:root[data-deck-theme="clay"] :is(.bubble.bot .speaker, .thread-details .details-bot-copy strong, .thread-details .allowed-copy strong) {
+  color: color-mix(in srgb, var(--agent-color, var(--accent)) 80%, var(--text));
+  color: oklch(from var(--agent-color, var(--accent)) clamp(.76, l, .92) clamp(0, c, .13) h);
+}
+:root[data-deck-light="true"][data-deck-theme="clay"] :is(.bubble.bot .speaker, .thread-details .details-bot-copy strong, .thread-details .allowed-copy strong) {
+  color: color-mix(in srgb, var(--agent-color, var(--accent)) 38%, var(--text));
+  color: oklch(from var(--agent-color, var(--accent)) clamp(.28, l, .44) clamp(0, c, .13) h);
+}
+/* The same clamp for names outside bubbles and Details; these fall back
+   to the text color, not the accent, when no agent color is set. */
+:root[data-deck-theme="clay"] :is(.diff-group h4, .qform-who) {
+  color: color-mix(in srgb, var(--agent-color, var(--text)) 80%, var(--text));
+  color: oklch(from var(--agent-color, var(--text)) clamp(.76, l, .92) clamp(0, c, .13) h);
+}
+:root[data-deck-light="true"][data-deck-theme="clay"] :is(.diff-group h4, .qform-who) {
+  color: color-mix(in srgb, var(--agent-color, var(--text)) 38%, var(--text));
+  color: oklch(from var(--agent-color, var(--text)) clamp(.28, l, .44) clamp(0, c, .13) h);
+}
+:root[data-deck-theme="clay"] .bubble.human {
+  background: var(--deck-human-fill);
+  border: 1px solid var(--deck-human-line);
+  border-radius: calc(var(--deck-radius, 10px) * 1.6);
+  font-size: 14px;
+  line-height: 1.5;
+}
+:root[data-deck-theme="clay"] .bubble { padding-block: calc(10px * var(--deck-density, 1) + 2px); }
+:root[data-deck-theme="clay"] .bubble.bot { padding-block: calc(4px * var(--deck-density, 1)); }
+
+/* One raised composer box on the solid raised surface. */
+:root[data-deck-theme="clay"] .composer-box {
+  --box: rgb(var(--deck-panel-raised));
+  background: var(--box);
+  border: 1px solid var(--deck-edge);
+  border-radius: calc(var(--deck-radius, 10px) * 1.6);
+  box-shadow: 0 2px 10px -6px rgb(0 0 0 / .35);
+}
+:root[data-deck-light="true"][data-deck-theme="clay"] .composer-box {
+  box-shadow: 0 2px 10px -6px rgb(70 45 20 / .25);
+}
+:root[data-deck-theme="clay"] .composer-box:focus-within {
+  --box: rgb(var(--deck-panel-raised));
+  border-color: var(--deck-accent-text);
+}
+
+/* Quieter rail: the focused thread gets a filled row, not a glow. */
+:root[data-deck-theme="clay"] .pane-row { border-radius: max(5px, calc(var(--deck-radius, 10px) * .6)); }
+:root[data-deck-theme="clay"] .pane-row.focused {
+  background: var(--deck-selected);
+  color: var(--text);
+}
+:root[data-deck-theme="clay"] .pane-row.lit,
+:root[data-deck-theme="clay"] .ws-row.lit { background: var(--deck-selected); }
+
+/* Code, diffs and tables keep the monospace face on the sunken warm
+   surface. The base diff inks suit dark surfaces only, so Paper gets
+   deeper inks that stay readable on cream. */
+:root[data-deck-theme="clay"] :is(.md-code, .md-code pre, .diff, .answer-command) {
+  background: var(--deck-code);
+  color: var(--deck-text);
+  border-color: var(--line);
+}
+:root[data-deck-theme="clay"] .md code { background: var(--deck-code); }
+:root[data-deck-theme="clay"] .md-table th { background: var(--deck-code); }
+:root[data-deck-theme="clay"] .diff-line.add { color: var(--deck-success); background: color-mix(in srgb, var(--deck-success) 13%, transparent); }
+:root[data-deck-theme="clay"] .diff-line.del { color: var(--deck-danger); background: color-mix(in srgb, var(--deck-danger) 13%, transparent); }
+:root[data-deck-light="true"][data-deck-theme="clay"] .diff-line.add { color: #14532d; }
+:root[data-deck-light="true"][data-deck-theme="clay"] .diff-line.del { color: #7f1d1d; }
+:root[data-deck-theme="clay"] .work-steps-output {
+  background: var(--deck-code);
+  border-color: var(--line);
+  color: var(--deck-muted);
+}
+:root[data-deck-theme="clay"] :is(.work-steps-helper, .work-steps-detail) { border-color: var(--line); }
+:root[data-deck-theme="clay"] :is(.muted, .head-state, .details-head p) {
+  color: var(--deck-muted);
+}
+
+/* Menus, popovers, dialogs and toasts stay solid and readable — the same
+   surfaces glass lifts, without the blur. */
+:root[data-deck-theme="clay"] :is(.composer-menu, .pane-menu, .hover-card, .usage-card, .bot-settings, .quick-add, .workspace-machine-menu,
+  .new-menu-list, .link-menu, .review-menu, .artifact-menu, .model-menu, .selection-actions, .steer-pop, .mod-status-menu,
+  .host-menu, .attention-list, .proj-picker, .confirm, .toast, .mod-toast, .mod-modal, .library-viewer) {
+  background: rgb(var(--deck-panel-raised));
+  border-color: var(--deck-edge);
+  border-radius: max(8px, calc(var(--deck-radius, 10px) * .6));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: 0 14px 36px -18px rgb(0 0 0 / .45);
+}
+:root[data-deck-light="true"][data-deck-theme="clay"] :is(.composer-menu, .pane-menu, .hover-card, .usage-card, .bot-settings, .quick-add, .workspace-machine-menu,
+  .new-menu-list, .link-menu, .review-menu, .artifact-menu, .model-menu, .selection-actions, .steer-pop, .mod-status-menu,
+  .host-menu, .attention-list, .proj-picker, .confirm, .toast, .mod-toast, .mod-modal, .library-viewer) {
+  box-shadow: 0 14px 36px -18px rgb(70 45 20 / .3);
+}
+:root[data-deck-theme="clay"] :is(.settings-nav, .settings-card, .artifacts-panel, .preview, .changes, .agent-card, .library-tile, .mod-card,
+  .add-form, .connection-banner, .terminal-bar, .folder-list, .pins, .qform, .move-ask, .conn-retarget, .answer-strip) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-deck-theme="clay"] :is(.settings-card, .agent-card, .library-tile, .mod-card) {
+  border-radius: var(--deck-radius, 10px);
+  box-shadow: none;
+}
+:root[data-deck-theme="clay"] .settings-nav { border-right-color: var(--line); }
+
+/* Details as quiet cards, echoing a per-session inspector without
+   rebuilding it. Data and layout are unchanged. */
+:root[data-deck-theme="clay"] .thread-details { background: var(--panel); border-left-color: var(--line); }
+:root[data-deck-theme="clay"] .details-bot {
+  background: rgb(var(--deck-panel-raised));
+  border: 1px solid var(--line);
+  border-radius: var(--deck-radius, 10px);
+  padding: 10px;
+  margin-bottom: 10px;
+}
+:root[data-deck-theme="clay"] .details-bot:hover { background: rgb(var(--deck-panel-raised)); }
+
+/* Settings › Appearance paints from these, so its cards follow Clay too.
+   Skin previews inside each tile keep their own colors. */
+:root[data-deck-theme="clay"] .appearance-settings {
+  --appearance-panel: rgb(var(--deck-panel-raised));
+  --appearance-raised: var(--deck-accent-soft);
+  --appearance-line: var(--line);
+}
+:root[data-deck-theme="clay"] .appearance-settings .appearance-section {
+  border-radius: var(--deck-radius, 10px);
+  box-shadow: none;
+}
+:root[data-deck-theme="clay"] .appearance-settings .appearance-skin { border-radius: calc(var(--deck-radius, 10px) * .6); }
+
+/* ── Structure ─────────────────────────────────────────────────────────
+   The rules above recolor Apex Deck; these reshape it toward the Clay mock:
+   flush columns instead of floating cards, one centered reading column
+   shared by the transcript and the composer, senders inline above their
+   reply, a two-row composer, quiet tabs, and status by shape as well as
+   color. CSS only — no component markup changes for any theme. */
+
+/* Flush shell: no gutter frame. The rail and Details are columns split by
+   hairlines; the title bar shares the rail's surface; the chat sits on
+   the lighter canvas. */
+:root[data-deck-theme="clay"] { --deck-gap: 0px; }
+:root[data-deck-theme="clay"] .titlebar {
+  background: rgb(var(--deck-panel));
+  border-bottom: 1px solid var(--line);
+}
+:root[data-deck-theme="clay"] .rail {
+  margin: 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+}
+:root[data-deck-theme="clay"] :is(.thread-details.docked, .thread-details.overlay) {
+  margin: 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+}
+:root[data-deck-theme="clay"] .thread-details.overlay { inset: 0 0 0 auto; }
+:root[data-deck-theme="clay"] :is(.sidebar-handle.overlay) { top: 0; bottom: 0; }
+/* Panes are inset half a gap inside the grid (PaneLayout GAP); with no
+   canvas padding a lone pane meets the canvas edges exactly; split panes
+   get back a hairline frame (below) so the gutter between them reads. */
+:root[data-deck-theme="clay"] .pane {
+  background: var(--deck-bg);
+  border: 0;
+  border-radius: 0;
+}
+:root[data-deck-theme="clay"] .pane.focused { box-shadow: none; }
+/* Only with two or more panes showing does focus need a frame. */
+:root[data-deck-theme="clay"] .grid:has(> .pane:not([style*="display: none"]) ~ .pane:not([style*="display: none"])) > .pane {
+  border: 1px solid var(--line);
+  border-radius: max(6px, calc(var(--deck-radius, 10px) * .6));
+}
+:root[data-deck-theme="clay"] .grid:has(> .pane:not([style*="display: none"]) ~ .pane:not([style*="display: none"])) > .pane.focused {
+  border-color: color-mix(in srgb, var(--deck-accent-text) 55%, var(--line));
+}
+:root[data-deck-theme="clay"] .pane-head { background: transparent; }
+
+/* Title bar: the section switcher is quiet text with a neutral selected
+   chip, never an accent slab; New is a plain bordered button. */
+:root[data-deck-theme="clay"] .titlebar > .section-navigation {
+  background: transparent;
+  border-color: transparent;
+}
+:root[data-deck-theme="clay"] .titlebar .section-button { color: var(--deck-muted); }
+:root[data-deck-theme="clay"] .titlebar .section-button:hover:not(:disabled):not(.selected) { color: var(--text); }
+:root[data-deck-theme="clay"] .titlebar .section-button.selected {
+  background: var(--deck-selected);
+  color: var(--text);
+}
+:root[data-deck-theme="clay"] .titlebar .section-button.selected > span { color: var(--text); }
+:root[data-deck-theme="clay"] .titlebar button.titlebar-new {
+  background: rgb(var(--deck-panel-raised)) !important;
+  border-color: var(--deck-edge) !important;
+  color: var(--text) !important;
+}
+:root[data-deck-theme="clay"] .titlebar button.titlebar-new:hover:not(:disabled) {
+  background: var(--deck-selected) !important;
+}
+
+/* Rail: sentence-case section labels and plain project rows; only the
+   selected thread is filled. */
+:root[data-deck-theme="clay"] .rail-sec {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--deck-muted-2);
+}
+:root[data-deck-theme="clay"] .ws-row.active { background: transparent; border-color: transparent; }
+:root[data-deck-theme="clay"] .ws-row.active .fold { --cut: rgb(var(--deck-panel)); }
+
+/* Status: Classic's cyan "done" color arrives through --brand-cyan (done
+   dots, Ready flags, counts, plan mode); Clay maps it to its success ink.
+   Links take the accent. Every state also gets a shape: a ring when idle,
+   a diamond when it waits for you, a square when it failed. */
+:root[data-deck-theme="clay"] { --brand-cyan: var(--deck-success); }
+:root[data-deck-theme="clay"] :is(.msg-link, button.link) {
+  color: var(--deck-accent-text);
+  text-decoration-color: color-mix(in srgb, var(--deck-accent-text) 45%, transparent);
+}
+:where(:root[data-deck-theme="clay"]) .dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--deck-muted-2);
+}
+:root[data-deck-theme="clay"] .dot.working {
+  background: var(--deck-accent-text);
+  box-shadow: 0 0 0 3px var(--deck-accent-soft);
+}
+:root[data-deck-theme="clay"] .dot.needs_input { border-radius: 1px; transform: rotate(45deg) scale(.92); }
+:root[data-deck-theme="clay"] .dot.failed { border-radius: 1px; }
+
+/* One reading column, centered in the pane and shared by the composer
+   below, so your message, the replies and the box all line up. */
+:root[data-deck-theme="clay"] .transcript {
+  padding-inline: max(24px, calc((100% - var(--deck-message-width)) / 2));
+}
+
+/* Senders sit inline: a small identicon before the name, the reply flush
+   with the column instead of indented past an avatar gutter. The Avatar
+   keeps its markup (and its context battery), only scaled and placed. */
+:root[data-deck-theme="clay"] .bot-row {
+  max-width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  position: relative;
+}
+:root[data-deck-theme="clay"] .bot-row > :is(.bubble, .message-actions) { grid-column: 1; }
+:root[data-deck-theme="clay"] .bot-row > .identicon {
+  position: absolute;
+  left: 0;
+  top: calc(4px * var(--deck-density, 1));
+  transform: scale(.58);
+  transform-origin: 0 0;
+  z-index: 1;
+}
+:root[data-deck-theme="clay"] .bubble.bot > .speaker {
+  padding-left: 28px;
+  min-height: 21px;
+  line-height: 21px;
+  margin-bottom: 4px;
+}
+
+/* Composer: the same column as the transcript, with the text on top and
+   its tools in a row underneath (the layout Apex already uses for narrow
+   panes), and the bot chips under the box. */
+:root[data-deck-theme="clay"] .composer {
+  padding-inline: max(16px, calc((100% - var(--deck-message-width)) / 2));
+}
+:root[data-deck-theme="clay"] .composer-box {
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 6px 8px 6px 10px;
+}
+:root[data-deck-theme="clay"] .composer-box > .composer-field { order: -1; flex-basis: 100%; }
+:root[data-deck-theme="clay"] .composer-box > .composer-field > textarea { min-height: 44px; }
+:root[data-deck-theme="clay"] .composer-box > .composer-tools { margin: 0 auto 0 0; }
+:root[data-deck-theme="clay"] .composer-box > :is(.tldr-pill, button.round-send, .plan-chip) { align-self: center; margin-bottom: 0; }
+
+/* Empty thread and welcome: sentence-case eyebrow, serif headline,
+   examples as a wrapping row of pill chips. */
+:root[data-deck-theme="clay"] .eyebrow {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--deck-muted);
+}
+:root[data-deck-theme="clay"] .example-rows {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+:root[data-deck-theme="clay"] .example-row {
+  border-radius: 999px;
+  border-color: var(--deck-edge);
+  background: transparent;
+  padding: 5px 12px;
+}
+:root[data-deck-theme="clay"] .example-row:hover:not(:disabled) { border-color: var(--deck-muted-2); }
+:root[data-deck-theme="clay"] .picker h2 {
+  font-family: var(--deck-font-reading);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+:root[data-deck-theme="clay"] .welcome-capabilities { font-family: var(--deck-font-ui); font-size: 11.5px; letter-spacing: 0; }
+
+/* Right panel: text tabs with an underline for the open one; filters as
+   outlined pills; sentence-case group labels. */
+:root[data-deck-theme="clay"] .right-panel-tab { border-radius: 0; box-shadow: inset 0 -2px 0 transparent; }
+:root[data-deck-theme="clay"] .right-panel-tab.active { background: transparent; box-shadow: inset 0 -2px 0 var(--text); }
+:root[data-deck-theme="clay"] .right-panel-tab.active > button[role="tab"] { color: var(--text); }
+:root[data-deck-theme="clay"] .right-panel-tabs { padding-bottom: 0; }
+:root[data-deck-theme="clay"] .right-dashboard-filters button { border: 1px solid var(--deck-edge); }
+:root[data-deck-theme="clay"] .right-dashboard-filters button[aria-checked="true"] {
+  background: var(--deck-selected);
+  border-color: var(--deck-muted-2);
+}
+:root[data-deck-theme="clay"] .right-dashboard-group {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  color: var(--deck-muted-2);
+}

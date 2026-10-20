@@ -322,6 +322,7 @@
 .ph-was .ph-md { opacity: .55; }
 .ph-cut { font-size: 13px; color: var(--muted); border-left: 2px solid var(--line); padding: 4px 0 4px 10px; margin: 0 0 16px !important; }
 .ph-by { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.ph-by > span { color: var(--agent-color, var(--accent)); }
 .ph-msg > p { font-size: 15px; line-height: 1.55; white-space: pre-wrap; }
 .ph-msg.human { background: var(--panel-2); padding: 10px 14px; border-radius: 18px 18px 4px 18px; margin-left: auto; width: fit-content; max-width: 85%; }
 .ph-md { font-size: 15px; line-height: 1.55; }
@@ -608,7 +609,7 @@
 /* A held bot's details. */
 .ph-bot-head { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
 .ph-bot-head .ph-grow { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ph-bot-head strong { font-size: 17px; }
+.ph-bot-head strong { font-size: 17px; color: var(--agent-color, var(--text)); }
 .ph-bot-head small { font-size: 13px; color: var(--muted); }
 .ph-usage p { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
 .ph-usage p span:first-child { color: var(--muted); flex: none; }
