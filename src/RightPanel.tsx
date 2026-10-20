@@ -3,13 +3,14 @@ import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNod
 import { FIXED, KINDS, activate, closeTab, moveTab, openTab, outsideViewport, tabIndexAt, tabReleaseAction, type PanelTab, type RightPanelState, type TabKind } from "./rightPanelModel";
 import "./right-panel.css";
 
-export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", browser: "Browser", files: "Files", worktrees: "Worktrees", phone: "Phone" };
+export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", artifacts: "Artifacts", browser: "Browser", files: "Files", worktrees: "Worktrees", phone: "Phone" };
 
 /** Tab-strip line icons, drawn on the same 24-unit grid / 1.7 stroke as SidebarIcons. Kept local so the tab strip has no extra imports. */
 const TAB_PATHS: Record<TabKind, ReactNode> = {
   dashboard: <><rect x="3" y="3" width="8" height="8" rx="1.5" /><rect x="13" y="3" width="8" height="8" rx="1.5" /><rect x="3" y="13" width="8" height="8" rx="1.5" /><rect x="13" y="13" width="8" height="8" rx="1.5" /></>,
   tasks: <><rect x="4" y="4" width="16" height="16" rx="3" /><path d="m8.5 12.5 2.5 2.5 5-5.5" /></>,
   details: <><circle cx="12" cy="12" r="9" /><path d="M12 7.5v5.5M12 16.5v.01" /></>,
+  artifacts: <><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z" /><path d="M14 3v5h5" /><path d="M8 13h8" /><path d="M8 17h6" /></>,
   browser: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" /></>,
   files: <path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9H3V7Z" />,
   worktrees: <><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M6 3v12" /><path d="M18 9a9 9 0 0 1-9 9" /></>,
@@ -19,7 +20,7 @@ const TAB_PATHS: Record<TabKind, ReactNode> = {
 function TabIcon({ kind }: { kind: TabKind }) {
   return <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{TAB_PATHS[kind]}</svg>;
 }
-const EMPTY: Partial<Record<TabKind, string>> = { details: "Open a thread to see its details." };
+const EMPTY: Partial<Record<TabKind, string>> = { details: "Open a thread to see its details.", artifacts: "Open a thread to see its artifacts." };
 
 interface Props {
   state: RightPanelState;

@@ -6,8 +6,9 @@ import { KIND_LABEL, ago, exportName, newestFirst, pickVersion, type ArtifactFil
 import { frameDocument } from "./artifactFrame";
 import { compact, lineDiff } from "./lineDiff";
 
-// The artifacts panel: beside the conversation, over it in a narrow thread,
-// or over the whole deck in full window. See the spec, 2.3.
+// The artifacts panel: in the side panel's Artifacts tab, beside the
+// conversation, over it in a narrow thread, or over the whole deck in full
+// window. See the spec, 2.3.
 
 export type ArtifactTab = "preview" | "source" | "changes";
 
@@ -23,6 +24,26 @@ export interface PanelView {
 
 export const DEFAULT_VIEW: PanelView = { artifactId: null, n: null, tab: "preview", full: false, list: false };
 
+/** The side panel's Artifacts tab, which a thread draws its panel into. */
+export interface ArtifactsHost {
+  slot: HTMLElement | null;
+  /** The tab is in front in an open side panel. */
+  open: boolean;
+  /** The thread the tab shows. Only that thread renders into the slot. */
+  target: string | null;
+  /** The side panel covers the conversation (narrow windows). */
+  overlay: boolean;
+  /** The side panel fills the work area. */
+  full: boolean;
+  /** Opening the tab hides nothing the person is looking at: the side panel is closed or already on Artifacts. */
+  free: boolean;
+  show: () => void;
+  close: () => void;
+  setFull: (full: boolean) => void;
+  /** A standalone tab already fills its window. */
+  expandable?: boolean;
+}
+
 interface Props {
   file: ArtifactFile;
   view: PanelView;
@@ -36,6 +57,9 @@ interface Props {
   backend: Backend;
   /** Why changes here aren't being saved, if they aren't. */
   problem: string;
+  /** In the side panel's tab: the side panel owns full screen and Esc, so `view.full` only sets the button. */
+  docked?: boolean;
+  expandable?: boolean;
 }
 
 const TABS: { id: ArtifactTab; label: string }[] = [
@@ -57,7 +81,7 @@ const KIND_ICON: Record<ArtifactKind, ReactNode> = {
   markdown: icon(<><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z" /><path d="M14 3v5h5" /><path d="M8 13h8" /><path d="M8 17h6" /></>),
 };
 
-export function ArtifactsPanel({ file, view, onView, onClose, overlay, nameOf, colorOf, onOpenLink, backend, problem }: Props) {
+export function ArtifactsPanel({ file, view, onView, onClose, overlay, nameOf, colorOf, onOpenLink, backend, problem, docked = false, expandable = true }: Props) {
   const root = useRef<HTMLElement>(null);
   const picked = pickVersion(file, view.artifactId, view.n);
   const [copied, setCopied] = useState(false);
@@ -76,6 +100,7 @@ export function ArtifactsPanel({ file, view, onView, onClose, overlay, nameOf, c
 
   // Esc leaves full window; in a narrow thread, with focus in the panel, it closes the panel.
   useEffect(() => {
+    if (docked) return;
     const key = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (view.full) {
@@ -88,10 +113,10 @@ export function ArtifactsPanel({ file, view, onView, onClose, overlay, nameOf, c
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [view, overlay, onView, onClose]);
+  }, [view, overlay, onView, onClose, docked]);
 
   const set = (change: Partial<PanelView>) => onView({ ...view, ...change });
-  const classes = ["artifacts-panel", overlay && !view.full ? "overlay" : "", view.full ? "full-window" : ""].filter(Boolean).join(" ");
+  const classes = docked ? "artifacts-panel docked" : ["artifacts-panel", overlay && !view.full ? "overlay" : "", view.full ? "full-window" : ""].filter(Boolean).join(" ");
 
   if (!picked || view.list) {
     return (
@@ -158,9 +183,9 @@ export function ArtifactsPanel({ file, view, onView, onClose, overlay, nameOf, c
           <button className="artifacts-title" onClick={() => set({ list: true })} title="All artifacts in this thread">{artifact.title} ▾</button>
           <span className="artifacts-meta">{KIND_LABEL[artifact.kind]} · v{version.n} of {total} · by {who}</span>
         </div>
-        <button className="icon small" onClick={() => set({ full: !view.full })} aria-label={view.full ? "Back to the thread" : "Full window"} title={view.full ? "Back to the thread (Esc)" : "Full window (Esc to go back)"}>
+        {expandable && <button className="icon small" onClick={() => set({ full: !view.full })} aria-label={view.full ? "Back to the thread" : "Full window"} title={view.full ? "Back to the thread (Esc)" : "Full window (Esc to go back)"}>
           {view.full ? "▣" : CORNERS}
-        </button>
+        </button>}
         {!view.full && <button className="icon small" onClick={onClose} aria-label="Close artifacts" title="Close">×</button>}
       </div>
       <div className="artifacts-bar">

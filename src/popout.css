@@ -197,3 +197,11 @@
 .popout-stopped .primary {
   padding: 4px 16px;
 }
+
+/* A sibling of the whole chat, including its composer. */
+.popout-artifacts { width: 440px; min-width: 0; min-height: 0; flex: none; }
+.popout-artifacts.overlay { position: absolute; inset: 0 0 0 auto; z-index: 30; width: min(440px, 100%); background: var(--panel); box-shadow: -12px 0 32px #0005; }
+.popout-artifacts.full { flex: 1; width: auto; }
+.popout-chat-main[hidden] { display: none; }
+
+.popout-artifacts-backdrop { position: absolute; inset: 0; z-index: 29; border: 0; border-radius: 0; background: #0003; }

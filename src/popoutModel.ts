@@ -12,6 +12,12 @@ import type { Access, AgentInfo, Pane, ParticipantConfig, RoomOptions } from "./
 
 export type PopoutKind = "pane" | "tab";
 
+/** Artifacts follows the thread shown by its docked tab, even when a terminal has focus. */
+export function followedTabPane(kind: TabKind, panes: Pane[], focused: string | null, artifactsTarget: string | null): Pane | null {
+  const id = kind === "artifacts" ? artifactsTarget : focused;
+  return panes.find((pane) => pane.id === id) ?? null;
+}
+
 /** Why a pane stays in Deck instead of popping out, or null when it may pop out.
  *  Task threads come from the assistant's own list, not Deck's: their titles,
  *  renames and forks live there too, so a pop-out of one could not stay in step —

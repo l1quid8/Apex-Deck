@@ -17,7 +17,7 @@ import type { CodeInfo } from "./Markdown";
 import { parseBlocks } from "./markdownText";
 import { ModDock, useMods } from "./ModView";
 import { modHost } from "./mods/host";
-import { ArtifactsPanel, DEFAULT_VIEW, type PanelView } from "./ArtifactsPanel";
+import { ArtifactsPanel, DEFAULT_VIEW, type ArtifactsHost, type PanelView } from "./ArtifactsPanel";
 import { EMPTY_ARTIFACTS, MAX_SOURCE, addArtifact, addVersion, codeChoices, kindForPath, kindOf, pickVersion, readArtifacts, artifactAutoOpen, upsertFromFile, fromReply, type ArtifactFile } from "./artifacts";
 import { parseServerRequests, resolveServerRequests } from "./serverRequests";
 import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress";
@@ -171,6 +171,10 @@ interface Props {
   /** "Always" in the steer prompt turns the setting off everywhere. */
   onConfirmSteer?: (confirm: boolean) => void;
   details?: DetailsHost;
+  /** The side panel's Artifacts tab. Without one the panel sits beside the conversation. */
+  artifactsHost?: ArtifactsHost;
+  /** A detached Artifacts tab observes the owner's saved file instead of collecting a second copy. */
+  followArtifacts?: boolean;
   /** Where the Artifacts and Changes counts render, when the host names the slot itself
    *  (a pop-out's top bar) instead of leaving a `.pane-head .pane-counts` to find. */
   countsSlot?: HTMLElement | null;
@@ -490,7 +494,7 @@ function fitHead(head: HTMLElement) {
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -1823,6 +1827,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [artifactsLoaded, setArtifactsLoaded] = useState(false);
   const [artifactProblem, setArtifactProblem] = useState("");
   const [panel, setPanel] = useState<PanelView | null>(null);
+  /** The side panel's Artifacts tab is showing this thread. */
+  const dockedHere = Boolean(artifactsHost?.open && artifactsHost.target === pane.id);
+  /** What the person sees: in the tab it's always this thread's artifacts, starting from the list's newest. */
+  const liveView = artifactsHost ? (dockedHere ? panel ?? DEFAULT_VIEW : null) : panel;
   const mods = useMods();
   const modDock = mods.hostPane === pane.id ? mods.panes.filter((p) => !p.focus) : [];
   const artifactsReadable = useRef(false);
@@ -1830,26 +1838,37 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   useEffect(() => {
     if (profileMode) return;
     let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let previous = "";
     artifactsReadable.current = false;
     setArtifactsLoaded(false);
     if (hostConnection.revision === 0 && backend.host) return;
-    backend.artifactsLoad(pane.id).then(
-      (raw) => {
+    const load = async () => {
+      try {
+        const next = readArtifacts(await backend.artifactsLoad(pane.id));
         if (!live) return;
-        latestArtifacts.current = readArtifacts(raw);
-        setArtifacts(latestArtifacts.current);
-        artifactsReadable.current = true;
+        const encoded = JSON.stringify(next);
+        if (encoded !== previous) {
+          previous = encoded;
+          latestArtifacts.current = next;
+          setArtifacts(next);
+        }
+        artifactsReadable.current = !followArtifacts;
         setArtifactProblem("");
         setArtifactsLoaded(true);
-      },
-      () => {
+      } catch {
         if (!live) return;
         setArtifactProblem("Artifacts couldn't be read, so changes here won't be saved.");
         setArtifactsLoaded(true);
-      },
-    );
-    return () => { live = false; };
-  }, [backend, pane.id, profileMode, hostConnection.revision]);
+      } finally {
+        // Artifact saves have no service event. A standalone tab has one reader,
+        // no overlapping requests, and never writes over Deck's authoritative file.
+        if (live && followArtifacts) timer = setTimeout(load, 1000);
+      }
+    };
+    void load();
+    return () => { live = false; clearTimeout(timer); };
+  }, [backend, pane.id, profileMode, hostConnection.revision, followArtifacts]);
 
   // Settings people chose on the cards in this thread's replies. See src/interactiveAnswers.
   const [answers, setAnswers] = useState<AnswerStore | null>(null);
@@ -1897,6 +1916,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       : undefined;
 
   const changeArtifacts = (next: ArtifactFile) => {
+    if (followArtifacts) return;
     latestArtifacts.current = next;
     setArtifacts(next);
     if (!artifactsReadable.current) return;
@@ -1913,13 +1933,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // button glows briefly and keeps a dot.
   const [unseenArtifacts, setUnseenArtifacts] = useState(0);
   const [artifactGlow, setArtifactGlow] = useState(0);
-  useEffect(() => { if (panel) setUnseenArtifacts(0); }, [panel]);
+  useEffect(() => { if (liveView) setUnseenArtifacts(0); }, [liveView]);
   const panelWasOpen = useRef(false);
   const panelDismissed = useRef(false);
   useEffect(() => {
-    if (panelWasOpen.current && !panel) panelDismissed.current = true;
-    panelWasOpen.current = panel !== null;
-  }, [panel]);
+    // Moving the tab to another thread isn't closing it.
+    if (panelWasOpen.current && !liveView && (!artifactsHost || artifactsHost.target === pane.id)) panelDismissed.current = true;
+    panelWasOpen.current = liveView !== null;
+  }, [liveView]);
   const lastComposerKey = useRef(0);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (composer.current?.contains(event.target as Node)) lastComposerKey.current = Date.now(); };
@@ -1934,11 +1955,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const announceArtifact = (artifactId: string, n: number) => {
     const typing = Date.now() - lastComposerKey.current < 2000;
     if (panelWasOpen.current) { showVersion(artifactId, n); return; }
-    if (artifactAutoOpen() && !panelDismissed.current && !typing && !narrow) { showVersion(artifactId, n); return; }
+    // In the side panel, only open it where it hides nothing and covers nothing.
+    const roomy = artifactsHost ? artifactsHost.free && !artifactsHost.overlay && artifactsHost.target === pane.id : !narrow;
+    if (artifactAutoOpen() && !panelDismissed.current && !typing && roomy) { showVersion(artifactId, n); return; }
     setUnseenArtifacts((count) => count + 1);
     setArtifactGlow(Date.now());
   };
+  const announceArtifactLatest = useRef(announceArtifact);
+  announceArtifactLatest.current = announceArtifact;
   collectWritten.current = (bot: string) => {
+    if (followArtifacts) return;
     const paths = [...written.current].filter(([path, by]) => by === bot && kindForPath(path)).map(([path]) => path);
     for (const path of paths) written.current.delete(path);
     if (paths.length === 0 || !artifactsReadable.current) return;
@@ -1948,7 +1974,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         const out = upsertFromFile(latestArtifacts.current, path, { source, by: bot, seq: null, at: Date.now() }, `art-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
         if (!out.added) return;
         changeArtifacts(out.file);
-        if (out.artifact) announceArtifact(out.artifact.id, out.artifact.versions.length);
+        if (out.artifact) announceArtifactLatest.current(out.artifact.id, out.artifact.versions.length);
       }, () => {});
     }
   };
@@ -1956,6 +1982,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   // HTML or SVG fenced in a live reply opens the same way. Replies loaded
   // with the thread don't: those were seen already.
   collectReply.current = (message) => {
+    if (followArtifacts) return;
     if (!artifactsReadable.current || message.speaker.kind !== "bot") return;
     const code = parseBlocks(message.text).flatMap((block) => (block.kind === "code" ? [{ language: block.language, text: block.text }] : []));
     if (code.length === 0) return;
@@ -1965,7 +1992,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     announceArtifact(out.artifact.id, 1);
   };
 
-  const showVersion = (artifactId: string, n: number) => setPanel((view) => ({ ...(view ?? DEFAULT_VIEW), artifactId, n, list: false }));
+  const showVersion = (artifactId: string, n: number) => {
+    setPanel((view) => ({ ...(view ?? DEFAULT_VIEW), artifactId, n, list: false }));
+    artifactsHost?.show();
+  };
+  const toggleArtifacts = () => {
+    if (!artifactsHost) { setPanel((view) => (view ? null : DEFAULT_VIEW)); return; }
+    artifactsHost.show();
+  };
 
   /** A person chose what to do with a code block in a finished reply. */
   const openFromCode = (message: { seq: number; speaker: Speaker }, code: { language: string; text: string }, choice: CodeChoice) => {
@@ -1988,7 +2022,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     showVersion(added.artifact.id, 1);
   };
 
-  const shownVersion = panel && !panel.list ? pickVersion(artifacts, panel.artifactId, panel.n) : null;
+  const shownVersion = liveView && !liveView.list ? pickVersion(artifacts, liveView.artifactId, liveView.n) : null;
   /** The control for a code block in a finished bot reply, or nothing. */
   const artifactAction = (message: { seq: number; speaker: Speaker }, code: { language: string; text: string }) => {
     if (!artifactsLoaded) return null;
@@ -2957,11 +2991,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     {removedNote && <p className="allowed-removed" role="status"><span aria-hidden="true">✓</span>{removedNote}</p>}
   </>;
   const changedFiles = new Set(changes.map((c) => c.change.path)).size;
-  const newArtifacts = unseenArtifacts > 0 && !panel;
+  const newArtifacts = unseenArtifacts > 0 && !liveView;
   // Labels hide on a crowded top line, so each button names itself for screen readers.
   const threadCounts = (
     <div className="thread-counts">
-      {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${panel ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={panel !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={() => setPanel((view) => (view ? null : DEFAULT_VIEW))}>
+      {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${liveView ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={liveView !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={toggleArtifacts}>
         <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
       </button>}
       {changes.length > 0 && <button className="ghost small" aria-label={`Changes · ${changedFiles}`} title="Changes" onClick={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }}>
@@ -3272,8 +3306,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </button>}
         {unread > 0 && <button type="button" className="transcript-pill" onClick={jumpToLatest}>{newPill(unread)}</button>}
       </div>}
-      {!profileMode && panel && narrow && !panel.full && <button type="button" className="artifacts-backdrop" aria-label="Close artifacts" onClick={() => setPanel(null)} />}
-      {!profileMode && panel && (
+      {!profileMode && !artifactsHost && panel && narrow && !panel.full && <button type="button" className="artifacts-backdrop" aria-label="Close artifacts" onClick={() => setPanel(null)} />}
+      {!profileMode && !artifactsHost && panel && (
         <ArtifactsPanel
           file={artifacts}
           view={panel}
@@ -3287,7 +3321,25 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           problem={artifactProblem}
         />
       )}
-      {!profileMode && !panel && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
+      {!profileMode && artifactsHost && dockedHere && artifactsHost.slot && createPortal(
+        <ArtifactsPanel
+          file={artifacts}
+          view={{ ...(panel ?? DEFAULT_VIEW), full: artifactsHost.full }}
+          onView={(next) => {
+            if (next.full !== artifactsHost.full) artifactsHost.setFull(next.full);
+            setPanel({ ...next, full: false });
+          }}
+          onClose={artifactsHost.close}
+          overlay={false}
+          docked
+          expandable={artifactsHost.expandable}
+          nameOf={(id) => names.get(id) ?? id}
+          colorOf={color}
+          onOpenLink={openTarget}
+          backend={backend}
+          problem={artifactProblem}
+        />, artifactsHost.slot)}
+      {!profileMode && !(panel && !artifactsHost) && modDock.length > 0 && <ModDock panes={modDock} overlay={narrow} />}
       </div>}
 
       {!profileMode && <div className={`composer${tldr ? " tldr" : ""}${planOn ? " plan" : ""}`} ref={composer}

@@ -247,3 +247,12 @@ test("a fork settles only with the owner's result, and its error rejects", async
   await check;
   assert.equal(channel.pendingCount(), 0);
 });
+
+test('Artifacts popout follows its visible thread and workspace while another tool has focus', async () => {
+  const { followedTabPane } = await import('../src/popoutModel.ts');
+  const thread = {id:'thread',kind:'chat',workspaceId:'remote-project'};
+  const terminal = {id:'terminal',kind:'terminal',workspaceId:'local-project'};
+  assert.equal(followedTabPane('artifacts',[thread,terminal],'terminal','thread'),thread);
+  assert.equal(followedTabPane('artifacts',[thread,terminal],'thread',null),null,'no hidden thread leaks into the tab');
+  assert.equal(followedTabPane('files',[thread,terminal],'terminal','thread'),terminal,'other tools still follow focus');
+});
