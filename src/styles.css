@@ -3326,7 +3326,7 @@ button.mod-status:hover { color: var(--text); }
 .composer-bots .chip-name { padding: 2px 8px 2px 3px; font-size: 12px; }
 .composer-bots .chip-meta { font-size: 11px; }
 /* A badge's usage card floats above it, so the row's overflow never clips it. */
-.usage-card.above { position: fixed; top: auto; }
+.usage-card.above { position: fixed; top: auto; z-index: 40; }
 .usage-card.above::before { inset: auto 0 -7px; }
 .quick-add-wrap.roster-pop .quick-add { top: auto; bottom: 0; max-height: var(--room); overflow-y: auto; }
 

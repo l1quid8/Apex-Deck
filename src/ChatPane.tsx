@@ -549,7 +549,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [card, setCard] = useState<string | null>(null);
   /** Where the hovered bot's usage card sits: above its badge, at the bottom of the pane. */
   const [cardAt, setCardAt] = useState<{ left: number; bottom: number } | null>(null);
-  const hoverCard = (id: string, badge: HTMLElement) => { setCard(id); setCardAt(aboveAnchor(badge.getBoundingClientRect(), viewport(), USAGE_CARD_WIDTH)); };
+  /** The open usage card, drawn on the page body so the Glass pane's blur cannot shift where it lands.
+   *  React still passes its pointer, focus and key events up to the badge that opened it. */
+  const cardBox = useRef<HTMLDivElement | null>(null);
+  /** A short wait before the card closes, so the pointer can cross from the badge to the card. */
+  const cardClose = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const keepCard = () => clearTimeout(cardClose.current);
+  const leaveCard = (id: string) => { keepCard(); cardClose.current = setTimeout(() => setCard((open) => (open === id ? null : open)), 200); };
+  useEffect(() => keepCard, []);
+  const hoverCard = (id: string, badge: HTMLElement) => { keepCard(); setCard(id); setCardAt(aboveAnchor(badge.getBoundingClientRect(), viewport(), USAGE_CARD_WIDTH)); };
 
   /** What each bot has proposed and is waiting on a yes or no for, from the app-wide store (approvals.ts). */
   const approvalState = useSyncExternalStore(subscribeApprovals, approvalSnapshot);
@@ -2566,7 +2574,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const spent = spendLine(used[p.id], dollars);
     const sharing = provider ? participants.filter((other) => planProvider(other) === provider).length : 0;
     return (
-      <div className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
+      <div ref={at ? cardBox : undefined} className={at ? "usage-card above" : "usage-card"} style={at ? { left: at.left, bottom: at.bottom } : undefined} role="group" aria-label={`Usage for ${p.display_name}`}>
         {!makesMedia(p) && <div className="usage-row">
           <span className="usage-label">Context</span>
           <span className={isLow(contextLevel(fill)) ? "usage-low" : undefined}>{fill ? contextLine(fill) : reports ? "Not reported yet. The next reply says." : "Not reported by this provider"}</span>
@@ -3016,9 +3024,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           className="chip-wrap"
           key={p.id}
           onMouseEnter={(e) => hoverCard(p.id, e.currentTarget)}
-          onMouseLeave={() => setCard((open) => (open === p.id ? null : open))}
+          onMouseLeave={() => leaveCard(p.id)}
           onFocus={(e) => hoverCard(p.id, e.currentTarget)}
-          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCard((open) => (open === p.id ? null : open)); }}
+          onBlur={(e) => { const to = e.relatedTarget as Node | null; if (!e.currentTarget.contains(to) && !cardBox.current?.contains(to)) setCard((open) => (open === p.id ? null : open)); }}
           onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
         >
             <span className={lit.has(p.id) ? "chip to" : "chip"} style={{ "--who": color(p.id) } as CSSProperties}>
@@ -3045,7 +3053,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
               </button>
               {!profileMode && <button type="button" className="chip-kick" disabled={!ready} aria-label={`Kick ${p.display_name}`} title={`Kick ${p.display_name}`} onPointerDown={(event) => event.preventDefault()} onClick={() => kick(p)}>×</button>}
             </span>
-        {card === p.id && !quickSettings && usageCard(p, cardAt)}
+        {card === p.id && !quickSettings && createPortal(usageCard(p, cardAt), document.body)}
         </span>
         );
       })}
