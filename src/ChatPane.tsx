@@ -634,6 +634,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [rosterAnchor, setRosterAnchor] = useState<{ left: number; bottom: number } | null>(null);
   /** True once the person types a name, so choosing a model stops renaming the bot. */
   const nameTouched = useRef(false);
+  /** New bots set up and waiting in the quick add batch, oldest first. */
+  const [queuedBots] = useState<Draft[]>([]);
   useEffect(() => {
     if (!quickAdd) return;
     const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".quick-add-wrap")) setQuickAdd(null); };
@@ -2374,7 +2376,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
-  const keyName = adding && takesKey(draft.preset) ? keyNameOf(draft) : "";
+  const keyName = (adding || quickAdd) && takesKey(draft.preset) ? keyNameOf(draft) : "";
   useEffect(() => {
     setKeyState(null);
     if (!keyName || backend.demo) return;
@@ -2499,9 +2501,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   useEffect(() => {
     if (!quickAdd || nameTouched.current) return;
     const tool = preset.agent?.tool ?? preset.key;
-    const name = uniqueName(nameForModel(tool, preset.label, draft.model), participants.map(mentionFor), slug);
+    const name = uniqueName(nameForModel(tool, preset.label, draft.model), [...participants.map(mentionFor), ...queuedBots.map((d) => slug(d.name))], slug);
     if (name !== draft.name) set("name", name);
-  }, [quickAdd, draft.preset, draft.model, participants]);
+  }, [quickAdd, draft.preset, draft.model, participants, queuedBots]);
 
   // Each provider balance is read on open and again shortly after a bot on it replies.
   const accounts = new Map(participants.flatMap((p) => { const a = accountOf(p); return a ? [[a.key, a] as const] : []; }));
@@ -2890,6 +2892,45 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </select>
         </label>
       </div>
+      <div className="quick-add-grid">
+        <label>Effort
+          {efforts.length > 0 ? (
+            <select name="quick-effort" value={draft.effort} onChange={(e) => set("effort", e.target.value)}>
+              <option value="">
+                {chosenApiModel?.default_effort
+                  ? `Default (${effortLabel(chosenApiModel.default_effort)})`
+                  : "Default"}
+              </option>
+              {efforts.map((level) => (
+                <option key={level} value={level}>
+                  {effortLabel(level)}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="hint">This model has no effort setting.</span>
+          )}
+        </label>
+        <label>Persona
+          <input name="quick-persona" value={draft.persona} onChange={(e) => set("persona", e.target.value)} placeholder="Optional role or tone" />
+        </label>
+      </div>
+      {preset.api && (
+        <>
+          <label>Base URL
+            <input name="quick-base-url" value={draft.baseUrl} onChange={(e) => set("baseUrl", e.target.value)} placeholder="e.g. https://api.example.com/v1" />
+          </label>
+          {preset.api.key && (
+            <label>API key
+              <input name="quick-api-key" type="password" autoComplete="off" spellCheck={false} value={draft.apiKey ?? ""} onChange={(e) => set("apiKey", e.target.value)} placeholder="Paste your API key" />
+              <span className="hint">{keyNote(keyState, keyNameOf(draft))}</span>
+            </label>
+          )}
+          <label>Key name
+            <input name="quick-key-env" value={draft.keyEnv} onChange={(e) => set("keyEnv", e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))} placeholder={keyNameOf({ ...draft, keyEnv: "" }) || "e.g. MY_PROVIDER_API_KEY"} />
+          </label>
+        </>
+      )}
       <label>Name
         <input name="quick-name" value={draft.name} onChange={(e) => { nameTouched.current = true; set("name", e.target.value); }} placeholder="e.g. Opus" />
         {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}

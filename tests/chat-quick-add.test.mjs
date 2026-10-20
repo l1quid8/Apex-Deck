@@ -30,3 +30,24 @@ test('an empty thread keeps an Add bot seat after a kick notice', () => {
   assert.equal(shows([], []), false, 'the empty state already offers the button on a fresh thread');
   assert.equal(shows([{ id: 'a' }], []), true);
 });
+
+test('quick add names a second bot after the queued ones', () => {
+  const effect = source.match(/In the quick add menu the name follows the model[\s\S]*?\}, \[([^\]]*)\]\);/);
+  assert.ok(effect, 'the name-follows-model effect exists');
+  const taken = effect[0].match(/uniqueName\([^\n]*?,\s*(\[[^\n]*?\]),\s*slug\)/)?.[1];
+  assert.ok(taken, 'uniqueName gets a taken list');
+  assert.match(taken, /queued/, 'bots waiting in the batch count as taken names');
+  assert.match(effect[1], /queued/, 'the effect re-runs when the batch changes');
+});
+
+test('the quick add menu has effort, persona and API fields', () => {
+  const menu = source.slice(source.indexOf('const quickAddMenu = ('), source.indexOf('const quickAddButton = ('));
+  for (const name of ['quick-effort', 'quick-persona', 'quick-base-url', 'quick-key-env', 'quick-api-key']) {
+    assert.match(menu, new RegExp(`name="${name}"`), `${name} field`);
+  }
+  assert.match(menu, /type="password"/, 'the API key is a password field');
+});
+
+test('the key lookup also runs for the quick add menu', () => {
+  assert.match(source, /const keyName = \(adding \|\| quickAdd\) && takesKey\(draft\.preset\)/);
+});
