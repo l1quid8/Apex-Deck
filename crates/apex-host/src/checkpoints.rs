@@ -412,7 +412,7 @@ impl Snapshots {
         let (first, second) = (self.thread_lock(first), self.thread_lock(second));
         let _first = first.lock().unwrap();
         let _second = (!Arc::ptr_eq(&first, &second)).then(|| second.lock().unwrap());
-        let mut file = self.load(source);
+        let mut file = { let list = self.list_lock(source); let _list = list.lock().unwrap(); self.load(source) };
         if let Some(upto) = upto {
             file.checkpoints.retain(|c| c.seq < upto || (c.seq == upto && !c.kind.working()));
             file.effects.retain(|e| e.seq < upto);
