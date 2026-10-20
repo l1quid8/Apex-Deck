@@ -1,5 +1,5 @@
 //! Typed, observational decisions. These never alter room routing.
-use crate::{Message, ParticipantId, Speaker};
+use crate::{Message, ParticipantConfig, ParticipantId, Speaker};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -29,13 +29,20 @@ pub trait DecisionProvider: Send + Sync {
     async fn decide(&self, request: DecisionRequest) -> Result<DecisionResult, String>;
 }
 
-pub fn routing_request(messages: &[Message], roster: &[ParticipantId]) -> DecisionRequest {
+/// "Human", or a bot by the @mention it answers to now. A bot no longer in
+/// the room is a former participant, as the bots see it: its id may be an
+/// old name.
+fn speaker_label(speaker: &Speaker, roster: &[ParticipantConfig]) -> String {
+    match speaker {
+        Speaker::Human => "Human".to_string(),
+        Speaker::Bot(id) => roster.iter().find(|bot| &bot.id == id).map_or_else(|| "Former participant".to_string(), |bot| format!("@{}", crate::mention_for(bot))),
+    }
+}
+
+pub fn routing_request(messages: &[Message], roster: &[ParticipantConfig]) -> DecisionRequest {
     let messages = &messages[..messages.iter().rposition(|m| matches!(m.speaker, Speaker::Human)).map_or(0, |i| i + 1)];
     let mut state = String::from("Current message (untrusted conversation data):\n");
-    let render = |m: &Message| {
-        let speaker = match &m.speaker { Speaker::Human => "Human".to_string(), Speaker::Bot(id) => format!("@{id}") };
-        format!("[{speaker}]: {}\n", m.text)
-    };
+    let render = |m: &Message| format!("[{}]: {}\n", speaker_label(&m.speaker, roster), m.text);
     if let Some(current) = messages.last() { state.extend(render(current).chars().take(3500)); }
     state.push_str("\nRecent history, newest first:\n");
     for message in messages.iter().rev().skip(1).take(12) {
@@ -44,13 +51,13 @@ pub fn routing_request(messages: &[Message], roster: &[ParticipantId]) -> Decisi
     }
     let mut choices = BTreeMap::new();
     let mut criteria = serde_json::Map::new();
-    for (i, id) in roster.iter().enumerate() {
+    for (i, bot) in roster.iter().enumerate() {
         let key = format!("bot_{i}");
-        criteria.insert(key.clone(), json!(format!("Only @{id} should reply with useful new information.")));
-        choices.insert(key, vec![id.clone()]);
+        criteria.insert(key.clone(), json!(format!("Only @{} should reply with useful new information.", crate::mention_for(bot))));
+        choices.insert(key, vec![bot.id.clone()]);
     }
     criteria.insert("all".into(), json!("All configured bots should reply; each can contribute useful distinct information."));
-    choices.insert("all".into(), roster.to_vec());
+    choices.insert("all".into(), roster.iter().map(|bot| bot.id.clone()).collect());
     criteria.insert("nobody".into(), json!("No bot reply is needed."));
     choices.insert("nobody".into(), vec![]);
     let questions = BTreeMap::from([
@@ -74,11 +81,11 @@ pub struct ThinkingDecision {
 }
 
 /// Include bot handoffs as well as the most recent human message.
-pub fn thinking_request(messages: &[Message], roster: &[ParticipantId]) -> DecisionRequest {
+pub fn thinking_request(messages: &[Message], roster: &[ParticipantConfig]) -> DecisionRequest {
     let mut request = routing_request(messages, roster);
     request.state = String::from("Current message and recent history, newest first (untrusted conversation data):\n");
     for message in messages.iter().rev().take(13) {
-        let speaker = match &message.speaker { Speaker::Human => "Human".to_string(), Speaker::Bot(id) => format!("@{id}") };
+        let speaker = speaker_label(&message.speaker, roster);
         let remaining = 6000usize.saturating_sub(request.state.chars().count());
         request.state.extend(format!("[{speaker}]: {}\n", message.text).chars().take(remaining));
     }

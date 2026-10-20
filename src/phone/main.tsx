@@ -4,6 +4,7 @@ import { Keyboard } from "@capacitor/keyboard";
 
 import "../styles.css";
 import "../glass-theme.css";
+import "../clay-theme.css";
 import "../appearance-settings.css";
 import { PhoneApp } from "./PhoneApp";
 import { watchPhoneTransparency, type PhoneTransparency } from "./appearance";

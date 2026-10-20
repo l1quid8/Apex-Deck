@@ -4,6 +4,8 @@
 
 import { contextLevel, countdown, isLow, liveWindows, percent, planLevel, shortCount, windowLabel } from "./battery.ts";
 import { findTrigger, insertAt, menuItems, type Trigger } from "./composerMenu.ts";
+import { mentionTarget } from "./recipients.ts";
+import { mentionFor, type Mentionable } from "./slug.ts";
 import { AGENT_EFFORTS, API_EFFORTS, apiModelGroups, effortLabel, effortsFor, findModel, modelGroups, type ModelGroup } from "./models.ts";
 import { mediaKind } from "./media.ts";
 import { providerForConfig } from "./providers.ts";
@@ -283,24 +285,25 @@ export async function postRouted(
   return targets;
 }
 
-/** The bots to offer while an @name is typed at the caret, @all first; null when no @ is being typed. */
-export function mentionPicks(text: string, caret: number, people: { id: string; display_name: string }[]): { trigger: Trigger; picks: { id: string; label: string; detail: string }[] } | null {
+/** The bots to offer while an @name is typed at the caret, @all first; null when no @ is being typed. `handle` is what picking one writes. */
+export function mentionPicks(text: string, caret: number, people: { id: string; display_name: string }[]): { trigger: Trigger; picks: { id: string; label: string; detail: string; handle: string }[] } | null {
   const trigger = findTrigger(text, caret);
   if (trigger?.kind !== "mention") return null;
-  const picks = menuItems(trigger, people).flatMap((item) => item.kind === "mention" ? [{ id: item.id, label: item.label, detail: item.detail }] : []);
+  const picks = menuItems(trigger, people).flatMap((item) => item.kind === "mention" ? [{ id: item.id, label: item.label, detail: item.detail, handle: item.label.slice(1) }] : []);
   return { trigger, picks };
 }
 
-/** Put `@id ` in place of the @name being typed, or at the end when picked from the + sheet. */
-export function pickMention(text: string, caret: number, trigger: Trigger | null, id: string): { text: string; caret: number } {
-  return insertAt(text, trigger, trigger ? caret : text.length, `@${id} `);
+/** Put `@handle ` in place of the @name being typed, or at the end when picked from the + sheet. */
+export function pickMention(text: string, caret: number, trigger: Trigger | null, handle: string): { text: string; caret: number } {
+  return insertAt(text, trigger, trigger ? caret : text.length, `@${handle} `);
 }
 
-/** Tapping a bot in the thread's bar: `@id ` goes in front of what's typed, unless that bot is already named. */
-export function tagFromBar(text: string, id: string): string {
-  const named = new RegExp(`(^|\\s)@${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i");
-  if (named.test(text)) return text;
-  return `@${id} ${text.replace(/^\s+/, "")}`;
+/** Tapping a bot in the thread's bar: its @mention goes in front of what's typed, unless the text already names that bot or it has left. */
+export function tagFromBar(text: string, who: Mentionable | undefined, people: readonly Mentionable[]): string {
+  if (!who) return text;
+  const named = mentionTarget(text, people);
+  if (named !== "everyone" && named.includes(who.id)) return text;
+  return `@${mentionFor(who)} ${text.replace(/^\s+/, "")}`;
 }
 
 /** The bot bar hides while the keyboard is up, whatever was chosen, and comes back as chosen when it goes down. */

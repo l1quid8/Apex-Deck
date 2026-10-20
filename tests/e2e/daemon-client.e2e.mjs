@@ -196,3 +196,47 @@ test('phone roster edits reach an already open desktop room', { timeout: 30_000 
   const state = await desktop.call('room_state', { id: 'roster' });
   assert.deepEqual(state.snapshot.participants, []);
 });
+
+test('a renamed bot answers to its new name only, and a clashing or letterless name is refused', { timeout: 30_000 }, async t => {
+  const data = fs.mkdtempSync('/tmp/ade-rename-');
+  const daemon = await serve(data);
+  const client = new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
+  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
+  await client.start();
+  const replies = [];
+  client.on('room-event', p => { const m = added(p); if (p.room === 'rename' && m?.speaker.kind === 'bot') replies.push(m.text); });
+  // The bot replies with the first line of what it is given: who it is told it is.
+  const jigga = { ...shell('jigga', 'head -n 1'), display_name: 'Jigga' };
+  const nul = { ...shell('null', 'echo ok'), display_name: 'Null' };
+  // Null first: a message naming nobody goes to the first bot, so only a real match reaches Atlas.
+  await client.call('room_create', { id: 'rename', participants: [nul, jigga], options, cwd: null });
+  const atlas = await client.call('room_update_participant', { id: 'rename', base: jigga, participant: { ...jigga, display_name: 'Atlas' } });
+  assert.equal(atlas.id, 'jigga', 'the id it is saved under never changes');
+  assert.deepEqual(await client.call('room_targets', { id: 'rename', text: '@atlas who are you?' }), ['jigga']);
+  assert.deepEqual(await client.call('room_targets', { id: 'rename', text: '@jigga still there?' }), ['null'], 'its old name is gone, so the message names nobody');
+  await client.call('room_post', { id: 'rename', text: '@atlas who are you?' });
+  assert.match(replies.at(-1), /^You are Atlas \(@atlas\)/, 'its instructions use the new name');
+  await assert.rejects(client.call('room_add_participant', { id: 'rename', participant: { ...shell('atlas', 'echo hi'), display_name: 'Atlas' } }), /Atlas in this chat already answers to @atlas/);
+  await assert.rejects(client.call('room_update_participant', { id: 'rename', base: atlas, participant: { ...atlas, display_name: 'null' } }), /Null in this chat already answers to @null/);
+  await assert.rejects(client.call('room_update_participant', { id: 'rename', base: atlas, participant: { ...atlas, display_name: '-_-' } }), /A name needs a letter or a number/);
+  await client.call('room_add_participant', { id: 'rename', participant: { ...shell('jigga-2', 'echo hi'), display_name: 'Jigga' } });
+  assert.deepEqual(await client.call('room_targets', { id: 'rename', text: '@jigga hi' }), ['jigga-2'], 'a bot called that now gets it');
+});
+
+test('a bot can be renamed while it is replying', { timeout: 30_000 }, async t => {
+  const data = fs.mkdtempSync('/tmp/ade-rename-busy-');
+  const daemon = await serve(data);
+  const client = new DaemonClient(() => socketLink(path.join(data, 'daemon.sock')));
+  t.after(async () => { client.close(); await daemon.stop(); fs.rmSync(data, { recursive: true, force: true }); });
+  await client.start();
+  const started = [];
+  client.on('room-event', p => { if (p.room === 'busy' && p.event.type === 'turn_started') started.push(p.event.id); });
+  const slow = { ...shell('slow', 'sleep 1; echo done'), display_name: 'Slow' };
+  await client.call('room_create', { id: 'busy', participants: [slow], options, cwd: null });
+  const posted = client.call('room_post', { id: 'busy', text: '@slow go' });
+  await until('slow to start', () => started.includes('slow'));
+  const renamed = await client.call('room_update_participant', { id: 'busy', base: slow, participant: { ...slow, display_name: 'Turtle' } });
+  assert.equal(renamed.display_name, 'Turtle');
+  await posted;
+  assert.deepEqual(await client.call('room_targets', { id: 'busy', text: '@turtle next' }), ['slow']);
+});

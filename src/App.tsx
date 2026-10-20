@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { getBackend, type Backend, type HostEntry } from "./backend";
 import { connection, statusWords } from "./connection";
 import { SettingsPage, type SettingsSection } from "./lazyViews";
-import { DEFAULT_LANDING_TEXTURE, DEFAULT_SETTINGS, readSettings, type AppSettings } from "./settings";
+import { DEFAULT_LANDING_TEXTURE, DEFAULT_SETTINGS, effectiveLandingTexture, readSettings, type AppSettings } from "./settings";
 import { DEFAULT_APPEARANCE } from "./themes";
 import { useAppearance } from "./useAppearance";
 import { providerEnabled } from "./providers";
@@ -21,6 +21,7 @@ import { startHub } from "./hub";
 import { loadStartupState } from "./startupState.ts";
 import { SectionNavigation, type AttentionItem, type SectionFlag } from "./SectionNavigation";
 import { AgentsSection } from "./AgentsSection";
+import { addRenames, renamedAgents, renameNotes, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { ApexAgentSources } from "./ApexAgentSources";
 import { ApexAgentTasks } from "./lazyViews";
 import { overviewProject, overviewOwner, overviewOwnerKey, visibleOverviewEntries, loadOverviewEntries, overviewRouting, handoffBatch, loadHandoffBatches, saveHandoffBatches, visibleHandoffChildren, type HandoffAssignment, type OverviewEntry } from "./apexAgentOverview.ts";
@@ -335,6 +336,21 @@ export function App() {
     setToasts((all) => [...all.slice(-2), { id, text, undo }]);
     setTimeout(() => setToasts((all) => all.filter((t) => t.id !== id)), undo ? UNDO_MS : TOAST_MS);
   }, []);
+  /** Agents renamed in the Agents tab, for every thread to rename its copy of. */
+  const [copyRenames, setCopyRenames] = useState<CopyRename[]>([]);
+  const renameSeq = useRef(0);
+  const renameNote = useRef<ReturnType<typeof renameNotes> | null>(null);
+  renameNote.current ??= renameNotes(toast);
+  const onCopyRenamed = useCallback((seq: number, outcome: CopyOutcome) => renameNote.current?.heard(seq, outcome), []);
+  /** The Agents tab saved. Renaming an agent there renames its copies in chats too. */
+  const saveAgents = (next: ParticipantConfig[]) => {
+    const renamed = renamedAgents(profiles, next).map((rename) => ({ ...rename, seq: ++renameSeq.current }));
+    setProfiles(next);
+    if (renamed.length === 0) return;
+    for (const rename of renamed) renameNote.current?.started(rename);
+    // Every rename, in order, so a chat that was offline through a swap replays it step by step.
+    setCopyRenames((list) => addRenames(list, renamed));
+  };
   /** Saved machines, for the sidebar's server names and Copy folder path. */
   const [hostList, setHostList] = useState<HostEntry[]>([]);
   /** Edit connection… (or Add a server), while open. */
@@ -353,6 +369,8 @@ export function App() {
   const [railRename, setRailRename] = useState<Record<string, number>>({});
   /** Bumped to start a terminal again from its ⋯ menu. */
   const [startRequests, setStartRequests] = useState<Record<string, number>>({});
+  /** Text to type, not run, into a terminal the first time it starts: a code block's Open in terminal. */
+  const [typeIns, setTypeIns] = useState<Record<string, string>>({});
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared once the thread takes it. */
   const [threadRequests, setThreadRequests] = useState<Record<string, { id: string; action: ThreadMenuRequest } | undefined>>({});
   const menuSeq = useRef(0);
@@ -816,6 +834,13 @@ export function App() {
     setSection(paneSection(pane));
     setMaximized(null);
     setPicking(false);
+    return pane.id;
+  };
+
+  /** A code block's Open in terminal: a new shell in the thread's project, the command typed in and not run. */
+  const openTerminalWith = (workspaceId: string, command: string) => {
+    const id = addPane("terminal", "Terminal", undefined, workspaceId);
+    if (id) setTypeIns((all) => ({ ...all, [id]: command }));
   };
 
   /** The sidebar's New thread (or terminal) in a project. */
@@ -2381,7 +2406,7 @@ export function App() {
         )}
 
         <main ref={canvasRef} className={`canvas section-${section}`} inert={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined} aria-hidden={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined}>
-          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={setProfiles} addRequest={newAgentRequest} />}
+          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
           {(section === "code" || section === "threads") && !current && (
@@ -2459,7 +2484,7 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {!paneBackend ? <div role="alert">{destinationError}</div> : <HostPane backend={paneBackend} agents={agents}>{hostAgents => pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={paneBackend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, hostAgents)} toolLabel={toolName(pane.agent, hostAgents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onRenamePane={renamePane} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={paneBackend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} typeIn={typeIns[pane.id]} installed={toolInstalled(pane.agent, hostAgents)} toolLabel={toolName(pane.agent, hostAgents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onRenamePane={renamePane} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
                     ) : pane.kind === "preview" ? (
                       <PreviewPane
                         pane={pane}
@@ -2477,7 +2502,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={setProfiles} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>

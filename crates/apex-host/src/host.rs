@@ -882,6 +882,9 @@ impl Host {
         let room = self.room(&id)?;
         let mut room = room.lock().await;
         self.require_idle(&id)?;
+        if let Some(why) = apex_core::mention_clash(&participant, &room.configs()) {
+            return Err(why);
+        }
         if room.add_participant(apex_adapters::build(participant, &context)) {
             self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
             self.persist_and_emit(&id, &handle, RoomEvent::ParticipantsChanged { participants: room.configs() })
@@ -911,11 +914,16 @@ impl Host {
             if base.id != name { return Err("settings base belongs to another participant".into()); }
             merge_participant(&current, &base, &participant)?
         } else { participant };
+        // Only a new name is checked, so a chat that already has two bots
+        // answering to one name can still save their other settings.
+        if next.display_name != current.display_name {
+            if let Some(why) = apex_core::mention_clash(&next, &room.configs()) { return Err(why); }
+        }
         self.ensure_task_read_access(&id, &next)?;
         let replacement = apex_adapters::build(next.clone(), &context);
         if handle.runtime.busy() {
             if !room.replace_turn_settings(replacement) {
-                return Err("Only model, reasoning and speed can change while models are replying".into());
+                return Err("Only the name, model, reasoning and speed can change while models are replying".into());
             }
         } else { room.replace_participant(replacement); }
         self.tool_servers.lock().unwrap().remove(&format!("{id}:{name}"));
@@ -1303,6 +1311,14 @@ impl Host {
         preview::probe(preview::client(), &address).await
     }
 
+    /// Drop `id`'s Retry/Revert snapshots. That waits for any snapshot the
+    /// thread is still taking, which can run for minutes in a large folder, so
+    /// it never holds `room_lifecycle` or a daemon worker meanwhile.
+    fn forget_snapshots(&self, id: &str) {
+        let (snapshots, thread) = (Arc::clone(&self.snapshots), id.to_string());
+        std::thread::spawn(move || snapshots.delete(&thread));
+    }
+
     pub fn room_delete(&self, id: String) -> Result<(), String> {
         let _lifecycle = self.room_lifecycle.lock().unwrap();
         let handle = self.handle(&id).ok();
@@ -1310,7 +1326,7 @@ impl Host {
             if handle.as_ref().is_some_and(|h|h.busy()) { return Err("Stop this task and wait for its worker cleanup before deleting its chat.".into()); }
             self.assistant_tasks.tombstone_execution(&id).map_err(|e|e.to_string())?;
         }
-        self.snapshots.delete(&id);
+        self.forget_snapshots(&id);
         if let Some(handle) = &handle { handle.runtime.stop(None); handle.stop.store(true, Ordering::SeqCst); handle.approvals.reject_all(); }
         self.rooms.lock().unwrap().remove(&id);
         if let Ok(name) = export::safe_file_name(&id) {
@@ -1591,7 +1607,7 @@ impl Host {
             handle.approvals.reject_all();
         }
         // Its checkpoints are of the old folder.
-        self.snapshots.delete(&id);
+        self.forget_snapshots(&id);
         Ok(())
     }
 
@@ -2176,6 +2192,27 @@ mod host_tests {
     }
 
     #[test]
+    fn deleting_a_thread_mid_snapshot_does_not_stall_opening_others() {
+        let (host, _runtime, data) = host("delete-mid-snapshot");
+        let folder = data.join("work");
+        std::fs::create_dir_all(&folder).unwrap();
+        host.room_create("a".into(), vec![], RoomOptions::default(), Some(folder.to_string_lossy().into_owned())).unwrap();
+        // "a" is partway through a snapshot that takes minutes, as in a folder with gigabytes of build output.
+        let snapshot = host.snapshots.hold_for_test("a");
+        let taking = snapshot.lock().unwrap();
+        let deleting = { let host = Arc::clone(&host); std::thread::spawn(move || host.room_delete("a".into())) };
+        // Let the delete get underway before the app opens another thread.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (done, opened) = std::sync::mpsc::channel();
+        { let host = Arc::clone(&host); std::thread::spawn(move || { let _ = done.send(host.room_create("b".into(), vec![], RoomOptions::default(), None).map(|_| ())); }); }
+        let opened = opened.recv_timeout(std::time::Duration::from_secs(10));
+        drop(taking);
+        assert!(opened.expect("opening a thread waited for another thread's snapshot").is_ok());
+        deleting.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
     fn interactive_answers_are_always_on_for_open_and_new_threads() {
         let (host, _runtime, data) = host("answers");
         host.room_create("before".into(), vec![], RoomOptions::default(), None).unwrap();
@@ -2254,6 +2291,75 @@ mod host_tests {
         assert_eq!(rosters[0]["payload"]["event"]["participants"][0]["id"], "null");
         assert_eq!(rosters[1]["payload"]["event"]["participants"], serde_json::json!([]));
         drop(events);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    fn named_bot(id: &str, name: &str) -> ParticipantConfig {
+        serde_json::from_value(serde_json::json!({"id":id,"display_name":name,"backend":{"kind":"scripted","lines":["[pass]"]}})).unwrap()
+    }
+
+    #[test]
+    fn a_name_another_bot_in_the_chat_answers_to_is_refused() {
+        let (host, runtime, data) = host("mention-clash");
+        host.room_create("r".into(), vec![named_bot("jigga", "Atlas"), named_bot("null", "Null")], RoomOptions::default(), None).unwrap();
+        let added = runtime.block_on(host.room_add_participant("r".into(), named_bot("atlas", "ATLAS")));
+        assert_eq!(added.unwrap_err(), "Atlas in this chat already answers to @atlas. Pick a different name.");
+        let everyone = runtime.block_on(host.room_add_participant("r".into(), named_bot("all", "All")));
+        assert_eq!(everyone.unwrap_err(), "@all already means everyone in the chat. Pick a different name.");
+        let renamed = runtime.block_on(host.room_update_participant("r".into(), named_bot("null", "Atlas")));
+        assert_eq!(renamed.unwrap_err(), "Atlas in this chat already answers to @atlas. Pick a different name.");
+        let names: Vec<_> = host.store.room("r").unwrap().unwrap().snapshot.participants.into_iter().map(|p| p.display_name).collect();
+        assert_eq!(names, ["Atlas", "Null"], "nothing was added or renamed");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_renamed_bot_answers_to_its_new_name_only() {
+        let (host, runtime, data) = host("mention-rename");
+        // Null first: a message naming nobody goes to the first bot, so only a real match reaches Atlas.
+        host.room_create("r".into(), vec![named_bot("null", "Null"), named_bot("jigga", "Jigga")], RoomOptions::default(), None).unwrap();
+        runtime.block_on(host.room_update_participant("r".into(), named_bot("jigga", "Atlas"))).unwrap();
+        let targets = |text: &str| runtime.block_on(host.room_targets("r".into(), text.into())).unwrap();
+        assert_eq!(targets("@atlas look"), vec![ParticipantId::new("jigga")]);
+        assert_eq!(targets("@jigga look"), vec![ParticipantId::new("null")], "its old name is gone, so the message names nobody");
+        // A new bot may now be called Jigga.
+        runtime.block_on(host.room_add_participant("r".into(), named_bot("jigga-2", "Jigga"))).unwrap();
+        assert_eq!(targets("@jigga look"), vec![ParticipantId::new("jigga-2")]);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_name_with_no_letter_or_number_is_refused() {
+        let (host, runtime, data) = host("mention-letterless");
+        host.room_create("r".into(), vec![named_bot("jigga", "Jigga")], RoomOptions::default(), None).unwrap();
+        let why = "A name needs a letter or a number. Pick a different name.";
+        // It would fall back on the id, which is the bot's first name.
+        assert_eq!(runtime.block_on(host.room_update_participant("r".into(), named_bot("jigga", "🤖"))).unwrap_err(), why);
+        assert_eq!(runtime.block_on(host.room_add_participant("r".into(), named_bot("robot", "🤖"))).unwrap_err(), why);
+        let names: Vec<_> = host.store.room("r").unwrap().unwrap().snapshot.participants.into_iter().map(|p| p.display_name).collect();
+        assert_eq!(names, ["Jigga"], "nothing was added or renamed");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_bot_saved_with_a_letterless_name_can_still_save_other_settings() {
+        let (host, runtime, data) = host("mention-old-letterless");
+        host.room_create("r".into(), vec![named_bot("robot", "🤖")], RoomOptions::default(), None).unwrap();
+        let mut persona = named_bot("robot", "🤖");
+        persona.persona = "Be brief.".into();
+        runtime.block_on(host.room_update_participant("r".into(), persona)).unwrap();
+        assert_eq!(host.store.room("r").unwrap().unwrap().snapshot.participants[0].persona, "Be brief.");
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_chat_that_already_has_two_bots_answering_to_one_name_can_still_save_other_settings() {
+        let (host, runtime, data) = host("mention-old-clash");
+        host.room_create("r".into(), vec![named_bot("jigga", "Atlas"), named_bot("atlas", "Atlas")], RoomOptions::default(), None).unwrap();
+        let mut persona = named_bot("atlas", "Atlas");
+        persona.persona = "Be brief.".into();
+        runtime.block_on(host.room_update_participant("r".into(), persona)).unwrap();
+        assert_eq!(host.store.room("r").unwrap().unwrap().snapshot.participants[1].persona, "Be brief.");
         let _ = std::fs::remove_dir_all(data);
     }
 

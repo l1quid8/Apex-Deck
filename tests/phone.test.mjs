@@ -194,12 +194,27 @@ test('typing @ offers the bots in the thread, and picking one fills in its @name
 });
 
 test('tapping a bot in the bar tags it in front of the draft, once', () => {
-  assert.equal(tagFromBar('', 'jigga'), '@jigga ');
-  assert.equal(tagFromBar('  fix the typo', 'jigga'), '@jigga fix the typo');
-  assert.equal(tagFromBar('@jigga fix it', 'jigga'), '@jigga fix it');
-  assert.equal(tagFromBar('ask @Jigga too', 'jigga'), 'ask @Jigga too');
+  const jigga = { id: 'jigga', display_name: 'Jigga' };
+  const people = [jigga, { id: 'null', display_name: 'Null' }];
+  assert.equal(tagFromBar('', jigga, people), '@jigga ');
+  assert.equal(tagFromBar('  fix the typo', jigga, people), '@jigga fix the typo');
+  assert.equal(tagFromBar('@jigga fix it', jigga, people), '@jigga fix it');
+  assert.equal(tagFromBar('ask @Jigga too', jigga, people), 'ask @Jigga too');
   // @jiggabot is someone else, so Jigga still gets tagged.
-  assert.equal(tagFromBar('@jiggabot hi', 'jigga'), '@jigga @jiggabot hi');
+  assert.equal(tagFromBar('@jiggabot hi', jigga, people), '@jigga @jiggabot hi');
+});
+
+test('a renamed bot is picked and tagged by its new name', () => {
+  const atlas = { id: 'jigga', display_name: 'Atlas' };
+  const people = [atlas, { id: 'null', display_name: 'Null' }];
+  const typed = mentionPicks('ask @at', 7, people);
+  assert.deepEqual(typed.picks.map((pick) => [pick.id, pick.handle]), [['jigga', 'atlas']]);
+  assert.deepEqual(pickMention('ask @at', 7, typed.trigger, typed.picks[0].handle), { text: 'ask @atlas ', caret: 11 });
+  assert.equal(tagFromBar('', atlas, people), '@atlas ');
+  assert.equal(tagFromBar('@atlas fix it', atlas, people), '@atlas fix it');
+  assert.equal(tagFromBar('@jigga fix it', atlas, people), '@atlas @jigga fix it', 'its old name no longer names it');
+  assert.deepEqual(mentionPicks('ask @jig', 8, people).picks, [], 'and finds nothing in the @ list');
+  assert.equal(tagFromBar('fix it', undefined, people), 'fix it', 'a bot no longer here adds no tag');
 });
 
 test('the bot bar hides while the keyboard is up and comes back as it was chosen', () => {

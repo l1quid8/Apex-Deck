@@ -85,7 +85,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
           <h2>{section === "threads" ? "Defaults for new threads" : SECTIONS[index].label}</h2>
           {LEADS[section] && <p>{LEADS[section]}</p>}
         </header>
-        {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} />}
+        {section === "general" && <General backend={backend} themeName={appearance.current.name} onAppearance={() => onSection("appearance")} settings={settings} onChange={onChange} />}
         {section === "appearance" && <AppearanceSettings value={appearance} onChange={(appearance) => onChange({ ...settings, appearance })} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onLandingTexture={(landingTexture) => onChange({ ...settings, landingTexture })} />}
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
         {section === "remote" && backend.remoteAccess && <RemoteAccessSettings backend={backend} remote={backend.remoteAccess} />}
@@ -127,7 +127,7 @@ function Stepper({ value, min, max, unit, label, onChange }: { value: number; mi
   </span>;
 }
 
-function General({ backend, themeName, onAppearance }: { backend: Backend; themeName: string; onAppearance: () => void }) {
+function General({ backend, themeName, onAppearance, settings, onChange }: { backend: Backend; themeName: string; onAppearance: () => void; settings: AppSettings; onChange: (s: AppSettings) => void }) {
   const [folder, setFolder] = useState("");
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
@@ -136,6 +136,11 @@ function General({ backend, themeName, onAppearance }: { backend: Backend; theme
     <Row label="Theme" note={themeName}><button onClick={onAppearance}>Appearance…</button></Row>
     <Row label="Saved in" note={<span className="mono">{folder || "…"}</span>}>
       {!backend.demo && <button disabled={!folder} onClick={() => backend.openTarget(folder, null, false).catch(() => {})}>Show in Finder</button>}
+    </Row>
+    <Row label="Run buttons on code blocks" note={backend.demo
+      ? "Shell blocks in a bot's reply get a Run button. Running needs the desktop app, so nothing runs in this browser preview."
+      : "Shell blocks in a bot's reply get a Run button. Clicking it runs the block in the thread's folder on the thread's host."}>
+      <input type="checkbox" aria-label="Run buttons on code blocks" checked={settings.codeRunButtons} onChange={(e) => onChange({ ...settings, codeRunButtons: e.target.checked })} />
     </Row>
     <Row label="New artifacts" note="When a bot writes a file the artifacts pane can show.">
       <select aria-label="New artifacts" value={autoOpen ? "open" : "notify"} onChange={(e) => { const on = e.target.value === "open"; setArtifactAutoOpen(on); setAutoOpen(on); }}>

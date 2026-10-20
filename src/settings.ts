@@ -5,7 +5,7 @@
 
 import type { Access, ParticipantConfig, RoomOptions, TurnPolicy } from "./types";
 import type { ChipParts } from "./botChip";
-import { readAppearance, type AppearanceSettings } from "./themes.ts";
+import { accentHex, readAppearance, themeMode, type AppearanceSettings, type AppearanceValues } from "./themes.ts";
 
 export interface DecisionSettings { enabled: boolean; provider: "jev" | "openrouter" | "cloudflare"; accountId: string; }
 export const DEFAULT_DECISION: DecisionSettings = { enabled: false, provider: "jev", accountId: "" };
@@ -38,6 +38,19 @@ export function readLandingTexture(raw: unknown): LandingTextureSettings {
   };
 }
 
+/**
+ * What the empty-thread field actually draws. Under Clay, a one-color field
+ * still on the mint default follows the skin accent instead; any color the
+ * user picked (or rainbow mode, or another theme) is left alone. The saved
+ * settings are never rewritten, so leaving Clay restores the mint.
+ */
+export function effectiveLandingTexture(landing: LandingTextureSettings, appearance: AppearanceValues): LandingTextureSettings {
+  if (themeMode(appearance) === "clay" && landing.mode === "single" && landing.color.toLowerCase() === DEFAULT_LANDING_TEXTURE.color) {
+    return { ...landing, color: accentHex(appearance) };
+  }
+  return landing;
+}
+
 export interface AppSettings {
   decision?: DecisionSettings;
   /** Saved only after a user changes Appearance; older settings files omit it. */
@@ -56,6 +69,8 @@ export interface AppSettings {
   preview: { openExternally: string[] };
   /** Ask before a steer interrupts a bot mid-turn. A thread can override it. */
   confirmSteer: boolean;
+  /** Show a Run button on shell code blocks in a bot's reply. */
+  codeRunButtons: boolean;
   /** What the bot chips under the message box show. */
   botChips: ChipParts;
 }
@@ -72,6 +87,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminal: { fontSize: 13, scrollback: 5000 },
   preview: { openExternally: [] },
   confirmSteer: true,
+  codeRunButtons: true,
   botChips: { tool: true, effort: true, usage: true },
 };
 
@@ -115,6 +131,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       openExternally: [...new Set((strings(record(saved.preview).openExternally) ?? []).map((host) => host.trim().toLowerCase()).filter(Boolean))],
     },
     confirmSteer: typeof saved.confirmSteer === "boolean" ? saved.confirmSteer : d.confirmSteer,
+    codeRunButtons: typeof saved.codeRunButtons === "boolean" ? saved.codeRunButtons : d.codeRunButtons,
     botChips: {
       tool: typeof chips.tool === "boolean" ? chips.tool : d.botChips.tool,
       effort: typeof chips.effort === "boolean" ? chips.effort : d.botChips.effort,

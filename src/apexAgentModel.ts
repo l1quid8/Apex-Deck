@@ -1,5 +1,7 @@
 import type { ParticipantConfig } from './types';
 import { assistantProfileChoices } from './assistantTaskModel.ts';
+import { mentionSpans, mentionedWords } from './recipients.ts';
+import { mentionFor, slug } from './slug.ts';
 
 export interface MonitorEvidence {
   sourceId: string;
@@ -99,6 +101,52 @@ export function mergeProjectConversations(monitors: ProjectMonitor[], names: Rec
   return monitors
     .flatMap((monitor) => monitor.messages.map((message) => ({ workspaceId: monitor.workspaceId, project: names[monitor.workspaceId] ?? 'Project', message })))
     .sort((a, b) => a.message.at - b.message.at || a.workspaceId.localeCompare(b.workspaceId));
+}
+
+/**
+ * What each project answers to after @, by id: its name as a mention, or its
+ * id when another project's name gives the same mention or the name means
+ * everyone, so the @ list never offers one handle for two projects.
+ */
+export function laneMentions(projects: readonly { id: string; name: string }[]): Map<string, string> {
+  const fromName = projects.map((project) => mentionFor({ id: project.id, display_name: project.name }));
+  return new Map(projects.map((project, i) => {
+    const shared = fromName.filter((mention) => mention === fromName[i]).length > 1;
+    return [project.id, shared || fromName[i] === 'all' || fromName[i] === 'everyone' ? slug(project.id) : fromName[i]];
+  }));
+}
+
+/** The project an @word names: the one laneMentions says answers to it, else the one with that id. */
+function laneNamed(word: string, projects: readonly { id: string; name: string }[], mentions: Map<string, string>) {
+  return projects.find((p) => mentions.get(p.id) === word) ?? projects.find((p) => slug(p.id) === word);
+}
+
+/** The project `text` @mentions first: by what laneMentions says it answers to, or by its id. Null when it names none. */
+export function mentionedLane(text: string, projects: readonly { id: string; name: string }[]): string | null {
+  const mentions = laneMentions(projects);
+  for (const word of mentionedWords(text)) {
+    const project = laneNamed(word, projects, mentions);
+    if (project) return project.id;
+  }
+  return null;
+}
+
+/**
+ * `text` with each project @mention blanked out, for the checks that read
+ * plain words: "@all-hands" names All Hands only, never projects called "All"
+ * and "Hands", and "@overall" is not the word "overall". An @word that names
+ * no project stays.
+ */
+export function withoutLaneMentions(text: string, projects: readonly { id: string; name: string }[]): string {
+  const mentions = laneMentions(projects);
+  return mentionSpans(text).reduceRight((rest, span) => laneNamed(span.word, projects, mentions) ? `${rest.slice(0, span.start)} ${rest.slice(span.end)}` : rest, text);
+}
+
+/** Whether the text means every project: a whole `@all`, never the start of a
+ *  project handle. A project called "All Hands" answers to `@all-hands`, and
+ *  naming it must not send to every project instead. */
+export function mentionsAll(text: string): boolean {
+  return mentionedWords(text).includes('all');
 }
 
 /** A reply goes to the project it names as a whole word ("UI" never matches "Build"); otherwise it continues the last project talked about. */

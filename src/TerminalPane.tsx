@@ -30,6 +30,8 @@ interface Props {
   attachPtyId?: string;
   /** Start and Start again in attach mode: the owner runs them, which owns the run. */
   onRestartRequest?: (paneId: string) => void;
+  /** Typed in, not run, once the first shell has started: a code block's Open in terminal. */
+  typeIn?: string;
   onActivity: (paneId: string) => void;
   /** Told each time the program starts or ends. */
   onRun: (paneId: string, run: TerminalRun) => void;
@@ -59,6 +61,9 @@ function screenText(term: Terminal): string {
   return lines.join("\n");
 }
 
+/** Time for the shell to draw its prompt before the command is pasted in. */
+const TYPE_IN_DELAY_MS = 400;
+
 const THEME = {
   background: "#0b1016",
   foreground: "#d5dde6",
@@ -68,7 +73,7 @@ const THEME = {
   brightBlack: "#5b6875",
 };
 
-export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, attachPtyId, onRestartRequest, onActivity, onRun, onTitle, onRenamePane, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
+export function TerminalPane({ pane, cwd, backend, focused, startOnMount, installed, toolLabel, startRequest, attachPtyId, onRestartRequest, typeIn, onActivity, onRun, onTitle, onRenamePane, onSignal, onClose, onRunStart, onServer, fontSize = 13, scrollback = 5000 }: Props) {
   const connection = useHostConnection(backend);
   const available = installed && hostCanMutate(connection.status);
   /** Fit the terminal to its pane and tell the program its new size. Set up with the terminal below. */
@@ -85,6 +90,8 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
   const lastPaneTitle = useRef(pane.title);
   /** Starts the program, or starts it again once it has ended. Set up with the terminal below. */
   const start = useRef<() => void>(() => {});
+  /** `typeIn`, until the first shell has it. */
+  const typeInLeft = useRef(typeIn);
 
   useEffect(() => {
     const element = host.current;
@@ -211,6 +218,12 @@ export function TerminalPane({ pane, cwd, backend, focused, startOnMount, instal
       if (hasSize()) fit.fit();
       backend
         .ptySpawn({ id, agent: pane.agent, cwd: latest.current.cwd || undefined, name: latest.current.title, cols: term.cols, rows: term.rows })
+        .then(() => {
+          // Pasted, not typed: bracketed paste keeps a newline in it from running anything.
+          const text = typeInLeft.current;
+          typeInLeft.current = undefined;
+          if (text) setTimeout(() => backend.ptyWrite(id, `\x1b[200~${text}\x1b[201~`).catch(() => {}), TYPE_IN_DELAY_MS);
+        })
         .catch((error) => {
           term.write(`\x1b[31mCould not start: ${String(error)}\x1b[0m\r\n`);
           report(exited(current, next.generation, null, Date.now()));

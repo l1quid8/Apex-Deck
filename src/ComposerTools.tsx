@@ -1,10 +1,10 @@
 import type { ToolServer } from "./types";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { availableMenuItems, boxKeyGoesToMenu, clickCloses, menuItems, type MenuItem, type Trigger } from "./composerMenu";
+import { availableMenuItems, boxKeyGoesToMenu, clickCloses, menuItems, type MenuItem, type MenuPerson, type Trigger } from "./composerMenu";
 
 export type ComposerMenuHandle = { key: (event: React.KeyboardEvent) => boolean };
 export const ComposerMenu = forwardRef<ComposerMenuHandle, {
-  participants: { id: string; display_name: string }[];
+  participants: readonly MenuPerson[];
   servers: (ToolServer & {agent: string})[];
   serverStatus?: string;
   /** Commands the running mods registered. */

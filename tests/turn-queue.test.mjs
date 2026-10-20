@@ -51,14 +51,23 @@ test('participant queues let idle Jigga start while Null works', async () => {
   assert.deepEqual(sent.map(x=>x.text), ['@null first', '@jigga plan', '@null later']);
 });
 
+test("a tag by a renamed bot's new name counts as a tag", async () => {
+  const { queuedSticky } = await import('../src/turnQueue.ts');
+  const people = [{ id: 'null', display_name: 'Null' }, { id: 'jigga', display_name: 'Atlas' }];
+  const queued = [{ id: 1, text: '@null look', kind: 'message', to: ['null'] }];
+  assert.equal(queuedSticky('@atlas and this', people, 'mention', queued), null);
+  assert.deepEqual(queuedSticky('and this', people, 'mention', queued), ['null']);
+});
+
 test('an untagged message behind a queued tag follows that tag, as the desktop routes it', async () => {
   const { ParticipantQueues, queuedSticky } = await import('../src/turnQueue.ts');
-  const ids = ['null', 'jigga'];
+  const people = [{ id: 'null', display_name: 'Null' }, { id: 'jigga', display_name: 'Jigga' }];
+  const ids = people.map((p) => p.id);
   // The thread still remembers "@everyone": it hasn't heard the queued "@null" yet.
   const thread = async text => text.includes('@null') ? ['null'] : text.includes('@jigga') ? ['jigga'] : ids;
   const sent = [];
   let q;
-  q = new ParticipantQueues(async text => queuedSticky(text, ids, 'mention', q.items) ?? thread(text), async (text, to) => sent.push({text,to}), async () => {}, () => {});
+  q = new ParticipantQueues(async text => queuedSticky(text, people, 'mention', q.items) ?? thread(text), async (text, to) => sent.push({text,to}), async () => {}, () => {});
   await q.send('@everyone review this');
   await q.send('@null also the tests'); await q.send('and the docs');
   assert.deepEqual(q.items.map(x => x.to), [['null'], ['null']]);

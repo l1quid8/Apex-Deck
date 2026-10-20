@@ -1,6 +1,7 @@
 import type { ToolServer } from "./types.ts";
 import { normalizeServer, proseMask } from "./serverRequests.ts";
 import type { Command } from "./commands";
+import { mentionFor } from "./slug.ts";
 
 /** What the composer's "+" menu offers. Typing `/` at the start of the
  *  message or `@` at the start of a word opens it filtered to that kind. */
@@ -45,9 +46,17 @@ export function findTrigger(text: string, caret: number): Trigger | null {
   return null;
 }
 
+/** Who the @ list offers: a bot by its mention (see mentionFor), or by
+ *  `mention` when the caller decides what it answers to, as for projects. */
+export interface MenuPerson {
+  id: string;
+  display_name: string;
+  mention?: string;
+}
+
 /** Items for a trigger, or everything when the menu was opened with "+".
  *  Mod commands are inserted, not run, so you can add arguments first. */
-export function menuItems(trigger: Trigger | null, people: { id: string; display_name: string }[], servers: (ToolServer & {agent: string})[] = [], mods: { mod: string; name: string; description: string }[] = [], planOn = false, includeAll = true, allMentionDetail = "Everyone answers"): MenuItem[] {
+export function menuItems(trigger: Trigger | null, people: readonly MenuPerson[], servers: (ToolServer & {agent: string})[] = [], mods: { mod: string; name: string; description: string }[] = [], planOn = false, includeAll = true, allMentionDetail = "Everyone answers"): MenuItem[] {
   const commands: Extract<MenuItem, { kind: "command" }>[] = [
     ...COMMANDS,
     ...mods.filter((m) => !COMMANDS.some((c) => c.key === m.name.toLowerCase()))
@@ -55,7 +64,7 @@ export function menuItems(trigger: Trigger | null, people: { id: string; display
   ];
   const mentions: MenuItem[] = [
     ...(includeAll ? [{ kind: "mention" as const, id: "all", label: "@all", detail: allMentionDetail }] : []),
-    ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.id}`, detail: p.display_name })),
+    ...people.map((p) => ({ kind: "mention" as const, id: p.id, label: `@${p.mention ?? mentionFor(p)}`, detail: p.display_name })),
   ];
   // Plan switches every bot in the thread to planning, or back.
   const plan: MenuItem = planOn
@@ -66,7 +75,8 @@ export function menuItems(trigger: Trigger | null, people: { id: string; display
   const q = trigger.query;
   if (trigger.kind === "server") return servers.filter(s => [s.token, ...s.aliases].some(alias => normalizeServer(alias).startsWith(normalizeServer(q)))).map(s => ({kind: "server", agent: s.agent, label: `!${s.token}`, detail: `${s.label} · ${people.find(p => p.id === s.agent)?.display_name ?? s.agent}`}));
   if (trigger.kind === "command") return commands.filter((c) => c.key.startsWith(q));
-  return mentions.filter((m) => m.kind === "mention" && (m.id.toLowerCase().startsWith(q) || m.detail.toLowerCase().startsWith(q)));
+  // By what picking it writes, or by its name. Never by its id, which may be an old name.
+  return mentions.filter((m) => m.kind === "mention" && [m.label.slice(1), m.detail.toLowerCase()].some((word) => word.startsWith(q)));
 }
 
 /** Remove choices the caller cannot actually perform for this destination. */

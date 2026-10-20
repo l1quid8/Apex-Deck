@@ -4,6 +4,7 @@ import { App } from "./App";
 import { PopoutApp } from "./PopoutApp";
 import "./styles.css";
 import "./glass-theme.css";
+import "./clay-theme.css";
 import "./appearance-settings.css";
 import "./apex-agent-panel.css";
 import "./apex-agent-widget.css";

@@ -5,9 +5,9 @@ import { BUILTIN_SKINS, DEFAULT_APPEARANCE, parseSkin, skinPrompt, themeMode, th
 const validAppearance = { hue: 168, glow: 40, blur: 24, opacity: 76, radius: 18, backdrop: 35, density: 1, light: false, flat: false };
 const skin = (appearance = validAppearance, extra = {}) => JSON.stringify({ format: "apex-glass-playground", version: 2, name: "Test", appearance, ...extra });
 
-test("exports the seven v4 presets and the legacy-compatible default is Classic", () => {
+test("exports the eight presets and the legacy-compatible default is Classic", () => {
   assert.deepEqual(BUILTIN_SKINS.map(({ id, name }) => [id, name]), [
-    ["classic", "Classic"], ["smoked", "Smoked"], ["tide", "Tide"], ["dusk", "Dusk"], ["rose", "Rose"], ["frost", "Frost"], ["liquid", "Liquid"],
+    ["classic", "Classic"], ["smoked", "Smoked"], ["tide", "Tide"], ["dusk", "Dusk"], ["rose", "Rose"], ["frost", "Frost"], ["liquid", "Liquid"], ["clay", "Clay"],
   ]);
   assert.deepEqual(DEFAULT_APPEARANCE, BUILTIN_SKINS[0].appearance);
   assert.equal(themeMode(DEFAULT_APPEARANCE), "classic");

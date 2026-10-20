@@ -18,11 +18,22 @@ export function dotState(status: HostStatus): DotState {
 /** The words for each dot, shared by the sidebar and Settings › Hosts. */
 export const DOT_WORDS = { on: "Connected", wait: "Connecting", off: "Can't be reached", idle: "Not connected yet" } as const;
 
+/** This Mac's name. desktop/hosts.mjs reserves it, so no saved host can be called this. */
+export const LOCAL_HOST_NAME = "This Mac";
+
 /** Words for a helper older than this app. Deck has no updater, so there is no Restart button. */
 export function helperNotice(name: string, app: string, helper: string | null | undefined): string | null {
   if (helper === undefined || helper === app) return null;
-  return helper === null
-    ? `Deck's helper on ${name} is older than this app (${app}). Update apex-daemon there to recover live approvals after a reconnect.`
+  // This Mac's daemon ships inside the app bundle, so reinstalling the app is
+  // the update; the daemon-ubuntu doc only helps a server someone else runs.
+  const local = name === LOCAL_HOST_NAME;
+  if (helper === null) {
+    return local
+      ? `This Mac's daemon is older than this app (${app}), so live approvals stop after a reconnect. Reinstall the app to update the daemon it ships.`
+      : `Deck's helper on ${name} is older than this app (${app}). Update apex-daemon there to recover live approvals after a reconnect.`;
+  }
+  return local
+    ? `This Mac runs apex-daemon ${helper}, which ships with the app; this app is ${app}. Reinstall the app to update it.`
     : `${name} runs apex-daemon ${helper}; this app is ${app}. Update it there (docs/daemon-ubuntu.md).`;
 }
 

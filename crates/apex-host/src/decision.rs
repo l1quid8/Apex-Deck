@@ -67,11 +67,10 @@ impl Observer {
         let mut cache = self.cache.lock().unwrap();
         if let Some((_, call)) = cache.iter().find(|(before, _)| *before == messages) { return (call.clone(), false); }
         let settings = self.settings.clone();
-        let ids = roster.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-        let mut request = apex_core::decision::thinking_request(&messages, &ids);
+        let mut request = apex_core::decision::thinking_request(&messages, &roster);
         // Keep the existing routing state exactly as it was on eligible human messages.
         let routing = self.routing && messages == self.initial.transcript;
-        if routing { request.state = routing_request(&messages, &ids).state; }
+        if routing { request.state = routing_request(&messages, &roster).state; }
         let choices = request.choices.clone();
         let call = async move {
             if settings["decision"]["enabled"] != true { return Err("Decision observer is off".into()); }

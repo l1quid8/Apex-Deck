@@ -16,6 +16,20 @@ test("the card names an old helper without offering a restart", () => {
   assert.doesNotMatch(helperNotice("AT", "0.5.1", null), /Restart/);
 });
 
+test("This Mac's own daemon says reinstall the app, and only a server gets the doc", () => {
+  const local = helperNotice("This Mac", "0.8.0", "0.7.0");
+  assert.match(local, /This Mac runs apex-daemon 0\.7\.0/);
+  assert.match(local, /Reinstall the app/);
+  assert.doesNotMatch(local, /daemon-ubuntu|Update it there/);
+  const older = helperNotice("This Mac", "0.8.0", null);
+  assert.match(older, /Reinstall the app/);
+  assert.doesNotMatch(older, /Update apex-daemon there/);
+  // The reserve on the name is what makes this safe: no saved host can be This Mac.
+  assert.match(helperNotice("AT", "0.8.0", "0.7.0"), /Update it there \(docs\/daemon-ubuntu\.md\)/);
+  assert.doesNotMatch(helperNotice("AT", "0.8.0", "0.7.0"), /Reinstall the app/);
+  assert.equal(helperNotice("This Mac", "0.8.0", "0.8.0"), null);
+});
+
 test("a service on a different build than the app gets a warning; a matching one doesn't", () => {
   const app = { commit: "fd13c103931e", dirty: false };
   assert.equal(buildNotice("VPS", app, { commit: "fd13c103931e", dirty: false }), null);
@@ -105,4 +119,7 @@ test("hostLine: connected, with and without a helper version, and with an old he
   const old = hostLine("AT", conn(ok, { helper: "0.5.0", build: { commit: "aaa", dirty: false } }), app, at);
   assert.match(old.notice, /AT runs apex-daemon 0\.5\.0; this app is 0\.7\.0/);
   assert.equal(old.tone, "plain");
+  const mine = hostLine("This Mac", conn(ok, { helper: "0.5.0", build: { commit: "aaa", dirty: false } }), app, at);
+  assert.match(mine.notice, /Reinstall the app/);
+  assert.doesNotMatch(mine.notice, /daemon-ubuntu/);
 });
