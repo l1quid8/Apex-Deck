@@ -2745,7 +2745,9 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .bot-row > .bubble { grid-column: 2; grid-row: 1; justify-self: start; }
 .bot-row > .message-actions { grid-column: 2; grid-row: 2; justify-self: start; }
 .human-row { align-self: flex-end; max-width: 85%; }
-.message-row > .bubble { min-width: 0; max-width: none; }
+/* Capped at the row: the grid sizes an aligned bubble to its longest line, and
+   step rows and table headers never wrap, so a long one pushed past the column. */
+.message-row > .bubble { min-width: 0; max-width: 100%; }
 .message-actions { flex: none; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 2px; }
 .message-more > .pane-menu { left: 0; right: auto; }
 .human-row .message-more > .pane-menu { left: auto; right: 0; }
