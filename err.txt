@@ -1,2 +1,0 @@
-muse: workspace root: /Users/tylercaldwell/Downloads/apex-deck (cwd default)
-muse: workspace trust: trusted source=user-config
