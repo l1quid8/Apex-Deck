@@ -7,6 +7,7 @@ import type { ChipParts } from "./botChip";
 import type { DashRow } from "./dashboardModel";
 import type { ServerChoice } from "./PreviewPane";
 import type { LandingTextureSettings } from "./settings";
+import type { AppearanceValues } from "./themes";
 import type { Access, AgentInfo, Pane, ParticipantConfig, RoomOptions } from "./types";
 
 export type PopoutKind = "pane" | "tab";
@@ -78,6 +79,8 @@ export interface PopoutSnapshot {
   workspaceName?: string;
   /** The focused chat thread at pop-out time, which Files and Details follow. */
   activeChatId?: string | null;
+  /** The owner's current skin, so the pop-out wears the same look as Deck. */
+  appearance?: AppearanceValues;
 }
 
 /** Which side of its neighbour a pane sat on. */
@@ -149,6 +152,8 @@ export interface PopoutUpdate {
   chatConfig?: ChatBundle;
   /** The outcome of a fork this pop-out asked for. */
   forkResult?: ForkResult;
+  /** The owner's skin, resent whenever it changes so open pop-outs change with Deck. */
+  appearance?: AppearanceValues;
 }
 
 export interface PaneTakeout {

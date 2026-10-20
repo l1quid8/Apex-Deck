@@ -1,4 +1,4 @@
-import { defaultAppearanceSettings, readAppearance, themeMode, themeVariables, type AppearanceSettings, type AppearanceValues } from '../themes.ts';
+import { applyAppearance, defaultAppearanceSettings, readAppearance, type AppearanceSettings, type AppearanceValues } from '../themes.ts';
 
 export const PHONE_APPEARANCE_KEY = 'apex-deck.phone.appearance.v1';
 
@@ -15,15 +15,7 @@ export function savePhoneAppearance(storage: Pick<Storage, 'setItem'>, value: Ap
 
 /** Same palette as the Mac, with cleanup when returning to Classic. */
 export function applyPhoneTheme(root: Pick<HTMLElement, 'dataset' | 'style'>, values: AppearanceValues): () => void {
-  const variables = themeVariables(values);
-  root.dataset.deckTheme = themeMode(values);
-  root.dataset.deckLight = String(values.light);
-  for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
-  return () => {
-    for (const name of Object.keys(variables)) root.style.removeProperty(name);
-    delete root.dataset.deckTheme;
-    delete root.dataset.deckLight;
-  };
+  return applyAppearance(root, values);
 }
 
 export interface PhoneTransparency {

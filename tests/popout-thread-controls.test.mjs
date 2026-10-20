@@ -74,5 +74,6 @@ test("the bar keeps thread controls whole at narrow widths", () => {
   assert.match(popoutCss, /\.popout-btn\s*\{[^}]*flex:\s*none/);
   assert.match(popoutCss, /\.popout-bar \.pane-counts\s*\{[^}]*flex:\s*none/);
   assert.match(popoutCss, /max-width:\s*520px[^}]*\.popout-bar \.count-label\s*\{\s*display:\s*none/);
-  assert.match(popoutCss, /\.popout-details-col\s*\{[^}]*width:\s*320px/);
+  // Details sizing comes from Deck's .thread-details (320px in styles.css).
+  assert.match(popout, /thread-details \$\{overlay \? "overlay" : "docked"\}/);
 });

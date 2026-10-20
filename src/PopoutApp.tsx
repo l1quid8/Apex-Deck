@@ -20,6 +20,8 @@ import { RightPhone } from "./RightPhone";
 import { RightWorktreesTab } from "./RightWorktrees";
 import { DEFAULT_LANDING_TEXTURE } from "./settings";
 import { TerminalPane } from "./TerminalPane";
+import { DEFAULT_APPEARANCE, type AppearanceValues } from "./themes";
+import { useAppearance } from "./useAppearance";
 import type { DetailsHost } from "./ThreadDetails";
 import type { Pane, ParticipantConfig } from "./types";
 import "./popout.css";
@@ -85,6 +87,9 @@ export function PopoutApp({ token }: { token: string }) {
   const [draftTitle, setDraftTitle] = useState("");
   const renameSent = useRef(false);
   const [winWidth, setWinWidth] = useState(() => window.innerWidth);
+  // The owner's skin, sent with the snapshot and again whenever it changes in Deck.
+  const [appearance, setAppearance] = useState<AppearanceValues>(DEFAULT_APPEARANCE);
+  useAppearance(appearance);
 
   useEffect(() => {
     const measure = () => setWinWidth(window.innerWidth);
@@ -115,6 +120,7 @@ export function PopoutApp({ token }: { token: string }) {
       setPreviewSource(snap.preview?.source ?? null);
       setOpenExternally(snap.preview?.openExternally ?? []);
       if (snap.chatConfig) setBundle(snap.chatConfig);
+      if (snap.appearance) setAppearance(snap.appearance);
     }, (error: unknown) => {
       if (live) setProblem(error instanceof Error ? error.message : String(error));
     });
@@ -133,6 +139,7 @@ export function PopoutApp({ token }: { token: string }) {
       if (patch.previewSource !== undefined) setPreviewSource(patch.previewSource);
       if (patch.chatConfig !== undefined) setBundle(patch.chatConfig);
       if (patch.forkResult !== undefined) forks.current.settle(patch.forkResult);
+      if (patch.appearance !== undefined) setAppearance(patch.appearance);
     });
     void electronBackend(bridge).then((made) => {
       if (live) setBackend(made);
@@ -395,7 +402,7 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
               />
             </div>
             {paneDetails.open && (
-              <div ref={paneDetails.setSlot} tabIndex={-1} className={`right-details-slot popout-details-col${overlay ? " overlay" : ""}`} />
+              <div ref={paneDetails.setSlot} tabIndex={-1} className={`right-details-slot thread-details ${overlay ? "overlay" : "docked"}`} />
             )}
           </div>
         ))}
@@ -524,9 +531,10 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
     };
     return (
       <>
-        <div ref={tabDetails.setSlot} tabIndex={-1} className="right-details-slot" />
         {activeChatId ? (
-          <div style={{ display: "none" }}>
+          <>
+            <div ref={tabDetails.setSlot} tabIndex={-1} className="right-details-slot thread-details full" />
+            <div style={{ display: "none" }}>
             <HostPane backend={route} agents={bundle.agents}>
               {() => (
                 <ChatPane
@@ -552,7 +560,8 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
                 />
               )}
             </HostPane>
-          </div>
+            </div>
+          </>
         ) : (
           tabDetails.open && <p className="muted right-panel-empty">Open a thread to see its details.</p>
         )}

@@ -2,13 +2,14 @@ import { canvasPanes } from "./canvasPanes.ts";
 import { normalizeWorkspaces, prepareHostSession, mergeHostSession, migrateCanvasLayouts, workspaceFamily, workspaceHost } from "./hostSession.ts";
 import { paneDestination } from "./paneHost.ts";
 import { HostPane, HostAgents, HostMonitors } from "./HostPane";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 
 import { getBackend, type Backend, type HostEntry } from "./backend";
 import { connection, statusWords } from "./connection";
 import { SettingsPage, type SettingsSection } from "./lazyViews";
 import { DEFAULT_LANDING_TEXTURE, DEFAULT_SETTINGS, readSettings, type AppSettings } from "./settings";
-import { DEFAULT_APPEARANCE, themeMode, themeVariables } from "./themes";
+import { DEFAULT_APPEARANCE } from "./themes";
+import { useAppearance } from "./useAppearance";
 import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
 import type { DetailsHost } from "./ThreadDetails";
@@ -163,18 +164,7 @@ export function App() {
   }, []);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const appearance = settings.appearance?.current.appearance ?? DEFAULT_APPEARANCE;
-  useLayoutEffect(() => {
-    const root = document.documentElement;
-    const variables = themeVariables(appearance);
-    root.dataset.deckTheme = themeMode(appearance);
-    root.dataset.deckLight = String(appearance.light);
-    for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
-    return () => {
-      for (const name of Object.keys(variables)) root.style.removeProperty(name);
-      delete root.dataset.deckTheme;
-      delete root.dataset.deckLight;
-    };
-  }, [appearance]);
+  useAppearance(appearance);
   const disabledProviders = settings.disabledProviders;
   /** The settings section shown, or null while the deck is. */
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
@@ -1272,7 +1262,7 @@ export function App() {
     const { workspace, hostId } = hostOfPane(pane);
     const run = runs[paneId];
     const snapshot: PopoutSnapshot = {
-      kind: "pane", id: pane.id, title: pane.title,
+      kind: "pane", id: pane.id, title: pane.title, appearance,
       ...(pane.kind === "terminal" && run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
       workspaceId: pane.workspaceId, hostId,
       ...(pane.agent ? { agent: pane.agent } : {}),
@@ -1317,7 +1307,7 @@ export function App() {
     const hostId = workspace ? workspaceHost(workspace) : "local";
     const selected = listed.find((pane) => pane.id === focusedPane);
     const snapshot: PopoutSnapshot = {
-      kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind,
+      kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance,
       ...(tab.url !== undefined ? { url: tab.url } : {}),
       workspaceId: workspace?.id, hostId,
       cwd: workspace?.path ?? "",
@@ -1438,6 +1428,7 @@ export function App() {
       const { workspace, hostId } = hostOfPane(pane);
       push(rec.token, {
         title: pane.title,
+        appearance,
         workspaceId: pane.workspaceId,
         ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
         ...(pane.kind === "preview" ? { previewSource: previewSourceOf(pane) } : {}),
@@ -1450,7 +1441,7 @@ export function App() {
     const followWorkspace = workspaces.find((w) => w.id === (selected?.workspaceId ?? activeWorkspace)) ?? null;
     for (const rec of poppedTabs) {
       const tab = panel.tabs.find((t) => t.id === rec.id) ?? rec.tab;
-      const patch: PopoutUpdate = { title: tabTitle(tab) };
+      const patch: PopoutUpdate = { title: tabTitle(tab), appearance };
       if (tab.kind === "browser" && tab.url !== undefined) patch.url = tab.url;
       if (tab.kind === "dashboard") patch.dashboardRows = dashboardRows;
       if (followWorkspace) {
@@ -1466,7 +1457,7 @@ export function App() {
       patch.activeChatId = selectedChat ? selectedChat.id : null;
       push(rec.token, patch);
     }
-  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents, appearance]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A thread closed, archived or deleted here, or its project removed, takes its
   // pop-out with it. The record drops first, so the window's close restores nothing.
