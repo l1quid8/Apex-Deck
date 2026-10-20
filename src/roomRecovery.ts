@@ -10,6 +10,46 @@ export async function loadRoomState(backend: Backend, id: string, participants: 
   return { snapshot, active: [], approvals: [], live: false };
 }
 
+export const WAITING_FOR_OWNER = "Waiting for Deck…";
+
+/** Structured check for the attach-mode waiting state. The component keys its
+ *  retry loop on this boolean, never on display text. */
+export function isWaitingForOwner(error: unknown): boolean {
+  return String(error).includes("Waiting for Deck");
+}
+
+/** Read-only room read for pop-out windows: subscribe and read, never create. A
+ *  missing room means the owner hasn't opened it (yet), so the view waits for
+ *  the owner instead of resurrecting the room itself. Reconnect and the
+ *  attach retry loop retry. */
+export async function loadRoomAttach(backend: Backend, id: string): Promise<RoomState> {
+  if (!backend.roomState) throw new Error(WAITING_FOR_OWNER);
+  try {
+    return { ...await backend.roomState(id), live: true };
+  } catch (error) {
+    if (/no group chat with id/i.test(String(error))) throw new Error(WAITING_FOR_OWNER);
+    throw error;
+  }
+}
+
+/** Attach mode's retry loop: while the owner hasn't opened the room, try again after 2s, 4s,
+ *  then every 8s, until a read succeeds (reset) or the view goes away (dispose). Each try is the
+ *  caller's read-only refresh, so the loop never creates the room. */
+export function createAttachRetry(retry: () => void, delays: readonly number[] = [2000, 4000, 8000]) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let misses = 0; let disposed = false;
+  const stop = () => { if (timer) clearTimeout(timer); timer = null; };
+  return {
+    missed() {
+      stop();
+      if (disposed) return;
+      timer = setTimeout(() => { timer = null; retry(); }, delays[Math.min(misses++, delays.length - 1)]);
+    },
+    reset() { stop(); misses = 0; },
+    dispose() { disposed = true; stop(); },
+  };
+}
+
 /** Old helpers have no event boundary: reread durable totals instead of adding replayed deltas. The room is already open. */
 export async function loadRoomTotals(backend: Backend, id: string): Promise<Pick<RoomSnapshot, "usage" | "changes">> {
   const snapshot = await backend.roomCreate(id, [], { policy: "mention", max_bot_hops: 0 }, "");

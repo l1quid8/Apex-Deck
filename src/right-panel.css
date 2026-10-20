@@ -15,6 +15,7 @@
 .right-panel-tab > button[role="tab"] svg { flex: none; }
 .right-panel-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .right-panel-tab.active { background: var(--hover, rgba(127,127,127,.14)); }
+.right-panel-tab.dragging { opacity: .55; }
 .right-panel-tab.active > button[role="tab"] { color: inherit; }
 .right-panel-tab.has-attention { position: relative; }
 .right-panel-tab.has-attention::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -5px; height: 3px; border-radius: 3px; background: var(--warn, #e0a030); pointer-events: none; }
@@ -180,3 +181,9 @@
 .right-phone-screen:focus-visible { outline: 2px solid var(--accent, #71e6b5); outline-offset: 2px; }
 .right-phone-state { margin: 0; color: var(--muted); font-size: 12px; }
 .right-phone-alert { margin: 0; color: #ef6b6b; }
+
+/* A tab's right-click menu: Open in new window. */
+.right-panel-context-backdrop { position: fixed; inset: 0; z-index: 80; }
+.right-panel-context { position: fixed; z-index: 81; min-width: 170px; padding: 4px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,.3); }
+.right-panel-context button { display: block; width: 100%; text-align: left; padding: 6px 10px; border-radius: 4px; }
+.right-panel-context button:hover { background: var(--hover); }

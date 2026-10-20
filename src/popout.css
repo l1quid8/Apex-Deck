@@ -1,0 +1,199 @@
+/* The pop-out window: a small top bar and one live pane. It never saves. */
+
+.popout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.popout-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* 88px left matches .titlebar: room for the macOS traffic lights (hiddenInset). */
+  padding: 10px 12px 10px 88px;
+  -webkit-app-region: drag;
+  border-bottom: 1px solid var(--line);
+}
+
+.popout-bar button,
+.popout-bar input {
+  -webkit-app-region: no-drag;
+}
+
+/* min-width: 0 lets the flex items shrink so the ellipsis engages. */
+.popout-title {
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popout-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Deck's base button supplies the border, fill and corners; these only
+   keep the bar's controls whole and at bar height. */
+.popout-return {
+  flex: none;
+  white-space: nowrap;
+  padding: 4px 12px;
+}
+
+/* Thread controls beside Return to Deck: Details toggle and the ⋯ menu. */
+.popout-btn {
+  flex: none;
+  white-space: nowrap;
+  padding: 4px 10px;
+}
+
+/* On reads as Deck's toggles do — an accent border — never the hover look. */
+.popout-btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* Artifacts and Changes counts, portalled into the bar by the thread.
+   Given the same size as in Deck's pane heads; without these the buttons
+   fall back to the full-size button style and crowd out everything else. */
+.popout-bar .pane-counts {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+/* No Artifacts and no Changes yet: the empty slot takes no room. */
+.popout-bar .pane-counts:not(:has(button)) {
+  display: none;
+}
+
+.popout-bar .thread-counts {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+.popout-bar .thread-counts button {
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 4px 8px;
+}
+
+/* At the narrowest widths the labels go; the icons and counts stay. */
+@media (max-width: 520px) {
+  .popout-bar .count-label {
+    display: none;
+  }
+
+  .popout-bar .count-icon {
+    display: inline-block;
+  }
+}
+
+/* A popped thread's bar carries more controls than the 360px minimum
+   width holds in one row (only 260px is left beside the traffic
+   lights). So it wraps: the spacer becomes the line break, leaving the
+   title, status and counts above and the thread buttons below, with Return to
+   Deck at the right edge. Bars without thread buttons fit on one row
+   at every width and keep it. */
+@media (max-width: 640px) {
+  .popout-bar:has(.popout-btn) {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .popout-bar:has(.popout-btn) .spacer {
+    flex-basis: 100%;
+    height: 0;
+  }
+
+  /* Zero bases, so a long title or status truncates on the top row
+     instead of wrapping the counts onto a row of their own. */
+  .popout-bar:has(.popout-btn) .popout-title {
+    flex: 2 1 0;
+  }
+
+  .popout-bar:has(.popout-btn) .popout-sub {
+    flex: 1 1 0;
+  }
+
+  .popout-bar:has(.popout-btn) .popout-return {
+    margin-left: auto;
+  }
+}
+
+.popout-rename {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 8px;
+}
+
+/* A popped thread: the chat, with its Details panel in a column beside it. */
+.popout-chat-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 8px;
+  position: relative;
+}
+
+.popout-chat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.popout-chat-main > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Details wears Deck's own .thread-details panel (docked or overlay in a
+   thread, like the main window's side panel). A popped Details tab is the
+   whole window, so its panel fills it; Deck's own .full rule is scoped
+   under .body, which a pop-out is not inside. */
+.popout-body > .thread-details.full {
+  flex: 1 1 0;
+  width: auto;
+  max-width: none;
+  min-width: 0;
+  border-left: 0;
+}
+
+.popout-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+}
+
+.popout-body > .muted,
+.popout-body > [role="alert"] {
+  margin: auto;
+}
+
+.popout-stopped {
+  margin: auto;
+  text-align: center;
+}
+
+.popout-stopped .primary {
+  padding: 4px 16px;
+}

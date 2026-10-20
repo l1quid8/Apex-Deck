@@ -1,7 +1,7 @@
 import { useHostConnection } from "./useHostConnection";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { hostCanMutate } from "./hostAvailability";
-import { createRoomRecovery, createRoomTotalsRefresh, loadRoomState, loadRoomTotals, messageDedup, representedRoomEvent } from "./roomRecovery.ts";
+import { createAttachRetry, createRoomRecovery, createRoomTotalsRefresh, isWaitingForOwner, loadRoomAttach, loadRoomState, loadRoomTotals, messageDedup, representedRoomEvent } from "./roomRecovery.ts";
 import { aboveAnchor } from "./floating";
 import { fitHeight, fitSteps } from "./fit";
 import { actionChevron, messageTime } from "./messageActions";
@@ -171,6 +171,12 @@ interface Props {
   /** "Always" in the steer prompt turns the setting off everywhere. */
   onConfirmSteer?: (confirm: boolean) => void;
   details?: DetailsHost;
+  /** Where the Artifacts and Changes counts render, when the host names the slot itself
+   *  (a pop-out's top bar) instead of leaving a `.pane-head .pane-counts` to find. */
+  countsSlot?: HTMLElement | null;
+  /** Attach mode for pop-out windows: subscribe and read, never create or close.
+   *  Sends, approvals, answers and live updates stay on; only the Deck window owns the room. */
+  attach?: boolean;
   /** Settings → General "Run buttons on code blocks". */
   codeRunButtons?: boolean;
   /** Open a terminal in this thread's project with `command` typed in, not run. */
@@ -484,7 +490,7 @@ function fitHead(head: HTMLElement) {
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -653,6 +659,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const hostConnection = useHostConnection(backend);
   const ready = roomReady && hostCanMutate(hostConnection.status);
   const [loadError, setLoadError] = useState("");
+  /** Structured attach-mode waiting state: the owner hasn't opened the room yet. Drives the retry loop. */
+  const [waitingForOwner, setWaitingForOwner] = useState(false);
 
   useEffect(() => { if (profileMode) setParticipants(profiles); }, [profiles, profileMode]);
   /** The window has focus; a thread counts as watched only then. */
@@ -849,7 +857,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     );
     refreshSteps.current = () => { void stepsLoader.refresh(); };
     const durableRecovery = createRoomTotalsRefresh({
-      load: () => loadRoomTotals(backend, pane.id),
+      // Attach mode never touches lifecycle reads either; usage arrives with the attached snapshot on live backends.
+      load: () => attach ? Promise.resolve({ usage: {}, changes: [] }) : loadRoomTotals(backend, pane.id),
       apply: saved => {
         if (!alive || !recoveredState || recoveredState.recovery_seq != null) return;
         setUsed(saved.usage ?? {});
@@ -1061,8 +1070,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       setAttached([]);
       notify("Attached files stay on the machine they were sent to. Attach them again here.");
     }
+    // Attach mode reads again while the owner hasn't opened the room; cancelled on unmount or room change.
+    const attachRetry = createAttachRetry(() => { if (alive) void refresh(); });
     const recovery = createRoomRecovery({
-      load: () => loadRoomState(backend, pane.id, pane.sample ? SAMPLE_BOTS : [], defaults.current.newThread, cwd),
+      // Attach mode reads the owner's room without creating it; a missing room waits for the owner.
+      load: () => attach ? loadRoomAttach(backend, pane.id) : loadRoomState(backend, pane.id, pane.sample ? SAMPLE_BOTS : [], defaults.current.newThread, cwd),
       apply: (state) => {
         if (!alive) return;
         const saved = state.snapshot;
@@ -1105,13 +1117,19 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           setUnread(unseenCount(seen, from));
         }
         setLoadError("");
+        setWaitingForOwner(false);
+        attachRetry.reset();
         setReady(true);
         reportApprovals();
       },
       fail: error => {
         if (!alive) return;
         setReady(false); setLoadError(String(error));
-        notify(`Could not load the chat: ${String(error)}`, "error", undefined, "room-load");
+        // An attached view whose owner hasn't opened the room waits quietly and reads again; it never creates it.
+        const waiting = attach && isWaitingForOwner(error);
+        setWaitingForOwner(waiting);
+        if (waiting) attachRetry.missed();
+        else notify(`Could not load the chat: ${String(error)}`, "error", undefined, "room-load");
       },
       event: onEvent,
       represented: representedRoomEvent,
@@ -1136,6 +1154,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     });
     return () => {
       alive = false;
+      attachRetry.dispose();
       recovery.dispose(); offRecovery();
       durableRecovery.dispose();
       offHub();
@@ -1143,12 +1162,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       forgetRoom(pane.id);
       forgetQuestions(pane.id);
       approvals.current?.(pane.id, null);
-      backend.roomClose(pane.id).catch(() => {});
+      // Attach mode only watches: closing the view must never close the owner's room.
+      if (!attach) backend.roomClose(pane.id).catch(() => {});
     };
     // The room lives as long as the pane, where the pane runs. A thread that
     // hasn't started can be moved (App imports it there first), so it reopens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pane.id, profileMode, backend, cwd]);
+  }, [pane.id, profileMode, backend, cwd, attach]);
 
   // Keep the elapsed times moving while anything is running.
   const running = Object.keys(working).length > 0;
@@ -1288,6 +1308,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         onProfilesChange(next);
       } else if (editing) {
         const saved = await backend.roomUpdateParticipant(pane.id, config, editingBase.current ?? undefined);
+        // Attach mode never creates the room: a popped view edits only while the owner has it open.
+        if (!saved && attach) return setFormError("This chat isn't open in Deck right now. Return it to Deck and try again.");
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants((list) => list.map((p) => (p.id === editing ? actual : p)));
         if (profiles.some(p => p.id === editing)) onProfilesChange(profiles.map(p => p.id === editing ? { ...p, appearance: config.appearance } : p));
@@ -2119,12 +2141,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   }, [backend]);
 
   // Artifacts and Changes sit on the pane's top line, in the slot App leaves for them.
-  const [headSlot, setHeadSlot] = useState<HTMLElement | null>(null);
+  // A host that names its own slot (a pop-out's top bar) skips the lookup and the refit.
+  const [ownSlot, setOwnSlot] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
-    setHeadSlot(root.current?.closest(".pane")?.querySelector<HTMLElement>(".pane-head .pane-counts") ?? null);
-  }, []);
+    if (countsSlot !== undefined) return;
+    setOwnSlot(root.current?.closest(".pane")?.querySelector<HTMLElement>(".pane-head .pane-counts") ?? null);
+  }, [countsSlot]);
+  const headSlot = countsSlot !== undefined ? countsSlot : ownSlot;
   // The top line refits when the pane resizes or anything on it changes: counts, status words, the server chip.
   useEffect(() => {
+    if (countsSlot !== undefined) return;
     const head = headSlot?.closest<HTMLElement>(".pane-head");
     if (!head) return;
     fitHead(head);
@@ -2134,7 +2160,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const changed = new MutationObserver(() => fitHead(head));
     changed.observe(head, { childList: true, characterData: true, subtree: true });
     return () => { resized.disconnect(); changed.disconnect(); };
-  }, [headSlot]);
+  }, [headSlot, countsSlot]);
 
   const [serverLists, setServerLists] = useState<Record<string, ToolServer[]>>({});
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
@@ -3011,6 +3037,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {quickAdd === "roster" && rosterAnchor && createPortal(<span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom, "--room": `${window.innerHeight - rosterAnchor.bottom - 8}px` } as CSSProperties}>{quickAddMenu}</span>, document.body)}
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
+        // Attach mode never creates the room: a popped view edits only while the owner has it open.
+        if (!saved && attach) { setFormError("This chat isn't open in Deck right now. Return it to Deck and try again."); return; }
         const actual = saved || (await backend.roomCreate(pane.id, [], { policy: "mention", max_bot_hops: 0 }, "")).participants.find(p => p.id === config.id) || config;
         if (!saved) setParticipants(list => list.map(p => p.id === config.id ? actual : p));
         if (turnQueue.state[config.id] === "working") setPendingSettings(all => ({ ...all, [config.id]: true }));
@@ -3353,7 +3381,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             }
           }}
           rows={1}
-          placeholder={form.kind === "steps" && !text ? form.offer.steps[0].prompt : copy.placeholder}
+          placeholder={waitingForOwner ? "Waiting for Deck…" : form.kind === "steps" && !text ? form.offer.steps[0].prompt : copy.placeholder}
           disabled={!roomReady || participants.length === 0}
         />
           </div>

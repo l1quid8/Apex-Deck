@@ -13,6 +13,7 @@ import { daemonTransport, fromBase64, toBase64 } from "./daemon/transport.ts";
 import { pathPrompt, type PathRequest } from "./typedPath.ts";
 import { recentFiles } from "./recentFiles.ts";
 import type { GeneratedApi } from "./interactiveAnswers/generatedRun.ts";
+import type { PopoutAction, PopoutSnapshot, PopoutUpdate } from "./popoutModel.ts";
 import { clientCapabilitiesForGeneratedRuntime, type ClientCapabilities } from '../shared/generatedUiCapability.mjs';
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
@@ -64,6 +65,16 @@ export interface DeckBridge {
   browser: BrowserApi & {
     /** Key presses in a docked page that the deck owns (desktop/browser-keys.mjs). */
     onShortcut(cb: (press: KeyboardEventInit) => void): () => void;
+  };
+  popout?: {
+    open(snapshot: PopoutSnapshot, bounds?: { x: number; y: number; width: number; height: number }): Promise<{ token: string }>;
+    snapshot(token: string): Promise<PopoutSnapshot>;
+    close(token: string): Promise<void>;
+    update(token: string, patch: PopoutUpdate): Promise<void>;
+    sendAction(token: string, action: PopoutAction): Promise<void>;
+    onUpdate(cb: (patch: PopoutUpdate) => void): () => void;
+    onAction(cb: (token: string, action: PopoutAction) => void): () => void;
+    onClosed(cb: (token: string) => void): () => void;
   };
   smoke: boolean;
 }

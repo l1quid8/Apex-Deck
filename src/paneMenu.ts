@@ -5,7 +5,7 @@
 import type { PaneKind } from "./types";
 import { threadKeys } from "./shortcuts.ts";
 
-export type PaneMenuAction = "rename" | "pin" | "mark_unread" | "project" | "share_pdf" | "copy" | "start" | "copy_path" | "copy_address" | "close" | "fork" | "export" | "archive" | "delete" | "open";
+export type PaneMenuAction = "rename" | "pin" | "mark_unread" | "project" | "share_pdf" | "copy" | "start" | "copy_path" | "copy_address" | "popout" | "close" | "fork" | "export" | "archive" | "delete" | "open";
 
 export interface PaneMenuItem {
   action: PaneMenuAction;
@@ -50,6 +50,7 @@ export function paneMenuItems(kind: PaneKind, terminal: TerminalMenuState, previ
       item("copy", "Copy", { submenu: true }),
       item("fork", "Fork"),
       item("export", "Export"),
+      item("popout", "Open in new window"),
       item("archive", "Archive", { separated: true, keys: keys.archive }),
       item("delete", "Delete…", { danger: true }),
     ];
@@ -60,6 +61,7 @@ export function paneMenuItems(kind: PaneKind, terminal: TerminalMenuState, previ
       item("rename", "Rename"),
       pin,
       item("copy_address", "Copy address", { disabled: !preview.address, reason: preview.address ? "" : "No page yet." }),
+      item("popout", "Open in new window"),
       item("close", "Close", { separated: true }),
     ];
   }
@@ -69,6 +71,7 @@ export function paneMenuItems(kind: PaneKind, terminal: TerminalMenuState, previ
     pin,
     item("start", "Start again", { disabled: startReason !== "", reason: startReason }),
     item("copy_path", "Copy folder path", { disabled: !terminal.folder, reason: terminal.folder ? "" : "This workspace has no folder." }),
+    item("popout", "Open in new window"),
     item("close", "Close", { separated: true }),
   ];
 }

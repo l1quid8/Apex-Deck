@@ -203,6 +203,22 @@ export function themeVariables(values: AppearanceValues): Record<string, string>
   };
 }
 
+/** Paint a validated appearance onto a document root: the mode, the light flag
+ *  and the theme variables. Returns the cleanup that removes all of it, so
+ *  switching back to Classic leaves nothing behind. Every window that shows
+ *  Deck — the main one, pop-outs and the phone — applies skins this one way. */
+export function applyAppearance(root: Pick<HTMLElement, "dataset" | "style">, values: AppearanceValues): () => void {
+  const variables = themeVariables(values);
+  root.dataset.deckTheme = themeMode(values);
+  root.dataset.deckLight = String(values.light);
+  for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
+  return () => {
+    for (const name of Object.keys(variables)) root.style.removeProperty(name);
+    delete root.dataset.deckTheme;
+    delete root.dataset.deckLight;
+  };
+}
+
 const customBackdrop = (values: AppearanceValues): boolean =>
   values.backdropPattern !== undefined || values.glowColors !== undefined || values.glowCount !== undefined || values.glowSize !== undefined;
 

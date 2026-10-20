@@ -8,6 +8,27 @@ test('late state cannot overwrite newer recovery, and disposed panes ignore repl
   const a=recovery.refresh();const b=recovery.refresh();waiting[1]('new');await b;waiting[0]('old');await a;
   const c=recovery.refresh();recovery.dispose();waiting[2]('closed');await c;assert.deepEqual(applied,['new']);
 });
+test('attach mode reads the room without ever creating it',async()=>{
+  assert.equal(typeof mod.loadRoomAttach,'function');
+  const state={snapshot:{transcript:[],participants:[],options:{}},active:[],approvals:[]};
+  const backend={
+    roomCreate:async()=>{throw Error('attach must not create the room');},
+    roomState:async(id)=>{assert.equal(id,'r');return state;},
+  };
+  const out=await mod.loadRoomAttach(backend,'r');
+  assert.equal(out.live,true);
+  assert.equal(out.snapshot,state.snapshot);
+});
+test('attach mode waits for the owner instead of resurrecting a missing room',async()=>{
+  const missing={roomState:async()=>{throw Error('no group chat with id');}};
+  await assert.rejects(mod.loadRoomAttach(missing,'r'),/Waiting for Deck/);
+  await assert.rejects(mod.loadRoomAttach({},'r'),/Waiting for Deck/);
+});
+test('an old helper without room_state is an error to show, not a wait for the owner',async()=>{
+  // serde's message for a request the helper doesn't know names room_state; it must not read as a missing room.
+  const old={roomState:async()=>{throw Error('unknown variant `room_state`, expected one of `room_create`, `room_close`');}};
+  await assert.rejects(mod.loadRoomAttach(old,'r'),error=>!mod.isWaitingForOwner(error)&&/room_state/.test(String(error)));
+});
 test('old helper falls back only for unsupported room_state, never a lost request',async()=>{
   assert.equal(typeof mod.loadRoomState,'function');
   const snapshot={transcript:[],participants:[],options:{},pins:[]};let creates=0;
