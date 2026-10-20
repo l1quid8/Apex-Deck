@@ -9,10 +9,10 @@
 //! working, so they are this thread's. Changes after an Idle (or Open, or
 //! Restore) checkpoint belong to someone else, and a revert leaves them alone.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use apex_core::ParticipantId;
 use serde::{Deserialize, Serialize};
@@ -85,7 +85,10 @@ impl RevertPlan {
     }
 }
 
-pub struct Snapshots { root: PathBuf, lock: Mutex<()> }
+/// One thread's snapshots run one at a time, since they share its index and
+/// checkpoint list. Other threads, even in the same folder, never wait for
+/// them: a snapshot of a large folder can take minutes.
+pub struct Snapshots { root: PathBuf, threads: Mutex<HashMap<String, Arc<Mutex<()>>>>, stores: Mutex<()> }
 
 fn git(store: &Path, cwd: &Path, index: Option<&Path>, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     use std::io::Write;
@@ -122,8 +125,22 @@ fn safe(thread: &str) -> String {
     thread.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
-/// Files over `MAX_FILE`, outside the skipped folders, relative to `cwd`.
-fn big_files(cwd: &Path) -> Vec<String> {
+/// Folders the project's own `.gitignore` files ignore, relative to `cwd`:
+/// build output such as `release/` or `dist/`, which can hold gigabytes.
+/// Listed against an index that is never written, so what an earlier
+/// snapshot saved doesn't hide them, and git doesn't walk into them.
+fn ignored_folders(store: &Path, cwd: &Path) -> Vec<String> {
+    let args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"];
+    let Ok(out) = git(store, cwd, Some(&store.join("empty-index")), &args, None) else { return Vec::new() };
+    out.split(|b| *b == 0)
+        .filter_map(|p| String::from_utf8_lossy(p).strip_suffix('/').map(str::to_string))
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// Files over `MAX_FILE`, outside the skipped and `ignored` folders, relative to `cwd`.
+fn big_files(cwd: &Path, ignored: &[String]) -> Vec<String> {
+    let ignored: BTreeSet<PathBuf> = ignored.iter().map(|folder| cwd.join(folder)).collect();
     let mut found = Vec::new();
     let mut stack = vec![cwd.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -132,7 +149,7 @@ fn big_files(cwd: &Path) -> Vec<String> {
             let Ok(kind) = entry.file_type() else { continue };
             let name = entry.file_name();
             if kind.is_dir() {
-                if !SKIPPED_FOLDERS.iter().any(|s| name == *s) { stack.push(entry.path()); }
+                if !SKIPPED_FOLDERS.iter().any(|s| name == *s) && !ignored.contains(&entry.path()) { stack.push(entry.path()); }
             } else if kind.is_file() && entry.metadata().map(|m| m.len() > MAX_FILE).unwrap_or(false) {
                 if let Ok(rel) = entry.path().strip_prefix(cwd) { found.push(rel.to_string_lossy().into_owned()); }
             }
@@ -161,7 +178,15 @@ pub fn irreversible(command: &str) -> bool {
 }
 
 impl Snapshots {
-    pub fn new(root: PathBuf) -> Self { Snapshots { root, lock: Mutex::new(()) } }
+    pub fn new(root: PathBuf) -> Self { Snapshots { root, threads: Mutex::default(), stores: Mutex::default() } }
+
+    fn thread_lock(&self, thread: &str) -> Arc<Mutex<()>> {
+        Arc::clone(self.threads.lock().unwrap().entry(thread.to_string()).or_default())
+    }
+
+    /// Tests stand in for a slow snapshot by holding a thread's lock.
+    #[cfg(test)]
+    pub(crate) fn hold_for_test(&self, thread: &str) -> Arc<Mutex<()>> { self.thread_lock(thread) }
 
     fn thread_path(&self, thread: &str) -> PathBuf { self.root.join("threads").join(format!("{}.json", safe(thread))) }
 
@@ -181,6 +206,8 @@ impl Snapshots {
     fn store(&self, cwd: &Path) -> Result<PathBuf, String> {
         let dir = self.root.join(folder_key(cwd));
         let store = dir.join("store.git");
+        // Two threads opening in a new folder make its store once.
+        let _making = self.stores.lock().unwrap();
         if !store.join("HEAD").exists() {
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let out = Command::new("git").args(["init", "--bare", "-q"]).arg(&store).env_remove("GIT_DIR")
@@ -199,14 +226,24 @@ impl Snapshots {
     fn write_tree(&self, cwd: &Path, thread: &str) -> Result<(String, Vec<String>), String> {
         let store = self.store(cwd)?;
         let index = self.index(cwd, thread);
-        let skipped = big_files(cwd);
+        // Ignored files on their own (a .env) are still saved; ignored folders are not.
+        let ignored = ignored_folders(&store, cwd);
+        let skipped = big_files(cwd, &ignored);
         let mut args: Vec<String> = ["add", "-A", "-f", "--ignore-errors", "--", "."].iter().map(|s| s.to_string()).collect();
         for folder in SKIPPED_FOLDERS { args.push(format!(":(exclude,glob)**/{folder}/**")); }
+        for folder in &ignored { args.push(format!(":(exclude,literal){folder}")); }
         for file in &skipped { args.push(format!(":(exclude,literal){file}")); }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         // --ignore-errors still exits non-zero when one file can't be read;
         // the rest are added, so carry on to write-tree.
         let _ = git(&store, cwd, Some(&index), &args, None);
+        if !ignored.is_empty() {
+            // An earlier snapshot may have saved a folder that is ignored now.
+            let mut forget: Vec<String> = ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"].iter().map(|s| s.to_string()).collect();
+            forget.extend(ignored.iter().map(|folder| format!(":(literal){folder}")));
+            let forget: Vec<&str> = forget.iter().map(String::as_str).collect();
+            let _ = git(&store, cwd, Some(&index), &forget, None);
+        }
         let tree = text(git(&store, cwd, Some(&index), &["write-tree"], None)?);
         Ok((tree, skipped))
     }
@@ -214,7 +251,7 @@ impl Snapshots {
     /// Take a checkpoint for `thread` in `cwd`.
     pub fn take(&self, thread: &str, cwd: &Path, seq: usize, kind: Kind, by: Option<ParticipantId>) -> Result<Checkpoint, String> {
         // One at a time: two bots starting together share the thread's index.
-        let _guard = self.lock.lock().unwrap();
+        let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
         let (tree, skipped) = self.write_tree(cwd, thread)?;
         let mut file = self.load(thread);
         file.cwd = cwd.to_string_lossy().into_owned();
@@ -231,7 +268,7 @@ impl Snapshots {
     /// Remember a command a bot ran, if a revert couldn't undo it.
     pub fn note_command(&self, thread: &str, seq: usize, by: &ParticipantId, command: &str) {
         if !irreversible(command) { return; }
-        let _guard = self.lock.lock().unwrap();
+        let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
         let mut file = self.load(thread);
         file.effects.push(SideEffect { seq, by: by.clone(), command: command.to_string() });
         let _ = self.save(thread, &file);
@@ -260,7 +297,7 @@ impl Snapshots {
 
     fn plan_from(&self, thread: &str, cwd: &Path, file: &ThreadFile, k: usize) -> Result<RevertPlan, String> {
         let store = self.store(cwd)?;
-        let (now, now_skipped) = { let _guard = self.lock.lock().unwrap(); self.write_tree(cwd, thread)? };
+        let (now, now_skipped) = { let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap(); self.write_tree(cwd, thread)? };
         let list = &file.checkpoints[k..];
         let mut ours = BTreeSet::new();
         let mut theirs = BTreeSet::new();
@@ -326,7 +363,7 @@ impl Snapshots {
     /// on, and mark the folder as it is now as not this thread's work.
     pub fn rewind(&self, thread: &str, cwd: &Path, at: usize, bot: Option<&ParticipantId>, kind: Kind) -> Result<(), String> {
         {
-            let _guard = self.lock.lock().unwrap();
+            let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
             let mut file = self.load(thread);
             if let Some(k) = Self::point(&file.checkpoints, at, bot) {
                 // Keep the point itself only if it was taken before anything at `at` happened.
@@ -342,14 +379,14 @@ impl Snapshots {
     /// `/clear`: forget every checkpoint and start again from now.
     pub fn clear(&self, thread: &str, cwd: Option<&Path>) {
         {
-            let _guard = self.lock.lock().unwrap();
+            let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
             let _ = std::fs::remove_file(self.thread_path(thread));
         }
         if let Some(cwd) = cwd { let _ = self.take(thread, cwd, 0, Kind::Open, None); }
     }
 
     pub fn delete(&self, thread: &str) {
-        let _guard = self.lock.lock().unwrap();
+        let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
         let file = self.load(thread);
         if !file.cwd.is_empty() { let _ = std::fs::remove_file(self.index(Path::new(&file.cwd), thread)); }
         let _ = std::fs::remove_file(self.thread_path(thread));
@@ -357,7 +394,11 @@ impl Snapshots {
 
     /// A fork keeps the checkpoints for the messages it keeps.
     pub fn fork(&self, source: &str, target: &str, upto: Option<usize>) {
-        let _guard = self.lock.lock().unwrap();
+        // Reads one thread's list and writes another's: hold both, always in the same order.
+        let (first, second) = if source <= target { (source, target) } else { (target, source) };
+        let (first, second) = (self.thread_lock(first), self.thread_lock(second));
+        let _first = first.lock().unwrap();
+        let _second = (!Arc::ptr_eq(&first, &second)).then(|| second.lock().unwrap());
         let mut file = self.load(source);
         if let Some(upto) = upto {
             file.checkpoints.retain(|c| c.seq < upto || (c.seq == upto && !c.kind.working()));
@@ -370,7 +411,7 @@ impl Snapshots {
     pub fn diff_since_start(&self, thread: &str, cwd: &Path) -> Option<Result<String, String>> {
         let first = self.load(thread).checkpoints.first()?.tree.clone();
         Some(self.store(cwd).and_then(|store| {
-            let (now, _) = { let _guard = self.lock.lock().unwrap(); self.write_tree(cwd, thread)? };
+            let (now, _) = { let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap(); self.write_tree(cwd, thread)? };
             git(&store, cwd, None, &["diff", "--no-color", "--no-ext-diff", "--no-renames", &first, &now], None).map(|b| String::from_utf8_lossy(&b).into_owned())
         }))
     }
@@ -488,12 +529,12 @@ mod tests {
         let plan = snaps.plan("t", &cwd, 0, None);
         assert!(plan.available);
         let files: Vec<_> = plan.files.iter().map(|f| (f.path.as_str(), f.delete, f.conflict)).collect();
-        assert_eq!(files, [("a.txt", false, false), ("dist/js/out.js", true, false), ("shared.txt", true, true)]);
+        assert_eq!(files, [("a.txt", false, false), ("shared.txt", true, true)]);
 
         let paths: Vec<String> = plan.files.iter().map(|f| f.path.clone()).collect();
         assert!(snaps.restore("t", &cwd, 0, None, &paths).unwrap().is_empty());
         assert_eq!(std::fs::read_to_string(cwd.join("a.txt")).unwrap(), "one\n");
-        assert!(!cwd.join("dist").exists(), "empty folders the bot made go too");
+        assert_eq!(std::fs::read_to_string(cwd.join("dist/js/out.js")).unwrap(), "built", "folders the project ignores are left as they are");
         assert!(!cwd.join("shared.txt").exists());
         assert_eq!(std::fs::read_to_string(cwd.join("mine.txt")).unwrap(), "human\n", "someone else's file is untouched");
         assert_eq!(std::fs::read_to_string(cwd.join("node_modules/x/i.js")).unwrap(), "v2", "package folders are left as they are");
@@ -528,6 +569,48 @@ mod tests {
         let plan = snaps.plan("t", &cwd, 0, None);
         assert_eq!(plan.effects.len(), 1);
         assert!(irreversible("npm i -g pnpm") && !irreversible("npm test"));
+    }
+
+    fn files_in(snaps: &Snapshots, cwd: &Path, tree: &str) -> Vec<String> {
+        let store = snaps.store(cwd).unwrap();
+        text(git(&store, cwd, None, &["ls-tree", "-r", "--name-only", tree], None).unwrap()).lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn snapshots_leave_out_folders_the_project_ignores_but_keep_ignored_files() {
+        let (cwd, snaps) = folder("ignored");
+        std::fs::write(cwd.join("a.txt"), "one\n").unwrap();
+        std::fs::create_dir_all(cwd.join("release/app")).unwrap();
+        std::fs::write(cwd.join("release/app/build.bin"), "artifact").unwrap();
+        std::fs::write(cwd.join(".env"), "KEY=1\n").unwrap();
+        // Saved before anything was ignored.
+        let before = snaps.take("t", &cwd, 0, Kind::Open, None).unwrap();
+        assert!(files_in(&snaps, &cwd, &before.tree).contains(&"release/app/build.bin".to_string()));
+
+        // Build output in an ignored folder can be gigabytes; a secret file is small and worth restoring.
+        std::fs::write(cwd.join(".gitignore"), "release/\n.env\n").unwrap();
+        std::fs::write(cwd.join("release/app/more.bin"), "artifact").unwrap();
+        let after = snaps.take("t", &cwd, 1, Kind::Send, None).unwrap();
+        assert_eq!(files_in(&snaps, &cwd, &after.tree), [".env", ".gitignore", "a.txt"], "an ignored folder is left out, even what an earlier snapshot saved");
+    }
+
+    #[test]
+    fn a_slow_snapshot_holds_up_only_its_own_thread() {
+        let (cwd, snaps) = folder("parallel");
+        std::fs::write(cwd.join("a.txt"), "x").unwrap();
+        let snaps = std::sync::Arc::new(snaps);
+        // Thread "slow" is in the middle of a long snapshot of the same folder.
+        let slow = snaps.thread_lock("slow");
+        let _taking = slow.lock().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let other = std::sync::Arc::clone(&snaps);
+        let cwd_other = cwd.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(other.take("other", &cwd_other, 0, Kind::Send, None).map(|_| ()));
+            other.note_command("other", 0, &ParticipantId::new("jigga"), "Running: git push");
+            other.delete("other");
+        });
+        assert!(finished.recv_timeout(std::time::Duration::from_secs(10)).expect("another thread's snapshot waited for the slow one").is_ok());
     }
 
     #[test]
