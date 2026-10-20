@@ -4,7 +4,7 @@ import type { AppSection, Pane, PaneStatus, ThreadStatus, Workspace } from "./ty
 import { label as flagLabel, workspaceFlag, type Signal } from "./attention";
 import { workspaceHost } from "./hostSession.ts";
 import type { HostConnectionStore } from "./hostConnections";
-import { ageWords, hostTints, sidebarSections, twinPath, type ProjectBlock } from "./sidebarModel.ts";
+import { ageWords, hostTints, projectGroups, sidebarSections, twinPath, type ProjectBlock } from "./sidebarModel.ts";
 import { DOT_WORDS, dotState } from "./hostFacts.ts";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
 import { HoverCard, ProjectCard, ThreadCard, useHoverCard } from "./HoverCards";
@@ -14,8 +14,7 @@ import { ThreadName } from "./ThreadName";
 import { WorkspaceHostMenu } from "./WorkspaceHostMenu";
 
 // The rail, as in Codex: Pinned, Projects and Recents. Projects mixes This
-// Mac's folders with servers'; a server's shows its name, a dot for its
-// connection and a coloured globe. App owns the data and the actions; this
+// Mac's folders and servers' folders in host groups. App owns the data and the actions; this
 // draws them and keeps the rail's own menus and hover cards.
 
 export interface ProjectSidebarProps {
@@ -44,6 +43,7 @@ export interface ProjectSidebarProps {
   onRenameWorkspace(id: string, name: string): void;
   onProjectClick(workspace: Workspace): void;
   onProjectPin(workspace: Workspace): void;
+  onReorderProject(sourceId: string, targetId: string, after: boolean): void;
   onNewIn(workspace: Workspace): void;
   onAddWorkspace(hostId: string): Promise<void>;
   onManageHosts(): void;
@@ -84,9 +84,16 @@ const menuKey = (event: ReactKeyboardEvent) => event.key === "ContextMenu" || (e
 export function ProjectSidebar(props: ProjectSidebarProps) {
   const { backend, section, panes, workspaces, deleting, hosts } = props;
   const lists = useMemo(() => sidebarSections(panes, workspaces, section, deleting), [panes, workspaces, section, deleting]);
+  const groups = useMemo(() => projectGroups(lists.projects, hosts.map(h => h.id)), [lists.projects, hosts]);
   const tints = useMemo(() => hostTints(hosts.filter((h) => h.remote).map((h) => h.id)), [hosts]);
   const [menu, setMenu] = useState<OpenMenu | null>(null);
   const [projectsOpen, setProjectsOpen] = useState(true);
+  const [collapsedHosts, setCollapsedHosts] = useState<ReadonlySet<string>>(new Set());
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean } | null>(null);
+  const dragSource = useRef<string | null>(null);
+  const pendingDrop = useRef<{ id: string; after: boolean } | null>(null);
+  const [moveStatus, setMoveStatus] = useState("");
   const hover = useHoverCard();
   const rail = useRef<HTMLElement>(null);
   const now = Date.now();
@@ -103,6 +110,22 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const open = (next: OpenMenu) => { hover.hide(); setMenu(next); };
   const toggle = (kind: OpenMenu["kind"], id: string, button: HTMLElement) =>
     menu?.kind === kind && menu.id === id ? setMenu(null) : open({ kind, id, anchor: { rect: button.getBoundingClientRect() }, opener: button });
+
+  const clearDrop = () => { pendingDrop.current = null; setDropTarget(null); };
+  const endDrag = () => { dragSource.current = null; setDragging(null); clearDrop(); };
+  const reorder = (source: Workspace, target: Workspace, after: boolean) => {
+    props.onReorderProject(source.id, target.id, after);
+    setMoveStatus(`${source.name} moved ${after ? "after" : "before"} ${target.name} on ${hostName(workspaceHost(source))}.`);
+  };
+  const neighbors = (workspace: Workspace) => {
+    const own = groups.find(g => g.hostId === workspaceHost(workspace))?.projects ?? [];
+    const i = own.findIndex(p => p.workspace.id === workspace.id);
+    return { up: own[i - 1]?.workspace, down: own[i + 1]?.workspace };
+  };
+  const moveProject = (workspace: Workspace, direction: "up" | "down") => {
+    const target = neighbors(workspace)[direction];
+    if (target) reorder(workspace, target, direction === "down");
+  };
 
   const row = (pane: Pane, where: "pinned" | "project" | "recent") => {
     const flat = where !== "project";
@@ -170,17 +193,48 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     const newWhat = section === "code" ? "terminal" : "thread";
     return (
       <div key={workspace.id} className="ws">
-        <div className={`ws-row ${workspace.id === props.activeWorkspace ? "active" : ""} ${lit ? "lit" : ""}`} data-host-id={hostId}
+        <div className={`ws-row ${workspace.id === props.activeWorkspace ? "active" : ""} ${lit ? "lit" : ""} ${dragging === workspace.id ? "project-dragging" : ""} ${dropTarget?.id === workspace.id ? dropTarget.after ? "project-drop-after" : "project-drop-before" : ""}`} data-host-id={hostId}
+          onDragOver={(event) => {
+            const source = workspaces.find(w => w.id === dragSource.current && !w.hidden);
+            if (!source || source.id === workspace.id || workspaceHost(source) !== hostId) { clearDrop(); return; }
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            const rect = event.currentTarget.getBoundingClientRect();
+            const next = { id: workspace.id, after: event.clientY > rect.top + rect.height / 2 };
+            pendingDrop.current = next;
+            if (dropTarget?.id !== next.id || dropTarget.after !== next.after) setDropTarget(next);
+          }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) clearDrop(); }}
+          onDrop={(event) => {
+            const source = workspaces.find(w => w.id === dragSource.current && !w.hidden);
+            const target = pendingDrop.current;
+            if (source && target?.id === workspace.id && workspaceHost(source) === hostId) {
+              event.preventDefault();
+              event.stopPropagation();
+              reorder(source, workspace, target.after);
+            }
+            endDrag();
+          }}
           onMouseEnter={(event) => hover.enter("project", workspace.id, event.currentTarget)} onMouseLeave={hover.leave}
           onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); open({ kind: "project", id: workspace.id, anchor: { x: event.clientX, y: event.clientY }, opener: more(event.currentTarget) }); }}>
           {/* A div, not a button, so the name inside can be renamed in place. */}
           <div role="button" tabIndex={0} data-workspace={workspace.id} className="ws-name" title={workspace.path || workspace.name}
+            draggable
+            aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+            onDragStart={(event) => {
+              if ((event.target as HTMLElement).closest("input, textarea")) { event.preventDefault(); return; }
+              hover.hide(); setMenu(null); dragSource.current = workspace.id; setDragging(workspace.id);
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("application/x-apex-project-order", workspace.id);
+            }}
+            onDragEnd={endDrag}
             aria-expanded={!folded}
             aria-label={[workspace.name, remote ? `on ${hostName(hostId)}` : "", flag?.title].filter(Boolean).join(", ")}
             onClick={() => props.onProjectClick(workspace)}
             onKeyDown={(event) => {
               if (event.target !== event.currentTarget) return;
-              if (event.key === "Enter" || event.key === " ") { event.preventDefault(); props.onProjectClick(workspace); }
+              if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) { event.preventDefault(); moveProject(workspace, event.key === "ArrowUp" ? "up" : "down"); }
+              else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); props.onProjectClick(workspace); }
               else if (event.key === "F2") { event.preventDefault(); props.projectMenu(workspace).find((e) => e.key === "edit")?.onSelect?.(); }
               else if (menuKey(event)) {
                 event.preventDefault();
@@ -211,7 +265,14 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
   const menuEntries = (): MenuEntry[] => {
     if (!menu) return [];
     if (menu.kind === "pane") { const pane = panes.find((p) => p.id === menu.id); return pane ? props.paneMenu(pane) : []; }
-    if (menu.kind === "project") { const w = workspaces.find((x) => x.id === menu.id); return w ? props.projectMenu(w) : []; }
+    if (menu.kind === "project") {
+      const w = workspaces.find((x) => x.id === menu.id);
+      if (!w) return [];
+      const near = neighbors(w);
+      return [...props.projectMenu(w),
+        { key: "move-up", label: "Move up", keys: "⌥↑", separated: true, disabled: !near.up, onSelect: () => moveProject(w, "up") },
+        { key: "move-down", label: "Move down", keys: "⌥↓", disabled: !near.down, onSelect: () => moveProject(w, "down") }];
+    }
     return lists.archived.map((pane) => ({ key: pane.id, label: pane.title, side: workspaces.find((w) => w.id === pane.workspaceId)?.name ?? "", onSelect: () => props.onRestore(pane) }));
   };
 
@@ -251,7 +312,21 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         </button>
         <WorkspaceHostMenu backend={backend} choose={props.onAddWorkspace} manage={props.onManageHosts} />
       </div>
-      {projectsOpen && (lists.projects.length === 0 ? <p className="muted rail-empty">Add a folder to get started.</p> : lists.projects.map(project))}
+      {projectsOpen && (lists.projects.length === 0 ? <p className="muted rail-empty">Add a folder to get started.</p> : groups.map(group => {
+        const folded = collapsedHosts.has(group.hostId);
+        return <section className="project-host-group" data-project-host={group.hostId} key={group.hostId} aria-label={`${hostName(group.hostId)} projects`}>
+          <button type="button" className="project-host-toggle" aria-expanded={!folded} onClick={() => {
+            hover.hide(); endDrag();
+            setCollapsedHosts(old => { const next = new Set(old); if (next.has(group.hostId)) next.delete(group.hostId); else next.add(group.hostId); return next; });
+          }}>
+            <Glyph name={folded ? "chevRight" : "chevDown"} size={12} />
+            <span className="project-host-name" title={hostName(group.hostId)}>{hostName(group.hostId)}</span>
+            <span className="project-host-count">{group.projects.length}</span>
+          </button>
+          {!folded && group.projects.map(project)}
+        </section>;
+      }))}
+      <span className="project-order-status" role="status">{moveStatus}</span>
       {lists.recents.length > 0 && <>
         <div className="rail-sec" data-sec="recents">Recents</div>
         {lists.recents.map((pane) => row(pane, "recent"))}

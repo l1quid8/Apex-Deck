@@ -17,6 +17,7 @@ export function normalizeWorkspaces(value: unknown): Workspace[] {
     if (v.hidden === true) w.hidden = true;
     if (v.pinned === true) w.pinned = true;
     if (v.collapsed === true) w.collapsed = true;
+    if (Number.isSafeInteger(v.sidebarOrder) && v.sidebarOrder >= 0) w.sidebarOrder = v.sidebarOrder;
     if (v.hostId && v.hostId !== "local") w.hostId = v.hostId;
     w.family = typeof v.family === "string" && v.family ? v.family : workspaceFamily(w);
     return [w];

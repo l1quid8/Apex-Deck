@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { sidebarSections, twinPath, homeShort, hostTints, HOST_TINTS, ageWords, archiveThreads, unarchiveThreads, setUnread, noteActive, toggleProjectPin, setCollapsed } from "../src/sidebarModel.ts";
 import { normalizeWorkspaces } from "../src/hostSession.ts";
+import * as model from "../src/sidebarModel.ts";
 
 const ws = [
   { id: "deck", name: "apex-deck", path: "/Users/t/apex-deck" },
@@ -81,4 +82,55 @@ test("saved project pins and collapsed state survive a restart", () => {
   assert.equal(w.pinned, true);
   assert.equal(w.collapsed, true);
   assert.equal("junk" in w, false);
+});
+
+const mixed = [
+  { id: "a", name: "same", path: "/a", hostId: "at" },
+  { id: "l", name: "same", path: "/l" },
+  { id: "b", name: "B", path: "/b", hostId: "at" },
+  { id: "x", name: "X", path: "/x", hostId: "missing" },
+  { id: "m", name: "M", path: "/m", hostId: "local" },
+  { id: "hidden", name: "Hidden", path: "/h", hostId: "at", hidden: true },
+];
+const projects = (list) => sidebarSections([], list, "threads", new Set()).projects;
+const groupIds = (list) => model.projectGroups(projects(list), ["at"]).map(g => [g.hostId, g.projects.map(p => p.workspace.id)]);
+
+test("project groups use host IDs, local first, and retain unavailable hosts", () => {
+  assert.deepEqual(groupIds(mixed), [["local", ["l", "m"]], ["at", ["a", "b"]], ["missing", ["x"]]]);
+});
+
+test("within-host moves persist through normalization without changing project identity", () => {
+  const next = model.reorderProject(mixed, "b", "a", false);
+  assert.deepEqual(groupIds(next), [["local", ["l", "m"]], ["at", ["b", "a"]], ["missing", ["x"]]]);
+  assert.deepEqual(groupIds(normalizeWorkspaces(JSON.parse(JSON.stringify(next)))), groupIds(next));
+  for (const item of mixed) {
+    const { sidebarOrder, ...saved } = next.find(w => w.id === item.id);
+    assert.deepEqual(saved, item);
+  }
+  assert.equal(next.find(w => w.id === "l"), mixed[1]);
+  const restored = model.reorderProject(next, "b", "a", true);
+  assert.deepEqual(groupIds(restored)[1], ["at", ["a", "b"]]);
+});
+
+test("cross-host, hidden, missing and self moves are rejected", () => {
+  for (const [from, to] of [["a", "l"], ["a", "hidden"], ["hidden", "a"], ["absent", "b"], ["b", "absent"], ["a", "a"]]) {
+    assert.equal(model.reorderProject(mixed, from, to, false), mixed, `${from} to ${to}`);
+  }
+});
+
+test("custom order accepts new projects and pin actions still move within their host", () => {
+  const next = [...model.reorderProject(mixed, "b", "a", false), { id: "c", name: "C", path: "/c", hostId: "at" }];
+  assert.deepEqual(groupIds(next)[1], ["at", ["b", "a", "c"]]);
+  const pinned = toggleProjectPin(next, "a");
+  assert.deepEqual(groupIds(pinned)[1], ["at", ["a", "b", "c"]]);
+  assert.deepEqual(groupIds(toggleProjectPin(pinned, "a"))[1], ["at", ["a", "b", "c"]]);
+  const manual = model.reorderProject(pinned, "b", "a", false);
+  assert.deepEqual(groupIds(manual)[1], ["at", ["b", "a", "c"]], "drag order wins over the previous pin position");
+});
+
+test("invalid saved sidebar ranks are discarded", () => {
+  for (const sidebarOrder of [-1, NaN, Infinity, "2", 1.5]) {
+    assert.equal(normalizeWorkspaces([{ ...mixed[0], sidebarOrder }])[0].sidebarOrder, undefined);
+  }
+  assert.equal(normalizeWorkspaces([{ ...mixed[0], sidebarOrder: 2 }])[0].sidebarOrder, 2);
 });

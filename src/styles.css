@@ -3369,6 +3369,21 @@ button.mod-status:hover { color: var(--text); }
 .rail-sec .workspace-host-menu { margin-left: auto; }
 .rail-sec .workspace-host-menu > .icon { width: 22px; height: 22px; padding: 0; font-size: 14px; }
 .ws { margin-bottom: 2px; }
+.project-host-group { min-width: 0; margin-bottom: 6px; }
+.project-host-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 7px 8px 4px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; text-align: left; cursor: pointer; }
+.project-host-toggle:hover { color: var(--text); }
+.project-host-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+.project-host-toggle > svg { flex: none; }
+.project-host-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-host-count { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; }
+.project-host-group .ws-name { cursor: grab; }
+.project-host-group .ws-name:active { cursor: grabbing; }
+.project-host-group .host-tag .host-name { display: none; }
+.ws-row.project-dragging { opacity: .4; }
+.ws-row.project-drop-before::before, .ws-row.project-drop-after::after { content: ""; position: absolute; left: 8px; right: 8px; height: 2px; background: var(--accent); border-radius: 1px; pointer-events: none; }
+.ws-row.project-drop-before::before { top: -2px; }
+.ws-row.project-drop-after::after { bottom: -2px; }
+.project-order-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .ws-row { position: relative; }
 .ws-row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
 .ws-row.lit { background: var(--panel-2); border-color: var(--line); }

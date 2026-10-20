@@ -563,7 +563,7 @@ function realSidebar() {
   return mountComponent('Sidebar.tsx', 'ProjectSidebar', {
     flagLabel: attention.label, workspaceFlag: attention.workspaceFlag,
     workspaceHost: hostSession.workspaceHost,
-    ageWords: sidebarModel.ageWords, hostTints: sidebarModel.hostTints, sidebarSections: sidebarModel.sidebarSections, twinPath: sidebarModel.twinPath,
+    ageWords: sidebarModel.ageWords, hostTints: sidebarModel.hostTints, projectGroups: sidebarModel.projectGroups, sidebarSections: sidebarModel.sidebarSections, twinPath: sidebarModel.twinPath,
     dotState: hostFacts.dotState,
     DOT_WORDS: hostFacts.DOT_WORDS, DeckIcon: stubComponent('DeckIcon'),
     MenuList: stubComponent('MenuList'), HoverCard: stubComponent('HoverCard'), ProjectCard: stubComponent('ProjectCard'), ThreadCard: stubComponent('ThreadCard'),

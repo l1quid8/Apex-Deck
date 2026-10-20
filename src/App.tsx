@@ -44,7 +44,7 @@ import { copyMenuItems, paneMenuItems, projectMenuItems, type CopyKind, type Pan
 import { ProjectSidebar } from "./Sidebar";
 import { ConnectionDialog, type ConnectionMode } from "./ConnectionDialog";
 import { MenuList, type MenuAnchor, type MenuEntry } from "./Menu";
-import { archiveThreads, hostTints, noteActive, setCollapsed, setUnread, toggleProjectPin, twinPath, unarchiveThreads } from "./sidebarModel.ts";
+import { archiveThreads, hostTints, noteActive, reorderProject, setCollapsed, setUnread, toggleProjectPin, twinPath, unarchiveThreads } from "./sidebarModel.ts";
 import { COPIED, folderCopyText, writeClipboard } from "./threadCopy.ts";
 import { chooseOutcome, pickerRows, shortName, workInRows } from "./destinations.ts";
 import { Glyph, ProjectFolder } from "./SidebarIcons";
@@ -2406,6 +2406,7 @@ export function App() {
               setWorkspaces((list) => setCollapsed(list, workspace.id, !workspace.collapsed));
             }}
             onProjectPin={(workspace) => setWorkspaces((list) => toggleProjectPin(list, workspace.id))}
+            onReorderProject={(source, target, after) => setWorkspaces(list => reorderProject(list, source, target, after))}
             onNewIn={newIn}
             onAddWorkspace={(hostId) => addWorkspace(undefined, hostId)}
             onManageHosts={() => setSettingsOpen("hosts")}

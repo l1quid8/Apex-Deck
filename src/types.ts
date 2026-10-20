@@ -406,8 +406,10 @@ export interface Workspace {
   hostId?: string;
   /** Project copies share a family; defaults to the folder basename. */
   family?: string;
-  /** Kept at the top of the sidebar's Projects. */
+  /** Pin action moves it to the top of its host's projects. */
   pinned?: true;
+  /** Manual position within its host. Missing keeps the legacy pinned/insertion order. */
+  sidebarOrder?: number;
   /** Its threads are folded away in the sidebar. */
   collapsed?: true;
 }
