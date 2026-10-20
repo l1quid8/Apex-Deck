@@ -9,23 +9,50 @@ import * as model from '../src/rightPanelModel.ts';
 
 const source = await fs.readFile(new URL('../src/RightPanel.tsx', import.meta.url), 'utf8');
 const code = transform(source.replace(/^import .*;\n/gm, '').replace(/export (function|const)/g, '$1'), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-const build = (useState) => new Function('React', 'model', 'useRef', 'useState', `const {FIXED, KINDS, openTab, closeTab, activate, moveTab, outsideViewport, tabIndexAt, tabReleaseAction} = model; ${code}; return { RightPanel };`)(React, model, React.useRef, useState).RightPanel;
+const build = (useState) => new Function('React', 'model', 'useRef', 'useState', 'useEffect', 'useLayoutEffect', `const {FIXED, KINDS, TAB_GAP, openTab, closeTab, activate, fitTabs, moveTab, outsideViewport, tabIndexAt, tabReleaseAction} = model; ${code}; return { RightPanel };`)(React, model, React.useRef, useState, React.useEffect, React.useLayoutEffect).RightPanel;
 const RightPanel = build(React.useState);
-// The add menu opens on a click, which a static render can't make, so this copy starts with it open.
-const RightPanelMenuOpen = build(() => [true, () => {}]);
+// The ⋯ menu and its Add tool list open on clicks, which a static render can't make, so this copy starts with both open.
+const RightPanelMenuOpen = build((initial) => typeof initial === 'boolean' ? [true, () => {}] : React.useState(initial));
+const renderMenu = (state) => {
+  const html = renderToStaticMarkup(React.createElement(RightPanelMenuOpen, { state, onChange() {}, onClose() {}, onFull() {}, bodies: {} }));
+  return html.slice(html.indexOf('role="menu"'));
+};
 
 const render = (state, bodies = {}) => renderToStaticMarkup(React.createElement(RightPanel, { state, onChange() {}, onClose() {}, bodies }));
 
-test('tab strip lists every tab with one shared remove control and no individual close buttons', () => {
+test('tab strip lists every tab with only ⋯ and × beside it, and no per-tab close buttons', () => {
   const html = render({ ...model.defaultPanel(), open: true });
   assert.match(html, /role="tablist"/);
   for (const label of ['Dashboard', 'Tasks', 'Details']) assert.match(html, new RegExp(`>${label}<`));
   assert.equal((html.match(/aria-label="Close /g) ?? []).length, 0);
-  assert.equal((html.match(/aria-label="Remove selected tool"/g) ?? []).length, 1);
-  assert.match(html, /aria-label="Remove selected tool"[^>]*disabled=""/);
-  const removable = render({ ...model.defaultPanel(), open: true, active: 'details' });
-  assert.match(removable, /aria-label="Remove selected tool" title="Remove Details"[^>]*>−<\/button>/);
-  assert.doesNotMatch(removable, /aria-label="Remove selected tool"[^>]*disabled/);
+  const controls = html.slice(html.indexOf('right-panel-ctl'), html.indexOf('right-panel-name'));
+  assert.deepEqual([...controls.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((m) => m[1]), ['⋯', '×']);
+  assert.match(controls, /aria-label="Sidebar options"[^>]*aria-haspopup="menu" aria-expanded="false"/);
+  assert.match(controls, /aria-label="Hide side panel"/);
+  assert.doesNotMatch(html, /role="menu"/);
+});
+
+test('⋯ holds Add tool, Remove the open tool, and Expand; Remove is off for permanent tools', () => {
+  const fixed = renderMenu({ ...model.defaultPanel(), open: true });
+  assert.match(fixed, /aria-expanded="true"[^>]*>.*?Add tool/);
+  assert.match(fixed, /disabled=""[^>]*title="Dashboard is a permanent tool"[^>]*>.*?Remove Dashboard</);
+  assert.match(fixed, />Expand</);
+  const removable = renderMenu({ ...model.defaultPanel(), open: true, active: 'details' });
+  assert.match(removable, /Remove Details/);
+  assert.doesNotMatch(removable, /disabled=""[^>]*>.*?Remove Details/);
+  assert.match(renderMenu({ ...model.defaultPanel(), open: true, full: true }), />Collapse</);
+});
+
+test('Add tool starts collapsed each time ⋯ opens', () => {
+  assert.match(source, /const toggleMenu = \(\) => \{ setAddOpen\(false\);/);
+});
+
+test('names never ellipsize: the strip clips and each tab shows a full name or an icon', async () => {
+  const css = await fs.readFile(new URL('../src/right-panel.css', import.meta.url), 'utf8');
+  assert.match(css, /\.right-panel-tab-label \{ white-space: nowrap; \}/);
+  assert.match(css, /\.right-panel-tabs \{[^}]*overflow: hidden;/);
+  assert.match(css, /\.right-panel\[data-fit="mid"\] \.right-panel-tab:not\(\.active\) \.right-panel-tab-label/);
+  assert.match(css, /\.right-panel\[data-fit="icons"\] \.right-panel-name \{ display: block; \}/);
 });
 
 test('only the active tab body is shown, others stay mounted but hidden', () => {
@@ -41,18 +68,8 @@ test('details tab without a thread says so', () => {
   assert.match(html, /Open a thread to see its details\./);
 });
 
-test('the expand button sits before the hide button and says what it will do', () => {
-  const docked = render({ ...model.defaultPanel(), open: true });
-  assert.match(docked, /aria-label="Expand side panel" aria-pressed="false"/);
-  assert.ok(docked.indexOf('Expand side panel') < docked.indexOf('Hide side panel'));
-  const full = render({ ...model.defaultPanel(), open: true, full: true });
-  assert.match(full, /aria-label="Collapse side panel" aria-pressed="true"/);
-});
-
 test('the add menu lists Phone', () => {
-  const html = renderToStaticMarkup(React.createElement(RightPanelMenuOpen, { state: { ...model.defaultPanel(), open: true }, onChange() {}, onClose() {}, bodies: {} }));
-  const menu = html.slice(html.indexOf('role="menu"'));
-  assert.match(menu, /role="menuitem"[^>]*><svg[^>]*>.*?<\/svg>Phone</);
+  assert.match(renderMenu({ ...model.defaultPanel(), open: true }), /role="menuitem" class="indent"><span class="right-panel-menu-glyph"><svg[^>]*>.*?<\/svg><\/span>Phone</);
 });
 
 test('a Phone tab is labelled Phone', () => {

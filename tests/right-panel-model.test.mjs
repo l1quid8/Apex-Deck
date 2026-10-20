@@ -1,7 +1,7 @@
 // tests/right-panel-model.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultPanel, openTab, closeTab, activate, moveTab, parsePanel, setFull, closePanel, BROWSER_CAP } from '../src/rightPanelModel.ts';
+import { defaultPanel, openTab, closeTab, activate, moveTab, parsePanel, setFull, closePanel, BROWSER_CAP, fitTabs } from '../src/rightPanelModel.ts';
 
 const kinds = (s) => s.tabs.map((t) => t.kind);
 
@@ -126,4 +126,37 @@ test('saved panels from before Artifacts retain their tabs and selection', () =>
   const old = openTab(defaultPanel(), 'files', 1);
   assert.deepEqual(parsePanel(JSON.stringify(old)), old);
   assert.equal(openTab(parsePanel(JSON.stringify(old)), 'artifacts', 2).active, 'artifacts');
+});
+
+test('fitTabs shows every name when they fit, and never cuts one off', () => {
+  // Five 60 px names need 5 * (60 + 36) + 4 * 2 = 488 px.
+  const ws = [60, 60, 60, 60, 60];
+  assert.equal(fitTabs(ws, 0, 488, 'all').fit, 'all');
+  assert.equal(fitTabs(ws, 0, 487, 'all').fit, 'mid');
+  // Middle stage: four icons plus the longest name, 4 * 30 + 60 + 36 = 216.
+  assert.equal(fitTabs(ws, 0, 216, 'mid').fit, 'mid');
+  assert.equal(fitTabs(ws, 0, 215, 'mid').fit, 'icons');
+});
+
+test('fitTabs sizes the middle stage for the longest name, so switching tabs never changes it', () => {
+  const ws = [70, 35, 75, 60, 55];
+  for (let active = 0; active < ws.length; active++) assert.equal(fitTabs(ws, active, 240, 'mid').fit, 'mid');
+});
+
+test('fitTabs brings names back only with 20 px to spare', () => {
+  const ws = [60, 60, 60, 60, 60];
+  assert.equal(fitTabs(ws, 0, 500, 'mid').fit, 'mid');
+  assert.equal(fitTabs(ws, 0, 508, 'mid').fit, 'all');
+  assert.equal(fitTabs(ws, 0, 230, 'icons').fit, 'icons');
+  assert.equal(fitTabs(ws, 0, 236, 'icons').fit, 'mid');
+});
+
+test('fitTabs moves icons that still do not fit into the menu, never the open tab', () => {
+  const ws = [70, 35, 75, 60, 55, 40, 45];
+  // 150 px holds five 30 px icon slots.
+  const { fit, shown } = fitTabs(ws, 6, 150, 'icons');
+  assert.equal(fit, 'icons');
+  assert.deepEqual(shown, [true, true, true, true, false, false, true]);
+  assert.deepEqual(fitTabs(ws, 1, 150, 'icons').shown, [true, true, true, true, true, false, false]);
+  assert.deepEqual(fitTabs(ws, 0, 1000, 'all').shown, ws.map(() => true));
 });

@@ -123,3 +123,36 @@ export function tabIndexAt(rects: { left: number; right: number }[], x: number):
   const at = rects.findIndex((r) => x <= (r.left + r.right) / 2);
   return at >= 0 ? at : rects.length - 1;
 }
+
+/** How the tab strip shows names: every name, only the open tab's, or none. */
+export type TabFit = "all" | "mid" | "icons";
+/** Tab sizes around a name, in px: a 14 px icon, the 6 px gap and 16 px of padding; an icon-only tab; the space between tabs. */
+export const TAB_LABEL_CHROME = 36;
+export const TAB_ICON_WIDTH = 28;
+export const TAB_GAP = 2;
+/** Names come back only once this much spare room is free, so dragging the edge doesn't flicker. */
+export const TAB_FIT_BUFFER = 20;
+const FIT_RANK: Record<TabFit, number> = { icons: 0, mid: 1, all: 2 };
+
+/** Which stage the tab strip uses and which tabs stay in it. A name is never cut off: it shows
+ *  in full or its tab becomes an icon. The middle stage is sized for the longest name, so
+ *  clicking another tab never changes the stage. When even icons don't fit, the tabs past the
+ *  room go to the ⋯ menu; the active tab always stays. */
+export function fitTabs(labelWidths: number[], activeIndex: number, avail: number, prev: TabFit): { fit: TabFit; shown: boolean[] } {
+  const n = labelWidths.length;
+  if (n === 0) return { fit: prev, shown: [] };
+  const need: Record<TabFit, number> = {
+    all: labelWidths.reduce((sum, w) => sum + w + TAB_LABEL_CHROME, 0) + TAB_GAP * (n - 1),
+    mid: (TAB_ICON_WIDTH + TAB_GAP) * (n - 1) + Math.max(...labelWidths) + TAB_LABEL_CHROME,
+    icons: 0,
+  };
+  let fit: TabFit = "icons";
+  for (const stage of ["all", "mid"] as const) {
+    const slack = FIT_RANK[stage] > FIT_RANK[prev] ? TAB_FIT_BUFFER : 0;
+    if (avail >= need[stage] + slack) { fit = stage; break; }
+  }
+  const slots = fit === "icons" ? Math.max(1, Math.floor((avail + TAB_GAP) / (TAB_ICON_WIDTH + TAB_GAP))) : n;
+  const shown = labelWidths.map((_, i) => i < slots);
+  if (activeIndex >= slots && activeIndex < n) { shown[slots - 1] = false; shown[activeIndex] = true; }
+  return { fit, shown };
+}

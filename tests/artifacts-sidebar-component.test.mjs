@@ -61,16 +61,18 @@ test('Artifacts follows the selected thread, preserves each view, and stays out 
         await run('fixture.reopen()');await wait("document.querySelector('.artifacts-title')?.textContent.includes('one')");
         await run("document.querySelector('[aria-label=\\"Full window\\"]').click()");await frame();assert.equal(await run('fixture.panel.full'),true,'artifact maximize expands host');
         await run("document.querySelector('[aria-label=\\"Back to the thread\\"]').click()");await frame();assert.equal(await run('fixture.panel.full'),false);
-        await run("document.querySelector('[aria-label=\\"Remove selected tool\\"]').click()");await frame();
+        await run("document.querySelector('[aria-label=\\"Sidebar options\\"]').click()");await frame();
+        await run("[...document.querySelectorAll('[role=menuitem]')].find(b=>b.textContent.includes('Remove Artifacts')).click()");await frame();
         assert.equal(await run("fixture.panel.tabs.some(t=>t.kind==='artifacts')"),false,'minus removes selected artifacts tab');
-        await run("document.querySelector('[aria-label=\\"Add a tab\\"]').click()");await frame();
+        await run("document.querySelector('[aria-label=\\"Sidebar options\\"]').click()");await frame();
+        await run("[...document.querySelectorAll('[role=menuitem]')].find(b=>b.textContent.includes('Add tool')).click()");await frame();
         await run("[...document.querySelectorAll('[role=menuitem]')].find(b=>b.textContent==='Artifacts').click()");await wait("document.querySelector('.artifacts-title')?.textContent.includes('one')");
         await run("fixture.setFollow(true)");await frame();
         await run("service.title='Updated ';service.listeners.forEach(fn=>fn('one',{type:'message_added',message:{seq:7,speaker:{kind:'bot',id:'bot'},text:[String.fromCharCode(96).repeat(3)+'html','<h1>Incoming artifact</h1>',String.fromCharCode(96).repeat(3)].join(String.fromCharCode(10)),at:1},recovery_seq:2}))");
         await frame();
         assert.equal(await run('service.saves.length'),0,'standalone observer never overwrites the owner artifact file');
         await wait("document.querySelector('.artifacts-title')?.textContent.includes('Updated one')");
-        console.log('Real ChatPane portal, thread switching, version/view retention, maximize, and + - x passed');app.exit(0);
+        console.log('Real ChatPane portal, thread switching, version/view retention, maximize, and the ⋯ menu and × passed');app.exit(0);
       }catch(e){console.error(e.stack);app.exit(1);}
     });
   `);
