@@ -113,3 +113,17 @@ test('closing the panel clears full screen, so a reopen is docked', () => {
   assert.equal(closed.full, false);
   assert.equal(openTab(closed, 'files', 1).full, false);
 });
+
+
+test('Artifacts is a singleton, survives saves, and closes like Details', () => {
+  const state = openTab(openTab(defaultPanel(), 'artifacts', 1), 'artifacts', 2);
+  assert.equal(state.tabs.filter(t => t.kind === 'artifacts').length, 1);
+  assert.deepEqual(parsePanel(JSON.stringify(state)), state);
+  assert.equal(closeTab(state, state.active).tabs.some(t => t.kind === 'artifacts'), false);
+});
+
+test('saved panels from before Artifacts retain their tabs and selection', () => {
+  const old = openTab(defaultPanel(), 'files', 1);
+  assert.deepEqual(parsePanel(JSON.stringify(old)), old);
+  assert.equal(openTab(parsePanel(JSON.stringify(old)), 'artifacts', 2).active, 'artifacts');
+});

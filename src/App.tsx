@@ -12,6 +12,7 @@ import { DEFAULT_APPEARANCE } from "./themes";
 import { useAppearance } from "./useAppearance";
 import { providerEnabled } from "./providers";
 import { detailsOverlay, detailsThread, noteFocus, type DetailsSection } from "./detailsLayout";
+import type { ArtifactsHost } from "./ArtifactsPanel";
 import type { DetailsHost } from "./ThreadDetails";
 import { ThreadName } from "./ThreadName";
 import { ChatPane, type ThreadMenuRequest } from "./ChatPane";
@@ -53,7 +54,7 @@ import { MoveRefused, forkThread as importThreadFork, historyHasAttachments, pla
 import { flushAnswerStores } from "./interactiveAnswers/answerStore.ts";
 import { loadRoomState } from "./roomRecovery.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
-import { orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles, type ChatBundle, type PaneSpot, type PopoutAction, type PopoutSnapshot, type PopoutUpdate, type TabSpot } from "./popoutModel.ts";
+import { followedTabPane, orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles, type ChatBundle, type PaneSpot, type PopoutAction, type PopoutSnapshot, type PopoutUpdate, type TabSpot } from "./popoutModel.ts";
 import { TAB_LABEL } from "./RightPanel";
 import type { PanelTab } from "./rightPanelModel";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
@@ -80,7 +81,7 @@ import { RightBrowser } from "./RightBrowser";
 import { RightPhone } from "./RightPhone";
 import { RightFilesTab } from "./RightFiles";
 import { RightWorktreesTab } from "./RightWorktrees";
-import { closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
+import { closeTab, closePanel, defaultPanel, loadPanel, openTab, parsePanel, savePanel, setFull, type RightPanelState } from "./rightPanelModel";
 import type { AgentInfo, AppSection, AppSession, Layout, Pane, PaneStatus, ParticipantConfig, ThreadStatus, ToolServer, Workspace } from "./types";
 
 const STORAGE_KEY = "apex-deck.workspaces.v1";
@@ -400,6 +401,8 @@ export function App() {
   const asideRef = useRef<HTMLElement | null>(null);
   const [detailsCollapsed, setDetailsCollapsed] = useState<Partial<Record<DetailsSection, boolean>>>({});
   const [detailsSlot, setDetailsSlot] = useState<HTMLElement | null>(null);
+  const [artifactsSlot, setArtifactsSlot] = useState<HTMLElement | null>(null);
+  const artifactsTabActive = panel.tabs.find((t) => t.id === panel.active)?.kind === "artifacts";
   const detailsTabActive = panel.tabs.find((t) => t.id === panel.active)?.kind === "details";
   const bodyRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLElement>(null);
@@ -707,6 +710,17 @@ export function App() {
   /** The thread the details sidebar shows; null when no thread is on screen. */
   const detailsTarget = section === "threads" && !picking ? detailsThread(focusedPane, shown.filter((p) => p.kind === "chat").map((p) => p.id), recentThreads) : null;
   detailsTargetRef.current = detailsTarget;
+  const artifactsHost: ArtifactsHost = {
+    slot: artifactsSlot,
+    open: panel.open && artifactsTabActive && section === "threads",
+    target: detailsTarget,
+    overlay: overlayDetails,
+    full: sidePanelFull,
+    free: !panel.open || artifactsTabActive,
+    show: () => setPanel((p) => openTab({ ...p, open: true }, "artifacts", Date.now())),
+    close: () => setPanel((p) => closeTab(p, p.tabs.find((t) => t.kind === "artifacts")?.id ?? "artifacts")),
+    setFull: setSidePanelFull,
+  };
   const detailsHost: DetailsHost = { ...detailsHostBase, target: detailsTarget };
 
   // The arrangement of the panes in view. Panes that were added or closed
@@ -1339,9 +1353,9 @@ export function App() {
     const takeout = takeTabOut(panel, tabId);
     if (!takeout) return;
     const tab = takeout.tab;
-    const workspace = workspaces.find((w) => w.id === activeWorkspace) ?? shownWorkspaces(workspaces)[0] ?? null;
+    const selected = followedTabPane(tab.kind, listed, focusedPane, detailsTarget);
+    const workspace = workspaces.find((w) => w.id === (tab.kind === "artifacts" ? selected?.workspaceId : activeWorkspace)) ?? shownWorkspaces(workspaces)[0] ?? null;
     const hostId = workspace ? workspaceHost(workspace) : "local";
-    const selected = listed.find((pane) => pane.id === focusedPane);
     const snapshot: PopoutSnapshot = {
       kind: "tab", id: tab.id, title: tabTitle(tab), tabKind: tab.kind, appearance,
       ...(tab.url !== undefined ? { url: tab.url } : {}),
@@ -1470,11 +1484,10 @@ export function App() {
         ...(pane.kind === "chat" ? { chatConfig: chatConfigOf(workspace, hostId) } : {}),
       });
     }
-    const selected = listed.find((pane) => pane.id === focusedPane);
-    const selectedChat = selected?.kind === "chat" ? selected : null;
-    const followWorkspace = workspaces.find((w) => w.id === (selected?.workspaceId ?? activeWorkspace)) ?? null;
     for (const rec of poppedTabs) {
       const tab = panel.tabs.find((t) => t.id === rec.id) ?? rec.tab;
+      const selected = followedTabPane(tab.kind, listed, focusedPane, detailsTarget);
+      const followWorkspace = workspaces.find((w) => w.id === (selected?.workspaceId ?? activeWorkspace)) ?? null;
       const patch: PopoutUpdate = { title: tabTitle(tab), appearance };
       if (tab.kind === "browser" && tab.url !== undefined) patch.url = tab.url;
       if (tab.kind === "dashboard") patch.dashboardRows = dashboardRows;
@@ -1486,12 +1499,12 @@ export function App() {
         // The tasks owner travels as one bundle: workspace and conversation from the same push, never mixed.
         if (tab.kind === "tasks") patch.conversationId = assistantMonitors.find((m) => m.workspaceId === followWorkspace.id)?.conversationId ?? "";
         // Details shows a thread and Tasks lists saved Agents: both follow the live bundle.
-        if (tab.kind === "details" || tab.kind === "tasks") patch.chatConfig = chatConfigOf(followWorkspace, workspaceHost(followWorkspace));
+        if (tab.kind === "details" || tab.kind === "tasks" || tab.kind === "artifacts") patch.chatConfig = chatConfigOf(followWorkspace, workspaceHost(followWorkspace));
       }
-      patch.activeChatId = selectedChat ? selectedChat.id : null;
+      patch.activeChatId = selected?.kind === "chat" ? selected.id : null;
       push(rec.token, patch);
     }
-  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents, appearance]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, detailsTarget, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents, appearance]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A thread closed, archived or deleted here, or its project removed, takes its
   // pop-out with it. The record drops first, so the window's close restores nothing.
@@ -2511,7 +2524,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} artifactsHost={artifactsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance)} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
@@ -2601,6 +2614,9 @@ export function App() {
                 try { if (workspace) route = hostBackend(workspaceHost(workspace)); } catch { /* show the offline state */ }
                 return <RightWorktreesTab root={workspace?.path || null} backend={route} visible={visible} onOpen={(path) => { if (route && workspace) void route.openTarget(path, workspace.path || null, false).catch(() => {}); }} />;
               },
+              artifacts: (_tab, visible) => detailsTarget
+                ? <div ref={setArtifactsSlot} tabIndex={-1} className="right-artifacts-slot" hidden={!visible} />
+                : <p className="muted right-panel-empty">Open a thread to see its artifacts.</p>,
               details: (_tab, visible) => detailsTarget
                 ? <div ref={setDetailsSlot} tabIndex={-1} className="right-details-slot" hidden={!visible} />
                 : <p className="muted right-panel-empty">Open a thread to see its details.</p>,

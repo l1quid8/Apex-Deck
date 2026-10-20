@@ -22,6 +22,7 @@ import { DEFAULT_LANDING_TEXTURE } from "./settings";
 import { TerminalPane } from "./TerminalPane";
 import { DEFAULT_APPEARANCE, type AppearanceValues } from "./themes";
 import { useAppearance } from "./useAppearance";
+import type { ArtifactsHost } from "./ArtifactsPanel";
 import type { DetailsHost } from "./ThreadDetails";
 import type { Pane, ParticipantConfig } from "./types";
 import "./popout.css";
@@ -318,6 +319,27 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
   onOpenExternally: (hosts: string[]) => void;
   send: (action: PopoutAction) => void;
 }) {
+  const [artifactsSlot, setArtifactsSlot] = useState<HTMLElement | null>(null);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [artifactsFull, setArtifactsFull] = useState(false);
+  useEffect(() => { if (paneDetails.open) { setArtifactsOpen(false); setArtifactsFull(false); } }, [paneDetails.open]);
+  useEffect(() => {
+    if (!artifactsOpen) return;
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (artifactsFull) { event.preventDefault(); setArtifactsFull(false); }
+      else if (overlay && artifactsSlot?.contains(event.target as Node)) { event.preventDefault(); setArtifactsOpen(false); }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [artifactsOpen, artifactsFull, overlay, artifactsSlot]);
+  const paneArtifacts: ArtifactsHost = {
+    slot: artifactsSlot, open: artifactsOpen, target: snapshot.id,
+    overlay, full: artifactsFull, free: !paneDetails.open,
+    show: () => { paneDetails.setOpen(false); setArtifactsOpen(true); },
+    close: () => { setArtifactsOpen(false); setArtifactsFull(false); },
+    setFull: setArtifactsFull,
+  };
   const pane: Pane = {
     id: snapshot.id,
     workspaceId: snapshot.workspaceId ?? "",
@@ -334,7 +356,7 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
       overlay,
       collapsed: paneDetails.collapsed,
       toggle: paneDetails.toggle,
-      show: paneDetails.show,
+      show: (section) => { setArtifactsOpen(false); paneDetails.show(section); },
       close: () => paneDetails.setOpen(false),
     };
     return (
@@ -370,7 +392,7 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
           />
         ) : (
           <div className="popout-chat-row">
-            <div className="popout-chat-main">
+            <div className="popout-chat-main" hidden={artifactsOpen && artifactsFull}>
               <ChatPane
                 pane={{ ...pane, kind: "chat" }}
                 cwd={cwd}
@@ -391,6 +413,7 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
                 landingTexture={bundle.landingTexture}
                 codeRunButtons={bundle.codeRunButtons}
                 details={details}
+                artifactsHost={paneArtifacts}
                 countsSlot={countsSlot}
                 menuRequest={menuRequest}
                 onMenuDone={onMenuDone}
@@ -404,6 +427,10 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
                 }}
               />
             </div>
+            {artifactsOpen && overlay && !artifactsFull && <button type="button" className="popout-artifacts-backdrop" aria-label="Close artifacts overlay" onClick={paneArtifacts.close} />}
+            {artifactsOpen && (
+              <div ref={setArtifactsSlot} tabIndex={-1} className={`right-artifacts-slot popout-artifacts ${artifactsFull ? "full" : overlay ? "overlay" : "docked"}`} />
+            )}
             {paneDetails.open && (
               <div ref={paneDetails.setSlot} tabIndex={-1} className={`right-details-slot thread-details ${overlay ? "overlay" : "docked"}`} />
             )}
@@ -521,7 +548,8 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
       </HostPane>
     );
   }
-  if (tabKind === "details") {
+  if (tabKind === "details" || tabKind === "artifacts") {
+    const isArtifacts = tabKind === "artifacts";
     const details: DetailsHost = {
       slot: tabDetails.slot,
       open: tabDetails.open && activeChatId !== null,
@@ -532,15 +560,23 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
       show: tabDetails.show,
       close: () => window.close(),
     };
+    const artifacts: ArtifactsHost = {
+      slot: tabDetails.slot, open: tabDetails.open && activeChatId !== null,
+      target: activeChatId, overlay: false, full: false, free: true,
+      show: () => tabDetails.setOpen(true), close: () => window.close(), setFull: () => {}, expandable: false,
+    };
     return (
       <>
         {activeChatId ? (
           <>
-            <div ref={tabDetails.setSlot} tabIndex={-1} className="right-details-slot thread-details full" />
+            {isArtifacts
+              ? <div ref={tabDetails.setSlot} tabIndex={-1} className="right-artifacts-slot popout-artifacts full" />
+              : <div ref={tabDetails.setSlot} tabIndex={-1} className="right-details-slot thread-details full" />}
             <div style={{ display: "none" }}>
             <HostPane backend={route} agents={bundle.agents}>
               {() => (
                 <ChatPane
+                  key={activeChatId}
                   pane={{ id: activeChatId, workspaceId, kind: "chat", title }}
                   cwd={cwd}
                   agents={bundle.agents}
@@ -559,14 +595,16 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
                   landingTexture={bundle.landingTexture}
                   onActivity={() => {}}
                   onSignal={() => {}}
-                  details={details}
+                  details={isArtifacts ? undefined : details}
+                  artifactsHost={isArtifacts ? artifacts : undefined}
+                  followArtifacts={isArtifacts}
                 />
               )}
             </HostPane>
             </div>
           </>
         ) : (
-          tabDetails.open && <p className="muted right-panel-empty">Open a thread to see its details.</p>
+          tabDetails.open && <p className="muted right-panel-empty">Open a thread to see its {isArtifacts ? "artifacts" : "details"}.</p>
         )}
       </>
     );

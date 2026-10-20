@@ -1032,12 +1032,15 @@ textarea {
 /* A reply that is still being worked on. It must not be mistaken for the
    finished message: the avatar shimmers, the text is dimmer, the steps taken
    are listed above it, and a moving status line sits under it until the turn
-   ends. */
+   ends. It keeps 260px beside the 36px avatar and 12px gap, but never more
+   than the thread is wide: the row's percentage is the thread's width, and the
+   reply takes what is left of the row. */
 .bubble.writing,
 .bot-row > .bubble.writing {
   opacity: 1;
-  min-width: 260px;
+  min-width: min(260px, 100% - 48px);
 }
+.bot-row:has(> .bubble.writing) { min-width: min(308px, 100%); }
 .draft-text {
   color: var(--muted);
 }
@@ -2735,7 +2738,7 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .hand-off { flex: none; }
 .hand-off > button { padding: 3px 8px; font-size: 12px; white-space: nowrap; }
 .hand-off-menu { top: auto; bottom: calc(100% + 6px); }
-/* Now 3.4: Quote, Copy and Fork on every message; one ⋯ in a narrow pane. */
+/* Now 3.4: Quote, Copy and Fork on every message. */
 /* Actions sit under the bubble: a bot's at bottom left, yours at bottom right. */
 .message-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; row-gap: 2px; }
 .human-row > .bubble { grid-column: 1; grid-row: 1; justify-self: end; }
@@ -2749,6 +2752,10 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
    step rows and table headers never wrap, so a long one pushed past the column. */
 .message-row > .bubble { min-width: 0; max-width: 100%; }
 .message-actions { flex: none; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 2px; }
+/* In a thread the row stays inside its reply's column: where it doesn't fit,
+   the time drops to its own line, and your lines stay right-aligned. */
+.message-row > .message-actions { flex-wrap: wrap; }
+.human-row > .message-actions { justify-content: flex-end; text-align: end; }
 .message-more > .pane-menu { left: 0; right: auto; }
 .human-row .message-more > .pane-menu { left: auto; right: 0; }
 .human-row .msg-action.quote svg { transform: scaleX(-1); }
@@ -2999,6 +3006,10 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .artifacts-panel.overlay { position: absolute; top: 0; right: 0; bottom: 0; z-index: 30; width: min(440px, 100%); box-shadow: -12px 0 32px #0005; }
 .artifacts-backdrop { position: absolute; inset: 0; z-index: 29; border: 0; border-radius: 0; background: #0003; }
 .artifacts-panel.full-window { position: fixed; top: var(--deck-top, 0px); left: 0; right: 0; bottom: 0; z-index: 35; width: auto; border: 0; box-shadow: none; background: var(--bg); }
+/* In the side panel's Artifacts tab it fills the tab, top to bottom, and wears the side panel's frame. */
+.right-artifacts-slot { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.right-artifacts-slot[hidden] { display: none; }
+:root .right-artifacts-slot > .artifacts-panel.docked { flex: 1; width: auto; border-left: 0; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .artifacts-head { display: flex; align-items: flex-start; gap: 6px; padding: 12px 8px 12px 16px; border-bottom: 1px solid var(--line); }
 .artifacts-head > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .artifacts-title { align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; margin-left: -6px; font-weight: 600; background: transparent; border-color: transparent; }
@@ -3098,10 +3109,13 @@ div.ws-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 /* A consistent action row, with disclosure last in both message types. */
 .collapsed-actions { min-height: 32px; }
 .message-action-items, .message-primary-actions { display: flex; align-items: center; gap: 2px; }
+.message-row :is(.message-primary-actions, .message-action-items) { flex-wrap: wrap; }
 .action-disclosure { flex: none; }
 /* Actions and time show while the message is hovered, like Codex. The row keeps
-   its height so nothing shifts; a pinned message keeps its pin in view. */
+   its height so nothing shifts; a pinned message keeps its pin in view. In a
+   thread, a week-old date wraps rather than overflow the narrowest pane. */
 .message-time { padding: 0 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.message-row .message-time { text-wrap: balance; }
 @media (hover: hover) {
   .message-actions .msg-action, .message-time { opacity: 0; transition: opacity 120ms ease; }
   .message-row:hover .message-actions .msg-action, .message-row:hover .message-time,

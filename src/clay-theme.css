@@ -418,6 +418,9 @@
    the column and the thread scrolled sideways. Clamped, the step's own
    ellipsis takes the rest; the base's max-width: none allowed the overflow. */
 :root[data-deck-theme="clay"] .bot-row > .bubble { max-width: 100%; }
+/* No avatar gutter here, so a reply being written keeps its 260px floor
+   wherever the thread itself is that wide. */
+:root[data-deck-theme="clay"] .bot-row > .bubble.writing { min-width: min(260px, 100%); }
 :root[data-deck-theme="clay"] .bot-row > .identicon {
   position: absolute;
   left: 0;
