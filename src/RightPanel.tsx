@@ -47,6 +47,7 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
   const panel = useRef<HTMLDivElement | null>(null);
   const controls = useRef<HTMLDivElement | null>(null);
   const meter = useRef<HTMLSpanElement | null>(null);
+  const tipBox = useRef<HTMLDivElement | null>(null);
   const moreButton = useRef<HTMLButtonElement | null>(null);
   const menu = useRef<HTMLDivElement | null>(null);
   // Name widths, measured once per name rather than on every resize.
@@ -67,7 +68,12 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
     if (!bar || !ctl || !ruler || !bar.clientWidth) return;
     const ws = labels.map((text) => {
       let w = widths.current.get(text);
-      if (w === undefined) { ruler.textContent = text; w = ruler.getBoundingClientRect().width; widths.current.set(text, w); }
+      if (w === undefined) {
+        ruler.textContent = text;
+        w = ruler.getBoundingClientRect().width;
+        // A zero width means the ruler wasn't laid out; caching it would fit a real name into no room.
+        if (w > 0) widths.current.set(text, w);
+      }
       return w;
     });
     const pad = getComputedStyle(bar);
@@ -79,6 +85,13 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
     });
   };
   useLayoutEffect(() => { fitRef.current(); }, [fitKey]);
+  // Centre the bubble under its icon, then pull it back inside the panel's edges.
+  useLayoutEffect(() => {
+    const el = tipBox.current, box = panel.current;
+    if (!tip || !el || !box) return;
+    const w = el.getBoundingClientRect().width;
+    el.style.left = `${Math.max(6, Math.min(tip.x - w / 2, box.clientWidth - w - 6))}px`;
+  }, [tip]);
   useEffect(() => {
     const el = panel.current;
     if (!el || typeof ResizeObserver === "undefined") return;
@@ -176,7 +189,7 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
     </div>
     <div className="right-panel-name" aria-hidden="true">{selectedTab ? labels[state.tabs.indexOf(selectedTab)] : ""}</div>
     <span className="right-panel-tab-label right-panel-meter" ref={meter} aria-hidden="true" />
-    {tip && <div className="right-panel-tip" style={{ left: tip.x }} aria-hidden="true">{tip.text}</div>}
+    {tip && <div className="right-panel-tip" ref={tipBox} aria-hidden="true">{tip.text}</div>}
     {menuOpen && <div className="right-panel-menu" role="menu" ref={menu}>
       {overflow.length > 0 && <>
         <div className="right-panel-menu-sub">More tabs</div>
