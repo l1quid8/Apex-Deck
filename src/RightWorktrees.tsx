@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Backend } from "./backend";
 import type { Worktree, WorktreeAdd, WorktreeList } from "./types";
+import { writeClipboard } from "./threadCopy";
 
 const shorten = (path: string) => path.length > 48 ? `…${path.slice(-47)}` : path;
 const initialRequest = (branch = ""): WorktreeAdd => ({ branch, newBranch: true, base: "HEAD", folder: null });
@@ -17,6 +18,7 @@ export function worktreeErrorMessage(reason: unknown): string {
 export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: string | null; backend: Backend | null; visible: boolean; onOpen: (path: string) => void }) {
   const [listing, setListing] = useState<WorktreeList | null>(null);
   const [error, setError] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
   const [busy, setBusy] = useState("");
   const [adding, setAdding] = useState(false);
   const [request, setRequest] = useState<WorktreeAdd>(initialRequest());
@@ -29,7 +31,12 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
     catch (reason) { if (id === loadId.current) { setError(worktreeErrorMessage(reason)); setListing(null); } }
   };
   useEffect(() => { if (visible) void load(); return () => { loadId.current++; }; }, [visible, root, backend]);
-  useEffect(() => { setListing(null); setRequest(initialRequest()); setAdding(false); setConfirm(null); setError(""); }, [root]);
+  useEffect(() => { setListing(null); setRequest(initialRequest()); setAdding(false); setConfirm(null); setError(""); setCopyStatus(""); }, [root]);
+  const copyPathname = async (path: string) => {
+    setCopyStatus("");
+    const ok = await writeClipboard(path, navigator.clipboard);
+    setCopyStatus(ok ? "Pathname copied" : "Clipboard unavailable");
+  };
   const doAdd = async () => {
     if (!root || !backend) return;
     setBusy("add"); setError("");
@@ -71,6 +78,7 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
       {error !== OLD_SERVICE && <button type="button" onClick={() => { setAdding((value) => !value); setError(""); }} disabled={!!busy}>{adding ? "Cancel" : "New worktree"}</button>}
       <button type="button" aria-label="Refresh worktrees" title="Refresh" onClick={() => void load()} disabled={!!busy}>↻</button>
     </header>
+    {copyStatus && <p className="muted right-worktrees-empty" role="status">{copyStatus}</p>}
     {adding && error !== OLD_SERVICE && <form className="right-worktrees-form" onSubmit={(event) => { event.preventDefault(); void doAdd(); }}>
       <label>Branch<input autoFocus value={request.branch} onChange={(event) => branchChanged(event.target.value)} required /></label>
       <div className="right-worktrees-switch" role="group" aria-label="Branch source">
@@ -85,11 +93,11 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
     {!listing && !error && <p className="muted right-worktrees-empty">Loading worktrees…</p>}
     {error && !adding && <p className="right-worktrees-error" role="alert">{error}</p>}
     {listing && listing.items.length === 0 && <p className="muted right-worktrees-empty">No worktrees found.</p>}
-    {listing && <ul className="right-worktrees-list">{listing.items.map((item) => <WorktreeRow key={item.path} item={item} busy={busy === item.path} confirm={confirm?.path === item.path && confirm.action === "remove"} pruneConfirm={confirm?.path === item.path && confirm.action === "prune"} onOpen={onOpen} onRemove={(force) => void doRemove(item.path, force)} onPrune={(force) => { void doPruneOne(item.path, force); }} onCancel={() => setConfirm(null)} />)}</ul>}
+    {listing && <ul className="right-worktrees-list">{listing.items.map((item) => <WorktreeRow key={item.path} item={item} busy={busy === item.path} confirm={confirm?.path === item.path && confirm.action === "remove"} pruneConfirm={confirm?.path === item.path && confirm.action === "prune"} onOpen={onOpen} onCopy={(path) => void copyPathname(path)} onRemove={(force) => void doRemove(item.path, force)} onPrune={(force) => { void doPruneOne(item.path, force); }} onCancel={() => setConfirm(null)} />)}</ul>}
     {listing?.items.some((item) => item.prunable) && <button type="button" className="right-worktrees-prune" onClick={() => void doPrune()} disabled={!!busy}>{busy === "prune" ? "Cleaning…" : "Clean up missing"}</button>}
   </section>;
 }
-export function WorktreeRow({ item, busy, confirm, pruneConfirm, onOpen, onRemove, onPrune, onCancel }: { item: Worktree; busy: boolean; confirm: boolean; pruneConfirm?: boolean; onOpen: (path: string) => void; onRemove: (force: boolean) => void; onPrune?: (force: boolean) => void; onCancel: () => void }) {
+export function WorktreeRow({ item, busy, confirm, pruneConfirm, onOpen, onCopy, onRemove, onPrune, onCancel }: { item: Worktree; busy: boolean; confirm: boolean; pruneConfirm?: boolean; onOpen: (path: string) => void; onCopy: (path: string) => void; onRemove: (force: boolean) => void; onPrune?: (force: boolean) => void; onCancel: () => void }) {
   const branch = item.branch ?? (item.head ? `detached · ${item.head.slice(0, 8)}` : "detached");
   const labels = [item.main && "Main", item.changes != null && item.changes > 0 && `Changes · ${item.changes}`, item.locked && "Locked", item.prunable && "Missing", item.task && "ApexAgent task"].filter(Boolean) as string[];
   const actionable = !item.main && !item.task;
@@ -101,6 +109,7 @@ export function WorktreeRow({ item, busy, confirm, pruneConfirm, onOpen, onRemov
           <summary aria-label="Worktree actions" title="Worktree actions">⋯</summary>
           <div className="right-worktrees-menu-items">
             <button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onOpen(item.path); }}>Open folder</button>
+            <button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onCopy(item.path); }}>Copy pathname</button>
             {actionable && <>
               <hr />
             {!item.prunable && <button type="button" title="Delete folder and unregister worktree" disabled={busy || item.locked} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onRemove(false); }}>Remove</button>}

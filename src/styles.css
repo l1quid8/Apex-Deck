@@ -3350,8 +3350,8 @@ button.mod-status:hover { color: var(--text); }
 .pane-head > button, .pane-head > .pane-menu-wrap { flex-shrink: 0; }
 .workspace-host { max-width: 110px; }
 .workspace-host-menu { position: relative; }
-.workspace-machine-menu { position: absolute; top: 100%; right: 0; z-index: 90; width: 260px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 32px #0005; }
-.workspace-machine-menu button { display: block; width: 100%; text-align: left; }
+.workspace-machine-menu { position: fixed; z-index: 90; width: 260px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow-y: auto; overflow-wrap: anywhere; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 32px #0005; }
+.workspace-machine-menu button { display: block; width: 100%; text-align: left; white-space: normal; }
 .workspace-machine-menu strong, .workspace-machine-menu p { display: block; padding: 6px; }
 .approval-host { max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
 .approval, .approval-detail { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }

@@ -173,7 +173,7 @@
 .right-worktrees-menu summary::-webkit-details-marker { display: none; }
 .right-worktrees-menu summary:hover { background: var(--hover); }
 .right-worktrees-menu-items { position: absolute; right: 0; top: 100%; z-index: 55; min-width: 110px; padding: 4px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,.3); }
-.right-worktrees-menu-items button { display: block; width: 100%; text-align: left; }
+.right-worktrees-menu-items button { display: block; width: 100%; text-align: left; white-space: nowrap; }
 
 .right-worktrees-menu-items hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
