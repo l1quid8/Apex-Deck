@@ -9,7 +9,7 @@ import * as model from '../src/rightPanelModel.ts';
 
 const source = await fs.readFile(new URL('../src/RightPanel.tsx', import.meta.url), 'utf8');
 const code = transform(source.replace(/^import .*;\n/gm, '').replace(/export (function|const)/g, '$1'), { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-const build = (useState) => new Function('React', 'model', 'useRef', 'useState', `const {FIXED, KINDS, openTab, closeTab, activate, moveTab} = model; ${code}; return { RightPanel };`)(React, model, React.useRef, useState).RightPanel;
+const build = (useState) => new Function('React', 'model', 'useRef', 'useState', `const {FIXED, KINDS, openTab, closeTab, activate, moveTab, outsideViewport, tabIndexAt, tabReleaseAction} = model; ${code}; return { RightPanel };`)(React, model, React.useRef, useState).RightPanel;
 const RightPanel = build(React.useState);
 // The add menu opens on a click, which a static render can't make, so this copy starts with it open.
 const RightPanelMenuOpen = build(() => [true, () => {}]);
@@ -54,4 +54,32 @@ test('a Phone tab is labelled Phone', () => {
   const html = render({ ...model.openTab(model.defaultPanel(), 'phone', 1), open: true });
   assert.match(html, /aria-label="Phone"/);
   assert.match(html, />Phone</);
+});
+
+test('fixed Dashboard and Tasks tabs can drag out; reordering them still refuses', () => {
+  const html = render({ ...model.defaultPanel(), open: true });
+  // Every tab is a pointer-drag target, fixed ones included: HTML5 drag is gone,
+  // whose dragend never delivered a usable release outside the window.
+  for (const id of ['dashboard', 'tasks', 'details']) assert.match(html, new RegExp(`data-tab-id="${id}"`));
+  assert.doesNotMatch(html, /draggable=/);
+  assert.match(source, /onPointerDown/);
+  assert.match(source, /setPointerCapture/);
+  // A release past the window's edge pops out whichever tab was dragged, fixed included;
+  // inside it reorders, and a press that never travelled stays a click.
+  assert.equal(model.outsideViewport(-4, 40, 800, 600), true);
+  assert.equal(model.outsideViewport(40, 40, 800, 600), false);
+  assert.equal(model.tabReleaseAction(true, true), 'popout');
+  assert.equal(model.tabReleaseAction(true, false), 'reorder');
+  assert.equal(model.tabReleaseAction(false, true), 'click');
+  const state = model.defaultPanel();
+  assert.deepEqual(model.moveTab(state, 'dashboard', 2), state);
+  assert.deepEqual(model.moveTab(state, 'tasks', 2), state);
+});
+
+test('a tab release lands on the tab whose center it passed', () => {
+  const rects = [{ left: 0, right: 100 }, { left: 100, right: 200 }, { left: 200, right: 300 }];
+  assert.equal(model.tabIndexAt(rects, 10), 0);
+  assert.equal(model.tabIndexAt(rects, 60), 1);
+  assert.equal(model.tabIndexAt(rects, 299), 2);
+  assert.equal(model.tabIndexAt([], 10), -1);
 });

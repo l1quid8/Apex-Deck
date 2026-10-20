@@ -1,6 +1,6 @@
 // src/RightPanel.tsx
-import { useRef, useState, type ReactNode } from "react";
-import { FIXED, KINDS, activate, closeTab, moveTab, openTab, type PanelTab, type RightPanelState, type TabKind } from "./rightPanelModel";
+import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { FIXED, KINDS, activate, closeTab, moveTab, openTab, outsideViewport, tabIndexAt, tabReleaseAction, type PanelTab, type RightPanelState, type TabKind } from "./rightPanelModel";
 import "./right-panel.css";
 
 export const TAB_LABEL: Record<TabKind, string> = { dashboard: "Dashboard", tasks: "Tasks", details: "Details", browser: "Browser", files: "Files", worktrees: "Worktrees", phone: "Phone" };
@@ -38,29 +38,71 @@ interface Props {
 export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAttention, onPopout, onPopoutDragOut }: Props) {
   const [adding, setAdding] = useState(false);
   const [context, setContext] = useState<{ id: string; x: number; y: number } | null>(null);
-  const dragging = useRef<string | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const strip = useRef<HTMLDivElement | null>(null);
+  const suppressClick = useRef(false);
   const now = () => Date.now();
-  const outsideWindow = (event: { screenX: number; screenY: number }) =>
-    event.screenX <= window.screenX || event.screenX >= window.screenX + window.outerWidth ||
-    event.screenY <= window.screenY || event.screenY >= window.screenY + window.outerHeight;
+  // The window listeners below outlive the render that attached them.
+  const live = useRef({ state, onChange, onPopoutDragOut });
+  live.current = { state, onChange, onPopoutDragOut };
+
+  /** Press a tab: past a small travel it is a drag — reorder inside, pop out past the
+   *  window's edge — and without the travel it stays a plain click. Pointer capture
+   *  keeps the release coming while off-window, which HTML5 drag never delivered. */
+  const beginTabDrag = (tabId: string, event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    const button = (event.target as HTMLElement).closest("button");
+    if (button && button.getAttribute("role") !== "tab") return; // The close × keeps its click.
+    suppressClick.current = false;
+    const press = { id: tabId, x: event.clientX, y: event.clientY, active: false, el: event.currentTarget as HTMLElement, pid: event.pointerId };
+    const move = (e: PointerEvent) => {
+      if (press.active) return;
+      if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return;
+      press.active = true;
+      setDragId(press.id);
+      try { press.el.setPointerCapture(press.pid); } catch { /* Capture can fail as the press ends; the drag still works inside. */ }
+    };
+    const finish = (e: PointerEvent | null) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", key);
+      try { if (press.el.hasPointerCapture?.(press.pid)) press.el.releasePointerCapture(press.pid); } catch { /* The element may be gone. */ }
+      setDragId(null);
+      if (!press.active) return;
+      suppressClick.current = true;
+      if (!e) return;
+      const current = live.current;
+      const action = tabReleaseAction(true, outsideViewport(e.clientX, e.clientY, window.innerWidth, window.innerHeight));
+      if (action === "popout") { current.onPopoutDragOut?.(press.id, e.screenX, e.screenY); return; }
+      const bar = strip.current;
+      if (!bar) return;
+      const rects = current.state.tabs.map((t) => {
+        const box = bar.querySelector(`[data-tab-id="${t.id}"]`)?.getBoundingClientRect();
+        return box ? { left: box.left, right: box.right } : { left: 0, right: 0 };
+      });
+      const to = tabIndexAt(rects, e.clientX);
+      if (to >= 0) current.onChange(moveTab(current.state, press.id, to));
+    };
+    const up = (e: PointerEvent) => finish(e);
+    const cancel = () => finish(null);
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") finish(null); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", key);
+  };
   return <div className="right-panel">
-    <div className="right-panel-tabs" role="tablist" aria-label="Side panel">
-      {state.tabs.map((tab, index) => {
+    <div className="right-panel-tabs" role="tablist" aria-label="Side panel" ref={strip}>
+      {state.tabs.map((tab) => {
         const fixed = FIXED.includes(tab.kind);
         const label = tab.kind === "browser" && tab.url ? hostOf(tab.url) : TAB_LABEL[tab.kind];
         const flaggedTasks = tab.kind === "tasks" && !!taskAttention?.count;
-        return <div key={tab.id} className={`right-panel-tab${tab.id === state.active ? " active" : ""}${flaggedTasks && tab.id === state.active ? " has-attention" : ""}`}
-          draggable={!fixed}
-          onDragStart={() => { dragging.current = tab.id; }}
-          onDragOver={(e) => { if (dragging.current) e.preventDefault(); }}
-          onDrop={() => { if (dragging.current) onChange(moveTab(state, dragging.current, index)); dragging.current = null; }}
-          onDragEnd={(e) => {
-            const id = dragging.current;
-            dragging.current = null;
-            if (id && onPopoutDragOut && outsideWindow(e)) onPopoutDragOut(id, e.screenX, e.screenY);
-          }}
+        return <div key={tab.id} data-tab-id={tab.id} className={`right-panel-tab${tab.id === state.active ? " active" : ""}${flaggedTasks && tab.id === state.active ? " has-attention" : ""}${dragId === tab.id ? " dragging" : ""}`}
+          // Every tab can drag out into a window; reordering fixed tabs is refused by moveTab.
+          onPointerDown={(e) => beginTabDrag(tab.id, e)}
           onContextMenu={onPopout ? (e) => { e.preventDefault(); setContext({ id: tab.id, x: e.clientX, y: e.clientY }); } : undefined}>
-          <button role="tab" id={`right-tab-${tab.id}`} aria-selected={tab.id === state.active} aria-controls={`right-body-${tab.id}`} aria-label={flaggedTasks ? taskAttention?.details : label} title={flaggedTasks ? taskAttention?.details : label} onClick={() => onChange(activate(state, tab.id, now()))}><TabIcon kind={tab.kind} /><span className="right-panel-tab-label" aria-hidden="true">{label}</span></button>
+          <button role="tab" id={`right-tab-${tab.id}`} aria-selected={tab.id === state.active} aria-controls={`right-body-${tab.id}`} aria-label={flaggedTasks ? taskAttention?.details : label} title={flaggedTasks ? taskAttention?.details : label} onClick={() => { if (suppressClick.current) { suppressClick.current = false; return; } onChange(activate(state, tab.id, now())); }}><TabIcon kind={tab.kind} /><span className="right-panel-tab-label" aria-hidden="true">{label}</span></button>
           {!fixed && <button className="icon small" aria-label={`Close ${label}`} onClick={() => onChange(closeTab(state, tab.id))}>×</button>}
         </div>;
       })}

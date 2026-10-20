@@ -15,6 +15,7 @@
 .right-panel-tab > button[role="tab"] svg { flex: none; }
 .right-panel-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .right-panel-tab.active { background: var(--hover, rgba(127,127,127,.14)); }
+.right-panel-tab.dragging { opacity: .55; }
 .right-panel-tab.active > button[role="tab"] { color: inherit; }
 .right-panel-tab.has-attention { position: relative; }
 .right-panel-tab.has-attention::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -5px; height: 3px; border-radius: 3px; background: var(--warn, #e0a030); pointer-events: none; }

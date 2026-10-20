@@ -102,3 +102,24 @@ export function loadPanel(): RightPanelState {
 export function savePanel(s: RightPanelState) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch { /* Storage can be unavailable; tabs then last this session only. */ }
 }
+
+/** Whether a point in window coordinates fell outside the window: a tab released there pops out. */
+export function outsideViewport(x: number, y: number, width: number, height: number): boolean {
+  return x < 0 || y < 0 || x > width || y > height;
+}
+
+/** What letting go of a pressed tab does: a plain press clicks, a drag out of the
+ *  window pops out, and any other drag reorders. Fixed tabs pop out like the rest;
+ *  only `moveTab` refuses to reorder them. */
+export function tabReleaseAction(moved: boolean, outside: boolean): "click" | "popout" | "reorder" {
+  if (!moved) return "click";
+  return outside ? "popout" : "reorder";
+}
+
+/** The tab a release at `x` lands on, by tab centers: the first tab whose center is
+ *  past `x`, or the last one. -1 when there are no tabs. */
+export function tabIndexAt(rects: { left: number; right: number }[], x: number): number {
+  if (rects.length === 0) return -1;
+  const at = rects.findIndex((r) => x <= (r.left + r.right) / 2);
+  return at >= 0 ? at : rects.length - 1;
+}

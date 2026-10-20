@@ -51,7 +51,7 @@ import { MoveRefused, forkThread as importThreadFork, historyHasAttachments, pla
 import { flushAnswerStores } from "./interactiveAnswers/answerStore.ts";
 import { loadRoomState } from "./roomRecovery.ts";
 import { grid, insertBeside, leafIds, mainAndStack, rects, sync, type LayoutNode, type Rect } from "./layout";
-import { restorePane, restoreTab, takePaneOut, takeTabOut, type PaneSpot, type PopoutAction, type PopoutSnapshot, type PopoutUpdate, type TabSpot } from "./popoutModel.ts";
+import { orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles, type ChatBundle, type PaneSpot, type PopoutAction, type PopoutSnapshot, type PopoutUpdate, type TabSpot } from "./popoutModel.ts";
 import { TAB_LABEL } from "./RightPanel";
 import type { PanelTab } from "./rightPanelModel";
 import { Dividers, paneStyle, usePaneDrag } from "./PaneLayout";
@@ -1233,11 +1233,18 @@ export function App() {
   };
 
   /** Run what was chosen in a pane's ⋯ menu. */
-  /** A thread's bots and provider blocks for a popped chat, from this window's settings. */
-  const chatConfigOf = (workspace: { name: string } | null | undefined) => ({
+  /** A popped thread's agents, saved Agents and settings, from this window: the pop-out
+   *  runs discovery nowhere, so the machine's found agents travel with the bundle. */
+  const chatConfigOf = (workspace: { name: string } | null | undefined, hostId: string): ChatBundle => ({
+    agents: agentsOn(hostId),
     profiles,
     disabledProviders,
     workspaceName: workspace?.name ?? "",
+    newThread: settings.newThread,
+    newBotAccess: settings.newBotAccess,
+    confirmSteer: settings.confirmSteer,
+    chipParts: settings.botChips,
+    landingTexture: settings.landingTexture ?? DEFAULT_LANDING_TEXTURE,
   });
 
   /** A preview's source without the pane itself, for snapshots and updates. */
@@ -1256,6 +1263,12 @@ export function App() {
     if (poppedIds.has(paneId)) return;
     const pane = listed.find((p) => p.id === paneId);
     if (!pane || (pane.kind !== "terminal" && pane.kind !== "chat" && pane.kind !== "preview")) return;
+    // The menu hides this door from task threads; drag-out reaches here too, so the refusal lives here.
+    const refusal = popoutRefusal(pane);
+    if (refusal) {
+      toast(refusal);
+      return;
+    }
     const { workspace, hostId } = hostOfPane(pane);
     const run = runs[paneId];
     const snapshot: PopoutSnapshot = {
@@ -1264,7 +1277,7 @@ export function App() {
       workspaceId: pane.workspaceId, hostId,
       ...(pane.agent ? { agent: pane.agent } : {}),
       cwd: workspace?.path ?? "",
-      ...(pane.kind === "chat" ? { chatConfig: chatConfigOf(workspace) } : {}),
+      ...(pane.kind === "chat" ? { chatConfig: chatConfigOf(workspace, hostId) } : {}),
       ...(pane.kind === "preview" ? {
         url: pane.url,
         preview: {
@@ -1309,7 +1322,7 @@ export function App() {
       workspaceId: workspace?.id, hostId,
       cwd: workspace?.path ?? "",
       workspaceName: workspace?.name ?? "",
-      chatConfig: chatConfigOf(workspace),
+      chatConfig: chatConfigOf(workspace, hostId),
       ...(selected?.kind === "chat" ? { activeChatId: selected.id } : { activeChatId: null }),
       ...(tab.kind === "dashboard" ? { dashboardRows } : {}),
       ...(tab.kind === "tasks" ? { conversationId: assistantMonitors.find((m) => m.workspaceId === workspace?.id)?.conversationId ?? "" } : {}),
@@ -1323,8 +1336,8 @@ export function App() {
   };
 
   /** The newest pop-outs and pane edits, for window events that arrive between renders. */
-  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, focusPane: (_pane: Pane) => {} });
-  popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane };
+  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, focusPane: (_pane: Pane) => {} });
+  popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen };
   /** The last patch pushed to each pop-out, so unchanged renders send nothing. */
   const lastSent = useRef(new Map<string, string>());
 
@@ -1335,10 +1348,11 @@ export function App() {
       lastSent.current.delete(token);
       const paneRec = popoutLive.current.poppedOut.find((p) => p.token === token);
       if (paneRec) {
-        // A pane closed from its pop-out stays closed; anything else goes back where it was.
+        // A pane closed from its pop-out stays closed, and one archived here stays
+        // archived; anything else goes back where it was.
         const pane = latest.current.panes.find((p) => p.id === paneRec.id);
         setPoppedOut((list) => list.filter((p) => p.token !== token));
-        if (pane && !pane.closed) {
+        if (pane && !pane.closed && !pane.archived) {
           setLayouts((all) => ({ ...all, [paneRec.layoutKey]: restorePane(all[paneRec.layoutKey] ?? null, paneRec.id, paneRec.spot) }));
         }
         return;
@@ -1371,10 +1385,27 @@ export function App() {
         if (paneRec) setPreviewAddress(paneRec.id, action.address, action.servedBy);
       } else if (action.type === "open-externally") {
         setSettings((s) => ({ ...s, preview: { ...s.preview, openExternally: action.hosts } }));
-      } else if (action.type === "profiles") {
-        setProfiles(action.profiles);
+      } else if (action.type === "profiles-upsert") {
+        // Only the agents that changed arrive, folded in by id: saves made in this
+        // window while the pop-out was open survive a save from the pop-out.
+        setProfiles((list) => upsertProfiles(list, action.profiles));
+      } else if (action.type === "fork") {
+        if (!paneRec) return;
+        const reply = (forkResult: PopoutUpdate["forkResult"]) => void bridge.update(token, { forkResult }).catch(() => {});
+        const pane = latest.current.panes.find((p) => p.id === paneRec.id);
+        if (!pane) reply({ requestId: action.requestId, error: "That thread is no longer open in Deck." });
+        else live.forkThread(pane, action.title, action.upto, action.at).then(
+          (title) => reply({ requestId: action.requestId, title }),
+          (error: unknown) => reply({ requestId: action.requestId, error: error instanceof Error ? error.message : String(error) }),
+        );
+      } else if (action.type === "confirm-steer") {
+        setSettings((s) => ({ ...s, confirmSteer: action.confirm }));
+      } else if (action.type === "seen") {
+        if (paneRec) live.onThreadSeen(paneRec.id, action.seq);
       } else if (action.type === "tab-url") {
         setPanel((current) => ({ ...current, tabs: current.tabs.map((item) => (item.id === rec.id ? { ...item, url: action.url } : item)) }));
+        // The tab left the strip while popped out: keep its saved copy current too, or the return loses the navigation.
+        setPoppedTabs((list) => retargetPoppedTab(list, token, action.url));
       }
     });
     return () => {
@@ -1382,6 +1413,13 @@ export function App() {
       offAction();
     };
   }, []);
+
+  /** Live assistant monitors with their workspace, host and conversation: the tasks owner travels as one bundle. */
+  const assistantMonitors = Object.values(monitorAttention).flatMap((entry) => {
+    const workspace = workspaces.find((item) => item.id === entry.workspaceId && !item.hidden);
+    const monitor = entry.monitor;
+    return workspace && workspaceHost(workspace) === entry.hostId && monitor.workspaceId === workspace.id && monitor.hostId === entry.hostId && monitor.cwd === workspace.path ? [monitor] : [];
+  });
 
   // Keep pop-outs current: titles, runs, rows, addresses and the followed selection.
   useEffect(() => {
@@ -1397,11 +1435,14 @@ export function App() {
       const pane = panes.find((p) => p.id === rec.id);
       if (!pane) continue;
       const run = runs[rec.id];
+      const { workspace, hostId } = hostOfPane(pane);
       push(rec.token, {
         title: pane.title,
         workspaceId: pane.workspaceId,
         ...(run && run.state === "running" ? { ptyId: ptyIdFor(pane.id, run.generation) } : {}),
         ...(pane.kind === "preview" ? { previewSource: previewSourceOf(pane) } : {}),
+        // A popped thread's agents, saved Agents and settings follow this window's.
+        ...(pane.kind === "chat" ? { chatConfig: chatConfigOf(workspace, hostId) } : {}),
       });
     }
     const selected = listed.find((pane) => pane.id === focusedPane);
@@ -1417,11 +1458,30 @@ export function App() {
         patch.cwd = followWorkspace.path ?? "";
         patch.hostId = workspaceHost(followWorkspace);
         patch.workspaceName = followWorkspace.name;
+        // The tasks owner travels as one bundle: workspace and conversation from the same push, never mixed.
+        if (tab.kind === "tasks") patch.conversationId = assistantMonitors.find((m) => m.workspaceId === followWorkspace.id)?.conversationId ?? "";
+        // Details shows a thread and Tasks lists saved Agents: both follow the live bundle.
+        if (tab.kind === "details" || tab.kind === "tasks") patch.chatConfig = chatConfigOf(followWorkspace, workspaceHost(followWorkspace));
       }
       patch.activeChatId = selectedChat ? selectedChat.id : null;
       push(rec.token, patch);
     }
-  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, workspaces, activeWorkspace, dashboardRows]);
+  }, [poppedOut, poppedTabs, panes, runs, panel, listed, focusedPane, workspaces, activeWorkspace, dashboardRows, assistantMonitors, profiles, disabledProviders, settings, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A thread closed, archived or deleted here, or its project removed, takes its
+  // pop-out with it. The record drops first, so the window's close restores nothing.
+  useEffect(() => {
+    const bridge = window.apexDeck?.popout;
+    if (!bridge || poppedOut.length === 0) return;
+    const orphans = orphanedPopouts(poppedOut, panes, listed);
+    if (orphans.length === 0) return;
+    const tokens = new Set(orphans.map((o) => o.token));
+    setPoppedOut((list) => list.filter((p) => !tokens.has(p.token)));
+    for (const orphan of orphans) {
+      lastSent.current.delete(orphan.token);
+      void bridge.close(orphan.token).catch(() => {});
+    }
+  }, [poppedOut, panes, listed]);
 
   const runPaneMenu = (pane: Pane, action: PaneMenuAction, from: "rail" | "head" = "head") => {
     const bump = (all: Record<string, number>) => ({ ...all, [pane.id]: (all[pane.id] ?? 0) + 1 });
@@ -2138,11 +2198,6 @@ export function App() {
     return () => { live = false; stop?.(); };
   }, [backend]);
 
-  const assistantMonitors = Object.values(monitorAttention).flatMap((entry) => {
-    const workspace = workspaces.find((item) => item.id === entry.workspaceId && !item.hidden);
-    const monitor = entry.monitor;
-    return workspace && workspaceHost(workspace) === entry.hostId && monitor.workspaceId === workspace.id && monitor.hostId === entry.hostId && monitor.cwd === workspace.path ? [monitor] : [];
-  });
   const toolContextKey = assistantMonitors.map((monitor) => `${monitor.workspaceId}:${monitor.hostId}:${monitor.cwd}:${monitor.conversationId}:${monitor.threads.join(',')}`).sort().join('|');
   const [serversByLane, setServersByLane] = useState<Record<string, (ToolServer & { agent: string })[]>>({});
   const [serverStatusByLane, setServerStatusByLane] = useState<Record<string, string>>({});
