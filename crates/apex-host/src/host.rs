@@ -128,6 +128,27 @@ impl Drop for Chain<'_> {
     }
 }
 
+/// Takes the checkpoint a bot's Retry goes back to, before the bot starts.
+/// In a large folder that can take minutes, so it runs on the blocking pool
+/// and the turn waits for it without holding a runtime worker.
+struct StartCheckpoint {
+    snapshots: Arc<checkpoints::Snapshots>,
+    runtime: tokio::runtime::Handle,
+    thread: String,
+    cwd: PathBuf,
+    saved: Arc<Mutex<SavedRoom>>,
+}
+
+impl apex_core::TurnStartHook for StartCheckpoint {
+    fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+        let seq = self.saved.lock().unwrap().snapshot.transcript.len();
+        let (snapshots, thread, cwd, bot) = (Arc::clone(&self.snapshots), self.thread.clone(), self.cwd.clone(), id.clone());
+        let taking = self.runtime.spawn_blocking(move || snapshots.take(&thread, &cwd, seq, checkpoints::Kind::Start, Some(bot)));
+        // A failed snapshot doesn't stop the turn; Retry then offers only the chat.
+        Box::pin(async move { let _ = taking.await; })
+    }
+}
+
 impl Host {
     /// Open the host's data in `paths.data`. Old snapshots are compacted on a
     /// background thread, and agents may read the attachments folder.
@@ -607,15 +628,16 @@ impl Host {
         // Card guidance is always on.
         answers.store(true, Ordering::SeqCst);
         let approvals = room.approvals_handle();
+        let checkpoint = Arc::new(Mutex::new(SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
         let mut runtime = ConcurrentRoom::new(room);
-        // Only ApexAgent task threads share the checkout gate; ordinary chat
-        // threads in the same folder run their turns concurrently.
         if let Some(cwd) = &context.cwd {
+            runtime = runtime.with_turn_start(Arc::new(StartCheckpoint { snapshots: Arc::clone(&self.snapshots), runtime: self.runtime.clone(), thread: id.clone(), cwd: cwd.clone(), saved: Arc::clone(&checkpoint) }));
+            // Only ApexAgent task threads share the checkout gate; ordinary chat
+            // threads in the same folder run their turns concurrently.
             if let Some(owner) = self.assistant_tasks.execution(&id).map_err(|e| e.to_string())?.map(|entry| entry.task_id) {
                 runtime = runtime.with_write_gate(self.checkout_gate(cwd), Some(owner));
             }
         }
-        let checkpoint = Arc::new(Mutex::new(SavedRoom { cwd: context.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()), snapshot: snapshot.clone() }));
         self.rooms
             .lock()
             .unwrap()
@@ -638,10 +660,6 @@ impl Host {
             // The desktop emits room-wide Idle only after the final snapshot
             // (including cursors) is saved by run_batch.
             if matches!(event, RoomEvent::Idle) { return; }
-            if let (RoomEvent::TurnStarted { id: bot }, Some(cwd)) = (&event, &handle.context.cwd) {
-                let seq = handle.checkpoint.lock().unwrap().snapshot.transcript.len();
-                let _ = self.snapshots.take(id, cwd, seq, checkpoints::Kind::Start, Some(bot.clone()));
-            }
             if let RoomEvent::Activity { id: bot, text } = &event {
                 if let Some(command) = text.strip_prefix("Running: ") {
                     let seq = handle.checkpoint.lock().unwrap().snapshot.transcript.len();
@@ -1979,13 +1997,15 @@ mod tests {
         let sink = |event| events.lock().unwrap().push(event);
         runtime.block_on(async {
             let batch = handle.runtime.begin_post("work", None, &sink).await.unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(2), handle.runtime.run(batch, &sink)).await
+            tokio::time::timeout(std::time::Duration::from_secs(10), handle.runtime.run(batch, &sink)).await
                 .expect("ordinary chat writers must not wait for the checkout gate");
         });
-        let started: Vec<_> = events.lock().unwrap().iter().filter_map(|event| match event {
+        let mut started: Vec<_> = events.lock().unwrap().iter().filter_map(|event| match event {
             RoomEvent::TurnStarted { id } => Some(id.as_str().to_owned()),
             _ => None,
         }).collect();
+        // Each starts once its Start snapshot is taken, which may be in either order.
+        started.sort();
         assert_eq!(started, vec!["writer", "writer2"], "both writers run while the task holds the checkout");
         assert_eq!(gate.queued(), 0, "ordinary chat never queues on the checkout gate");
         assert_eq!(gate.owner().as_deref(), Some("task-reservation"), "the task keeps its hold");
@@ -2209,6 +2229,66 @@ mod host_tests {
         drop(taking);
         assert!(opened.expect("opening a thread waited for another thread's snapshot").is_ok());
         deleting.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_bot_waiting_for_its_start_snapshot_leaves_the_daemon_answering() {
+        // One worker: a turn that holds it stops every other request, as eleven waiting turns did on a twelve-core Mac.
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-host-start-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let folder = data.join("work");
+        std::fs::create_dir_all(&folder).unwrap();
+        let bot = Arc::new(apex_core::testing::ScriptedParticipant::new("null", &["done"]));
+        host.room_create("a".into(), vec![bot.config().clone()], RoomOptions::default(), Some(folder.to_string_lossy().into_owned())).unwrap();
+        runtime.block_on(async { *host.handle("a").unwrap().room.lock().await = Room::new(vec![bot.clone()], RoomOptions::default()) });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        host.events().listen(move |envelope| sink.lock().unwrap().push(envelope.event.clone()));
+        // "a" is partway through a snapshot that takes minutes, as in a folder with gigabytes of build output.
+        let snapshot = host.snapshots.hold_for_test("a");
+        let taking = snapshot.lock().unwrap();
+        // Try again: null's turn begins at once, then waits for the snapshot its Retry goes back to.
+        runtime.block_on(Arc::clone(&host).room_turn("a".into(), vec![ParticipantId::new("null")], Some(0))).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // The daemon runs each request on its own task.
+        let (done, answered) = std::sync::mpsc::channel();
+        let open = crate::Command::RoomCreate { id: "b".into(), participants: vec![], options: RoomOptions::default(), cwd: None };
+        { let host = Arc::clone(&host); runtime.spawn(async move { let _ = done.send(host.call(open).await.map(|_| ())); }); }
+        let answered = answered.recv_timeout(std::time::Duration::from_secs(10));
+        let started_early = !bot.requests().is_empty();
+        drop(taking);
+        assert!(answered.expect("another request waited for a bot's Start snapshot").is_ok());
+        assert!(!started_early, "the bot started before the snapshot its Retry goes back to");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !seen.lock().unwrap().iter().any(|e| matches!(e, HostEvent::Room { event: RoomEvent::Idle, .. })) {
+            assert!(std::time::Instant::now() < deadline, "the turn never finished");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(bot.requests().len(), 1, "the bot runs once its snapshot is taken");
+        let thread: serde_json::Value = serde_json::from_slice(&std::fs::read(data.join("snapshots").join("threads").join("a.json")).unwrap()).unwrap();
+        assert!(thread["checkpoints"].as_array().unwrap().iter().any(|c| c["kind"] == "start" && c["by"] == "null"), "Retry has a point to go back to: {thread}");
+        host.shutdown();
+        drop(host);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn a_bots_start_snapshot_works_on_a_current_thread_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let data = std::env::temp_dir().join(format!("apex-host-start-snapshot-one-thread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let host = Host::new(HostPaths { data: data.clone(), downloads: None }, runtime.handle().clone());
+        let folder = data.join("work");
+        std::fs::create_dir_all(&folder).unwrap();
+        host.room_create("a".into(), vec![scripted("null", &["done"])], RoomOptions::default(), Some(folder.to_string_lossy().into_owned())).unwrap();
+        runtime.block_on(Arc::clone(&host).room_post("a".into(), "@null go".into())).unwrap();
+        let thread: serde_json::Value = serde_json::from_slice(&std::fs::read(data.join("snapshots").join("threads").join("a.json")).unwrap()).unwrap();
+        assert!(thread["checkpoints"].as_array().unwrap().iter().any(|c| c["kind"] == "start" && c["by"] == "null"), "Retry has a point to go back to: {thread}");
+        host.shutdown();
+        drop(host);
         let _ = std::fs::remove_dir_all(data);
     }
 

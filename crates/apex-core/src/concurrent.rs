@@ -80,6 +80,12 @@ impl Drop for TurnBatch {
         self.pending.fetch_sub(1, Ordering::SeqCst);
     }
 }
+/// Host work that must finish before a participant starts, such as the file
+/// checkpoint its Retry goes back to. The turn awaits it: work that blocks
+/// belongs on another thread, so the one polling the turn stays free.
+pub trait TurnStartHook: Send + Sync {
+    fn before_turn<'a>(&'a self, id: &'a ParticipantId) -> BoxFuture<'a, ()>;
+}
 #[derive(Clone)]
 pub struct ConcurrentRoom {
     room: Arc<AsyncMutex<Room>>,
@@ -89,6 +95,7 @@ pub struct ConcurrentRoom {
     write_gate: Option<crate::CheckoutWriteGate>,
     write_owner: Option<String>,
     cleanup_holds: Arc<Mutex<HashMap<ParticipantId, (String, bool)>>>,
+    turn_start: Option<Arc<dyn TurnStartHook>>,
 }
 impl ConcurrentRoom {
     pub fn new(room: Room) -> Self {
@@ -100,7 +107,13 @@ impl ConcurrentRoom {
             write_gate: None,
             write_owner: None,
             cleanup_holds: Arc::default(),
+            turn_start: None,
         }
+    }
+    /// Await `hook` before each participant starts a turn.
+    pub fn with_turn_start(mut self, hook: Arc<dyn TurnStartHook>) -> Self {
+        self.turn_start = Some(hook);
+        self
     }
     /// Attach the host's checkout-wide gate. `owner` is a stable task id;
     /// omit it for ordinary manual batches, which get unique transient owners.
@@ -486,6 +499,15 @@ impl ConcurrentRoom {
                 + &room.transcript().iter().rev().find(|m| m.speaker == crate::Speaker::Human).map(|m| crate::server_request::prompt_section(&m.text)).unwrap_or_default()
                 + answer_guidance;
             if request.plan { request.system.push_str(crate::room::PLAN_SYSTEM); }
+        }
+        if let Some(hook) = &self.turn_start {
+            hook.before_turn(&ticket.id).await;
+            // Stopped while the host worked: the turn never starts.
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) {
+                drop(editor);
+                sink(RoomEvent::ParticipantIdle { id: ticket.id.clone() });
+                return Vec::new();
+            }
         }
         sink(RoomEvent::TurnStarted {
             id: ticket.id.clone(),
