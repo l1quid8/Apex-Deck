@@ -21,3 +21,12 @@ test('the roster Add bot dialog escapes the thread pane into the document body',
   assert.equal(result.child.props.style.bottom, 100);
   assert.equal(result.child.children[0], menu);
 });
+
+test('an empty thread keeps an Add bot seat after a kick notice', () => {
+  const guard = source.match(/const botChips = \([\s\S]*?\{\((participants\.length > 0 \|\| entries\.length > 0)\) && \(/)?.[1];
+  assert.ok(guard, 'the composer add chip guard exists');
+  const shows = new Function('participants', 'entries', `return (${guard});`);
+  assert.equal(shows([], [{ kind: 'notice' }]), true, 'a kick notice must not leave the thread with no way to add a bot');
+  assert.equal(shows([], []), false, 'the empty state already offers the button on a fresh thread');
+  assert.equal(shows([{ id: 'a' }], []), true);
+});

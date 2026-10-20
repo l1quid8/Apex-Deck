@@ -3057,7 +3057,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </span>
         );
       })}
-      {participants.length > 0 && (
+      {/* The chip row keeps the add button when the last bot is gone too: a notice
+          (a kick, a load error) hides the empty state's own button, so without
+          this seat an empty thread would have no way to add a bot back. */}
+      {(participants.length > 0 || entries.length > 0) && (
         <span className="quick-add-wrap roster">
           <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { openNewForm(); } else { setRosterAnchor(aboveAnchor(e.currentTarget.getBoundingClientRect(), viewport(), QUICK_ADD_WIDTH, 8)); openQuickAdd("roster"); } }}>
             <PersonPlus /><span className="chip-add-label">Add bot</span>
