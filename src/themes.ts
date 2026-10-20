@@ -18,6 +18,9 @@ export interface AppearanceValues {
   glowCount?: number;
   /** Glow size in percent of normal (50–200). */
   glowSize?: number;
+  /** Solid warm theme layer; omitted by every legacy skin. Saved last so
+   *  JSON key order survives a parseSkin round-trip (tile highlight). */
+  theme?: "clay";
 }
 
 export const BACKDROP_PATTERNS = [
@@ -71,7 +74,16 @@ export const BUILTIN_SKINS: BuiltinSkin[] = [
   { id: "rose", name: "Rose", note: "Warm and soft", appearance: appearance({ hue: 15, glow: 45, blur: 22, opacity: 70, radius: 22, backdrop: 55, density: 1, light: false, flat: false }) },
   { id: "frost", name: "Frost", note: "Light glass", appearance: appearance({ hue: 218, glow: 40, blur: 26, opacity: 66, radius: 18, backdrop: 70, density: 1, light: true, flat: false }) },
   { id: "liquid", name: "Liquid", note: "Full glass", appearance: appearance({ hue: 172, glow: 85, blur: 30, opacity: 44, radius: 24, backdrop: 95, density: 1, light: false, flat: false }) },
+  { id: "clay", name: "Clay", note: "Warm paper, serif replies", appearance: appearance({ hue: 38, glow: 0, blur: 0, opacity: 100, radius: 10, backdrop: 0, density: 1, light: false, flat: true, theme: "clay" }) },
 ];
+
+/** Clay accent hues. The stylesheet derives a light Ember and a dark Paper
+ *  accent from the hue, so one value stays readable as text in both modes. */
+export const CLAY_ACCENT_PRESETS = [
+  { id: "terracotta", name: "Terracotta", hue: 38 },
+  { id: "sage", name: "Sage", hue: 152 },
+  { id: "slate", name: "Slate", hue: 252 },
+] as const;
 
 const FORMAT = "apex-glass-playground" as const;
 const MAX_SKIN_BYTES = 32_000;
@@ -101,7 +113,7 @@ export function parseSkin(text: string): SkinFile {
   if (value.author !== undefined && typeof value.author !== "string") throw new Error("Skin author must be text.");
   if (!isRecord(value.appearance)) throw new Error("Skin appearance must be an object.");
   const source = value.appearance;
-  const knownAppearance = new Set<string>([...FIELD_NAMES, "accentColor", "backdropPattern", "glowColors", "glowCount", "glowSize"]);
+  const knownAppearance = new Set<string>([...FIELD_NAMES, "accentColor", "backdropPattern", "glowColors", "glowCount", "glowSize", "theme"]);
   for (const key of Object.keys(source)) if (!knownAppearance.has(key)) throw new Error(`Unknown appearance setting: ${key}.`);
 
   const normalized: Record<string, unknown> = {};
@@ -142,6 +154,10 @@ export function parseSkin(text: string): SkinFile {
   normalized.density = source.density;
   normalized.light = source.light;
   normalized.flat = source.flat;
+  if (source.theme !== undefined) {
+    if (source.theme !== "clay") throw new Error("Theme must be \"clay\" when present.");
+    normalized.theme = source.theme;
+  }
 
   const name = value.name.trim().slice(0, 40);
   const result: SkinFile = {
@@ -157,6 +173,20 @@ export function parseSkin(text: string): SkinFile {
 /** Convert validated settings into CSS custom properties. Classic intentionally has no overrides. */
 export function themeVariables(values: AppearanceValues): Record<string, string> {
   if (themeMode(values) === "classic") return {};
+  if (themeMode(values) === "clay") {
+    // Clay is solid: only the hue, corners, density and an exact picked
+    // accent reach the stylesheet. Glow/frost/backdrop stay out so inline
+    // values can never override the Clay token block.
+    return {
+      ...(values.accentColor ? {
+        "--deck-custom-accent": values.accentColor,
+        "--deck-custom-accent-ink": accentInk(values.accentColor),
+      } : {}),
+      "--deck-hue": String(values.hue),
+      "--deck-radius": `${values.radius}px`,
+      "--deck-density": String(values.density),
+    };
+  }
   return {
     ...(values.accentColor ? {
       "--deck-custom-accent": values.accentColor,
@@ -310,7 +340,8 @@ function rgba(hex: string, alpha: number): string {
   return `rgb(${red} ${green} ${blue} / ${Math.round(alpha * 1000) / 1000})`;
 }
 
-export function themeMode(values: AppearanceValues): "classic" | "flat" | "glass" {
+export function themeMode(values: AppearanceValues): "classic" | "flat" | "glass" | "clay" {
+  if (values.theme === "clay") return "clay";
   if (!values.accentColor && !customBackdrop(values) && FIELD_NAMES.every((field) => values[field] === DEFAULT_APPEARANCE[field])) return "classic";
   return values.flat ? "flat" : "glass";
 }
@@ -318,7 +349,7 @@ export function themeMode(values: AppearanceValues): "classic" | "flat" | "glass
 /** Build a truthful prompt for an external AI to return an importable skin JSON file. */
 export function skinPrompt(description: string): string {
   const brief = description.trim() || "a distinctive, usable Apex Deck appearance";
-  return `Create an Apex Deck appearance skin for this description: ${brief}\n\nReturn only one JSON object using this contract: {"format":"apex-glass-playground","version":2,"name":"Name","appearance":{"hue":0,"glow":0,"blur":0,"opacity":100,"radius":14,"backdrop":0,"density":1,"light":false,"flat":false}}. Optional accentColor is an exact six-digit hex color such as #35aabb; omit it for the legacy hue palette. The background behind the glass is a set of colored glows: optional backdropPattern is one of ${BACKDROP_PATTERNS.map(({ id }) => id).join(", ")}; optional glowColors is a list of ${MIN_GLOWS} to ${MAX_GLOWS} six-digit hex colors, one per glow (omit it to derive the glows from the accent hue); optional glowCount (whole number ${MIN_GLOWS}–${MAX_GLOWS}) sets how many accent-derived glows there are when glowColors is omitted; optional glowSize (number 50–200, percent of normal) makes the glows tighter or wider. Use only these appearance fields: accentColor (optional hex string), backdropPattern (optional), glowColors (optional), glowCount (optional), glowSize (optional), hue (number 0–360), glow (number 0–100), blur (number 0–40), opacity (number 30–100), radius (number 4–30), backdrop (number 0–100), density (exactly 0.72 or 1), light (boolean), flat (boolean). Do not include CSS, scripts, extra keys, or external assets. This prompt requests JSON for the user's import workflow; Apex Deck does not generate the skin itself.`;
+  return `Create an Apex Deck appearance skin for this description: ${brief}\n\nReturn only one JSON object using this contract: {"format":"apex-glass-playground","version":2,"name":"Name","appearance":{"hue":0,"glow":0,"blur":0,"opacity":100,"radius":14,"backdrop":0,"density":1,"light":false,"flat":false}}. Optional accentColor is an exact six-digit hex color such as #35aabb; omit it for the legacy hue palette. The background behind the glass is a set of colored glows: optional backdropPattern is one of ${BACKDROP_PATTERNS.map(({ id }) => id).join(", ")}; optional glowColors is a list of ${MIN_GLOWS} to ${MAX_GLOWS} six-digit hex colors, one per glow (omit it to derive the glows from the accent hue); optional glowCount (whole number ${MIN_GLOWS}–${MAX_GLOWS}) sets how many accent-derived glows there are when glowColors is omitted; optional glowSize (number 50–200, percent of normal) makes the glows tighter or wider. Use only these appearance fields: accentColor (optional hex string), backdropPattern (optional), glowColors (optional), glowCount (optional), glowSize (optional), hue (number 0–360), glow (number 0–100), blur (number 0–40), opacity (number 30–100), radius (number 4–30), backdrop (number 0–100), density (exactly 0.72 or 1), light (boolean), flat (boolean), theme (optional, exactly "clay" for the solid warm theme with serif replies; omit it otherwise). Do not include CSS, scripts, extra keys, or external assets. This prompt requests JSON for the user's import workflow; Apex Deck does not generate the skin itself.`;
 }
 
 export function defaultAppearanceSettings(): AppearanceSettings {
@@ -364,6 +395,8 @@ function accentInk(hex: string): string {
 export function accentHex(values: AppearanceValues): string {
   if (values.accentColor) return values.accentColor;
   if (themeMode(values) === "classic") return "#71e6b5";
+  // Mirror clay-theme.css so the picker, previews and the landing field agree.
+  if (themeMode(values) === "clay") return oklchHex(values.light ? .48 : .83, values.light ? .1 : .08, values.hue);
   return oklchHex(values.light ? .47 : .85, values.light ? .12 : .13, values.hue);
 }
 

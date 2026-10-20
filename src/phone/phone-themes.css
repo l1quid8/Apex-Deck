@@ -1,6 +1,6 @@
 /* Shared Mac palettes, with glass confined to a few phone surfaces. The
    backdrop is static; scrolling messages never get an individual blur layer. */
-:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .ph-app {
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app {
   --accent: var(--deck-accent);
   --accent-ink: var(--deck-accent-ink);
   --mint: var(--deck-accent);
@@ -36,9 +36,31 @@
   -webkit-backdrop-filter: blur(var(--deck-blur)) saturate(1.2);
   backdrop-filter: blur(var(--deck-blur)) saturate(1.2);
 }
-:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .ph-app .ph-tabs button.on svg { color: var(--accent); }
-:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .ph-app .ph-msg { margin-bottom: calc(18px * var(--deck-density, 1)); }
-:root:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .ph-app .ph-item { padding-block: max(8px, calc(11px * var(--deck-density, 1))); }
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app .ph-tabs button.on svg { color: var(--accent); }
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app .ph-msg { margin-bottom: calc(18px * var(--deck-density, 1)); }
+:root:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .ph-app .ph-item { padding-block: max(8px, calc(11px * var(--deck-density, 1))); }
+/* Clay on the phone: solid warm surfaces (no blur) and serif bot replies.
+   The shared clay-theme.css already remaps --panel/--text/--accent. */
+:root[data-deck-theme="clay"] .ph-app .ph-msg:not(.human) .md {
+  font-family: var(--deck-font-reading);
+  font-size: var(--deck-reading-size);
+  line-height: 1.62;
+}
+:root[data-deck-theme="clay"] .ph-app .ph-msg.human {
+  background: var(--deck-human-fill);
+  border-color: var(--deck-human-line);
+  border-radius: calc(var(--deck-radius, 10px) * 1.6);
+}
+/* Same two-step name colors as clay-theme.css: mix fallback, then an
+   oklch lightness clamp where supported, for arbitrary picked colors. */
+:root[data-deck-theme="clay"] .ph-app :is(.ph-by > span, .ph-bot-head strong) {
+  color: color-mix(in srgb, var(--agent-color, var(--accent)) 80%, var(--text));
+  color: oklch(from var(--agent-color, var(--accent)) clamp(.76, l, .92) clamp(0, c, .13) h);
+}
+:root[data-deck-light="true"][data-deck-theme="clay"] .ph-app :is(.ph-by > span, .ph-bot-head strong) {
+  color: color-mix(in srgb, var(--agent-color, var(--accent)) 38%, var(--text));
+  color: oklch(from var(--agent-color, var(--accent)) clamp(.28, l, .44) clamp(0, c, .13) h);
+}
 :root[data-deck-light="true"] .ph-app .ph-content.ph-tl { --tl-faint: var(--muted); }
 
 /* Preferences and the same full editor used on the Mac, adapted for thumbs. */

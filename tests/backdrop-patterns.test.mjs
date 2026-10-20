@@ -284,7 +284,7 @@ test("backgroundPatch turns off Flat and lifts a zero Backdrop", () => {
 test("only Background controls turn glass on; tuning, density, Light and Flat use plain tune", async () => {
   const { readFile } = await import("node:fs/promises");
   const source = await readFile(new URL("../src/AppearanceSettings.tsx", import.meta.url), "utf8");
-  const tuneSection = source.slice(source.indexOf("SLIDERS.map("), source.indexOf("</section>", source.indexOf("SLIDERS.map(")));
+  const tuneSection = source.slice(source.indexOf("appearance-tune-title"), source.indexOf("</section>", source.indexOf("appearance-tune-title")));
   assert.ok(tuneSection.includes("density: 0.72") && tuneSection.includes("flat: event"), "tune section located");
   assert.ok(!tuneSection.includes("tuneBackground("), "tune section must not route through tuneBackground");
 });

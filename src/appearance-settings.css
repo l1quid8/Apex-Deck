@@ -124,6 +124,20 @@
   background: #090d12;
 }
 .appearance-settings .appearance-preview[data-mode="flat"] { background: #090d12; }
+.appearance-settings .appearance-preview[data-mode="clay"] {
+  --preview-panel: #302d29;
+  --preview-edge: #544e46;
+  background: #262421;
+  color: #efe9e0;
+}
+.appearance-settings .appearance-preview[data-mode="clay"][data-light="true"] {
+  --preview-panel: #fffdf9;
+  --preview-edge: #c9c0b1;
+  background: #f8f5ee;
+  color: #29251f;
+}
+.appearance-settings .appearance-preview[data-mode="clay"] .appearance-preview-field { display: none; }
+.appearance-settings .appearance-preview[data-mode="clay"] .appearance-preview-bubble { background: transparent; border-color: transparent; }
 .appearance-settings .appearance-preview[data-mode="glass"] {
   -webkit-backdrop-filter: blur(var(--appearance-blur, 0px));
   backdrop-filter: blur(var(--appearance-blur, 0px));

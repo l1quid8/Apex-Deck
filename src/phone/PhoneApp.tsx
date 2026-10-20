@@ -1940,10 +1940,10 @@ function BotSheet(props: {
 
   return (
     <Sheet title="In this thread" onClose={props.onClose}>
-      <div className="ph-bot-head">
+      <div className="ph-bot-head" style={{ "--agent-color": props.who.look.color } as CSSProperties}>
         <Avatar seed={props.who.look.seed} color={props.who.look.color} size="lg" working={props.working && !props.asking} />
         <span className="ph-grow">
-          <strong style={{ color: props.who.look.color }}>{name}</strong>
+          <strong>{name}</strong>
           <small>{settingsLine({ ...props.config, backend: "model" in backend ? { ...backend, model: model || null } as ParticipantConfig["backend"] : backend, effort: effort || null, speed: speed || null }, props.reported, props.apiModels)}</small>
           <small className={props.statusWarn ? "ph-amber" : undefined}>{props.status}</small>
         </span>
@@ -2154,7 +2154,7 @@ function ThreadView(props: {
   const asking = (id: string) => props.approvals.some((card) => card.id === id);
   const by = (id: string, live = false) => {
     const who = person(id);
-    return <div className="ph-by"><Avatar seed={who.look.seed} color={who.look.color} size="sm" working={live && !asking(id)} /><span style={{ color: who.look.color }}>{who.display_name}</span></div>;
+    return <div className="ph-by" style={{ "--agent-color": who.look.color } as CSSProperties}><Avatar seed={who.look.seed} color={who.look.color} size="sm" working={live && !asking(id)} /><span>{who.display_name}</span></div>;
   };
   return (
     <>

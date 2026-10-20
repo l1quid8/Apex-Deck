@@ -238,7 +238,7 @@
   color: var(--deck-text);
   border-color: var(--deck-edge);
 }
-:root[data-deck-theme="glass"] :is(.speaker, .muted, .head-state, .details-head p, .approval-note, .approval-deadline, .approval-scope) {
+:root[data-deck-theme="glass"] :is(.muted, .head-state, .details-head p, .approval-note, .approval-deadline, .approval-scope) {
   color: var(--deck-muted);
 }
 :root[data-deck-theme="glass"] .speaker { color: var(--agent-color, var(--accent)); }
@@ -441,9 +441,11 @@
 }
 
 /* Approval cards are the safety boundary: solid amber surfaces and fixed
-   action colors stay readable regardless of imported hue/frost values. */
+   action colors stay readable regardless of imported hue/frost values.
+   Clay joins here so its warm palette can never recolor an approval. */
 :root[data-deck-theme="glass"] .approval,
-:root[data-deck-theme="flat"] .approval {
+:root[data-deck-theme="flat"] .approval,
+:root[data-deck-theme="clay"] .approval {
   background: #fff4d6;
   color: #2d220d;
   border: 1px solid #d18a00;
@@ -454,35 +456,41 @@
   font-size: max(12px, 1em);
 }
 :root[data-deck-theme="glass"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) ,
-:root[data-deck-theme="flat"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) {
+:root[data-deck-theme="flat"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]),
+:root[data-deck-theme="clay"] .approval :is(.approval-host, .approval-kind, .approval-head strong, .approval-detail, .approval-scope, .approval-note, .approval-deadline, .approval-plan, [role="alert"]) {
   color: #2d220d;
   font-size: max(12px, 1em);
 }
 :root[data-deck-theme="glass"] .approval :is(.approval-head, .approval-detail, .approval-actions, .approval-scope, .approval-plan),
-:root[data-deck-theme="flat"] .approval :is(.approval-head, .approval-detail, .approval-actions, .approval-scope, .approval-plan) {
+:root[data-deck-theme="flat"] .approval :is(.approval-head, .approval-detail, .approval-actions, .approval-scope, .approval-plan),
+:root[data-deck-theme="clay"] .approval :is(.approval-head, .approval-detail, .approval-actions, .approval-scope, .approval-plan) {
   background: #fff4d6;
   border-color: #e2bd68;
 }
 :root[data-deck-theme="glass"] .approval .approval-kind,
-:root[data-deck-theme="flat"] .approval .approval-kind { color: #805000; }
+:root[data-deck-theme="flat"] .approval .approval-kind,
+:root[data-deck-theme="clay"] .approval .approval-kind { color: #805000; }
 /* The base diff colors suit dark surfaces; light approval diffs need deeper ink. */
-:root[data-deck-light="true"]:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .approval .diff-line.add {
+:root[data-deck-light="true"]:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .approval .diff-line.add {
   color: #14532d;
 }
-:root[data-deck-light="true"]:is([data-deck-theme="glass"], [data-deck-theme="flat"]) .approval .diff-line.del {
+:root[data-deck-light="true"]:is([data-deck-theme="glass"], [data-deck-theme="flat"], [data-deck-theme="clay"]) .approval .diff-line.del {
   color: #7f1d1d;
 }
 :root[data-deck-theme="glass"] .approval-actions button[data-answer="once"],
 :root[data-deck-theme="glass"] .approval-actions button[data-answer="always"],
 :root[data-deck-theme="flat"] .approval-actions button[data-answer="once"],
-:root[data-deck-theme="flat"] .approval-actions button[data-answer="always"] {
+:root[data-deck-theme="flat"] .approval-actions button[data-answer="always"],
+:root[data-deck-theme="clay"] .approval-actions button[data-answer="once"],
+:root[data-deck-theme="clay"] .approval-actions button[data-answer="always"] {
   background: #9a5b00;
   border-color: #9a5b00;
   color: #fff;
   font-size: max(12px, 1em);
 }
 :root[data-deck-theme="glass"] .approval-actions button[data-answer="deny"],
-:root[data-deck-theme="flat"] .approval-actions button[data-answer="deny"] {
+:root[data-deck-theme="flat"] .approval-actions button[data-answer="deny"],
+:root[data-deck-theme="clay"] .approval-actions button[data-answer="deny"] {
   background: #fff4d6;
   border-color: #a3261e;
   color: #8b211b;

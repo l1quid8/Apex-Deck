@@ -2859,7 +2859,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       <div className="details-bot-row">
         <Avatar seed={appearance(p.id).seed} color={color(p.id)} levels={levels} refills={refillsFor(p.id)} working={Boolean(working[p.id]) && !asks[p.id]?.length} />
         <div className="details-bot-copy">
-          <strong style={{ color: color(p.id) }}>{p.display_name}</strong>
+          <strong style={{ "--agent-color": color(p.id) } as CSSProperties}>{p.display_name}</strong>
           <span className="muted">{chipDescription(p, ALL_PARTS).replace(" · asks first", "")} · {accessLabel(p.access)}</span>
           {(levels.context !== null || levels.plan !== null) && <span className="bot-meters">{meter("ctx", levels.context)}{meter("plan", levels.plan)}</span>}
         </div>
@@ -2886,7 +2886,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       : <ul className="allowed-list" aria-label="Always allowed">
         {allowed.map((rule) => <li key={`${rule.by}\u001f${rule.kind}\u001f${rule.what}`}>
           <span className="allowed-copy">
-            <strong style={{ color: color(rule.by) }}>{names.get(rule.by) ?? rule.by}</strong>
+            <strong style={{ "--agent-color": color(rule.by) } as CSSProperties}>{names.get(rule.by) ?? rule.by}</strong>
             <span className={`allowed-what${rule.kind === "command" || rule.kind === "tool" ? " mono" : ""}`} title={rule.what}>{describeRule(rule)}</span>
             <span className="allowed-when">{allowedLine(rule, new Date())}</span>
           </span>
@@ -3073,7 +3073,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 {...(newestReply.get(entry.message.speaker.id) === entry.message.seq ? { levels: levelsFor(entry.message.speaker.id), refills: refillsFor(entry.message.speaker.id) } : {})}
               />
               <div className="bubble bot completed" data-seq={entry.message.seq} data-activity="idle" style={{ "--agent-color": color(entry.message.speaker.id) } as CSSProperties}>
-                <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
+                <span className="speaker">
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
                 <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} fence={cardIn(entry.message)} />
@@ -3117,7 +3117,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <div key={`d${id}`} className="bot-row">
               <Avatar seed={appearance(id).seed} color={color(id)} working={!asks[id]?.length} levels={levelsFor(id)} refills={refillsFor(id)} />
               <div className="bubble bot writing" aria-busy="true" data-activity={asks[id]?.length ? "waiting" : "working"} style={{ "--agent-color": color(id) } as CSSProperties}>
-                <span className="speaker" style={{ color: color(id) }}>
+                <span className="speaker">
                   {names.get(id) ?? id}
                 </span>
                 {turn?.work.structured ? (
