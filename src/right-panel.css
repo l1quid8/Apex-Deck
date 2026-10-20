@@ -147,7 +147,9 @@
 .right-files-markdown { overflow: auto; padding: 4px 8px; }
 .right-files-truncated { margin: 6px 0 0; font-size: 11px; }
 .right-worktrees { padding: 8px; }
-.right-worktrees-toolbar { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; }
+.right-worktrees-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding-bottom: 8px; }
+.right-worktrees-toolbar button { flex-shrink: 0; }
+.right-worktrees-copy-status { flex: 1; min-width: 0; font-size: 11px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .right-worktrees-toolbar button, .right-worktrees-actions button, .right-worktrees-prune { background: none; border: 0; color: var(--accent, #4a8cff); padding: 4px 6px; border-radius: 4px; }
 .right-worktrees-toolbar button:hover, .right-worktrees-actions button:hover, .right-worktrees-prune:hover { background: var(--hover, rgba(127,127,127,.14)); }
 .right-worktrees-form { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); padding: 4px 0 12px; margin-bottom: 8px; }

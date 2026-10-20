@@ -24,6 +24,7 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
   const [request, setRequest] = useState<WorktreeAdd>(initialRequest());
   const [confirm, setConfirm] = useState<{ path: string; action: "prune" | "remove" } | null>(null);
   const loadId = useRef(0);
+  const copyTimer = useRef<number | undefined>(undefined);
   const load = async () => {
     if (!root || !backend) return;
     const id = ++loadId.current; setError("");
@@ -31,11 +32,16 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
     catch (reason) { if (id === loadId.current) { setError(worktreeErrorMessage(reason)); setListing(null); } }
   };
   useEffect(() => { if (visible) void load(); return () => { loadId.current++; }; }, [visible, root, backend]);
-  useEffect(() => { setListing(null); setRequest(initialRequest()); setAdding(false); setConfirm(null); setError(""); setCopyStatus(""); }, [root]);
+  useEffect(() => {
+    setListing(null); setRequest(initialRequest()); setAdding(false); setConfirm(null); setError(""); setCopyStatus("");
+    return () => window.clearTimeout(copyTimer.current);
+  }, [root]);
   const copyPathname = async (path: string) => {
+    window.clearTimeout(copyTimer.current);
     setCopyStatus("");
     const ok = await writeClipboard(path, navigator.clipboard);
     setCopyStatus(ok ? "Pathname copied" : "Clipboard unavailable");
+    copyTimer.current = window.setTimeout(() => setCopyStatus(""), 1500);
   };
   const doAdd = async () => {
     if (!root || !backend) return;
@@ -76,9 +82,9 @@ export function RightWorktreesTab({ root, backend, visible, onOpen }: { root: st
   return <section className="right-worktrees" aria-label="Git worktrees">
     <header className="right-worktrees-toolbar">
       {error !== OLD_SERVICE && <button type="button" onClick={() => { setAdding((value) => !value); setError(""); }} disabled={!!busy}>{adding ? "Cancel" : "New worktree"}</button>}
+      <span className="muted right-worktrees-copy-status" role="status">{copyStatus}</span>
       <button type="button" aria-label="Refresh worktrees" title="Refresh" onClick={() => void load()} disabled={!!busy}>↻</button>
     </header>
-    {copyStatus && <p className="muted right-worktrees-empty" role="status">{copyStatus}</p>}
     {adding && error !== OLD_SERVICE && <form className="right-worktrees-form" onSubmit={(event) => { event.preventDefault(); void doAdd(); }}>
       <label>Branch<input autoFocus value={request.branch} onChange={(event) => branchChanged(event.target.value)} required /></label>
       <div className="right-worktrees-switch" role="group" aria-label="Branch source">

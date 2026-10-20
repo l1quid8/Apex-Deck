@@ -76,25 +76,35 @@ test('add-project menu escapes sidebar clipping and worktree actions copy the fu
         assert.equal(await run('fixture.managed'),1);
         await open();await run('document.body.dispatchEvent(new MouseEvent("mousedown",{bubbles:true}))');await frame();
         assert.equal(await run('!!document.querySelector("[data-machine-menu]")'),false,'outside click closes menu');
+        // Copy feedback stays beside Refresh without moving the list, then clears after the latest copy.
+        const listTop=await run('document.querySelector(".right-worktrees-list").getBoundingClientRect().top');
         // Main, linked and missing task rows all copy the exact full path, never the shortened label.
         for(let i=0;i<3;i++){
           await run('document.querySelectorAll(".right-worktrees-menu summary")['+i+'].click()');await frame();
           const copied=await run('(()=>{const row=document.querySelectorAll(".right-worktrees-row")['+i+'];const b=[...row.querySelectorAll("button")].find(b=>b.textContent==="Copy pathname");if(!b)return false;b.click();return true;})()');
           assert.equal(copied,true,'Copy pathname is available for row '+i);await frame();
           assert.equal(await run('document.querySelectorAll(".right-worktrees-menu")['+i+'].open'),false,'copy closes menu');
+          assert.equal(await run('!!document.querySelector(".right-worktrees-toolbar [role=status]")'),true,'copy feedback is in the header beside Refresh');
+          assert.equal(await run('document.querySelector(".right-worktrees-list").getBoundingClientRect().top'),listTop,'copy feedback does not move the list');
         }
         assert.deepEqual(await run('fixture.copied'),[
           '/Users/example/Projects/A folder with spaces/日本語/main-repository',
           '/Users/example/Projects/worktrees/a-very-long-feature-branch-name',
           '/srv/worktrees/missing-task'
         ]);
-        assert.equal(await run('document.querySelector(".right-worktrees [role=status]").textContent'),'Pathname copied');
+        assert.equal(await run('document.querySelector(".right-worktrees-toolbar [role=status]").textContent'),'Pathname copied');
+        await run('new Promise(r=>setTimeout(r,1000))');
         await run('fixture.rejectCopy=true;document.querySelector(".right-worktrees-menu summary").click()');await frame();
         await run('[...document.querySelector(".right-worktrees-row").querySelectorAll("button")].find(b=>b.textContent==="Copy pathname").click()');await frame();
         assert.equal(await run('fixture.copied.length'),3,'failed write does not report a copy');
-        assert.equal(await run('document.querySelector(".right-worktrees [role=status]").textContent'),'Clipboard unavailable');
+        assert.equal(await run('document.querySelector(".right-worktrees-toolbar [role=status]").textContent'),'Clipboard unavailable');
         await run('document.querySelectorAll(".right-worktrees-menu summary")[1].click()');await frame();await shot('worktree-copy');
-        console.log('Project popup visible and actionable across themes, sizes and scrolling; worktree full-path copy and failure feedback passed');app.exit(0);
+        await run('new Promise(r=>setTimeout(r,600))');
+        assert.equal(await run('document.querySelector(".right-worktrees-toolbar [role=status]").textContent'),'Clipboard unavailable','the earlier copy timer cannot clear newer feedback');
+        const cleared=await run('new Promise(resolve=>{const end=performance.now()+1800;const check=()=>{const status=document.querySelector(".right-worktrees-toolbar [role=status]");if(!status?.textContent)return resolve(true);if(performance.now()>=end)return resolve(false);setTimeout(check,25);};check();})');
+        assert.equal(cleared,true,'copy feedback clears automatically');
+        assert.equal(await run('document.querySelector(".right-worktrees-list").getBoundingClientRect().top'),listTop,'clearing feedback does not move the list');
+        console.log('Project popup visible and actionable across themes, sizes and scrolling; full-path copy and transient header feedback passed');app.exit(0);
       }catch(e){console.error(e.stack);app.exit(1);}
     });
   `);
