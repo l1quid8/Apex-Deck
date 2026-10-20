@@ -14,8 +14,9 @@ export interface SidebarSections { pinned: Pane[]; projects: ProjectBlock[]; rec
 
 const byActivity = (a: Pane, b: Pane) => (b.activeAt ?? 0) - (a.activeAt ?? 0);
 
-const orderedProjects = (list: Workspace[]) => [...list.filter(w => w.pinned), ...list.filter(w => !w.pinned)]
-  .sort((a, b) => (a.sidebarOrder ?? Infinity) - (b.sidebarOrder ?? Infinity));
+const orderedProjects = (list: Workspace[]) => [...list]
+  .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)
+    || (a.sidebarOrder ?? Infinity) - (b.sidebarOrder ?? Infinity));
 
 /** This Mac first, saved hosts next, then any unavailable hosts still owning projects. */
 export function projectGroups(projects: ProjectBlock[], hostIds: string[] = []): ProjectGroup[] {
@@ -29,11 +30,11 @@ export function projectGroups(projects: ProjectBlock[], hostIds: string[] = []):
     .filter(id => groups.has(id)).map(hostId => ({ hostId, projects: groups.get(hostId)! }));
 }
 
-/** Reorder visible projects on one host only, leaving all other workspace data alone. */
+/** Reorder within one host and pinned area, leaving all other workspace data alone. */
 export function reorderProject(list: Workspace[], sourceId: string, targetId: string, after: boolean): Workspace[] {
   const source = list.find(w => w.id === sourceId && !w.hidden);
   const target = list.find(w => w.id === targetId && !w.hidden);
-  if (!source || !target || source === target || workspaceHost(source) !== workspaceHost(target)) return list;
+  if (!source || !target || source === target || workspaceHost(source) !== workspaceHost(target) || !!source.pinned !== !!target.pinned) return list;
   const own = orderedProjects(list.filter(w => !w.hidden && workspaceHost(w) === workspaceHost(source)));
   const moved = own.filter(w => w.id !== sourceId);
   moved.splice(moved.findIndex(w => w.id === targetId) + (after ? 1 : 0), 0, source);
@@ -138,13 +139,15 @@ export function noteActive(panes: Pane[], id: string, at: number): Pane[] {
 }
 
 export function toggleProjectPin(list: Workspace[], id: string): Workspace[] {
-  const next = list.map((w) => (w.id !== id ? w : w.pinned ? without(w, "pinned") : { ...w, pinned: true as const }));
-  const target = next.find(w => w.id === id);
+  const target = list.find(w => w.id === id);
   if (!target) return list;
-  const own = orderedProjects(next.filter(w => !w.hidden && workspaceHost(w) === workspaceHost(target)));
-  if (!own.some(w => w.sidebarOrder !== undefined)) return next;
-  const pinned = [...own.filter(w => w.pinned), ...own.filter(w => !w.pinned)];
-  const ranks = new Map(pinned.map((w, i) => [w.id, i]));
+  const updated = target.pinned ? without(target, "pinned") : { ...target, pinned: true as const };
+  const next = list.map(w => w.id === id ? updated : w);
+  if (target.hidden) return next;
+  const own = orderedProjects(list.filter(w => w.id !== id && !w.hidden && workspaceHost(w) === workspaceHost(target)));
+  // Either transition inserts at the boundary: last pinned or first unpinned.
+  own.splice(own.filter(w => w.pinned).length, 0, updated);
+  const ranks = new Map(own.map((w, i) => [w.id, i]));
   return next.map(w => ranks.has(w.id) ? { ...w, sidebarOrder: ranks.get(w.id)! } : w);
 }
 

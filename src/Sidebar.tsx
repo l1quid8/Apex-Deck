@@ -118,7 +118,8 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     setMoveStatus(`${source.name} moved ${after ? "after" : "before"} ${target.name} on ${hostName(workspaceHost(source))}.`);
   };
   const neighbors = (workspace: Workspace) => {
-    const own = groups.find(g => g.hostId === workspaceHost(workspace))?.projects ?? [];
+    const own = (groups.find(g => g.hostId === workspaceHost(workspace))?.projects ?? [])
+      .filter(p => !!p.workspace.pinned === !!workspace.pinned);
     const i = own.findIndex(p => p.workspace.id === workspace.id);
     return { up: own[i - 1]?.workspace, down: own[i + 1]?.workspace };
   };
@@ -196,7 +197,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
         <div className={`ws-row ${workspace.id === props.activeWorkspace ? "active" : ""} ${lit ? "lit" : ""} ${dragging === workspace.id ? "project-dragging" : ""} ${dropTarget?.id === workspace.id ? dropTarget.after ? "project-drop-after" : "project-drop-before" : ""}`} data-host-id={hostId}
           onDragOver={(event) => {
             const source = workspaces.find(w => w.id === dragSource.current && !w.hidden);
-            if (!source || source.id === workspace.id || workspaceHost(source) !== hostId) { clearDrop(); return; }
+            if (!source || source.id === workspace.id || workspaceHost(source) !== hostId || !!source.pinned !== !!workspace.pinned) { clearDrop(); return; }
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
             const rect = event.currentTarget.getBoundingClientRect();
@@ -208,7 +209,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           onDrop={(event) => {
             const source = workspaces.find(w => w.id === dragSource.current && !w.hidden);
             const target = pendingDrop.current;
-            if (source && target?.id === workspace.id && workspaceHost(source) === hostId) {
+            if (source && target?.id === workspace.id && workspaceHost(source) === hostId && !!source.pinned === !!workspace.pinned) {
               event.preventDefault();
               event.stopPropagation();
               reorder(source, workspace, target.after);

@@ -29,9 +29,10 @@ test("Pinned, Projects and Recents list threads once each where Codex shows them
   assert.deepEqual(sidebarSections(panes, ws, "agents", new Set()).projects.map((b) => b.panes.length), [0, 0, 0]);
 });
 
-test("pinned projects lead the Projects list; the rest keep their order", () => {
+test("pinned projects lead their host group; the rest keep their order", () => {
   const list = toggleProjectPin(ws, "two");
-  assert.deepEqual(sidebarSections([], list, "threads", new Set()).projects.map((b) => b.workspace.id), ["two", "deck", "deckAT"]);
+  const groups = model.projectGroups(sidebarSections([], list, "threads", new Set()).projects, ["at"]);
+  assert.deepEqual(groups.map(g => [g.hostId, g.projects.map(p => p.workspace.id)]), [["local", ["deck"]], ["at", ["two", "deckAT"]]]);
   assert.equal(toggleProjectPin(list, "two").find((w) => w.id === "two").pinned, undefined);
 });
 
@@ -125,7 +126,53 @@ test("custom order accepts new projects and pin actions still move within their 
   assert.deepEqual(groupIds(pinned)[1], ["at", ["a", "b", "c"]]);
   assert.deepEqual(groupIds(toggleProjectPin(pinned, "a"))[1], ["at", ["a", "b", "c"]]);
   const manual = model.reorderProject(pinned, "b", "a", false);
-  assert.deepEqual(groupIds(manual)[1], ["at", ["b", "a", "c"]], "drag order wins over the previous pin position");
+  assert.equal(manual, pinned, "an unpinned project cannot cross the pinned boundary");
+});
+
+const projectList = (items) => items.map((item) => ({ name: item.id.toUpperCase(), path: `/${item.id}`, ...item }));
+const projectIds = (list) => projects(list).map(p => p.workspace.id);
+
+test("saved order cannot put an unpinned project ahead of a pinned project", () => {
+  const list = projectList([
+    { id: "a", sidebarOrder: 0 }, { id: "b", pinned: true, sidebarOrder: 3 },
+    { id: "c", pinned: true, sidebarOrder: 1 }, { id: "d", sidebarOrder: 2 },
+  ]);
+  assert.deepEqual(projectIds(list), ["c", "b", "a", "d"]);
+});
+
+test("drag cannot cross the pinned boundary in either direction", () => {
+  const list = projectList([{ id: "a", pinned: true }, { id: "b", pinned: true }, { id: "c" }, { id: "d" }]);
+  for (const [source, target] of [["a", "c"], ["b", "d"], ["c", "a"], ["d", "b"]]) {
+    for (const after of [false, true]) {
+      assert.equal(model.reorderProject(list, source, target, after), list, `${source} to ${target}, after=${after}`);
+    }
+  }
+});
+
+test("pinning appends to pinned and unpinning prepends to unpinned before any saved drag", () => {
+  const list = projectList([{ id: "a" }, { id: "b", pinned: true }, { id: "c", pinned: true }, { id: "d" }]);
+  const pinned = toggleProjectPin(list, "a");
+  assert.deepEqual(projectIds(pinned), ["b", "c", "a", "d"]);
+  assert.equal(pinned.find(w => w.id === "a").pinned, true);
+  const unpinned = toggleProjectPin(list, "b");
+  assert.deepEqual(projectIds(unpinned), ["c", "b", "a", "d"]);
+  assert.equal(unpinned.find(w => w.id === "b").pinned, undefined);
+});
+
+test("pin and unpin after dragging preserve every other project's relative order", () => {
+  const list = projectList([
+    { id: "a", pinned: true }, { id: "b", pinned: true }, { id: "c", pinned: true },
+    { id: "d" }, { id: "e" }, { id: "f" },
+    { id: "remote", hostId: "at" }, { id: "hidden", hidden: true, pinned: true },
+  ]);
+  const dragged = model.reorderProject(model.reorderProject(list, "b", "a", false), "f", "d", false);
+  assert.deepEqual(projectIds(dragged), ["b", "a", "c", "f", "d", "e", "remote"]);
+  const pinned = toggleProjectPin(dragged, "e");
+  assert.deepEqual(projectIds(pinned), ["b", "a", "c", "e", "f", "d", "remote"]);
+  const unpinned = toggleProjectPin(pinned, "a");
+  assert.deepEqual(projectIds(unpinned), ["b", "c", "e", "a", "f", "d", "remote"]);
+  for (const id of ["remote", "hidden"]) assert.equal(unpinned.find(w => w.id === id), list.find(w => w.id === id));
+  assert.deepEqual(projectIds(normalizeWorkspaces(JSON.parse(JSON.stringify(unpinned)))), ["b", "c", "e", "a", "f", "d", "remote"]);
 });
 
 test("invalid saved sidebar ranks are discarded", () => {
