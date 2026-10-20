@@ -25,8 +25,17 @@ ENV PATH=/root/.cargo/bin:$PATH CARGO_TARGET_DIR=/target
 DOCKERFILE
 
 mkdir -p "$root/target/linux-$arch"
+# In a linked worktree .git is a file pointing, by absolute host path, into the
+# main checkout's .git (the common dir), so build.rs's git needs that mounted at
+# the same path. safe.directory /src still covers it: git trusts the work tree.
+src_mounts=(-v "$root:/src:ro")
+if [[ -f "$root/.git" ]]; then
+  common="$(git -C "$root" rev-parse --git-common-dir)"
+  common="$(cd "$root" && cd "$common" && pwd -P)"
+  src_mounts+=(-v "${common}:${common}:ro")
+fi
 docker run --rm --platform "linux/$arch" \
-  -v "$root:/src:ro" \
+  "${src_mounts[@]}" \
   -v "apex-deck-cargo-registry-$arch:/root/.cargo/registry" \
   -v "apex-deck-linux-build-$arch:/target" \
   -v "$root/target/linux-$arch:/out" \
