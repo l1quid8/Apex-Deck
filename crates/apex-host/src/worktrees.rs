@@ -99,35 +99,121 @@ fn parse_list(raw: &str, task_dir: &Path) -> Vec<Worktree> {
         })
         .collect()
 }
-pub fn list(project: &Path, task_dir: &Path) -> Result<WorktreeList, String> {
-    let root = git(project, &["rev-parse".into(), "--show-toplevel".into()])
-        .map_err(|_| "This folder isn't a Git repository.".to_string())?
-        .trim()
-        .to_string();
-    let raw = git(
-        Path::new(&root),
-        &[
-            "worktree".into(),
-            "list".into(),
-            "--porcelain".into(),
-            "-z".into(),
-        ],
-    )?;
+/// A repository the tab manages: the folder to run Git in, and its worktrees, main first.
+struct Repo {
+    dir: PathBuf,
+    items: Vec<Worktree>,
+}
+/// The repository holding `project`. A project folder that isn't in one, such as a
+/// folder of checkouts, gets every repository checked out directly inside it; the one
+/// with the most checkouts there comes first and takes new worktrees.
+fn repos(project: &Path, task_dir: &Path) -> Result<(String, Vec<Repo>), String> {
     let task_root = fs_canonical(task_dir).unwrap_or_else(|| task_dir.to_path_buf());
-    let mut items = parse_list(&raw, &task_root);
-    for item in items.iter_mut().filter(|w| !w.prunable).take(50) {
-        item.changes = git(
-            Path::new(&root),
+    let worktrees = |dir: &Path| {
+        git(
+            dir,
             &[
-                "-C".into(),
-                item.path.clone(),
-                "status".into(),
+                "worktree".into(),
+                "list".into(),
                 "--porcelain".into(),
+                "-z".into(),
             ],
         )
-        .ok()
-        .map(|s| s.lines().count().min(u32::MAX as usize) as u32);
+        .map(|raw| parse_list(&raw, &task_root))
+    };
+    let (root, mut repos) = match git(project, &["rev-parse".into(), "--show-toplevel".into()]) {
+        Ok(root) => {
+            let root = root.trim().to_string();
+            let items = worktrees(Path::new(&root))?;
+            (root, vec![Repo { dir: project.to_path_buf(), items }])
+        }
+        Err(_) => {
+            let repos: Vec<Repo> = child_repos(project)
+                .into_iter()
+                .filter_map(|checkout| {
+                    let items = worktrees(&checkout).ok()?;
+                    // Git runs in the main checkout, so a new branch starts from its HEAD.
+                    let dir = items
+                        .first()
+                        .map(|main| PathBuf::from(&main.path))
+                        .filter(|main| main.is_dir())
+                        .unwrap_or(checkout);
+                    Some(Repo { dir, items })
+                })
+                .collect();
+            let root = repos
+                .first()
+                .ok_or("This folder isn't a Git repository.")?
+                .dir
+                .to_string_lossy()
+                .into_owned();
+            (root, repos)
+        }
+    };
+    for item in repos
+        .iter_mut()
+        .flat_map(|repo| repo.items.iter_mut())
+        .filter(|w| !w.prunable)
+        .take(50)
+    {
+        item.changes = git(Path::new(&item.path), &["status".into(), "--porcelain".into()])
+            .ok()
+            .map(|s| s.lines().count().min(u32::MAX as usize) as u32);
     }
+    Ok((root, repos))
+}
+/// One checkout per repository checked out directly inside `folder`, the repository
+/// with the most checkouts there first. Hidden folders and symlinks are skipped, so
+/// nothing outside `folder` is reached.
+fn child_repos(folder: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    let children = entries
+        .flatten()
+        .filter(|entry| {
+            !entry.file_name().to_string_lossy().starts_with('.')
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .take(256);
+    for entry in children {
+        let path = entry.path();
+        let Ok(out) = git(
+            &path,
+            &[
+                "rev-parse".into(),
+                "--path-format=absolute".into(),
+                "--show-toplevel".into(),
+                "--git-common-dir".into(),
+            ],
+        ) else {
+            continue;
+        };
+        let mut lines = out.lines();
+        let (Some(top), Some(common)) = (lines.next(), lines.next()) else {
+            continue;
+        };
+        match (fs_canonical(Path::new(top)), fs_canonical(&path)) {
+            (Some(top), Some(path)) if top == path => {}
+            _ => continue,
+        }
+        let common = fs_canonical(Path::new(common)).unwrap_or_else(|| PathBuf::from(common));
+        match found.iter_mut().find(|(known, _)| *known == common) {
+            Some((_, checkouts)) => checkouts.push(path),
+            None => found.push((common, vec![path])),
+        }
+    }
+    found.iter_mut().for_each(|(_, checkouts)| checkouts.sort());
+    found.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.1[0].cmp(&b.1[0])));
+    found
+        .into_iter()
+        .map(|(_, mut checkouts)| checkouts.swap_remove(0))
+        .collect()
+}
+pub fn list(project: &Path, task_dir: &Path) -> Result<WorktreeList, String> {
+    let (root, repos) = repos(project, task_dir)?;
+    let items = repos.into_iter().flat_map(|repo| repo.items).collect();
     Ok(WorktreeList { root, items })
 }
 pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
@@ -141,8 +227,10 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
     {
         return Err("Enter a valid branch name.".into());
     }
-    let current = list(project, Path::new("/__apexagent_task_dir_unavailable__"))?;
-    let main = current
+    let (_, repos) = repos(project, Path::new("/__apexagent_task_dir_unavailable__"))?;
+    let repo = repos.first().ok_or("Git did not report a main worktree.")?;
+    let project = repo.dir.as_path();
+    let main = repo
         .items
         .first()
         .ok_or("Git did not report a main worktree.")?;
@@ -217,16 +305,21 @@ pub fn add(project: &Path, req: AddRequest) -> Result<Worktree, String> {
     Ok(row)
 }
 pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
-    let state = list(project, task_dir)?;
+    let (_, repos) = repos(project, task_dir)?;
     if std::fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err("The worktree folder was replaced.".into());
     }
     let target = fs_canonical(target).unwrap_or_else(|| target.to_path_buf());
-    let row = state
-        .items
+    let (project, row) = repos
         .iter()
-        .find(|w| {
-            fs_canonical(Path::new(&w.path)).unwrap_or_else(|| PathBuf::from(&w.path)) == target
+        .find_map(|repo| {
+            repo.items
+                .iter()
+                .find(|w| {
+                    fs_canonical(Path::new(&w.path)).unwrap_or_else(|| PathBuf::from(&w.path))
+                        == target
+                })
+                .map(|row| (repo.dir.as_path(), row))
         })
         .ok_or("That folder is not a worktree for this project.")?;
     if row.main {
@@ -253,8 +346,9 @@ pub fn remove(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
 /// Unregister only the selected worktree, retaining its working files.
 /// A separate command prevents older hosts from interpreting Prune as deletion.
 pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Result<(), String> {
-    let state = list(project, task_dir)?;
-    let row = state.items.iter().find(|w| Path::new(&w.path) == target)
+    let (_, repos) = repos(project, task_dir)?;
+    let (project, row) = repos.iter()
+        .find_map(|repo| repo.items.iter().find(|w| Path::new(&w.path) == target).map(|row| (repo.dir.as_path(), row)))
         .ok_or("That folder is not a worktree for this project.")?;
     if row.main { return Err("The main checkout can't be removed here.".into()); }
     if row.task { return Err("ApexAgent manages this worktree.".into()); }
@@ -290,7 +384,17 @@ pub fn forget(project: &Path, target: &Path, force: bool, task_dir: &Path) -> Re
     Err("Could not find the selected worktree registration.".into())
 }
 pub fn prune(project: &Path) -> Result<(), String> {
-    git(project, &["worktree".into(), "prune".into()]).map(|_| ())
+    if git(project, &["rev-parse".into(), "--show-toplevel".into()]).is_ok() {
+        return git(project, &["worktree".into(), "prune".into()]).map(|_| ());
+    }
+    let checkouts = child_repos(project);
+    if checkouts.is_empty() {
+        return Err("This folder isn't a Git repository.".into());
+    }
+    for checkout in checkouts {
+        git(&checkout, &["worktree".into(), "prune".into()])?;
+    }
+    Ok(())
 }
 fn fs_canonical(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path).ok()
@@ -583,5 +687,86 @@ mod tests {
             .items
             .iter()
             .any(|w| w.prunable));
+    }
+    fn init(root: &Path) {
+        fs::create_dir_all(root).unwrap();
+        let run = |args: &[&str]| {
+            git(root, &args.iter().map(|a| a.to_string()).collect::<Vec<_>>()).unwrap();
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        fs::write(root.join("seed"), "seed").unwrap();
+        run(&["add", "seed"]);
+        run(&["commit", "-m", "seed"]);
+    }
+    fn branch_at(branch: &str, folder: PathBuf) -> AddRequest {
+        AddRequest {
+            branch: branch.into(),
+            new_branch: true,
+            base: None,
+            folder: Some(folder.to_string_lossy().into_owned()),
+        }
+    }
+    fn real(path: PathBuf) -> String {
+        fs_canonical(&path).unwrap().to_string_lossy().into_owned()
+    }
+    #[test]
+    fn folder_of_checkouts_lists_each_repository_once() {
+        let temp = Temp::new();
+        let parent = temp.path().join("projects");
+        let tasks = temp.path().join("agent-data");
+        init(&parent.join("app"));
+        init(&parent.join("tool"));
+        init(&parent.join(".hidden"));
+        fs::create_dir_all(parent.join("notes")).unwrap();
+        add(&parent.join("app"), branch_at("feature", parent.join("app-feature"))).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(parent.join("tool"), parent.join("tool-link")).unwrap();
+        let rows = list(&parent, &tasks).unwrap();
+        let shown: Vec<(&str, bool)> = rows.items.iter().map(|w| (w.path.as_str(), w.main)).collect();
+        let (app, feature, tool) = (real(parent.join("app")), real(parent.join("app-feature")), real(parent.join("tool")));
+        assert_eq!(shown, vec![(app.as_str(), true), (feature.as_str(), false), (tool.as_str(), true)]);
+        assert_eq!(rows.root, app);
+        assert!(rows.items.iter().all(|w| w.changes == Some(0)));
+    }
+    #[test]
+    fn folder_of_checkouts_routes_changes_to_the_owning_repository() {
+        let temp = Temp::new();
+        let parent = temp.path().join("projects");
+        let tasks = temp.path().join("agent-data");
+        let (app, tool) = (parent.join("app"), parent.join("tool"));
+        init(&app);
+        init(&tool);
+        // Two of app's checkouts are in the folder, so new worktrees go to app.
+        add(&app, branch_at("second", parent.join("app-second"))).unwrap();
+        let added = add(&parent, branch_at("from-folder", temp.path().join("app-new"))).unwrap();
+        assert!(list(&app, &tasks).unwrap().items.iter().any(|w| w.path == added.path));
+        assert!(git(&tool, &["rev-parse".into(), "--verify".into(), "refs/heads/from-folder".into()]).is_err());
+
+        let outside = add(&tool, branch_at("outside", temp.path().join("tool-outside"))).unwrap();
+        assert!(list(&parent, &tasks).unwrap().items.iter().any(|w| w.path == outside.path));
+        remove(&parent, Path::new(&outside.path), false, &tasks).unwrap();
+        assert!(!Path::new(&outside.path).exists());
+        assert!(remove(&parent, &tool, false, &tasks).unwrap_err().contains("main checkout"));
+
+        let gone = add(&tool, branch_at("gone", temp.path().join("tool-gone"))).unwrap();
+        let missing = add(&app, branch_at("missing", temp.path().join("app-missing"))).unwrap();
+        fs::remove_dir_all(&gone.path).unwrap();
+        fs::remove_dir_all(&missing.path).unwrap();
+        forget(&parent, Path::new(&gone.path), false, &tasks).unwrap();
+        let rows = list(&parent, &tasks).unwrap();
+        assert!(!rows.items.iter().any(|w| w.path == gone.path));
+        assert!(rows.items.iter().any(|w| w.path == missing.path && w.prunable));
+        prune(&parent).unwrap();
+        assert!(!list(&parent, &tasks).unwrap().items.iter().any(|w| w.prunable));
+    }
+    #[test]
+    fn folder_without_checkouts_is_not_a_repository() {
+        let temp = Temp::new();
+        let folder = temp.path().join("empty");
+        fs::create_dir_all(folder.join("notes")).unwrap();
+        assert_eq!(list(&folder, &temp.path().join("agent-data")).unwrap_err(), "This folder isn't a Git repository.");
+        assert!(prune(&folder).is_err());
     }
 }
