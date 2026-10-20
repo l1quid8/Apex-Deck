@@ -33,6 +33,8 @@ export interface ChatBundle {
   confirmSteer: boolean;
   chipParts: ChipParts;
   landingTexture: LandingTextureSettings;
+  /** Settings → General "Run buttons on code blocks". */
+  codeRunButtons: boolean;
 }
 
 /** How a fork the owner ran for a pop-out ended: the new thread's title, or why it failed. */

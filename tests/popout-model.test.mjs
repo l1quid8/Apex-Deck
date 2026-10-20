@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { renamedAgents } from "../src/agentRenames.ts";
 import { addLeaf, leafIds, moveLeaf, resize } from "../src/layout.ts";
 import { changedProfiles, createForkChannel, orphanedPopouts, popoutRefusal, restorePane, restoreTab, retargetPoppedTab, takePaneOut, takeTabOut, upsertProfiles } from "../src/popoutModel.ts";
 import { defaultPanel, openTab } from "../src/rightPanelModel.ts";
@@ -214,6 +215,15 @@ test("a Deck-side edit to another agent survives a pop-out save", () => {
   assert.equal(fromPopout.find((p) => p.id === "two").persona, "edited in pop-out");
   assert.deepEqual(changedProfiles(atOpen, atOpen), []);
   assert.equal(upsertProfiles(ownerNow, []), ownerNow);
+});
+
+test("a pop-out's changed agents are enough to find a rename", () => {
+  // Save to Agents from a pop-out sends only what changed; the owner finds renames in
+  // that list, so the agent's copies in chats are renamed as they are from Deck.
+  const atOpen = [agent("one"), agent("two")];
+  const changed = changedProfiles(atOpen, [agent("one"), agent("two", { display_name: "Twain" })]);
+  assert.deepEqual(renamedAgents(atOpen, changed), [{ id: "two", from: "two", name: "Twain" }]);
+  assert.deepEqual(renamedAgents(atOpen, changedProfiles(atOpen, [...atOpen, agent("three")])), []);
 });
 
 test("pop-outs whose thread is gone are orphans; live threads are not", () => {

@@ -37,6 +37,8 @@ const EMPTY_BUNDLE: ChatBundle = {
   confirmSteer: true,
   chipParts: { tool: true, effort: true, usage: true },
   landingTexture: DEFAULT_LANDING_TEXTURE,
+  // No Run buttons until the owner says whether Settings has them on.
+  codeRunButtons: false,
 };
 
 /** A details slot's open and folded state, for this window only: never saved. */
@@ -387,6 +389,7 @@ function PaneBody({ snapshot, route, title, ptyId, url, previewSource, openExter
                 onConfirmSteer={(confirm) => send({ type: "confirm-steer", confirm })}
                 chipParts={bundle.chipParts}
                 landingTexture={bundle.landingTexture}
+                codeRunButtons={bundle.codeRunButtons}
                 details={details}
                 countsSlot={countsSlot}
                 menuRequest={menuRequest}

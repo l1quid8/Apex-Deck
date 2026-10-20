@@ -36,8 +36,25 @@ test("saved Agents travel one change at a time, and attach mode stays on", () =>
   assert.match(popout, /changedProfiles\(bundle\.profiles, next\)/);
   assert.match(popout, /type: "profiles-upsert"/);
   assert.doesNotMatch(popout, /\{ type: "profiles",/);
-  assert.match(app, /upsertProfiles\(list, action\.profiles\)/);
+  assert.match(app, /live\.upsertAgents\(action\.profiles\)/);
+  assert.match(app, /setProfiles\(\(list\) => upsertProfiles\(list, changed\)\)/);
   assert.equal((popout.match(/^\s+attach$/gm) ?? []).length, 2);
+});
+
+test("popped threads follow the chat settings and renames that came with 0.8.0", () => {
+  // Settings → General "Run buttons on code blocks": off in Deck means off in a pop-out,
+  // and no Run button shows before the owner's bundle says which.
+  const config = app.slice(app.indexOf("const chatConfigOf"), app.indexOf("const previewSourceOf"));
+  assert.match(config, /codeRunButtons: settings\.codeRunButtons/);
+  assert.match(popout, /codeRunButtons=\{bundle\.codeRunButtons\}/);
+  const empty = popout.slice(popout.indexOf("const EMPTY_BUNDLE"), popout.indexOf("\n};", popout.indexOf("const EMPTY_BUNDLE")));
+  assert.match(empty, /codeRunButtons: false/);
+  // The empty thread's glyph field takes the same appearance-aware colour as in Deck.
+  assert.match(config, /landingTexture: effectiveLandingTexture\(settings\.landingTexture \?\? DEFAULT_LANDING_TEXTURE, appearance\)/);
+  // Save to Agents from a pop-out renames the agent's chat copies, as it does from Deck.
+  const upsert = app.slice(app.indexOf("const upsertAgents"), app.indexOf("const upsertAgents") + 500);
+  assert.match(upsert, /noteRenames\(profiles, changed\)/);
+  assert.match(app, /const saveAgents = \(next: ParticipantConfig\[\]\) => \{\s*noteRenames\(profiles, next\);/);
 });
 
 test("a popped thread has its Details panel, counts, menu and rename in its own window", () => {

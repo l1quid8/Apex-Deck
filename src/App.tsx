@@ -342,14 +342,24 @@ export function App() {
   const renameNote = useRef<ReturnType<typeof renameNotes> | null>(null);
   renameNote.current ??= renameNotes(toast);
   const onCopyRenamed = useCallback((seq: number, outcome: CopyOutcome) => renameNote.current?.heard(seq, outcome), []);
-  /** The Agents tab saved. Renaming an agent there renames its copies in chats too. */
-  const saveAgents = (next: ParticipantConfig[]) => {
-    const renamed = renamedAgents(profiles, next).map((rename) => ({ ...rename, seq: ++renameSeq.current }));
-    setProfiles(next);
+  /** Agents whose name changed from `before` to `after`, for every thread to rename its copy of. */
+  const noteRenames = (before: ParticipantConfig[], after: ParticipantConfig[]) => {
+    const renamed = renamedAgents(before, after).map((rename) => ({ ...rename, seq: ++renameSeq.current }));
     if (renamed.length === 0) return;
     for (const rename of renamed) renameNote.current?.started(rename);
     // Every rename, in order, so a chat that was offline through a swap replays it step by step.
     setCopyRenames((list) => addRenames(list, renamed));
+  };
+  /** The Agents tab saved. Renaming an agent there renames its copies in chats too. */
+  const saveAgents = (next: ParticipantConfig[]) => {
+    noteRenames(profiles, next);
+    setProfiles(next);
+  };
+  /** Saved Agents changed in a pop-out: only the changed ones arrive, folded in by id so
+   *  saves made here meanwhile survive. A new name renames the chat copies, as saveAgents does. */
+  const upsertAgents = (changed: ParticipantConfig[]) => {
+    noteRenames(profiles, changed);
+    setProfiles((list) => upsertProfiles(list, changed));
   };
   /** Saved machines, for the sidebar's server names and Copy folder path. */
   const [hostList, setHostList] = useState<HostEntry[]>([]);
@@ -1259,7 +1269,8 @@ export function App() {
     newBotAccess: settings.newBotAccess,
     confirmSteer: settings.confirmSteer,
     chipParts: settings.botChips,
-    landingTexture: settings.landingTexture ?? DEFAULT_LANDING_TEXTURE,
+    landingTexture: effectiveLandingTexture(settings.landingTexture ?? DEFAULT_LANDING_TEXTURE, appearance),
+    codeRunButtons: settings.codeRunButtons,
   });
 
   /** A preview's source without the pane itself, for snapshots and updates. */
@@ -1351,8 +1362,8 @@ export function App() {
   };
 
   /** The newest pop-outs and pane edits, for window events that arrive between renders. */
-  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, focusPane: (_pane: Pane) => {} });
-  popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen };
+  const popoutLive = useRef({ poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents, focusPane: (_pane: Pane) => {} });
+  popoutLive.current = { ...popoutLive.current, poppedOut, poppedTabs, closePane, renamePane, forkThread, onThreadSeen, upsertAgents };
   /** The last patch pushed to each pop-out, so unchanged renders send nothing. */
   const lastSent = useRef(new Map<string, string>());
 
@@ -1401,9 +1412,7 @@ export function App() {
       } else if (action.type === "open-externally") {
         setSettings((s) => ({ ...s, preview: { ...s.preview, openExternally: action.hosts } }));
       } else if (action.type === "profiles-upsert") {
-        // Only the agents that changed arrive, folded in by id: saves made in this
-        // window while the pop-out was open survive a save from the pop-out.
-        setProfiles((list) => upsertProfiles(list, action.profiles));
+        live.upsertAgents(action.profiles);
       } else if (action.type === "fork") {
         if (!paneRec) return;
         const reply = (forkResult: PopoutUpdate["forkResult"]) => void bridge.update(token, { forkResult }).catch(() => {});
