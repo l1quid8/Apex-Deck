@@ -75,10 +75,3 @@ export function handOffChoices(lead: string | null, bots: { id: string; name: st
 export function handOffLabel(lead: string | null, nameOf: (id: string) => string): string {
   return lead === "all" ? "Send to everyone" : lead ? `Send to ${nameOf(lead)}` : "Send to…";
 }
-
-/** Below this pane width, Quote, Copy and Fork fold into one ⋯ menu. */
-export const MIN_ACTIONS_WIDTH = 360;
-
-export function foldsMessageActions(paneWidth: number): boolean {
-  return paneWidth < MIN_ACTIONS_WIDTH;
-}
