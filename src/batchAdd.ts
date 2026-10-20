@@ -3,6 +3,13 @@ import type { ParticipantConfig } from "./types";
 
 export const MAX_NEW_BOTS = 4;
 
+/** The batch submit button's text for `total` bots. */
+export function batchLabel(total: number): string {
+  if (total === 0) return "Pick a bot";
+  if (total === 1) return "Add 1 bot";
+  return `Add ${total} bots`;
+}
+
 export function checkBatch(
   items: ParticipantConfig[],
   options: { others: readonly Mentionable[]; agents: readonly Mentionable[] }

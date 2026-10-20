@@ -24,9 +24,10 @@ import { findServerUrls, isLocalHost, normalizeAddress } from "./previewAddress"
 import { failedLine, goBackAlways, goBackAsks, goBackRequest, goBackTitle, initialFiles, saveGoBackAlways, type GoBack, type RevertScope } from "./revertConfirm";
 import { saveThreadSteer, steerAnswer, steerAsks, threadSteer, type SteerAnswer, type ThreadSteer } from "./steerConfirm";
 import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, quietLine, threadStatusOf, type BotProgress } from "./composerStatus";
-import { botIdentity, clashMessage, mentionable, mentionClash, mentionFor, slug } from "./slug";
+import { botIdentity, mentionable, mentionFor, slug } from "./slug";
 import { copyRenamer, savedToAgents, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { nameForModel, uniqueName } from "./quickAdd";
+import { addInOrder, batchLabel, checkBatch, MAX_NEW_BOTS } from "./batchAdd";
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
@@ -342,6 +343,15 @@ function keyNote(state: KeyState | null, name: string): string {
   return "Kept in this Mac's Keychain (a private file on Linux), never in your chats.";
 }
 
+/** How a bot's access reads in menus. */
+function accessLabel(access: Access): string {
+  switch (access) {
+    case "read": return "Read only";
+    case "ask": return "Ask first";
+    case "edits": return "Can edit files";
+    default: return "Full access";
+  }
+}
 /** Put an argument back into command-line form, quoting it if it has spaces. */
 function quoteArg(arg: string): string {
   if (arg !== "" && !/[\s"']/.test(arg)) return arg;
@@ -635,7 +645,11 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** True once the person types a name, so choosing a model stops renaming the bot. */
   const nameTouched = useRef(false);
   /** New bots set up and waiting in the quick add batch, oldest first. */
-  const [queuedBots] = useState<Draft[]>([]);
+  const [queuedBots, setQueuedBots] = useState<Draft[]>([]);
+  /** Ids of saved agents ticked in the quick add menu. */
+  const [pickedAgents, setPickedAgents] = useState<Set<string>>(new Set());
+  /** Whether the quick add editor is open and counts as one more new bot. */
+  const [editorOpen, setEditorOpen] = useState(true);
   useEffect(() => {
     if (!quickAdd) return;
     const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".quick-add-wrap")) setQuickAdd(null); };
@@ -2819,18 +2833,120 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </div>
         </form>
       ));
-  const addSaved = async (config: ParticipantConfig) => {
-    const clash = mentionClash(config, participants);
-    if (clash) { notify(clashMessage(clash, "chat"), "error"); return false; }
+  const freezeDraft = async (): Promise<boolean> => {
+    let ready: Draft;
     try {
-      await backend.roomAddParticipant(pane.id, config);
-      setParticipants((list) => list.some(p => p.id === config.id) ? list : [...list, config]);
-      return true;
-    } catch (error) { notify(`Could not add the agent: ${String(error)}`, "error"); return false; }
+      ready = await withKey(draft);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    const built = draftToConfig(ready);
+    if (typeof built === "string") {
+      setFormError(built);
+      return false;
+    }
+    const taken = [...identities.current.values(), ...queuedBots.flatMap((d) => (d.appearance ? [d.appearance] : []))];
+    setQueuedBots((list) => [...list, { ...ready, apiKey: "", appearance: ready.appearance ?? createAppearance(taken) }]);
+    setFormError("");
+    return true;
+  };
+
+  const anotherBot = async () => {
+    if (editorOpen && !(await freezeDraft())) return;
+    nameTouched.current = false;
+    setDraft((d) => emptyDraft(d.preset, d.access));
+    setEditorOpen(true);
+  };
+
+  const openRow = async (index: number) => {
+    const row = queuedBots[index];
+    if (!row) return;
+    if (editorOpen && !(await freezeDraft())) return;
+    setQueuedBots((list) => list.filter((d) => d !== row));
+    nameTouched.current = true;
+    setDraft(row);
+    setEditorOpen(true);
+    setFormError("");
+  };
+
+  const removeRow = (index: number) => setQueuedBots((list) => list.filter((_, i) => i !== index));
+
+  const togglePicked = (id: string) => setPickedAgents((old) => {
+    const next = new Set(old);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+
+  const submitBatch = async (): Promise<boolean> => {
+    if (editorOpen && !providerEnabled(draft.preset, disabledProviders)) {
+      setFormError("This provider is disabled. Enable it in Providers to add a bot.");
+      return false;
+    }
+    const saved = availableProfiles.filter((p) => pickedAgents.has(p.id) && !participants.some((own) => own.id === p.id));
+    let rows = queuedBots;
+    if (editorOpen) {
+      let ready: Draft;
+      try {
+        ready = await withKey(draft);
+      } catch (error) {
+        setFormError(error instanceof Error ? error.message : String(error));
+        return false;
+      }
+      rows = [...rows, { ...ready, apiKey: "" }];
+    }
+    const taken = [...identities.current.values()];
+    const fresh: ParticipantConfig[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const built = draftToConfig(rows[i]);
+      if (typeof built === "string") {
+        setFormError(`${rows[i].name.trim() || "New bot"}: ${built}`);
+        return false;
+      }
+      const look = built.appearance ?? createAppearance(taken);
+      taken.push(look);
+      fresh.push({ ...built, appearance: look });
+    }
+    const items = [...saved, ...fresh];
+    if (items.length === 0) return false;
+    const checked = checkBatch(items, { others: participants, agents: profiles });
+    if ("error" in checked) {
+      if (checked.index < saved.length) {
+        notify(checked.error, "error");
+      } else {
+        setFormError(checked.error);
+      }
+      return false;
+    }
+    const result = await addInOrder(checked.ok, (config) => backend.roomAddParticipant(pane.id, config));
+    setParticipants((list) => [...list, ...result.added.filter((c) => !list.some((p) => p.id === c.id))]);
+    for (const c of result.added) {
+      if (c.backend.kind === "agent" && c.backend.model) {
+        rememberModel(c.backend.tool, c.backend.model);
+      }
+    }
+    if (result.failed) {
+      const addedSaved = Math.min(result.added.length, saved.length);
+      const addedRows = result.added.length - addedSaved;
+      setPickedAgents((old) => {
+        const next = new Set(old);
+        for (const c of result.added) next.delete(c.id);
+        return next;
+      });
+      setQueuedBots(rows.slice(addedRows));
+      setEditorOpen(false);
+      setFormError(`Added ${result.added.length}. Could not add ${checked.ok[result.failed.index].display_name}: ${result.failed.error}`);
+      return false;
+    }
+    return true;
   };
   const openQuickAdd = (where: "empty" | "details" | "roster") => {
     if (quickAdd === where) return setQuickAdd(null);
     nameTouched.current = false;
+    setPickedAgents(new Set());
+    setQueuedBots([]);
+    setEditorOpen(true);
     setEditing(null);
     setAdding(false);
     setFormError("");
@@ -2843,16 +2959,26 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** Up to three tools for the quick menu: installed coding agents, then local models. */
   const quickTools = availablePresets.filter((p) => (p.agent && installed(p)) || p.key === "ollama").slice(0, 3);
   const quickAddMenu = (
-    <form className="quick-add" aria-label="Add a bot" onSubmit={async (e) => { e.preventDefault(); if (await saveParticipant()) setQuickAdd(null); }}>
+    <form className="quick-add" aria-label="Add a bot" onSubmit={async (e) => { e.preventDefault(); if (await submitBatch()) { closeForm(draft.preset); setQuickAdd(null); } }}>
       {availableProfiles.some((p) => !participants.some((own) => own.id === p.id)) && <>
         <span className="quick-add-label">Saved agents</span>
         <div className="quick-add-saved">
           {availableProfiles.filter((p) => !participants.some((own) => own.id === p.id)).map((p) => (
-            <button type="button" key={p.id} className="quick-add-chip" style={{ borderColor: (p.appearance ?? legacyAppearance(p.id)).color }} onClick={async () => { if (await addSaved(p)) setQuickAdd(null); }}>{p.display_name}</button>
+            <button type="button" key={p.id} className={pickedAgents.has(p.id) ? "quick-add-chip on" : "quick-add-chip"} style={{ borderColor: (p.appearance ?? legacyAppearance(p.id)).color }} onClick={() => togglePicked(p.id)} role="checkbox" aria-checked={pickedAgents.has(p.id)}>{pickedAgents.has(p.id) ? "✓ " : ""}{p.display_name}</button>
           ))}
         </div>
-        <span className="quick-add-label">Or a new bot</span>
       </>}
+      <span className="quick-add-label">New bots</span>
+      {queuedBots.map((d, i) => (
+        <div className="quick-add-row" key={`${d.name}-${i}`}>
+          <button type="button" className="quick-add-row-open" title="Edit this bot" onClick={() => openRow(i)}>
+            {PRESETS.find((p) => p.key === d.preset)?.label.replace(/\s*\(.*\)$/, "") ?? d.preset} · {d.name} · {d.effort ? effortLabel(d.effort) : "Default"} · {accessLabel(d.access)}
+          </button>
+          <button type="button" className="quick-add-row-x" aria-label={`Remove ${d.name}`} onClick={() => removeRow(i)}>×</button>
+        </div>
+      ))}
+      {editorOpen && (<div className="quick-add-editor">
+        <button type="button" className="quick-add-row-x quick-add-editor-x" aria-label="Remove this bot" onClick={() => { setEditorOpen(false); setFormError(""); }}>×</button>
       <div className="quick-add-tools" role="radiogroup" aria-label="Tool">
         {quickTools.map((p) => (
           <button type="button" role="radio" aria-checked={draft.preset === p.key} key={p.key} className={draft.preset === p.key ? "qa-tool on" : "qa-tool"} title={p.label} onClick={() => choosePreset(p.key)}>
@@ -2935,10 +3061,12 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         <input name="quick-name" value={draft.name} onChange={(e) => { nameTouched.current = true; set("name", e.target.value); }} placeholder="e.g. Opus" />
         {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}
       </label>
+      </div>)}
       {formError && <p className="form-error">{formError}</p>}
       <div className="quick-add-foot">
+        <button type="button" className="ghost quick-add-another" disabled={queuedBots.length + (editorOpen ? 1 : 0) >= MAX_NEW_BOTS} title={`Up to ${MAX_NEW_BOTS} new bots at a time`} onClick={anotherBot}>+ Another bot</button>
         <button type="button" className="ghost" onClick={() => { setQuickAdd(null); openNewForm(); }}>More options</button>
-        <button className="primary" type="submit">Add to chat</button>
+        <button className="primary" type="submit" disabled={pickedAgents.size + queuedBots.length + (editorOpen ? 1 : 0) === 0}>{batchLabel(pickedAgents.size + queuedBots.length + (editorOpen ? 1 : 0))}</button>
       </div>
     </form>
   );
@@ -2991,7 +3119,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </div>)}
         </div>
       </details> : <p className="muted">No pinned responses. Use the pin icon on a model response.</p>);
-  const accessLabel = (access: Access) => access === "read" ? "Read only" : access === "ask" ? "Ask first" : access === "edits" ? "Can edit files" : "Full access";
   /** A small labelled bar for a context or plan reading. */
   const meter = (name: string, level: number | null) => level === null ? null : <span className="bot-meter" title={name === "ctx" ? "Context left" : "Plan left"}>
     {name}<span className="bot-meter-track" aria-hidden="true"><span style={{ width: `${percent(level)}%` }} className={isLow(level) ? "low" : undefined} /></span>

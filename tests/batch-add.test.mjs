@@ -47,3 +47,10 @@ test("addInOrder with no failure returns failed null", async () => {
   assert.deepEqual(result.added.map((c) => c.id), ["a"]);
   assert.equal(result.failed, null);
 });
+
+test("batchLabel counts the batch on the submit button", async () => {
+  const { batchLabel } = await import("../src/batchAdd.ts");
+  assert.equal(batchLabel(0), "Pick a bot");
+  assert.equal(batchLabel(1), "Add 1 bot");
+  assert.equal(batchLabel(4), "Add 4 bots");
+});
