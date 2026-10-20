@@ -23,6 +23,13 @@ fn main() {
     println!("cargo:rustc-env=APEX_BUILD_COMMIT={commit}");
     println!("cargo:rustc-env=APEX_BUILD_DIRTY={}", if dirty { "true" } else { "false" });
 
+    // A build folder that links its target/ to another checkout's shares this
+    // script's last run, and with it that checkout's watch list below, so
+    // commits here would never refresh the label. Cargo hashes workspace
+    // members by relative path, so the shared run looks current. The shell
+    // that starts cargo sets PWD to the checkout, and a change reruns us.
+    println!("cargo:rerun-if-env-changed=PWD");
+
     // Rebuild when the checked-out commit or the index changes. Paths that
     // don't exist would make cargo rerun this script every time, so skip them.
     let mut watched = vec!["HEAD".to_string(), "index".to_string()];
