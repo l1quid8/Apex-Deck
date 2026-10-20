@@ -776,6 +776,71 @@ fn stop_during_auto_wait_never_starts_the_old_reply() {
     });
 }
 
+/// A host's start work that takes a while, as a snapshot of a large folder does.
+struct HeldStart {
+    release: Mutex<Option<oneshot::Receiver<()>>>,
+}
+impl apex_core::TurnStartHook for HeldStart {
+    fn before_turn<'a>(&'a self, _: &'a ParticipantId) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let release = self.release.lock().unwrap().take();
+            if let Some(release) = release { let _ = release.await; }
+        })
+    }
+}
+
+#[test]
+fn the_turn_awaits_the_hosts_start_work_before_the_bot_starts() {
+    use futures::FutureExt;
+    block_on(async {
+        let bot = Arc::new(ScriptedParticipant::new("null", &["done"]));
+        let (release, ready) = oneshot::channel();
+        let room = ConcurrentRoom::new(Room::new(vec![bot.clone()], RoomOptions::default()))
+            .with_turn_start(Arc::new(HeldStart { release: Mutex::new(Some(ready)) }));
+        let events = Mutex::new(Vec::new());
+        let sink = |event| events.lock().unwrap().push(event);
+        let batch = room.begin_post("@null go", None, &sink).await.unwrap();
+        let mut run = Box::pin(room.run(batch, &sink));
+        assert!(run.as_mut().now_or_never().is_none(), "the turn waits for the start work");
+        assert!(bot.requests().is_empty(), "the bot has not started");
+        assert!(!events.lock().unwrap().iter().any(|e| matches!(e, RoomEvent::TurnStarted { .. })));
+        release.send(()).unwrap();
+        run.await;
+        assert_eq!(bot.requests().len(), 1);
+        assert!(events.lock().unwrap().contains(&RoomEvent::TurnStarted { id: ParticipantId::new("null") }));
+    });
+}
+
+#[test]
+fn stop_during_the_hosts_start_work_never_starts_the_reply() {
+    use futures::FutureExt;
+    block_on(async {
+        let mut config = ScriptedParticipant::new("null", &["must not run"]).config().clone();
+        config.access = apex_core::Access::Full;
+        let bot = Arc::new(ScriptedParticipant::from_config(config));
+        let (release, ready) = oneshot::channel();
+        let room = ConcurrentRoom::new(Room::new(vec![bot.clone()], RoomOptions::default()))
+            .with_turn_start(Arc::new(HeldStart { release: Mutex::new(Some(ready)) }));
+        let batch = room.begin_post("@null work", None, &|_| {}).await.unwrap();
+        let events = Mutex::new(Vec::new());
+        let sink = |event| events.lock().unwrap().push(event);
+        let mut run = Box::pin(room.run(batch, &sink));
+        assert!(run.as_mut().now_or_never().is_none());
+        room.stop(None);
+        release.send(()).unwrap();
+        run.await;
+        assert!(bot.requests().is_empty());
+        assert!(!room.busy());
+        // The editor's place is given up before idle, as at the end of a turn.
+        assert_eq!(events.lock().unwrap().as_slice(), &[
+            RoomEvent::EditorChanged { id: Some(ParticipantId::new("null")) },
+            RoomEvent::EditorChanged { id: None },
+            RoomEvent::ParticipantIdle { id: ParticipantId::new("null") },
+            RoomEvent::Idle,
+        ]);
+    });
+}
+
 #[test]
 fn a_task_room_runs_readers_while_its_writers_wait_for_the_checkout() {
     use futures::FutureExt;

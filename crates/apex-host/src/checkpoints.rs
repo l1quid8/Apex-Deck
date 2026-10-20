@@ -87,8 +87,10 @@ impl RevertPlan {
 
 /// One thread's snapshots run one at a time, since they share its index and
 /// checkpoint list. Other threads, even in the same folder, never wait for
-/// them: a snapshot of a large folder can take minutes.
-pub struct Snapshots { root: PathBuf, threads: Mutex<HashMap<String, Arc<Mutex<()>>>>, stores: Mutex<()> }
+/// them: a snapshot of a large folder can take minutes. The list also has a
+/// lock of its own, held only while it is read and saved, so noting a
+/// command a bot ran never waits for a snapshot.
+pub struct Snapshots { root: PathBuf, threads: Mutex<HashMap<String, Arc<Mutex<()>>>>, lists: Mutex<HashMap<String, Arc<Mutex<()>>>>, stores: Mutex<()> }
 
 fn git(store: &Path, cwd: &Path, index: Option<&Path>, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     use std::io::Write;
@@ -178,10 +180,16 @@ pub fn irreversible(command: &str) -> bool {
 }
 
 impl Snapshots {
-    pub fn new(root: PathBuf) -> Self { Snapshots { root, threads: Mutex::default(), stores: Mutex::default() } }
+    pub fn new(root: PathBuf) -> Self { Snapshots { root, threads: Mutex::default(), lists: Mutex::default(), stores: Mutex::default() } }
 
     fn thread_lock(&self, thread: &str) -> Arc<Mutex<()>> {
         Arc::clone(self.threads.lock().unwrap().entry(thread.to_string()).or_default())
+    }
+
+    /// Held while the thread's list is read and saved. Anything that also
+    /// holds `thread_lock` takes this one second.
+    fn list_lock(&self, thread: &str) -> Arc<Mutex<()>> {
+        Arc::clone(self.lists.lock().unwrap().entry(thread.to_string()).or_default())
     }
 
     /// Tests stand in for a slow snapshot by holding a thread's lock.
@@ -253,6 +261,7 @@ impl Snapshots {
         // One at a time: two bots starting together share the thread's index.
         let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
         let (tree, skipped) = self.write_tree(cwd, thread)?;
+        let list = self.list_lock(thread); let _list = list.lock().unwrap();
         let mut file = self.load(thread);
         file.cwd = cwd.to_string_lossy().into_owned();
         // Two idle checkpoints in a row with the same tree say nothing new.
@@ -268,7 +277,8 @@ impl Snapshots {
     /// Remember a command a bot ran, if a revert couldn't undo it.
     pub fn note_command(&self, thread: &str, seq: usize, by: &ParticipantId, command: &str) {
         if !irreversible(command) { return; }
-        let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
+        // Not the thread lock: the bot is mid-turn, and a snapshot can take minutes.
+        let lock = self.list_lock(thread); let _guard = lock.lock().unwrap();
         let mut file = self.load(thread);
         file.effects.push(SideEffect { seq, by: by.clone(), command: command.to_string() });
         let _ = self.save(thread, &file);
@@ -364,6 +374,7 @@ impl Snapshots {
     pub fn rewind(&self, thread: &str, cwd: &Path, at: usize, bot: Option<&ParticipantId>, kind: Kind) -> Result<(), String> {
         {
             let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
+            let list = self.list_lock(thread); let _list = list.lock().unwrap();
             let mut file = self.load(thread);
             if let Some(k) = Self::point(&file.checkpoints, at, bot) {
                 // Keep the point itself only if it was taken before anything at `at` happened.
@@ -380,6 +391,7 @@ impl Snapshots {
     pub fn clear(&self, thread: &str, cwd: Option<&Path>) {
         {
             let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
+            let list = self.list_lock(thread); let _list = list.lock().unwrap();
             let _ = std::fs::remove_file(self.thread_path(thread));
         }
         if let Some(cwd) = cwd { let _ = self.take(thread, cwd, 0, Kind::Open, None); }
@@ -387,6 +399,7 @@ impl Snapshots {
 
     pub fn delete(&self, thread: &str) {
         let lock = self.thread_lock(thread); let _guard = lock.lock().unwrap();
+        let list = self.list_lock(thread); let _list = list.lock().unwrap();
         let file = self.load(thread);
         if !file.cwd.is_empty() { let _ = std::fs::remove_file(self.index(Path::new(&file.cwd), thread)); }
         let _ = std::fs::remove_file(self.thread_path(thread));
@@ -404,6 +417,7 @@ impl Snapshots {
             file.checkpoints.retain(|c| c.seq < upto || (c.seq == upto && !c.kind.working()));
             file.effects.retain(|e| e.seq < upto);
         }
+        let list = self.list_lock(target); let _list = list.lock().unwrap();
         let _ = self.save(target, &file);
     }
 
@@ -611,6 +625,27 @@ mod tests {
             other.delete("other");
         });
         assert!(finished.recv_timeout(std::time::Duration::from_secs(10)).expect("another thread's snapshot waited for the slow one").is_ok());
+    }
+
+    #[test]
+    fn noting_a_command_does_not_wait_for_its_threads_slow_snapshot() {
+        let (cwd, snaps) = folder("note-mid-snapshot");
+        snaps.take("t", &cwd, 0, Kind::Send, None).unwrap();
+        let snaps = std::sync::Arc::new(snaps);
+        // Another bot in "t" is starting, and its snapshot of a large folder takes minutes.
+        let slow = snaps.hold_for_test("t");
+        let taking = slow.lock().unwrap();
+        let (done, noted) = std::sync::mpsc::channel();
+        let other = std::sync::Arc::clone(&snaps);
+        std::thread::spawn(move || {
+            other.note_command("t", 1, &ParticipantId::new("jigga"), "Running: git push origin main");
+            let _ = done.send(());
+        });
+        let noted = noted.recv_timeout(std::time::Duration::from_secs(10));
+        drop(taking);
+        noted.expect("noting a bot's command waited for its thread's snapshot");
+        let effects = snaps.plan("t", &cwd, 0, None).effects;
+        assert_eq!(effects, [SideEffect { seq: 1, by: ParticipantId::new("jigga"), command: "Running: git push origin main".into() }]);
     }
 
     #[test]
