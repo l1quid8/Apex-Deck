@@ -42,6 +42,8 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
   const strip = useRef<HTMLDivElement | null>(null);
   const suppressClick = useRef(false);
   const now = () => Date.now();
+  const selectedTab = state.tabs.find((tab) => tab.id === state.active);
+  const canRemove = !!selectedTab && !FIXED.includes(selectedTab.kind);
   // The window listeners below outlive the render that attached them.
   const live = useRef({ state, onChange, onPopoutDragOut });
   live.current = { state, onChange, onPopoutDragOut };
@@ -52,7 +54,7 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
   const beginTabDrag = (tabId: string, event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
     const button = (event.target as HTMLElement).closest("button");
-    if (button && button.getAttribute("role") !== "tab") return; // The close × keeps its click.
+    if (button && button.getAttribute("role") !== "tab") return;
     suppressClick.current = false;
     const press = { id: tabId, x: event.clientX, y: event.clientY, active: false, el: event.currentTarget as HTMLElement, pid: event.pointerId };
     const move = (e: PointerEvent) => {
@@ -95,7 +97,6 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
   return <div className="right-panel">
     <div className="right-panel-tabs" role="tablist" aria-label="Side panel" ref={strip}>
       {state.tabs.map((tab) => {
-        const fixed = FIXED.includes(tab.kind);
         const label = tab.kind === "browser" && tab.url ? hostOf(tab.url) : TAB_LABEL[tab.kind];
         const flaggedTasks = tab.kind === "tasks" && !!taskAttention?.count;
         return <div key={tab.id} data-tab-id={tab.id} className={`right-panel-tab${tab.id === state.active ? " active" : ""}${flaggedTasks && tab.id === state.active ? " has-attention" : ""}${dragId === tab.id ? " dragging" : ""}`}
@@ -103,12 +104,12 @@ export function RightPanel({ state, onChange, bodies, onClose, onFull, taskAtten
           onPointerDown={(e) => beginTabDrag(tab.id, e)}
           onContextMenu={onPopout ? (e) => { e.preventDefault(); setContext({ id: tab.id, x: e.clientX, y: e.clientY }); } : undefined}>
           <button role="tab" id={`right-tab-${tab.id}`} aria-selected={tab.id === state.active} aria-controls={`right-body-${tab.id}`} aria-label={flaggedTasks ? taskAttention?.details : label} title={flaggedTasks ? taskAttention?.details : label} onClick={() => { if (suppressClick.current) { suppressClick.current = false; return; } onChange(activate(state, tab.id, now())); }}><TabIcon kind={tab.kind} /><span className="right-panel-tab-label" aria-hidden="true">{label}</span></button>
-          {!fixed && <button className="icon small" aria-label={`Close ${label}`} onClick={() => onChange(closeTab(state, tab.id))}>×</button>}
         </div>;
       })}
-      <button className="icon small" aria-label="Add a tab" aria-expanded={adding} onClick={() => setAdding((v) => !v)}>+</button>
+      <button className="icon small" aria-label="Add a tab" title="Add sidebar tool" aria-expanded={adding} onClick={() => setAdding((v) => !v)}>+</button>
+      <button className="icon small" aria-label="Remove selected tool" title={canRemove ? `Remove ${TAB_LABEL[selectedTab.kind]}` : selectedTab ? `${TAB_LABEL[selectedTab.kind]} is a permanent tool` : "No tool selected"} disabled={!canRemove} onClick={() => { if (!canRemove) return; setAdding(false); onChange(closeTab(state, state.active)); }}>−</button>
       <button className="icon small right-panel-full" aria-label={state.full ? "Collapse side panel" : "Expand side panel"} aria-pressed={state.full} title={state.full ? "Collapse" : "Expand"} onClick={() => onFull(!state.full)}>{state.full ? "⤡" : "⤢"}</button>
-      <button className="icon small right-panel-close" aria-label="Hide side panel" onClick={onClose}>×</button>
+      <button className="icon small right-panel-close" aria-label="Hide side panel" title="Close sidebar" onClick={() => { setAdding(false); onClose(); }}>×</button>
     </div>
     {adding && <div className="right-panel-add" role="menu">
       {KINDS.filter((k) => !FIXED.includes(k)).map((kind) => <button key={kind} role="menuitem" onClick={() => { setAdding(false); onChange(openTab(state, kind, now())); }}><TabIcon kind={kind} />{TAB_LABEL[kind]}</button>)}
