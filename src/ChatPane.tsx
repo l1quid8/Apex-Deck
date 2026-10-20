@@ -1652,7 +1652,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       </div>
     </div>;
   };
-  /** Directional disclosure for message actions; a menu in narrow panes. */
+  /** Directional disclosure for message actions; the row wraps in a narrow pane. */
   const messageActions = (message: Message) => {
     const quote = () => { const next = quoteFor(message, (id) => names.get(id) ?? id); setReplies((list) => list.some((q) => q.id === next.id && q.name === next.name && q.text === next.text) ? list : [...list, next]); input.current?.focus(); };
     const copy = () => copyMessage(message);

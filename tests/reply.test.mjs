@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { foldsMessageActions, handOffChoices, handOffLabel, quoteFor, quoteLead, quoteTarget, replyText } from '../src/reply.ts';
+import { handOffChoices, handOffLabel, quoteFor, quoteLead, quoteTarget, replyText } from '../src/reply.ts';
 
 const bots = (...ids) => ids.map((id) => ({ id, display_name: id }));
 
@@ -94,9 +94,4 @@ test('preview and send agree when your own quote comes first', () => {
   ];
   assert.equal(quoteTarget('', quotes, bots('muck', 'null')), 'muck');
   assert.ok(replyText('', quotes, bots('muck', 'null')).startsWith('@muck '));
-});
-
-test('message actions fold into one menu in a pane under 360px wide', () => {
-  assert.equal(foldsMessageActions(359), true);
-  assert.equal(foldsMessageActions(360), false);
 });
