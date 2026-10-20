@@ -10,6 +10,10 @@ import { REPLY_POLICIES } from "./ReplyPolicyPicker";
 import { BotSettings } from "./BotSettings";
 import type { AllowedRule, NextStep, RevertPlan, Speaker, ThreadStatus, ToolServer } from "./types";
 import { ArtifactButton, type CodeChoice } from "./ArtifactButton";
+import { CodeRunBox, RunButton, outputForMessage } from "./CodeRunBox";
+import { commandFrom, isRunnable } from "./codeRun.ts";
+import { useCodeRuns } from "./useCodeRuns.ts";
+import type { CodeInfo } from "./Markdown";
 import { parseBlocks } from "./markdownText";
 import { ModDock, useMods } from "./ModView";
 import { modHost } from "./mods/host";
@@ -167,6 +171,10 @@ interface Props {
   /** "Always" in the steer prompt turns the setting off everywhere. */
   onConfirmSteer?: (confirm: boolean) => void;
   details?: DetailsHost;
+  /** Settings → General "Run buttons on code blocks". */
+  codeRunButtons?: boolean;
+  /** Open a terminal in this thread's project with `command` typed in, not run. */
+  onOpenTerminal?: (command: string) => void;
 }
 
 /** A line in the transcript from the app. `action` adds Try again or Let them answer. */
@@ -476,7 +484,7 @@ function fitHead(head: HTMLElement) {
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details }: Props) {
+export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -1968,6 +1976,33 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return <ArtifactButton choices={choices} showing={showing} onChoose={(choice) => openFromCode(message, code, choice)} />;
   };
 
+  // Running a shell block from a bot's reply. The click is the consent; the
+  // browser preview has no shell, so it gets no button.
+  const codeRuns = useCodeRuns(backend, pane.id);
+  const runKey = (message: { seq: number }, code: CodeInfo) => `${message.seq}:${code.index}`;
+  const runAction = (message: { seq: number }, code: CodeInfo) => {
+    if (!codeRunButtons || backend.demo || !isRunnable(code.language, code.text)) return null;
+    const command = commandFrom(code.language, code.text);
+    if (!command.trim()) return null;
+    const key = runKey(message, code);
+    return <RunButton command={command} running={codeRuns.runs[key]?.state === "running"} onRun={() => codeRuns.run(key, command, cwd)} />;
+  };
+  const runBelow = (message: { seq: number }, code: CodeInfo) => {
+    const key = runKey(message, code);
+    const run = codeRuns.runs[key];
+    if (!run) return null;
+    return (
+      <CodeRunBox run={run} host={backend.host?.name ?? "This Mac"}
+        onStop={() => codeRuns.stop(key)} onDismiss={() => codeRuns.dismiss(key)}
+        onOpenTerminal={onOpenTerminal && (() => onOpenTerminal(run.command))}
+        onAddToMessage={() => {
+          const block = outputForMessage(run);
+          setText((current) => current.trim() ? `${current.replace(/\s+$/, "")}\n\n${block}\n` : `${block}\n`);
+          input.current?.focus();
+        }} />
+    );
+  };
+
   // In a narrow thread the panel covers the conversation.
   const chatBody = useRef<HTMLDivElement>(null);
   const [narrow, setNarrow] = useState(false);
@@ -3076,7 +3111,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 <span className="speaker" style={{ color: color(entry.message.speaker.id) }}>
                   {names.get(entry.message.speaker.id) ?? entry.message.speaker.id}
                 </span>
-                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => artifactAction(entry.message, code)} fence={cardIn(entry.message)} />
+                <Markdown text={entry.message.text} onOpen={openTarget} pathExists={pathExists} codeAction={(code) => <>{runAction(entry.message, code)}{artifactAction(entry.message, code)}</>} codeBelow={(code) => runBelow(entry.message, code)} fence={cardIn(entry.message)} />
                 <AttachedImages paths={replyImages(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 <AttachedVideos paths={replyVideos(entry.message.text)} read={readReplyImage(names.get(entry.message.speaker.id) ?? entry.message.speaker.id)} onOpen={(path) => openTarget(path, true)} onLoad={() => settle.current()} />
                 {(() => {

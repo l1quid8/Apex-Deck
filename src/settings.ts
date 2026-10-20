@@ -56,6 +56,8 @@ export interface AppSettings {
   preview: { openExternally: string[] };
   /** Ask before a steer interrupts a bot mid-turn. A thread can override it. */
   confirmSteer: boolean;
+  /** Show a Run button on shell code blocks in a bot's reply. */
+  codeRunButtons: boolean;
   /** What the bot chips under the message box show. */
   botChips: ChipParts;
 }
@@ -72,6 +74,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminal: { fontSize: 13, scrollback: 5000 },
   preview: { openExternally: [] },
   confirmSteer: true,
+  codeRunButtons: true,
   botChips: { tool: true, effort: true, usage: true },
 };
 
@@ -115,6 +118,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       openExternally: [...new Set((strings(record(saved.preview).openExternally) ?? []).map((host) => host.trim().toLowerCase()).filter(Boolean))],
     },
     confirmSteer: typeof saved.confirmSteer === "boolean" ? saved.confirmSteer : d.confirmSteer,
+    codeRunButtons: typeof saved.codeRunButtons === "boolean" ? saved.codeRunButtons : d.codeRunButtons,
     botChips: {
       tool: typeof chips.tool === "boolean" ? chips.tool : d.botChips.tool,
       effort: typeof chips.effort === "boolean" ? chips.effort : d.botChips.effort,

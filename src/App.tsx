@@ -344,6 +344,8 @@ export function App() {
   const [railRename, setRailRename] = useState<Record<string, number>>({});
   /** Bumped to start a terminal again from its ⋯ menu. */
   const [startRequests, setStartRequests] = useState<Record<string, number>>({});
+  /** Text to type, not run, into a terminal the first time it starts: a code block's Open in terminal. */
+  const [typeIns, setTypeIns] = useState<Record<string, string>>({});
   /** Fork, Export, Share or Copy chosen in a ⋯ menu. Cleared once the thread takes it. */
   const [threadRequests, setThreadRequests] = useState<Record<string, { id: string; action: ThreadMenuRequest } | undefined>>({});
   const menuSeq = useRef(0);
@@ -797,6 +799,13 @@ export function App() {
     setSection(paneSection(pane));
     setMaximized(null);
     setPicking(false);
+    return pane.id;
+  };
+
+  /** A code block's Open in terminal: a new shell in the thread's project, the command typed in and not run. */
+  const openTerminalWith = (workspaceId: string, command: string) => {
+    const id = addPane("terminal", "Terminal", undefined, workspaceId);
+    if (id) setTypeIns((all) => ({ ...all, [id]: command }));
   };
 
   /** The sidebar's New thread (or terminal) in a project. */
@@ -2191,7 +2200,7 @@ export function App() {
                   </div>
                   <div className="pane-body">
                     {!paneBackend ? <div role="alert">{destinationError}</div> : <HostPane backend={paneBackend} agents={agents}>{hostAgents => pane.kind === "terminal" ? (
-                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={paneBackend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} installed={toolInstalled(pane.agent, hostAgents)} toolLabel={toolName(pane.agent, hostAgents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onRenamePane={renamePane} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
+                      <TerminalPane pane={pane} cwd={workspace?.path ?? ""} backend={paneBackend} startRequest={startRequests[pane.id]} startOnMount={!restored.current.has(pane.id)} typeIn={typeIns[pane.id]} installed={toolInstalled(pane.agent, hostAgents)} toolLabel={toolName(pane.agent, hostAgents)} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onRun={onRun} onTitle={onTitle} onRenamePane={renamePane} onSignal={onSignal} onClose={closePane} onRunStart={onRunStart} onServer={onServer} fontSize={settings.terminal.fontSize} scrollback={settings.terminal.scrollback} />
                     ) : pane.kind === "preview" ? (
                       <PreviewPane
                         pane={pane}
@@ -2209,7 +2218,7 @@ export function App() {
                         onOpenInBrowser={openInBrowser}
                       />
                     ) : (
-                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
+                      <ChatPane visible={visible && section !== "agents"} onStatus={onThreadStatus} onCopy={onThreadCopy} menuRequest={(pane as Pane & { assistantTaskId?: string }).assistantTaskId ? undefined : threadRequests[pane.id]} onMenuDone={(id) => setThreadRequests((all) => all[pane.id]?.id === id ? { ...all, [pane.id]: undefined } : all)} onSeen={onThreadSeen} details={detailsHost} onFork={(title, upto, at) => (pane as Pane & { assistantTaskId?: string }).assistantTaskId ? Promise.resolve("") : forkThread(pane, title, upto, at)} moveAsk={askFor(pane)} work={workFor(pane)} pane={pane} cwd={(pane as Pane & { executionPath?: string }).executionPath ?? workspace?.path ?? ""} workspaceName={workspace?.name ?? ""} agents={hostAgents} backend={paneBackend} profiles={profiles} copyRenames={copyRenames} onCopyRenamed={onCopyRenamed} disabledProviders={disabledProviders} newThread={settings.newThread} newBotAccess={settings.newBotAccess} confirmSteer={settings.confirmSteer} chipParts={settings.botChips} codeRunButtons={settings.codeRunButtons} onOpenTerminal={(command) => openTerminalWith(pane.workspaceId, command)} landingTexture={settings.landingTexture ?? DEFAULT_LANDING_TEXTURE} onConfirmSteer={(confirmSteer) => setSettings((s) => ({ ...s, confirmSteer }))} onProfilesChange={saveAgents} focused={pane.id === focusedPane && visible && !picking && !settingsOpen} onActivity={onActivity} onSignal={onSignal} onApprovals={onApprovals} onServer={onServer} onPreview={(address, auto) => openPreview(address, pane.id, auto)} />
                     )}</HostPane>}
                   </div>
                 </section>
