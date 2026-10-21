@@ -2,12 +2,23 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  flex: none;
+  align-self: flex-end;
+  margin-bottom: 3px;
+}
+.composer-box.stacked > .voice-call-controls,
+.thread-chat .composer-box > .voice-call-controls {
+  align-self: center;
+  margin-bottom: 0;
 }
 .voice-mic {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  aspect-ratio: 1;
+  padding: 0;
   border: 0;
   border-radius: 50%;
   background: transparent;
