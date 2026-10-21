@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import React from 'react';
+import { personaWriters } from '../src/personaDraft.ts';
 
 const { transform } = createRequire(import.meta.url)('sucrase');
 const source = fs.readFileSync(new URL('../src/ChatPane.tsx', import.meta.url), 'utf8');
@@ -53,12 +55,46 @@ test('quick add names a second bot after the queued ones', () => {
   assert.match(effect[1], /queued/, 'the effect re-runs when the batch changes');
 });
 
-test('the quick add menu has effort, persona and API fields', () => {
+test('the quick add menu has effort, name and API fields', () => {
   const menu = source.slice(source.indexOf('const quickAddMenu = ('), source.indexOf('const quickAddButton = ('));
-  for (const name of ['quick-effort', 'quick-persona', 'quick-base-url', 'quick-key-env', 'quick-api-key']) {
+  for (const name of ['quick-effort', 'quick-name', 'quick-base-url', 'quick-key-env', 'quick-api-key']) {
     assert.match(menu, new RegExp(`name="${name}"`), `${name} field`);
   }
   assert.match(menu, /type="password"/, 'the API key is a password field');
+});
+
+test('quick add passes batch names to the persona writer and applies its edits', async () => {
+  // Exercise the child boundary: a generated persona must update this draft,
+  // while queued and saved names must reach the backend collision list.
+  const jsx = quickMenu().match(/<PersonaDraft\b[\s\S]*?\n\s*\/>/)?.[0];
+  assert.ok(jsx, 'quick add must offer the persona writer');
+  let draft = { preset: 'codex', name: 'My bot', persona: 'a security reviewer', access: 'full' };
+  const profiles = [{ id: 'saved', display_name: 'Saved', backend: { kind: 'agent', tool: 'codex', model: null }, persona: '', access: 'read', effort: null }];
+  const nameTouched = { current: false };
+  const calls = [];
+  const scope = {
+    React, PersonaDraft: Symbol('PersonaDraft'), personaWriters,
+    PRESETS: [{ key: 'codex', label: 'Codex', agent: { tool: 'codex' } }],
+    installed: () => true, profiles, disabledProviders: [],
+    participants: [{ display_name: 'Present' }], queuedBots: [{ name: 'Queued' }],
+    savedToAdd: profiles, draft, quickPersonaId: 1, nameTouched,
+    setDraft: update => { draft = update(draft); },
+    backend: { personaDraft: async (...args) => { calls.push(args); return { name: 'Vex', persona: 'You review security.' }; } },
+  };
+  const code = transform(`return (${jsx});`, { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
+  const { props } = new Function(...Object.keys(scope), code)(...Object.values(scope));
+  assert.deepEqual(new Set(props.taken), new Set(['Saved', 'Present', 'Queued']));
+  assert.deepEqual(props.writers.map(w => w.key), ['agent:codex', 'saved:saved']);
+  const writer = props.writers[0].config;
+  const generated = await props.write(writer, 'a security reviewer', props.taken);
+  assert.deepEqual(calls, [[writer, 'a security reviewer', props.taken]]);
+  props.onApply({ name: 'My bot', persona: generated.persona });
+  assert.equal(draft.persona, 'You review security.');
+  assert.equal(draft.name, 'My bot');
+  assert.equal(draft.access, 'full');
+  assert.equal(nameTouched.current, true, 'model auto-naming must not replace the applied name');
+  props.onIdea('Make it concise');
+  assert.equal(draft.persona, 'Make it concise');
 });
 
 test('the key lookup also runs for the quick add menu', () => {
@@ -92,7 +128,7 @@ test('the quick add menu scrolls inside itself and keeps its button visible', ()
 test('the quick add menu opens a new bot only when there are no saved agents to pick', () => {
   assert.match(source, /const \[editorOpen, setEditorOpen\] = useState\(false\);/);
   assert.match(source, /const pickableAgents = availableProfiles\.filter\(\(p\) => !participants\.some\(\(own\) => own\.id === p\.id\)\);/);
-  const open = source.slice(source.indexOf('const openQuickAdd = '), source.indexOf('const openQuickAdd = ') + 400);
+  const open = source.slice(source.indexOf('const openQuickAdd = '), source.indexOf('/** Up to three tools'));
   assert.match(open, /setEditorOpen\(pickableAgents\.length === 0\);/, 'saved agents to pick: start empty; none: start with a new bot open');
   assert.doesNotMatch(open, /setEditorOpen\(true\)/);
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ParticipantConfig, PersonaDraftResult } from "./types";
 import { ProviderLogo } from "./providerLogos";
 import { applyPersona, defaultWriter, DraftRun, type PersonaWriter } from "./personaDraft";
@@ -15,6 +15,7 @@ export function PersonaDraft({ writers, preset, taken, form, onApply, onIdea, wr
   onIdea: (persona: string) => void;
   write: (writer: ParticipantConfig, idea: string, taken: string[]) => Promise<PersonaDraftResult>;
 }) {
+  const ideaId = useId();
   const [writerKey, setWriterKey] = useState(() => defaultWriter(writers, preset));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -57,20 +58,11 @@ export function PersonaDraft({ writers, preset, taken, form, onApply, onIdea, wr
     }
   };
 
-  if (writers.length === 0) {
-    return (
-      <section className="persona-draft wide persona-draft-off" aria-label="Persona writing">
-        <span className="persona-draft-title">Describe the agent you want</span>
-        <p>Install or turn on an AI in Providers to use this.</p>
-      </section>
-    );
-  }
-
   return (
     <section className="persona-draft wide" aria-label="Write an agent persona">
-      <label className="persona-draft-title" htmlFor="persona-idea">Persona — describe the agent you want</label>
+      <label className="persona-draft-title" htmlFor={ideaId}>Persona — describe the agent you want</label>
       <textarea
-        id="persona-idea"
+        id={ideaId}
         name="persona"
         value={form.persona}
         rows={4}
@@ -84,7 +76,7 @@ export function PersonaDraft({ writers, preset, taken, form, onApply, onIdea, wr
           }
         }}
       />
-      <div className="persona-draft-row">
+      {writers.length === 0 ? <p className="hint">Install or turn on an AI in Providers to use Write it. You can still write the persona above.</p> : <div className="persona-draft-row">
         <span className="persona-draft-source">
           <span className="persona-draft-by">Written by</span>
           {writer && <ProviderLogo preset={writer.logo} label={`${writer.label} logo`} />}
@@ -96,7 +88,7 @@ export function PersonaDraft({ writers, preset, taken, form, onApply, onIdea, wr
         <button type="button" className="persona-draft-go" aria-live="polite" disabled={busy || !idea.trim()} onClick={() => void go()}>
           {busy ? "Writing…" : "Write it"}
         </button>
-      </div>
+      </div>}
       {error && <p className="persona-draft-error" role="alert">{error}</p>}
       {done && !busy && !error && (
         <p className="persona-draft-done" role="status">

@@ -669,6 +669,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [pickedAgents, setPickedAgents] = useState<Set<string>>(new Set());
   /** Whether the quick add editor is open and counts as one more new bot. */
   const [editorOpen, setEditorOpen] = useState(false);
+  /** Remount the persona writer when switching drafts, cancelling late answers. */
+  const [quickPersonaId, setQuickPersonaId] = useState(0);
   useEffect(() => {
     if (!quickAdd) return;
     const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".quick-add-wrap, .quick-add")) setQuickAdd(null); };
@@ -2896,6 +2898,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   const anotherBot = async () => {
     if (editorOpen && !(await freezeDraft())) return;
+    setQuickPersonaId((id) => id + 1);
     nameTouched.current = false;
     setDraft((d) => emptyDraft(d.preset, d.access));
     setEditorOpen(true);
@@ -2905,6 +2908,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const row = queuedBots[index];
     if (!row) return;
     if (editorOpen && !(await freezeDraft())) return;
+    setQuickPersonaId((id) => id + 1);
     setQueuedBots((list) => list.filter((d) => d !== row));
     nameTouched.current = true;
     setDraft(row);
@@ -3000,6 +3004,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     nameTouched.current = false;
     setPickedAgents(new Set());
     setQueuedBots([]);
+    setQuickPersonaId((id) => id + 1);
     // Saved agents to pick: start with no new bot. None: start with one open.
     setEditorOpen(pickableAgents.length === 0);
     setEditing(null);
@@ -3102,8 +3107,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
             <span className="hint">This model has no effort setting.</span>
           )}
         </label>
-        <label>Persona
-          <input name="quick-persona" value={draft.persona} onChange={(e) => set("persona", e.target.value)} placeholder="Optional role or tone" />
+        <label>Name
+          <input name="quick-name" value={draft.name} onChange={(e) => { nameTouched.current = true; set("name", e.target.value); }} placeholder="e.g. Opus" />
+          {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}
         </label>
       </div>
       {preset.api && (
@@ -3122,10 +3128,18 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           </label>
         </>
       )}
-      <label>Name
-        <input name="quick-name" value={draft.name} onChange={(e) => { nameTouched.current = true; set("name", e.target.value); }} placeholder="e.g. Opus" />
-        {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}
-      </label>
+      <PersonaDraft
+        key={`quick-persona:${quickPersonaId}`}
+        writers={personaWriters(
+          PRESETS.flatMap((p) => p.agent ? [{ key: p.key, label: p.label.replace(/ \(.*\)$/, ""), tool: p.agent.tool, installed: installed(p) }] : []),
+          profiles, disabledProviders)}
+        preset={draft.preset}
+        taken={[...new Set([...profiles.map((p) => p.display_name), ...participants.map((p) => p.display_name), ...queuedBots.map((d) => d.name)])]}
+        form={{ name: draft.name, persona: draft.persona }}
+        onApply={(next) => { nameTouched.current = true; setDraft((d) => ({ ...d, name: next.name, persona: next.persona })); }}
+        onIdea={(persona) => setDraft((d) => ({ ...d, persona }))}
+        write={(writer, idea, taken) => backend.personaDraft(writer, idea, taken)}
+      />
       </div>)}
         <button type="button" className="ghost quick-add-another" disabled={queuedBots.length + (editorOpen ? 1 : 0) >= MAX_NEW_BOTS} title={`Up to ${MAX_NEW_BOTS} new bots at a time`} onClick={anotherBot}>+ Another bot</button>
       </div>{/* end quick-add-scroll */}
