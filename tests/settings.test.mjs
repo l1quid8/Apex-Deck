@@ -108,3 +108,21 @@ test("a leftover interactive-answers flag is ignored; cards are always on", () =
   assert.equal("interactiveAnswers" in readSettings(null), false);
   assert.equal("interactiveAnswers" in readSettings({ interactiveAnswers: true }), false);
 });
+
+test("all twelve chip styles survive saving and loading without losing display preferences", () => {
+  for (const style of ['dashed', 'tinted', 'stamp', 'stack', 'mono', 'ticket', 'keycap', 'tab', 'ledger', 'terminal', 'tiles', 'two-line']) {
+    const settings = readSettings({ botChips: { style, tool: false, effort: false, usage: false } });
+    assert.equal(settings.botChips.style, style);
+    assert.deepEqual(readSettings(JSON.parse(JSON.stringify(settings))), settings);
+    assert.equal(settings.botChips.usage, false);
+  }
+});
+
+test("unknown chip styles fall back to Classic without resetting other preferences", () => {
+  for (const style of ['whisper', 'signal', '__proto__', '', null, 12, {}, []]) {
+    const chips = readSettings({ botChips: { style, usage: false } }).botChips;
+    assert.equal(chips.style, undefined);
+    assert.equal(chips.usage, false);
+  }
+  assert.equal(readSettings({ botChips: { style: 'classic' } }).botChips.style, 'classic');
+});

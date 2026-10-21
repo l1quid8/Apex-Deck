@@ -3,9 +3,28 @@
 
 import type { AgentTool, ParticipantConfig } from "./types";
 
-/** The parts of a chip a person can hide in Settings. The avatar, name,
- *  model and "asks first" always show. */
-export interface ChipParts { tool: boolean; effort: boolean; usage: boolean }
+/** Shared chip display preferences. Compact layouts keep full details in
+ *  the hover card and bot settings. Omitted style preserves the original look. */
+export const CHIP_STYLES = [
+  { id: "classic", label: "Classic" },
+  { id: "dashed", label: "Dashed off / solid on" },
+  { id: "tinted", label: "Tinted fill" },
+  { id: "stamp", label: "Stamp" },
+  { id: "stack", label: "Avatar stack" },
+  { id: "mono", label: "Square mono tags" },
+  { id: "ticket", label: "Ticket" },
+  { id: "keycap", label: "Keycap" },
+  { id: "tab", label: "Tab" },
+  { id: "ledger", label: "Ledger" },
+  { id: "terminal", label: "Terminal brackets" },
+  { id: "tiles", label: "Avatar tiles" },
+  { id: "two-line", label: "Two-line cards" },
+] as const;
+export type ChipStyle = typeof CHIP_STYLES[number]["id"];
+export interface ChipParts { tool: boolean; effort: boolean; usage: boolean; style?: ChipStyle }
+export function isChipStyle(value: unknown): value is ChipStyle {
+  return CHIP_STYLES.some(style => style.id === value);
+}
 
 export const AGENT_LABEL: Record<AgentTool, string> = { claude_code: "Claude Code", codex: "Codex", gemini: "Antigravity / Gemini", grok: "Grok", muse: "Muse Code" };
 
