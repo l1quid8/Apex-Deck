@@ -11,10 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 apex-adapters = { path = "../apex-adapters" }
+apex-core = { path = "../apex-core" }
 apex-host = { path = "../apex-host" }
 dirs = "7"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio = { workspace = true, features = ["signal", "io-std", "fs"] }
 futures.workspace = true
 tokio-util = { version = "0.7", features = ["codec"] }
