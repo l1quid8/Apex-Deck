@@ -7,4 +7,3 @@ release/
 dist-phone/
 build/DerivedData/
 err*.txt
-__pycache__/

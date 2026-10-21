@@ -39,7 +39,5 @@ mac:
   # the Developer ID identity instead when the keychain has one.
   identity: "-"
   hardenedRuntime: false
-  extendInfo:
-    NSMicrophoneUsageDescription: Apex Deck uses the microphone for local voice conversations you start.
 dmg:
   artifactName: Apex-Deck_${version}_${arch}.${ext}

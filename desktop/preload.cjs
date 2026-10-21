@@ -42,11 +42,6 @@ try {
 }
 
 contextBridge.exposeInMainWorld('apexDeck', {
-  moshi: {
-    open: () => ipcRenderer.invoke('moshi:open'),
-    status: () => ipcRenderer.invoke('moshi:status'),
-    stop: () => ipcRenderer.invoke('moshi:stop'),
-  },
   generatedUI: {
     capability: () => ipcRenderer.invoke('generated-ui:capability'),
     run: (request) => ipcRenderer.invoke('generated-ui:run', request),

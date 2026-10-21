@@ -18,11 +18,6 @@ import { clientCapabilitiesForGeneratedRuntime, type ClientCapabilities } from '
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
-  moshi?: {
-    open(): Promise<void>;
-    status(): Promise<{ phase: 'off' | 'installing' | 'starting' | 'ready' | 'error'; message: string }>;
-    stop(): Promise<void>;
-  };
   /** Absent in older desktops; execution capability is checked in main. */
   generatedUI?: GeneratedApi;
   daemon: {

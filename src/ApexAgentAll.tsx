@@ -11,7 +11,6 @@ import type { PersonalLane, PersonalMessage, PersonalTask } from './personalAssi
 import { PersonalPanels, type PanelName } from './PersonalPanels.tsx';
 import './personal-panels.css';
 import { PersonalCall } from './PersonalCall.tsx';
-import { LocalVoiceButton } from './LocalVoiceButton.tsx';
 import './personal-call.css';
 import { ApexAgentMessageActions, ApexAgentReplyQuote } from './ApexAgentMessageActions.tsx';
 import type { MessageQuote, MessageReaction } from './apexAgentModel.ts';
@@ -509,7 +508,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     <header className="apex-agent-head">
       <div className="apex-agent-head-row">
         <div className="apex-agent-brand"><h1>ApexAgent</h1></div>
-        <div className="apex-agent-head-actions"><LocalVoiceButton />{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label="More ApexAgent options">⋯</summary><div role="menu">
+        <div className="apex-agent-head-actions">{assistant && personal && <button className="icon" aria-label="Voice call" title="Voice call" onClick={() => setCalling(true)}>📞</button>}<details className="apex-agent-more"><summary aria-label="More ApexAgent options">⋯</summary><div role="menu">
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy} onClick={() => void run(async () => { await batch(active.filter((monitor) => monitor.paused === anyPaused), 'monitor_pause', { paused: !anyPaused }); })}>{anyPaused ? 'Resume project watching' : 'Pause project watching'}{anyPaused && <small>Start checking your project folders again.</small>}</button>}
           {!!monitors.length && <button type="button" role="menuitem" disabled={busy || !active.some((monitor) => !monitor.paused)} onClick={() => void run(async () => { await batch(active.filter((monitor) => !monitor.paused), 'monitor_check_now', {}); })}>Check now</button>}
           {onClear && !!entries.length && <button type="button" role="menuitem" onClick={() => { if (window.confirm('Hide this conversation on this Mac? Tasks and notifications stay available.')) onClear(); }}>Clear conversation</button>}

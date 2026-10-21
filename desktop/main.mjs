@@ -23,7 +23,6 @@ import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, sta
 import { changeRemoteAccess } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
 import { installGeneratedUI } from './generated-ui/host.mjs';
-import { installMoshi } from './moshiHost.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '..');
@@ -313,8 +312,6 @@ const windows = new Map();
 // Generated code lives in a dedicated host/session, never in the chat renderer.
 // Main admits only the independently verified runtime/policy registry tuple.
 installGeneratedUI({ electron: { app, ipcMain, powerMonitor, session, WebContentsView, webContents }, deckWindow });
-const localVoice = installMoshi({ app, ipcMain, BrowserWindow, session, dialog, deckWindow,
-  root: path.join(dataDir ?? path.join(app.getPath('appData'), 'dev.apexdeck.app'), 'voice', 'moshi') });
 
 /** Handle `channel` only for a Deck window's own page; `run` gets that window first. */
 function handle(channel, run) {
@@ -535,7 +532,6 @@ async function finishQuit() {
   if (finishing) return;
   finishing = true;
   gate.confirm();
-  await localVoice.stop();
   // Sign-ins in the docked browser last: app.exit doesn't wait for Chromium to save them.
   await flushProfile();
   // The daemon Deck started ends with it; a daemon it found, or the LaunchAgent, goes on.
