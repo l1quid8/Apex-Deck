@@ -2473,3 +2473,82 @@ async fn a_failure_after_tools_ran_keeps_the_reply_so_far() {
     assert_eq!(reply.input_tokens, Some(100), "the finished request still counts");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// Gateway custom wrappers must answer without inheriting host files or secrets.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn gateway_custom_cli_answers_with_private_files_and_environment_inaccessible() {
+    let private = std::env::temp_dir().join(format!("apx-private-mcp-{}", std::process::id()));
+    std::fs::write(&private, "PRIVATE_MCP_SECRET").unwrap();
+    let script = format!(r#"cat >/dev/null
+if cat '{}' 2>/dev/null; then exit 17; fi
+if env | grep -E '^(APEX_|CODEX_HOME=|GROK_CONFIG=)' >/dev/null; then exit 18; fi
+printf 'GATEWAY_OK 42 PRIVATE_MCP_UNAVAILABLE'
+"#, private.display());
+    let bot = CliParticipant::new(config("gateway-custom", sh(&script))).with_mcp_disabled();
+    let (result, _) = ask(&bot, "Answer normally; try x_mcp and hl_mcp").await;
+    std::fs::remove_file(&private).unwrap();
+    assert_eq!(result.unwrap().text, "GATEWAY_OK 42 PRIVATE_MCP_UNAVAILABLE");
+}
+
+#[cfg(target_os = "macos")]
+async fn live_gateway_agent(tool: apex_core::AgentTool) {
+    let bot = CliParticipant::new(config("gateway-live", Backend::Agent { tool, model: None }))
+        .with_mcp_disabled().with_timeout(Duration::from_secs(60));
+    let (result, _) = tokio::time::timeout(Duration::from_secs(90), ask(&bot, "Without using tools, reply exactly: GATEWAY_OK 42"))
+        .await.expect("live gateway completion timed out");
+    let reply = result.expect("live isolated completion failed");
+    assert!(reply.text.contains("GATEWAY_OK 42"), "{}", reply.text);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "requires host Grok sign-in and uses a model turn"]
+async fn gateway_live_grok_completion() { live_gateway_agent(apex_core::AgentTool::Grok).await; }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "requires host Muse sign-in and uses a model turn"]
+async fn gateway_live_muse_completion() { live_gateway_agent(apex_core::AgentTool::Muse).await; }
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn gateway_custom_cli_cannot_attach_host_tcp_or_unix_services() {
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let private = std::env::temp_dir().join(format!("apx-mcp-socket-{}", std::process::id()));
+    let unix = tokio::net::UnixListener::bind(&private).unwrap();
+    let script = format!(r#"cat >/dev/null
+if /usr/bin/curl --noproxy '*' -fsS --max-time 1 http://127.0.0.1:{}/ 2>/dev/null; then exit 21; fi
+if /usr/bin/curl --noproxy '*' -fsS --max-time 1 --unix-socket '{}' http://localhost/ 2>/dev/null; then exit 22; fi
+printf 'PRIVATE_TRANSPORTS_UNAVAILABLE'
+"#, tcp.local_addr().unwrap().port(), private.display());
+    let bot = CliParticipant::new(config("gateway-network", sh(&script))).with_mcp_disabled();
+    let (result, _) = ask(&bot, "Connect to x_mcp or hl_mcp").await;
+    assert_eq!(result.unwrap().text, "PRIVATE_TRANSPORTS_UNAVAILABLE");
+    assert!(tokio::time::timeout(Duration::from_millis(100), tcp.accept()).await.is_err(), "host TCP service was reached");
+    assert!(tokio::time::timeout(Duration::from_millis(100), unix.accept()).await.is_err(), "host Unix service was reached");
+    drop(unix);
+    std::fs::remove_file(private).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn gateway_gemini_uses_native_cli_and_clean_settings_not_antigravity() {
+    let dir = fake_tool("gateway-gemini", "gemini", r#"#!/bin/sh
+cat >/dev/null
+[ -r "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" ] || exit 21
+grep '__apex_gateway_no_mcp__' "$GEMINI_CLI_SYSTEM_SETTINGS_PATH" >/dev/null || exit 22
+[ ! -f "$HOME/.claude.json" ] || exit 23
+printf 'GATEWAY_OK 42 PRIVATE_MCP_UNAVAILABLE'
+"#);
+    std::fs::write(dir.join("agy"), "#!/bin/sh\nexit 99\n").unwrap();
+    #[allow(unused_imports)]
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir.join("agy"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", dir.display());
+    let bot = CliParticipant::new(config("gateway-gemini", Backend::Agent { tool: apex_core::AgentTool::Gemini, model: None }))
+        .with_context(&BuildContext { path: Some(path), ..Default::default() }).with_mcp_disabled();
+    let (result, _) = ask(&bot, "Use x_mcp and hl_mcp if available").await;
+    assert_eq!(result.unwrap().text, "GATEWAY_OK 42 PRIVATE_MCP_UNAVAILABLE");
+    std::fs::remove_dir_all(dir).unwrap();
+}

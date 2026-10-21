@@ -16,6 +16,7 @@ mod claude_session;
 mod claude_usage;
 mod cli;
 mod gemini_usage;
+mod gateway_sandbox;
 mod codex_server;
 mod codex_hook;
 mod events;

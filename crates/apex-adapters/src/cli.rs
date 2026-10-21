@@ -80,6 +80,7 @@ pub struct CliParticipant {
     /// Disable every tool for a text-only monitor turn.
     tools_disabled: bool,
     mcp_disabled: bool,
+    isolation: Option<std::sync::Arc<crate::gateway_sandbox::Isolation>>,
     processes: Registry,
     cargo_target_dir: Option<PathBuf>,
     attachment_roots: Vec<PathBuf>,
@@ -89,7 +90,7 @@ pub struct CliParticipant {
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, isolation: None, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None }
     }
 
     /// Start a text-only turn with tools disabled at both the CLI and
@@ -130,7 +131,7 @@ impl CliParticipant {
     /// The program and arguments for this participant's backend, and how
     /// to read what it prints.
     fn command_line(&self) -> Result<(String, Vec<String>, OutputFormat), ParticipantError> {
-        if self.mcp_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+        if self.mcp_disabled && self.isolation.is_none() && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
             return Err(ParticipantError::Failed("This CLI has no verified MCP isolation; gateway turn refused.".into()));
         }
         match &self.config.backend {
@@ -140,8 +141,20 @@ impl CliParticipant {
                 if self.tools_disabled && *tool != AgentTool::ClaudeCode {
                     return Err(ParticipantError::Failed("This CLI does not have a verified tool-free mode, so the monitor check did not run.".into()));
                 }
-                let (program, mut args) =
+                let (mut program, mut args) =
                     agent_command_in(*tool, model.as_deref(), self.config.effort.as_deref(), self.config.speed, self.config.access, self.plan.is_some(), self.path.as_deref());
+                if self.mcp_disabled && *tool == AgentTool::Gemini {
+                    // Never attach Antigravity's existing background service.
+                    program = "gemini".into();
+                    args = vec!["-p".into(), "Read the conversation from stdin and answer the final user message.".into()];
+                    if let Some(model) = model { args.extend(["--model".into(), model.clone()]); }
+                }
+                if self.mcp_disabled && *tool == AgentTool::Muse {
+                    args.extend(["-c".into(), "plugins.enabled=false".into()]);
+                }
+                if self.mcp_disabled && *tool == AgentTool::Grok {
+                    args.extend(["--tools".into(), "".into(), "--no-subagents".into()]);
+                }
                 if *tool == AgentTool::Codex {
                     args.splice(1..1, phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
                 }
@@ -168,8 +181,13 @@ impl CliParticipant {
 
     /// `start`, with extra environment variables for the program.
     fn start_with(&self, program: &str, args: &[String], env: &[(&str, std::ffi::OsString)]) -> Result<OwnedChild, ParticipantError> {
-        let mut command = Command::new(program);
-        command.args(args);
+        let mut command = if let Some(isolation) = &self.isolation {
+            isolation.command(program, args, self.path.as_deref())?
+        } else {
+            let mut command = Command::new(program);
+            command.args(args);
+            command
+        };
         command.envs(env.iter().map(|(name, value)| (*name, value)));
         // Claude and Codex bots get the phone command; see phone_env.rs.
         // A text-only monitor turn has no tools, so it gets nothing.
@@ -186,11 +204,11 @@ impl CliParticipant {
             command.env("PATH", path);
         }
         // Scratch files land in the thread's temp folder when it exists.
-        if let Some(temp) = self.temp.as_ref().filter(|dir| dir.is_dir()) {
+        if let Some(temp) = self.temp.as_ref().filter(|dir| dir.is_dir() && self.isolation.is_none()) {
             command.env("TMPDIR", temp).env("TMP", temp).env("TEMP", temp);
         }
         if let Some(target_dir) = &self.cargo_target_dir { command.env("CARGO_TARGET_DIR", target_dir); }
-        if let Some(cwd) = &self.cwd {
+        if let Some(cwd) = self.cwd.as_ref().filter(|_| self.isolation.is_none()) {
             // A missing folder would otherwise be reported as a missing program.
             if !cwd.is_dir() {
                 return Err(ParticipantError::Failed(format!(
@@ -628,7 +646,7 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -639,7 +657,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -650,7 +668,12 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, isolation: self.isolation.clone(), processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            return scoped.respond_with_approvals(request, on_progress, approver).await;
+        }
+        if self.mcp_disabled && self.isolation.is_none() && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+            let isolation = std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&self.config.backend)?);
+            let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
