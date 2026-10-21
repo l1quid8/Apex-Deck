@@ -780,7 +780,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [unread, setUnread] = useState(0);
   /** The chat's root element; its pane's size decides what fits. */
   const root = useRef<HTMLDivElement>(null);
-  // The composer floats over the chat: tell the CSS how tall it is.
+  // The empty landing screen extends its texture under the composer.
   useEffect(() => {
     const box = composer.current;
     if (!box) return;
@@ -3326,8 +3326,10 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     </div>
   );
 
+  const landing = entries.length === 0 && Object.keys(drafts).length === 0;
+
   return (
-    <div ref={root} className={`chat ${profileMode ? "" : "thread-chat"}`}>
+    <div ref={root} className={`chat ${profileMode ? "" : `thread-chat${landing ? " thread-landing" : ""}`}`}>
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 
@@ -3371,7 +3373,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={addPicked}>Add to chat</button>
           <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={explainPicked} disabled={!ready || participants.length === 0}>More details</button>
         </span>}
-        {entries.length === 0 && Object.keys(drafts).length === 0 && (
+        {landing && (
           <div className={`empty${quickAdd === "dock" ? " away" : ""}`}>
             <LandingTexture settings={landingTexture} />
             <div className="empty-copy">

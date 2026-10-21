@@ -203,15 +203,21 @@ test('closing the add menu puts focus back where it was opened', () => {
   assert.doesNotMatch(source, /openQuickAdd\("(dock|details)"\)\}/, 'every opener passes the button it came from');
 });
 
-test('the composer floats over the chat with no strip behind it', () => {
+test('the composer floats only on the empty landing screen', () => {
+  assert.match(source, /const landing = entries\.length === 0 && Object\.keys\(drafts\)\.length === 0;/);
+  assert.match(source, /landing \? " thread-landing" : ""/);
   assert.match(source, /root\.current\?\.style\.setProperty\("--composer-h", `\$\{[^`]*\}px`\)/, 'the composer height is measured live');
   const css = fs.readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
-  const box = css.match(/\.thread-chat > \.composer \{([^}]*)\}/)?.[1] ?? '';
+  const active = css.match(/\.thread-chat:not\(\.thread-landing\) > \.composer \{([^}]*)\}/)?.[1] ?? '';
+  assert.match(active, /flex-shrink: 0;/);
+  assert.match(active, /border-top: 1px solid var\(--line\);/);
+  assert.match(active, /background: var\(--bg\);/);
+  const box = css.match(/\.thread-chat\.thread-landing > \.composer \{([^}]*)\}/)?.[1] ?? '';
   assert.match(box, /border-top: 0;/);
   assert.match(box, /background: transparent;/);
-  const scroll = css.match(/\.thread-chat \.chat-body > \.transcript \{([^}]*)\}/)?.[1] ?? '';
+  const scroll = css.match(/\.thread-chat\.thread-landing \.chat-body > \.transcript \{([^}]*)\}/)?.[1] ?? '';
   assert.match(scroll, /margin-bottom: calc\(-1 \* var\(--composer-h, 0px\)\);/, 'the transcript runs on behind the composer');
   assert.match(scroll, /padding-bottom: calc\(24px \+ var\(--composer-h, 0px\)\);/, 'the last message still clears it');
   const texture = fs.readFileSync(new URL('../src/landing/landing-texture.css', import.meta.url), 'utf8');
-  assert.match(texture, /\.thread-chat \.landing-texture-wrap \{ bottom: calc\(-1 \* var\(--composer-h, 0px\)\); \}/, 'the texture reaches under the composer');
+  assert.match(texture, /\.thread-chat\.thread-landing \.landing-texture-wrap \{ bottom: calc\(-1 \* var\(--composer-h, 0px\)\); \}/, 'the landing texture reaches under the composer');
 });

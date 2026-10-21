@@ -4161,8 +4161,15 @@ button.mod-status:hover { color: var(--text); }
   padding: 0;
 }
 
-/* Floating composer and transcript adjustment */
-.thread-chat > .composer {
+/* Active threads reserve a bottom row outside the transcript scrollport. */
+.thread-chat:not(.thread-landing) > .composer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+/* Only the empty rain screen extends beneath the composer. */
+.thread-chat.thread-landing > .composer {
   border-top: 0;
   background: transparent;
   /* The strip is a gutter, not a surface: let clicks beside the box fall
@@ -4170,11 +4177,11 @@ button.mod-status:hover { color: var(--text); }
   pointer-events: none;
 }
 
-.thread-chat > .composer > * {
+.thread-chat.thread-landing > .composer > * {
   pointer-events: auto;
 }
 
-.thread-chat .chat-body > .transcript {
+.thread-chat.thread-landing .chat-body > .transcript {
   margin-bottom: calc(-1 * var(--composer-h, 0px));
   padding-bottom: calc(24px + var(--composer-h, 0px));
   scroll-padding-bottom: calc(24px + var(--composer-h, 0px));

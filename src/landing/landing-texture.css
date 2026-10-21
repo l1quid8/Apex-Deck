@@ -25,7 +25,7 @@
   z-index: 1;
 }
 /* texture runs on under the floating composer */
-.thread-chat .landing-texture-wrap { bottom: calc(-1 * var(--composer-h, 0px)); }
+.thread-chat.thread-landing .landing-texture-wrap { bottom: calc(-1 * var(--composer-h, 0px)); }
 
 /* Quiet the moving field only behind the welcome copy. The soft edge
    keeps the surrounding rain visible, in dark and light themes alike. */
