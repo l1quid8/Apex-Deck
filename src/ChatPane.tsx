@@ -3360,26 +3360,28 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
           <div className={`empty${quickAdd === "dock" ? " away" : ""}`}>
             <LandingTexture settings={landingTexture} />
-            <div className="empty-emblem"><DeckIcon name="chat" size={26} /></div>
-            <span className="eyebrow">A fresh perspective starts here</span>
-            {work ? <>
-              {/* Codex's opening question: the project's name opens the picker. */}
-              <h3 className="ask">What should we work on in <button type="button" className="pick-name" onClick={() => setAskPicker((n) => n + 1)}>{work.project.name}</button>?</h3>
-              <p className="where">{!work.project.path ? "No project: the bots work without a project folder."
-                : work.project.hostId === "local" ? `On This Mac · ${work.project.path}`
-                : `On ${work.project.hostName} · ${work.project.path}${work.workRows.some((r) => r.hostId === "local" && r.workspaceId) ? " · a separate copy from your Mac's" : ""}`}</p>
-            </> : <h3>{participants.length === 0 ? "Build your thinking team." : "The room is yours."}</h3>}
-            <p>
-              {participants.length === 0
-                ? "Add two or more models, then ask them something. Each one sees the whole conversation."
-                : "Type a message below. Use @name to pick who answers, or @all for everyone."}
-            </p>
-            {participants.length === 0 && <button className="primary" disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => openQuickAdd("dock", e.currentTarget)}>+ Add bots</button>}
-            {participants.length > 0 && <div className="example-rows" aria-label="Examples">
-              {exampleRows(participants).map((row) => (
-                <button key={row.text} type="button" className="example-row" onClick={() => insertExample(row.text)}>{row.label}</button>
-              ))}
-            </div>}
+            <div className="empty-copy">
+              <div className="empty-emblem"><DeckIcon name="chat" size={26} /></div>
+              <span className="eyebrow">A fresh perspective starts here</span>
+              {work ? <>
+                {/* Codex's opening question: the project's name opens the picker. */}
+                <h3 className="ask">What should we work on in <button type="button" className="pick-name" onClick={() => setAskPicker((n) => n + 1)}>{work.project.name}</button>?</h3>
+                <p className="where">{!work.project.path ? "No project: the bots work without a project folder."
+                  : work.project.hostId === "local" ? `On This Mac · ${work.project.path}`
+                  : `On ${work.project.hostName} · ${work.project.path}${work.workRows.some((r) => r.hostId === "local" && r.workspaceId) ? " · a separate copy from your Mac's" : ""}`}</p>
+              </> : <h3>{participants.length === 0 ? "Build your thinking team." : "The room is yours."}</h3>}
+              <p>
+                {participants.length === 0
+                  ? "Add two or more models, then ask them something. Each one sees the whole conversation."
+                  : "Type a message below. Use @name to pick who answers, or @all for everyone."}
+              </p>
+              {participants.length === 0 && <button className="primary" disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => openQuickAdd("dock", e.currentTarget)}>+ Add bots</button>}
+              {participants.length > 0 && <div className="example-rows" aria-label="Examples">
+                {exampleRows(participants).map((row) => (
+                  <button key={row.text} type="button" className="example-row" onClick={() => insertExample(row.text)}>{row.label}</button>
+                ))}
+              </div>}
+            </div>
           </div>
         )}
         {pane.fork && pane.fork.at === 0 && forkLine}

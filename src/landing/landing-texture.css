@@ -26,3 +26,20 @@
 }
 /* texture runs on under the floating composer */
 .thread-chat .landing-texture-wrap { bottom: calc(-1 * var(--composer-h, 0px)); }
+
+/* Quiet the moving field only behind the welcome copy. The soft edge
+   keeps the surrounding rain visible, in dark and light themes alike. */
+.transcript .empty-copy {
+  isolation: isolate;
+  color: color-mix(in srgb, var(--text) 88%, var(--bg));
+  text-shadow: 0 1px 4px var(--bg);
+}
+.transcript .landing-texture-wrap + .empty-copy::before {
+  content: "";
+  position: absolute;
+  inset: -40px -48px;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(ellipse, color-mix(in srgb, var(--bg) 96%, transparent) 45%, transparent 75%);
+}
+.transcript .empty-copy .where { color: inherit; }

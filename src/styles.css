@@ -4145,6 +4145,22 @@ button.mod-status:hover { color: var(--text); }
 .md-code .md-code-run { max-height: 160px; overflow: auto; padding: 8px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 60%, transparent); white-space: pre-wrap; word-break: break-word; font-size: 12px; }
 .md-code-run-cut, .md-code-run-empty { color: var(--muted); font-style: italic; }
 
+/* Clay's reading-column geometry is shared by every desktop theme.
+   Keep the same 24px floor on both sides, including in narrow panes. */
+.thread-chat .composer-box {
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 6px 8px 6px 10px;
+}
+.thread-chat .composer-box > .composer-field { order: -1; flex-basis: 100%; }
+.thread-chat .composer-box > .composer-field > textarea { min-height: 44px; }
+.thread-chat .composer-box > .composer-tools { margin: 0 auto 0 0; }
+.thread-chat .composer-box > :is(.tldr-pill, button.round-send, .plan-chip) { align-self: center; margin-bottom: 0; }
+.thread-chat .composer-box.adding {
+  align-items: stretch;
+  padding: 0;
+}
+
 /* Floating composer and transcript adjustment */
 .thread-chat > .composer {
   border-top: 0;
@@ -4162,6 +4178,11 @@ button.mod-status:hover { color: var(--text); }
   margin-bottom: calc(-1 * var(--composer-h, 0px));
   padding-bottom: calc(24px + var(--composer-h, 0px));
   scroll-padding-bottom: calc(24px + var(--composer-h, 0px));
+}
+
+.thread-chat > .composer,
+.thread-chat .chat-body > .transcript {
+  padding-inline: max(24px, calc((100% - var(--deck-message-width, 44rem)) / 2));
 }
 
 .identicon i {

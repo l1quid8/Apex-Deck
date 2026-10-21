@@ -257,7 +257,7 @@
 :root[data-deck-theme="glass"] :is(.pane, .rail, .thread-details, .thread, .bubble, .composer-box, .pin, .details-bot, .md-code, .quote-preview, .folder-chip, .chip) {
   border-radius: var(--deck-radius, 12px);
 }
-:root[data-deck-theme="glass"] :is(.pane-head, .pins, .composer, .details-section-body) {
+:root[data-deck-theme="glass"] :is(.pane-head, .pins, .details-section-body) {
   padding-block: calc(8px * var(--deck-density, 1));
 }
 :root[data-deck-theme="glass"] .bubble { padding-block: calc(10px * var(--deck-density, 1) + 2px); }

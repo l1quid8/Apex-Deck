@@ -204,6 +204,7 @@ test("Clay replaces the base stylesheet's fixed dark and mint colors", () => {
 
 test("Clay reshapes the layout toward the mock, scoped and CSS-only", () => {
   const css = readFileSync(new URL("../src/clay-theme.css", import.meta.url), "utf8");
+  const sharedCss = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
   const rule = (selector) => {
     const at = css.indexOf(selector + " {");
     assert.ok(at >= 0, `missing Clay rule for ${selector}`);
@@ -220,9 +221,8 @@ test("Clay reshapes the layout toward the mock, scoped and CSS-only", () => {
   // Classic's mint focused-pane border and cyan status color don't reach Clay.
   assert.match(css, /--brand-cyan: var\(--deck-success\)/);
   assert.match(rule(`${clay} .pane.focused`), /box-shadow: none/);
-  // One centered column for the transcript and the composer.
-  assert.match(rule(`${clay} .transcript`), /padding-inline: max\(24px, calc\(\(100% - var\(--deck-message-width\)\) \/ 2\)\)/);
-  assert.match(rule(`${clay} .composer`), /padding-inline: max\(16px, calc\(\(100% - var\(--deck-message-width\)\) \/ 2\)\)/);
+  // All themes now share Clay's centered column, including narrow gutters.
+  assert.match(sharedCss, /\.thread-chat > \.composer,\s*\.thread-chat \.chat-body > \.transcript \{\s*padding-inline: max\(24px, calc\(\(100% - var\(--deck-message-width, 44rem\)\) \/ 2\)\)/);
   // Senders inline: the reply takes the whole column, the avatar is placed over the name line.
   assert.match(rule(`${clay} .bot-row`), /grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(rule(`${clay} .bot-row > .identicon`), /position: absolute/);
@@ -231,7 +231,7 @@ test("Clay reshapes the layout toward the mock, scoped and CSS-only", () => {
   // reply past the column and the thread scrolled sideways. It's clamped.
   assert.match(rule(`${clay} .bot-row > .bubble`), /max-width: 100%/);
   // Two-row composer: text first, tools below.
-  assert.match(rule(`${clay} .composer-box > .composer-field`), /order: -1; flex-basis: 100%/);
+  assert.match(sharedCss, /\.thread-chat \.composer-box > \.composer-field \{ order: -1; flex-basis: 100%/);
   // Sentence-case labels instead of uppercase tracking.
   for (const label of [".rail-sec", ".eyebrow", ".right-dashboard-group"]) assert.match(rule(`${clay} ${label}`), /text-transform: none/);
   // Every structural selector stays behind the Clay attribute.

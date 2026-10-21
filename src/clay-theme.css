@@ -397,12 +397,6 @@
 :root[data-deck-theme="clay"] .dot.needs_input { border-radius: 1px; transform: rotate(45deg) scale(.92); }
 :root[data-deck-theme="clay"] .dot.failed { border-radius: 1px; }
 
-/* One reading column, centered in the pane and shared by the composer
-   below, so your message, the replies and the box all line up. */
-:root[data-deck-theme="clay"] .transcript {
-  padding-inline: max(24px, calc((100% - var(--deck-message-width)) / 2));
-}
-
 /* Senders sit inline: a small identicon before the name, the reply flush
    with the column instead of indented past an avatar gutter. The Avatar
    keeps its markup (and its context battery), only scaled and placed. */
@@ -435,22 +429,6 @@
   line-height: 21px;
   margin-bottom: 4px;
 }
-
-/* Composer: the same column as the transcript, with the text on top and
-   its tools in a row underneath (the layout Apex already uses for narrow
-   panes), and the bot chips under the box. */
-:root[data-deck-theme="clay"] .composer {
-  padding-inline: max(16px, calc((100% - var(--deck-message-width)) / 2));
-}
-:root[data-deck-theme="clay"] .composer-box {
-  flex-wrap: wrap;
-  align-items: center;
-  padding: 6px 8px 6px 10px;
-}
-:root[data-deck-theme="clay"] .composer-box > .composer-field { order: -1; flex-basis: 100%; }
-:root[data-deck-theme="clay"] .composer-box > .composer-field > textarea { min-height: 44px; }
-:root[data-deck-theme="clay"] .composer-box > .composer-tools { margin: 0 auto 0 0; }
-:root[data-deck-theme="clay"] .composer-box > :is(.tldr-pill, button.round-send, .plan-chip) { align-self: center; margin-bottom: 0; }
 
 /* Empty thread and welcome: sentence-case eyebrow, serif headline,
    examples as a wrapping row of pill chips. */
