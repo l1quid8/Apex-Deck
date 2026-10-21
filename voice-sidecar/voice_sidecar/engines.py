@@ -1,5 +1,6 @@
 """One executor owns all MLX operations. No downloads during calls."""
 import os, pathlib
+from .made_up import made_up
 class Engines:
  def __init__(self,root):
   import mlx.core as mx, torch
@@ -31,7 +32,8 @@ class Engines:
   r=transcribe(np.frombuffer(pcm,dtype='<i2').astype(np.float32)/32768,path_or_hf_repo=self.stt_path,language='en',temperature=0.,condition_on_previous_text=False,initial_prompt=', '.join(hints),verbose=None)
   segments=r.get('segments') or []
   if not segments or all(s.get('no_speech_prob',0)>.8 for s in segments):return ''
-  return r['text'].strip()
+  text=r['text'].strip()
+  return '' if made_up(text,hints,[s.get('compression_ratio',0) for s in segments]) else text
  def synthesize(self,text,voice):
   import numpy as np
   if voice not in self.voices:raise ValueError('Choose an installed voice')
