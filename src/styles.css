@@ -2438,30 +2438,26 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
   width: min(330px, 86vw);
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 12px;
   text-align: left;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
   max-height: var(--room, min(70vh, 640px));
-  overflow-y: auto;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
 }
-.quick-add-wrap.empty .quick-add { left: 50%; transform: translateX(-50%); }
 .quick-add-wrap.details { display: flex; width: 100%; }
 .quick-add-wrap.details > button { flex: 1; }
 .quick-add-wrap.details .quick-add { left: 0; width: min(296px, 86vw); }
 .quick-add-wrap.roster { align-self: center; }
-.quick-add-wrap.roster-pop { position: fixed; z-index: 40; }
-.quick-add-wrap.roster-pop .quick-add { left: 0; }
 .chip-add { width: 30px; height: 30px; min-height: 0; padding: 0; border-radius: 50%; display: inline-grid; place-items: center; background: transparent; border: none; color: var(--muted); }
 .chip-add:hover:not(:disabled), .chip-add[aria-expanded="true"] { color: var(--text); background: var(--panel-2); }
 .quick-add label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); min-width: 0; }
 .quick-add label input, .quick-add label select { font-size: 12px; color: var(--text); min-width: 0; width: 100%; }
 .quick-add-label { font-size: 11px; color: var(--muted); }
 .quick-add-saved { display: flex; flex-wrap: wrap; gap: 6px; }
-.quick-add-chip { padding: 3px 10px; border-radius: 999px; background: var(--panel); font-size: 12px; }
 .quick-add-tools { display: flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
 .quick-add-tools button { flex: 1; padding: 4px 6px; border: 1px solid transparent; background: transparent; font-size: 12px; color: var(--muted); }
 .quick-add-tools button.on { background: var(--panel-2); border-color: var(--line); color: var(--text); }
@@ -2475,20 +2471,11 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
 .quick-add-tools .qa-more { grid-column: 1 / -1; padding: 4px 6px; border: 0; background: transparent; font-size: 12px; color: var(--muted); }
 .quick-add-foot {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  position: sticky;
-  bottom: -12px;
-  margin: 0 -12px -12px;
-  padding: 8px 12px 12px;
-  background: var(--panel-2);
+  gap: 8px 10px;
+  padding: 10px 14px;
   border-top: 1px solid var(--line);
-}
-.quick-add-chip.on {
-  border-color: var(--accent);
-  background: var(--panel-2);
-  color: var(--text);
 }
 .quick-add-row {
   display: flex;
@@ -2540,8 +2527,233 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
   margin-right: 22px;
 }
 .quick-add-foot button { white-space: nowrap; padding: 6px 10px; font-size: 12px; }
-.quick-add-chip.on { background: color-mix(in srgb, var(--accent) 18%, var(--panel-2)); }
 .quick-add .form-error { margin: 0; }
+/* Mockup v2: the message box grows into the add menu; saved agents are tiles; the lineup is the box's bottom strip. */
+.quick-add-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 14px 8px;
+}
+
+.quick-add-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+:root[data-deck-theme="clay"] .quick-add-head h3 {
+  font-family: var(--deck-font-reading);
+  font-weight: 500;
+  font-size: 17px;
+}
+
+.quick-add-head p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.quick-add-close {
+  flex: none;
+  align-self: center;
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.quick-add-close:hover {
+  color: var(--text);
+}
+
+.quick-add-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 14px 12px;
+  scrollbar-width: thin;
+}
+
+.quick-add-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 4px;
+}
+
+.quick-add-count {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.quick-add-saved {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+}
+
+.quick-add-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.quick-add-tile:hover {
+  border-color: var(--line);
+}
+
+.quick-add-tile[aria-checked="true"] {
+  border-color: var(--ring);
+  background: color-mix(in srgb, var(--ring) 14%, var(--panel));
+}
+
+.quick-add-tick {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  font-size: 11px;
+  color: var(--ring);
+  opacity: 0;
+}
+
+.quick-add-tile[aria-checked="true"] .quick-add-tick {
+  opacity: 1;
+}
+
+.quick-add-tile-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-add-row-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-add-row-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quick-add-face {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.quick-add-another {
+  align-self: flex-start;
+  border-style: dashed;
+  border-radius: 999px;
+}
+
+.quick-add-faces {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.quick-add-faces > * + * {
+  margin-left: -6px;
+}
+
+.quick-add-say {
+  flex: 1 1 140px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.composer-box.adding {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0;
+}
+
+.composer-box.adding > :not(.quick-add) { display: none; }
+
+.composer-box.adding > .quick-add {
+  position: static;
+  width: 100%;
+  max-height: min(72vh, 680px);
+  background: transparent;
+  border: 0;
+  border-radius: inherit;
+  box-shadow: none;
+  animation: quick-add-grow .3s cubic-bezier(.2, .7, .2, 1);
+}
+
+@keyframes quick-add-grow {
+  from {
+    max-height: 48px;
+    opacity: .3;
+  }
+}
+/* Themes paint .quick-add as a floating menu; docked, the message box is the only surface. */
+:root[data-deck-theme] .composer-box.adding > .quick-add {
+  background: transparent;
+  border-radius: inherit;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+:root[data-deck-theme="glass"] .composer-box.adding {
+  background-color: rgb(var(--deck-panel) / max(.62, var(--deck-opacity, .44)));
+}
+
+.transcript .empty {
+  transition: opacity .2s ease, transform .2s ease;
+}
+
+.transcript .empty.away {
+  opacity: 0;
+  transform: translateY(-12px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-box.adding > .quick-add {
+    animation: none;
+  }
+
+  .transcript .empty {
+    transition: none;
+  }
+}
 .attention-severity-border { display: flex; flex: none; height: 1px; margin: 0 4px; background: var(--line); }
 .attention-severity-border span { min-width: 0; }
 .attention-severity-border .failed { background: color-mix(in srgb, var(--danger) 50%, var(--line)); }
@@ -3397,7 +3609,6 @@ button.mod-status:hover { color: var(--text); }
 /* A badge's usage card floats above it, so the row's overflow never clips it. */
 .usage-card.above { position: fixed; top: auto; z-index: 40; }
 .usage-card.above::before { inset: auto 0 -7px; }
-.quick-add-wrap.roster-pop .quick-add { top: auto; bottom: 0; max-height: var(--room); overflow-y: auto; }
 
 /* Each badge is outlined in its bot's colour; the bots your message goes to are lit. */
 .composer-bots .chip { border-color: color-mix(in srgb, var(--who) 30%, var(--line)); transition: background-color .15s, border-color .15s; }

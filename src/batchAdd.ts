@@ -67,3 +67,11 @@ export function splitAdded(added: number, savedCount: number): { saved: number; 
   const saved = Math.min(added, savedCount);
   return { saved, rows: added - saved };
 }
+
+/** The add menu's bottom strip: how many bots will join, and who. */
+export function lineupText(names: string[]): string {
+  const n = names.length;
+  if (n === 0) return "Pick at least one bot";
+  const list = names.map(name => name.trim() === "" ? "New bot" : name.trim()).join(", ");
+  return n === 1 ? `1 bot will join: ${list}` : `${n} bots will join: ${list}`;
+}

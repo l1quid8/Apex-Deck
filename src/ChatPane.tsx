@@ -27,7 +27,7 @@ import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, qu
 import { botIdentity, mentionable, mentionFor, slug } from "./slug";
 import { copyRenamer, savedToAgents, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { nameForModel, uniqueName } from "./quickAdd";
-import { addInOrder, batchLabel, checkBatch, MAX_NEW_BOTS, splitAdded } from "./batchAdd";
+import { addInOrder, batchLabel, checkBatch, lineupText, MAX_NEW_BOTS, splitAdded } from "./batchAdd";
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
@@ -474,8 +474,6 @@ const STACK_PX = 330;
 
 /** The widest a bot's usage card gets (.usage-card max-width). */
 const USAGE_CARD_WIDTH = 340;
-/** The Add bot form's width (.quick-add). */
-const QUICK_ADD_WIDTH = 330;
 const viewport = () => ({ width: window.innerWidth, height: window.innerHeight });
 
 
@@ -638,10 +636,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key, true); };
   }, [handOffOpen]);
   const [adding, setAdding] = useState(false);
-  /** Where the quick add menu is open: under the empty thread's button, or in the sidebar. */
-  const [quickAdd, setQuickAdd] = useState<"empty" | "details" | "roster" | null>(null);
-  // Portal the viewport-positioned roster menu outside clipping panes and glass backdrop-filter containing blocks.
-  const [rosterAnchor, setRosterAnchor] = useState<{ left: number; bottom: number } | null>(null);
+  /** Where the quick add menu is open: grown out of the message box, or in the sidebar. */
+  const [quickAdd, setQuickAdd] = useState<"dock" | "details" | null>(null);
   /** True once the person types a name, so choosing a model stops renaming the bot. */
   const nameTouched = useRef(false);
   /** New bots set up and waiting in the quick add batch, oldest first. */
@@ -652,7 +648,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [editorOpen, setEditorOpen] = useState(true);
   useEffect(() => {
     if (!quickAdd) return;
-    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".quick-add-wrap")) setQuickAdd(null); };
+    const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".quick-add-wrap, .quick-add")) setQuickAdd(null); };
     const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); setQuickAdd(null); } };
     window.addEventListener("mousedown", away);
     window.addEventListener("keydown", key, true);
@@ -2881,6 +2877,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
 
   const savedToAdd = availableProfiles.filter((p) => pickedAgents.has(p.id) && !participants.some((own) => own.id === p.id));
   const batchTotal = savedToAdd.length + queuedBots.length + (editorOpen ? 1 : 0);
+  /** Names of the new bots in the batch: queued rows, then the open editor. */
+  const newNames = [...queuedBots.map((d) => d.name), ...(editorOpen ? [draft.name] : [])];
   const submitBatch = async (): Promise<boolean> => {
     setFormError("");
     if (editorOpen && !providerEnabled(draft.preset, disabledProviders)) {
@@ -2948,7 +2946,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     }
     return true;
   };
-  const openQuickAdd = (where: "empty" | "details" | "roster") => {
+  const openQuickAdd = (where: "dock" | "details") => {
     if (quickAdd === where) return setQuickAdd(null);
     nameTouched.current = false;
     setPickedAgents(new Set());
@@ -2967,19 +2965,33 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const quickTools = availablePresets.filter((p) => (p.agent && installed(p)) || p.key === "ollama").slice(0, 3);
   const quickAddMenu = (
     <form className="quick-add" aria-label="Add a bot" onSubmit={async (e) => { e.preventDefault(); if (await submitBatch()) { closeForm(draft.preset); setQuickAdd(null); } }}>
+      <header className="quick-add-head">
+        <h3>Who's in this thread?</h3>
+        <p>Pick saved agents, or set up new ones below.</p>
+        <button type="button" className="quick-add-close" aria-label="Close menu" onClick={() => setQuickAdd(null)}>×</button>
+      </header>
+      <div className="quick-add-scroll">
       {availableProfiles.some((p) => !participants.some((own) => own.id === p.id)) && <>
-        <span className="quick-add-label">Saved agents</span>
+        <div className="quick-add-section"><span className="quick-add-label">Saved agents</span><span className="quick-add-count">{savedToAdd.length} picked</span></div>
         <div className="quick-add-saved">
-          {availableProfiles.filter((p) => !participants.some((own) => own.id === p.id)).map((p) => (
-            <button type="button" key={p.id} className={pickedAgents.has(p.id) ? "quick-add-chip on" : "quick-add-chip"} style={{ borderColor: (p.appearance ?? legacyAppearance(p.id)).color }} onClick={() => togglePicked(p.id)} role="checkbox" aria-checked={pickedAgents.has(p.id)}>{pickedAgents.has(p.id) ? "✓ " : ""}{p.display_name}</button>
-          ))}
+          {availableProfiles.filter((p) => !participants.some((own) => own.id === p.id)).map((p) => {
+            const look = p.appearance ?? legacyAppearance(p.id);
+            return (
+              <button type="button" key={p.id} className="quick-add-tile" style={{ "--ring": look.color } as CSSProperties} onClick={() => togglePicked(p.id)} role="checkbox" aria-checked={pickedAgents.has(p.id)}>
+                <span className="quick-add-tick" aria-hidden="true">✓</span>
+                <Avatar seed={look.seed} color={look.color} />
+                <span className="quick-add-tile-name">{p.display_name}</span>
+              </button>
+            );
+          })}
         </div>
       </>}
-      <span className="quick-add-label">New bots</span>
+      <div className="quick-add-section"><span className="quick-add-label">New bots</span><span className="quick-add-count">Up to {MAX_NEW_BOTS}</span></div>
       {queuedBots.map((d, i) => (
         <div className="quick-add-row" key={`${d.name}-${i}`}>
           <button type="button" className="quick-add-row-open" title="Edit this bot" onClick={() => openRow(i)}>
-            {PRESETS.find((p) => p.key === d.preset)?.label.replace(/\s*\(.*\)$/, "") ?? d.preset} · {d.name} · {d.effort ? effortLabel(d.effort) : "Default"} · {accessLabel(d.access)}
+            <span className="quick-add-face" aria-hidden="true">{(d.name.trim()[0] ?? "?").toUpperCase()}</span>
+            <span className="quick-add-row-text">{PRESETS.find((p) => p.key === d.preset)?.label.replace(/\s*\(.*\)$/, "") ?? d.preset} · {d.name} · {d.effort ? effortLabel(d.effort) : "Default"} · {accessLabel(d.access)}</span>
           </button>
           <button type="button" className="quick-add-row-x" aria-label={`Remove ${d.name}`} onClick={() => removeRow(i)}>×</button>
         </div>
@@ -3069,15 +3081,20 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         {draft.name && <span className="hint">{mentionable(draft.name) ? `Mention as @${slug(draft.name)}` : "A name needs a letter or a number."}</span>}
       </label>
       </div>)}
-      {formError && <p className="form-error">{formError}</p>}
-      <div className="quick-add-foot">
         <button type="button" className="ghost quick-add-another" disabled={queuedBots.length + (editorOpen ? 1 : 0) >= MAX_NEW_BOTS} title={`Up to ${MAX_NEW_BOTS} new bots at a time`} onClick={anotherBot}>+ Another bot</button>
+      </div>{/* end quick-add-scroll */}
+      <div className="quick-add-foot">
+        <span className="quick-add-faces" aria-hidden="true">
+          {savedToAdd.map((p) => { const look = p.appearance ?? legacyAppearance(p.id); return <Avatar key={p.id} seed={look.seed} color={look.color} size="sm" />; })}
+          {newNames.map((name, i) => <span key={`new-${i}`} className="quick-add-face">{(name.trim()[0] ?? "?").toUpperCase()}</span>)}
+        </span>
+        <span className="quick-add-say" role="status">{formError ? <span className="form-error">{formError}</span> : lineupText([...savedToAdd.map((p) => p.display_name), ...newNames])}</span>
         <button type="button" className="ghost" onClick={() => { setQuickAdd(null); openNewForm(); }}>More options</button>
         <button className="primary" type="submit" disabled={batchTotal === 0}>{batchLabel(batchTotal)}</button>
       </div>
     </form>
   );
-  const quickAddButton = (where: "empty" | "details" | "roster", primary: boolean) => (
+  const quickAddButton = (where: "details", primary: boolean) => (
     <span className={`quick-add-wrap ${where}`}>
       <button className={primary ? "primary" : "ghost"} disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={() => openQuickAdd(where)}>+ Add bot</button>
       {quickAdd === where && quickAddMenu}
@@ -3237,7 +3254,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           this seat an empty thread would have no way to add a bot back. */}
       {(participants.length > 0 || entries.length > 0) && (
         <span className="quick-add-wrap roster">
-          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "roster"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) { openNewForm(); } else { setRosterAnchor(aboveAnchor(e.currentTarget.getBoundingClientRect(), viewport(), QUICK_ADD_WIDTH, 8)); openQuickAdd("roster"); } }}>
+          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={() => { if (availablePresets.length === 0 && availableProfiles.length === 0) openNewForm(); else openQuickAdd("dock"); }}>
             <PersonPlus /><span className="chip-add-label">Add bot</span>
           </button>
         </span>
@@ -3254,7 +3271,6 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 
-      {quickAdd === "roster" && rosterAnchor && createPortal(<span className="quick-add-wrap roster-pop" role="dialog" aria-label="Add a bot" style={{ left: rosterAnchor.left, bottom: rosterAnchor.bottom, "--room": `${window.innerHeight - rosterAnchor.bottom - 8}px` } as CSSProperties}>{quickAddMenu}</span>, document.body)}
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
         // Attach mode never creates the room: a popped view edits only while the owner has it open.
@@ -3296,7 +3312,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={explainPicked} disabled={!ready || participants.length === 0}>More details</button>
         </span>}
         {entries.length === 0 && Object.keys(drafts).length === 0 && (
-          <div className="empty">
+          <div className={`empty${quickAdd === "dock" ? " away" : ""}`}>
             <LandingTexture settings={landingTexture} />
             <div className="empty-emblem"><DeckIcon name="chat" size={26} /></div>
             <span className="eyebrow">A fresh perspective starts here</span>
@@ -3312,7 +3328,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 ? "Add two or more models, then ask them something. Each one sees the whole conversation."
                 : "Type a message below. Use @name to pick who answers, or @all for everyone."}
             </p>
-            {participants.length === 0 && quickAddButton("empty", true)}
+            {participants.length === 0 && <button className="primary" disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={() => openQuickAdd("dock")}>+ Add bots</button>}
             {participants.length > 0 && <div className="example-rows" aria-label="Examples">
               {exampleRows(participants).map((row) => (
                 <button key={row.text} type="button" className="example-row" onClick={() => insertExample(row.text)}>{row.label}</button>
@@ -3577,7 +3593,8 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
         </div>}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
-        <div className={`composer-box${stacked ? " stacked" : ""}${work && !work.started ? " with-tray" : ""}`} ref={field}>
+        <div className={`composer-box${stacked ? " stacked" : ""}${work && !work.started ? " with-tray" : ""}${quickAdd === "dock" ? " adding" : ""}`} ref={field}>
+          {quickAdd === "dock" && quickAddMenu}
           <ComposerMenu ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
             if (item.kind === "attach") return filePicker.current?.click();
             if (item.kind === "attach-folder") return void backend.pickFolder().then((path) => path && track(`${path.split("/").pop() || path}/`, undefined, () => backend.copyAttachment(pane.id, path)));

@@ -5,21 +5,32 @@ import { createRequire } from 'node:module';
 
 const { transform } = createRequire(import.meta.url)('sucrase');
 const source = fs.readFileSync(new URL('../src/ChatPane.tsx', import.meta.url), 'utf8');
+const quickMenu = () => source.slice(source.indexOf('const quickAddMenu = ('), source.indexOf('const quickAddButton = ('));
 
-test('the roster Add bot dialog escapes the thread pane into the document body', () => {
-  const expression = source.split('\n').find(line => line.includes('{quickAdd === "roster" && rosterAnchor &&'))?.trim().slice(1, -1);
-  assert.ok(expression, 'roster dialog render exists');
-  const compiled = transform(`return (${expression});`, { transforms: ['typescript', 'jsx'], jsxRuntime: 'classic' }).code;
-  const React = { createElement: (type, props, ...children) => ({ type, props, children }) };
-  const body = {};
-  const menu = {};
-  const render = new Function('React', 'quickAdd', 'rosterAnchor', 'quickAddMenu', 'window', 'document', 'createPortal', compiled);
-  const result = render(React, 'roster', { left: 20, bottom: 100 }, menu, { innerHeight: 600 }, { body }, (child, target) => ({ child, target }));
-  assert.equal(result.target, body, 'fixed dialog must escape clipping and backdrop-filter ancestors');
-  assert.equal(result.child.props.role, 'dialog');
-  assert.equal(result.child.props.style.left, 20);
-  assert.equal(result.child.props.style.bottom, 100);
-  assert.equal(result.child.children[0], menu);
+test('the add menu grows out of the message box instead of floating', () => {
+  const box = source.match(/<div className=\{`composer-box\$\{[^\n]*?\}`\} ref=\{field\}>\n\s*(.*)/);
+  assert.ok(box, 'the composer box render exists');
+  assert.match(box[0], /quickAdd === "dock" \? " adding" : ""/, 'the box is marked while the menu is open');
+  assert.match(box[1], /\{quickAdd === "dock" && quickAddMenu\}/, 'the menu is the first thing in the box');
+  assert.doesNotMatch(source, /rosterAnchor|roster-pop|quickAddButton\("empty"/, 'no floating copy of the menu is left');
+  const seat = source.match(/className="chip-add"[^\n]*/)?.[0] ?? '';
+  assert.match(seat, /openQuickAdd\("dock"\)/, 'the composer seat opens the same menu');
+});
+
+test('the welcome block steps aside while the add menu is open', () => {
+  assert.match(source, /<div className=\{`empty\$\{quickAdd === "dock" \? " away" : ""\}`\}/);
+  assert.match(source, /onClick=\{\(\) => openQuickAdd\("dock"\)\}>\+ Add bots<\/button>/, 'the welcome button opens the menu in the message box');
+  const css = fs.readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.transcript \.empty\.away \{[^}]*opacity: 0;[^}]*pointer-events: none;/);
+  assert.match(css, /\.composer-box\.adding > :not\(\.quick-add\) \{ display: none; \}/, 'the message box hides its own controls while it is the menu');
+});
+
+test('saved agents are tiles with their own avatar, and the menu can be closed', () => {
+  const menu = quickMenu();
+  assert.match(menu, /className="quick-add-tile"/);
+  assert.match(menu, /<Avatar seed=\{look\.seed\} color=\{look\.color\}/);
+  assert.match(menu, /aria-label="Close menu" onClick=\{\(\) => setQuickAdd\(null\)\}/);
+  assert.match(menu, /lineupText\(/, 'the bottom strip says who will join');
 });
 
 test('an empty thread keeps an Add bot seat after a kick notice', () => {
@@ -52,8 +63,6 @@ test('the key lookup also runs for the quick add menu', () => {
   assert.match(source, /const keyName = \(adding \|\| quickAdd\) && takesKey\(draft\.preset\)/);
 });
 
-const quickMenu = () => source.slice(source.indexOf('const quickAddMenu = ('), source.indexOf('const quickAddButton = ('));
-
 test('saved agents in the quick add menu are toggles, not instant adds', () => {
   const menu = quickMenu();
   assert.match(menu, /role="checkbox"/);
@@ -72,6 +81,8 @@ test('a queued row never keeps a typed key', () => {
 
 test('the quick add menu scrolls inside itself and keeps its button visible', () => {
   const css = fs.readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
-  assert.match(css, /\.quick-add \{[^}]*max-height:[^}]*overflow-y: auto;/);
-  assert.match(css, /\.quick-add-foot \{[^}]*position: sticky;[^}]*bottom: -?\d+(px)?;/);
+  assert.match(css, /\.quick-add \{[^}]*max-height:[^}]*overflow: hidden;/);
+  assert.match(css, /\.quick-add-scroll \{[^}]*min-height: 0;[^}]*overflow-y: auto;/);
+  const menu = quickMenu();
+  assert.ok(menu.indexOf('className="quick-add-foot"') > menu.lastIndexOf('</div>{/* end quick-add-scroll */}'), 'the Add button sits outside the scrolling part');
 });

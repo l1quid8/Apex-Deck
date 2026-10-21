@@ -137,3 +137,12 @@ The v2 rows carry the same settings as the single-bot form. Today the quick-add 
 - Batch adding on the iPhone app and in the Agents tab.
 - Removing the big empty-thread "+ Add bot" button. That's a separate decision, now that `8b6cd08` stops it stretching.
 - A daemon-side "add many" call. N calls in order are enough at 4–10 bots, and one call per bot keeps the daemon's clash check working per bot.
+
+## Task 5 (added 2026-10-20): the message box grows into the menu
+
+From mockup `mockups/add-bot-menu-theme-v2.html`, picked by the Human.
+
+- The welcome button and the composer seat both open one place, `quickAdd === "dock"`: the menu is the first child of `.composer-box.adding`, which hides its own controls. The floating hero menu and the roster portal are removed (clean cut-over). The sidebar's "details" menu is unchanged.
+- The welcome block gets `.away` (fades and stops taking clicks) while the menu is open; × or Esc brings it back.
+- Menu layout: header with ×, a scrolling middle (saved agents as avatar tiles, new-bot rows, the editor, "+ Another bot"), and a lineup strip outside the scroll (faces, `lineupText`, More options, Add N bots).
+- On Glass and Clay the docked menu drops its own popup surface so the message box is the only material; Glass lifts the box's fill to at least .62 while it is the menu.

@@ -73,3 +73,10 @@ test("splitAdded says how many saved agents and new rows went in", async () => {
   assert.deepEqual(splitAdded(2, 0), { saved: 0, rows: 2 });
   assert.deepEqual(splitAdded(0, 0), { saved: 0, rows: 0 });
 });
+
+test("lineupText says who will join the thread", async () => {
+  const { lineupText } = await import("../src/batchAdd.ts");
+  assert.equal(lineupText([]), "Pick at least one bot");
+  assert.equal(lineupText(["Null"]), "1 bot will join: Null");
+  assert.equal(lineupText(["Null", "  ", "Opus"]), "3 bots will join: Null, New bot, Opus");
+});
