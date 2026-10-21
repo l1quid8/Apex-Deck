@@ -42,6 +42,15 @@ try {
 }
 
 contextBridge.exposeInMainWorld('apexDeck', {
+  voice: {
+    status: () => ipcRenderer.invoke('voice:status'),
+    install: () => ipcRenderer.invoke('voice:install'),
+    cancelInstall: () => ipcRenderer.invoke('voice:cancelInstall'),
+    start: () => ipcRenderer.invoke('voice:start'),
+    stop: () => ipcRenderer.invoke('voice:stop'),
+    onProgress: (cb) => subscribe('voice:progress', cb),
+    onSuspend: (cb) => subscribe('voice:suspend', cb),
+  },
   generatedUI: {
     capability: () => ipcRenderer.invoke('generated-ui:capability'),
     run: (request) => ipcRenderer.invoke('generated-ui:run', request),

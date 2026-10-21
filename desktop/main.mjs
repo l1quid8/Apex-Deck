@@ -4,7 +4,8 @@
 // relays lines and does what needs the machine with the screen. Each window
 // runs on one host, this Mac or another machine, so two can sit side by side.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, screen, session, shell, WebContentsView, webContents } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, powerMonitor, protocol, screen, session, shell, systemPreferences, WebContentsView, webContents } from 'electron';
+import { VoiceRuntimeManager } from './voiceRuntime.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -321,6 +322,37 @@ function handle(channel, run) {
     return run(entry, ...args);
   });
 }
+
+const localVoice = new VoiceRuntimeManager({
+  root: path.join(app.getPath('appData'), 'dev.apexdeck.app', 'voice'),
+  source: app.isPackaged ? path.join(process.resourcesPath, 'voice-sidecar') : path.join(repo, 'voice-sidecar'),
+  origins: ['app://deck', 'null', ...(devUrl ? [new URL(devUrl).origin] : [])],
+  progress: (value) => { for (const {win} of windows.values()) win.webContents.send('voice:progress', value); },
+});
+handle('voice:status', () => localVoice.status());
+handle('voice:install', () => localVoice.install());
+handle('voice:cancelInstall', () => localVoice.cancelInstall());
+handle('voice:start', ({win}) => {
+  const id=win.webContents.id;
+  win.webContents.once('destroyed', () => void localVoice.stop(id));
+  return localVoice.start(id);
+});
+handle('voice:stop', ({win}) => localVoice.stop(win.webContents.id));
+app.on('will-quit', () => void localVoice.shutdown());
+app.whenReady().then(() => {
+  powerMonitor.on('suspend', () => {
+    for (const {win} of windows.values()) win.webContents.send('voice:suspend');
+    void localVoice.shutdown();
+  });
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const entry=[...windows.values()].find(e=>e.win.webContents===contents);
+    const trusted=entry && [originOf(devUrl), 'app://deck'].includes(originOf(contents.getURL()));
+    const audioOnly=permission==='media' && details.mediaTypes?.includes('audio') && !details.mediaTypes?.includes('video');
+    if(!trusted||!audioOnly){callback(false);return;}
+    if(process.platform==='darwin') void systemPreferences.askForMediaAccess('microphone').then(callback).catch(()=>callback(false));
+    else callback(true);
+  });
+});
 
 handle('connection:current', async ({ host }) => {
   const remote = remoteHost(host);

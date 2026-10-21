@@ -18,6 +18,13 @@ import { clientCapabilitiesForGeneratedRuntime, type ClientCapabilities } from '
 
 /** What desktop/preload.cjs puts on `window.apexDeck`. */
 export interface DeckBridge {
+  voice?: {
+    status(): Promise<{supported:boolean;installed:boolean;installing:boolean;downloadBytes:number;requiredDiskBytes:number}>;
+    install(): Promise<unknown>; cancelInstall():Promise<void>;
+    start():Promise<import('./voice/types').VoiceRuntime>;stop():Promise<void>;
+    onProgress(cb:(progress:{stage:string;downloaded:number;total:number})=>void):()=>void;
+    onSuspend(cb:()=>void):()=>void;
+  };
   /** Absent in older desktops; execution capability is checked in main. */
   generatedUI?: GeneratedApi;
   daemon: {

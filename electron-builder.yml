@@ -27,6 +27,9 @@ files:
   - "!desktop/generated-ui/run-packaged-*.mjs"
   - "!desktop/generated-ui/runtime-smoke.mjs"
 extraResources:
+  - from: voice-sidecar
+    to: voice-sidecar
+    filter: ["**/*", "!**/__pycache__/**", "!tests/**", "!.venv/**"]
   - from: target/release/apex-daemon
     to: bin/apex-daemon
   - from: third_party/open-intelligent-ui/LICENSE
@@ -34,6 +37,8 @@ extraResources:
 mac:
   icon: build/icons/icon.icns
   category: public.app-category.developer-tools
+  extendInfo:
+    NSMicrophoneUsageDescription: "Apex Deck uses your microphone only during voice calls you start."
   target: dmg
   # A bare electron-builder run signs ad hoc; scripts/package-mac.mjs passes
   # the Developer ID identity instead when the keychain has one.
