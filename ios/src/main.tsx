@@ -81,6 +81,8 @@ export const screens = [
   ["browser-control", "Browser · control"],
   ["settings", "Device settings"],
   ["machines", "Settings → Machines"],
+  ["local-chat", "Local chat session"],
+  ["local-chat-settings", "Settings → Local chat"],
   ["connecting", "Connecting"],
   ["reconnecting", "Catching up"],
   ["offline", "Host offline"],
@@ -313,7 +315,7 @@ function App() {
   ].includes(screen);
   const machineScreen =
     screen.startsWith("pick-") ||
-    ["threads", "machines", "hosts"].includes(screen);
+    ["threads", "machines", "hosts", "local-chat", "local-chat-settings"].includes(screen);
   const machineStep = screen.startsWith("pick-")
     ? screens.findIndex(([id]) => id === screen) + 1
     : 0;
@@ -433,7 +435,9 @@ function App() {
                   ? "machines"
                   : screen === "threads"
                     ? "list"
-                    : undefined
+                    : screen === "local-chat" || screen === "local-chat-settings"
+                      ? screen
+                      : undefined
               }
               onNavigate={(route) => go(route as Screen)}
               onHost={(name, path, bots, offline, asleep) => {setHost(name); setWorkspacePath(path); setWorkspaceBots(bots); setWorkspaceOffline(offline); setWorkspaceAsleep(asleep);}}
@@ -1139,12 +1143,20 @@ function App() {
                 {screen === "settings" && (
                   <>
                     <h2>Device settings</h2>
-                    {row(
-                      Server,
-                      "Machines",
-                      "Pairing and direct connections",
-                      () => go("machines"),
-                    )}
+                    <div className="group">
+                      {row(
+                        Server,
+                        "Machines",
+                        "Pairing and direct connections",
+                        () => go("machines"),
+                      )}
+                      {row(
+                        MessageSquare,
+                        "Local chat",
+                        "On-device sessions · host models",
+                        () => go("local-chat-settings"),
+                      )}
+                    </div>
                     <div className="device">
                       <span className="host-icon">
                         <Laptop size={27} />

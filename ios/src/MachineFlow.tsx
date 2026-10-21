@@ -20,6 +20,14 @@ import {
   Terminal,
   X,
 } from "lucide-react";
+import {
+  LocalChatThread,
+  loadGatewayConfig,
+  loadLocalChatSessions,
+  parseGatewayPairingLink,
+  saveGatewayConfig,
+  saveLocalChatSessions,
+} from "./LocalChatSession";
 
 type Machine = {
   id: string;
@@ -420,6 +428,18 @@ export default function MachineFlow({
   const [folderProjectName, setFolderProjectName] = useState<string | undefined>(step === 8 ? "apex-deck" : undefined);
   const [folderServerChoice, setFolderServerChoice] = useState(false);
   const [connectionReturn, setConnectionReturn] = useState("list");
+  const [localSessions, setLocalSessions] = useState(() => loadLocalChatSessions());
+  const [activeLocalId, setActiveLocalId] = useState(() => loadLocalChatSessions()[0]?.id || "lc-1");
+  const [gatewayConfig, setGatewayConfig] = useState(() => loadGatewayConfig());
+  const [pairingInput, setPairingInput] = useState("");
+  useEffect(() => {
+    saveLocalChatSessions(localSessions);
+  }, [localSessions]);
+  useEffect(() => {
+    saveGatewayConfig(gatewayConfig);
+  }, [gatewayConfig]);
+  const activeLocalSession =
+    localSessions.find((s) => s.id === activeLocalId) || localSessions[0];
   const isOffline = (host: Machine) => !!host.offline || (scene === 19 && host.id === "mac") || unpaired.includes(host.id);
   const activity = (thread: Thread) => !thread.started ? "Unsent draft" : !thread.at ? "now" : (thread.at || 0) < 60 ? `${thread.at || 0}m ago` : (thread.at || 0) < 1440 ? `${Math.floor((thread.at || 0)/60)}h ago` : `${Math.floor((thread.at || 0)/1440)}d ago`;
   const dialog = useRef<HTMLDivElement>(null),
@@ -706,6 +726,22 @@ export default function MachineFlow({
   useEffect(() => {
     if (view === "chat") content.current?.scrollTo({top: content.current.scrollHeight});
   }, [active, view, t.messages.length, t.decision]);
+  if (view === "local-chat" && activeLocalSession) {
+    return (
+      <LocalChatThread
+        config={gatewayConfig}
+        session={activeLocalSession}
+        onUpdateSession={(next) =>
+          setLocalSessions((prev) =>
+            prev.map((s) => (s.id === next.id ? next : s)),
+          )
+        }
+        onOpenSettings={() => setView("local-chat-settings")}
+        onBack={() => setView("list")}
+        onNavigateTab={(route) => onNavigate(route)}
+      />
+    );
+  }
   return (
     <>
       <header className="phone-header" inert={!!sheet}>
@@ -816,6 +852,50 @@ export default function MachineFlow({
             <div className="group">
               {threads.filter(listed).sort((a,b) => (a.at || 0)-(b.at || 0)).slice(0,4).map(threadRow)}
             </div>
+            <div className="section-label">LOCAL CHAT</div>
+            <div className="group">
+              {localSessions.map((sess) => (
+                <div className="mf-list-row" key={sess.id}>
+                  <button
+                    className="mf-item"
+                    onClick={() => {
+                      setActiveLocalId(sess.id);
+                      setView("local-chat");
+                      setSheet("");
+                    }}
+                  >
+                    <strong>
+                      <i aria-hidden="true" className="mf-dot" />
+                      {sess.title}
+                    </strong>
+                    <small>Local chat · Stored on this iPhone</small>
+                    <span className="mf-meta">
+                      {sess.bots.join(" · ")} · {sess.updatedAt}
+                    </span>
+                  </button>
+                  <button
+                    className="icon-button"
+                    aria-label="New local chat session"
+                    onClick={() => {
+                      const id = `lc-${Date.now()}`;
+                      const created = {
+                        id,
+                        title: "New local chat",
+                        bots: ["Codex", "Claude"],
+                        messages: [],
+                        updatedAt: "now",
+                      };
+                      setLocalSessions((prev) => [created, ...prev]);
+                      setActiveLocalId(id);
+                      setView("local-chat");
+                      setSheet("");
+                    }}
+                  >
+                    <Plus size={18} />
+                  </button>
+                </div>
+              ))}
+            </div>
             <p className="footnote">
               Long-press for details. Swipe right to pin; left to archive.
             </p>
@@ -923,9 +1003,68 @@ export default function MachineFlow({
             <h2>Settings</h2>
             <div className="group">
               {action("Machines", () => setView("machines"))}
+              {action("Local chat", () => setView("local-chat-settings"))}
             </div>
             <p className="footnote">
               Tyler’s iPhone · direct connections to each machine
+            </p>
+          </>
+        )}
+        {view === "local-chat-settings" && (
+          <>
+            <h2>Local chat</h2>
+            <p className="intro">
+              Use your host’s models while keeping chat history on this iPhone.
+              Setup happens once here—never in the thread.
+            </p>
+            <div className="group padded">
+              <h3>
+                <Laptop size={17} /> {gatewayConfig.hostLabel}
+              </h3>
+              <p className="muted">
+                Connected · Key {gatewayConfig.keySuffix}
+                <br />
+                Transcripts stored on this iPhone
+              </p>
+              <p className="mf-path">
+                {gatewayConfig.baseUrl || "https://tailscale-host:8787/v1 (simulated)"}
+              </p>
+              {action(
+                "Open Local chat session",
+                () => setView("local-chat"),
+                "primary wide",
+              )}
+            </div>
+            <div className="form">
+              <label>
+                One-time setup link or /v1 endpoint
+                <input
+                  aria-label="Local chat setup link"
+                  placeholder="apexdeck://gateway?url=…&key=apx_sk_…"
+                  value={pairingInput}
+                  onChange={(e) => setPairingInput(e.target.value)}
+                />
+              </label>
+            </div>
+            {action(
+              "Save Local chat connection",
+              () => {
+                const parsed = parseGatewayPairingLink(pairingInput);
+                if (!parsed) {
+                  setNotice(
+                    "Paste an apexdeck://gateway?… link, https://…/v1 URL, or apx_sk_… key",
+                  );
+                  return;
+                }
+                setGatewayConfig((prev) => ({ ...prev, ...parsed }));
+                setPairingInput("");
+                setNotice("Local chat connection updated");
+              },
+              "wide",
+            )}
+            <p className="scope">
+              Only the host owner can issue or revoke keys. Private host MCP
+              tools (x_mcp, hl_mcp) are permanently excluded.
             </p>
           </>
         )}
