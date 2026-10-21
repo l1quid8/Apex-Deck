@@ -7,6 +7,8 @@ pub mod cli;
 pub mod devices;
 pub mod devices_cli;
 pub mod files;
+pub mod gateway_cli;
+pub mod gateway_http;
 pub mod gateway_keys;
 pub mod identity;
 pub mod local_call;

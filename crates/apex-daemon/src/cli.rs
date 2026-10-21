@@ -4,10 +4,11 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-stdin-close] [--remote [--remote-port N]] [--data-dir PATH]
+usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-stdin-close] [--remote [--remote-port N]] [--gateway-port N [--gateway-bind ADDR]] [--data-dir PATH]
        apex-daemon --stdio [--attach] [--data-dir PATH]
        apex-daemon data-dir [--data-dir PATH]
        apex-daemon devices list|add|tier|threads|revoke … [--data-dir PATH]
+       apex-daemon keys list|issue|revoke … [--data-dir PATH]
        apex-daemon pair [--tier read_only|chat|full] [--threads all|ID,ID] [--data-dir PATH]
        apex-daemon remote info|advertise … [--data-dir PATH]
 
@@ -23,9 +24,16 @@ usage: apex-daemon serve [--port N] [--bind ADDR] [--insecure-bind] [--exit-on-s
   --remote         with serve: let paired devices connect from anywhere over iroh
                    (direct when possible, else relay.apex-terminal.xyz)
   --remote-port N  UDP port for --remote (default: picked at first start, then kept)
+  --gateway-port N with serve: listen for OpenAI-compatible /v1/models and /v1/chat/completions
+                   requests authenticated with `apx_sk_...` bearer keys
+  --gateway-bind ADDR
+                   with --gateway-port: address for the HTTP gateway (default 127.0.0.1)
   data-dir         print the data folder the daemon would use, and exit
   devices          list, add, retier or revoke phones allowed to connect from outside;
                    `apex-daemon devices` alone explains each
+  keys             list, issue or revoke model gateway API keys (`apx_sk_…`); only
+                   from this machine, and the raw key is shown once
+                   `apex-daemon keys` alone explains each
   pair             pair a phone: shows a QR code, then asks you to approve the phone
                    (needs the daemon running with --remote); `apex-daemon pair --help`
   remote           remote access: `remote info`, or `remote advertise host:port…|--clear`
@@ -40,6 +48,8 @@ pub enum Action {
     /// Print the data folder.
     DataDir,
     Devices(crate::devices_cli::DevicesAction),
+    /// `keys list|issue|revoke`: the model gateway's API keys (local only).
+    Keys(crate::gateway_cli::KeysAction),
     Pair(crate::pair_cli::PairOptions),
     Remote(crate::pair_cli::RemoteAction),
     /// `pair --help` / `remote --help`.
@@ -60,11 +70,24 @@ pub struct ServeOptions {
     /// Listen for paired devices over iroh.
     pub remote: bool,
     pub remote_port: Option<u16>,
+    /// Optional port for the OpenAI-compatible HTTP gateway (`/v1/models`, `/v1/chat/completions`).
+    pub gateway_port: Option<u16>,
+    /// Bind address for the HTTP gateway (default `127.0.0.1`).
+    pub gateway_bind: IpAddr,
 }
 
 impl Default for ServeOptions {
     fn default() -> Self {
-        ServeOptions { port: 0, bind: IpAddr::V4(Ipv4Addr::LOCALHOST), insecure_bind: false, exit_on_stdin_close: false, remote: false, remote_port: None }
+        ServeOptions {
+            port: 0,
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            insecure_bind: false,
+            exit_on_stdin_close: false,
+            remote: false,
+            remote_port: None,
+            gateway_port: None,
+            gateway_bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        }
     }
 }
 
@@ -90,6 +113,9 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     if rest.first().map(String::as_str) == Some("devices") {
         return Ok(Cli { action: Action::Devices(crate::devices_cli::parse(&rest[1..])?), data_dir });
     }
+    if rest.first().map(String::as_str) == Some("keys") {
+        return Ok(Cli { action: Action::Keys(crate::gateway_cli::parse(&rest[1..])?), data_dir });
+    }
     if matches!(rest.first().map(String::as_str), Some("pair" | "remote")) {
         let action = if rest[1..].iter().any(|a| a == "-h" || a == "--help") {
             Action::PairHelp
@@ -109,6 +135,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     let mut data_dir = None;
     let mut options = ServeOptions::default();
     let mut serve_flag = None;
+    let mut gateway_bind_set = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
@@ -143,6 +170,17 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 options.remote_port = Some(port.parse().map_err(|_| format!("--remote-port {port} is not a port number"))?);
                 serve_flag.get_or_insert("--remote-port");
             }
+            "--gateway-port" => {
+                let port = value()?;
+                options.gateway_port = Some(port.parse().map_err(|_| format!("--gateway-port {port} is not a port number"))?);
+                serve_flag.get_or_insert("--gateway-port");
+            }
+            "--gateway-bind" => {
+                let bind = value()?;
+                options.gateway_bind = bind.parse().map_err(|_| format!("--gateway-bind {bind} is not an IP address"))?;
+                gateway_bind_set = true;
+                serve_flag.get_or_insert("--gateway-bind");
+            }
             "--exit-on-stdin-close" => {
                 options.exit_on_stdin_close = true;
                 serve_flag.get_or_insert("--exit-on-stdin-close");
@@ -170,6 +208,9 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         }
         if options.remote_port.is_some() && !options.remote {
             return Err("--remote-port goes with --remote".into());
+        }
+        if gateway_bind_set && options.gateway_port.is_none() {
+            return Err("--gateway-bind goes with --gateway-port".into());
         }
         Action::Serve(options)
     } else {
@@ -247,6 +288,23 @@ mod tests {
         assert!(!ServeOptions::default().remote);
         assert!(parse(&["serve", "--remote-port", "1"]).unwrap_err().contains("--remote"));
         assert!(parse(&["--stdio", "--remote"]).unwrap_err().contains("--remote"));
+    }
+
+    #[test]
+    fn serve_may_listen_for_gateway_http_requests() {
+        let cli = parse(&["serve", "--gateway-port", "8787", "--gateway-bind", "0.0.0.0"]).unwrap();
+        assert_eq!(
+            cli.action,
+            Action::Serve(ServeOptions {
+                gateway_port: Some(8787),
+                gateway_bind: "0.0.0.0".parse().unwrap(),
+                ..ServeOptions::default()
+            })
+        );
+        assert_eq!(ServeOptions::default().gateway_port, None);
+        assert_eq!(ServeOptions::default().gateway_bind.to_string(), "127.0.0.1");
+        assert!(parse(&["serve", "--gateway-bind", "127.0.0.1"]).unwrap_err().contains("--gateway-port"));
+        assert!(parse(&["--stdio", "--gateway-port", "8787"]).unwrap_err().contains("--gateway-port"));
     }
 
     #[test]
