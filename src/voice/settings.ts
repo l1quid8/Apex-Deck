@@ -41,8 +41,8 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
     enabled: r.enabled === true,
     silenceMs:
       typeof r.silenceMs === "number" && Number.isFinite(r.silenceMs)
-        ? Math.min(2000, Math.max(300, Math.round(r.silenceMs)))
-        : 700,
+        ? Math.min(2000, Math.max(100, Math.round(r.silenceMs)))
+        : 100,
     preferences,
   };
 }

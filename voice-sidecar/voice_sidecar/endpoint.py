@@ -1,8 +1,8 @@
 """Bounded Silero endpoint policy. Silence-based; semantic endpointing is not claimed."""
 from collections import deque
 class EndpointDetector:
- def __init__(self,silence_ms=700,semantic=False):
-  self.semantic=semantic;self.last_candidate=0;self.silence_ms=max(300,min(2000,silence_ms));self.audio=[];self.ring=deque(maxlen=20);self.active=False;self.run=0;self.quiet=0;self.voiced=0;self.chunk=None
+ def __init__(self,silence_ms=100,semantic=False):
+  self.semantic=semantic;self.last_candidate=0;self.silence_ms=max(100,min(2000,silence_ms));self.audio=[];self.ring=deque(maxlen=20);self.active=False;self.run=0;self.quiet=0;self.voiced=0;self.chunk=None
  def push(self,pcm,prob):
   events=[]
   if not self.active:
@@ -17,7 +17,8 @@ class EndpointDetector:
    self.chunk=b''.join(self.audio);self.audio=self.audio[-20:];events.append('partial-ready')
   if self.quiet*32>=self.silence_ms:
    if self.semantic and self.quiet*32<2000:
-    if self.quiet-self.last_candidate>=9:
+    # Ask Smart Turn as soon as the pause is reached, then every ~100 ms (3 frames) until 2 s.
+    if not self.last_candidate or self.quiet-self.last_candidate>=3:
      self.last_candidate=self.quiet;events.append('candidate')
     return events
    self.active=False;self.run=0

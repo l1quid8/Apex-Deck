@@ -63,6 +63,14 @@ class SemanticTests(unittest.TestCase):
   self.assertTrue(e.active)
   for i in range(41):events+=e.push(b'\0'*1024,.01)
   self.assertIn('complete',events)
+ def test_100ms_pause_asks_smart_turn_after_four_quiet_frames_then_every_three(self):
+  e=EndpointDetector(100,semantic=True)
+  for i in range(8):e.push(b'\0'*1024,.9)
+  asked=[q for q in range(1,12) if 'candidate' in e.push(b'\0'*1024,.01)]
+  self.assertEqual(asked,[4,7,10])
+ def test_pause_floor_and_default_are_100ms(self):
+  self.assertEqual(EndpointDetector(0).silence_ms,100)
+  self.assertEqual(EndpointDetector().silence_ms,100)
 
 class PiecePipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_pieces_share_one_start_and_end_with_100ms_between(self):

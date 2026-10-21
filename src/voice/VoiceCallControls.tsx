@@ -313,14 +313,14 @@ export function VoiceCallControls({
                 Pause before reply{" "}
                 <input
                   type="range"
-                  min="300"
+                  min="100"
                   max="2000"
                   step="100"
                   value={
                     scope
                       ? (settings ?? voiceRegistration(scope).settings)
                           .silenceMs
-                      : 700
+                      : 100
                   }
                   onChange={(e) => {
                     if (scope) {
@@ -335,7 +335,7 @@ export function VoiceCallControls({
                 <span>
                   {scope
                     ? (settings ?? voiceRegistration(scope).settings).silenceMs
-                    : 700}{" "}
+                    : 100}{" "}
                   ms · applies next call
                 </span>
               </label>

@@ -273,7 +273,7 @@ export function VoiceCall({
                     Pause · {voice.settings().silenceMs} ms
                     <input
                       type="range"
-                      min="300"
+                      min="100"
                       max="2000"
                       step="100"
                       value={voice.settings().silenceMs}

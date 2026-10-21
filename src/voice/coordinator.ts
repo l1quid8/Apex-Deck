@@ -59,7 +59,7 @@ export const voiceController: VoiceController = createVoiceController({
   },
   silence: () => {
     const scope = voiceController.getState().scope;
-    return scope ? lookup(scope).settings.silenceMs : 700;
+    return scope ? lookup(scope).settings.silenceMs : 100;
   },
   focus: (scope) => lookup(scope).focus(),
 });

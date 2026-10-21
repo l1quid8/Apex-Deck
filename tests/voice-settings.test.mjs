@@ -29,7 +29,7 @@ test("sanitize limits, ignore prototype keys and malformed values", () => {
       x: { voice: "am_michael", aliases: Array(25).fill("x".repeat(100)) },
     },
   });
-  assert.equal(s.silenceMs, 700);
+  assert.equal(s.silenceMs, 100);
   assert.equal(s.preferences.x.aliases.length, 16);
   assert.equal(s.preferences.x.aliases[0].length, 64);
 });
