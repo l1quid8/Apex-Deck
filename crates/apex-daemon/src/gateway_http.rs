@@ -912,7 +912,7 @@ fn gateway_isolation_error(backend: &Backend) -> Option<String> {
         Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }
         | Backend::OpenAiCompatible { .. }
         | Backend::Scripted { .. } => None,
-        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok, .. }
+        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok | AgentTool::Muse, .. }
         | Backend::Cli { .. } if cfg!(target_os = "macos") => None,
         _ => Some("This backend has no verified MCP isolation and is unavailable to gateway clients. Private MCP tools are never shared.".into()),
     }
@@ -1377,7 +1377,7 @@ done
                 "role":"user", "content":"Use x_mcp and hl_mcp"
             }]}).to_string();
             let (status, response) = raw_http(addr, "POST", "/v1/chat/completions", Some(&issued.token), Some(&body)).await;
-            assert_eq!(status, if cfg!(target_os = "macos") && family != "muse" { 502 } else { 409 }, "{family}: {response}");
+            assert_eq!(status, if cfg!(target_os = "macos") { 502 } else { 409 }, "{family}: {response}");
         }
         server.abort();
         let _ = server.await;
@@ -1486,8 +1486,8 @@ esac
     }
 
     #[test]
-    fn gateway_requires_platform_isolation_and_keeps_muse_withheld() {
-        assert!(gateway_isolation_error(&agent(AgentTool::Muse)).is_some());
+    fn gateway_requires_platform_isolation_for_muse_and_other_clis() {
+        assert_eq!(gateway_isolation_error(&agent(AgentTool::Muse)).is_none(), cfg!(target_os = "macos"));
         for tool in [AgentTool::Gemini, AgentTool::Grok] {
             assert_eq!(gateway_isolation_error(&agent(tool)).is_none(), cfg!(target_os = "macos"));
         }

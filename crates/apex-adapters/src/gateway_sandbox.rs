@@ -85,11 +85,23 @@ impl Isolation {
     }
 
     fn copy_auth(&self, source: &Path, relative: &str) -> Result<(), ParticipantError> {
-        let bytes = match std::fs::read(source) {
+        let mut bytes = match std::fs::read(source) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(_) => return Err(failed("cannot read model sign-in file")),
         };
+        if relative == "config/muse/auth.json" {
+            bytes = muse_auth_document(&bytes, || {
+                #[cfg(target_os = "macos")]
+                {
+                    muse_meta_secret()
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Err(failed("Muse Keychain sign-in requires macOS"))
+                }
+            })?;
+        }
         let target = self.root.dir.join(relative);
         std::fs::create_dir_all(target.parent().unwrap())
             .map_err(|_| failed("cannot stage model sign-in"))?;
@@ -139,8 +151,16 @@ impl Isolation {
         }
 
         // Muse's installed launcher execs its sibling versioned binary. Grant
-        // exactly those two files, never its directory (which may hold secrets).
+        // exactly those two files; ancestor directories grant no file contents.
         if program == "muse" {
+            // Muse's safe directory walker opens each ancestor component. Permit
+            // those directories themselves, never their file contents/subtrees.
+            for parent in binary.ancestors().skip(1) {
+                read.push_str(&format!(" (literal {})", quote(parent)?));
+            }
+            // Optional system Agent Definition discovery must be able to walk
+            // these two directories; no system configuration files are granted.
+            read.push_str(" (literal \"/Library\") (literal \"/Library/Application Support\")");
             let parent = binary
                 .parent()
                 .ok_or_else(|| failed("invalid Muse launcher"))?;
@@ -181,6 +201,7 @@ impl Isolation {
 (deny network-outbound (remote ip "localhost:*"))
 (allow network-outbound (literal "/private/var/run/mDNSResponder"))
 (allow mach-lookup
+ (global-name "com.apple.system.opendirectoryd.libinfo")
  (global-name "com.apple.system.logger")
  (global-name "com.apple.system.notification_center")
  (global-name "com.apple.trustd.agent")
@@ -233,5 +254,210 @@ impl Isolation {
             .env("LANG", "en_US.UTF-8")
             .current_dir(root.join("work"));
         Ok(command)
+    }
+}
+
+// macOS's signed credential helper reads only this one pre-existing service /
+// account pair. Its stdout is captured privately, never logged or passed in argv.
+// Bound the wait so a locked Keychain cannot hang a headless gateway request.
+#[cfg(target_os = "macos")]
+fn muse_meta_secret() -> Result<Vec<u8>, ParticipantError> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "ai.meta.dev.credentials",
+            "-a",
+            "meta",
+            "-w",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| failed("cannot start Muse credential helper"))?;
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if start.elapsed() < std::time::Duration::from_secs(10) => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(failed("Muse credential helper timed out or failed"));
+            }
+        }
+    };
+    if !status.success() {
+        return Err(failed("cannot read Muse Meta sign-in from Keychain"));
+    }
+    let mut bytes = Vec::new();
+    child
+        .stdout
+        .take()
+        .ok_or_else(|| failed("Muse credential helper has no output"))?
+        .take(16 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| failed("cannot read Muse credential helper output"))?;
+    if bytes.len() > 16 * 1024 {
+        return Err(failed("Muse credential payload is too large"));
+    }
+    Ok(bytes)
+}
+
+// Resolve exactly Muse's model sign-in in the trusted parent. Never grant the
+// child Keychain access or copy MCP credential slots alongside the model login.
+fn muse_auth_document(
+    bytes: &[u8],
+    read_meta_secret: impl FnOnce() -> Result<Vec<u8>, ParticipantError>,
+) -> Result<Vec<u8>, ParticipantError> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| failed("invalid Muse sign-in document"))?;
+    if doc["schema_version"] != 2 {
+        return Err(failed("unsupported Muse sign-in schema"));
+    }
+    let meta = &doc["providers"]["meta"];
+    if meta["mechanism"] != "oauth" {
+        return Err(failed("Muse gateway requires subscription sign-in"));
+    }
+    let mut staged = serde_json::Map::new();
+    for name in [
+        "mechanism",
+        "obtained_via",
+        "expires_at",
+        "api_base_url",
+        "subs_active",
+        "user_full_name",
+        "user_email",
+        "user_avatar_url",
+    ] {
+        if let Some(value) = meta.get(name) {
+            staged.insert(name.into(), value.clone());
+        }
+    }
+    let secret = match meta["storage"].as_str() {
+        Some("keychain") => {
+            let secret: serde_json::Value = serde_json::from_slice(&read_meta_secret()?)
+                .map_err(|_| failed("invalid Muse Meta Keychain payload"))?;
+            if secret["secret_schema_version"] != 1 {
+                return Err(failed("unsupported Muse Meta Keychain schema"));
+            }
+            secret
+        }
+        Some("file") => meta.clone(),
+        _ => return Err(failed("unsupported Muse sign-in storage")),
+    };
+    let token = secret["access_token"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| failed("Muse subscription sign-in has no access token"))?;
+    staged.insert("access_token".into(), token.into());
+    staged.insert("storage".into(), "file".into());
+    serde_json::to_vec(&serde_json::json!({"schema_version":2,"providers":{"meta":staged}}))
+        .map_err(|_| failed("cannot encode private Muse sign-in"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn muse_directory_walk_does_not_expose_private_files_or_keychain() {
+        use std::os::unix::fs::PermissionsExt;
+        let operator = Staged::new().unwrap();
+        let script = operator.dir.join("muse");
+        std::fs::write(operator.dir.join("private-mcp"), "PRIVATE_MCP_SECRET").unwrap();
+        std::fs::write(&script, format!(r#"#!/bin/sh
+/bin/ls /Library >/dev/null || exit 20
+/bin/ls '/Library/Application Support' >/dev/null || exit 21
+if /bin/cat '{}' 2>/dev/null; then exit 22; fi
+if /usr/bin/security find-generic-password -s ai.meta.dev.credentials -a meta -w >/dev/null 2>&1; then exit 23; fi
+printf 'DIRECTORIES_OK_PRIVATE_MCP_AND_KEYCHAIN_BLOCKED'
+"#, operator.dir.join("private-mcp").display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let isolation = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap();
+        let mut command = isolation
+            .command("muse", &[], operator.dir.to_str())
+            .unwrap();
+        command.kill_on_drop(true);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "DIRECTORIES_OK_PRIVATE_MCP_AND_KEYCHAIN_BLOCKED"
+        );
+    }
+
+    #[test]
+    fn muse_keychain_login_is_materialized_without_mcp_or_api_key() {
+        let input = br#"{"schema_version":2,"providers":{"meta":{"storage":"keychain","mechanism":"oauth","obtained_via":"device_code"},"mcp_oauth:x_mcp":{"storage":"keychain"},"mcp_oauth:hl_mcp":{"storage":"keychain"}}}"#;
+        let staged = muse_auth_document(input, || Ok(br#"{"secret_schema_version":1,"access_token":"subscription-only","api_key":"do-not-stage"}"#.to_vec())).unwrap();
+        let staged: serde_json::Value = serde_json::from_slice(&staged).unwrap();
+        assert_eq!(staged["providers"].as_object().unwrap().len(), 1);
+        assert_eq!(staged["providers"]["meta"]["storage"], "file");
+        assert_eq!(
+            staged["providers"]["meta"]["access_token"],
+            "subscription-only"
+        );
+        assert!(staged["providers"]["meta"].get("api_key").is_none());
+    }
+
+    #[test]
+    fn muse_keychain_errors_fail_closed_without_leaking_payload() {
+        let input = br#"{"schema_version":2,"providers":{"meta":{"storage":"keychain","mechanism":"oauth"}}}"#;
+        assert!(muse_auth_document(input, || Err(failed("Keychain unavailable"))).is_err());
+        let error = muse_auth_document(input, || Ok(b"PRIVATE_INVALID_SECRET".to_vec()))
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("PRIVATE_INVALID_SECRET"));
+        assert!(muse_auth_document(input, || Ok(
+            br#"{"secret_schema_version":1,"access_token":""}"#.to_vec()
+        ))
+        .is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn muse_auth_stages_only_meta_from_file_storage() {
+        let isolation = Isolation::new(&Backend::Scripted { lines: vec![] }).unwrap();
+        let source = isolation.root.dir.join("source-auth.json");
+        std::fs::write(&source, r#"{"schema_version":2,"providers":{"meta":{"mechanism":"oauth","storage":"file","access_token":"model-login"},"mcp_oauth:x_mcp":{"access_token":"private-x"},"mcp_oauth:hl_mcp":{"access_token":"private-hl"}}}"#).unwrap();
+        isolation
+            .copy_auth(&source, "config/muse/auth.json")
+            .unwrap();
+        let staged: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(isolation.root.dir.join("config/muse/auth.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            staged["providers"].as_object().unwrap().len(),
+            1,
+            "private MCP credentials must never be staged"
+        );
+        assert_eq!(staged["providers"]["meta"]["access_token"], "model-login");
+        use std::os::unix::fs::PermissionsExt;
+        let auth_path = isolation.root.dir.join("config/muse/auth.json");
+        assert_eq!(
+            std::fs::metadata(&auth_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let run_root = isolation.root.dir.clone();
+        drop(isolation);
+        assert!(
+            !run_root.exists(),
+            "staged model credentials must be removed after the turn"
+        );
     }
 }
