@@ -14,7 +14,7 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):
   from voice_sidecar.server import run
   read,write=os.pipe();self.token='a'*64;os.write(write,self.token.encode());os.close(write)
-  args=types.SimpleNamespace(token_fd=read,root='unused',port=0,origin=['app://deck'])
+  args=types.SimpleNamespace(token_fd=read,root='unused',port=0,origin=['app://deck','apex-daemon'])
   if getattr(self,'engine',None):args.engine=self.engine
   module='engines_cpu' if getattr(self,'engine',None)=='cpu' else 'engines'
   self.patch=patch('voice_sidecar.'+module+'.Engines',FakeEngines);self.patch.start()
@@ -84,3 +84,16 @@ class CpuEngineTests(SocketTests):
    self.assertTrue(audio)
    self.assertEqual([e['type'] for e in events],['audioStart','audioEnd','timing'])
    self.assertIsInstance(events[-1]['ttsFirstMs'],int)
+
+@unittest.skipUnless(importlib.util.find_spec('websockets'),'Socket tests require the managed runtime')
+class DaemonAuthTests(SocketTests):
+ async def test_daemon_auth_acknowledges_exclusive_ownership(self):
+  from websockets.asyncio.client import connect
+  async with connect(self.url,origin='apex-daemon') as first:
+   await first.send(json.dumps({'type':'auth','token':self.token}))
+   ack=json.loads(await asyncio.wait_for(first.recv(),.3))
+   self.assertEqual(ack,{'type':'authenticated','protocolVersion':1})
+   async with connect(self.url,origin='apex-daemon') as second:
+    await second.send(json.dumps({'type':'auth','token':self.token}))
+    await asyncio.wait_for(second.wait_closed(),1)
+    self.assertEqual(second.close_code,1008)

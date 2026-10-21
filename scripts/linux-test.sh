@@ -16,7 +16,7 @@ docker build -q -t "$image" - >/dev/null <<'DOCKERFILE'
 FROM ubuntu:24.04
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates curl build-essential pkg-config git bash \
+      ca-certificates curl build-essential pkg-config git bash python3 \
  && rm -rf /var/lib/apt/lists/*
 RUN useradd -m dev && mkdir -p /target /home/dev/.cargo/registry && chown -R dev /target /home/dev/.cargo
 USER dev
