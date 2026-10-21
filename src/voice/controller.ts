@@ -99,7 +99,7 @@ export function createVoiceController(deps: VoiceDependencies) {
   function error(e: Error) {
     if (state.status === "off" || state.status === "error") return;
     const scope = state.scope;
-    void end()
+    void end("error: " + e.message)
       .catch(() => {})
       .finally(() => set({ status: "error", scope, error: e.message }));
   }
@@ -113,7 +113,13 @@ export function createVoiceController(deps: VoiceDependencies) {
     if (a) cleanup = cleanup.then(() => a.bridge.cancel(a.id));
     return cleanup;
   }
-  async function end() {
+  async function end(reason = "ended by user") {
+    // Every call end is logged with its reason so drops can be traced.
+    if (callId || state.status !== "off")
+      console.warn(
+        "[voice end] " +
+          JSON.stringify({ callId, reason, status: state.status }),
+      );
     epoch++;
     const owned = runtimeAcquired;
     runtimeAcquired = false;
@@ -195,7 +201,7 @@ export function createVoiceController(deps: VoiceDependencies) {
       deps.candidates().filter((c) => c.hostId === state.scope!.hostId),
     );
     if (parsed.kind === "end") {
-      await end();
+      await end("spoken stop phrase");
       return;
     }
     if (parsed.kind === "unknown") {
@@ -308,7 +314,7 @@ export function createVoiceController(deps: VoiceDependencies) {
       error(Error(e.message ?? "Local voice failed"));
   }
   async function start(scope: CallScope) {
-    await end();
+    await end("new call started");
     cleanup = Promise.resolve();
     const myEpoch = ++epoch;
     set({ status: "warming", scope, muted: false, error: undefined });

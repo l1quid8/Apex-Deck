@@ -166,9 +166,16 @@ export function createThreadVoiceBridge(deps: {
     },
     dispose: () => {
       disposed = true;
-      if ([...requests.values()].every((r) => r.done)) unlisten?.();
-      else setTimeout(() => unlisten?.(), 30000);
-      listeners.clear();
+      // Keep listeners while a reply is in flight so a reloading thread view
+      // still delivers it to the call.
+      if ([...requests.values()].every((r) => r.done)) {
+        unlisten?.();
+        listeners.clear();
+      } else
+        setTimeout(() => {
+          unlisten?.();
+          listeners.clear();
+        }, 30000);
     },
   };
 }

@@ -339,6 +339,15 @@ handle('voice:start', ({win}) => {
 });
 handle('voice:stop', ({win}) => localVoice.stop(win.webContents.id));
 app.on('will-quit', () => void localVoice.shutdown());
+// Save each "[voice end]" line from Deck windows so dropped calls can be traced.
+const voiceLog = () => path.join(app.getPath('userData'), 'voice-calls.log');
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('console-message', (...args) => {
+    const message = String(args[0]?.message ?? args[2] ?? '');
+    if (!message.startsWith('[voice end]')) return;
+    fs.promises.appendFile(voiceLog(), `${new Date().toISOString()} ${message}\n`).catch(() => {});
+  });
+});
 app.whenReady().then(() => {
   powerMonitor.on('suspend', () => {
     for (const {win} of windows.values()) win.webContents.send('voice:suspend');

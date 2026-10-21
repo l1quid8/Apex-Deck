@@ -55,19 +55,35 @@ export const voiceController = createVoiceController({
   },
   focus: (scope) => lookup(scope).focus(),
 });
+// A thread view that only reloads (reconnect, new backend) registers again at
+// once; the call ends only if its thread stays gone past this grace period.
+const CLOSE_GRACE_MS = 3000;
+const closing = new Map<string, ReturnType<typeof setTimeout>>();
 export function registerVoiceThread(key: string, entry: VoiceRegistration) {
+  const timer = closing.get(key);
+  if (timer !== undefined) clearTimeout(timer);
+  closing.delete(key);
   registry.set(key, entry);
 }
 export function unregisterVoiceThread(key: string) {
   registry.delete(key);
   const scope = voiceController.getState().scope;
-  if (scope && scopeKey(scope) === key) void voiceController.end();
+  if (!scope || scopeKey(scope) !== key || closing.has(key)) return;
+  closing.set(
+    key,
+    setTimeout(() => {
+      closing.delete(key);
+      const now = voiceController.getState().scope;
+      if (!registry.has(key) && now && scopeKey(now) === key)
+        void voiceController.end("thread closed");
+    }, CLOSE_GRACE_MS),
+  );
 }
 export function voiceRegistration(scope: CallScope) {
   return lookup(scope);
 }
 export const defaultVoiceSettings = () => readVoiceSettings(undefined);
 if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", () => void voiceController.end());
-  window.apexDeck?.voice?.onSuspend(() => void voiceController.end());
+  window.addEventListener("beforeunload", () => void voiceController.end("window closed"));
+  window.apexDeck?.voice?.onSuspend(() => void voiceController.end("Mac went to sleep"));
 }
