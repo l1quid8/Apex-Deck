@@ -34,3 +34,10 @@ class RealModelTests(unittest.TestCase):
         piece = e.pieces('I checked the build on main, and the failure comes from the type checker, not the tests.')[0]
         t = time.monotonic(); e.synthesize(piece, 'am_michael'); first = time.monotonic() - t
         print(json.dumps({'loadS': round(load, 2), 'ttsS': round(tts, 2), 'firstPieceS': round(first, 2), 'sttS': round(stt, 2), 'smartTurnMs': round(turn * 1000)}))
+    def test_room_noise_is_not_sent_as_speech(self):
+        import numpy as np
+        from voice_sidecar.engines_cpu import Engines
+        e = Engines(os.environ['VOICE_CPU_ROOT']); rng = np.random.default_rng(1)
+        for level in (30, 200, 1500, 4000):
+            noise = rng.normal(0, level, 16000 * 6).astype('<i2').tobytes()
+            self.assertEqual(e.transcribe(noise, ['Jigga', 'Null', 'deepgeek', 'Muck', 'Luna']), '', level)

@@ -3,6 +3,7 @@ import importlib.util
 import os
 import pathlib
 import re
+from .made_up import made_up
 from .pieces import speech_pieces
 
 
@@ -80,7 +81,8 @@ class Engines:
         segments = list(segments)
         if not segments or all(s.no_speech_prob > .8 for s in segments):
             return ''
-        return ' '.join(s.text.strip() for s in segments).strip()
+        text = ' '.join(s.text.strip() for s in segments).strip()
+        return '' if made_up(text, hints, [s.compression_ratio for s in segments]) else text
 
     def synthesize(self, text, voice):
         import numpy as np
