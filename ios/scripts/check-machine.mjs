@@ -237,6 +237,7 @@ if (process.env.APEX_LIVE_GATEWAY === "1") {
   const binCandidates = [
     process.env.APEX_DAEMON_BIN,
     path.join(repoRoot, "target/debug/apex-daemon"),
+    "/Users/tylercaldwell/Downloads/apex-deck-worktrees/feat-ai-endpoint-wrapper/target/debug/apex-daemon",
     "/Users/tylercaldwell/Downloads/apex-deck/target/debug/apex-daemon",
   ].filter(Boolean);
   const daemonBin = binCandidates.find((p) => fs.existsSync(p));
@@ -357,7 +358,65 @@ if (process.env.APEX_LIVE_GATEWAY === "1") {
     );
     await expect(livePage.getByRole("button", { name: "Send local chat message", exact: true })).toBeDisabled();
     await livePage.close();
-    console.log("Live gateway Playwright block passed");
+
+    // Prove a real `codex/...` subscription model through the iOS UI and exercise `@codex` + family prefix intersection (`matchingForFamily[0]`) without `preferredModels`
+    const subIssueRaw = execFileSync(
+      daemonBin,
+      [
+        "keys",
+        "issue",
+        "--label",
+        "ios-playwright-real-codex",
+        "--scope",
+        "sub",
+        "--max-turns",
+        "2",
+        "--data-dir",
+        tempDataDir,
+      ],
+      { encoding: "utf8" },
+    );
+    const subIssued = JSON.parse(subIssueRaw);
+    const subToken = subIssued.token;
+
+    const codexPage = await browser.newPage();
+    await codexPage.addInitScript(
+      ({ cfgKey, histKey, cfg, sessions }) => {
+        localStorage.setItem(cfgKey, JSON.stringify(cfg));
+        localStorage.setItem(histKey, JSON.stringify(sessions));
+      },
+      {
+        cfgKey: "apex-deck.ios.gateway-config.v1",
+        histKey: "apex-deck.ios.thread-history.v1",
+        cfg: {
+          baseUrl: `http://127.0.0.1:${gatewayPort}`,
+          apiKey: subToken,
+          hostLabel: "Live Daemon",
+          keySuffix: `…${subToken.slice(-3)}`,
+        },
+        sessions: [
+          {
+            id: "lc-real-codex",
+            title: "Real Codex verification",
+            bots: ["Claude", "Codex"],
+            messages: [],
+            updatedAt: "now",
+            pinned: true,
+          },
+        ],
+      },
+    );
+
+    await codexPage.goto(`${base}/#local-chat`);
+    await expect(codexPage.getByRole("button", { name: "Local chat status", exact: true })).toContainText("● Local chat");
+    await codexPage
+      .getByRole("textbox", { name: "Message local chat" })
+      .fill("@codex Reply with the exact text REAL_CODEX_IOS_OK 42 and nothing else.");
+    await codexPage.getByRole("button", { name: "Send local chat message", exact: true }).click();
+    await expect(codexPage.locator(".phone-content")).toContainText("gpt-6.1-sol", { timeout: 60000 });
+    await expect(codexPage.locator(".phone-content")).toContainText("REAL_CODEX_IOS_OK 42", { timeout: 60000 });
+    await codexPage.close();
+    console.log("Live gateway Playwright block passed (scripted + real codex/...)");
   } finally {
     try {
       process.kill(-daemonProc.pid, "SIGTERM");
