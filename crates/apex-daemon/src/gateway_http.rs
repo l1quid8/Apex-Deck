@@ -1290,6 +1290,89 @@ fn now_unix() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// Exercise an actual HTTP listener with a pre-policy key file and a CLI
+    /// fixture that deliberately ignores the MCP-disable overrides. No live
+    /// account or private MCP server is contacted by this test.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn legacy_allow_mcp_key_cannot_reach_private_servers_over_http() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gateway-legacy-mcp-{}", identity::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let keys = GatewayKeys::load(&dir).unwrap();
+        let issued = keys.issue(IssueSpec {
+            label: "legacy-allow-mcp".into(), scopes: KeyScope::all_scopes(),
+            allow_mcp: false, max_turns_per_day: None, max_usd_micros_per_month: None,
+        }).unwrap();
+        let key_path = dir.join(crate::gateway_keys::FILE);
+        let mut stored: Value = serde_json::from_slice(&std::fs::read(&key_path).unwrap()).unwrap();
+        stored["keys"][0]["allow_mcp"] = json!(true);
+        std::fs::write(&key_path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        drop(keys);
+        let keys = Arc::new(GatewayKeys::load(&dir).unwrap());
+        assert!(!keys.authenticate(&issued.token).unwrap().allow_mcp);
+
+        // Advertise private servers even after receiving disable flags: the
+        // running-server inventory must refuse the turn before thread/start.
+        let fixture = dir.join("codex");
+        std::fs::write(&fixture, r##"#!/bin/sh
+root=$(/usr/bin/dirname "$0")
+printf '%s\n' "$@" >> "$root/args.log"
+case "$*" in
+  *"mcp list --json"*)
+    echo '[{"name":"x_mcp"},{"name":"hl_mcp"}]'
+    exit 0 ;;
+esac
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$root/requests.log"
+  case "$line" in
+    *'"method":"initialize"'*) echo '{"id":0,"result":{}}' ;;
+    *'"method":"plugin/list"'*) echo '{"id":110,"result":{"marketplaces":[]}}' ;;
+    *'"method":"mcpServerStatus/list"'*)
+      echo '{"id":10,"result":{"data":[{"name":"x_mcp","tools":{"post":{"name":"post"}},"resources":[],"resourceTemplates":[]},{"name":"hl_mcp","tools":{"trade":{"name":"trade"}},"resources":[],"resourceTemplates":[]}],"nextCursor":null}}' ;;
+    *'"method":"thread/start"'*|*'"method":"turn/start"'*) exit 42 ;;
+  esac
+done
+"##).unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = Arc::new(GatewayHttpState {
+            data_dir: dir.clone(), keys: Arc::clone(&keys),
+            login_path: Some(format!("{}:/usr/bin:/bin", dir.display())),
+        });
+        let server = tokio::spawn(serve(listener, state));
+        for private_server in ["x_mcp", "hl_mcp"] {
+            let body = json!({"model":"codex/default", "messages":[{
+                "role":"user", "content":format!("Use {private_server} now")
+            }]}).to_string();
+            let (status, response) = tokio::time::timeout(Duration::from_secs(10),
+                raw_http(addr, "POST", "/v1/chat/completions", Some(&issued.token), Some(&body))
+            ).await.expect("gateway must fail closed promptly");
+            assert_eq!(status, 502, "{response}");
+            assert!(response.contains("Codex still exposes MCP servers after isolation"), "{response}");
+        }
+        let args = std::fs::read_to_string(dir.join("args.log")).unwrap();
+        for name in ["x_mcp", "hl_mcp"] {
+            assert!(args.contains(&format!("mcp_servers.{name}.enabled=false")));
+        }
+        let requests = std::fs::read_to_string(dir.join("requests.log")).unwrap();
+        assert!(requests.contains("mcpServerStatus/list"));
+        assert!(!requests.contains("thread/start"), "must reject before creating a model session");
+        assert!(!requests.contains("turn/start"), "must never send the client's prompt");
+        assert_eq!(keys.list()[0].turns_today, 0, "refused turns must be refunded");
+        for family in ["gemini", "grok", "muse"] {
+            let body = json!({"model":format!("{family}/default"), "messages":[{
+                "role":"user", "content":"Use x_mcp and hl_mcp"
+            }]}).to_string();
+            let (status, response) = raw_http(addr, "POST", "/v1/chat/completions", Some(&issued.token), Some(&body)).await;
+            assert_eq!(status, 409, "{family}: {response}");
+        }
+        server.abort();
+        let _ = server.await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[tokio::test]
     async fn client_mcp_calls_are_always_rejected() {
         let action = apex_core::ProposedAction {
