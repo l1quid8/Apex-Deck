@@ -27,7 +27,7 @@ import { composerCopy, doingNow, elapsed, headLine, heardFrom, isCommandLine, qu
 import { botIdentity, mentionable, mentionFor, slug } from "./slug";
 import { copyRenamer, savedToAgents, type CopyOutcome, type CopyRename } from "./agentRenames";
 import { nameForModel, uniqueName } from "./quickAdd";
-import { addInOrder, batchLabel, checkBatch, MAX_NEW_BOTS } from "./batchAdd";
+import { addInOrder, batchLabel, checkBatch, MAX_NEW_BOTS, splitAdded } from "./batchAdd";
 import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { ComposerMenu, type ComposerMenuHandle } from "./ComposerTools";
@@ -2879,13 +2879,21 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     return next;
   });
 
+  const savedToAdd = availableProfiles.filter((p) => pickedAgents.has(p.id) && !participants.some((own) => own.id === p.id));
+  const batchTotal = savedToAdd.length + queuedBots.length + (editorOpen ? 1 : 0);
   const submitBatch = async (): Promise<boolean> => {
+    setFormError("");
     if (editorOpen && !providerEnabled(draft.preset, disabledProviders)) {
       setFormError("This provider is disabled. Enable it in Providers to add a bot.");
       return false;
     }
-    const saved = availableProfiles.filter((p) => pickedAgents.has(p.id) && !participants.some((own) => own.id === p.id));
+    const saved = savedToAdd;
     let rows = queuedBots;
+    const offRow = rows.find((d) => !providerEnabled(d.preset, disabledProviders));
+    if (offRow) {
+      setFormError(`${offRow.name.trim() || "New bot"}: this provider is disabled. Enable it in Providers or remove the bot.`);
+      return false;
+    }
     if (editorOpen) {
       let ready: Draft;
       try {
@@ -2927,14 +2935,13 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       }
     }
     if (result.failed) {
-      const addedSaved = Math.min(result.added.length, saved.length);
-      const addedRows = result.added.length - addedSaved;
+      const split = splitAdded(result.added.length, saved.length);
       setPickedAgents((old) => {
         const next = new Set(old);
         for (const c of result.added) next.delete(c.id);
         return next;
       });
-      setQueuedBots(rows.slice(addedRows));
+      setQueuedBots(rows.slice(split.rows));
       setEditorOpen(false);
       setFormError(`Added ${result.added.length}. Could not add ${checked.ok[result.failed.index].display_name}: ${result.failed.error}`);
       return false;
@@ -3066,7 +3073,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
       <div className="quick-add-foot">
         <button type="button" className="ghost quick-add-another" disabled={queuedBots.length + (editorOpen ? 1 : 0) >= MAX_NEW_BOTS} title={`Up to ${MAX_NEW_BOTS} new bots at a time`} onClick={anotherBot}>+ Another bot</button>
         <button type="button" className="ghost" onClick={() => { setQuickAdd(null); openNewForm(); }}>More options</button>
-        <button className="primary" type="submit" disabled={pickedAgents.size + queuedBots.length + (editorOpen ? 1 : 0) === 0}>{batchLabel(pickedAgents.size + queuedBots.length + (editorOpen ? 1 : 0))}</button>
+        <button className="primary" type="submit" disabled={batchTotal === 0}>{batchLabel(batchTotal)}</button>
       </div>
     </form>
   );

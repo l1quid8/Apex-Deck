@@ -1,4 +1,4 @@
-import { botIdentity, type Mentionable } from "./slug.ts";
+import { botIdentity, type Mentionable, mentionFor } from "./slug.ts";
 import type { ParticipantConfig } from "./types";
 
 export const MAX_NEW_BOTS = 4;
@@ -26,6 +26,19 @@ export function checkBatch(
       }
     );
     if ("error" in result) {
+      // Check if the clash is with a bot already in `accepted`
+      const secondResult = botIdentity(
+        items[i],
+        {
+          editing: null,
+          others: options.others,
+          agents: options.agents,
+          place: "chat"
+        }
+      );
+      if (!("error" in secondResult)) {
+        return { index: i, error: `Another bot in this batch already answers to @${mentionFor(items[i])}. Pick a different name.` };
+      }
       return { index: i, error: result.error };
     }
     accepted.push({ ...items[i], id: result.id });
@@ -47,4 +60,10 @@ export async function addInOrder(
     }
   }
   return { added, failed: null };
+}
+
+/** How many of the `added` bots were saved agents and how many were new rows. Saved agents always go first. */
+export function splitAdded(added: number, savedCount: number): { saved: number; rows: number } {
+  const saved = Math.min(added, savedCount);
+  return { saved, rows: added - saved };
 }

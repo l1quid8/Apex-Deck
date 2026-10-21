@@ -54,3 +54,22 @@ test("batchLabel counts the batch on the submit button", async () => {
   assert.equal(batchLabel(1), "Add 1 bot");
   assert.equal(batchLabel(4), "Add 4 bots");
 });
+
+test("checkBatch words a clash inside the batch as the batch, not the chat", () => {
+  const result = checkBatch([bot("Opus"), { id: "opus-x", display_name: "opus" }], { others: [bot("Gwen")], agents: [] });
+  assert.equal(result.index, 1);
+  assert.equal(result.error, "Another bot in this batch already answers to @opus. Pick a different name.");
+});
+
+test("checkBatch still words a clash with the chat as the chat", () => {
+  const result = checkBatch([bot("Gwen")], { others: [bot("Gwen")], agents: [] });
+  assert.match(result.error, /^Gwen in this chat already answers to @gwen/);
+});
+
+test("splitAdded says how many saved agents and new rows went in", async () => {
+  const { splitAdded } = await import("../src/batchAdd.ts");
+  assert.deepEqual(splitAdded(3, 2), { saved: 2, rows: 1 });
+  assert.deepEqual(splitAdded(1, 2), { saved: 1, rows: 0 });
+  assert.deepEqual(splitAdded(2, 0), { saved: 0, rows: 2 });
+  assert.deepEqual(splitAdded(0, 0), { saved: 0, rows: 0 });
+});
