@@ -263,9 +263,14 @@ impl GatewayKeys {
         self.revoked_tx.subscribe()
     }
 
+    /// Whether `id` is still an active key. A streamed turn that missed its own
+    /// revocation broadcast (`Lagged`) can ask this instead of guessing.
+    pub fn is_active(&self, id: &str) -> bool {
+        self.lock().keys.iter().any(|k| k.id == id)
+    }
+
     /// List active keys (with `token_sha256` stripped).
-    pub fn list(&self) -> Vec<GatewayKey> {
-        let mut s = self.lock();
+    pub fn list(&self) -> Vec<GatewayKey> {        let mut s = self.lock();
         let now = now_unix();
         for k in &mut s.keys {
             refresh_buckets(k, now);

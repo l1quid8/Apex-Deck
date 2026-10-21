@@ -29,6 +29,7 @@ use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
 use crate::authority;
 use crate::devices::{Device, Devices, Threads, Tier};
+use crate::gateway_keys::GatewayKeys;
 
 /// The protocol version `hello` must name.
 pub const PROTOCOL: u64 = 1;
@@ -57,6 +58,10 @@ pub struct Daemon {
     pub token: Option<String>,
     /// The remote devices allowed in.
     pub devices: Arc<Devices>,
+    /// Gateway API keys. One instance shared by the local socket (which issues
+    /// and revokes) and the HTTP listener (which authenticates and streams), so
+    /// a revocation reaches turns already in flight.
+    pub gateway_keys: Arc<GatewayKeys>,
     /// The data folder (`remote.json` lives here).
     pub data: std::path::PathBuf,
     /// Pairing invitations handed out since this daemon started.
@@ -74,11 +79,12 @@ impl Daemon {
         // The daemon's arguments (`--data-dir PATH`) are not workspaces.
         host.set_startup_folders(Vec::new());
         let devices = Arc::new(Devices::open(&paths.data));
+        let gateway_keys = Arc::new(GatewayKeys::load(&paths.data)?);
         host.start_monitor_clock()?;
         // The worker stamps operations with this machine's id, so make it first.
         let host_id = crate::identity::host_id(&paths.data)?;
         host.start_personal_worker()?;
-        Ok(Arc::new(Daemon { host, host_id, boot_id: crate::identity::boot_id(), token, devices, data: paths.data.clone(),
+        Ok(Arc::new(Daemon { host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, data: paths.data.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] endpoint: Default::default(),
         }))
@@ -356,6 +362,18 @@ where
                             return stop.into();
                         }
                     }
+                    Ok((id, Request::Gateway(request))) => {
+                        let frame = match trust {
+                            Trust::Local => match crate::gateway_cli::execute(&daemon.gateway_keys, request.into_action()) {
+                                Ok(value) => json!({ "id": id, "ok": value }),
+                                Err(why) => json!({ "id": id, "err": why }),
+                            },
+                            Trust::Token | Trust::Device(_) => json!({ "id": id, "err": "not allowed from a remote connection" }),
+                        };
+                        if let Err(stop) = send(&mut output, &mut guard, frame.to_string()).await {
+                            return stop.into();
+                        }
+                    }
                     Ok((id, Request::Pairing(request))) => match trust {
                         Trust::Local => {
                             in_flight += 1;
@@ -522,6 +540,7 @@ fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
 enum Request {
     Host(Command),
     Devices(DevicesRequest),
+    Gateway(crate::gateway_cli::KeysRequest),
     Pairing(crate::pair_commands::PairRequest),
 }
 
@@ -547,6 +566,10 @@ fn read_request(text: &str) -> Result<(u64, Request), String> {
     if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("devices_")) {
         let request = serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
         return Ok((id, Request::Devices(request)));
+    }
+    if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("gateway_keys_")) {
+        let request = serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
+        return Ok((id, Request::Gateway(request)));
     }
     if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("pair_") || cmd.starts_with("remote_")) {
         let request = serde_json::from_value(value).map_err(|e| crate::pair_commands::Refusal::new(e.to_string(), "bad_request").frame(id).to_string())?;
@@ -636,7 +659,8 @@ mod tests {
         let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
         let devices = Arc::new(Devices::open(&data.0));
         let daemon = Daemon {
-            host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices, data: data.0.clone(),
+            host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices,
+            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), data: data.0.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] endpoint: Default::default(),
         };
@@ -1027,6 +1051,48 @@ mod tests {
         tokio::time::timeout(wait, session).await.expect("the session ended in time").unwrap()
     }
 
+    /// Gateway keys are the crown jewels: a paired phone or the WebSocket may
+    /// never list, issue, or revoke one, whatever its tier.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gateway_keys_are_issued_only_from_this_machine() {
+        let (daemon, _data) = daemon();
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let issue_frame = json!({ "id": 1, "cmd": "gateway_keys_issue", "args": { "label": "friend" } });
+
+        let mut token = connect_to(&daemon, Trust::Token);
+        token.send(json!({ "id": 0, "cmd": "hello", "args": { "protocol": 1, "token": "secret" } })).await;
+        token.next().await.unwrap();
+        let (mut device, _session) = connect_device(&daemon, &phone, 1 << 16);
+        device.hello().await;
+        for client in [&mut token, &mut device] {
+            for frame in [issue_frame.clone(), json!({ "id": 1, "cmd": "gateway_keys_list" }), json!({ "id": 1, "cmd": "gateway_keys_revoke", "args": { "id": "k1" } })] {
+                client.send(frame).await;
+                assert_eq!(client.next().await.unwrap(), json!({ "id": 1, "err": "not allowed from a remote connection" }));
+            }
+        }
+        assert!(daemon.gateway_keys.list().is_empty(), "a refused request must not have issued anything");
+
+        // The local socket issues against the very store the HTTP listener uses.
+        let mut local = connect_to(&daemon, Trust::Local);
+        local.hello().await;
+        local.send(issue_frame).await;
+        let ok = local.next().await.unwrap();
+        let token_plain = ok["ok"]["token"].as_str().expect("issue returns the raw token once").to_string();
+        assert!(token_plain.starts_with(crate::gateway_keys::TOKEN_PREFIX));
+        // Same `Arc`: authenticating here proves the HTTP side would see it too.
+        assert!(daemon.gateway_keys.authenticate(&token_plain).is_ok());
+
+        let key_id = ok["ok"]["key"]["id"].as_str().unwrap().to_string();
+        local.send(json!({ "id": 2, "cmd": "gateway_keys_list" })).await;
+        let list = local.next().await.unwrap();
+        assert_eq!(list["ok"]["keys"].as_array().unwrap().len(), 1);
+        assert!(list["ok"]["keys"][0].get("token_sha256").is_none());
+
+        local.send(json!({ "id": 3, "cmd": "gateway_keys_revoke", "args": { "id": key_id } })).await;
+        assert_eq!(local.next().await.unwrap()["ok"]["revoked"], true);
+        assert!(matches!(daemon.gateway_keys.authenticate(&token_plain), Err(crate::gateway_keys::AuthError::Revoked)));
+    }
+
     /// Test 2.
     #[tokio::test(flavor = "multi_thread")]
     async fn devices_are_managed_only_from_this_machine() {
@@ -1328,7 +1394,8 @@ mod tests {
         daemon.devices.revoke(&phone).unwrap();
         let restarted = Arc::new(Daemon {
             host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
-            host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)), data: data.0.clone(),
+            host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
+            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), data: data.0.clone(),
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
@@ -1443,7 +1510,8 @@ mod tests {
 
         let restarted = Arc::new(Daemon {
             host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
-            host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)), data: data.0.clone(),
+            host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
+            gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), data: data.0.clone(),
             #[cfg(feature = "remote")]
             invites: Default::default(),
             #[cfg(feature = "remote")]
