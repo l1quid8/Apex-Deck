@@ -731,9 +731,12 @@ export default function MachineFlow({
       <LocalChatThread
         config={gatewayConfig}
         session={activeLocalSession}
-        onUpdateSession={(next) =>
+        onUpdateSession={(updater) =>
           setLocalSessions((prev) =>
-            prev.map((s) => (s.id === next.id ? next : s)),
+            prev.map((s) => {
+              if (s.id !== activeLocalSession.id) return s;
+              return typeof updater === "function" ? updater(s) : updater;
+            }),
           )
         }
         onOpenSettings={() => setView("local-chat-settings")}

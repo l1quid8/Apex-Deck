@@ -156,23 +156,177 @@ await page.getByRole("button", {name:"Copy thread ID", exact:true}).click();
 expect(realWrites).toBe(0);
 // Verify Local chat session in main thread flow, status sheet, and Settings -> Local chat.
 await page.goto(`${base}/#pick-one`);
+await page.evaluate(() => {
+  localStorage.removeItem("apex-deck.ios.gateway-config.v1");
+  localStorage.removeItem("apex-deck.ios.thread-history.v1");
+});
+await page.reload();
 await page.getByRole("button", {name:"Settings and Machines", exact:true}).click();
 await page.getByRole("button", {name:"Local chat", exact:true}).click();
 await expect(page.getByRole("heading", {name:"Local chat", exact:true})).toBeVisible();
+// Verify /v1 normalization when pasting a raw host URL without /v1.
+await page.getByRole("textbox", {name:"Local chat setup link"}).fill("https://tailscale-host:8787");
+await page.getByRole("button", {name:"Save Local chat connection", exact:true}).click();
+await expect(page.locator(".phone-content")).toContainText("https://tailscale-host:8787/v1");
 await page.getByRole("button", {name:"Open Local chat session", exact:true}).click();
-await expect(page.getByRole("button", {name:"Local chat status", exact:true})).toContainText("● Local chat");
+await expect(page.getByRole("button", {name:"Local chat status", exact:true})).toContainText("● Local chat (preview)");
 await page.getByRole("button", {name:"Local chat status", exact:true}).click();
 await expect(page.getByRole("dialog")).toContainText("Local chat session");
 await page.getByRole("button", {name:"Simulate revoked key (401)", exact:true}).click();
 await expect(page.getByRole("button", {name:"Local chat status", exact:true})).toContainText("○ Local chat paused — reconnect");
 await expect(page.getByRole("button", {name:"Send local chat message", exact:true})).toBeDisabled();
 await page.getByRole("button", {name:"Retry connection", exact:true}).click();
-await expect(page.getByRole("button", {name:"Local chat status", exact:true})).toContainText("● Local chat");
+await expect(page.getByRole("button", {name:"Local chat status", exact:true})).toContainText("● Local chat (preview)");
 await page.getByRole("textbox", {name:"Message local chat"}).fill("@grok test local persistence");
 await page.getByRole("button", {name:"Send local chat message", exact:true}).click();
 await expect(page.locator(".phone-content")).toContainText("@grok test local persistence");
 await page.reload();
 await page.getByRole("button", {name:/Weekend architecture/}).first().click();
 await expect(page.locator(".phone-content")).toContainText("@grok test local persistence");
+
+// Live daemon end-to-end verification (opt-in via APEX_LIVE_GATEWAY=1 so offline screenshot/capture runs stay self-contained).
+if (process.env.APEX_LIVE_GATEWAY === "1") {
+  const { spawn, execFileSync } = await import("node:child_process");
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const binCandidates = [
+    process.env.APEX_DAEMON_BIN,
+    path.join(repoRoot, "target/debug/apex-daemon"),
+    "/Users/tylercaldwell/Downloads/apex-deck/target/debug/apex-daemon",
+  ].filter(Boolean);
+  const daemonBin = binCandidates.find((p) => fs.existsSync(p));
+  if (!daemonBin) {
+    throw new Error(`APEX_LIVE_GATEWAY=1 set, but apex-daemon binary was not found in ${binCandidates.join(", ")}`);
+  }
+
+  const tempDataDir = fs.mkdtempSync("/tmp/apx-ios-gw-");
+  fs.mkdirSync(path.join(tempDataDir, "saved-chats-v1"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tempDataDir, "saved-chats-v1", "session.json"),
+    JSON.stringify({
+      profiles: [
+        {
+          id: "codex-live",
+          display_name: "Codex Live",
+          access: "read",
+          persona: "",
+          backend: {
+            kind: "scripted",
+            lines: ["LIVE_GATEWAY_STREAM_OK 391"],
+          },
+        },
+      ],
+    }),
+  );
+
+  const gatewayPort = Number(process.env.APEX_LIVE_GATEWAY_PORT || 8788);
+  const daemonProc = spawn(
+    daemonBin,
+    ["serve", "--port", "0", "--gateway-port", String(gatewayPort), "--data-dir", tempDataDir],
+    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+  );
+  let daemonStderr = "";
+  daemonProc.stderr?.on("data", (chunk) => {
+    daemonStderr += chunk.toString();
+  });
+
+  try {
+    // Wait for daemon.sock + gateway HTTP port to come up
+    let ready = false;
+    for (let i = 0; i < 40; i++) {
+      try {
+        const probe = await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`);
+        if (probe.status === 401) {
+          ready = true;
+          break;
+        }
+      } catch {
+        // Still starting
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!ready) {
+      throw new Error(`apex-daemon gateway did not start on port ${gatewayPort}: ${daemonStderr}`);
+    }
+
+    // Issue a real key over the live daemon socket scoped to `cli` so GET /v1/models returns `scripted/codex-live`
+    const issueRaw = execFileSync(
+      daemonBin,
+      [
+        "keys",
+        "issue",
+        "--label",
+        "ios-playwright-live",
+        "--scope",
+        "cli",
+        "--max-turns",
+        "2",
+        "--data-dir",
+        tempDataDir,
+      ],
+      { encoding: "utf8" },
+    );
+    const issued = JSON.parse(issueRaw);
+    const token = issued.token;
+    const keyId = issued.key.id;
+
+    // Seed localStorage with a host URL deliberately missing `/v1` to exercise normalization + live `/v1/models` probe
+    const livePage = await browser.newPage();
+    await livePage.addInitScript(
+      ({ cfgKey, histKey, cfg }) => {
+        localStorage.setItem(cfgKey, JSON.stringify(cfg));
+        localStorage.removeItem(histKey);
+      },
+      {
+        cfgKey: "apex-deck.ios.gateway-config.v1",
+        histKey: "apex-deck.ios.thread-history.v1",
+        cfg: {
+          baseUrl: `http://127.0.0.1:${gatewayPort}`,
+          apiKey: token,
+          hostLabel: "Live Daemon",
+          keySuffix: `…${token.slice(-3)}`,
+        },
+      },
+    );
+
+    await livePage.goto(`${base}/#local-chat`);
+    await expect(livePage.getByRole("button", { name: "Local chat status", exact: true })).toContainText("● Local chat");
+    await expect(livePage.getByRole("button", { name: "Local chat status", exact: true })).not.toContainText("(preview)");
+
+    // Stream a real reply from the live daemon's `/v1/chat/completions` SSE endpoint
+    await livePage.getByRole("textbox", { name: "Message local chat" }).fill("Verify live gateway SSE");
+    await livePage.getByRole("button", { name: "Send local chat message", exact: true }).click();
+    await expect(livePage.locator(".phone-content")).toContainText("Verify live gateway SSE");
+    await expect(livePage.locator(".phone-content")).toContainText("LIVE_GATEWAY_STREAM_OK 391");
+    await expect(livePage.locator(".phone-content")).not.toContainText("Preview reply from");
+
+    // Revoke the key against the live daemon and verify the next send yields a real HTTP 401 and pauses the pill
+    execFileSync(daemonBin, ["keys", "revoke", keyId, "--data-dir", tempDataDir], {
+      encoding: "utf8",
+    });
+
+    await livePage.getByRole("textbox", { name: "Message local chat" }).fill("Message after revoke");
+    await livePage.getByRole("button", { name: "Send local chat message", exact: true }).click();
+    await expect(livePage.getByRole("button", { name: "Local chat status", exact: true })).toContainText(
+      "○ Local chat paused — reconnect",
+    );
+    await expect(livePage.getByRole("button", { name: "Send local chat message", exact: true })).toBeDisabled();
+    await livePage.close();
+    console.log("Live gateway Playwright block passed");
+  } finally {
+    try {
+      process.kill(-daemonProc.pid, "SIGTERM");
+    } catch {
+      daemonProc.kill("SIGTERM");
+    }
+    fs.rmSync(tempDataDir, { recursive: true, force: true });
+  }
+} else {
+  console.log("Skipping live gateway daemon block (set APEX_LIVE_GATEWAY=1 to run)");
+}
 await browser.close();
 console.log("Machine flows passed");

@@ -54,10 +54,22 @@ export type GatewayConnectionConfig = {
 
 export type LocalChatState =
   | "live"
+  | "preview"
   | "revoked"
   | "capped"
   | "tool-refused"
   | "offline";
+
+export type LocalChatSessionUpdater =
+  | LocalChatSession
+  | ((prev: LocalChatSession) => LocalChatSession);
+
+export function normalizeGatewayBaseUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  if (trimmed.endsWith("/v1")) return trimmed;
+  return `${trimmed}/v1`;
+}
 
 export const DEFAULT_GATEWAY_MODELS = [
   "codex/gpt-6.1-sol",
@@ -224,7 +236,7 @@ export function parseGatewayPairingLink(input: string): Partial<GatewayConnectio
   if (trimmed.startsWith("apexdeck://gateway")) {
     try {
       const url = new URL(trimmed.replace(/^apexdeck:\/\//, "http://"));
-      const baseUrl = url.searchParams.get("url") || "";
+      const baseUrl = normalizeGatewayBaseUrl(url.searchParams.get("url") || "");
       const apiKey = url.searchParams.get("key") || "";
       const hostLabel = url.searchParams.get("host") || "Tyler’s MacBook";
       const keySuffix = apiKey.length >= 4 ? `…${apiKey.slice(-3)}` : "…09b";
@@ -234,7 +246,7 @@ export function parseGatewayPairingLink(input: string): Partial<GatewayConnectio
     }
   }
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-    return { baseUrl: trimmed.replace(/\/$/, "") };
+    return { baseUrl: normalizeGatewayBaseUrl(trimmed) };
   }
   if (trimmed.startsWith("apx_sk_")) {
     return {
@@ -327,13 +339,15 @@ export function LocalChatThread({
 }: {
   config: GatewayConnectionConfig;
   session: LocalChatSession;
-  onUpdateSession: (next: LocalChatSession) => void;
+  onUpdateSession: (updater: LocalChatSessionUpdater) => void;
   onOpenSettings: () => void;
   onBack: () => void;
   onNavigateTab: (route: string) => void;
 }) {
+  const isPaired = Boolean(config.baseUrl.trim() && config.apiKey.trim());
+  const activeState = (): LocalChatState => (isPaired ? "live" : "preview");
   const [draft, setDraft] = useState("");
-  const [status, setStatus] = useState<LocalChatState>("live");
+  const [status, setStatus] = useState<LocalChatState>(() => activeState());
   const [statusDetail, setStatusDetail] = useState("");
   const [availableModels, setAvailableModels] = useState<string[]>(
     DEFAULT_GATEWAY_MODELS,
@@ -360,17 +374,16 @@ export function LocalChatThread({
   const probeModels = async () => {
     if (!config.baseUrl || !config.apiKey) {
       setAvailableModels(DEFAULT_GATEWAY_MODELS);
-      setStatus("live");
+      setStatus("preview");
       setStatusDetail("");
       return;
     }
+    const normalizedBase = normalizeGatewayBaseUrl(config.baseUrl);
     try {
-      const res = await fetch(
-        `${config.baseUrl.replace(/\/$/, "")}/models`,
-        {
-          headers: { Authorization: `Bearer ${config.apiKey}` },
-        },
-      );
+      const res = await fetch(`${normalizedBase}/models`, {
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+        signal: AbortSignal.timeout(5000),
+      });
       if (res.status === 401) {
         setStatus("revoked");
         setStatusDetail("This key was revoked or rotated on the host.");
@@ -430,9 +443,11 @@ export function LocalChatThread({
     };
   }, [sheet]);
 
+  const canSend = status === "live" || status === "preview";
+
   async function send() {
     const text = draft.trim();
-    if (!text || status !== "live") return;
+    if (!text || !canSend) return;
     setDraft("");
 
     const { bot, modelId, modelLabel } = resolveBotAndModel(
@@ -463,27 +478,24 @@ export function LocalChatThread({
       streaming: true,
     };
 
-    const nextTitle =
-      session.title === "New local chat"
-        ? text
-            .replace(/@\S+/g, "")
-            .trim()
-            .split(/\s+/)
-            .slice(0, 5)
-            .join(" ") || "Local chat"
-        : session.title;
+    const derivedTitle =
+      text
+        .replace(/@\S+/g, "")
+        .trim()
+        .split(/\s+/)
+        .slice(0, 5)
+        .join(" ") || "Local chat";
 
-    const withUser = [...session.messages, userMsg, placeholderMsg];
-    onUpdateSession({
-      ...session,
-      title: nextTitle,
-      messages: withUser,
+    onUpdateSession((prev) => ({
+      ...prev,
+      title: prev.title === "New local chat" ? derivedTitle : prev.title,
+      messages: [...prev.messages, userMsg, placeholderMsg],
       updatedAt: "now",
-    });
+    }));
 
     if (!config.baseUrl || !config.apiKey) {
       if (timerRef.current) clearInterval(timerRef.current);
-      const sample = `Routed to ${bot} (${modelLabel}) over your host’s /v1 gateway while keeping this transcript stored on this iPhone.`;
+      const sample = `Preview reply from ${bot} (${modelLabel}). Connect your host in Settings → Local chat to stream live /v1 turns while keeping this transcript stored on this iPhone.`;
       let idx = 0;
       timerRef.current = setInterval(() => {
         idx += 8;
@@ -493,14 +505,13 @@ export function LocalChatThread({
           clearInterval(timerRef.current);
           timerRef.current = null;
         }
-        onUpdateSession({
-          ...session,
-          title: nextTitle,
-          messages: withUser.map((m) =>
+        onUpdateSession((prev) => ({
+          ...prev,
+          messages: prev.messages.map((m) =>
             m.id === replyId ? { ...m, content: slice, streaming: !done } : m,
           ),
           updatedAt: "now",
-        });
+        }));
       }, 40);
       return;
     }
@@ -508,27 +519,25 @@ export function LocalChatThread({
     clearPendingStreams();
     const ac = new AbortController();
     abortRef.current = ac;
+    const normalizedBase = normalizeGatewayBaseUrl(config.baseUrl);
 
     try {
-      const res = await fetch(
-        `${config.baseUrl.replace(/\/$/, "")}/chat/completions`,
-        {
-          method: "POST",
-          signal: ac.signal,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${config.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: modelId,
-            stream: true,
-            messages: [...session.messages, userMsg].map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-          }),
+      const res = await fetch(`${normalizedBase}/chat/completions`, {
+        method: "POST",
+        signal: ac.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`,
         },
-      );
+        body: JSON.stringify({
+          model: modelId,
+          stream: true,
+          messages: [...session.messages, userMsg].map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+      });
 
       if (!res.ok) {
         let errMsg = "";
@@ -557,11 +566,10 @@ export function LocalChatThread({
           setStatus("offline");
           setStatusDetail(errMsg || `Host returned HTTP ${res.status}.`);
         }
-        onUpdateSession({
-          ...session,
-          title: nextTitle,
-          messages: session.messages.concat(userMsg),
-        });
+        onUpdateSession((prev) => ({
+          ...prev,
+          messages: prev.messages.filter((m) => m.id !== replyId),
+        }));
         return;
       }
 
@@ -569,31 +577,28 @@ export function LocalChatThread({
       for await (const delta of readSseDeltas(res, ac.signal)) {
         acc += delta;
         const snapshot = acc;
-        onUpdateSession({
-          ...session,
-          title: nextTitle,
-          messages: withUser.map((m) =>
+        onUpdateSession((prev) => ({
+          ...prev,
+          messages: prev.messages.map((m) =>
             m.id === replyId ? { ...m, content: snapshot, streaming: true } : m,
           ),
-        });
+        }));
       }
 
-      onUpdateSession({
-        ...session,
-        title: nextTitle,
-        messages: withUser.map((m) =>
+      onUpdateSession((prev) => ({
+        ...prev,
+        messages: prev.messages.map((m) =>
           m.id === replyId ? { ...m, content: acc, streaming: false } : m,
         ),
-      });
+      }));
     } catch {
       if (!ac.signal.aborted) {
         setStatus("offline");
         setStatusDetail("Connection lost before stream completed.");
-        onUpdateSession({
-          ...session,
-          title: nextTitle,
-          messages: session.messages.concat(userMsg),
-        });
+        onUpdateSession((prev) => ({
+          ...prev,
+          messages: prev.messages.filter((m) => m.id !== replyId),
+        }));
       }
     }
   }
@@ -601,16 +606,18 @@ export function LocalChatThread({
   const pillLabel =
     status === "live"
       ? "● Local chat"
-      : status === "revoked"
-        ? "○ Local chat paused — reconnect"
-        : status === "capped"
-          ? "○ Daily limit reached"
-          : status === "tool-refused"
-            ? "○ Private tool blocked"
-            : "○ Host offline";
+      : status === "preview"
+        ? "● Local chat (preview)"
+        : status === "revoked"
+          ? "○ Local chat paused — reconnect"
+          : status === "capped"
+            ? "○ Daily limit reached"
+            : status === "tool-refused"
+              ? "○ Private tool blocked"
+              : "○ Host offline";
 
   const pillDotColor =
-    status === "live"
+    status === "live" || status === "preview"
       ? "var(--mint)"
       : status === "revoked" || status === "capped" || status === "tool-refused"
         ? "var(--amber)"
@@ -672,7 +679,7 @@ export function LocalChatThread({
           <ChevronRight size={16} />
         </button>
 
-        {status !== "live" && (
+        {!canSend && (
           <div className="mf-banner" role="status">
             <strong>
               {status === "revoked"
@@ -696,7 +703,7 @@ export function LocalChatThread({
             <button
               className="wide"
               onClick={() => {
-                setStatus("live");
+                setStatus(activeState());
                 setStatusDetail("");
                 void probeModels();
               }}
@@ -749,7 +756,7 @@ export function LocalChatThread({
             aria-label="Message local chat"
             rows={2}
             value={draft}
-            disabled={status !== "live"}
+            disabled={!canSend}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -758,7 +765,7 @@ export function LocalChatThread({
               }
             }}
             placeholder={
-              status === "live"
+              canSend
                 ? "Message @codex, @claude, @grok…"
                 : "Paused — retry or open Settings → Local chat"
             }
@@ -766,7 +773,7 @@ export function LocalChatThread({
           <button
             className="send"
             aria-label="Send local chat message"
-            disabled={status !== "live" || !draft.trim()}
+            disabled={!canSend || !draft.trim()}
             onClick={() => void send()}
           >
             <ArrowUp size={21} />
@@ -854,7 +861,7 @@ export function LocalChatThread({
                 <button
                   className="wide"
                   onClick={() => {
-                    setStatus("live");
+                    setStatus(activeState());
                     setStatusDetail("");
                     void probeModels();
                     setSheet("");
@@ -865,7 +872,7 @@ export function LocalChatThread({
                 <button
                   className="wide"
                   onClick={() => {
-                    setStatus(status === "revoked" ? "live" : "revoked");
+                    setStatus(status === "revoked" ? activeState() : "revoked");
                     setStatusDetail(
                       status === "revoked"
                         ? ""
@@ -881,7 +888,7 @@ export function LocalChatThread({
                 <button
                   className="wide"
                   onClick={() => {
-                    setStatus(status === "capped" ? "live" : "capped");
+                    setStatus(status === "capped" ? activeState() : "capped");
                     setStatusDetail(
                       status === "capped"
                         ? ""
@@ -931,16 +938,16 @@ export function LocalChatThread({
                               familyModels.length
                             : 0;
                         const nextModel = familyModels[nextIdx] || activeRoute;
-                        onUpdateSession({
-                          ...session,
-                          bots: session.bots.includes(bot.name)
-                            ? session.bots
-                            : [...session.bots, bot.name],
+                        onUpdateSession((prev) => ({
+                          ...prev,
+                          bots: prev.bots.includes(bot.name)
+                            ? prev.bots
+                            : [...prev.bots, bot.name],
                           preferredModels: {
-                            ...(session.preferredModels || {}),
+                            ...(prev.preferredModels || {}),
                             [bot.name]: nextModel,
                           },
-                        });
+                        }));
                         setDraft(
                           (prev) =>
                             `@${bot.name.toLowerCase()} ${prev.replace(/^@\w+\s*/, "")}`,
