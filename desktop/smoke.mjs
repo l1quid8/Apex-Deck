@@ -18,6 +18,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * it started are gone.
  */
 export async function runSmoke(win, { sidecar, browser }) {
+  // Smoke windows are invisible and unfocused. Keep renderer timers and layout
+  // running normally, as in multi-host-smoke, throughout both launches.
+  win.webContents.setBackgroundThrottling(false);
   if (process.env.APEX_DECK_SMOKE_HOST) return runRemoteSmoke(win);
   if (process.env.APEX_DECK_SMOKE_PHASE === 'again') return runAgain(win, sidecar);
   // Keep fixture checkouts small and outside daemon-owned data so checkpoint
@@ -153,11 +156,16 @@ export async function runSmoke(win, { sidecar, browser }) {
         const native = browser.inspect('smoke-preview');
         throw new Error(`${error.message}; BrowserView mount diagnostics: ${JSON.stringify({ diagnostic, native:native&&{shown:native.shown,url:native.contents.getURL(),loading:native.contents.isLoading(),title:native.contents.getTitle()} })}`);
       });
-      const place = await page(`const r = document.querySelector('.browser-place').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height };`);
       const zoom = contents.getZoomFactor();
-      for (const key of ['x', 'y', 'width', 'height']) {
-        if (Math.abs(docked.bounds[key] - place[key] * zoom) > 1) throw new Error(`the view is at ${JSON.stringify(docked.bounds)}, its place at ${JSON.stringify(place)}`);
-      }
+      // Navigation finishing does not mean ResizeObserver has sent the final
+      // placeholder bounds to the native view yet. Still require a 1px match.
+      let geometry;
+      await until('the Preview bounds to match its placeholder', async () => {
+        const place = await page(`const r = document.querySelector('.browser-place').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height };`);
+        const bounds = browser.inspect('smoke-preview').bounds;
+        geometry = { bounds, place, zoom };
+        return ['x', 'y', 'width', 'height'].every(key => Math.abs(bounds[key] - place[key] * zoom) <= 1);
+      }, 5_000).catch(error => { throw new Error(`${error.message}; geometry: ${JSON.stringify(geometry)}`); });
       if (await docked.contents.executeJavaScript(`document.body.innerText`) !== 'hello') throw new Error('the page did not render');
 
       // A menu over the pane: the view steps aside for a picture of itself, and comes back.
@@ -173,7 +181,11 @@ export async function runSmoke(win, { sidecar, browser }) {
       // Settings takes the deck's place; the page must not sit on top of it.
       await page(`document.querySelector('button[aria-label="Settings"]').click(); return true;`);
       await until('the view to step aside for Settings', () => !browser.inspect('smoke-preview').shown, 5_000);
+      // Hiding the Preview follows settingsOpen immediately; the lazy Settings
+      // chunk can still be loading, so its close button is not ready yet.
+      await until('Settings to render', () => page(`return Boolean(document.querySelector('button[aria-label="Close settings"]'));`));
       await page(`document.querySelector('button[aria-label="Close settings"]').click(); return true;`);
+      await until('Settings to close', () => page(`return !document.querySelector('button[aria-label="Close settings"]');`));
       await until('the view to come back after Settings', () => browser.inspect('smoke-preview').shown, 5_000);
 
       // A page that tries to take over the window or reach the bridge gets nowhere.
@@ -319,7 +331,11 @@ export async function runSmoke(win, { sidecar, browser }) {
         let form=document.querySelector('.agents-section form.add-form');
         if (!form) { [...document.querySelectorAll('.titlebar-end button')].find(button=>button.textContent.trim()==='+ New agent')?.click(); for(let attempt=0;attempt<50&&!form;attempt++){await sleep(20);form=document.querySelector('.agents-section form.add-form');} }
         if (!form) throw new Error('The saved-agent editor did not open.');
-        const preset=form.querySelector('select[name="preset"]');if(!preset)throw new Error('The editor has no provider selector.');setValue(preset,'scripted');
+        const preset=[...form.querySelectorAll('.agent-providers [role="radio"]')].find(button=>button.title==='Scripted');
+        if(!preset)throw new Error('The editor has no Scripted provider tile.');
+        preset.click();
+        for(let attempt=0;attempt<50&&preset.getAttribute('aria-checked')!=='true';attempt++)await sleep(20);
+        if(preset.getAttribute('aria-checked')!=='true')throw new Error('The Scripted provider tile was not selected.');
         const name=form.querySelector('input[name="name"]');setValue(name,'Saved agent '+String(i).padStart(2,'0')+' with a long name');
         form.requestSubmit();
         for(let attempt=0;attempt<100&&document.querySelector('.agents-section form.add-form');attempt++)await sleep(20);
@@ -334,7 +350,9 @@ export async function runSmoke(win, { sidecar, browser }) {
   });
 
   await step('changing Who answers updates the placeholder and recipient badges', async () => {
-    await page(`document.querySelector('button[aria-label="Show thread details"]').click(); return true;`);
+    await page(`document.querySelector('button[aria-label="Show side panel"]')?.click(); return true;`);
+    await until('the Details tab', () => page(`return Boolean(document.querySelector('[role="tab"][aria-label="Details"]'))`));
+    await page(`document.querySelector('[role="tab"][aria-label="Details"]').click(); return true;`);
     await until('the policy control', () => page(`return Boolean(document.querySelector('.chat-options select'))`));
     await page(`
       const control = document.querySelector('.chat-options select');
@@ -348,7 +366,7 @@ export async function runSmoke(win, { sidecar, browser }) {
     await page(`document.querySelector('button[aria-label="Close thread details"]').click(); return true;`);
   });
 
-  await step('Add bot escapes pane clipping in classic and glass at short and tall sizes', async () => {
+  await step('Add bot stays docked and usable in classic and glass at short and tall sizes', async () => {
     const [width, height] = win.getContentSize();
     const theme = await page(`return document.documentElement.dataset.deckTheme ?? null`);
     try {
@@ -358,35 +376,47 @@ export async function runSmoke(win, { sidecar, browser }) {
           win.setContentSize(w, h);
           await sleep(300);
           await page(`document.querySelector('.composer .chip-add').click(); return true;`);
-          await until('the add-bot choices', () => page(`return document.querySelectorAll('.roster-pop .quick-add-tools [role="radio"]').length > 0`));
-          const problem = await page(`
-            const form = document.querySelector('.roster-pop .quick-add');
-            if (form.closest('.pane')) return 'add-bot menu is trapped inside the clipping thread pane';
+          await until('the saved-agent choices', () => page(`return document.querySelectorAll('.composer-box.adding .quick-add-tile').length === 36`));
+          const problems = () => page(`
+            const form = document.querySelector('.composer-box.adding > .quick-add');
+            if (!form) return 'add-bot menu is not docked in the composer';
             const rect = form.getBoundingClientRect();
-            if (rect.top < 8 || rect.bottom > innerHeight - 8 || rect.left < 0 || rect.right > innerWidth) return 'form outside viewport';
-            const pane = document.querySelector('.composer .chip-add').closest('.pane').getBoundingClientRect();
-            const points = [
-              [rect.left + rect.width / 2, rect.top + 4],
-              [rect.left + 4, rect.top + rect.height / 2],
-              [rect.right - 4, rect.top + rect.height / 2],
-            ].filter(([x, y]) => x < pane.left || x > pane.right || y < pane.top || y > pane.bottom);
-            if (!points.length) return 'fixture does not extend the menu beyond the pane boundary';
-            for (const [x, y] of points) {
-              const hit = document.elementFromPoint(x, y);
-              if (!form.contains(hit)) return 'menu clipped outside pane: ' + JSON.stringify({ x, y, hit: hit?.outerHTML });
-            }
-            const first = form.querySelector('.quick-add-tools [role="radio"]');
+            const pane = form.closest('.pane').getBoundingClientRect();
+            if (rect.top < pane.top || rect.bottom > Math.min(pane.bottom, innerHeight) || rect.left < pane.left || rect.right > pane.right) return 'docked menu outside its pane';
+            const foot = form.querySelector('.quick-add-foot');
+            const scroll = form.querySelector('.quick-add-scroll');
+            if (scroll.scrollHeight <= scroll.clientHeight) return 'saved-agent fixture does not exercise scrolling';
+            const button = foot.querySelector('button[type="submit"]');
+            const r = button.getBoundingClientRect();
+            if (r.top < rect.top || r.bottom > rect.bottom || !button.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2))) return 'Add action is clipped or covered';
+            const first = form.querySelector('.quick-add-tile');
+            first.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            const t = first.getBoundingClientRect();
+            if (!first.contains(document.elementFromPoint(t.left + t.width / 2, t.top + t.height / 2))) return 'first saved agent is clipped or covered';
+            const chat = form.closest('.thread-chat');
+            const composer = chat.querySelector('.composer');
+            if (parseFloat(getComputedStyle(chat).getPropertyValue('--composer-h')) !== composer.offsetHeight) return 'composer height does not track the docked menu';
+            return '';`);
+          let problem = '';
+          await until('the docked menu to fit', async () => (problem = await problems()) === '', 5_000)
+            .catch(() => { throw new Error(appearance + ' at ' + w + 'x' + h + ': ' + problem); });
+          await page(`document.querySelector('.composer-box.adding .quick-add-tile').click(); return true;`);
+          await until('the saved agent to be picked', () => page(`return Boolean(document.querySelector('.quick-add-tile[aria-checked="true"]')) && !document.querySelector('.quick-add-foot button[type="submit"]').disabled;`));
+          await page(`document.querySelector('.quick-add-another').click(); return true;`);
+          await until('the new-bot tools', () => page(`return document.querySelectorAll('.quick-add-tools [role="radio"]').length > 0`));
+          await page(`
+            const first = document.querySelector('.quick-add-tools [role="radio"]');
             first.scrollIntoView({ block: 'nearest', inline: 'nearest' });
             const r = first.getBoundingClientRect();
-            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-            if (!first.contains(hit)) return 'first add-bot choice is not clickable: ' + JSON.stringify({ hit: hit?.outerHTML });
+            if (!first.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2))) {
+              throw new Error('first new-bot tool is clipped or covered');
+            }
             first.click();
-            return '';`);
-          if (problem) throw new Error(appearance + ' at ' + w + 'x' + h + ': ' + problem);
-          await until('the chosen add-bot tool', () => page(`return Boolean(document.querySelector('.roster-pop .quick-add-tools [role="radio"][aria-checked="true"]'))`));
+            return true;`);
+          await until('the chosen add-bot tool', () => page(`return Boolean(document.querySelector('.quick-add-tools [role="radio"][aria-checked="true"]'))`));
           if (appearance === 'glass' && w === 900) fs.writeFileSync('/tmp/apex-add-bot-smoke.png', (await contents.capturePage()).toPNG());
           await page(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`);
-          await until('the add-bot menu to close', () => page(`return !document.querySelector('.roster-pop')`));
+          await until('the add-bot menu to close', () => page(`return !document.querySelector('.composer-box.adding')`));
         }
       }
     } finally {
