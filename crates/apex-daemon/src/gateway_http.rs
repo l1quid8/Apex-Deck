@@ -1690,7 +1690,9 @@ esac
         let issued = keys
             .issue(IssueSpec {
                 label: "test-rig".into(),
-                scopes: KeyScope::all_scopes(),
+                // This fixture uses only a scripted profile. Avoid discovering real
+                // API credentials or subscription CLIs on the test machine.
+                scopes: vec![KeyScope::Cli],
                 allow_mcp: false,
                 max_turns_per_day: Some(1),
                 max_usd_micros_per_month: None,
