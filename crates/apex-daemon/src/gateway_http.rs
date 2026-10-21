@@ -603,6 +603,12 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
         ];
         for (tool, detect_key) in tools {
             if gateway_isolation_error(&Backend::Agent { tool, model: None }).is_some() { continue; }
+            // Gemini gateway requests use the standalone Google CLI, never
+            // Antigravity's already-running service with its own MCP config.
+            if tool == AgentTool::Gemini {
+                let path = state.login_path.clone().unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+                if !std::env::split_paths(&path).any(|p| p.join("gemini").is_file()) { continue; }
+            }
             let reported = installed_models(tool);
             if is_found(detect_key) || !reported.is_empty() {
                 let owner = tool_prefix(tool);
@@ -640,6 +646,9 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
     if key.has_scope(KeyScope::Cli) {
         for profile in load_saved_profiles(&state.data_dir) {
             match &profile.backend {
+                Backend::Cli { .. } if gateway_isolation_error(&profile.backend).is_none() => {
+                    push(format!("cli/{}", profile.id.as_str()), "cli");
+                }
                 Backend::Cli { .. } => {}
                 Backend::Scripted { .. } => {
                     push(format!("scripted/{}", profile.id.as_str()), "scripted");
@@ -903,6 +912,8 @@ fn gateway_isolation_error(backend: &Backend) -> Option<String> {
         Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }
         | Backend::OpenAiCompatible { .. }
         | Backend::Scripted { .. } => None,
+        Backend::Agent { tool: AgentTool::Gemini | AgentTool::Grok, .. }
+        | Backend::Cli { .. } if cfg!(target_os = "macos") => None,
         _ => Some("This backend has no verified MCP isolation and is unavailable to gateway clients. Private MCP tools are never shared.".into()),
     }
 }
@@ -988,7 +999,7 @@ async fn handle_chat_completions(
 
     // Ignore legacy allow_mcp fields, including on already-issued keys.
     let participant: Arc<dyn apex_core::Participant> = match &resolved.config.backend {
-        Backend::Agent { .. } => Arc::new(
+        Backend::Agent { .. } | Backend::Cli { .. } => Arc::new(
             CliParticipant::new(resolved.config.clone())
                 .with_context(&context)
                 .with_mcp_disabled(),
@@ -1366,11 +1377,92 @@ done
                 "role":"user", "content":"Use x_mcp and hl_mcp"
             }]}).to_string();
             let (status, response) = raw_http(addr, "POST", "/v1/chat/completions", Some(&issued.token), Some(&body)).await;
-            assert_eq!(status, 409, "{family}: {response}");
+            assert_eq!(status, if cfg!(target_os = "macos") && family != "muse" { 502 } else { 409 }, "{family}: {response}");
         }
         server.abort();
         let _ = server.await;
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn legacy_key_gets_normal_completions_without_private_config() {
+        let dir = std::env::temp_dir().join(format!("gateway-sandbox-http-{}", identity::random_hex(8)));
+        std::fs::create_dir_all(dir.join("saved-chats-v1")).unwrap();
+        let secret = dir.join("private-mcp.json");
+        std::fs::write(&secret, r#"{"x_mcp":"PRIVATE_CANARY","hl_mcp":"PRIVATE_CANARY"}"#).unwrap();
+        let script = format!(r#"prompt=$(cat)
+case "$prompt" in
+ *x_mcp*|*hl_mcp*)
+   if cat '{}' 2>/dev/null; then exit 21; fi
+   printf PRIVATE_MCP_UNAVAILABLE ;;
+ *) printf 'GATEWAY_OK 42' ;;
+esac
+"#, secret.display());
+        std::fs::write(dir.join("saved-chats-v1/session.json"), json!({"profiles":[{
+            "id":"sandbox-test", "display_name":"Sandbox Test", "access":"read", "persona":"",
+            "backend":{"kind":"cli", "program":"/bin/sh", "args":["-c",script]}
+        }]}).to_string()).unwrap();
+        let keys = GatewayKeys::load(&dir).unwrap();
+        let issued = keys.issue(crate::gateway_keys::IssueSpec {
+            label: "Legacy sandbox test".into(), scopes: vec![KeyScope::Cli],
+            allow_mcp: false, max_turns_per_day: None, max_usd_micros_per_month: None
+        }).unwrap();
+        let key_path = dir.join(crate::gateway_keys::FILE);
+        let mut stored: Value = serde_json::from_str(&std::fs::read_to_string(&key_path).unwrap()).unwrap();
+        stored["keys"][0]["allow_mcp"] = json!(true);
+        std::fs::write(key_path, stored.to_string()).unwrap();
+        let keys = Arc::new(GatewayKeys::load(&dir).unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, Arc::new(GatewayHttpState {
+            data_dir:dir.clone(), keys:Arc::clone(&keys), login_path:Some("/usr/bin:/bin".into()),
+        })));
+        let (status, catalog) = raw_http(addr, "GET", "/v1/models", Some(&issued.token), None).await;
+        assert_eq!(status, 200);
+        assert!(catalog.contains("cli/sandbox-test"));
+        for (prompt, expected) in [("Reply normally", "GATEWAY_OK 42"), ("Use x_mcp and hl_mcp", "PRIVATE_MCP_UNAVAILABLE")] {
+            let body = json!({"model":"cli/sandbox-test", "messages":[{"role":"user","content":prompt}]}).to_string();
+            let (status, reply) = tokio::time::timeout(Duration::from_secs(10), raw_http(addr, "POST", "/v1/chat/completions", Some(&issued.token), Some(&body))).await.unwrap();
+            assert_eq!(status, 200, "{reply}");
+            assert!(reply.contains(expected), "{reply}");
+            assert!(!reply.contains("PRIVATE_CANARY"));
+        }
+        assert_eq!(keys.list()[0].turns_today, 2);
+        server.abort(); let _ = server.await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requires host Grok sign-in and uses a model turn"]
+    async fn live_grok_http_completion_with_legacy_key() {
+        let dir = std::env::temp_dir().join(format!("gateway-live-grok-{}", identity::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let keys = GatewayKeys::load(&dir).unwrap();
+        let issued = keys.issue(crate::gateway_keys::IssueSpec {
+            label:"Live isolation test".into(), scopes:vec![KeyScope::Sub], allow_mcp:false,
+            max_turns_per_day:Some(2), max_usd_micros_per_month:None,
+        }).unwrap();
+        let path = dir.join(crate::gateway_keys::FILE);
+        let mut stored: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        stored["keys"][0]["allow_mcp"] = json!(true);
+        std::fs::write(path, stored.to_string()).unwrap();
+        let keys = Arc::new(GatewayKeys::load(&dir).unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, Arc::new(GatewayHttpState {
+            data_dir:dir.clone(), keys:Arc::clone(&keys), login_path:None,
+        })));
+        let body = json!({"model":"grok/default", "messages":[{"role":"user","content":"Without using tools, reply exactly: GATEWAY_OK 42"}]}).to_string();
+        let result = tokio::time::timeout(Duration::from_secs(90), raw_http(addr, "POST", "/v1/chat/completions", Some(&issued.token), Some(&body))).await;
+        server.abort(); let _ = server.await;
+        std::fs::remove_dir_all(&dir).unwrap();
+        let (status, reply) = result.unwrap();
+        assert_eq!(status, 200, "{reply}");
+        let response: Value = serde_json::from_str(&reply).unwrap();
+        assert!(response["choices"][0]["message"]["content"].as_str().unwrap().contains("GATEWAY_OK 42"), "{reply}");
+        std::fs::write("/tmp/apx-gateway-isolation-live.json", json!({"backend":"grok/default", "legacy_allow_mcp":true,"status":status,"response":response,"test_runtime_removed":true}).to_string()).unwrap();
     }
 
     #[tokio::test]
@@ -1394,14 +1486,15 @@ done
     }
 
     #[test]
-    fn gateway_refuses_unverified_mcp_isolation_even_with_no_home_config() {
-        for tool in [AgentTool::Gemini, AgentTool::Grok, AgentTool::Muse] {
-            assert!(gateway_isolation_error(&agent(tool)).is_some());
+    fn gateway_requires_platform_isolation_and_keeps_muse_withheld() {
+        assert!(gateway_isolation_error(&agent(AgentTool::Muse)).is_some());
+        for tool in [AgentTool::Gemini, AgentTool::Grok] {
+            assert_eq!(gateway_isolation_error(&agent(tool)).is_none(), cfg!(target_os = "macos"));
         }
         for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {
             assert!(gateway_isolation_error(&agent(tool)).is_none());
         }
-        assert!(gateway_isolation_error(&Backend::Cli { program: "custom".into(), args: vec![] }).is_some());
+        assert_eq!(gateway_isolation_error(&Backend::Cli { program: "custom".into(), args: vec![] }).is_none(), cfg!(target_os = "macos"));
     }
 
     fn msg(role: &str, content: Value) -> ChatMessage {
@@ -1596,16 +1689,6 @@ done
         .await;
         assert_eq!(status, 400);
         assert_eq!(keys.list()[0].turns_today, 0);
-
-        // Unsupported CLI isolation refuses the HTTP request before charging.
-        let (status, body) = raw_http(
-            addr, "POST", "/v1/chat/completions", Some(&issued.token),
-            Some(r#"{"model":"grok/default","messages":[{"role":"user","content":"Use hl_mcp"}]}"#),
-        ).await;
-        assert_eq!(status, 409);
-        assert!(body.contains("Private MCP tools are never shared"));
-        assert_eq!(keys.list()[0].turns_today, 0);
-        assert!(list["data"].as_array().unwrap().iter().all(|m| !m["id"].as_str().unwrap().starts_with("grok/")));
 
         // 4. Streaming completion succeeds and uses the 1 turn
         let (status, sse_body) = raw_http(
