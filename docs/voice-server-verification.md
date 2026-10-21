@@ -26,17 +26,74 @@ values. Offline import check passed with no torch, CUDA or MLX dependencies.
 `espeakng-loader` uses a `py3-none-manylinux…x86_64` wheel, accepted alongside
 CPython and abi3 manylinux wheels after the pinned interpreter resolved it.
 
-Local Python suite: 28 tests passed, including CPU selection/timing, cancellation
-and socket/long-reply coverage;
-one Linux-only real-model test skipped on Mac and passed on the VPS in each of
-the five runs. The full 24-test suite also passed on Linux before the final
-cancellation and CPU-socket additions.
+The helper suite contains 31 tests, including exclusive daemon authentication,
+CPU selection/timing, cancellation and socket/long-reply coverage. The Linux-only
+real-model test skips on Mac and passed on the VPS in each of the five runs. The final full 31-test suite also passed on Linux, including the daemon-only
+authentication acknowledgment. Peak engine-test RSS was 837,908 KiB (818 MiB).
 
-## Rehearsal
+## Rehearsal — 2026-10-21
 
-Pending: daemon-managed installation, two sets of ten synthetic voice turns,
-channel isolation/access tests, flow-control stall, memory, idle unload and
-process cleanup. No deployment or device testing is claimed from engine tests.
+A second Linux release daemon used separate scratch data, a loopback-only port
+and an SSH tunnel. The live daemon, agents, paired devices and saved threads
+were not modified. The Node smoke client used the same daemon link and voice
+transport as the phone, without microphone capture or agent-message dispatch.
+
+- Daemon-managed setup: **707,312,382 bytes in 26.422 seconds**, including offline
+  wheel install, model verification and the import check before activation.
+- Baseline: **20/20 synthetic audio round trips** across a cold and warm call.
+- Call open: **3,249 ms cold**, **175 ms warm**.
+- Synthesis to first audio: **1,319 ms p50**, **1,332 ms p95** for the complete
+  fixed command (shorter than the chunk-splitting threshold).
+- Speech end to transcript: **1,432 ms p50**, **1,485 ms p95**, including pause
+  detection and the test client's network trip; no agent thinking time included.
+- Helper RSS sampled during the run: **851,520 KiB (832 MiB)**.
+- Four-second tunnel stall: client reported weak, then recovered; **2/2 turns
+  passed**, the following warm call worked, and no daemon panic appeared.
+- Daemon shutdown during a turn: helper stopped within **20 ms**; the test client
+  reported disconnection rather than pretending that audio was still live.
+- After restart: **2/2 more turns passed**, cold open 3,252 ms and warm 169 ms.
+- Ten-minute idle unload: observed stopped at **601 seconds** (two-second
+  sampling). The helper stayed loaded at 541 seconds, and the daemon logged
+  its unload. The rehearsal daemon, tunnel and scratch install were removed;
+  the separate model-generation and original benchmark folders were retained.
+
+The synthetic utterance was: “Hey Null, can you check why the build failed on
+main?” The smoke runner prints only timings and assertions, never transcripts,
+audio, tokens or device identities. Real microphone/noise/echo and agent latency
+remain device acceptance work, not claims from this transport rehearsal.
+
+## Regression and build checks
+
+- TypeScript: `npx tsc --noEmit` passed.
+- JavaScript: **1,832 passed**, including real Chromium call-sheet interactions.
+- Mac Rust: **1,192 passed**, eight existing ignored tests.
+- Linux Rust: **1,186 passed**, five existing ignored tests.
+- Python: **31 passed on Linux**; 30 passed plus the Linux-only real-model skip
+  with the managed Mac Python.
+- Remote-feature voice tests and compilation passed.
+- `npm run iphone:sync` and unsigned generic-device `xcodebuild` passed. This is
+  a build check; it does not validate audio on a physical iPhone.
+- Five 393×852 dark UI states were rendered and inspected outside Git.
+
+Two existing test-environment issues were corrected: the Linux Docker image
+needed Python for CLI fixtures, and a scripted gateway fixture requested API
+scopes that caused real Mac Keychain access. That fixture now requests only its
+scripted-profile scope; production gateway behavior is unchanged.
+
+## Review decisions and fixes
+
+- CPU wheel validation accepts `py3-none-manylinux…x86_64` for the bundled
+  eSpeak linguistic library, as well as CPython/abi3 manylinux wheels. Hashes,
+  platform resolution and offline import checks still apply.
+- A saturated voice relay ends only that voice channel clearly, preserving the
+  chat link; it does not queue unlimited audio or silently keep a dead call live.
+- The daemon-only helper authentication acknowledgment proves exclusive socket
+  ownership before a new call opens. Same-device takeover aborts the stale relay
+  and retries only its explicit busy response; the Mac helper path is unchanged.
+- Runtime cleanup carries the acquired runtime identity, preventing a late
+  reconnect from leaking its channel or closing a newer call.
+- Review regressions cover cancellation before the next synthesis piece and
+  resolving ambiguous spoken agent names while a call remains active.
 
 ## iPhone
 
