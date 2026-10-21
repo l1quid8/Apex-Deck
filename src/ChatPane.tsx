@@ -1,3 +1,8 @@
+import { VoiceCallControls } from './voice/VoiceCallControls';
+import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
+import { createThreadVoiceBridge } from './voice/threadBridge';
+import { readVoiceSettings, preferenceFor } from './voice/settings';
+import type { VoiceSettings, VoiceTurn } from './voice/types';
 import { useHostConnection } from "./useHostConnection";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { hostCanMutate } from "./hostAvailability";
@@ -114,6 +119,9 @@ import type {
 import { SPEED_OPTIONS, supportsSpeed, speedHint } from "./speed";
 
 interface Props {
+  voiceSettings?: VoiceSettings;
+  onVoiceSettings?: (settings:VoiceSettings)=>void;
+  onVoiceFocus?: (roomId:string)=>void;
   pane: Pane;
   /** The workspace folder. Command-line participants run here. */
   cwd: string;
@@ -525,7 +533,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -1503,9 +1511,14 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const routing = useRef({ people: [] as ParticipantConfig[], policy: options.policy });
   routing.current = { people: participants, policy: options.policy };
   const stickyFor = (message: string, items: readonly ParticipantMessage[]) => queuedSticky(message, routing.current.people, routing.current.policy, items);
+  const voiceBridges = useRef(new Map<string, ReturnType<typeof createThreadVoiceBridge>>());
   const [turnQueue] = useState(() => new ParticipantQueues(
     async (message): Promise<string[]> => stickyFor(message, turnQueue.items) ?? current.current.roomTargets(pane.id, message),
-    (message, to, kind, hops, manual) => dispatch.current(message, to, kind, hops, manual),
+    async (message, to, kind, hops, manual, voice) => {
+      if (!voice) return dispatch.current(message, to, kind, hops, manual);
+      try { await current.current.roomPostTo(pane.id, message, to, false, false, {client_turn_id:voice.requestId,max_bot_hops:0}); }
+      catch(error) { voiceBridges.current.get(to[0])?.fail(voice.requestId,error); throw error; }
+    },
     id => current.current.roomStop(pane.id, id),
     // A one-off turn has no text to show or edit, so the queue line leaves it out.
     items => { setQueued(items.filter(item => item.kind !== "turn")); setBusy(turnQueue.active); setQueuePaused(turnQueue.paused.size > 0 || turnQueue.connectionPaused); },
@@ -1518,6 +1531,37 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     const changed = () => turnQueue.availabilityChanged();
     changed(); return store.subscribe(changed);
   }, [backend, turnQueue]);
+  const voiceHost=backend.host?.id??'local';
+  const voiceConfig=readVoiceSettings(voiceSettings);
+  const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
+  const voiceLive=useRef({ready,participants,voiceCandidates,voiceConfig,onVoiceSettings,onVoiceFocus});
+  voiceLive.current={ready,participants,voiceCandidates,voiceConfig,onVoiceSettings,onVoiceFocus};
+  useEffect(()=>{
+    const key=scopeKey({hostId:voiceHost,roomId:pane.id});
+    return ()=>{unregisterVoiceThread(key);for(const bridge of voiceBridges.current.values())bridge.dispose();voiceBridges.current.clear();};
+  },[backend,pane.id,voiceHost]);
+  useEffect(()=>{
+    if(profileMode)return;
+    registerVoiceThread(scopeKey({hostId:voiceHost,roomId:pane.id}),{
+      candidates:voiceCandidates,settings:voiceConfig,save:s=>voiceLive.current.onVoiceSettings?.(s),focus:()=>voiceLive.current.onVoiceFocus?.(pane.id),
+      bridge:id=>{
+        let bridge=voiceBridges.current.get(id);if(bridge)return bridge;
+        bridge=createThreadVoiceBridge({backend,scope:{hostId:voiceHost,roomId:pane.id,participantId:id},
+          enqueue:async (turn:VoiceTurn,isCanceled:()=>boolean)=>{
+            if(!voiceLive.current.ready||!voiceLive.current.participants.some(p=>p.id===id))throw Error('Agent thread is unavailable');
+            // Same mod validation as typed sends, without command parsing or draft mutation.
+            const hooked=await modHost.promptSubmit(pane.id,turn.text);
+            if(hooked.deny)throw Error(hooked.deny);
+            if(!hooked.text?.trim())throw Error('Voice transcript was empty after prompt processing');
+            const invalid=resolveServerRequests(parseServerRequests(hooked.text).map(s=>s.name),serverLists[id]??[]).unknown;
+            if(invalid.length)throw Error(`No tool server called ${invalid[0]} for this agent`);
+            if(isCanceled())throw Error("Voice turn canceled");
+            return turnQueue.sendTo(hooked.text,[id],{requestId:turn.requestId,canceled:isCanceled});
+          },remove:requestId=>{const item=turnQueue.items.find(i=>i.voice?.requestId===requestId);if(!item)return false;turnQueue.remove(item.id);return true;}});
+        voiceBridges.current.set(id,bridge);return bridge;
+      },
+    });
+  });
   /** This thread's own steer choice, over Settings. */
   const [steerChoice, setSteerChoice] = useState<ThreadSteer>(() => threadSteer(pane.id));
   const chooseSteer = (choice: ThreadSteer) => { setSteerChoice(choice); saveThreadSteer(pane.id, choice); };
@@ -3714,6 +3758,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           // Keep focus in the message box, so you can type straight after.
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
+          <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} disabled={!ready || saving} />
           {!busy && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
           {busy
             ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) stopBots(); }}><StopSquare size={12} /></button>
