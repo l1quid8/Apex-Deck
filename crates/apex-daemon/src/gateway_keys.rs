@@ -79,9 +79,8 @@ pub struct GatewayKey {
     pub token_sha256: String,
     /// Allowed backend scopes (`sub`, `api`, `cli`).
     pub scopes: Vec<KeyScope>,
-    /// Whether subscription CLI turns may invoke configured MCP servers
-    /// (`hl_mcp`, `x_mcp`, etc.) without interactive prompts.
-    /// Defaults to `false` so friend keys cannot trigger personal MCP tools.
+    /// Legacy field retained for on-disk compatibility. The HTTP gateway
+    /// ignores it: personal MCP servers are never available to clients.
     #[serde(default)]
     pub allow_mcp: bool,
     /// Optional daily turn cap across subscription CLI turns (or all turns).
@@ -233,6 +232,8 @@ impl GatewayKeys {
             Err(e) => return Err(format!("could not read {}: {e}", path.display())),
         };
 
+        for key in &mut store.keys { key.allow_mcp = false; }
+
         // Older files (and a crash between "delete the key" and "write the
         // tombstone") can leave a revoked id still present as a live key. Move
         // its digest into the tombstone so `authenticate` says Revoked, not
@@ -308,7 +309,7 @@ impl GatewayKeys {
             prefix,
             token_sha256,
             scopes,
-            allow_mcp: spec.allow_mcp,
+            allow_mcp: false,
             max_turns_per_day: spec.max_turns_per_day.filter(|&n| n > 0),
             max_usd_micros_per_month: spec.max_usd_micros_per_month.filter(|&n| n > 0),
             day_bucket: now / SECONDS_PER_DAY,
@@ -624,6 +625,21 @@ mod tests {
     }
 
     #[test]
+    fn legacy_keys_cannot_restore_mcp_authority_on_reload() {
+        let dir = temp_dir();
+        let keys = GatewayKeys::load(&dir).unwrap();
+        let issued = keys.issue(IssueSpec { label: "legacy".into(), scopes: KeyScope::all_scopes(), allow_mcp: true, max_turns_per_day: None, max_usd_micros_per_month: None }).unwrap();
+        assert!(!issued.key.allow_mcp);
+        let path = dir.join(FILE);
+        let mut stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        stored["keys"][0]["allow_mcp"] = serde_json::json!(true);
+        std::fs::write(path, serde_json::to_string(&stored).unwrap()).unwrap();
+        let reloaded = GatewayKeys::load(&dir).unwrap();
+        assert!(!reloaded.authenticate(&issued.token).unwrap().allow_mcp);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn revoke_removes_key_and_broadcasts_id() {
         let dir = temp_dir();
         let keys = GatewayKeys::load(&dir).unwrap();
@@ -638,6 +654,7 @@ mod tests {
             })
             .unwrap();
 
+        assert!(!issued.key.allow_mcp);
         assert!(keys.revoke(&issued.key.id).unwrap());
         assert_eq!(rx.try_recv().unwrap(), issued.key.id);
         assert_eq!(keys.authenticate(&issued.token), Err(AuthError::Revoked));

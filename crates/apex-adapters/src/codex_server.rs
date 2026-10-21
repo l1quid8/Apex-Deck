@@ -66,6 +66,7 @@ pub(crate) struct Turn<'a> {
     /// Start Codex in its planning mode, where it asks the person questions
     /// and changes nothing.
     pub plan: bool,
+    pub mcp_disabled: bool,
 }
 
 /// Why a turn through the app server did not produce a reply.
@@ -333,6 +334,7 @@ async fn hook_ready(
 async fn mcp_inventory(
     stdin: &mut ChildStdin,
     lines: &mut Lines<BufReader<ChildStdout>>,
+    full_inventory: bool,
 ) -> Result<
     (
         Value,
@@ -353,11 +355,11 @@ async fn mcp_inventory(
     let mut cursors = std::collections::HashSet::new();
     for page in 0..100u64 {
         let id = 10 + page;
+        let mut params = json!({"limit":100, "cursor":cursor});
+        if !full_inventory { params["detail"] = json!("toolsAndAuthOnly"); }
         send(
             stdin,
-            &json!({"id":id,"method":"mcpServerStatus/list", "params":{
-                "detail":"toolsAndAuthOnly", "limit":100, "cursor":cursor
-            }}),
+            &json!({"id":id,"method":"mcpServerStatus/list", "params":params}),
         )
         .await
         .map_err(|_| "Couldn't list Codex MCP servers".to_string())?;
@@ -396,6 +398,17 @@ async fn mcp_inventory(
         }
     }
     Err("Codex MCP inventory exceeded its page limit".into())
+}
+
+/// Disabled servers can remain in the status response, but none may expose
+/// tools or resources. Missing or unknown inventory shapes fail closed.
+fn isolated_mcp_inventory(servers: &[Value]) -> bool {
+    servers.iter().all(|server| {
+        server["tools"].as_object().is_some_and(|tools| tools.is_empty())
+            && ["resources", "resourceTemplates"].iter().all(|field| {
+                server.get(*field).is_some_and(|value| value.as_array().is_some_and(|values| values.is_empty()))
+            })
+    })
 }
 
 pub(crate) fn thread_start(turn: &Turn<'_>) -> Value {
@@ -616,7 +629,7 @@ pub(crate) async fn run_with_images(
         .await
         .map_err(TurnError::Unavailable)?;
 
-    let hooked = match hook {
+    let hooked = match hook.filter(|_| !turn.mcp_disabled) {
         Some(hook) => {
             hook_ready(
                 &mut stdin,
@@ -635,9 +648,12 @@ pub(crate) async fn run_with_images(
         crate::mcp::base_policy()
     } else {
         on_progress(Progress::Activity("Checking MCP tool approval policies"));
-        let (policy, menu, catalog) = mcp_inventory(&mut stdin, &mut lines)
+        let (policy, menu, catalog) = mcp_inventory(&mut stdin, &mut lines, turn.mcp_disabled)
             .await
             .map_err(TurnError::Failed)?;
+        if turn.mcp_disabled && !isolated_mcp_inventory(&catalog) {
+            return Err(TurnError::Failed("Codex still exposes MCP servers after isolation; gateway turn refused.".into()));
+        }
         tool_catalog = catalog;
         // Without the plugins the list would be short, so keep the last one.
         if let Ok(servers) = &menu {
@@ -793,7 +809,7 @@ pub(crate) async fn run_with_images(
                         let meta = &params["_meta"];
                         eprintln!("[apex-deck] permission request: server={} connector={} tool={} persist={} riskLevel={}",
                             params["serverName"], meta["connector_id"], meta["tool_name"], meta["persist"], meta["riskLevel"]);
-                        let decision = if params["threadId"] != thread {
+                        let decision = if turn.mcp_disabled || params["threadId"] != thread {
                             Decision::Reject
                         } else if let Some(action) = mcp_question(params) {
                             // App access is a separate decision even if its arguments
@@ -980,6 +996,43 @@ fn ended_early(reader: EventReader) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn gateway_declines_a_late_read_only_mcp_call() {
+        let script = r#"say() { echo "$1"; }
+read -r l; say '{"id":0,"result":{}}'
+read -r l; read -r l; read -r l
+say '{"id":110,"result":{"marketplaces":[]}}'
+say '{"id":10,"result":{"data":[],"nextCursor":null}}'
+read -r l; say '{"id":1,"result":{"thread":{"id":"T"}}}'
+read -r l
+say '{"method":"item/started","params":{"threadId":"T","item":{"type":"mcpToolCall","id":"c1","server":"probe","tool":"get_balance","arguments":{}}}}'
+say '{"id":99,"method":"mcpServer/elicitation/request","params":{"threadId":"T","serverName":"probe","_meta":{"codex_approval_kind":"mcp_tool_call","tool_params":{}}}}'
+read -r l
+case "$l" in *decline*) ;; *) exit 3 ;; esac
+say '{"method":"item/completed","params":{"threadId":"T","item":{"type":"agentMessage","id":"m1","text":"Private MCP denied."}}}'
+say '{"method":"turn/completed","params":{"threadId":"T","turn":{"status":"completed"}}}'
+read -r l; say '{"id":3,"result":{"rateLimits":{}}}'
+cat > /dev/null"#;
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", script]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+        let child = Registry::default().spawn(&mut command).unwrap();
+        let turn = Turn { model: None, effort: None, service_tier: None, access: Access::Read, cwd: None, plan: false, mcp_disabled: true };
+        let result = tokio::time::timeout(Duration::from_secs(5), run(child, turn, "hello", &|_| {}, &apex_core::NoApprover, None)).await.expect("must not hang");
+        match result {
+            Ok(reply) => assert_eq!(reply.text, "Private MCP denied."),
+            Err(_) => panic!("gateway accepted a late MCP call or failed the protocol"),
+        }
+    }
+
+    #[test]
+    fn gateway_inventory_requires_no_tools_or_resources() {
+        assert!(super::isolated_mcp_inventory(&[]));
+        assert!(super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [], "resourceTemplates": []})]));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {"post": {}}})]));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({"tools": {}, "resources": [{}]})]));
+        assert!(!super::isolated_mcp_inventory(&[serde_json::json!({})]));
+    }
+
     #[test]
     fn the_server_starts_with_the_plan_tool_on() {
         assert_eq!(super::ARGS, ["app-server", "-c", "tools.update_plan.enabled=true"]);
@@ -1180,6 +1233,7 @@ mod tests {
             service_tier: None,
             access: Access::Full,
             cwd: None,
+            mcp_disabled: false,
             plan: false,
         };
         let policy = thread_start(&turn)["params"]["approvalPolicy"].clone();
@@ -1193,7 +1247,7 @@ mod tests {
 
     #[test]
     fn thread_start_sends_the_service_tier_only_when_chosen() {
-        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, plan: false };
+        let mut turn = Turn { model: None, effort: None, service_tier: Some("priority"), access: Access::Read, cwd: None, mcp_disabled: false, plan: false };
         assert_eq!(thread_start(&turn)["params"]["serviceTier"], "priority");
         turn.service_tier = None;
         assert!(thread_start(&turn)["params"].get("serviceTier").is_none());
@@ -1207,6 +1261,7 @@ mod tests {
             service_tier: None,
             access: Access::Edits,
             cwd: Some("/work".into()),
+            mcp_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1221,6 +1276,7 @@ mod tests {
             service_tier: None,
             access: Access::Ask,
             cwd: None,
+            mcp_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1233,6 +1289,7 @@ mod tests {
             service_tier: None,
             access: Access::Read,
             cwd: None,
+            mcp_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1245,6 +1302,7 @@ mod tests {
             service_tier: None,
             access: Access::Full,
             cwd: None,
+            mcp_disabled: false,
             plan: false,
         };
         assert_eq!(
@@ -1359,6 +1417,7 @@ cat > /dev/null"#;
             service_tier: None,
             access: Access::Full,
             cwd: None,
+            mcp_disabled: false,
             plan: false,
         };
         let reply = match run(child, turn, "go", &sink, &apex_core::NoApprover, None).await {
@@ -1457,7 +1516,7 @@ pub async fn list_servers(
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let result = async {
         initialize(&mut stdin, &mut lines).await?;
-        mcp_inventory(&mut stdin, &mut lines)
+        mcp_inventory(&mut stdin, &mut lines, false)
             .await
             .and_then(|(_, names, _)| names)
     }

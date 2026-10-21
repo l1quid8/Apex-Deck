@@ -83,7 +83,7 @@ pub fn manage_gateway_keys_json(keys: &GatewayKeys, request: Value) -> Result<Va
 
 pub const USAGE: &str = "\
 usage: apex-daemon keys list
-       apex-daemon keys issue --label NAME [--scope sub,api,cli] [--max-turns N] [--max-usd USD] [--allow-mcp]
+       apex-daemon keys issue --label NAME [--scope sub,api,cli] [--max-turns N] [--max-usd USD]
        apex-daemon keys revoke <key-id>";
 
 /// Parse what follows `keys`.
@@ -97,7 +97,7 @@ pub fn parse(args: &[String]) -> Result<KeysAction, String> {
         Some("issue") => {
             let mut label: Option<String> = None;
             let mut scopes = KeyScope::default_scopes();
-            let mut allow_mcp = false;
+            let allow_mcp = false;
             let mut max_turns_per_day: Option<u64> = None;
             let mut max_usd_micros_per_month: Option<u64> = None;
 
@@ -147,7 +147,7 @@ pub fn parse(args: &[String]) -> Result<KeysAction, String> {
                         }
                         max_usd_micros_per_month = Some((usd * 1_000_000.0).round() as u64);
                     }
-                    "--allow-mcp" => allow_mcp = true,
+                    "--allow-mcp" => return Err(usage("private MCP tools cannot be shared with gateway clients".into())),
                     other => return Err(usage(format!("unknown argument {other}"))),
                 }
             }
@@ -275,7 +275,6 @@ mod tests {
             "50",
             "--max-usd",
             "2.5",
-            "--allow-mcp",
         ])
         .unwrap();
         assert_eq!(
@@ -283,7 +282,7 @@ mod tests {
             KeysAction::Issue {
                 label: "friend-alex".into(),
                 scopes: vec![KeyScope::Sub, KeyScope::Api],
-                allow_mcp: true,
+                allow_mcp: false,
                 max_turns_per_day: Some(50),
                 max_usd_micros_per_month: Some(2_500_000),
             }
@@ -296,6 +295,7 @@ mod tests {
         assert!(parse_slice(&["issue", "--label", "x", "--scope", "bogus"]).is_err());
         assert!(parse_slice(&["issue", "--label", "x", "--max-turns", "0"]).is_err());
         assert!(parse_slice(&["revoke"]).is_err());
+        assert!(parse_slice(&["issue", "--label", "x", "--allow-mcp"]).unwrap_err().contains("cannot be shared"));
     }
 
     /// The CLI builds a `{cmd,args}` request; the daemon side must land on the
