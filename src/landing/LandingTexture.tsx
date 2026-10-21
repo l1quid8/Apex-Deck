@@ -37,13 +37,17 @@ export function LandingTexture({ settings }: { settings: LandingTextureSettings 
     rendererRef.current = renderer;
 
     const resize = () => {
-      const rect = host.getBoundingClientRect();
+      // Measure the wrap, not the host: the wrap is what the canvas fills, and
+      // it grows past the host with `bottom: calc(-1 * var(--composer-h))`.
+      // Measuring the host left the backing store at the old size, so the
+      // drawing was stretched whenever the composer grew.
+      const rect = wrap.getBoundingClientRect();
       renderer.resize(rect.width, rect.height);
       if (mode === "static") renderer.drawStatic();
     };
     resize();
     const observer = new ResizeObserver(resize);
-    observer.observe(host);
+    observer.observe(wrap);
 
     const toLocal = (event: PointerEvent) => {
       const rect = host.getBoundingClientRect();

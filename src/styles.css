@@ -4149,6 +4149,13 @@ button.mod-status:hover { color: var(--text); }
 .thread-chat > .composer {
   border-top: 0;
   background: transparent;
+  /* The strip is a gutter, not a surface: let clicks beside the box fall
+     through to the texture instead of dying on an invisible band. */
+  pointer-events: none;
+}
+
+.thread-chat > .composer > * {
+  pointer-events: auto;
 }
 
 .thread-chat .chat-body > .transcript {
