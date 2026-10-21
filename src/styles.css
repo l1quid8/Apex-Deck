@@ -2641,6 +2641,102 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
 .quick-add-tile[aria-checked="true"] .quick-add-tick {
   opacity: 1;
 }
+/* Hover moves: ChatPane's playTileMove sets data-move; only the avatar moves. */
+.quick-add-tile[data-move="hop"] .identicon { animation: tile-hop .5s ease; }
+.quick-add-tile[data-move="wiggle"] .identicon { animation: tile-wiggle .5s ease; }
+.quick-add-tile[data-move="spin"] .identicon { animation: tile-spin .5s ease; }
+.quick-add-tile[data-move="squash"] .identicon { animation: tile-squash .5s ease; }
+.quick-add-tile[data-move="tilt"] .identicon { animation: tile-tilt .5s ease; }
+.quick-add-tile[data-move="pulse"] .identicon { animation: tile-pulse .5s ease; }
+@keyframes tile-hop {
+  0% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(-6px);
+  }
+  70% {
+    transform: translateY(2px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+@keyframes tile-wiggle {
+  0% {
+    transform: rotate(0);
+  }
+  20% {
+    transform: rotate(-12deg);
+  }
+  40% {
+    transform: rotate(10deg);
+  }
+  60% {
+    transform: rotate(-6deg);
+  }
+  80% {
+    transform: rotate(3deg);
+  }
+  100% {
+    transform: rotate(0);
+  }
+}
+@keyframes tile-spin {
+  from {
+    transform: rotate(0);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes tile-squash {
+  0% {
+    transform: scale(1, 1);
+  }
+  30% {
+    transform: scale(1.2, .8);
+  }
+  60% {
+    transform: scale(.9, 1.1);
+  }
+  100% {
+    transform: scale(1, 1);
+  }
+}
+@keyframes tile-tilt {
+  0% {
+    transform: rotate(0);
+  }
+  35% {
+    transform: rotate(-18deg) translateX(-2px);
+  }
+  70% {
+    transform: rotate(6deg);
+  }
+  100% {
+    transform: rotate(0);
+  }
+}
+@keyframes tile-pulse {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.18);
+  }
+  70% {
+    transform: scale(.96);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quick-add-tile[data-move] .identicon {
+    animation: none;
+  }
+}
 
 .quick-add-tile-name {
   max-width: 100%;
@@ -2735,14 +2831,17 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
   background-color: rgb(var(--deck-panel) / max(.62, var(--deck-opacity, .44)));
 }
 
-.transcript .empty {
-  transition: opacity .2s ease, transform .2s ease;
+/* Fade the welcome text, not the landing texture that lives inside .empty. */
+.transcript .empty > :not(.landing-texture-wrap) {
+  transition: opacity .2s ease, transform .2s ease, visibility .2s;
 }
-
 .transcript .empty.away {
+  pointer-events: none;
+}
+.transcript .empty.away > :not(.landing-texture-wrap) {
   opacity: 0;
   transform: translateY(-12px);
-  pointer-events: none;
+  visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

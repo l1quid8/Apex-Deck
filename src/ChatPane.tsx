@@ -499,6 +499,17 @@ function fitHead(head: HTMLElement) {
   head.toggleAttribute("data-flag-hidden", Boolean(head.querySelector(".flag")) && head.scrollWidth > head.clientWidth);
 }
 
+/** Short avatar moves for saved-agent tiles; styles.css has one keyframe per name. */
+export const TILE_MOVES = ["hop", "wiggle", "spin", "squash", "tilt", "pulse"];
+/** Plays a random move on a tile's avatar, never the move that tile played last. */
+export function playTileMove(tile: HTMLElement) {
+  const choices = TILE_MOVES.filter((move) => move !== tile.dataset.last);
+  const move = choices[Math.floor(Math.random() * choices.length)];
+  delete tile.dataset.move;
+  void tile.offsetWidth; // restart the animation
+  tile.dataset.move = move;
+  tile.dataset.last = move;
+}
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
@@ -645,7 +656,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** Ids of saved agents ticked in the quick add menu. */
   const [pickedAgents, setPickedAgents] = useState<Set<string>>(new Set());
   /** Whether the quick add editor is open and counts as one more new bot. */
-  const [editorOpen, setEditorOpen] = useState(true);
+  const [editorOpen, setEditorOpen] = useState(false);
   useEffect(() => {
     if (!quickAdd) return;
     const away = (event: MouseEvent) => { if (!(event.target as Element).closest?.(".quick-add-wrap, .quick-add")) setQuickAdd(null); };
@@ -654,6 +665,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     window.addEventListener("keydown", key, true);
     return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", key, true); };
   }, [quickAdd]);
+  /** The docked add menu, so focus can move into it when it opens. */
+  const quickAddForm = useRef<HTMLFormElement>(null);
+  useEffect(() => { if (quickAdd) quickAddForm.current?.querySelector<HTMLElement>(".quick-add-tile, .quick-add-another")?.focus(); }, [quickAdd]);
   /** The bot whose ⋯ menu is open in the details sidebar. */
   const [botMenu, setBotMenu] = useState<string | null>(null);
   useEffect(() => {
@@ -2946,12 +2960,15 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
     }
     return true;
   };
+  /** Saved agents not already in this thread, offered as tiles in the add menu. */
+  const pickableAgents = availableProfiles.filter((p) => !participants.some((own) => own.id === p.id));
   const openQuickAdd = (where: "dock" | "details") => {
     if (quickAdd === where) return setQuickAdd(null);
     nameTouched.current = false;
     setPickedAgents(new Set());
     setQueuedBots([]);
-    setEditorOpen(true);
+    // Saved agents to pick: start with no new bot. None: start with one open.
+    setEditorOpen(pickableAgents.length === 0);
     setEditing(null);
     setAdding(false);
     setFormError("");
@@ -2964,20 +2981,20 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** Up to three tools for the quick menu: installed coding agents, then local models. */
   const quickTools = availablePresets.filter((p) => (p.agent && installed(p)) || p.key === "ollama").slice(0, 3);
   const quickAddMenu = (
-    <form className="quick-add" aria-label="Add a bot" onSubmit={async (e) => { e.preventDefault(); if (await submitBatch()) { closeForm(draft.preset); setQuickAdd(null); } }}>
+    <form ref={quickAddForm} className="quick-add" role="dialog" aria-label="Add a bot" onSubmit={async (e) => { e.preventDefault(); if (await submitBatch()) { closeForm(draft.preset); setQuickAdd(null); } }}>
       <header className="quick-add-head">
         <h3>Who's in this thread?</h3>
         <p>Pick saved agents, or set up new ones below.</p>
         <button type="button" className="quick-add-close" aria-label="Close menu" onClick={() => setQuickAdd(null)}>×</button>
       </header>
       <div className="quick-add-scroll">
-      {availableProfiles.some((p) => !participants.some((own) => own.id === p.id)) && <>
+      {pickableAgents.length > 0 && <>
         <div className="quick-add-section"><span className="quick-add-label">Saved agents</span><span className="quick-add-count">{savedToAdd.length} picked</span></div>
         <div className="quick-add-saved">
-          {availableProfiles.filter((p) => !participants.some((own) => own.id === p.id)).map((p) => {
+          {pickableAgents.map((p) => {
             const look = p.appearance ?? legacyAppearance(p.id);
             return (
-              <button type="button" key={p.id} className="quick-add-tile" style={{ "--ring": look.color } as CSSProperties} onClick={() => togglePicked(p.id)} role="checkbox" aria-checked={pickedAgents.has(p.id)}>
+              <button type="button" key={p.id} className="quick-add-tile" style={{ "--ring": look.color } as CSSProperties} onClick={() => togglePicked(p.id)} role="checkbox" aria-checked={pickedAgents.has(p.id)} onPointerEnter={(e) => playTileMove(e.currentTarget)} onFocus={(e) => playTileMove(e.currentTarget)} onAnimationEnd={(e) => { delete e.currentTarget.dataset.move; }}>
                 <span className="quick-add-tick" aria-hidden="true">✓</span>
                 <Avatar seed={look.seed} color={look.color} />
                 <span className="quick-add-tile-name">{p.display_name}</span>
@@ -3088,7 +3105,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           {savedToAdd.map((p) => { const look = p.appearance ?? legacyAppearance(p.id); return <Avatar key={p.id} seed={look.seed} color={look.color} size="sm" />; })}
           {newNames.map((name, i) => <span key={`new-${i}`} className="quick-add-face">{(name.trim()[0] ?? "?").toUpperCase()}</span>)}
         </span>
-        <span className="quick-add-say" role="status">{formError ? <span className="form-error">{formError}</span> : lineupText([...savedToAdd.map((p) => p.display_name), ...newNames])}</span>
+        <span className="quick-add-say">{!formError && lineupText([...savedToAdd.map((p) => p.display_name), ...newNames])}<span role="status">{formError && <span className="form-error">{formError}</span>}</span></span>
         <button type="button" className="ghost" onClick={() => { setQuickAdd(null); openNewForm(); }}>More options</button>
         <button className="primary" type="submit" disabled={batchTotal === 0}>{batchLabel(batchTotal)}</button>
       </div>
