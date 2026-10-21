@@ -169,3 +169,22 @@ mod tests {
         assert_eq!(format_time(&tm), "2026-10-08 15:42:06");
     }
 }
+
+/// UTC timestamp used by metadata-only voice diagnostics.
+pub fn utc_stamp() -> String {
+    #[cfg(unix)]
+    {
+        let now = unsafe { libc::time(std::ptr::null_mut()) };
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::gmtime_r(&now, &mut tm) };
+        format!("{}Z", format_time(&tm).replace(' ', "T"))
+    }
+    #[cfg(not(unix))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string()
+    }
+}

@@ -28,3 +28,5 @@ pub mod serve;
 pub mod signals;
 pub mod stdio;
 pub mod websocket;
+
+pub mod voice;

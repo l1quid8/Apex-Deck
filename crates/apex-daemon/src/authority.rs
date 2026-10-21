@@ -523,3 +523,13 @@ mod tests {
         assert_eq!(filter_session(&Threads::Only(vec![]), Value::Null), Value::Null);
     }
 }
+
+/// Access required for daemon-owned voice commands.
+pub fn voice_needs(request: &crate::voice::session::VoiceRequest) -> Need {
+    use crate::voice::session::VoiceRequest::*;
+    match request {
+        VoiceServerStatus {} | VoiceServerClose { .. } => read(Scope::GlobalRead),
+        VoiceServerInstall {} | VoiceServerInstallCancel {} => full(Scope::Global),
+        VoiceServerWarm { room } | VoiceServerOpen { room } => chat(thread(room)),
+    }
+}

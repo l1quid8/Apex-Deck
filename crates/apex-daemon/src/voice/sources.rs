@@ -1,0 +1,30 @@
+pub const FILES: &[(&str, &str)] = &[
+    (
+        "endpoint.py",
+        include_str!("../../../../voice-sidecar/voice_sidecar/endpoint.py"),
+    ),
+    (
+        "engines.py",
+        include_str!("../../../../voice-sidecar/voice_sidecar/engines.py"),
+    ),
+    (
+        "engines_cpu.py",
+        include_str!("../../../../voice-sidecar/voice_sidecar/engines_cpu.py"),
+    ),
+    (
+        "pieces.py",
+        include_str!("../../../../voice-sidecar/voice_sidecar/pieces.py"),
+    ),
+    (
+        "pipeline.py",
+        include_str!("../../../../voice-sidecar/voice_sidecar/pipeline.py"),
+    ),
+    (
+        "protocol.py",
+        include_str!("../../../../voice-sidecar/voice_sidecar/protocol.py"),
+    ),
+    (
+        "server.py",
+        include_str!("../../../../voice-sidecar/voice_sidecar/server.py"),
+    ),
+];

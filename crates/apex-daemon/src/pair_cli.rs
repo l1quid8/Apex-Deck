@@ -333,6 +333,7 @@ mod tests {
         async fn live_daemon(data: &Path) -> (Arc<Daemon>, std::path::PathBuf, SocketAddr) {
             let host = Host::new(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
             let daemon = Arc::new(Daemon {
+                voice: crate::voice::VoiceServer::new(data),
                 host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(),
                 invites: Default::default(), endpoint: Default::default(),
             });
@@ -467,7 +468,7 @@ mod tests {
             // A daemon that isn't serving --remote.
             let data = crate::devices::tests::folder();
             let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
-            let off = Arc::new(Daemon { host, host_id: "h".into(), boot_id: "b".into(), token: None, devices: Arc::new(Devices::open(&data.0)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), invites: Default::default(), endpoint: Default::default() });
+            let off = Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&data.0), host, host_id: "h".into(), boot_id: "b".into(), token: None, devices: Arc::new(Devices::open(&data.0)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(), invites: Default::default(), endpoint: Default::default() });
             let (ours, theirs) = tokio::net::UnixStream::pair().unwrap();
             let (read, write) = theirs.into_split();
             let (input, output) = protocol::lines(read, write);

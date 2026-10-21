@@ -49,6 +49,7 @@ pub const DRAIN_GRACE: Duration = Duration::from_secs(10);
 
 /// What every session on this daemon shares.
 pub struct Daemon {
+    pub voice: Arc<crate::voice::VoiceServer>,
     pub host: Arc<Host>,
     /// Stable for a data folder.
     pub host_id: String,
@@ -85,7 +86,7 @@ impl Daemon {
         // The worker stamps operations with this machine's id, so make it first.
         let host_id = crate::identity::host_id(&paths.data)?;
         host.start_personal_worker()?;
-        Ok(Arc::new(Daemon { host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(),
+        Ok(Arc::new(Daemon { voice: crate::voice::VoiceServer::new(&paths.data), host, host_id, boot_id: crate::identity::boot_id(), token, devices, gateway_keys, gateway: Default::default(), data: paths.data.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
             #[cfg(feature = "remote")] endpoint: Default::default(),
         }))
@@ -317,6 +318,7 @@ where
         // The exact build, so a UI can tell two builds of the same version apart.
         "build_commit": crate::build_info::commit(), "build_dirty": crate::build_info::dirty(),
     } });
+    if daemon.voice.status().supported { welcome["ok"]["capabilities"].as_array_mut().unwrap().push(json!("voice_server_v1")); }
     // A device also learns what it may do now (so the phone can hide what
     // it can't use; the host still checks everything) and the addresses
     // advertised for this machine, to refresh its saved hints.
@@ -339,6 +341,33 @@ where
         }
     }
 
+    static VOICE_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let owner = crate::voice::Owner {
+        session: VOICE_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        device: match &trust {
+            Trust::Device(id) => Some(id.clone()),
+            _ => None,
+        },
+        label: guard
+            .as_ref()
+            .and_then(Guard::device)
+            .map(|d| d.label)
+            .unwrap_or_else(|| {
+                if trust == Trust::Local {
+                    "this machine".into()
+                } else {
+                    "a token connection".into()
+                }
+            }),
+    };
+    let mut voice = crate::voice::session::VoiceSession::new(daemon.voice.clone(), owner);
+    type VoiceDone = (
+        u64,
+        authority::Need,
+        String,
+        Result<Option<(crate::voice::Lease, crate::voice::relay::Relay)>, String>,
+    );
+    let (voice_tx, mut voice_done) = mpsc::channel::<VoiceDone>(16);
     let (replies_tx, mut replies) = mpsc::unbounded_channel::<Reply>();
     // Answers to local pairing commands, ready to send.
     let (frames_tx, mut frames) = mpsc::unbounded_channel::<String>();
@@ -351,6 +380,88 @@ where
         tokio::select! {
             frame = input.next(), if reading => match frame {
                 Some(Ok(text)) => match read_request(&text) {
+                    Ok((_, Request::VoiceFrame(frame))) => {
+                        if guard.as_ref().is_some_and(|g| g.device().is_none()) {
+                            return Ended::Revoked;
+                        }
+                        let denied = voice.room().is_some_and(|room| {
+                            guard.as_ref().and_then(Guard::device).is_some_and(|d| {
+                                authority::check(
+                                    &d,
+                                    &authority::Need::Tier(Tier::Chat, authority::Scope::Thread(room.into())),
+                                )
+                                .is_err()
+                            })
+                        });
+                        if denied {
+                            voice.close_all("this device's access changed");
+                        } else {
+                            voice.frame(&frame);
+                        }
+                    }
+                    Ok((id, Request::Voice(request))) => {
+                        use crate::voice::session::VoiceRequest::*;
+                        let need = authority::voice_needs(&request);
+                        if guard.as_ref().is_some_and(|g| g.device().is_none()) {
+                            return Ended::Revoked;
+                        }
+                        if let Some(d) = guard.as_ref().and_then(Guard::device) {
+                            if let Err(e) = authority::check(&d, &need) {
+                                if let Err(stop) = send(&mut output, &mut guard, refusal(json!(id), e)).await {
+                                    return stop.into();
+                                }
+                                continue;
+                            }
+                        }
+                        let is_open = matches!(request, VoiceServerOpen { .. });
+                        let result = match request {
+                            VoiceServerStatus {} => Ok(serde_json::to_value(daemon.voice.status()).unwrap()),
+                            VoiceServerInstall {} => daemon.voice.install().map(|_| Value::Null),
+                            VoiceServerInstallCancel {} => {
+                                daemon.voice.cancel_install();
+                                Ok(Value::Null)
+                            }
+                            VoiceServerClose { channel, reason } => {
+                                voice.close(channel, &reason);
+                                Ok(Value::Null)
+                            }
+                            VoiceServerWarm { room } | VoiceServerOpen { room } => {
+                                let open = is_open;
+                                let server = daemon.voice.clone();
+                                let owner = voice.owner.clone();
+                                let tx = voice_tx.clone();
+                                in_flight += 1;
+                                tokio::spawn(async move {
+                                    let result = if open {
+                                        match server.acquire(owner).await {
+                                            Ok(lease) => crate::voice::relay::Relay::connect(lease.running())
+                                                .await
+                                                .and_then(|relay| {
+                                                    if lease.bind_relay(&relay) {
+                                                        Ok(Some((lease, relay)))
+                                                    } else {
+                                                        Err("taken over by a newer connection from this device"
+                                                            .into())
+                                                    }
+                                                }),
+                                            Err(e) => Err(e),
+                                        }
+                                    } else {
+                                        server.warm().await.map(|_| None)
+                                    };
+                                    let _ = tx.send((id, need, room, result)).await;
+                                });
+                                continue;
+                            }
+                        };
+                        let frame = match result {
+                            Ok(v) => json!({"id":id,"ok":v}).to_string(),
+                            Err(e) => refusal(json!(id), e),
+                        };
+                        if let Err(stop) = send(&mut output, &mut guard, frame).await {
+                            return stop.into();
+                        }
+                    }
                     Ok((id, Request::Devices(request))) => {
                         let frame = match trust {
                             Trust::Local => match manage(&daemon.devices, request) {
@@ -437,10 +548,54 @@ where
                     return Ended::Closed;
                 }
                 None => {
+                    voice.close_all("connection closed");
                     reading = false;
                     drained.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
                 }
             },
+            Some((id,need,room,result))=voice_done.recv()=>{
+                in_flight -= 1;
+                let allowed = reading
+                    && guard.as_ref().map_or(true, |g| {
+                        g.device()
+                            .is_some_and(|d| authority::check(&d, &need).is_ok())
+                    });
+                let result = if !allowed {
+                    Err("this device's access changed".into())
+                } else {
+                    result.map(|v| match v {
+                        Some((lease, relay)) => {
+                            json!({"channel":voice.attach(room,lease,relay),"protocolVersion":1})
+                        }
+                        None => Value::Null,
+                    })
+                };
+                let frame = match result {
+                    Ok(v) => json!({"id":id,"ok":v}).to_string(),
+                    Err(e) => refusal(json!(id), e),
+                };
+                if let Err(stop) = send(&mut output, &mut guard, frame).await {
+                    return stop.into();
+                }
+            }
+            Some(line)=voice.next_line(), if reading=>{
+                let denied = voice.room().is_some_and(|room| {
+                    guard.as_ref().map_or(false, |g| {
+                        g.device().map_or(true, |d| {
+                            authority::check(
+                                &d,
+                                &authority::Need::Tier(Tier::Chat, authority::Scope::Thread(room.into())),
+                            )
+                            .is_err()
+                        })
+                    })
+                });
+                if denied {
+                    voice.close_all("this device's access changed");
+                } else if let Err(stop) = send(&mut output, &mut guard, line).await {
+                    return stop.into();
+                }
+            }
             Some(frame) = frames.recv() => {
                 in_flight -= 1;
                 if let Err(stop) = send(&mut output, &mut guard, frame).await {
@@ -549,6 +704,8 @@ fn manage(devices: &Devices, request: DevicesRequest) -> Result<Value, String> {
 }
 
 enum Request {
+    Voice(crate::voice::session::VoiceRequest),
+    VoiceFrame(Value),
     Host(Command),
     Devices(DevicesRequest),
     Gateway(crate::gateway_cli::KeysRequest),
@@ -566,29 +723,65 @@ fn event_frame(envelope: &Envelope) -> String {
 
 /// A request's id and command, or the refusal to send back.
 fn read_request(text: &str) -> Result<(u64, Request), String> {
-    let mut value: Value = serde_json::from_str(text).map_err(|e| refusal(Value::Null, format!("not JSON: {e}")))?;
-    let id = value.get("id").and_then(Value::as_u64).ok_or_else(|| refusal(Value::Null, "every request needs a numeric id"))?;
+    let mut value: Value =
+        serde_json::from_str(text).map_err(|e| refusal(Value::Null, format!("not JSON: {e}")))?;
+    if value.get("voice").is_some() && value.get("id").is_none() {
+        return Ok((0, Request::VoiceFrame(value["voice"].clone())));
+    }
+    let id = value
+        .get("id")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| refusal(Value::Null, "every request needs a numeric id"))?;
     if let Value::Object(fields) = &mut value {
         fields.remove("id");
-        fields.entry("args").or_insert_with(|| Value::Object(Default::default()));
+        fields
+            .entry("args")
+            .or_insert_with(|| Value::Object(Default::default()));
+    }
+    if value["cmd"]
+        .as_str()
+        .is_some_and(|c| c.starts_with("voice_server_"))
+    {
+        return serde_json::from_value(value)
+            .map(|r| (id, Request::Voice(r)))
+            .map_err(|e| refusal(json!(id), e.to_string()));
     }
     if value["cmd"] == "hello" {
         return Err(refusal(json!(id), "already said hello"));
     }
-    if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("devices_")) {
-        let request = serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
+    if value["cmd"]
+        .as_str()
+        .is_some_and(|cmd| cmd.starts_with("devices_"))
+    {
+        let request =
+            serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
         return Ok((id, Request::Devices(request)));
     }
-    if matches!(value["cmd"].as_str(), Some("gateway_status" | "gateway_configure" | "gateway_providers")) {
-        let request = serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
+    if matches!(
+        value["cmd"].as_str(),
+        Some("gateway_status" | "gateway_configure" | "gateway_providers")
+    ) {
+        let request =
+            serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
         return Ok((id, Request::GatewayAdmin(request)));
     }
-    if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("gateway_keys_")) {
-        let request = serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
+    if value["cmd"]
+        .as_str()
+        .is_some_and(|cmd| cmd.starts_with("gateway_keys_"))
+    {
+        let request =
+            serde_json::from_value(value).map_err(|e| refusal(json!(id), e.to_string()))?;
         return Ok((id, Request::Gateway(request)));
     }
-    if value["cmd"].as_str().is_some_and(|cmd| cmd.starts_with("pair_") || cmd.starts_with("remote_")) {
-        let request = serde_json::from_value(value).map_err(|e| crate::pair_commands::Refusal::new(e.to_string(), "bad_request").frame(id).to_string())?;
+    if value["cmd"]
+        .as_str()
+        .is_some_and(|cmd| cmd.starts_with("pair_") || cmd.starts_with("remote_"))
+    {
+        let request = serde_json::from_value(value).map_err(|e| {
+            crate::pair_commands::Refusal::new(e.to_string(), "bad_request")
+                .frame(id)
+                .to_string()
+        })?;
         return Ok((id, Request::Pairing(request)));
     }
     let command = Command::from_json(value).map_err(|why| refusal(json!(id), why))?;
@@ -675,6 +868,7 @@ mod tests {
         let host = Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current());
         let devices = Arc::new(Devices::open(&data.0));
         let daemon = Daemon {
+            voice: crate::voice::VoiceServer::new(&data.0),
             host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: Some("secret".into()), devices,
             gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
             #[cfg(feature = "remote")] invites: Default::default(),
@@ -1413,6 +1607,7 @@ mod tests {
         daemon.devices.set_tier(&id(2), Tier::Full).unwrap();
         daemon.devices.revoke(&phone).unwrap();
         let restarted = Arc::new(Daemon {
+            voice: crate::voice::VoiceServer::new(&data.0),
             host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
             host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
             gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
@@ -1529,6 +1724,7 @@ mod tests {
         assert_eq!(local.until_reply(3).await.pop().unwrap()["ok"], json!({ "enabled": false, "endpoint_id": null, "port": null, "advertise": addrs }));
 
         let restarted = Arc::new(Daemon {
+            voice: crate::voice::VoiceServer::new(&data.0),
             host: Host::new(HostPaths { data: data.0.clone(), downloads: None }, tokio::runtime::Handle::current()),
             host_id: "host-1".into(), boot_id: "boot-2".into(), token: None, devices: Arc::new(Devices::open(&data.0)),
             gateway_keys: Arc::new(GatewayKeys::load(&data.0).unwrap()), gateway: Default::default(), data: data.0.clone(),
@@ -1567,5 +1763,129 @@ mod tests {
         assert_eq!(local.until_reply(2).await.pop().unwrap()["reason"], "bad_request");
         local.send(json!({ "id": 3, "cmd": "pair_start", "args": { "tier": "admin" } })).await;
         assert_eq!(local.until_reply(3).await.pop().unwrap()["reason"], "bad_request");
+    }
+    #[tokio::test]
+    async fn voice_frames_stay_on_the_owning_session_and_out_of_events() {
+        let (mut daemon, data) = daemon();
+        let (running, task) = crate::voice::test_helper::fake_helper("test").await;
+        Arc::get_mut(&mut daemon).unwrap().voice =
+            crate::voice::test_helper::server_with_helper(&data.0, running);
+        let mut a = connect_to(&daemon, Trust::Local);
+        let mut b = connect_to(&daemon, Trust::Local);
+        let hello = a.hello().await;
+        assert!(hello["ok"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("voice_server_v1")));
+        b.hello().await;
+        let seq = daemon.host.events().last_seq();
+        a.send(json!({"id":1,"cmd":"voice_server_open","args":{"room":"r"}}))
+            .await;
+        let channel = a.until_reply(1).await.pop().unwrap()["ok"]["channel"].clone();
+        assert_eq!(channel, 1);
+        for seq in 1..=40 {
+            a.send(json!({"voice":{"channel":channel,"bin":crate::voice::test_helper::bin(seq)}}))
+                .await;
+        }
+        let mut bins = 0;
+        let mut acks = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while bins < 40 || acks.len() < 2 {
+                let frame = a.next().await.unwrap();
+                if frame["voice"]["bin"].is_string() {
+                    bins += 1
+                }
+                if let Some(rx) = frame["voice"]["rx"].as_u64() {
+                    acks.push(rx)
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(acks, vec![16, 32]);
+        assert_eq!(daemon.host.events().last_seq(), seq);
+        assert!(frames_for(&mut b, Duration::from_millis(30))
+            .await
+            .iter()
+            .all(|f| f.get("voice").is_none()));
+        a.send(json!({"id":2,"cmd":"voice_capabilities"})).await;
+        assert!(a.until_reply(2).await.last().unwrap().get("ok").is_some());
+        a.send(
+            json!({"id":3,"cmd":"voice_server_close","args":{"channel":channel,"reason":"done"}}),
+        )
+        .await;
+        assert!(a.until_reply(3).await.last().unwrap().get("ok").is_some());
+        assert!(!daemon.voice.status().busy);
+        task.abort();
+    }
+    #[tokio::test]
+    async fn voice_requests_need_chat_and_install_needs_full() {
+        let (mut daemon, data) = daemon();
+        let (running, task) = crate::voice::test_helper::fake_helper("test").await;
+        Arc::get_mut(&mut daemon).unwrap().voice =
+            crate::voice::test_helper::server_with_helper(&data.0, running);
+        let phone = add(&daemon, 1, Tier::ReadOnly, Threads::ALL);
+        let (mut c, _) = connect_device(&daemon, &phone, 1 << 16);
+        c.hello().await;
+        for (id, cmd) in [
+            (1, "voice_server_open"),
+            (2, "voice_server_warm"),
+            (3, "voice_server_install"),
+            (4, "voice_server_install_cancel"),
+        ] {
+            c.send(json!({"id":id,"cmd":cmd,"args":{"room":"r"}})).await;
+            assert!(c.until_reply(id).await.last().unwrap().get("err").is_some());
+        }
+        c.send(json!({"id":5,"cmd":"voice_server_status"})).await;
+        assert!(c.until_reply(5).await.last().unwrap().get("ok").is_some());
+        daemon.devices.set_tier(&phone, Tier::Chat).unwrap();
+        c.send(json!({"id":6,"cmd":"voice_server_open","args":{"room":"r"}}))
+            .await;
+        assert!(c.until_reply(6).await.last().unwrap()["ok"]["channel"].is_number());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn voice_same_device_takeover_releases_exclusive_helper_before_open() {
+        let (mut daemon, data) = daemon();
+        let (running, task) = crate::voice::test_helper::fake_helper("test").await;
+        Arc::get_mut(&mut daemon).unwrap().voice =
+            crate::voice::test_helper::server_with_helper(&data.0, running);
+        let phone = add(&daemon, 1, Tier::Chat, Threads::ALL);
+        let (mut a, _) = connect_device(&daemon, &phone, 1 << 16);
+        a.hello().await;
+        a.send(json!({"id":1,"cmd":"voice_server_open","args":{"room":"r"}}))
+            .await;
+        assert_eq!(a.until_reply(1).await.last().unwrap()["ok"]["channel"], 1);
+        let (mut b, _) = connect_device(&daemon, &phone, 1 << 16);
+        b.hello().await;
+        b.send(json!({"id":1,"cmd":"voice_server_open","args":{"room":"r"}}))
+            .await;
+        assert_eq!(b.until_reply(1).await.last().unwrap()["ok"]["channel"], 1);
+        b.send(json!({"voice":{"channel":1,"ctl":{"type":"start","callId":"takeover","generation":0}}})).await;
+        assert_eq!(b.next().await.unwrap()["voice"]["ctl"]["type"], "ready");
+        assert_eq!(
+            a.next().await.unwrap()["voice"]["closed"],
+            "taken over by a newer connection from this device"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn revoked_voice_request_never_starts_the_helper() {
+        let (mut daemon, data) = daemon();
+        let (running, task) = crate::voice::test_helper::fake_helper("test").await;
+        Arc::get_mut(&mut daemon).unwrap().voice =
+            crate::voice::test_helper::server_with_helper(&data.0, running);
+        let phone = add(&daemon, 1, Tier::Full, Threads::ALL);
+        let (mut client, session) = connect_device(&daemon, &phone, 1 << 16);
+        client.hello().await;
+        client
+            .send(json!({"id":1,"cmd":"voice_server_warm","args":{"room":"r"}}))
+            .await;
+        daemon.devices.revoke(&phone).unwrap();
+        assert_eq!(session.await.unwrap(), Ended::Revoked);
+        assert!(!daemon.voice.status().running);
+        task.abort();
     }
 }

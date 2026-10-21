@@ -147,3 +147,20 @@ A client that reconnects after a restart gets `resumed: false` and reloads.
 | `… is in use by apex-daemon --stdio (pid N)` | Someone has a `--stdio` session running the host in-process. Close it, or use the service. |
 | `the socket path … is longer than 100 bytes` | Pick a shorter `--data-dir`. |
 | An agent "was not found" | It isn't on your login shell's PATH. Check with `bash -lc 'command -v <agent>'`. |
+
+## Voice calls from the phone
+
+Voice setup starts from the phone in a server thread and requires Full access.
+It downloads about 0.8 GB once and needs three times the download size free
+while installing. Python, speech engines and models stay in
+`~/.local/share/dev.apexdeck.app/voice-server/`; `--data-dir` puts the same
+`voice-server/` folder under that data directory. No system Python is changed.
+
+Calls listen and speak on the Linux x86-64 server, so the Mac can be off.
+The helper unloads after ten idle minutes and stops with the daemon.
+Metadata and timings go to `voice-server/calls.log`; audio and transcripts
+are never written there. To remove voice, delete `voice-server/` while no
+call or setup is running.
+
+Each call has bounded queues. If a queue fills, the daemon closes that voice
+channel with a clear connection error; it keeps the chat connection available.
