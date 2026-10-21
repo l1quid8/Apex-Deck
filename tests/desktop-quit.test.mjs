@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { QuitGate, ANSWER_TIME } from '../desktop/quit.mjs';
+
+test('the direct exit path awaits voice shutdown without relying on will-quit', async () => {
+  // Execute the production quit function without starting Electron or a window.
+  const source = readFileSync(new URL('../desktop/main.mjs', import.meta.url), 'utf8');
+  const quit = source.match(/async function finishQuit\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(quit);
+  let voiceStopped = false, daemonStopped = false;
+  const context = {
+    finishing: false,
+    gate: { confirm() {} },
+    localVoice: { async shutdown() { await Promise.resolve(); voiceStopped = true; } },
+    flushProfile: async () => {},
+    local: { owned: true, async stop() { daemonStopped = true; } },
+    app: { exit(code) { assert.equal(code, 0); assert.ok(voiceStopped, 'voice helper stopped before app.exit'); assert.ok(daemonStopped); } },
+  };
+  await runInNewContext(`${quit}\nfinishQuit()`, context);
+  assert.ok(voiceStopped);
+});
 
 function fakeTimers() {
   let now = 0; const pending = [];

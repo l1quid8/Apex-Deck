@@ -1,6 +1,6 @@
 # Local agent voice verification
 
-Implementation branch: `feat/voice-calls`. Unmerged, unpublished development work. No DMG or installed-app replacement was performed for this feature.
+Implementation branch: `feat/voice-calls`; packaged validation fixes: `fix/voice-packaged-validation`. Unmerged, unpublished development work. Signed isolated test apps were built for validation; no release DMG or installed-app replacement was performed.
 
 ## Implemented
 
@@ -47,7 +47,7 @@ A fresh reviewer found and reproduced deferred-dispatch cancellation races, repe
 
 ## Remaining release gates
 
-- Signed packaged app: fresh microphone prompt, denial/retry, physical audible output, clean-Mac setup without developer tools, offline reuse, End/app quit and microphone/process release. Packaging was not authorized in this task.
+- Signed packaged app: fresh microphone prompt and denial/retry, clean-Mac setup without developer tools, and final End/app-quit microphone/process release. See the packaged validation evidence below for the narrower microphone/audio checks that were completed.
 - Controlled speaker/headphone AEC and self-transcription tests, coughing/background noise, real natural pauses, measured interruption flush <=150 ms, and at least 20 actual microphone turns with audible p50/p95 latency. Do not infer success from track constraints or generated WAVs.
 - Real external OpenAI-compatible API credentials, remote-host call and multi-window owner smoke; deterministic tests alone do not establish these deployment paths.
 - Redistribution review of all pinned binary wheels and linguistic assets, especially eSpeak/phonemizer GPL-family components.
@@ -55,3 +55,31 @@ A fresh reviewer found and reproduced deferred-dispatch cancellation races, repe
 ## Deliberate limits
 
 Assistant task-execution conversations retain their owner orchestration and reject voice posts; use a regular conversational agent thread. Correlation IDs are retained in a process-local bounded 4,096-entry table, rejecting new requests when full rather than allowing an old replay to execute; host restart loses this table. Lost posts are never automatically retried. Semantic model behavior was benchmarked and deterministic pause-deferral tested, but natural human pause quality is still an acoustic gate. This is development-ready work, not a release certification.
+
+## Packaged validation follow-up, 2026-10-20
+
+User-authorized packaged tests ran from `release`, on branch `fix/voice-packaged-validation`, with isolated daemon/profile data in `/tmp/apex-voice-packaged-validation`. The installed app and its live conversation were preserved. Test apps used bundle ID `dev.apexdeck.voicevalidation`; the final app's display name is **Apex Deck Voice Test**. The existing verified voice runtime/models were reused. This does not test a clean-machine installation.
+
+### Observed evidence
+
+- Developer ID signing and `codesign --verify --deep --strict` passed. The final package is `release/voice-validation-verified/mac-arm64/Apex Deck.app`. Its microphone usage description is present. Its signed test-only `LSEnvironment` selects the isolated profile when launched through Launch Services. None of these overrides were added to the production packaging configuration.
+- Composer mic calls captured actual microphone speech in the signed test app. Two read-only shell fixtures (Atlas/Birch) were prepared to make routing observable; a real authenticated Codex CLI participant was also added. The real Codex participant received microphone turns, answered, and recalled the `lunar apricot` history marker from its earlier text turn. Shell fixtures are not real model providers; Codex is the external CLI path exercised here.
+- macOS output was switched from M260VA HDMI to MacBook Pro Speakers, with the built-in MacBook microphone as input. A native AVAudioEngine tap recorded exactly 1,200,000 frames at 48 kHz over 25 seconds. The recording contains Kokoro's complete preview sentence and part of an agent reply. The app's saved human messages in that interval contain the person's words, rather than the audible preview sentence. This is one observed speaker/AEC case, not a controlled multi-volume or headphone certification.
+- A trimmed recording containing only the generated preview is available at `release/kokoro-packaged-speaker-preview.wav`. Full local audio/transcripts, command logs and content hashes remain ignored under `.superpowers/sdd/voice-packaged-validation/`; do not commit them.
+- An earlier FFmpeg AVFoundation recording had inconsistent sample timing and cannot support acoustic latency measurements. It was superseded by the native recorder, not counted as a passing measurement.
+- One unexpected non-English transcript appeared during the uncontrolled room/synthetic-input test. Its source was not established; noisy-input and false-transcript behavior remain gates rather than a claimed pass.
+
+### Reproduced failures and changes
+
+1. **Punctuation after a routing name was rejected.** `Call Jigga. check the build` returned `unknown`. The parser now accepts punctuation/whitespace boundaries while rejecting partial-name matches such as `Jiggabot`. The regression failed before the change and passes afterward. A final acoustic spoken-switch retest remains pending.
+2. **Normal quit orphaned the helper.** The original packaged app exited while its Python helper remained alive with parent PID 1. `finishQuit()` uses `app.exit()`, which bypasses `will-quit`; it now explicitly awaits voice shutdown before exiting. A test executes the production quit function with resource stubs and verifies shutdown before exit; the original function fails that assertion. The final packaged UI quit/process retest remains pending. Orphaned test helpers were explicitly terminated; this cleanup is not evidence that normal quit is fixed acoustically/end to end.
+3. **The call panel could extend above the window in split layouts.** The screenshot reproduced this in a top-right pane. It now portals to the body and uses the existing viewport-clamped popover positioning, with resize/scroll tracking and bounded scrolling. TypeScript/build pass; the final packaged visual retest remains pending.
+
+### Verification and blockers
+
+- TypeScript passed. Full JavaScript suite passed **1,795 tests** after the parser/panel/quit implementation changes; the subsequently added direct-exit regression and existing quit cases passed **6/6** separately. No Rust or Python implementation changed in this follow-up.
+- The final signed archive's main entry, 142 UI assets and sidecar sources were compared with the checkout/build outputs and matched (`package-content.json`).
+- A permission reset was limited to the test bundle ID. Initial direct-executable launches may inherit their launcher’s macOS responsibility context, so successful microphone capture does **not** establish the fresh app-specific permission flow. The later Launch Services call remained in `warming`; no fresh OS prompt/denial was independently observed.
+- Computer Use refused access to `com.apple.UserNotificationCenter` “for safety reasons.” A manual denial was requested, but no response was received in this run. Desktop automation subsequently failed repeatedly with `Sky Computer Use native pipe startup failed`, including after a kernel reset. It could not complete denial/retry, final package layout/quit checks, or restore the original HDMI output.
+- The running test app/helper were terminated explicitly after automation disconnected, to avoid leaving a test microphone session open. The installed app was left running. **Audio output remains on MacBook Pro Speakers; the original output was M260VA.**
+- Still unverified: fresh permission denial/recovery; final packaged routing/layout/quit fixes; controlled headphone/multiple speaker-volume and background-noise cases; <=150 ms physical interruption flush; and 20 controlled microphone turns with audible p50/p95 latency. No latency percentile is claimed from this run.

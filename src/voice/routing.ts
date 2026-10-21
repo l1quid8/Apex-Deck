@@ -26,7 +26,7 @@ export function resolveCallCommand<T extends Candidate>(
     [candidate.name, ...candidate.aliases].flatMap((name) => {
       const n = normalize(name);
       const c = normalize(command[1]);
-      return n && (c === n || c.startsWith(n + " "))
+      return n && c.startsWith(n) && (c.length === n.length || /^[\s,.:;!?]/.test(c.slice(n.length)))
         ? [{ candidate, length: n.length }]
         : [];
     }),

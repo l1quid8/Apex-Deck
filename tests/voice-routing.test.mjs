@@ -25,3 +25,12 @@ test("ambiguous aliases require a choice and unknown calls cannot dispatch", () 
   );
   assert.equal(resolveCallCommand("call Unknown", [a]).kind, "unknown");
 });
+test("transcript punctuation separates the called agent from its request", () => {
+  for (const separator of [". ", ", ", ": ", "! ", "? ", "; "]) {
+    assert.deepEqual(resolveCallCommand(`Call Jigga${separator}check the build`, [a]), {
+      kind: "switch", candidate: a, text: "check the build",
+    });
+  }
+  assert.equal(resolveCallCommand("Call Jiggabot check the build", [a]).kind, "unknown");
+  assert.deepEqual(resolveCallCommand("Call Jigga.", [a]), { kind: "switch", candidate: a, text: "" });
+});

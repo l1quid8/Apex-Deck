@@ -564,6 +564,8 @@ async function finishQuit() {
   if (finishing) return;
   finishing = true;
   gate.confirm();
+  // app.exit() skips will-quit; stop the voice helper on this path too.
+  await localVoice.shutdown();
   // Sign-ins in the docked browser last: app.exit doesn't wait for Chromium to save them.
   await flushProfile();
   // The daemon Deck started ends with it; a daemon it found, or the LaunchAgent, goes on.

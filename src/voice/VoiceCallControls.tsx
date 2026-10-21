@@ -1,4 +1,6 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
+import { popoverTop } from "../floating.ts";
 import { voiceController, voiceRegistration } from "./coordinator.ts";
 import { preferenceFor, voicePreferenceKey } from "./settings.ts";
 import type { VoiceCandidate } from "./types.ts";
@@ -20,6 +22,8 @@ export function VoiceCallControls({
   const [progress, setProgress] = useState("");
   const [installing, setInstalling] = useState(false);
   const [download, setDownload] = useState(0);
+  const button = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const r = window.apexDeck?.voice;
     if (!r) return;
@@ -30,7 +34,6 @@ export function VoiceCallControls({
       ),
     );
   }, []);
-  if (!window.apexDeck?.voice) return null;
   const scope = state.scope;
   const here =
     scope &&
@@ -46,6 +49,29 @@ export function VoiceCallControls({
           c.roomId === scope.roomId,
       )
     : undefined;
+  const showPanel = picking || (here && active) || (here && state.status === "error");
+  useLayoutEffect(() => {
+    if (!showPanel) return;
+    const place = () => {
+      if (!button.current || !panel.current) return;
+      const anchor = button.current.getBoundingClientRect();
+      const box = panel.current.getBoundingClientRect();
+      panel.current.style.left = `${Math.max(8, Math.min(anchor.right - box.width, window.innerWidth - box.width - 8))}px`;
+      panel.current.style.top = `${popoverTop(anchor, box.height, window.innerHeight)}px`;
+    };
+    place();
+    const resize = new ResizeObserver(place);
+    if (panel.current) resize.observe(panel.current);
+    if (button.current) resize.observe(button.current);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      resize.disconnect();
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [showPanel]);
+  if (!window.apexDeck?.voice) return null;
   const start = () => {
     if (candidates.length === 1) {
       const r = voiceRegistration(candidates[0]);
@@ -83,6 +109,7 @@ export function VoiceCallControls({
   return (
     <div className="voice-call-controls">
       <button
+        ref={button}
         type="button"
         className={`voice-mic${here && active ? " live" : ""}`}
         aria-label={here && active ? "End voice call" : "Call an agent"}
@@ -103,8 +130,9 @@ export function VoiceCallControls({
           <path d="M5 10v2a7 7 0 0014 0v-2M12 19v3M8 22h8" />
         </svg>
       </button>
-      {(picking || (here && active) || (here && state.status === "error")) && (
+      {showPanel && createPortal(
         <div
+          ref={panel}
           className="voice-call-panel"
           role="region"
           aria-label="Agent voice call"
@@ -300,7 +328,7 @@ export function VoiceCallControls({
               End call
             </button>
           )}
-        </div>
+        </div>, document.body
       )}
     </div>
   );
