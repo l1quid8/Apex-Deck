@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('apexDeck', {
     install: () => ipcRenderer.invoke('voice:install'),
     cancelInstall: () => ipcRenderer.invoke('voice:cancelInstall'),
     start: () => ipcRenderer.invoke('voice:start'),
+    warm: () => ipcRenderer.invoke('voice:warm'),
     stop: () => ipcRenderer.invoke('voice:stop'),
     onProgress: (cb) => subscribe('voice:progress', cb),
     onSuspend: (cb) => subscribe('voice:suspend', cb),

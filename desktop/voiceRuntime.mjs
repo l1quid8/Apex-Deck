@@ -122,8 +122,10 @@ export class VoiceRuntimeManager {
     platform = process.platform,
     arch = process.arch,
     progress = () => {},
+    log = () => {},
+    idleMs = 600000,
   }) {
-    Object.assign(this, { root, source, origins, platform, arch, progress });
+    Object.assign(this, { root, source, origins, platform, arch, progress, log, idleMs });
     this.owner = null;
     this.child = null;
     this.installing = null;
@@ -305,6 +307,26 @@ export class VoiceRuntimeManager {
       this.starting = null;
     }
   }
+  // Load the models before a call (mic hover) so tapping the mic starts fast.
+  async warm() {
+    const status = await this.status();
+    if (!status.supported || !status.installed) return false;
+    if (!this.connection && !this.starting) {
+      this.starting = this.launch();
+      try {
+        await this.starting;
+      } finally {
+        this.starting = null;
+      }
+    } else if (this.starting) await this.starting;
+    if (this.owner === null) this.armIdle();
+    return true;
+  }
+  armIdle() {
+    clearTimeout(this.idle);
+    this.idle = setTimeout(() => this.shutdown(), this.idleMs);
+    this.idle.unref?.();
+  }
   async launch() {
     if (!(await this.status()).installed)
       throw Error("Set up local voice first");
@@ -374,13 +396,27 @@ export class VoiceRuntimeManager {
           } catch {}
         }
       });
-      child.stderr.on("data", () => {}); // Never print session content or credentials.
+      // The helper only writes fixed JSON status lines here, never session content or credentials.
+      let errBuffer = "";
+      child.stderr.on("data", (chunk) => {
+        errBuffer = (errBuffer + chunk.toString()).slice(-65536);
+        const lines = errBuffer.split("\n");
+        errBuffer = lines.pop();
+        for (const line of lines) {
+          try {
+            const m = JSON.parse(line);
+            if (m.type === "sessionError" || m.type === "speechDropped")
+              this.log(JSON.stringify(m));
+          } catch {}
+        }
+      });
       child.once("error", (e) => {
         clearTimeout(timer);
         reject(e);
       });
-      child.once("exit", () => {
+      child.once("exit", (code, signal) => {
         clearTimeout(timer);
+        this.log(JSON.stringify({ type: "helperExit", code, signal }));
         this.child = null;
         this.connection = null;
         this.owner = null;
@@ -391,9 +427,7 @@ export class VoiceRuntimeManager {
   async stop(owner) {
     if (this.owner !== owner) return;
     this.owner = null;
-    clearTimeout(this.idle);
-    this.idle = setTimeout(() => this.shutdown(), 120000);
-    this.idle.unref?.();
+    this.armIdle();
   }
   async shutdown() {
     clearTimeout(this.idle);

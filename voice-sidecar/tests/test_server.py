@@ -41,3 +41,25 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
    async with connect(self.url,origin='app://deck') as second:
     await second.send(json.dumps({'type':'auth','token':self.token}));await asyncio.wait_for(second.wait_closed(),2);self.assertEqual(second.close_code,1008)
    await first.send(b'malformed');await asyncio.wait_for(first.wait_closed(),2);self.assertEqual(first.close_code,1011)
+
+@unittest.skipUnless(importlib.util.find_spec('websockets'),'Socket tests require the managed runtime')
+class LongReplyTests(SocketTests):
+ async def asyncSetUp(self):
+  import time
+  FakeEngines.synthesize=lambda self,text,voice:(time.sleep(.05),b'\0'*1024)[1]
+  await super().asyncSetUp()
+ async def asyncTearDown(self):
+  FakeEngines.synthesize=lambda self,text,voice:b'\0'*1024
+  await super().asyncTearDown()
+ async def test_long_reply_does_not_drop_call(self):
+  from websockets.asyncio.client import connect
+  async with connect(self.url,origin='app://deck') as ws:
+   await ws.send(json.dumps({'type':'auth','token':self.token}));await ws.send(json.dumps({'type':'start','callId':'c','generation':0,'voice':'am_michael'}))
+   self.assertEqual(json.loads(await asyncio.wait_for(ws.recv(),2))['type'],'ready')
+   for i in range(40):await ws.send(json.dumps({'type':'speak','callId':'c','generation':0,'requestId':'r','segmentId':i+1,'text':'Sentence number %d.'%i}))
+   await ws.send(json.dumps({'type':'playbackComplete','callId':'c','generation':0}))
+   await asyncio.sleep(.2);await ws.send(json.dumps({'type':'end','callId':'c','generation':0}))
+   # The server closes with 1000 after a clean end; an overflowed queue closes with 1011.
+   with contextlib.suppress(Exception):
+    while True:await asyncio.wait_for(ws.recv(),3)
+   self.assertNotEqual(ws.close_code,1011)

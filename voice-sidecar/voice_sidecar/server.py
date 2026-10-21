@@ -22,7 +22,7 @@ async def run(args):
    if auth.get('type')!='auth' or not secrets.compare_digest(str(auth.get('token','')),token):await ws.close(1008,'Authentication failed');return
    if owner is not None:await ws.close(1008,'Call already active');return
    owner=ws
-   sequence=0;last_input=-1;pending=set();chunks=[];speech_queue=asyncio.Queue(maxsize=8)
+   sequence=0;last_input=-1;pending=set();chunks=[];speech_queue=asyncio.Queue(maxsize=512)
    async def send(event):
     nonlocal sequence
     if event['type']=='audio':
@@ -102,14 +102,17 @@ async def run(args):
        if kind=='speak':
         text=msg.get('text','');v=msg.get('voice',voice);sid=msg.get('segmentId');rid=msg.get('requestId')
         if not isinstance(text,str) or len(text)>2048 or len(text.split())>22 or v not in engines.voices or not isinstance(sid,int) or not isinstance(rid,str) or len(rid)>128:raise ValueError('Invalid speech segment')
-        speech_queue.put_nowait((pipe.generation,rid,sid,text,v))
+        # Long replies stream in faster than Kokoro speaks; a full queue drops the segment, never the call.
+        if speech_queue.full():print(json.dumps({'type':'speechDropped'}),file=sys.stderr,flush=True)
+        else:speech_queue.put_nowait((pipe.generation,rid,sid,text,v))
        elif kind=='playbackProgress':credits.consumed(msg.get('bytes'))
        elif kind=='playbackComplete':pass
        elif kind=='end':break
     if speaker_task.done():await speaker_task
   except Exception as error:
    # Never log transcripts, tokens, or audio.
-   print(json.dumps({'type':'sessionError','class':type(error).__name__}),file=sys.stderr,flush=True)
+   # ValueError messages are our own fixed strings, so they are safe to log.
+   print(json.dumps({'type':'sessionError','class':type(error).__name__,'message':str(error)[:200] if isinstance(error,ValueError) else ''}),file=sys.stderr,flush=True)
    await ws.close(1011,'Voice session ended')
   finally:
    if owner is ws:

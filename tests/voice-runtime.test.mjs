@@ -58,3 +58,19 @@ test("stale install owner can be recovered without removing live locks", async (
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+test("warm loads the helper and keeps it 10 minutes without a call", async () => {
+  const m = new VoiceRuntimeManager({ root: "/nonexistent", source: "/x", platform: "darwin", arch: "arm64" });
+  assert.equal(m.idleMs, 600000);
+  let launches = 0;
+  m.status = async () => ({ supported: true, installed: true });
+  m.launch = async () => { launches++; m.connection = { port: 9, token: "t", protocolVersion: 1 }; return m.connection; };
+  assert.equal(await m.warm(), true);
+  assert.equal(await m.warm(), true);
+  assert.equal(launches, 1);
+  assert.ok(m.idle);
+  await m.start(1);
+  assert.equal(launches, 1);
+  await m.stop(1);
+  assert.ok(m.idle);
+  clearTimeout(m.idle);
+});

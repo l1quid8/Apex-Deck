@@ -28,6 +28,14 @@ const runtime = () => {
   if (!r) throw Error("Open the desktop app to use local calls");
   return r;
 };
+// Mic hover: start loading Whisper + Kokoro so the call opens without the warm-up wait.
+let lastWarm = 0;
+export function warmVoice() {
+  const now = Date.now();
+  if (now - lastWarm < 30000) return;
+  lastWarm = now;
+  void window.apexDeck?.voice?.warm?.().catch(() => {});
+}
 export const voiceController = createVoiceController({
   runtime: {
     status: () => runtime().status(),

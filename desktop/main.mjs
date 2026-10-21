@@ -328,6 +328,7 @@ const localVoice = new VoiceRuntimeManager({
   source: app.isPackaged ? path.join(process.resourcesPath, 'voice-sidecar') : path.join(repo, 'voice-sidecar'),
   origins: ['app://deck', 'null', ...(devUrl ? [new URL(devUrl).origin] : [])],
   progress: (value) => { for (const {win} of windows.values()) win.webContents.send('voice:progress', value); },
+  log: (line) => { fs.promises.appendFile(voiceLog(), `${new Date().toISOString()} [voice helper] ${line}\n`).catch(() => {}); },
 });
 handle('voice:status', () => localVoice.status());
 handle('voice:install', () => localVoice.install());
@@ -337,14 +338,15 @@ handle('voice:start', ({win}) => {
   win.webContents.once('destroyed', () => void localVoice.stop(id));
   return localVoice.start(id);
 });
+handle('voice:warm', () => localVoice.warm().catch(() => false));
 handle('voice:stop', ({win}) => localVoice.stop(win.webContents.id));
 app.on('will-quit', () => void localVoice.shutdown());
-// Save each "[voice end]" line from Deck windows so dropped calls can be traced.
+// Save each "[voice end]" / "[voice event]" line from Deck windows so dropped calls can be traced.
 const voiceLog = () => path.join(app.getPath('userData'), 'voice-calls.log');
 app.on('web-contents-created', (_event, contents) => {
   contents.on('console-message', (...args) => {
     const message = String(args[0]?.message ?? args[2] ?? '');
-    if (!message.startsWith('[voice end]')) return;
+    if (!message.startsWith('[voice end]') && !message.startsWith('[voice event]')) return;
     fs.promises.appendFile(voiceLog(), `${new Date().toISOString()} ${message}\n`).catch(() => {});
   });
 });

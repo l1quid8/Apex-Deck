@@ -96,8 +96,15 @@ export function createVoiceController(deps: VoiceDependencies) {
     audio?.flush(generation);
     control({ type: "cancel", resetInput });
   };
+  const note = (event: string, detail: Record<string, unknown> = {}) =>
+    console.warn("[voice event] " + JSON.stringify({ callId, event, ...detail }));
+  let reconnecting = false;
   function error(e: Error) {
     if (state.status === "off" || state.status === "error") return;
+    if (e.name === "VoiceDisconnected" && callId) {
+      void reconnect(e);
+      return;
+    }
     const scope = state.scope;
     void end("error: " + e.message)
       .catch(() => {})
@@ -143,6 +150,70 @@ export function createVoiceController(deps: VoiceDependencies) {
     } finally {
       if (owned) await deps.runtime.stop();
     }
+  }
+  // The helper dropped its connection: open a fresh one on the same call so the
+  // thread, the bot's reply in progress and the mic keep going. Two tries, then end clearly.
+  async function reconnect(cause: Error) {
+    if (reconnecting) return;
+    reconnecting = true;
+    const myEpoch = epoch,
+      scope = state.scope;
+    note("helper disconnected", { reason: cause.message });
+    client?.close();
+    client = undefined;
+    generation++;
+    audio?.flush(generation);
+    set({ status: "warming" });
+    try {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const runtime = await deps.runtime.start();
+          if (myEpoch !== epoch || !callId || !scope) return;
+          const connected = await connectHelper(runtime);
+          if (myEpoch !== epoch || !callId) {
+            connected.close();
+            return;
+          }
+          client = connected;
+          sendStart(scope);
+          note("helper reconnected", { attempt });
+          return;
+        } catch (e) {
+          note("reconnect failed", {
+            attempt,
+            reason: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+      if (myEpoch === epoch && callId) {
+        reconnecting = false;
+        error(Error("Voice helper stopped and could not restart. Start a new call."));
+      }
+    } finally {
+      reconnecting = false;
+    }
+  }
+  function connectHelper(runtime: VoiceRuntime) {
+    return deps.connect(
+      runtime,
+      helper,
+      (pcm, gen) => {
+        if (callId && gen === generation) audio?.play(pcm, gen);
+      },
+      error,
+    );
+  }
+  function sendStart(scope: CallScope) {
+    control({
+      type: "start",
+      voice: deps.voice(scope),
+      silenceMs: deps.silence(),
+      nameHints: deps
+        .candidates()
+        .filter((c) => c.hostId === scope.hostId)
+        .map((c) => c.name)
+        .slice(0, 64),
+    });
   }
   function say(text: string, requestId: string) {
     sinceSubmit("first-speech-submit", requestId);
@@ -365,29 +436,13 @@ export function createVoiceController(deps: VoiceDependencies) {
         throw Error(
           "Echo cancellation unavailable. Use a supported audio device before calling.",
         );
-      const connected = await deps.connect(
-        runtime,
-        helper,
-        (pcm, gen) => {
-          if (callId && gen === generation) audio?.play(pcm, gen);
-        },
-        error,
-      );
+      const connected = await connectHelper(runtime);
       if (myEpoch !== epoch) {
         connected.close();
         return;
       }
       client = connected;
-      control({
-        type: "start",
-        voice: deps.voice(scope),
-        silenceMs: deps.silence(),
-        nameHints: deps
-          .candidates()
-          .filter((c) => c.hostId === scope.hostId)
-          .map((c) => c.name)
-          .slice(0, 64),
-      });
+      sendStart(scope);
       deps.focus(scope);
     } catch (e) {
       if (myEpoch === epoch) error(e instanceof Error ? e : Error(String(e)));

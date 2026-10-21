@@ -208,3 +208,36 @@ test("waiting for an agent stays silent until its reply arrives", async (t) => {
   f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "done" });
   assert.equal(f.sent.filter((m) => m.type === "speak").map((m) => m.text).join(" "), "The build passed.");
 });
+test("a dropped helper connection reconnects and keeps the call", async () => {
+  let fail, connects = 0;
+  const sent = [];
+  const scope = { hostId: "h", roomId: "r", participantId: "a" };
+  const c = createVoiceController({
+    runtime: {
+      status: async () => ({ installed: true, supported: true }),
+      start: async () => ({ port: 1, token: "x", protocolVersion: 1 }),
+      stop: async () => {},
+    },
+    openAudio: async () => ({ mute() {}, play() {}, segmentEnd() {}, flush() {}, close() {}, echoCancellation: true }),
+    connect: async (_r, _fn, _a, err) => {
+      connects++;
+      fail = err;
+      return { send: (m) => sent.push(m), audio() {}, close() {} };
+    },
+    candidates: () => [{ ...scope, profileId: "a", name: "Null", aliases: [] }],
+    bridge: () => ({ submit: async () => ({}), cancel: async () => {}, subscribe: () => () => {} }),
+    voice: () => "am_michael",
+    silence: () => 700,
+    focus: () => {},
+  });
+  await c.start(scope);
+  const callId = sent.find((m) => m.type === "start").callId;
+  fail(Object.assign(Error("Local voice disconnected"), { name: "VoiceDisconnected" }));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(connects, 2);
+  const starts = sent.filter((m) => m.type === "start");
+  assert.equal(starts.length, 2);
+  assert.equal(starts[1].callId, callId);
+  assert.notEqual(c.getState().status, "off");
+  assert.notEqual(c.getState().status, "error");
+});
