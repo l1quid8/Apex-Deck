@@ -459,6 +459,11 @@ impl GatewayKeys {
     }
 
     /// Record additional API spend (in microdollars) after a turn finishes.
+    ///
+    /// Monthly spend caps (`max_usd_micros_per_month`) are checked before the turn
+    /// starts in [`Self::reserve_turn`], before the turn's actual cost is known.
+    /// A single in-flight turn can therefore overshoot the monthly cap once; the
+    /// cap will reject the next turn.
     pub fn record_spend(&self, key_id: &str, spend_micros: u64) {
         if spend_micros == 0 {
             return;
