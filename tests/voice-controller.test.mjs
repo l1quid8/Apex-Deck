@@ -188,3 +188,23 @@ test("playback drain returns an idle call to listening", async () => {
   assert.equal(f.c.getState().status, "listening");
   await f.c.end();
 });
+
+
+test("waiting for an agent stays silent until its reply arrives", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture();
+  t.after(() => f.c.end());
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "transcript", callId: start.callId, generation: 0,
+    utteranceId: "silent-wait", text: "Check the build" });
+  await Promise.resolve();
+  assert.equal(f.posted.length, 1);
+  t.mock.timers.tick(5000);
+  assert.equal(f.c.getState().status, "waiting");
+  assert.deepEqual(f.sent.filter((m) => m.type === "speak"), []);
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId,
+    type: "text", text: "The build passed. " });
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "done" });
+  assert.equal(f.sent.filter((m) => m.type === "speak").map((m) => m.text).join(" "), "The build passed.");
+});

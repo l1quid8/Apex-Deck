@@ -62,7 +62,6 @@ export function createVoiceController(deps: VoiceDependencies) {
       }
     | undefined;
   let cleanup: Promise<unknown> = Promise.resolve();
-  let ack: ReturnType<typeof setTimeout> | undefined;
   const utterances = new Set<string>();
   let pendingSwitchText = "";
   let playbackRequest = "";
@@ -96,7 +95,6 @@ export function createVoiceController(deps: VoiceDependencies) {
     generation++;
     audio?.flush(generation);
     control({ type: "cancel", resetInput });
-    clearTimeout(ack);
   };
   function error(e: Error) {
     if (state.status === "off" || state.status === "error") return;
@@ -117,7 +115,6 @@ export function createVoiceController(deps: VoiceDependencies) {
   }
   async function end() {
     epoch++;
-    clearTimeout(ack);
     const owned = runtimeAcquired;
     runtimeAcquired = false;
     callId = "";
@@ -159,10 +156,8 @@ export function createVoiceController(deps: VoiceDependencies) {
     if (e.type === "started") sinceSubmit("queue-to-start", a.id);
     if (e.type === "text" && e.text) {
       sinceSubmit("agent-first-text", a.id);
-      clearTimeout(ack);
       for (const part of a.speech.push(e.text)) say(part, a.id);
     } else if (e.type === "approval" || e.type === "question") {
-      clearTimeout(ack);
       say(
         e.type === "approval"
           ? "Approval is needed in the thread."
@@ -175,7 +170,6 @@ export function createVoiceController(deps: VoiceDependencies) {
       a.failed = true;
       error(Error(e.text ?? "Agent call failed"));
     } else if (e.type === "done" || e.type === "canceled") {
-      clearTimeout(ack);
       if (e.type === "done" && !a.failed)
         for (const part of a.speech.push("", true)) say(part, a.id);
       detach();
@@ -249,9 +243,6 @@ export function createVoiceController(deps: VoiceDependencies) {
       failed: false,
     };
     set({ status: "waiting", error: undefined });
-    ack = setTimeout(() => {
-      if (active?.id === id && state.status === "waiting") say("On it.", id);
-    }, 800);
     try {
       await bridge.submit(turn);
     } catch (e) {

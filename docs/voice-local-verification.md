@@ -7,7 +7,7 @@ Implementation branch: `feat/voice-calls`; packaged validation fixes: `fix/voice
 - Composer microphone immediately beside Send; one agent starts directly, multiple agents show a recipient picker.
 - Continuous input only during explicitly initiated calls, mute and End; name/alias switching among open same-host threads and pane focus.
 - Existing participant queues, thread history and daemon adapters. Correlated core tickets identify voice-owned events and cancellation; max_bot_hops=0 prevents follow-on agent dispatch. Typed chat and trusted approvals remain independent.
-- Saved per-agent/thread voices and aliases, preview, adjustable silence threshold, concise speech segments, markdown/code exclusion and local acknowledgment.
+- Saved per-agent/thread voices and aliases, preview, adjustable silence threshold, concise speech segments, markdown/code exclusion. Waiting for an agent is silent; no automatic spoken acknowledgment.
 - Browser microphone AEC constraints and worklet capture/playback, bounded tagged PCM frames, per-generation flush, consumption-based flow control. The presence of AEC in track settings is not acoustic proof.
 - Managed optional CPython 3.11.17, pinned MLX Whisper 0.4.3, MLX Audio 0.6.1/Kokoro, Silero 6.2.3, and Smart Turn v3.2 CPU. Downloads total **2,406,693,430 bytes**; installer requires **7,220,080,290 free bytes** while staging. No system Python or terminal setup is used by the app.
 - Loopback authentication/origin/one-owner checks; single desktop window lease, idle shutdown, suspend/app-quit handling, atomic installation and stale installation-lock recovery.
@@ -83,3 +83,10 @@ User-authorized packaged tests ran from `release`, on branch `fix/voice-packaged
 - Computer Use refused access to `com.apple.UserNotificationCenter` “for safety reasons.” A manual denial was requested, but no response was received in this run. Desktop automation subsequently failed repeatedly with `Sky Computer Use native pipe startup failed`, including after a kernel reset. It could not complete denial/retry, final package layout/quit checks, or restore the original HDMI output.
 - The running test app/helper were terminated explicitly after automation disconnected, to avoid leaving a test microphone session open. The installed app was left running. **Audio output remains on MacBook Pro Speakers; the original output was M260VA.**
 - Still unverified: fresh permission denial/recovery; final packaged routing/layout/quit fixes; controlled headphone/multiple speaker-volume and background-noise cases; <=150 ms physical interruption flush; and 20 controlled microphone turns with audible p50/p95 latency. No latency percentile is claimed from this run.
+
+## Call control follow-up, 2026-10-20
+
+- The active composer mic now hides or reopens the call panel. The panel also has **Hide call controls**; neither action ends the call or mutes it. The red mic stays visible, and **End call** remains a separate panel action.
+- Removed the timed "On it" acknowledgment. Approval/question notices and agent replies still speak normally.
+- Verified the real React controls in an isolated Chromium fixture: hide/reopen with the mic and panel button, retained live indicator, focus returned to the mic, and explicit End action. The fixture stubs the voice transport; this is a UI check, not another acoustic test.
+- The controller regression verifies a five-second wait emits no speech, then speaks the actual agent reply. TypeScript passed; the full JavaScript suite passed **1,797 tests**.

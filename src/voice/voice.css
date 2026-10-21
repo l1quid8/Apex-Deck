@@ -58,3 +58,18 @@
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.voice-call-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.voice-call-heading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.voice-call-heading button {
+  flex-shrink: 0;
+  font-size: 12px;
+}

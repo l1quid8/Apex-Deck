@@ -19,6 +19,7 @@ export function VoiceCallControls({
     voiceController.getState,
   );
   const [picking, setPicking] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [progress, setProgress] = useState("");
   const [installing, setInstalling] = useState(false);
   const [download, setDownload] = useState(0);
@@ -49,7 +50,17 @@ export function VoiceCallControls({
           c.roomId === scope.roomId,
       )
     : undefined;
-  const showPanel = picking || (here && active) || (here && state.status === "error");
+  const showPanel =
+    !collapsed && (picking || (here && active) || (here && state.status === "error"));
+  useEffect(() => {
+    if (["off", "error", "needs-attention"].includes(state.status))
+      setCollapsed(false);
+  }, [state.status]);
+  const hidePanel = () => {
+    setPicking(false);
+    setCollapsed(true);
+    button.current?.focus();
+  };
   useLayoutEffect(() => {
     if (!showPanel) return;
     const place = () => {
@@ -73,6 +84,7 @@ export function VoiceCallControls({
   }, [showPanel]);
   if (!window.apexDeck?.voice) return null;
   const start = () => {
+    setCollapsed(false);
     if (candidates.length === 1) {
       const r = voiceRegistration(candidates[0]);
       r.save({ ...r.settings, enabled: true });
@@ -112,10 +124,11 @@ export function VoiceCallControls({
         ref={button}
         type="button"
         className={`voice-mic${here && active ? " live" : ""}`}
-        aria-label={here && active ? "End voice call" : "Call an agent"}
-        title={here && active ? "End voice call" : "Call an agent"}
+        aria-label={here && active ? (showPanel ? "Hide voice call controls" : "Show voice call controls") : "Call an agent"}
+        aria-expanded={!!showPanel}
+        title={here && active ? (showPanel ? "Hide controls · call stays active" : "Show controls · call active") : "Call an agent"}
         disabled={disabled || !candidates.length}
-        onClick={() => (here && active ? void voiceController.end() : start())}
+        onClick={() => (here && active ? setCollapsed(!collapsed) : start())}
       >
         <svg
           width="18"
@@ -137,9 +150,12 @@ export function VoiceCallControls({
           role="region"
           aria-label="Agent voice call"
         >
-          <strong>
-            {candidate ? `Calling ${candidate.name}` : "Choose an agent"}
-          </strong>
+          <div className="voice-call-heading">
+            <strong>
+              {candidate ? `Calling ${candidate.name}` : "Choose an agent"}
+            </strong>
+            <button type="button" onClick={hidePanel}>Hide call controls</button>
+          </div>
           <span role="status">
             {state.error ??
               (state.status === "hearing"
