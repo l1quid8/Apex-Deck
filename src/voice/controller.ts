@@ -459,11 +459,8 @@ export function createVoiceController(deps: VoiceDependencies) {
     switchAgent,
     mute(value: boolean) {
       set({ muted: value });
+      // Muting only stops the mic; the agent keeps working and speaking.
       audio?.mute(value);
-      if (value) {
-        stopAudio(true);
-        void cancel().catch((e) => error(Error(String(e))));
-      }
     },
     preview(voice: string) {
       if (!callId || !state.voices.includes(voice)) return;

@@ -241,3 +241,22 @@ test("a dropped helper connection reconnects and keeps the call", async () => {
   assert.notEqual(c.getState().status, "off");
   assert.notEqual(c.getState().status, "error");
 });
+test("muting mid-reply keeps the agent working and speaking", async () => {
+  const f = fixture();
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_michael"] });
+  f.event({ type: "transcript", callId: start.callId, generation: 0,
+    utteranceId: "m", text: "Explain the build" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(f.posted.length, 1);
+  f.c.mute(true);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(f.stopped, []);
+  assert.equal(f.sent.filter((m) => m.type === "cancel").length, 0);
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId,
+    type: "text", text: "The build passed. " });
+  f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "done" });
+  assert.equal(f.sent.filter((m) => m.type === "speak").map((m) => m.text).join(" "), "The build passed.");
+  await f.c.end();
+});
