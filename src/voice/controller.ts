@@ -96,10 +96,17 @@ export function createVoiceController(deps: VoiceDependencies) {
     audio?.flush(generation);
     control({ type: "cancel", resetInput });
   };
+  const note = (event: string, detail: Record<string, unknown> = {}) =>
+    console.warn("[voice event] " + JSON.stringify({ callId, event, ...detail }));
+  let reconnecting = false;
   function error(e: Error) {
     if (state.status === "off" || state.status === "error") return;
+    if (e.name === "VoiceDisconnected" && callId) {
+      void reconnect(e);
+      return;
+    }
     const scope = state.scope;
-    void end()
+    void end("error: " + e.message)
       .catch(() => {})
       .finally(() => set({ status: "error", scope, error: e.message }));
   }
@@ -113,7 +120,13 @@ export function createVoiceController(deps: VoiceDependencies) {
     if (a) cleanup = cleanup.then(() => a.bridge.cancel(a.id));
     return cleanup;
   }
-  async function end() {
+  async function end(reason = "ended by user") {
+    // Every call end is logged with its reason so drops can be traced.
+    if (callId || state.status !== "off")
+      console.warn(
+        "[voice end] " +
+          JSON.stringify({ callId, reason, status: state.status }),
+      );
     epoch++;
     const owned = runtimeAcquired;
     runtimeAcquired = false;
@@ -137,6 +150,70 @@ export function createVoiceController(deps: VoiceDependencies) {
     } finally {
       if (owned) await deps.runtime.stop();
     }
+  }
+  // The helper dropped its connection: open a fresh one on the same call so the
+  // thread, the bot's reply in progress and the mic keep going. Two tries, then end clearly.
+  async function reconnect(cause: Error) {
+    if (reconnecting) return;
+    reconnecting = true;
+    const myEpoch = epoch,
+      scope = state.scope;
+    note("helper disconnected", { reason: cause.message });
+    client?.close();
+    client = undefined;
+    generation++;
+    audio?.flush(generation);
+    set({ status: "warming" });
+    try {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const runtime = await deps.runtime.start();
+          if (myEpoch !== epoch || !callId || !scope) return;
+          const connected = await connectHelper(runtime);
+          if (myEpoch !== epoch || !callId) {
+            connected.close();
+            return;
+          }
+          client = connected;
+          sendStart(scope);
+          note("helper reconnected", { attempt });
+          return;
+        } catch (e) {
+          note("reconnect failed", {
+            attempt,
+            reason: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+      if (myEpoch === epoch && callId) {
+        reconnecting = false;
+        error(Error("Voice helper stopped and could not restart. Start a new call."));
+      }
+    } finally {
+      reconnecting = false;
+    }
+  }
+  function connectHelper(runtime: VoiceRuntime) {
+    return deps.connect(
+      runtime,
+      helper,
+      (pcm, gen) => {
+        if (callId && gen === generation) audio?.play(pcm, gen);
+      },
+      error,
+    );
+  }
+  function sendStart(scope: CallScope) {
+    control({
+      type: "start",
+      voice: deps.voice(scope),
+      silenceMs: deps.silence(),
+      nameHints: deps
+        .candidates()
+        .filter((c) => c.hostId === scope.hostId)
+        .map((c) => c.name)
+        .slice(0, 64),
+    });
   }
   function say(text: string, requestId: string) {
     sinceSubmit("first-speech-submit", requestId);
@@ -195,7 +272,7 @@ export function createVoiceController(deps: VoiceDependencies) {
       deps.candidates().filter((c) => c.hostId === state.scope!.hostId),
     );
     if (parsed.kind === "end") {
-      await end();
+      await end("spoken stop phrase");
       return;
     }
     if (parsed.kind === "unknown") {
@@ -308,7 +385,7 @@ export function createVoiceController(deps: VoiceDependencies) {
       error(Error(e.message ?? "Local voice failed"));
   }
   async function start(scope: CallScope) {
-    await end();
+    await end("new call started");
     cleanup = Promise.resolve();
     const myEpoch = ++epoch;
     set({ status: "warming", scope, muted: false, error: undefined });
@@ -359,29 +436,13 @@ export function createVoiceController(deps: VoiceDependencies) {
         throw Error(
           "Echo cancellation unavailable. Use a supported audio device before calling.",
         );
-      const connected = await deps.connect(
-        runtime,
-        helper,
-        (pcm, gen) => {
-          if (callId && gen === generation) audio?.play(pcm, gen);
-        },
-        error,
-      );
+      const connected = await connectHelper(runtime);
       if (myEpoch !== epoch) {
         connected.close();
         return;
       }
       client = connected;
-      control({
-        type: "start",
-        voice: deps.voice(scope),
-        silenceMs: deps.silence(),
-        nameHints: deps
-          .candidates()
-          .filter((c) => c.hostId === scope.hostId)
-          .map((c) => c.name)
-          .slice(0, 64),
-      });
+      sendStart(scope);
       deps.focus(scope);
     } catch (e) {
       if (myEpoch === epoch) error(e instanceof Error ? e : Error(String(e)));
@@ -398,11 +459,8 @@ export function createVoiceController(deps: VoiceDependencies) {
     switchAgent,
     mute(value: boolean) {
       set({ muted: value });
+      // Muting only stops the mic; the agent keeps working and speaking.
       audio?.mute(value);
-      if (value) {
-        stopAudio(true);
-        void cancel().catch((e) => error(Error(String(e))));
-      }
     },
     preview(voice: string) {
       if (!callId || !state.voices.includes(voice)) return;

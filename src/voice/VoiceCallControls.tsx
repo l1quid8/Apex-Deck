@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { popoverTop } from "../floating.ts";
-import { voiceController, voiceRegistration } from "./coordinator.ts";
+import { voiceController, voiceRegistration, warmVoice } from "./coordinator.ts";
 import { preferenceFor, voicePreferenceKey } from "./settings.ts";
 import type { VoiceCandidate } from "./types.ts";
 import "./voice.css";
@@ -129,6 +129,8 @@ export function VoiceCallControls({
         title={here && active ? (showPanel ? "Hide controls · call stays active" : "Show controls · call active") : "Call an agent"}
         disabled={disabled || !candidates.length}
         onClick={() => (here && active ? setCollapsed(!collapsed) : start())}
+        onPointerEnter={() => { if (!active) warmVoice(); }}
+        onFocus={() => { if (!active) warmVoice(); }}
       >
         <svg
           width="18"

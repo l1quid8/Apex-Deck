@@ -5,6 +5,9 @@ export interface LocalVoiceClient {
   audio(pcm: Int16Array, generation: number): void;
   close(): void;
 }
+// Marks a dropped helper connection, which the controller reconnects instead of ending the call.
+export const disconnected = (message: string) =>
+  Object.assign(Error(message), { name: "VoiceDisconnected" });
 export function connectLocalVoice(
   runtime: VoiceRuntime,
   event: (e: HelperEvent) => void,
@@ -70,15 +73,13 @@ export function connectLocalVoice(
       if (!opened) {
         clearTimeout(timer);
         reject(Error("Cannot connect to local voice"));
-      } else if (!closed) failure(Error("Voice connection failed"));
+      } else if (!closed) failure(disconnected("Voice connection failed"));
     };
     ws.onclose = () => {
       clearTimeout(timer);
       if (!opened) reject(Error("Local voice disconnected"));
       else if (!closed)
-        failure(
-          Error("Local voice disconnected. Start a new call to reconnect."),
-        );
+        failure(disconnected("Local voice disconnected"));
     };
   });
 }
