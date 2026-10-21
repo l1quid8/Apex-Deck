@@ -908,6 +908,78 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayHttpState>) 
     Ok(())
 }
 
+/// The operator's home directory, if it can be determined.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Does this backend still have the operator's personal MCP servers available
+/// even though the key was minted without `allow_mcp`?
+///
+/// Claude is exempt: it runs with `--strict-mcp-config --setting-sources ""`,
+/// so its user-level servers never start. Every other subscription CLI reads
+/// its own config file, and in headless one-shot mode there is no interactive
+/// prompt to ask before calling a tool — which means `GatewayApprover` may
+/// never be consulted. Returns a message describing the problem, if any.
+fn unstripped_mcp_config(backend: &Backend, home: Option<&Path>) -> Option<String> {
+    let home = home?;
+    let candidates: Vec<(&str, PathBuf, &str)> = match backend {
+        Backend::Agent {
+            tool: AgentTool::ClaudeCode,
+            ..
+        } => return None,
+        Backend::Agent {
+            tool: AgentTool::Codex,
+            ..
+        } => vec![("Codex", home.join(".codex/config.toml"), "[mcp_servers.")],
+        Backend::Agent {
+            tool: AgentTool::Gemini,
+            ..
+        } => vec![(
+            "Gemini",
+            home.join(".gemini/settings.json"),
+            "\"mcpServers\"",
+        )],
+        // Grok and Muse config locations are not verified, so scan the likely
+        // files for any mention at all rather than assume they are clean.
+        Backend::Agent {
+            tool: AgentTool::Grok,
+            ..
+        } => vec![
+            ("Grok", home.join(".grok/config.toml"), "mcp"),
+            ("Grok", home.join(".grok/settings.json"), "mcp"),
+            ("Grok", home.join(".config/grok/config.toml"), "mcp"),
+        ],
+        Backend::Agent {
+            tool: AgentTool::Muse,
+            ..
+        } => vec![(
+            "Muse",
+            home.join(".config/muse/settings.json"),
+            "mcp",
+        )],
+        _ => return None,
+    };
+
+    for (label, path, marker) in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.contains(marker) {
+            return Some(format!(
+                "{label} loads MCP servers from {}, and this key was issued without `allow_mcp`. \
+                 A headless turn has no approval prompt, so those tools could run without asking. \
+                 Remove the MCP server entries, or re-issue the key with --allow-mcp if you \
+                 intend to grant that access.",
+                path.display()
+            ));
+        }
+    }
+    None
+}
+
 async fn handle_chat_completions(
     stream: &mut TcpStream,
     state: &Arc<GatewayHttpState>,
@@ -951,6 +1023,21 @@ async fn handle_chat_completions(
             return;
         }
     };
+
+    // A headless one-shot CLI has nobody to ask before it calls an MCP tool,
+    // and `--sandbox read-only` restricts local files, not a tool that is just
+    // an HTTPS request to a remote MCP server. `--strict-mcp-config` genuinely
+    // strips Claude; for the others the only gate is `GatewayApprover`, which
+    // the CLI may never consult on its own. So when a key was minted without
+    // `allow_mcp`, refuse the turn outright if the operator's config would
+    // hand that backend live MCP tools. Checked before `reserve_turn` so a
+    // refusal costs no quota.
+    if !authed_key.allow_mcp {
+        if let Some(why) = unstripped_mcp_config(&resolved.config.backend, home_dir().as_deref()) {
+            write_openai_error(stream, 409, "invalid_request_error", &why).await;
+            return;
+        }
+    }
 
     // Reserve 1 turn against the key's scope and daily/monthly caps.
     let reserved_key = match state.keys.reserve_turn(&authed_key.id, resolved.scope) {
@@ -1294,6 +1381,79 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
     use crate::gateway_keys::IssueSpec;
+
+    fn agent(tool: AgentTool) -> Backend {
+        Backend::Agent {
+            tool,
+            model: None,
+        }
+    }
+
+    fn scratch_home(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "apex-gw-mcp-{tag}-{}-{}",
+            std::process::id(),
+            identity::random_hex(4)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp home");
+        dir
+    }
+
+    #[test]
+    fn keys_without_allow_mcp_refuse_backends_that_still_have_personal_mcp_servers() {
+        let home = scratch_home("codex");
+        let codex_cfg = home.join(".codex");
+        std::fs::create_dir_all(&codex_cfg).expect("codex dir");
+        std::fs::write(
+            codex_cfg.join("config.toml"),
+            "[mcp_servers.hyperliquid]\nurl = \"https://example.invalid/mcp\"\n",
+        )
+        .expect("write config");
+
+        // Codex reads its own config and has nobody to ask in one-shot mode,
+        // so this must refuse rather than lean on GatewayApprover.
+        let why = unstripped_mcp_config(&agent(AgentTool::Codex), Some(&home))
+            .expect("codex with mcp_servers must be refused");
+        assert!(why.contains("Codex"), "names the backend: {why}");
+        assert!(why.contains("--allow-mcp"), "says how to opt in: {why}");
+
+        // Claude is genuinely stripped by --strict-mcp-config, so it is exempt
+        // even though ~/.claude.json is full of personal servers.
+        assert_eq!(
+            unstripped_mcp_config(&agent(AgentTool::ClaudeCode), Some(&home)),
+            None
+        );
+
+        // A clean config file is not a problem.
+        let clean = scratch_home("clean");
+        assert_eq!(unstripped_mcp_config(&agent(AgentTool::Codex), Some(&clean)), None);
+        // No home directory at all: nothing to inspect, nothing to block.
+        assert_eq!(unstripped_mcp_config(&agent(AgentTool::Codex), None), None);
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&clean);
+    }
+
+    #[test]
+    fn gemini_json_mcp_servers_are_detected_too() {
+        let home = scratch_home("gemini");
+        let dir = home.join(".gemini");
+        std::fs::create_dir_all(&dir).expect("gemini dir");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"mcpServers":{"hl_mcp":{"url":"https://example.invalid"}}}"#,
+        )
+        .expect("write settings");
+        assert!(unstripped_mcp_config(&agent(AgentTool::Gemini), Some(&home)).is_some());
+        // API backends never read a CLI config, so they are unaffected.
+        let api = Backend::OpenAiCompatible {
+            base_url: "https://example.invalid/v1".to_string(),
+            model: "m".to_string(),
+            api_key_env: None,
+        };
+        assert_eq!(unstripped_mcp_config(&api, Some(&home)), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     fn msg(role: &str, content: Value) -> ChatMessage {
         ChatMessage {
