@@ -1,0 +1,5 @@
+[project]
+name = "apex-deck-voice"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+description = "Optional local Whisper and Kokoro audio service for Apex Deck"

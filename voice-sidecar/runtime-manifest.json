@@ -1,0 +1,1748 @@
+{
+  "version": "2",
+  "platform": "darwin",
+  "arch": "arm64",
+  "python": {
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261020/cpython-3.11.17%2B20261020-aarch64-apple-darwin-install_only_stripped.tar.gz",
+    "sha256": "63209d8012c1df823844b5cdaeebc020257e4e000df99ce456ed4fb3cf8fc64d",
+    "size": 26760436
+  },
+  "wheels": [
+    {
+      "name": "addict",
+      "version": "2.4.0",
+      "url": "https://files.pythonhosted.org/packages/6a/00/b08f23b7d7e1e14ce01419a467b583edbb93c6cdb8654e54a9cc579cd61f/addict-2.4.0-py3-none-any.whl",
+      "sha256": "249bb56bbfd3cdc2a004ea0ff4c2b6ddc84d53bc2194761636eb314d5cfa5dfc",
+      "filename": "addict-2.4.0-py3-none-any.whl",
+      "size": 3832,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "url": "https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl",
+      "sha256": "117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101",
+      "filename": "annotated_doc-0.0.5-py3-none-any.whl",
+      "size": 5302,
+      "license": "MIT"
+    },
+    {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "url": "https://files.pythonhosted.org/packages/99/91/8acff4f5e50511b911bbccb72b8628a49c68ce14148cd9f6431094859a90/annotated_types-0.8.0-py3-none-any.whl",
+      "sha256": "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0",
+      "filename": "annotated_types-0.8.0-py3-none-any.whl",
+      "size": 13427,
+      "license": "MIT"
+    },
+    {
+      "name": "anyio",
+      "version": "4.15.1",
+      "url": "https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl",
+      "sha256": "6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101",
+      "filename": "anyio-4.15.1-py3-none-any.whl",
+      "size": 132079,
+      "license": "MIT"
+    },
+    {
+      "name": "attrs",
+      "version": "26.1.0",
+      "url": "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl",
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+      "filename": "attrs-26.1.0-py3-none-any.whl",
+      "size": 67548,
+      "license": "MIT"
+    },
+    {
+      "name": "babel",
+      "version": "2.18.0",
+      "url": "https://files.pythonhosted.org/packages/77/f5/21d2de20e8b8b0408f0681956ca2c69f1320a3848ac50e6e7f39c6159675/babel-2.18.0-py3-none-any.whl",
+      "sha256": "e2b422b277c2b9a9630c1d7903c2a00d0830c409c59ac8cae9081c92f1aeba35",
+      "filename": "babel-2.18.0-py3-none-any.whl",
+      "size": 10196845,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "blis",
+      "version": "1.3.3",
+      "url": "https://files.pythonhosted.org/packages/83/5a/3437009282f23684ecd3963a8b034f9307cdd2bf4484972e5a6b096bf9ac/blis-1.3.3-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "66e6249564f1db22e8af1e0513ff64134041fa7e03c8dd73df74db3f4d8415a7",
+      "filename": "blis-1.3.3-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 1232787,
+      "license": "BSD"
+    },
+    {
+      "name": "catalogue",
+      "version": "2.0.10",
+      "url": "https://files.pythonhosted.org/packages/9e/96/d32b941a501ab566a16358d68b6eb4e4acc373fab3c3c4d7d9e649f7b4bb/catalogue-2.0.10-py3-none-any.whl",
+      "sha256": "58c2de0020aa90f4a2da7dfad161bf7b3b054c86a5f09fcedc0b2b740c109a9f",
+      "filename": "catalogue-2.0.10-py3-none-any.whl",
+      "size": 17325,
+      "license": "MIT"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.10.19",
+      "url": "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl",
+      "sha256": "42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b",
+      "filename": "certifi-2026.10.19-py3-none-any.whl",
+      "size": 136464,
+      "license": "MPL-2.0"
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "url": "https://files.pythonhosted.org/packages/cd/95/31b535a9f0220ae9f357de4a08d57ce89cb417653c2fd9f075f50822a388/cffi-2.1.1-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "398aff33cee2767e3e781d2554c54bd0dff386bb437581e0d8011fde1a942ec1",
+      "filename": "cffi-2.1.1-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 184168,
+      "license": "MIT-0"
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.5.2",
+      "url": "https://files.pythonhosted.org/packages/fc/ad/d07d7862a62ffa6d79d68074d14823243dd235a77c45262acbf6adeb28bf/charset_normalizer-3.5.2-py3-none-any.whl",
+      "sha256": "b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685",
+      "filename": "charset_normalizer-3.5.2-py3-none-any.whl",
+      "size": 68872,
+      "license": "MIT"
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "url": "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl",
+      "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360",
+      "filename": "click-8.5.0-py3-none-any.whl",
+      "size": 125251,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "cloudpathlib",
+      "version": "0.26.0",
+      "url": "https://files.pythonhosted.org/packages/97/aa/c333f1be2afab2d033d51a66cb105f4bfc885b0c546e1168fb889a416b9d/cloudpathlib-0.26.0-py3-none-any.whl",
+      "sha256": "abcd7f54bcbb2fbb79c0e96b79241f08866760aee6276586882b3558672d571b",
+      "filename": "cloudpathlib-0.26.0-py3-none-any.whl",
+      "size": 66408,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "cloudpickle",
+      "version": "3.1.2",
+      "url": "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl",
+      "sha256": "9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a",
+      "filename": "cloudpickle-3.1.2-py3-none-any.whl",
+      "size": 22228,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "confection",
+      "version": "1.3.3",
+      "url": "https://files.pythonhosted.org/packages/8d/e4/d66708bdf0d92fb4d49b22cdff4b10cec38aca5dcd7e81d909bb55c65cd7/confection-1.3.3-py3-none-any.whl",
+      "sha256": "b9fef9ee84b237ef4611ec3eb5797b70e13063e6310ad9f15536373f5e313c82",
+      "filename": "confection-1.3.3-py3-none-any.whl",
+      "size": 35902,
+      "license": "MIT"
+    },
+    {
+      "name": "csvw",
+      "version": "4.1.1",
+      "url": "https://files.pythonhosted.org/packages/fe/9e/a4e6f6aea5f0dedd53523c653c8f368eb6a2392bce09d36ac36de1db2c0f/csvw-4.1.1-py2.py3-none-any.whl",
+      "sha256": "fce2c461899290771eaec28c770e2fd0f6bc1324edb81d688c89e09cf222fcdb",
+      "filename": "csvw-4.1.1-py2.py3-none-any.whl",
+      "size": 69365,
+      "license": "Apache 2.0"
+    },
+    {
+      "name": "curated-tokenizers",
+      "version": "0.0.10",
+      "url": "https://files.pythonhosted.org/packages/fd/a8/1a2c2beb18e152a19b8780ec5be301bd2a89626fea949942b82920fca4a8/curated_tokenizers-0.0.10-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "b24ac912cbd8500a4d213643e7d420b211e47f437252f34ab1c4ad45173b2e8d",
+      "filename": "curated_tokenizers-0.0.10-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 688936,
+      "license": "MIT"
+    },
+    {
+      "name": "curated-transformers",
+      "version": "0.1.1",
+      "url": "https://files.pythonhosted.org/packages/d6/67/3b72b3fdfcadab61bc8f59c17e63770e526ffabd583ed32f174a7c01af85/curated_transformers-0.1.1-py2.py3-none-any.whl",
+      "sha256": "d716063d73d803c6925d2dab56fde9b9ab8e89e663c2c0587804944ba488ff01",
+      "filename": "curated_transformers-0.1.1-py2.py3-none-any.whl",
+      "size": 25972,
+      "license": "MIT"
+    },
+    {
+      "name": "cymem",
+      "version": "2.0.13",
+      "url": "https://files.pythonhosted.org/packages/81/13/57f936fc08551323aab3f92ff6b7f4d4b89d5b4e495c870a67cb8d279757/cymem-2.0.13-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "bee2791b3f6fc034ce41268851462bf662ff87e8947e35fb6dd0115b4644a61f",
+      "filename": "cymem-2.0.13-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 43139,
+      "license": "MIT"
+    },
+    {
+      "name": "dlinfo",
+      "version": "2.0.0",
+      "url": "https://files.pythonhosted.org/packages/da/90/022c79d6e5e6f843268c10b84d4a021ee3afba0621d3c176d3ff2024bfc8/dlinfo-2.0.0-py3-none-any.whl",
+      "sha256": "b32cc18e3ea67c0ca9ca409e5b41eed863bd1363dbc9dd3de90fedf11b61e7bc",
+      "filename": "dlinfo-2.0.0-py3-none-any.whl",
+      "size": 3654,
+      "license": "MIT"
+    },
+    {
+      "name": "docopt",
+      "filename": "docopt-0.6.2-py2.py3-none-any.whl",
+      "bundled": true,
+      "sha256": "e0a728eaa7cb32a1e896805a3e394ed67386c30489e91afc46406b935ae8302b",
+      "size": 13781,
+      "license": "MIT"
+    },
+    {
+      "name": "en_core_web_sm",
+      "url": "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+      "sha256": "1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85",
+      "filename": "en_core_web_sm-3.8.0-py3-none-any.whl",
+      "size": 12806118
+    },
+    {
+      "name": "espeakng-loader",
+      "version": "0.2.4",
+      "url": "https://files.pythonhosted.org/packages/a8/26/258c0cd43b9bc1043301c5f61767d6a6c3b679df82790c9cb43a3277b865/espeakng_loader-0.2.4-py3-none-macosx_11_0_arm64.whl",
+      "sha256": "d27cdca31112226e7299d8562e889d3e38a1e48055c9ee381b45d669072ee59f",
+      "filename": "espeakng_loader-0.2.4-py3-none-macosx_11_0_arm64.whl",
+      "size": 9892565,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "filelock",
+      "version": "4.2.4",
+      "url": "https://files.pythonhosted.org/packages/e0/1b/5e74289a1878e666bb4b65fe5805a04cafcac2aa5f519ef1ead67ef91c56/filelock-4.2.4-py3-none-any.whl",
+      "sha256": "301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e",
+      "filename": "filelock-4.2.4-py3-none-any.whl",
+      "size": 162475,
+      "license": "MIT"
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.9.0",
+      "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
+      "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
+      "filename": "fsspec-2026.9.0-py3-none-any.whl",
+      "size": 221738,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "url": "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl",
+      "sha256": "63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86",
+      "filename": "h11-0.16.0-py3-none-any.whl",
+      "size": 37515,
+      "license": "MIT"
+    },
+    {
+      "name": "hf-xet",
+      "version": "1.7.0",
+      "url": "https://files.pythonhosted.org/packages/c3/47/a26ebdce7056a61e931f228439bc0ab08cbec239d1690f965e5e637cba79/hf_xet-1.7.0-cp38-abi3-macosx_11_0_arm64.whl",
+      "sha256": "59fba37039233c7fcbe196817d6cdcf1b40dfb17b410f229d85b0cf0a1848da4",
+      "filename": "hf_xet-1.7.0-cp38-abi3-macosx_11_0_arm64.whl",
+      "size": 3560352,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "url": "https://files.pythonhosted.org/packages/7e/f5/f66802a942d491edb555dd61e3a9961140fd64c90bce1eafd741609d334d/httpcore-1.0.9-py3-none-any.whl",
+      "sha256": "2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55",
+      "filename": "httpcore-1.0.9-py3-none-any.whl",
+      "size": 78784,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "httpcore2",
+      "version": "2.15.1",
+      "url": "https://files.pythonhosted.org/packages/0d/9b/e2b556e26fbc67716ab1dfc18832eb6fe196d88363f7094cb1da3d7c0d3e/httpcore2-2.15.1-py3-none-any.whl",
+      "sha256": "730f603058c260a3288378217b464713350c23e3b8fe8bba753701054032d98a",
+      "filename": "httpcore2-2.15.1-py3-none-any.whl",
+      "size": 85055,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "url": "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl",
+      "sha256": "d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad",
+      "filename": "httpx-0.28.1-py3-none-any.whl",
+      "size": 73517,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "httpx2",
+      "version": "2.15.1",
+      "url": "https://files.pythonhosted.org/packages/7a/bf/56068f774620330c8330e4b4915fae889a5b2d4b52667b3b7c8f66c4a9ad/httpx2-2.15.1-py3-none-any.whl",
+      "sha256": "75841cd83d16b417f7d6da8f2089ce8120806efdbf96af37d46c5129c49015be",
+      "filename": "httpx2-2.15.1-py3-none-any.whl",
+      "size": 96411,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "huggingface_hub",
+      "version": "2.2.0",
+      "url": "https://files.pythonhosted.org/packages/eb/b0/0f7b430fd100b3a3b037fdbb314878200241082e607b3383c63d91a13a72/huggingface_hub-2.2.0-py3-none-any.whl",
+      "sha256": "1667f145dc56dc210d60966069397df9ecfca9607a5d43db88b308c89dae56b3",
+      "filename": "huggingface_hub-2.2.0-py3-none-any.whl",
+      "size": 839884,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "idna",
+      "version": "3.20",
+      "url": "https://files.pythonhosted.org/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl",
+      "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c",
+      "filename": "idna-3.20-py3-none-any.whl",
+      "size": 69583,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "isodate",
+      "version": "0.7.2",
+      "url": "https://files.pythonhosted.org/packages/15/aa/0aca39a37d3c7eb941ba736ede56d689e7be91cab5d9ca846bde3999eba6/isodate-0.7.2-py3-none-any.whl",
+      "sha256": "28009937d8031054830160fce6d409ed342816b543597cece116d966c6d99e15",
+      "filename": "isodate-0.7.2-py3-none-any.whl",
+      "size": 22320,
+      "license": "Copyright (c) 2021, Hugo van Kemenade and contributors Copyright (c) 2009-2018, Gerhard Weis and contributors Copyright (c) 2009, Gerhard Weis All rights reserved.  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer. * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution. * Neither the name of the <organization> nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. "
+    },
+    {
+      "name": "Jinja2",
+      "version": "3.1.6",
+      "url": "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl",
+      "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "filename": "jinja2-3.1.6-py3-none-any.whl",
+      "size": 134899,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "joblib",
+      "version": "1.6.0",
+      "url": "https://files.pythonhosted.org/packages/18/53/84099323c2ec4be98d935f63c033ac4151ee83836ca1050ede3b3aadf155/joblib-1.6.0-py3-none-any.whl",
+      "sha256": "3dbbf9f6e4b592a2357b854608e980fe6390d131d7a82f011a377ef2ebef7aba",
+      "filename": "joblib-1.6.0-py3-none-any.whl",
+      "size": 306115,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "jsonschema",
+      "version": "4.26.0",
+      "url": "https://files.pythonhosted.org/packages/69/90/f63fb5873511e014207a475e2bb4e8b2e570d655b00ac19a9a0ca0a385ee/jsonschema-4.26.0-py3-none-any.whl",
+      "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
+      "filename": "jsonschema-4.26.0-py3-none-any.whl",
+      "size": 90630,
+      "license": "MIT"
+    },
+    {
+      "name": "jsonschema-specifications",
+      "version": "2025.9.1",
+      "url": "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe",
+      "filename": "jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "size": 18437,
+      "license": "MIT"
+    },
+    {
+      "name": "language-tags",
+      "version": "1.3.1",
+      "url": "https://files.pythonhosted.org/packages/0a/21/b48b9e8408b3faec9fb7cb2f68352c7724add35a980c948eaceb29ac41e4/language_tags-1.3.1-py3-none-any.whl",
+      "sha256": "f7db7ef8879523019603e09644a86d95ba60595ce5e5ea82d46e8971b0f68f7b",
+      "filename": "language_tags-1.3.1-py3-none-any.whl",
+      "size": 216654,
+      "license": "MIT"
+    },
+    {
+      "name": "llvmlite",
+      "version": "0.50.0",
+      "url": "https://files.pythonhosted.org/packages/fc/ae/9c41313563a860a69d5c67fb4098ce9b40a09c00b68a177407b7c10950fb/llvmlite-0.50.0-cp311-cp311-macosx_12_0_arm64.whl",
+      "sha256": "818b3d4845ac8e126e23cb500867570d0602a42a43e67b14acec31f046e03130",
+      "filename": "llvmlite-0.50.0-cp311-cp311-macosx_12_0_arm64.whl",
+      "size": 40534276,
+      "license": "BSD-2-Clause AND Apache-2.0 WITH LLVM-exception"
+    },
+    {
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "url": "https://files.pythonhosted.org/packages/b3/81/4da04ced5a082363ecfa159c010d200ecbd959ae410c10c0264a38cac0f5/markdown_it_py-4.2.0-py3-none-any.whl",
+      "sha256": "9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a",
+      "filename": "markdown_it_py-4.2.0-py3-none-any.whl",
+      "size": 91687,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "MarkupSafe",
+      "version": "3.0.4",
+      "url": "https://files.pythonhosted.org/packages/6c/14/0b05f79b4733e264a18d08fe08fa1df7347630ff32a6cb82180d9dccec55/markupsafe-3.0.4-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "7d3391b2188d18737cb2fa147028b1096236eaa7e156446c650a489fa2cadc91",
+      "filename": "markupsafe-3.0.4-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 12063,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "mdurl",
+      "version": "0.1.2",
+      "url": "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl",
+      "sha256": "84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8",
+      "filename": "mdurl-0.1.2-py3-none-any.whl",
+      "size": 9979,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "miniaudio",
+      "version": "1.71",
+      "url": "https://files.pythonhosted.org/packages/ea/c1/4b13ac3c36a2574e0d70f322246d80259606cd24523279f542abc9ac6063/miniaudio-1.71-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "5009b4e29cd43de3631d2d5ab09cc074192c085b4c8dd8a121b856ce1af6bab7",
+      "filename": "miniaudio-1.71-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 351405,
+      "license": "MIT"
+    },
+    {
+      "name": "misaki",
+      "version": "0.9.4",
+      "url": "https://files.pythonhosted.org/packages/82/ec/0ee4110ddb54278b8f21c40a140370ae8f687036c4edf578316602697c56/misaki-0.9.4-py3-none-any.whl",
+      "sha256": "90e2eeb169786c014c429e5058d2ea6bcd02d651f2a24450ba6c9ffc0f8da15a",
+      "filename": "misaki-0.9.4-py3-none-any.whl",
+      "size": 3617774,
+      "license": "Apache License\n                                   Version 2.0, January 2004\n                                http://www.apache.org/licenses/\n        \n           TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n        \n           1. Definitions.\n        \n              \"License\" shall mean the terms and conditions for use, reproduction,\n              and distribution as defined by Sections 1 through 9 of this document.\n        \n              \"Licensor\" shall mean the copyright owner or entity authorized by\n              the copyright owner that is granting the License.\n        \n              \"Legal Entity\" shall mean the union of the acting entity and all\n              other entities that control, are controlled by, or are under common\n              control with that entity. For the purposes of this definition,\n              \"control\" means (i) the power, direct or indirect, to cause the\n              direction or management of such entity, whether by contract or\n              otherwise, or (ii) ownership of fifty percent (50%) or more of the\n              outstanding shares, or (iii) beneficial ownership of such entity.\n        \n              \"You\" (or \"Your\") shall mean an individual or Legal Entity\n              exercising permissions granted by this License.\n        \n              \"Source\" form shall mean the preferred form for making modifications,\n              including but not limited to software source code, documentation\n              source, and configuration files.\n        \n              \"Object\" form shall mean any form resulting from mechanical\n              transformation or translation of a Source form, including but\n              not limited to compiled object code, generated documentation,\n              and conversions to other media types.\n        \n              \"Work\" shall mean the work of authorship, whether in Source or\n              Object form, made available under the License, as indicated by a\n              copyright notice that is included in or attached to the work\n              (an example is provided in the Appendix below).\n        \n              \"Derivative Works\" shall mean any work, whether in Source or Object\n              form, that is based on (or derived from) the Work and for which the\n              editorial revisions, annotations, elaborations, or other modifications\n              represent, as a whole, an original work of authorship. For the purposes\n              of this License, Derivative Works shall not include works that remain\n              separable from, or merely link (or bind by name) to the interfaces of,\n              the Work and Derivative Works thereof.\n        \n              \"Contribution\" shall mean any work of authorship, including\n              the original version of the Work and any modifications or additions\n              to that Work or Derivative Works thereof, that is intentionally\n              submitted to Licensor for inclusion in the Work by the copyright owner\n              or by an individual or Legal Entity authorized to submit on behalf of\n              the copyright owner. For the purposes of this definition, \"submitted\"\n              means any form of electronic, verbal, or written communication sent\n              to the Licensor or its representatives, including but not limited to\n              communication on electronic mailing lists, source code control systems,\n              and issue tracking systems that are managed by, or on behalf of, the\n              Licensor for the purpose of discussing and improving the Work, but\n              excluding communication that is conspicuously marked or otherwise\n              designated in writing by the copyright owner as \"Not a Contribution.\"\n        \n              \"Contributor\" shall mean Licensor and any individual or Legal Entity\n              on behalf of whom a Contribution has been received by Licensor and\n              subsequently incorporated within the Work.\n        \n           2. Grant of Copyright License. Subject to the terms and conditions of\n              this License, each Contributor hereby grants to You a perpetual,\n              worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n              copyright license to reproduce, prepare Derivative Works of,\n              publicly display, publicly perform, sublicense, and distribute the\n              Work and such Derivative Works in Source or Object form.\n        \n           3. Grant of Patent License. Subject to the terms and conditions of\n              this License, each Contributor hereby grants to You a perpetual,\n              worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n              (except as stated in this section) patent license to make, have made,\n              use, offer to sell, sell, import, and otherwise transfer the Work,\n              where such license applies only to those patent claims licensable\n              by such Contributor that are necessarily infringed by their\n              Contribution(s) alone or by combination of their Contribution(s)\n              with the Work to which such Contribution(s) was submitted. If You\n              institute patent litigation against any entity (including a\n              cross-claim or counterclaim in a lawsuit) alleging that the Work\n              or a Contribution incorporated within the Work constitutes direct\n              or contributory patent infringement, then any patent licenses\n              granted to You under this License for that Work shall terminate\n              as of the date such litigation is filed.\n        \n           4. Redistribution. You may reproduce and distribute copies of the\n              Work or Derivative Works thereof in any medium, with or without\n              modifications, and in Source or Object form, provided that You\n              meet the following conditions:\n        \n              (a) You must give any other recipients of the Work or\n                  Derivative Works a copy of this License; and\n        \n              (b) You must cause any modified files to carry prominent notices\n                  stating that You changed the files; and\n        \n              (c) You must retain, in the Source form of any Derivative Works\n                  that You distribute, all copyright, patent, trademark, and\n                  attribution notices from the Source form of the Work,\n                  excluding those notices that do not pertain to any part of\n                  the Derivative Works; and\n        \n              (d) If the Work includes a \"NOTICE\" text file as part of its\n                  distribution, then any Derivative Works that You distribute must\n                  include a readable copy of the attribution notices contained\n                  within such NOTICE file, excluding those notices that do not\n                  pertain to any part of the Derivative Works, in at least one\n                  of the following places: within a NOTICE text file distributed\n                  as part of the Derivative Works; within the Source form or\n                  documentation, if provided along with the Derivative Works; or,\n                  within a display generated by the Derivative Works, if and\n                  wherever such third-party notices normally appear. The contents\n                  of the NOTICE file are for informational purposes only and\n                  do not modify the License. You may add Your own attribution\n                  notices within Derivative Works that You distribute, alongside\n                  or as an addendum to the NOTICE text from the Work, provided\n                  that such additional attribution notices cannot be construed\n                  as modifying the License.\n        \n              You may add Your own copyright statement to Your modifications and\n              may provide additional or different license terms and conditions\n              for use, reproduction, or distribution of Your modifications, or\n              for any such Derivative Works as a whole, provided Your use,\n              reproduction, and distribution of the Work otherwise complies with\n              the conditions stated in this License.\n        \n           5. Submission of Contributions. Unless You explicitly state otherwise,\n              any Contribution intentionally submitted for inclusion in the Work\n              by You to the Licensor shall be under the terms and conditions of\n              this License, without any additional terms or conditions.\n              Notwithstanding the above, nothing herein shall supersede or modify\n              the terms of any separate license agreement you may have executed\n              with Licensor regarding such Contributions.\n        \n           6. Trademarks. This License does not grant permission to use the trade\n              names, trademarks, service marks, or product names of the Licensor,\n              except as required for reasonable and customary use in describing the\n              origin of the Work and reproducing the content of the NOTICE file.\n        \n           7. Disclaimer of Warranty. Unless required by applicable law or\n              agreed to in writing, Licensor provides the Work (and each\n              Contributor provides its Contributions) on an \"AS IS\" BASIS,\n              WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or\n              implied, including, without limitation, any warranties or conditions\n              of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A\n              PARTICULAR PURPOSE. You are solely responsible for determining the\n              appropriateness of using or redistributing the Work and assume any\n              risks associated with Your exercise of permissions under this License.\n        \n           8. Limitation of Liability. In no event and under no legal theory,\n              whether in tort (including negligence), contract, or otherwise,\n              unless required by applicable law (such as deliberate and grossly\n              negligent acts) or agreed to in writing, shall any Contributor be\n              liable to You for damages, including any direct, indirect, special,\n              incidental, or consequential damages of any character arising as a\n              result of this License or out of the use or inability to use the\n              Work (including but not limited to damages for loss of goodwill,\n              work stoppage, computer failure or malfunction, or any and all\n              other commercial damages or losses), even if such Contributor\n              has been advised of the possibility of such damages.\n        \n           9. Accepting Warranty or Additional Liability. While redistributing\n              the Work or Derivative Works thereof, You may choose to offer,\n              and charge a fee for, acceptance of support, warranty, indemnity,\n              or other liability obligations and/or rights consistent with this\n              License. However, in accepting such obligations, You may act only\n              on Your own behalf and on Your sole responsibility, not on behalf\n              of any other Contributor, and only if You agree to indemnify,\n              defend, and hold each Contributor harmless for any liability\n              incurred by, or claims asserted against, such Contributor by reason\n              of your accepting any such warranty or additional liability.\n        \n           END OF TERMS AND CONDITIONS\n        \n           APPENDIX: How to apply the Apache License to your work.\n        \n              To apply the Apache License to your work, attach the following\n              boilerplate notice, with the fields enclosed by brackets \"[]\"\n              replaced with your own identifying information. (Don't include\n              the brackets!)  The text should be enclosed in the appropriate\n              comment syntax for the file format. We also recommend that a\n              file or class name and description of purpose be included on the\n              same \"printed page\" as the copyright notice for easier\n              identification within third-party archives.\n        \n           Copyright [yyyy] [name of copyright owner]\n        \n           Licensed under the Apache License, Version 2.0 (the \"License\");\n           you may not use this file except in compliance with the License.\n           You may obtain a copy of the License at\n        \n               http://www.apache.org/licenses/LICENSE-2.0\n        \n           Unless required by applicable law or agreed to in writing, software\n           distributed under the License is distributed on an \"AS IS\" BASIS,\n           WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n           See the License for the specific language governing permissions and\n           limitations under the License."
+    },
+    {
+      "name": "mlx",
+      "version": "0.32.4",
+      "url": "https://files.pythonhosted.org/packages/7b/fd/f7af63951d6f4d39b47bbda462f2ed0341ce1293967de36ce9bbd4b836a9/mlx-0.32.4-cp311-cp311-macosx_14_0_arm64.whl",
+      "sha256": "dd0c9070d9c362fe280a0224806b1b47719b154984735041ebcc907e597c08ca",
+      "filename": "mlx-0.32.4-cp311-cp311-macosx_14_0_arm64.whl",
+      "size": 671764,
+      "license": "MIT"
+    },
+    {
+      "name": "mlx-audio",
+      "version": "0.6.1",
+      "url": "https://files.pythonhosted.org/packages/5c/35/831928ee30f7509e8298411aed20b124dccbef6030d668e98e644d49564d/mlx_audio-0.6.1-py3-none-any.whl",
+      "sha256": "4c5e4ef3f2a453dcc1c84c9aaf1e43701f62f5a32632aff50bfa6be9047d0f10",
+      "filename": "mlx_audio-0.6.1-py3-none-any.whl",
+      "size": 2305453,
+      "license": "MIT"
+    },
+    {
+      "name": "mlx-metal",
+      "version": "0.32.4",
+      "url": "https://files.pythonhosted.org/packages/77/24/7e5b7ed5d28abacab4577c7a8dd1fca6e9058504f5f95ae4333c09420e2e/mlx_metal-0.32.4-py3-none-macosx_14_0_arm64.whl",
+      "sha256": "8019b2db622599267d66cc168b2f0dbf5af929790a6c3b3913e00eabc42a7947",
+      "filename": "mlx_metal-0.32.4-py3-none-macosx_14_0_arm64.whl",
+      "size": 44958619,
+      "license": "MIT"
+    },
+    {
+      "name": "mlx-whisper",
+      "version": "0.4.3",
+      "url": "https://files.pythonhosted.org/packages/22/b7/a35232812a2ccfffcb7614ba96a91338551a660a0e9815cee668bf5743f0/mlx_whisper-0.4.3-py3-none-any.whl",
+      "sha256": "6b82b6597a994643a3e5496c7bc229a672e5ca308458455bfe276e76ae024489",
+      "filename": "mlx_whisper-0.4.3-py3-none-any.whl",
+      "size": 890544,
+      "license": "MIT"
+    },
+    {
+      "name": "more-itertools",
+      "version": "11.2.1",
+      "url": "https://files.pythonhosted.org/packages/5d/57/3c4b1c6f2e0cc29ba023802458ea3d2a996f87085559e4a5f2192d549532/more_itertools-11.2.1-py3-none-any.whl",
+      "sha256": "35a7377edd1dd6608dcb2cdf534ded55ea32d49448875ad042cd3f879fb1ded0",
+      "filename": "more_itertools-11.2.1-py3-none-any.whl",
+      "size": 74405,
+      "license": "MIT"
+    },
+    {
+      "name": "mpmath",
+      "version": "1.3.0",
+      "url": "https://files.pythonhosted.org/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl",
+      "sha256": "a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c",
+      "filename": "mpmath-1.3.0-py3-none-any.whl",
+      "size": 536198,
+      "license": "BSD"
+    },
+    {
+      "name": "murmurhash",
+      "version": "1.0.15",
+      "url": "https://files.pythonhosted.org/packages/e6/53/a936f577d35b245d47b310f29e5e9f09fcac776c8c992f1ab51a9fb0cee2/murmurhash-1.0.15-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "539d8405885d1d19c005f3a2313b47e8e54b0ee89915eb8dfbb430b194328e6c",
+      "filename": "murmurhash-1.0.15-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 27692,
+      "license": "MIT"
+    },
+    {
+      "name": "networkx",
+      "version": "3.6.1",
+      "url": "https://files.pythonhosted.org/packages/9e/c9/b2622292ea83fbb4ec318f5b9ab867d0a28ab43c5717bb85b0a5f6b3b0a4/networkx-3.6.1-py3-none-any.whl",
+      "sha256": "d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762",
+      "filename": "networkx-3.6.1-py3-none-any.whl",
+      "size": 2068504,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "num2words",
+      "version": "0.5.14",
+      "url": "https://files.pythonhosted.org/packages/d6/5b/545e9267a1cc080c8a1be2746113a063e34bcdd0f5173fd665a5c13cb234/num2words-0.5.14-py3-none-any.whl",
+      "sha256": "1c8e5b00142fc2966fd8d685001e36c4a9911e070d1b120e1beb721fa1edb33d",
+      "filename": "num2words-0.5.14-py3-none-any.whl",
+      "size": 163525,
+      "license": "LGPL"
+    },
+    {
+      "name": "numba",
+      "version": "0.68.0",
+      "url": "https://files.pythonhosted.org/packages/54/fc/57b1ce7b92cadbb4084a2ca30d9cfc8937a45ece9a64bc6050e527cbc14b/numba-0.68.0-cp311-cp311-macosx_12_0_arm64.whl",
+      "sha256": "50399af9d3799a4677044294861169c614bd7e1d8bbfc9479f78a67ab28ff427",
+      "filename": "numba-0.68.0-cp311-cp311-macosx_12_0_arm64.whl",
+      "size": 2759814,
+      "license": "BSD"
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "url": "https://files.pythonhosted.org/packages/ad/40/40a40ee0ddf7ceb782c49af278894b686e586d65d8c1889c8b5da01a3d7d/numpy-2.4.6-cp311-cp311-macosx_14_0_arm64.whl",
+      "sha256": "4cfe66903cc32a9921a6733d96b19bb6abf310397581bbad89c228f5abaf0ee8",
+      "filename": "numpy-2.4.6-cp311-cp311-macosx_14_0_arm64.whl",
+      "size": 5469159,
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+      "filename": "packaging-26.3-py3-none-any.whl",
+      "size": 129956,
+      "license": "Apache-2.0 OR BSD-2-Clause"
+    },
+    {
+      "name": "phonemizer-fork",
+      "version": "3.3.2",
+      "url": "https://files.pythonhosted.org/packages/64/f1/0dcce21b0ae16a82df4b6583f8f3ad8e55b35f7e98b6bf536a4dd225fa08/phonemizer_fork-3.3.2-py3-none-any.whl",
+      "sha256": "97305c76f4183b3825dae8f4c032265fe78c9946ce58c47d4b62161349264b74",
+      "filename": "phonemizer_fork-3.3.2-py3-none-any.whl",
+      "size": 82700,
+      "license": "GNU GENERAL PUBLIC LICENSE Version 3, 29 June 2007  Copyright (C) 2007 Free Software Foundation, Inc. <http://fsf.org/> Everyone is permitted to copy and distribute verbatim copies of this license document, but changing it is not allowed.  Preamble  The GNU General Public License is a free, copyleft license for software and other kinds of works.  The licenses for most software and other practical works are designed to take away your freedom to share and change the works.  By contrast, the GNU General Public License is intended to guarantee your freedom to share and change all versions of a program--to make sure it remains free software for all its users.  We, the Free Software Foundation, use the GNU General Public License for most of our software; it applies also to any other work released this way by its authors.  You can apply it to your programs, too.  When we speak of free software, we are referring to freedom, not price.  Our General Public Licenses are designed to make sure that you have the freedom to distribute copies of free software (and charge for them if you wish), that you receive source code or can get it if you want it, that you can change the software or use pieces of it in new free programs, and that you know you can do these things.  To protect your rights, we need to prevent others from denying you these rights or asking you to surrender the rights.  Therefore, you have certain responsibilities if you distribute copies of the software, or if you modify it: responsibilities to respect the freedom of others.  For example, if you distribute copies of such a program, whether gratis or for a fee, you must pass on to the recipients the same freedoms that you received.  You must make sure that they, too, receive or can get the source code.  And you must show them these terms so they know their rights.  Developers that use the GNU GPL protect your rights with two steps: (1) assert copyright on the software, and (2) offer you this License giving you legal permission to copy, distribute and/or modify it.  For the developers' and authors' protection, the GPL clearly explains that there is no warranty for this free software.  For both users' and authors' sake, the GPL requires that modified versions be marked as changed, so that their problems will not be attributed erroneously to authors of previous versions.  Some devices are designed to deny users access to install or run modified versions of the software inside them, although the manufacturer can do so.  This is fundamentally incompatible with the aim of protecting users' freedom to change the software.  The systematic pattern of such abuse occurs in the area of products for individuals to use, which is precisely where it is most unacceptable.  Therefore, we have designed this version of the GPL to prohibit the practice for those products.  If such problems arise substantially in other domains, we stand ready to extend this provision to those domains in future versions of the GPL, as needed to protect the freedom of users.  Finally, every program is threatened constantly by software patents. States should not allow patents to restrict development and use of software on general-purpose computers, but in those that do, we wish to avoid the special danger that patents applied to a free program could make it effectively proprietary.  To prevent this, the GPL assures that patents cannot be used to render the program non-free.  The precise terms and conditions for copying, distribution and modification follow.  TERMS AND CONDITIONS  0. Definitions.  \"This License\" refers to version 3 of the GNU General Public License.  \"Copyright\" also means copyright-like laws that apply to other kinds of works, such as semiconductor masks.  \"The Program\" refers to any copyrightable work licensed under this License.  Each licensee is addressed as \"you\".  \"Licensees\" and \"recipients\" may be individuals or organizations.  To \"modify\" a work means to copy from or adapt all or part of the work in a fashion requiring copyright permission, other than the making of an exact copy.  The resulting work is called a \"modified version\" of the earlier work or a work \"based on\" the earlier work.  A \"covered work\" means either the unmodified Program or a work based on the Program.  To \"propagate\" a work means to do anything with it that, without permission, would make you directly or secondarily liable for infringement under applicable copyright law, except executing it on a computer or modifying a private copy.  Propagation includes copying, distribution (with or without modification), making available to the public, and in some countries other activities as well.  To \"convey\" a work means any kind of propagation that enables other parties to make or receive copies.  Mere interaction with a user through a computer network, with no transfer of a copy, is not conveying.  An interactive user interface displays \"Appropriate Legal Notices\" to the extent that it includes a convenient and prominently visible feature that (1) displays an appropriate copyright notice, and (2) tells the user that there is no warranty for the work (except to the extent that warranties are provided), that licensees may convey the work under this License, and how to view a copy of this License.  If the interface presents a list of user commands or options, such as a menu, a prominent item in the list meets this criterion.  1. Source Code.  The \"source code\" for a work means the preferred form of the work for making modifications to it.  \"Object code\" means any non-source form of a work.  A \"Standard Interface\" means an interface that either is an official standard defined by a recognized standards body, or, in the case of interfaces specified for a particular programming language, one that is widely used among developers working in that language.  The \"System Libraries\" of an executable work include anything, other than the work as a whole, that (a) is included in the normal form of packaging a Major Component, but which is not part of that Major Component, and (b) serves only to enable use of the work with that Major Component, or to implement a Standard Interface for which an implementation is available to the public in source code form.  A \"Major Component\", in this context, means a major essential component (kernel, window system, and so on) of the specific operating system (if any) on which the executable work runs, or a compiler used to produce the work, or an object code interpreter used to run it.  The \"Corresponding Source\" for a work in object code form means all the source code needed to generate, install, and (for an executable work) run the object code and to modify the work, including scripts to control those activities.  However, it does not include the work's System Libraries, or general-purpose tools or generally available free programs which are used unmodified in performing those activities but which are not part of the work.  For example, Corresponding Source includes interface definition files associated with source files for the work, and the source code for shared libraries and dynamically linked subprograms that the work is specifically designed to require, such as by intimate data communication or control flow between those subprograms and other parts of the work.  The Corresponding Source need not include anything that users can regenerate automatically from other parts of the Corresponding Source.  The Corresponding Source for a work in source code form is that same work.  2. Basic Permissions.  All rights granted under this License are granted for the term of copyright on the Program, and are irrevocable provided the stated conditions are met.  This License explicitly affirms your unlimited permission to run the unmodified Program.  The output from running a covered work is covered by this License only if the output, given its content, constitutes a covered work.  This License acknowledges your rights of fair use or other equivalent, as provided by copyright law.  You may make, run and propagate covered works that you do not convey, without conditions so long as your license otherwise remains in force.  You may convey covered works to others for the sole purpose of having them make modifications exclusively for you, or provide you with facilities for running those works, provided that you comply with the terms of this License in conveying all material for which you do not control copyright.  Those thus making or running the covered works for you must do so exclusively on your behalf, under your direction and control, on terms that prohibit them from making any copies of your copyrighted material outside their relationship with you.  Conveying under any other circumstances is permitted solely under the conditions stated below.  Sublicensing is not allowed; section 10 makes it unnecessary.  3. Protecting Users' Legal Rights From Anti-Circumvention Law.  No covered work shall be deemed part of an effective technological measure under any applicable law fulfilling obligations under article 11 of the WIPO copyright treaty adopted on 20 December 1996, or similar laws prohibiting or restricting circumvention of such measures.  When you convey a covered work, you waive any legal power to forbid circumvention of technological measures to the extent such circumvention is effected by exercising rights under this License with respect to the covered work, and you disclaim any intention to limit operation or modification of the work as a means of enforcing, against the work's users, your or third parties' legal rights to forbid circumvention of technological measures.  4. Conveying Verbatim Copies.  You may convey verbatim copies of the Program's source code as you receive it, in any medium, provided that you conspicuously and appropriately publish on each copy an appropriate copyright notice; keep intact all notices stating that this License and any non-permissive terms added in accord with section 7 apply to the code; keep intact all notices of the absence of any warranty; and give all recipients a copy of this License along with the Program.  You may charge any price or no price for each copy that you convey, and you may offer support or warranty protection for a fee.  5. Conveying Modified Source Versions.  You may convey a work based on the Program, or the modifications to produce it from the Program, in the form of source code under the terms of section 4, provided that you also meet all of these conditions:  a) The work must carry prominent notices stating that you modified it, and giving a relevant date.  b) The work must carry prominent notices stating that it is released under this License and any conditions added under section 7.  This requirement modifies the requirement in section 4 to \"keep intact all notices\".  c) You must license the entire work, as a whole, under this License to anyone who comes into possession of a copy.  This License will therefore apply, along with any applicable section 7 additional terms, to the whole of the work, and all its parts, regardless of how they are packaged.  This License gives no permission to license the work in any other way, but it does not invalidate such permission if you have separately received it.  d) If the work has interactive user interfaces, each must display Appropriate Legal Notices; however, if the Program has interactive interfaces that do not display Appropriate Legal Notices, your work need not make them do so.  A compilation of a covered work with other separate and independent works, which are not by their nature extensions of the covered work, and which are not combined with it such as to form a larger program, in or on a volume of a storage or distribution medium, is called an \"aggregate\" if the compilation and its resulting copyright are not used to limit the access or legal rights of the compilation's users beyond what the individual works permit.  Inclusion of a covered work in an aggregate does not cause this License to apply to the other parts of the aggregate.  6. Conveying Non-Source Forms.  You may convey a covered work in object code form under the terms of sections 4 and 5, provided that you also convey the machine-readable Corresponding Source under the terms of this License, in one of these ways:  a) Convey the object code in, or embodied in, a physical product (including a physical distribution medium), accompanied by the Corresponding Source fixed on a durable physical medium customarily used for software interchange.  b) Convey the object code in, or embodied in, a physical product (including a physical distribution medium), accompanied by a written offer, valid for at least three years and valid for as long as you offer spare parts or customer support for that product model, to give anyone who possesses the object code either (1) a copy of the Corresponding Source for all the software in the product that is covered by this License, on a durable physical medium customarily used for software interchange, for a price no more than your reasonable cost of physically performing this conveying of source, or (2) access to copy the Corresponding Source from a network server at no charge.  c) Convey individual copies of the object code with a copy of the written offer to provide the Corresponding Source.  This alternative is allowed only occasionally and noncommercially, and only if you received the object code with such an offer, in accord with subsection 6b.  d) Convey the object code by offering access from a designated place (gratis or for a charge), and offer equivalent access to the Corresponding Source in the same way through the same place at no further charge.  You need not require recipients to copy the Corresponding Source along with the object code.  If the place to copy the object code is a network server, the Corresponding Source may be on a different server (operated by you or a third party) that supports equivalent copying facilities, provided you maintain clear directions next to the object code saying where to find the Corresponding Source.  Regardless of what server hosts the Corresponding Source, you remain obligated to ensure that it is available for as long as needed to satisfy these requirements.  e) Convey the object code using peer-to-peer transmission, provided you inform other peers where the object code and Corresponding Source of the work are being offered to the general public at no charge under subsection 6d.  A separable portion of the object code, whose source code is excluded from the Corresponding Source as a System Library, need not be included in conveying the object code work.  A \"User Product\" is either (1) a \"consumer product\", which means any tangible personal property which is normally used for personal, family, or household purposes, or (2) anything designed or sold for incorporation into a dwelling.  In determining whether a product is a consumer product, doubtful cases shall be resolved in favor of coverage.  For a particular product received by a particular user, \"normally used\" refers to a typical or common use of that class of product, regardless of the status of the particular user or of the way in which the particular user actually uses, or expects or is expected to use, the product.  A product is a consumer product regardless of whether the product has substantial commercial, industrial or non-consumer uses, unless such uses represent the only significant mode of use of the product.  \"Installation Information\" for a User Product means any methods, procedures, authorization keys, or other information required to install and execute modified versions of a covered work in that User Product from a modified version of its Corresponding Source.  The information must suffice to ensure that the continued functioning of the modified object code is in no case prevented or interfered with solely because modification has been made.  If you convey an object code work under this section in, or with, or specifically for use in, a User Product, and the conveying occurs as part of a transaction in which the right of possession and use of the User Product is transferred to the recipient in perpetuity or for a fixed term (regardless of how the transaction is characterized), the Corresponding Source conveyed under this section must be accompanied by the Installation Information.  But this requirement does not apply if neither you nor any third party retains the ability to install modified object code on the User Product (for example, the work has been installed in ROM).  The requirement to provide Installation Information does not include a requirement to continue to provide support service, warranty, or updates for a work that has been modified or installed by the recipient, or for the User Product in which it has been modified or installed.  Access to a network may be denied when the modification itself materially and adversely affects the operation of the network or violates the rules and protocols for communication across the network.  Corresponding Source conveyed, and Installation Information provided, in accord with this section must be in a format that is publicly documented (and with an implementation available to the public in source code form), and must require no special password or key for unpacking, reading or copying.  7. Additional Terms.  \"Additional permissions\" are terms that supplement the terms of this License by making exceptions from one or more of its conditions. Additional permissions that are applicable to the entire Program shall be treated as though they were included in this License, to the extent that they are valid under applicable law.  If additional permissions apply only to part of the Program, that part may be used separately under those permissions, but the entire Program remains governed by this License without regard to the additional permissions.  When you convey a copy of a covered work, you may at your option remove any additional permissions from that copy, or from any part of it.  (Additional permissions may be written to require their own removal in certain cases when you modify the work.)  You may place additional permissions on material, added by you to a covered work, for which you have or can give appropriate copyright permission.  Notwithstanding any other provision of this License, for material you add to a covered work, you may (if authorized by the copyright holders of that material) supplement the terms of this License with terms:  a) Disclaiming warranty or limiting liability differently from the terms of sections 15 and 16 of this License; or  b) Requiring preservation of specified reasonable legal notices or author attributions in that material or in the Appropriate Legal Notices displayed by works containing it; or  c) Prohibiting misrepresentation of the origin of that material, or requiring that modified versions of such material be marked in reasonable ways as different from the original version; or  d) Limiting the use for publicity purposes of names of licensors or authors of the material; or  e) Declining to grant rights under trademark law for use of some trade names, trademarks, or service marks; or  f) Requiring indemnification of licensors and authors of that material by anyone who conveys the material (or modified versions of it) with contractual assumptions of liability to the recipient, for any liability that these contractual assumptions directly impose on those licensors and authors.  All other non-permissive additional terms are considered \"further restrictions\" within the meaning of section 10.  If the Program as you received it, or any part of it, contains a notice stating that it is governed by this License along with a term that is a further restriction, you may remove that term.  If a license document contains a further restriction but permits relicensing or conveying under this License, you may add to a covered work material governed by the terms of that license document, provided that the further restriction does not survive such relicensing or conveying.  If you add terms to a covered work in accord with this section, you must place, in the relevant source files, a statement of the additional terms that apply to those files, or a notice indicating where to find the applicable terms.  Additional terms, permissive or non-permissive, may be stated in the form of a separately written license, or stated as exceptions; the above requirements apply either way.  8. Termination.  You may not propagate or modify a covered work except as expressly provided under this License.  Any attempt otherwise to propagate or modify it is void, and will automatically terminate your rights under this License (including any patent licenses granted under the third paragraph of section 11).  However, if you cease all violation of this License, then your license from a particular copyright holder is reinstated (a) provisionally, unless and until the copyright holder explicitly and finally terminates your license, and (b) permanently, if the copyright holder fails to notify you of the violation by some reasonable means prior to 60 days after the cessation.  Moreover, your license from a particular copyright holder is reinstated permanently if the copyright holder notifies you of the violation by some reasonable means, this is the first time you have received notice of violation of this License (for any work) from that copyright holder, and you cure the violation prior to 30 days after your receipt of the notice.  Termination of your rights under this section does not terminate the licenses of parties who have received copies or rights from you under this License.  If your rights have been terminated and not permanently reinstated, you do not qualify to receive new licenses for the same material under section 10.  9. Acceptance Not Required for Having Copies.  You are not required to accept this License in order to receive or run a copy of the Program.  Ancillary propagation of a covered work occurring solely as a consequence of using peer-to-peer transmission to receive a copy likewise does not require acceptance.  However, nothing other than this License grants you permission to propagate or modify any covered work.  These actions infringe copyright if you do not accept this License.  Therefore, by modifying or propagating a covered work, you indicate your acceptance of this License to do so.  10. Automatic Licensing of Downstream Recipients.  Each time you convey a covered work, the recipient automatically receives a license from the original licensors, to run, modify and propagate that work, subject to this License.  You are not responsible for enforcing compliance by third parties with this License.  An \"entity transaction\" is a transaction transferring control of an organization, or substantially all assets of one, or subdividing an organization, or merging organizations.  If propagation of a covered work results from an entity transaction, each party to that transaction who receives a copy of the work also receives whatever licenses to the work the party's predecessor in interest had or could give under the previous paragraph, plus a right to possession of the Corresponding Source of the work from the predecessor in interest, if the predecessor has it or can get it with reasonable efforts.  You may not impose any further restrictions on the exercise of the rights granted or affirmed under this License.  For example, you may not impose a license fee, royalty, or other charge for exercise of rights granted under this License, and you may not initiate litigation (including a cross-claim or counterclaim in a lawsuit) alleging that any patent claim is infringed by making, using, selling, offering for sale, or importing the Program or any portion of it.  11. Patents.  A \"contributor\" is a copyright holder who authorizes use under this License of the Program or a work on which the Program is based.  The work thus licensed is called the contributor's \"contributor version\".  A contributor's \"essential patent claims\" are all patent claims owned or controlled by the contributor, whether already acquired or hereafter acquired, that would be infringed by some manner, permitted by this License, of making, using, or selling its contributor version, but do not include claims that would be infringed only as a consequence of further modification of the contributor version.  For purposes of this definition, \"control\" includes the right to grant patent sublicenses in a manner consistent with the requirements of this License.  Each contributor grants you a non-exclusive, worldwide, royalty-free patent license under the contributor's essential patent claims, to make, use, sell, offer for sale, import and otherwise run, modify and propagate the contents of its contributor version.  In the following three paragraphs, a \"patent license\" is any express agreement or commitment, however denominated, not to enforce a patent (such as an express permission to practice a patent or covenant not to sue for patent infringement).  To \"grant\" such a patent license to a party means to make such an agreement or commitment not to enforce a patent against the party.  If you convey a covered work, knowingly relying on a patent license, and the Corresponding Source of the work is not available for anyone to copy, free of charge and under the terms of this License, through a publicly available network server or other readily accessible means, then you must either (1) cause the Corresponding Source to be so available, or (2) arrange to deprive yourself of the benefit of the patent license for this particular work, or (3) arrange, in a manner consistent with the requirements of this License, to extend the patent license to downstream recipients.  \"Knowingly relying\" means you have actual knowledge that, but for the patent license, your conveying the covered work in a country, or your recipient's use of the covered work in a country, would infringe one or more identifiable patents in that country that you have reason to believe are valid.  If, pursuant to or in connection with a single transaction or arrangement, you convey, or propagate by procuring conveyance of, a covered work, and grant a patent license to some of the parties receiving the covered work authorizing them to use, propagate, modify or convey a specific copy of the covered work, then the patent license you grant is automatically extended to all recipients of the covered work and works based on it.  A patent license is \"discriminatory\" if it does not include within the scope of its coverage, prohibits the exercise of, or is conditioned on the non-exercise of one or more of the rights that are specifically granted under this License.  You may not convey a covered work if you are a party to an arrangement with a third party that is in the business of distributing software, under which you make payment to the third party based on the extent of your activity of conveying the work, and under which the third party grants, to any of the parties who would receive the covered work from you, a discriminatory patent license (a) in connection with copies of the covered work conveyed by you (or copies made from those copies), or (b) primarily for and in connection with specific products or compilations that contain the covered work, unless you entered into that arrangement, or that patent license was granted, prior to 28 March 2007.  Nothing in this License shall be construed as excluding or limiting any implied license or other defenses to infringement that may otherwise be available to you under applicable patent law.  12. No Surrender of Others' Freedom.  If conditions are imposed on you (whether by court order, agreement or otherwise) that contradict the conditions of this License, they do not excuse you from the conditions of this License.  If you cannot convey a covered work so as to satisfy simultaneously your obligations under this License and any other pertinent obligations, then as a consequence you may not convey it at all.  For example, if you agree to terms that obligate you to collect a royalty for further conveying from those to whom you convey the Program, the only way you could satisfy both those terms and this License would be to refrain entirely from conveying the Program.  13. Use with the GNU Affero General Public License.  Notwithstanding any other provision of this License, you have permission to link or combine any covered work with a work licensed under version 3 of the GNU Affero General Public License into a single combined work, and to convey the resulting work.  The terms of this License will continue to apply to the part which is the covered work, but the special requirements of the GNU Affero General Public License, section 13, concerning interaction through a network will apply to the combination as such.  14. Revised Versions of this License.  The Free Software Foundation may publish revised and/or new versions of the GNU General Public License from time to time.  Such new versions will be similar in spirit to the present version, but may differ in detail to address new problems or concerns.  Each version is given a distinguishing version number.  If the Program specifies that a certain numbered version of the GNU General Public License \"or any later version\" applies to it, you have the option of following the terms and conditions either of that numbered version or of any later version published by the Free Software Foundation.  If the Program does not specify a version number of the GNU General Public License, you may choose any version ever published by the Free Software Foundation.  If the Program specifies that a proxy can decide which future versions of the GNU General Public License can be used, that proxy's public statement of acceptance of a version permanently authorizes you to choose that version for the Program.  Later license versions may give you additional or different permissions.  However, no additional obligations are imposed on any author or copyright holder as a result of your choosing to follow a later version.  15. Disclaimer of Warranty.  THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY APPLICABLE LAW.  EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM \"AS IS\" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.  THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE PROGRAM IS WITH YOU.  SHOULD THE PROGRAM PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR OR CORRECTION.  16. Limitation of Liability.  IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MODIFIES AND/OR CONVEYS THE PROGRAM AS PERMITTED ABOVE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT NOT LIMITED TO LOSS OF DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A FAILURE OF THE PROGRAM TO OPERATE WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.  17. Interpretation of Sections 15 and 16.  If the disclaimer of warranty and limitation of liability provided above cannot be given local legal effect according to their terms, reviewing courts shall apply local law that most closely approximates an absolute waiver of all civil liability in connection with the Program, unless a warranty or assumption of liability accompanies a copy of the Program in return for a fee.  END OF TERMS AND CONDITIONS  How to Apply These Terms to Your New Programs  If you develop a new program, and you want it to be of the greatest possible use to the public, the best way to achieve this is to make it free software which everyone can redistribute and change under these terms.  To do so, attach the following notices to the program.  It is safest to attach them to the start of each source file to most effectively state the exclusion of warranty; and each file should have at least the \"copyright\" line and a pointer to where the full notice is found.  {one line to give the program's name and a brief idea of what it does.} Copyright (C) {year}  {name of author}  This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.  This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.  You should have received a copy of the GNU General Public License along with this program.  If not, see <http://www.gnu.org/licenses/>.  Also add information on how to contact you by electronic and paper mail.  If the program does terminal interaction, make it output a short notice like this when it starts in an interactive mode:  {project}  Copyright (C) {year}  {fullname} This program comes with ABSOLUTELY NO WARRANTY; for details type `show w'. This is free software, and you are welcome to redistribute it under certain conditions; type `show c' for details.  The hypothetical commands `show w' and `show c' should show the appropriate parts of the General Public License.  Of course, your program's commands might be different; for a GUI interface, you would use an \"about box\".  You should also get your employer (if you work as a programmer) or school, if any, to sign a \"copyright disclaimer\" for the program, if necessary. For more information on this, and how to apply and follow the GNU GPL, see <http://www.gnu.org/licenses/>.  The GNU General Public License does not permit incorporating your program into proprietary programs.  If your program is a subroutine library, you may consider it more useful to permit linking proprietary applications with the library.  If this is what you want to do, use the GNU Lesser General Public License instead of this License.  But first, please read <http://www.gnu.org/philosophy/why-not-lgpl.html>. "
+    },
+    {
+      "name": "preshed",
+      "version": "3.0.13",
+      "url": "https://files.pythonhosted.org/packages/f6/65/de465b6801740140c2b5d2db6c312ca7937dcfd0442f1ae7d50dee529544/preshed-3.0.13-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "df642547a1a94079978a0ea8f4593ab4b8d3bd43f767bef0ef64d9a214f8c4c9",
+      "filename": "preshed-3.0.13-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 137261,
+      "license": "MIT"
+    },
+    {
+      "name": "pycparser",
+      "version": "3.11",
+      "url": "https://files.pythonhosted.org/packages/90/11/0e6f11117525ff0eec40ebac3d313376f102df93ca44ad9e893ee85e4f89/pycparser-3.11-py3-none-any.whl",
+      "sha256": "51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80",
+      "filename": "pycparser-3.11-py3-none-any.whl",
+      "size": 51178,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "pydantic",
+      "version": "2.14.1",
+      "url": "https://files.pythonhosted.org/packages/35/ea/a56b9fe5066f3537b7882f77e9c5dfb26d8c2eefdaed9b5fc73d57b4dc22/pydantic-2.14.1-py3-none-any.whl",
+      "sha256": "9195d967ec791692a04438115466764fb8b9a27b31f14a760437694f40d6b454",
+      "filename": "pydantic-2.14.1-py3-none-any.whl",
+      "size": 488106,
+      "license": "MIT"
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.50.1",
+      "url": "https://files.pythonhosted.org/packages/59/20/938ef7e0541af0a314e2f9d63848dbd1656ba2ebfe5ca0469f7ebee00d5e/pydantic_core-2.50.1-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "b6d0c2183008c188e19f4906d426b293bdc4f67ab17df8e180fe16cda208fa71",
+      "filename": "pydantic_core-2.50.1-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 2045761,
+      "license": "MIT"
+    },
+    {
+      "name": "Pygments",
+      "version": "2.21.0",
+      "url": "https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl",
+      "sha256": "2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9",
+      "filename": "pygments-2.21.0-py3-none-any.whl",
+      "size": 1250147,
+      "license": "BSD-2-Clause"
+    },
+    {
+      "name": "pyparsing",
+      "version": "3.3.3",
+      "url": "https://files.pythonhosted.org/packages/38/bb/d215ee7c73b61497b28a5503f9f53523f294fcc936762b7caf90e0c1c2b5/pyparsing-3.3.3-py3-none-any.whl",
+      "sha256": "ece8c00a69cf01b45d0b1dedabb469c90d8caf996d4fda40f147627a122849a4",
+      "filename": "pyparsing-3.3.3-py3-none-any.whl",
+      "size": 126420,
+      "license": "MIT"
+    },
+    {
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "url": "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "filename": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "size": 229892,
+      "license": "Dual License"
+    },
+    {
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "url": "https://files.pythonhosted.org/packages/16/19/13de8e4377ed53079ee996e1ab0a9c33ec2faf808a4647b7b4c0d46dd239/pyyaml-6.0.3-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "652cb6edd41e718550aad172851962662ff2681490a8a711af6a4d288dd96824",
+      "filename": "pyyaml-6.0.3-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 175577,
+      "license": "MIT"
+    },
+    {
+      "name": "rdflib",
+      "version": "7.6.0",
+      "url": "https://files.pythonhosted.org/packages/10/c2/6604a71269e0c1bd75656d5a001432d16f2cc5b8c057140ec797155c295e/rdflib-7.6.0-py3-none-any.whl",
+      "sha256": "30c0a3ebf4c0e09215f066be7246794b6492e054e782d7ac2a34c9f70a15e0dd",
+      "filename": "rdflib-7.6.0-py3-none-any.whl",
+      "size": 615416,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "referencing",
+      "version": "0.37.0",
+      "url": "https://files.pythonhosted.org/packages/2c/58/ca301544e1fa93ed4f80d724bf5b194f6e4b945841c5bfd555878eea9fcb/referencing-0.37.0-py3-none-any.whl",
+      "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231",
+      "filename": "referencing-0.37.0-py3-none-any.whl",
+      "size": 26766,
+      "license": "MIT"
+    },
+    {
+      "name": "regex",
+      "version": "2026.9.29",
+      "url": "https://files.pythonhosted.org/packages/b1/07/9bf3607d8d13a12e436ab9d63f9791e10706827d535695b23964ad79fd79/regex-2026.9.29-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "066d0e3dbfdd739bce2bf8c2a41dd16f73e3d8adc2eb06dd803a36a307f56075",
+      "filename": "regex-2026.9.29-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 292123,
+      "license": "Apache-2.0 AND CNRI-Python"
+    },
+    {
+      "name": "requests",
+      "version": "2.34.2",
+      "url": "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl",
+      "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+      "filename": "requests-2.34.2-py3-none-any.whl",
+      "size": 73075,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "rfc3986",
+      "version": "1.5.0",
+      "url": "https://files.pythonhosted.org/packages/c4/e5/63ca2c4edf4e00657584608bee1001302bbf8c5f569340b78304f2f446cb/rfc3986-1.5.0-py2.py3-none-any.whl",
+      "sha256": "a86d6e1f5b1dc238b218b012df0aa79409667bb209e58da56d0b94704e712a97",
+      "filename": "rfc3986-1.5.0-py2.py3-none-any.whl",
+      "size": 31976,
+      "license": "Apache 2.0"
+    },
+    {
+      "name": "rich",
+      "version": "15.0.0",
+      "url": "https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl",
+      "sha256": "33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb",
+      "filename": "rich-15.0.0-py3-none-any.whl",
+      "size": 310654,
+      "license": "MIT"
+    },
+    {
+      "name": "rpds-py",
+      "version": "2026.9.1",
+      "url": "https://files.pythonhosted.org/packages/9e/b2/632c3d034961149eff606e3e357547620a9ab37b849ae5815f67838753fd/rpds_py-2026.9.1-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "3231c4c0e521dafa5be0c9f114ee2c2ad46650836f2d72caa86801950c3e7044",
+      "filename": "rpds_py-2026.9.1-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 346770,
+      "license": "MIT"
+    },
+    {
+      "name": "safetensors",
+      "version": "0.8.0",
+      "url": "https://files.pythonhosted.org/packages/f5/b1/fa7c600e7dceae12e9606c7578cbc9ff1e1ed55844883ee5c92205e86226/safetensors-0.8.0-cp310-abi3-macosx_11_0_arm64.whl",
+      "sha256": "c80201d22cbf405b80647a60ada77bba06c8fba2da2743ba1e89cdcc39a81f25",
+      "filename": "safetensors-0.8.0-cp310-abi3-macosx_11_0_arm64.whl",
+      "size": 484562,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "scipy",
+      "version": "1.17.1",
+      "url": "https://files.pythonhosted.org/packages/6d/ee/18146b7757ed4976276b9c9819108adbc73c5aad636e5353e20746b73069/scipy-1.17.1-cp311-cp311-macosx_14_0_arm64.whl",
+      "sha256": "a3472cfbca0a54177d0faa68f697d8ba4c80bbdc19908c3465556d9f7efce9ee",
+      "filename": "scipy-1.17.1-cp311-cp311-macosx_14_0_arm64.whl",
+      "size": 20334032,
+      "license": "Copyright (c) 2001-2002 Enthought, Inc. 2003, SciPy Developers.\n         All rights reserved.\n         \n         Redistribution and use in source and binary forms, with or without\n         modification, are permitted provided that the following conditions\n         are met:\n         \n         1. Redistributions of source code must retain the above copyright\n            notice, this list of conditions and the following disclaimer.\n         \n         2. Redistributions in binary form must reproduce the above\n            copyright notice, this list of conditions and the following\n            disclaimer in the documentation and/or other materials provided\n            with the distribution.\n         \n         3. Neither the name of the copyright holder nor the names of its\n            contributors may be used to endorse or promote products derived\n            from this software without specific prior written permission.\n         \n         THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n         \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n         LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\n         A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT\n         OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,\n         SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT\n         LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,\n         DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY\n         THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n         (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\n         OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n         \n         ----\n         \n         This binary distribution of SciPy can also bundle the following software\n         (depending on the build):\n         \n         \n         Name: OpenBLAS\n         Files: scipy/.dylibs/libscipy_openblas*.so\n         Description: bundled as a dynamically linked library\n         Availability: https://github.com/OpenMathLib/OpenBLAS/\n         License: BSD-3-Clause\n           Copyright (c) 2011-2014, The OpenBLAS Project\n           All rights reserved.\n         \n           Redistribution and use in source and binary forms, with or without\n           modification, are permitted provided that the following conditions are\n           met:\n         \n              1. Redistributions of source code must retain the above copyright\n                 notice, this list of conditions and the following disclaimer.\n         \n              2. Redistributions in binary form must reproduce the above copyright\n                 notice, this list of conditions and the following disclaimer in\n                 the documentation and/or other materials provided with the\n                 distribution.\n              3. Neither the name of the OpenBLAS project nor the names of\n                 its contributors may be used to endorse or promote products\n                 derived from this software without specific prior written\n                 permission.\n         \n           THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\n           AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\n           IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE\n           ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE\n           LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\n           DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR\n           SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\n           CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,\n           OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE\n           USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n         \n         \n         Name: LAPACK\n         Files: scipy/.dylibs/libscipy_openblas*.so\n         Description: bundled in OpenBLAS\n         Availability: https://github.com/OpenMathLib/OpenBLAS/\n         License: BSD-3-Clause-Open-MPI\n           Copyright (c) 1992-2013 The University of Tennessee and The University\n                                   of Tennessee Research Foundation.  All rights\n                                   reserved.\n           Copyright (c) 2000-2013 The University of California Berkeley. All\n                                   rights reserved.\n           Copyright (c) 2006-2013 The University of Colorado Denver.  All rights\n                                   reserved.\n         \n           $COPYRIGHT$\n         \n           Additional copyrights may follow\n         \n           $HEADER$\n         \n           Redistribution and use in source and binary forms, with or without\n           modification, are permitted provided that the following conditions are\n           met:\n         \n           - Redistributions of source code must retain the above copyright\n             notice, this list of conditions and the following disclaimer.\n         \n           - Redistributions in binary form must reproduce the above copyright\n             notice, this list of conditions and the following disclaimer listed\n             in this license in the documentation and/or other materials\n             provided with the distribution.\n         \n           - Neither the name of the copyright holders nor the names of its\n             contributors may be used to endorse or promote products derived from\n             this software without specific prior written permission.\n         \n           The copyright holders provide no reassurances that the source code\n           provided does not infringe any patent, copyright, or any other\n           intellectual property rights of third parties.  The copyright holders\n           disclaim any liability to any recipient for claims brought against\n           recipient by any third party for infringement of that parties\n           intellectual property rights.\n         \n           THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n           \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n           LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\n           A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT\n           OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,\n           SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT\n           LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,\n           DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY\n           THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n           (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\n           OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n         \n         \n         Name: GCC runtime library\n         Files: scipy/.dylibs/libgfortran*, scipy/.dylibs/libgcc*\n         Description: dynamically linked to files compiled with gcc\n         Availability: https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libgfortran\n         License: GPL-3.0-or-later WITH GCC-exception-3.1\n           Copyright (C) 2002-2017 Free Software Foundation, Inc.\n           \n           Libgfortran is free software; you can redistribute it and/or modify\n           it under the terms of the GNU General Public License as published by\n           the Free Software Foundation; either version 3, or (at your option)\n           any later version.\n           \n           Libgfortran is distributed in the hope that it will be useful,\n           but WITHOUT ANY WARRANTY; without even the implied warranty of\n           MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n           GNU General Public License for more details.\n           \n           Under Section 7 of GPL version 3, you are granted additional\n           permissions described in the GCC Runtime Library Exception, version\n           3.1, as published by the Free Software Foundation.\n           \n           You should have received a copy of the GNU General Public License and\n           a copy of the GCC Runtime Library Exception along with this program;\n           see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see\n           <http://www.gnu.org/licenses/>.\n         \n         ----\n         \n         Full text of license texts referred to above follows (that they are\n         listed below does not necessarily imply the conditions apply to the\n         present binary release):\n         \n         ----\n         \n         GCC RUNTIME LIBRARY EXCEPTION\n         \n         Version 3.1, 31 March 2009\n         \n         Copyright (C) 2009 Free Software Foundation, Inc. <http://fsf.org/>\n         \n         Everyone is permitted to copy and distribute verbatim copies of this\n         license document, but changing it is not allowed.\n         \n         This GCC Runtime Library Exception (\"Exception\") is an additional\n         permission under section 7 of the GNU General Public License, version\n         3 (\"GPLv3\"). It applies to a given file (the \"Runtime Library\") that\n         bears a notice placed by the copyright holder of the file stating that\n         the file is governed by GPLv3 along with this Exception.\n         \n         When you use GCC to compile a program, GCC may combine portions of\n         certain GCC header files and runtime libraries with the compiled\n         program. The purpose of this Exception is to allow compilation of\n         non-GPL (including proprietary) programs to use, in this way, the\n         header files and runtime libraries covered by this Exception.\n         \n         0. Definitions.\n         \n         A file is an \"Independent Module\" if it either requires the Runtime\n         Library for execution after a Compilation Process, or makes use of an\n         interface provided by the Runtime Library, but is not otherwise based\n         on the Runtime Library.\n         \n         \"GCC\" means a version of the GNU Compiler Collection, with or without\n         modifications, governed by version 3 (or a specified later version) of\n         the GNU General Public License (GPL) with the option of using any\n         subsequent versions published by the FSF.\n         \n         \"GPL-compatible Software\" is software whose conditions of propagation,\n         modification and use would permit combination with GCC in accord with\n         the license of GCC.\n         \n         \"Target Code\" refers to output from any compiler for a real or virtual\n         target processor architecture, in executable form or suitable for\n         input to an assembler, loader, linker and/or execution\n         phase. Notwithstanding that, Target Code does not include data in any\n         format that is used as a compiler intermediate representation, or used\n         for producing a compiler intermediate representation.\n         \n         The \"Compilation Process\" transforms code entirely represented in\n         non-intermediate languages designed for human-written code, and/or in\n         Java Virtual Machine byte code, into Target Code. Thus, for example,\n         use of source code generators and preprocessors need not be considered\n         part of the Compilation Process, since the Compilation Process can be\n         understood as starting with the output of the generators or\n         preprocessors.\n         \n         A Compilation Process is \"Eligible\" if it is done using GCC, alone or\n         with other GPL-compatible software, or if it is done without using any\n         work based on GCC. For example, using non-GPL-compatible Software to\n         optimize any GCC intermediate representations would not qualify as an\n         Eligible Compilation Process.\n         \n         1. Grant of Additional Permission.\n         \n         You have permission to propagate a work of Target Code formed by\n         combining the Runtime Library with Independent Modules, even if such\n         propagation would otherwise violate the terms of GPLv3, provided that\n         all Target Code was generated by Eligible Compilation Processes. You\n         may then convey such a combination under terms of your choice,\n         consistent with the licensing of the Independent Modules.\n         \n         2. No Weakening of GCC Copyleft.\n         \n         The availability of this Exception does not imply any general\n         presumption that third-party software is unaffected by the copyleft\n         requirements of the license of GCC.\n         \n         ----\n         \n                             GNU GENERAL PUBLIC LICENSE\n                                Version 3, 29 June 2007\n         \n          Copyright (C) 2007 Free Software Foundation, Inc. <http://fsf.org/>\n          Everyone is permitted to copy and distribute verbatim copies\n          of this license document, but changing it is not allowed.\n         \n                                     Preamble\n         \n           The GNU General Public License is a free, copyleft license for\n         software and other kinds of works.\n         \n           The licenses for most software and other practical works are designed\n         to take away your freedom to share and change the works.  By contrast,\n         the GNU General Public License is intended to guarantee your freedom to\n         share and change all versions of a program--to make sure it remains free\n         software for all its users.  We, the Free Software Foundation, use the\n         GNU General Public License for most of our software; it applies also to\n         any other work released this way by its authors.  You can apply it to\n         your programs, too.\n         \n           When we speak of free software, we are referring to freedom, not\n         price.  Our General Public Licenses are designed to make sure that you\n         have the freedom to distribute copies of free software (and charge for\n         them if you wish), that you receive source code or can get it if you\n         want it, that you can change the software or use pieces of it in new\n         free programs, and that you know you can do these things.\n         \n           To protect your rights, we need to prevent others from denying you\n         these rights or asking you to surrender the rights.  Therefore, you have\n         certain responsibilities if you distribute copies of the software, or if\n         you modify it: responsibilities to respect the freedom of others.\n         \n           For example, if you distribute copies of such a program, whether\n         gratis or for a fee, you must pass on to the recipients the same\n         freedoms that you received.  You must make sure that they, too, receive\n         or can get the source code.  And you must show them these terms so they\n         know their rights.\n         \n           Developers that use the GNU GPL protect your rights with two steps:\n         (1) assert copyright on the software, and (2) offer you this License\n         giving you legal permission to copy, distribute and/or modify it.\n         \n           For the developers' and authors' protection, the GPL clearly explains\n         that there is no warranty for this free software.  For both users' and\n         authors' sake, the GPL requires that modified versions be marked as\n         changed, so that their problems will not be attributed erroneously to\n         authors of previous versions.\n         \n           Some devices are designed to deny users access to install or run\n         modified versions of the software inside them, although the manufacturer\n         can do so.  This is fundamentally incompatible with the aim of\n         protecting users' freedom to change the software.  The systematic\n         pattern of such abuse occurs in the area of products for individuals to\n         use, which is precisely where it is most unacceptable.  Therefore, we\n         have designed this version of the GPL to prohibit the practice for those\n         products.  If such problems arise substantially in other domains, we\n         stand ready to extend this provision to those domains in future versions\n         of the GPL, as needed to protect the freedom of users.\n         \n           Finally, every program is threatened constantly by software patents.\n         States should not allow patents to restrict development and use of\n         software on general-purpose computers, but in those that do, we wish to\n         avoid the special danger that patents applied to a free program could\n         make it effectively proprietary.  To prevent this, the GPL assures that\n         patents cannot be used to render the program non-free.\n         \n           The precise terms and conditions for copying, distribution and\n         modification follow.\n         \n                                TERMS AND CONDITIONS\n         \n           0. Definitions.\n         \n           \"This License\" refers to version 3 of the GNU General Public License.\n         \n           \"Copyright\" also means copyright-like laws that apply to other kinds of\n         works, such as semiconductor masks.\n         \n           \"The Program\" refers to any copyrightable work licensed under this\n         License.  Each licensee is addressed as \"you\".  \"Licensees\" and\n         \"recipients\" may be individuals or organizations.\n         \n           To \"modify\" a work means to copy from or adapt all or part of the work\n         in a fashion requiring copyright permission, other than the making of an\n         exact copy.  The resulting work is called a \"modified version\" of the\n         earlier work or a work \"based on\" the earlier work.\n         \n           A \"covered work\" means either the unmodified Program or a work based\n         on the Program.\n         \n           To \"propagate\" a work means to do anything with it that, without\n         permission, would make you directly or secondarily liable for\n         infringement under applicable copyright law, except executing it on a\n         computer or modifying a private copy.  Propagation includes copying,\n         distribution (with or without modification), making available to the\n         public, and in some countries other activities as well.\n         \n           To \"convey\" a work means any kind of propagation that enables other\n         parties to make or receive copies.  Mere interaction with a user through\n         a computer network, with no transfer of a copy, is not conveying.\n         \n           An interactive user interface displays \"Appropriate Legal Notices\"\n         to the extent that it includes a convenient and prominently visible\n         feature that (1) displays an appropriate copyright notice, and (2)\n         tells the user that there is no warranty for the work (except to the\n         extent that warranties are provided), that licensees may convey the\n         work under this License, and how to view a copy of this License.  If\n         the interface presents a list of user commands or options, such as a\n         menu, a prominent item in the list meets this criterion.\n         \n           1. Source Code.\n         \n           The \"source code\" for a work means the preferred form of the work\n         for making modifications to it.  \"Object code\" means any non-source\n         form of a work.\n         \n           A \"Standard Interface\" means an interface that either is an official\n         standard defined by a recognized standards body, or, in the case of\n         interfaces specified for a particular programming language, one that\n         is widely used among developers working in that language.\n         \n           The \"System Libraries\" of an executable work include anything, other\n         than the work as a whole, that (a) is included in the normal form of\n         packaging a Major Component, but which is not part of that Major\n         Component, and (b) serves only to enable use of the work with that\n         Major Component, or to implement a Standard Interface for which an\n         implementation is available to the public in source code form.  A\n         \"Major Component\", in this context, means a major essential component\n         (kernel, window system, and so on) of the specific operating system\n         (if any) on which the executable work runs, or a compiler used to\n         produce the work, or an object code interpreter used to run it.\n         \n           The \"Corresponding Source\" for a work in object code form means all\n         the source code needed to generate, install, and (for an executable\n         work) run the object code and to modify the work, including scripts to\n         control those activities.  However, it does not include the work's\n         System Libraries, or general-purpose tools or generally available free\n         programs which are used unmodified in performing those activities but\n         which are not part of the work.  For example, Corresponding Source\n         includes interface definition files associated with source files for\n         the work, and the source code for shared libraries and dynamically\n         linked subprograms that the work is specifically designed to require,\n         such as by intimate data communication or control flow between those\n         subprograms and other parts of the work.\n         \n           The Corresponding Source need not include anything that users\n         can regenerate automatically from other parts of the Corresponding\n         Source.\n         \n           The Corresponding Source for a work in source code form is that\n         same work.\n         \n           2. Basic Permissions.\n         \n           All rights granted under this License are granted for the term of\n         copyright on the Program, and are irrevocable provided the stated\n         conditions are met.  This License explicitly affirms your unlimited\n         permission to run the unmodified Program.  The output from running a\n         covered work is covered by this License only if the output, given its\n         content, constitutes a covered work.  This License acknowledges your\n         rights of fair use or other equivalent, as provided by copyright law.\n         \n           You may make, run and propagate covered works that you do not\n         convey, without conditions so long as your license otherwise remains\n         in force.  You may convey covered works to others for the sole purpose\n         of having them make modifications exclusively for you, or provide you\n         with facilities for running those works, provided that you comply with\n         the terms of this License in conveying all material for which you do\n         not control copyright.  Those thus making or running the covered works\n         for you must do so exclusively on your behalf, under your direction\n         and control, on terms that prohibit them from making any copies of\n         your copyrighted material outside their relationship with you.\n         \n           Conveying under any other circumstances is permitted solely under\n         the conditions stated below.  Sublicensing is not allowed; section 10\n         makes it unnecessary.\n         \n           3. Protecting Users' Legal Rights From Anti-Circumvention Law.\n         \n           No covered work shall be deemed part of an effective technological\n         measure under any applicable law fulfilling obligations under article\n         11 of the WIPO copyright treaty adopted on 20 December 1996, or\n         similar laws prohibiting or restricting circumvention of such\n         measures.\n         \n           When you convey a covered work, you waive any legal power to forbid\n         circumvention of technological measures to the extent such circumvention\n         is effected by exercising rights under this License with respect to\n         the covered work, and you disclaim any intention to limit operation or\n         modification of the work as a means of enforcing, against the work's\n         users, your or third parties' legal rights to forbid circumvention of\n         technological measures.\n         \n           4. Conveying Verbatim Copies.\n         \n           You may convey verbatim copies of the Program's source code as you\n         receive it, in any medium, provided that you conspicuously and\n         appropriately publish on each copy an appropriate copyright notice;\n         keep intact all notices stating that this License and any\n         non-permissive terms added in accord with section 7 apply to the code;\n         keep intact all notices of the absence of any warranty; and give all\n         recipients a copy of this License along with the Program.\n         \n           You may charge any price or no price for each copy that you convey,\n         and you may offer support or warranty protection for a fee.\n         \n           5. Conveying Modified Source Versions.\n         \n           You may convey a work based on the Program, or the modifications to\n         produce it from the Program, in the form of source code under the\n         terms of section 4, provided that you also meet all of these conditions:\n         \n             a) The work must carry prominent notices stating that you modified\n             it, and giving a relevant date.\n         \n             b) The work must carry prominent notices stating that it is\n             released under this License and any conditions added under section\n             7.  This requirement modifies the requirement in section 4 to\n             \"keep intact all notices\".\n         \n             c) You must license the entire work, as a whole, under this\n             License to anyone who comes into possession of a copy.  This\n             License will therefore apply, along with any applicable section 7\n             additional terms, to the whole of the work, and all its parts,\n             regardless of how they are packaged.  This License gives no\n             permission to license the work in any other way, but it does not\n             invalidate such permission if you have separately received it.\n         \n             d) If the work has interactive user interfaces, each must display\n             Appropriate Legal Notices; however, if the Program has interactive\n             interfaces that do not display Appropriate Legal Notices, your\n             work need not make them do so.\n         \n           A compilation of a covered work with other separate and independent\n         works, which are not by their nature extensions of the covered work,\n         and which are not combined with it such as to form a larger program,\n         in or on a volume of a storage or distribution medium, is called an\n         \"aggregate\" if the compilation and its resulting copyright are not\n         used to limit the access or legal rights of the compilation's users\n         beyond what the individual works permit.  Inclusion of a covered work\n         in an aggregate does not cause this License to apply to the other\n         parts of the aggregate.\n         \n           6. Conveying Non-Source Forms.\n         \n           You may convey a covered work in object code form under the terms\n         of sections 4 and 5, provided that you also convey the\n         machine-readable Corresponding Source under the terms of this License,\n         in one of these ways:\n         \n             a) Convey the object code in, or embodied in, a physical product\n             (including a physical distribution medium), accompanied by the\n             Corresponding Source fixed on a durable physical medium\n             customarily used for software interchange.\n         \n             b) Convey the object code in, or embodied in, a physical product\n             (including a physical distribution medium), accompanied by a\n             written offer, valid for at least three years and valid for as\n             long as you offer spare parts or customer support for that product\n             model, to give anyone who possesses the object code either (1) a\n             copy of the Corresponding Source for all the software in the\n             product that is covered by this License, on a durable physical\n             medium customarily used for software interchange, for a price no\n             more than your reasonable cost of physically performing this\n             conveying of source, or (2) access to copy the\n             Corresponding Source from a network server at no charge.\n         \n             c) Convey individual copies of the object code with a copy of the\n             written offer to provide the Corresponding Source.  This\n             alternative is allowed only occasionally and noncommercially, and\n             only if you received the object code with such an offer, in accord\n             with subsection 6b.\n         \n             d) Convey the object code by offering access from a designated\n             place (gratis or for a charge), and offer equivalent access to the\n             Corresponding Source in the same way through the same place at no\n             further charge.  You need not require recipients to copy the\n             Corresponding Source along with the object code.  If the place to\n             copy the object code is a network server, the Corresponding Source\n             may be on a different server (operated by you or a third party)\n             that supports equivalent copying facilities, provided you maintain\n             clear directions next to the object code saying where to find the\n             Corresponding Source.  Regardless of what server hosts the\n             Corresponding Source, you remain obligated to ensure that it is\n             available for as long as needed to satisfy these requirements.\n         \n             e) Convey the object code using peer-to-peer transmission, provided\n             you inform other peers where the object code and Corresponding\n             Source of the work are being offered to the general public at no\n             charge under subsection 6d.\n         \n           A separable portion of the object code, whose source code is excluded\n         from the Corresponding Source as a System Library, need not be\n         included in conveying the object code work.\n         \n           A \"User Product\" is either (1) a \"consumer product\", which means any\n         tangible personal property which is normally used for personal, family,\n         or household purposes, or (2) anything designed or sold for incorporation\n         into a dwelling.  In determining whether a product is a consumer product,\n         doubtful cases shall be resolved in favor of coverage.  For a particular\n         product received by a particular user, \"normally used\" refers to a\n         typical or common use of that class of product, regardless of the status\n         of the particular user or of the way in which the particular user\n         actually uses, or expects or is expected to use, the product.  A product\n         is a consumer product regardless of whether the product has substantial\n         commercial, industrial or non-consumer uses, unless such uses represent\n         the only significant mode of use of the product.\n         \n           \"Installation Information\" for a User Product means any methods,\n         procedures, authorization keys, or other information required to install\n         and execute modified versions of a covered work in that User Product from\n         a modified version of its Corresponding Source.  The information must\n         suffice to ensure that the continued functioning of the modified object\n         code is in no case prevented or interfered with solely because\n         modification has been made.\n         \n           If you convey an object code work under this section in, or with, or\n         specifically for use in, a User Product, and the conveying occurs as\n         part of a transaction in which the right of possession and use of the\n         User Product is transferred to the recipient in perpetuity or for a\n         fixed term (regardless of how the transaction is characterized), the\n         Corresponding Source conveyed under this section must be accompanied\n         by the Installation Information.  But this requirement does not apply\n         if neither you nor any third party retains the ability to install\n         modified object code on the User Product (for example, the work has\n         been installed in ROM).\n         \n           The requirement to provide Installation Information does not include a\n         requirement to continue to provide support service, warranty, or updates\n         for a work that has been modified or installed by the recipient, or for\n         the User Product in which it has been modified or installed.  Access to a\n         network may be denied when the modification itself materially and\n         adversely affects the operation of the network or violates the rules and\n         protocols for communication across the network.\n         \n           Corresponding Source conveyed, and Installation Information provided,\n         in accord with this section must be in a format that is publicly\n         documented (and with an implementation available to the public in\n         source code form), and must require no special password or key for\n         unpacking, reading or copying.\n         \n           7. Additional Terms.\n         \n           \"Additional permissions\" are terms that supplement the terms of this\n         License by making exceptions from one or more of its conditions.\n         Additional permissions that are applicable to the entire Program shall\n         be treated as though they were included in this License, to the extent\n         that they are valid under applicable law.  If additional permissions\n         apply only to part of the Program, that part may be used separately\n         under those permissions, but the entire Program remains governed by\n         this License without regard to the additional permissions.\n         \n           When you convey a copy of a covered work, you may at your option\n         remove any additional permissions from that copy, or from any part of\n         it.  (Additional permissions may be written to require their own\n         removal in certain cases when you modify the work.)  You may place\n         additional permissions on material, added by you to a covered work,\n         for which you have or can give appropriate copyright permission.\n         \n           Notwithstanding any other provision of this License, for material you\n         add to a covered work, you may (if authorized by the copyright holders of\n         that material) supplement the terms of this License with terms:\n         \n             a) Disclaiming warranty or limiting liability differently from the\n             terms of sections 15 and 16 of this License; or\n         \n             b) Requiring preservation of specified reasonable legal notices or\n             author attributions in that material or in the Appropriate Legal\n             Notices displayed by works containing it; or\n         \n             c) Prohibiting misrepresentation of the origin of that material, or\n             requiring that modified versions of such material be marked in\n             reasonable ways as different from the original version; or\n         \n             d) Limiting the use for publicity purposes of names of licensors or\n             authors of the material; or\n         \n             e) Declining to grant rights under trademark law for use of some\n             trade names, trademarks, or service marks; or\n         \n             f) Requiring indemnification of licensors and authors of that\n             material by anyone who conveys the material (or modified versions of\n             it) with contractual assumptions of liability to the recipient, for\n             any liability that these contractual assumptions directly impose on\n             those licensors and authors.\n         \n           All other non-permissive additional terms are considered \"further\n         restrictions\" within the meaning of section 10.  If the Program as you\n         received it, or any part of it, contains a notice stating that it is\n         governed by this License along with a term that is a further\n         restriction, you may remove that term.  If a license document contains\n         a further restriction but permits relicensing or conveying under this\n         License, you may add to a covered work material governed by the terms\n         of that license document, provided that the further restriction does\n         not survive such relicensing or conveying.\n         \n           If you add terms to a covered work in accord with this section, you\n         must place, in the relevant source files, a statement of the\n         additional terms that apply to those files, or a notice indicating\n         where to find the applicable terms.\n         \n           Additional terms, permissive or non-permissive, may be stated in the\n         form of a separately written license, or stated as exceptions;\n         the above requirements apply either way.\n         \n           8. Termination.\n         \n           You may not propagate or modify a covered work except as expressly\n         provided under this License.  Any attempt otherwise to propagate or\n         modify it is void, and will automatically terminate your rights under\n         this License (including any patent licenses granted under the third\n         paragraph of section 11).\n         \n           However, if you cease all violation of this License, then your\n         license from a particular copyright holder is reinstated (a)\n         provisionally, unless and until the copyright holder explicitly and\n         finally terminates your license, and (b) permanently, if the copyright\n         holder fails to notify you of the violation by some reasonable means\n         prior to 60 days after the cessation.\n         \n           Moreover, your license from a particular copyright holder is\n         reinstated permanently if the copyright holder notifies you of the\n         violation by some reasonable means, this is the first time you have\n         received notice of violation of this License (for any work) from that\n         copyright holder, and you cure the violation prior to 30 days after\n         your receipt of the notice.\n         \n           Termination of your rights under this section does not terminate the\n         licenses of parties who have received copies or rights from you under\n         this License.  If your rights have been terminated and not permanently\n         reinstated, you do not qualify to receive new licenses for the same\n         material under section 10.\n         \n           9. Acceptance Not Required for Having Copies.\n         \n           You are not required to accept this License in order to receive or\n         run a copy of the Program.  Ancillary propagation of a covered work\n         occurring solely as a consequence of using peer-to-peer transmission\n         to receive a copy likewise does not require acceptance.  However,\n         nothing other than this License grants you permission to propagate or\n         modify any covered work.  These actions infringe copyright if you do\n         not accept this License.  Therefore, by modifying or propagating a\n         covered work, you indicate your acceptance of this License to do so.\n         \n           10. Automatic Licensing of Downstream Recipients.\n         \n           Each time you convey a covered work, the recipient automatically\n         receives a license from the original licensors, to run, modify and\n         propagate that work, subject to this License.  You are not responsible\n         for enforcing compliance by third parties with this License.\n         \n           An \"entity transaction\" is a transaction transferring control of an\n         organization, or substantially all assets of one, or subdividing an\n         organization, or merging organizations.  If propagation of a covered\n         work results from an entity transaction, each party to that\n         transaction who receives a copy of the work also receives whatever\n         licenses to the work the party's predecessor in interest had or could\n         give under the previous paragraph, plus a right to possession of the\n         Corresponding Source of the work from the predecessor in interest, if\n         the predecessor has it or can get it with reasonable efforts.\n         \n           You may not impose any further restrictions on the exercise of the\n         rights granted or affirmed under this License.  For example, you may\n         not impose a license fee, royalty, or other charge for exercise of\n         rights granted under this License, and you may not initiate litigation\n         (including a cross-claim or counterclaim in a lawsuit) alleging that\n         any patent claim is infringed by making, using, selling, offering for\n         sale, or importing the Program or any portion of it.\n         \n           11. Patents.\n         \n           A \"contributor\" is a copyright holder who authorizes use under this\n         License of the Program or a work on which the Program is based.  The\n         work thus licensed is called the contributor's \"contributor version\".\n         \n           A contributor's \"essential patent claims\" are all patent claims\n         owned or controlled by the contributor, whether already acquired or\n         hereafter acquired, that would be infringed by some manner, permitted\n         by this License, of making, using, or selling its contributor version,\n         but do not include claims that would be infringed only as a\n         consequence of further modification of the contributor version.  For\n         purposes of this definition, \"control\" includes the right to grant\n         patent sublicenses in a manner consistent with the requirements of\n         this License.\n         \n           Each contributor grants you a non-exclusive, worldwide, royalty-free\n         patent license under the contributor's essential patent claims, to\n         make, use, sell, offer for sale, import and otherwise run, modify and\n         propagate the contents of its contributor version.\n         \n           In the following three paragraphs, a \"patent license\" is any express\n         agreement or commitment, however denominated, not to enforce a patent\n         (such as an express permission to practice a patent or covenant not to\n         sue for patent infringement).  To \"grant\" such a patent license to a\n         party means to make such an agreement or commitment not to enforce a\n         patent against the party.\n         \n           If you convey a covered work, knowingly relying on a patent license,\n         and the Corresponding Source of the work is not available for anyone\n         to copy, free of charge and under the terms of this License, through a\n         publicly available network server or other readily accessible means,\n         then you must either (1) cause the Corresponding Source to be so\n         available, or (2) arrange to deprive yourself of the benefit of the\n         patent license for this particular work, or (3) arrange, in a manner\n         consistent with the requirements of this License, to extend the patent\n         license to downstream recipients.  \"Knowingly relying\" means you have\n         actual knowledge that, but for the patent license, your conveying the\n         covered work in a country, or your recipient's use of the covered work\n         in a country, would infringe one or more identifiable patents in that\n         country that you have reason to believe are valid.\n         \n           If, pursuant to or in connection with a single transaction or\n         arrangement, you convey, or propagate by procuring conveyance of, a\n         covered work, and grant a patent license to some of the parties\n         receiving the covered work authorizing them to use, propagate, modify\n         or convey a specific copy of the covered work, then the patent license\n         you grant is automatically extended to all recipients of the covered\n         work and works based on it.\n         \n           A patent license is \"discriminatory\" if it does not include within\n         the scope of its coverage, prohibits the exercise of, or is\n         conditioned on the non-exercise of one or more of the rights that are\n         specifically granted under this License.  You may not convey a covered\n         work if you are a party to an arrangement with a third party that is\n         in the business of distributing software, under which you make payment\n         to the third party based on the extent of your activity of conveying\n         the work, and under which the third party grants, to any of the\n         parties who would receive the covered work from you, a discriminatory\n         patent license (a) in connection with copies of the covered work\n         conveyed by you (or copies made from those copies), or (b) primarily\n         for and in connection with specific products or compilations that\n         contain the covered work, unless you entered into that arrangement,\n         or that patent license was granted, prior to 28 March 2007.\n         \n           Nothing in this License shall be construed as excluding or limiting\n         any implied license or other defenses to infringement that may\n         otherwise be available to you under applicable patent law.\n         \n           12. No Surrender of Others' Freedom.\n         \n           If conditions are imposed on you (whether by court order, agreement or\n         otherwise) that contradict the conditions of this License, they do not\n         excuse you from the conditions of this License.  If you cannot convey a\n         covered work so as to satisfy simultaneously your obligations under this\n         License and any other pertinent obligations, then as a consequence you may\n         not convey it at all.  For example, if you agree to terms that obligate you\n         to collect a royalty for further conveying from those to whom you convey\n         the Program, the only way you could satisfy both those terms and this\n         License would be to refrain entirely from conveying the Program.\n         \n           13. Use with the GNU Affero General Public License.\n         \n           Notwithstanding any other provision of this License, you have\n         permission to link or combine any covered work with a work licensed\n         under version 3 of the GNU Affero General Public License into a single\n         combined work, and to convey the resulting work.  The terms of this\n         License will continue to apply to the part which is the covered work,\n         but the special requirements of the GNU Affero General Public License,\n         section 13, concerning interaction through a network will apply to the\n         combination as such.\n         \n           14. Revised Versions of this License.\n         \n           The Free Software Foundation may publish revised and/or new versions of\n         the GNU General Public License from time to time.  Such new versions will\n         be similar in spirit to the present version, but may differ in detail to\n         address new problems or concerns.\n         \n           Each version is given a distinguishing version number.  If the\n         Program specifies that a certain numbered version of the GNU General\n         Public License \"or any later version\" applies to it, you have the\n         option of following the terms and conditions either of that numbered\n         version or of any later version published by the Free Software\n         Foundation.  If the Program does not specify a version number of the\n         GNU General Public License, you may choose any version ever published\n         by the Free Software Foundation.\n         \n           If the Program specifies that a proxy can decide which future\n         versions of the GNU General Public License can be used, that proxy's\n         public statement of acceptance of a version permanently authorizes you\n         to choose that version for the Program.\n         \n           Later license versions may give you additional or different\n         permissions.  However, no additional obligations are imposed on any\n         author or copyright holder as a result of your choosing to follow a\n         later version.\n         \n           15. Disclaimer of Warranty.\n         \n           THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY\n         APPLICABLE LAW.  EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT\n         HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM \"AS IS\" WITHOUT WARRANTY\n         OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO,\n         THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR\n         PURPOSE.  THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE PROGRAM\n         IS WITH YOU.  SHOULD THE PROGRAM PROVE DEFECTIVE, YOU ASSUME THE COST OF\n         ALL NECESSARY SERVICING, REPAIR OR CORRECTION.\n         \n           16. Limitation of Liability.\n         \n           IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING\n         WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MODIFIES AND/OR CONVEYS\n         THE PROGRAM AS PERMITTED ABOVE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY\n         GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE\n         USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT NOT LIMITED TO LOSS OF\n         DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD\n         PARTIES OR A FAILURE OF THE PROGRAM TO OPERATE WITH ANY OTHER PROGRAMS),\n         EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF\n         SUCH DAMAGES.\n         \n           17. Interpretation of Sections 15 and 16.\n         \n           If the disclaimer of warranty and limitation of liability provided\n         above cannot be given local legal effect according to their terms,\n         reviewing courts shall apply local law that most closely approximates\n         an absolute waiver of all civil liability in connection with the\n         Program, unless a warranty or assumption of liability accompanies a\n         copy of the Program in return for a fee.\n         \n                              END OF TERMS AND CONDITIONS\n         \n                     How to Apply These Terms to Your New Programs\n         \n           If you develop a new program, and you want it to be of the greatest\n         possible use to the public, the best way to achieve this is to make it\n         free software which everyone can redistribute and change under these terms.\n         \n           To do so, attach the following notices to the program.  It is safest\n         to attach them to the start of each source file to most effectively\n         state the exclusion of warranty; and each file should have at least\n         the \"copyright\" line and a pointer to where the full notice is found.\n         \n             <one line to give the program's name and a brief idea of what it does.>\n             Copyright (C) <year>  <name of author>\n         \n             This program is free software: you can redistribute it and/or modify\n             it under the terms of the GNU General Public License as published by\n             the Free Software Foundation, either version 3 of the License, or\n             (at your option) any later version.\n         \n             This program is distributed in the hope that it will be useful,\n             but WITHOUT ANY WARRANTY; without even the implied warranty of\n             MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n             GNU General Public License for more details.\n         \n             You should have received a copy of the GNU General Public License\n             along with this program.  If not, see <http://www.gnu.org/licenses/>.\n         \n         Also add information on how to contact you by electronic and paper mail.\n         \n           If the program does terminal interaction, make it output a short\n         notice like this when it starts in an interactive mode:\n         \n             <program>  Copyright (C) <year>  <name of author>\n             This program comes with ABSOLUTELY NO WARRANTY; for details type `show w'.\n             This is free software, and you are welcome to redistribute it\n             under certain conditions; type `show c' for details.\n         \n         The hypothetical commands `show w' and `show c' should show the appropriate\n         parts of the General Public License.  Of course, your program's commands\n         might be different; for a GUI interface, you would use an \"about box\".\n         \n           You should also get your employer (if you work as a programmer) or school,\n         if any, to sign a \"copyright disclaimer\" for the program, if necessary.\n         For more information on this, and how to apply and follow the GNU GPL, see\n         <http://www.gnu.org/licenses/>.\n         \n           The GNU General Public License does not permit incorporating your program\n         into proprietary programs.  If your program is a subroutine library, you\n         may consider it more useful to permit linking proprietary applications with\n         the library.  If this is what you want to do, use the GNU Lesser General\n         Public License instead of this License.  But first, please read\n         <http://www.gnu.org/philosophy/why-not-lgpl.html>.\n         \n         \n         Name: libquadmath\n         Files: scipy/.dylibs/libquadmath*.so\n         Description: dynamically linked to files compiled with gcc\n         Availability: https://gcc.gnu.org/git/?p=gcc.git;a=tree;f=libquadmath\n         License: LGPL-2.1-or-later\n         \n             GCC Quad-Precision Math Library\n             Copyright (C) 2010-2019 Free Software Foundation, Inc.\n             Written by Francois-Xavier Coudert  <fxcoudert@gcc.gnu.org>\n         \n             This file is part of the libquadmath library.\n             Libquadmath is free software; you can redistribute it and/or\n             modify it under the terms of the GNU Library General Public\n             License as published by the Free Software Foundation; either\n             version 2.1 of the License, or (at your option) any later version.\n         \n             Libquadmath is distributed in the hope that it will be useful,\n             but WITHOUT ANY WARRANTY; without even the implied warranty of\n             MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\n             Lesser General Public License for more details.\n             https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html\n         "
+    },
+    {
+      "name": "segments",
+      "version": "2.4.0",
+      "url": "https://files.pythonhosted.org/packages/be/60/eef9acce946177f92c9aabf432224d87ab908bafafac516a36ab924199f3/segments-2.4.0-py2.py3-none-any.whl",
+      "sha256": "4021dc67f201cc03c864c74c618bdb163b1af629da3040babbaa37d8813f3db0",
+      "filename": "segments-2.4.0-py2.py3-none-any.whl",
+      "size": 16321,
+      "license": "Apache 2.0"
+    },
+    {
+      "name": "sentencepiece",
+      "version": "0.2.2",
+      "url": "https://files.pythonhosted.org/packages/2a/92/3a6ea4a2c6dd9e7062698a5a33534ca0e20844883338ae9c6b9c122c1a9f/sentencepiece-0.2.2-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "443ac618c7a2a1377cf5c82581fbb849591d14e656d5e5a3e4682d4e36a34e4e",
+      "filename": "sentencepiece-0.2.2-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 1346997,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "shellingham",
+      "version": "1.5.4",
+      "url": "https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl",
+      "sha256": "7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686",
+      "filename": "shellingham-1.5.4-py2.py3-none-any.whl",
+      "size": 9755,
+      "license": "ISC License"
+    },
+    {
+      "name": "silero-vad",
+      "version": "6.2.3",
+      "url": "https://files.pythonhosted.org/packages/84/ef/9099037ed6f180ea33220178df4107112c0ce2bf5fb4d6f6ab19db2844ed/silero_vad-6.2.3-py3-none-any.whl",
+      "sha256": "7b7f5436cfcb02fae583a05b512ea96467fd449fe54cb49a5e4f06c51a1e43b8",
+      "filename": "silero_vad-6.2.3-py3-none-any.whl",
+      "size": 11317527,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "url": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "size": 11050,
+      "license": "MIT"
+    },
+    {
+      "name": "smart_open",
+      "version": "8.0.4",
+      "url": "https://files.pythonhosted.org/packages/4e/6d/3a95e71d597ee03b3ddcf0ff154f2841b84d8724df2bb35a350493793ae9/smart_open-8.0.4-py3-none-any.whl",
+      "sha256": "8a3a67679942fa40d1a93ed3aea37619b4b4ec5458f1d5a9228dfc301db11b4c",
+      "filename": "smart_open-8.0.4-py3-none-any.whl",
+      "size": 73881,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "sounddevice",
+      "version": "0.5.6",
+      "url": "https://files.pythonhosted.org/packages/72/1f/62eef605172bddc1017508469a12f75bc7c4194ece35c734f822795f53b1/sounddevice-0.5.6-py3-none-any.whl",
+      "sha256": "de099612311ad81e55d31ccbd83f43ea6bf4d87b48f9b6ea55a1fbcde0eee4e0",
+      "filename": "sounddevice-0.5.6-py3-none-any.whl",
+      "size": 32793,
+      "license": "MIT"
+    },
+    {
+      "name": "spacy",
+      "version": "3.8.16",
+      "url": "https://files.pythonhosted.org/packages/f4/82/d1696b985a8eba24565b8273257968f4c69b69f3f3908a8f8a89f6632956/spacy-3.8.16-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "cb07d4b8255be6b6ff3a34ada93173176d0937d2023b35302a34eed3364681c0",
+      "filename": "spacy-3.8.16-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 6891423,
+      "license": "MIT"
+    },
+    {
+      "name": "spacy-curated-transformers",
+      "version": "0.3.1",
+      "url": "https://files.pythonhosted.org/packages/42/d8/f053d43125ae4ad14f3e2a12a475a656128233f1f40a272c6e09a05c73e8/spacy_curated_transformers-0.3.1-py2.py3-none-any.whl",
+      "sha256": "503559b6a1d6e44ec2c978e18ed871ce5c3d56871dc9216c0e1523428204e610",
+      "filename": "spacy_curated_transformers-0.3.1-py2.py3-none-any.whl",
+      "size": 237943,
+      "license": "MIT"
+    },
+    {
+      "name": "spacy-legacy",
+      "version": "3.0.12",
+      "url": "https://files.pythonhosted.org/packages/c3/55/12e842c70ff8828e34e543a2c7176dac4da006ca6901c9e8b43efab8bc6b/spacy_legacy-3.0.12-py2.py3-none-any.whl",
+      "sha256": "476e3bd0d05f8c339ed60f40986c07387c0a71479245d6d0f4298dbd52cda55f",
+      "filename": "spacy_legacy-3.0.12-py2.py3-none-any.whl",
+      "size": 29971,
+      "license": "MIT"
+    },
+    {
+      "name": "spacy-loggers",
+      "version": "1.0.5",
+      "url": "https://files.pythonhosted.org/packages/33/78/d1a1a026ef3af911159398c939b1509d5c36fe524c7b644f34a5146c4e16/spacy_loggers-1.0.5-py3-none-any.whl",
+      "sha256": "196284c9c446cc0cdb944005384270d775fdeaf4f494d8e269466cfa497ef645",
+      "filename": "spacy_loggers-1.0.5-py3-none-any.whl",
+      "size": 22343,
+      "license": "MIT"
+    },
+    {
+      "name": "srsly",
+      "version": "2.5.4",
+      "url": "https://files.pythonhosted.org/packages/36/f3/95603ca42400a83850ed51190267d8e454b3fce41b2956e27c22f55e8375/srsly-2.5.4-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "b2768afa6fef019688aec70bd1cbe33e0d93dcf417feb6989013952627b7a477",
+      "filename": "srsly-2.5.4-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 684837,
+      "license": "MIT"
+    },
+    {
+      "name": "sympy",
+      "version": "1.14.0",
+      "url": "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl",
+      "sha256": "e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5",
+      "filename": "sympy-1.14.0-py3-none-any.whl",
+      "size": 6299353,
+      "license": "BSD"
+    },
+    {
+      "name": "termcolor",
+      "version": "3.3.0",
+      "url": "https://files.pythonhosted.org/packages/33/d1/8bb87d21e9aeb323cc03034f5eaf2c8f69841e40e4853c2627edf8111ed3/termcolor-3.3.0-py3-none-any.whl",
+      "sha256": "cf642efadaf0a8ebbbf4bc7a31cec2f9b5f21a9f726f4ccbb08192c9c26f43a5",
+      "filename": "termcolor-3.3.0-py3-none-any.whl",
+      "size": 7734,
+      "license": "MIT"
+    },
+    {
+      "name": "thinc",
+      "version": "8.3.13",
+      "url": "https://files.pythonhosted.org/packages/48/44/e6aef092f478d263f72eb3933b55a6f37ba97c6a0ea0a61d13fbf9bf0c19/thinc-8.3.13-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "859fbd9d9b16af5278da23589b4afbe2ab6b0dd615df4d3229b7c4e67cd3107e",
+      "filename": "thinc-8.3.13-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 812089,
+      "license": "MIT"
+    },
+    {
+      "name": "tiktoken",
+      "version": "0.14.0",
+      "url": "https://files.pythonhosted.org/packages/2d/a9/d94302340304328961d6f0c35ca4e60617fbb57a5cf667e2ed1692cb9e57/tiktoken-0.14.0-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "cd8ca1305c1c902fe42c486165f2e4808d9997625c98ffb05b9e0366d99d3948",
+      "filename": "tiktoken-0.14.0-cp311-cp311-macosx_11_0_arm64.whl",
+      "size": 1042916,
+      "license": "MIT License\n        \n        Copyright (c) 2022 OpenAI, Shantanu Jain\n        \n        Permission is hereby granted, free of charge, to any person obtaining a copy\n        of this software and associated documentation files (the \"Software\"), to deal\n        in the Software without restriction, including without limitation the rights\n        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n        copies of the Software, and to permit persons to whom the Software is\n        furnished to do so, subject to the following conditions:\n        \n        The above copyright notice and this permission notice shall be included in all\n        copies or substantial portions of the Software.\n        \n        THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n        SOFTWARE.\n        "
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.23.3",
+      "url": "https://files.pythonhosted.org/packages/b2/72/01e49f032bb346e5aaf06c10c74fe8aeec847173adbadd66eb7c53054bf2/tokenizers-0.23.3-cp310-abi3-macosx_11_0_arm64.whl",
+      "sha256": "68649e97d5b43c44c031d8d848874a6eecae8f8fe40ea989aa777a5a83aca716",
+      "filename": "tokenizers-0.23.3-cp310-abi3-macosx_11_0_arm64.whl",
+      "size": 3101381,
+      "license": "See wheel dist-info/LICENSE"
+    },
+    {
+      "name": "torch",
+      "version": "2.14.1",
+      "url": "https://files.pythonhosted.org/packages/5d/9b/fd1cd143a7bda5abc1fc352ed7b431f6f52aa3c454293211a33656db2cb5/torch-2.14.1-cp311-cp311-macosx_14_0_arm64.whl",
+      "sha256": "b6074b130fd26bc50f5d171f07dfed70db22dd0c354ab34767729249f9e0f042",
+      "filename": "torch-2.14.1-cp311-cp311-macosx_14_0_arm64.whl",
+      "size": 127281154,
+      "license": "Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT"
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.1",
+      "url": "https://files.pythonhosted.org/packages/a7/03/921a3d3c75785aca9ebfbfcabfbc3a1be12e2ab5265deb026d55a5a3f83e/tqdm-4.70.1-py3-none-any.whl",
+      "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73",
+      "filename": "tqdm-4.70.1-py3-none-any.whl",
+      "size": 80199,
+      "license": "MPL-2.0 AND MIT"
+    },
+    {
+      "name": "transformers",
+      "version": "5.20.2",
+      "url": "https://files.pythonhosted.org/packages/96/b6/724faefed06913dd3e42e0476fe2c42448675c42f687a12bf810aa098005/transformers-5.20.2-py3-none-any.whl",
+      "sha256": "7ae75dbc1fb3922aff1b6c97b9e5479d6cf26fd86a8866bfb71324190479f807",
+      "filename": "transformers-5.20.2-py3-none-any.whl",
+      "size": 12844921,
+      "license": "Apache 2.0 License"
+    },
+    {
+      "name": "truststore",
+      "version": "0.10.5",
+      "url": "https://files.pythonhosted.org/packages/51/e9/3a7820be2bb0fe53b6bc9c3be26d3d1158004e4c3ab953aa6840b955b1e9/truststore-0.10.5-py3-none-any.whl",
+      "sha256": "9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c",
+      "filename": "truststore-0.10.5-py3-none-any.whl",
+      "size": 19017,
+      "license": "MIT"
+    },
+    {
+      "name": "typer",
+      "version": "0.27.3",
+      "url": "https://files.pythonhosted.org/packages/07/ea/2e31b67051e91a133189e9c000c222502ddc6969856416de0d095de4c0b0/typer-0.27.3-py3-none-any.whl",
+      "sha256": "e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff",
+      "filename": "typer-0.27.3-py3-none-any.whl",
+      "size": 123312,
+      "license": "MIT"
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "url": "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl",
+      "sha256": "65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147",
+      "filename": "typing_inspection-0.4.4-py3-none-any.whl",
+      "size": 14750,
+      "license": "MIT"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+      "size": 45571,
+      "license": "PSF-2.0"
+    },
+    {
+      "name": "uritemplate",
+      "version": "4.2.0",
+      "url": "https://files.pythonhosted.org/packages/a9/99/3ae339466c9183ea5b8ae87b34c0b897eda475d2aec2307cae60e5cd4f29/uritemplate-4.2.0-py3-none-any.whl",
+      "sha256": "962201ba1c4edcab02e60f9a0d3821e82dfc5d2d6662a21abd533879bdb8a686",
+      "filename": "uritemplate-4.2.0-py3-none-any.whl",
+      "size": 11488,
+      "license": "BSD 3-Clause OR Apache-2.0"
+    },
+    {
+      "name": "urllib3",
+      "version": "2.8.0",
+      "url": "https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl",
+      "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3",
+      "filename": "urllib3-2.8.0-py3-none-any.whl",
+      "size": 135717,
+      "license": "MIT"
+    },
+    {
+      "name": "wasabi",
+      "version": "1.1.3",
+      "url": "https://files.pythonhosted.org/packages/06/7c/34330a89da55610daa5f245ddce5aab81244321101614751e7537f125133/wasabi-1.1.3-py3-none-any.whl",
+      "sha256": "f76e16e8f7e79f8c4c8be49b4024ac725713ab10cd7f19350ad18a8e3f71728c",
+      "filename": "wasabi-1.1.3-py3-none-any.whl",
+      "size": 27880,
+      "license": "MIT"
+    },
+    {
+      "name": "weasel",
+      "version": "1.0.0",
+      "url": "https://files.pythonhosted.org/packages/0a/07/57ebf7a6798b016c064bd0ca81b4c6a99daa4dc377b898bc7b41eb6b5af0/weasel-1.0.0-py3-none-any.whl",
+      "sha256": "89518acee027f49d743126c3502d35e6dd14f5768be5c37c9af47c171b6005cc",
+      "filename": "weasel-1.0.0-py3-none-any.whl",
+      "size": 50713,
+      "license": "MIT"
+    },
+    {
+      "name": "websockets",
+      "version": "17.3",
+      "url": "https://files.pythonhosted.org/packages/d7/b0/3f01fcb3406662f6deb1e3e72b34dd0979e993991c0b7435a9e12bc14f02/websockets-17.3-py3-none-any.whl",
+      "sha256": "dc2b495a92b3971966bf102e73589f950db3ec1ca6713265355ce7771d97b199",
+      "filename": "websockets-17.3-py3-none-any.whl",
+      "size": 212375,
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "wrapt",
+      "version": "2.5.1",
+      "url": "https://files.pythonhosted.org/packages/bc/0c/7da7513ddcc8f1d831ec4bfbedc9f7f174ecb91042bc16916fc1e0d06b22/wrapt-2.5.1-py3-none-any.whl",
+      "sha256": "c6e6c226b1ca5402d7ae5fb34a0d21f1b49124fe4200e5884d1e19e53c47ac1d",
+      "filename": "wrapt-2.5.1-py3-none-any.whl",
+      "size": 81849,
+      "license": "BSD-2-Clause"
+    },
+    {
+      "name": "onnxruntime",
+      "version": "1.31.0",
+      "filename": "onnxruntime-1.31.0-cp311-cp311-macosx_14_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/a7/e7/61b2768393646bd12e31eeb71958193f4e02c98c4980cf9289d19bbb4a8f/onnxruntime-1.31.0-cp311-cp311-macosx_14_0_arm64.whl",
+      "sha256": "cbf1a7f6470ddfe9dbc781966af8ce4a10e1858d75a93f93cc6b9367c9587870",
+      "size": 20871717,
+      "license": "MIT License"
+    },
+    {
+      "name": "protobuf",
+      "version": "7.36.2",
+      "filename": "protobuf-7.36.2-cp310-abi3-macosx_10_9_universal2.whl",
+      "url": "https://files.pythonhosted.org/packages/32/72/98342feb672507c8f3a69e34b4fa8961f608edba5c1a48a6f47156d92cb5/protobuf-7.36.2-cp310-abi3-macosx_10_9_universal2.whl",
+      "sha256": "cbc70b17ee27e28894c7fee8bb04be1abead49e936bc70eb60052531eee2079e",
+      "size": 456039,
+      "license": "3-Clause BSD License"
+    },
+    {
+      "name": "flatbuffers",
+      "version": "25.12.19",
+      "filename": "flatbuffers-25.12.19-py2.py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl",
+      "sha256": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4",
+      "size": 26661,
+      "license": "Apache 2.0"
+    }
+  ],
+  "models": [
+    {
+      "path": "models/whisper/.gitattributes",
+      "url": "https://huggingface.co/mlx-community/whisper-large-v3-turbo/resolve/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb/.gitattributes",
+      "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+      "size": 1519
+    },
+    {
+      "path": "models/whisper/README.md",
+      "url": "https://huggingface.co/mlx-community/whisper-large-v3-turbo/resolve/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb/README.md",
+      "sha256": "78f2d3dc65072211d957fc1b646c2d96e8e8f96dd45ceb2ac5f2643d0c5c05da",
+      "size": 359
+    },
+    {
+      "path": "models/whisper/config.json",
+      "url": "https://huggingface.co/mlx-community/whisper-large-v3-turbo/resolve/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb/config.json",
+      "sha256": "b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379",
+      "size": 268
+    },
+    {
+      "path": "models/whisper/weights.safetensors",
+      "url": "https://huggingface.co/mlx-community/whisper-large-v3-turbo/resolve/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb/weights.safetensors",
+      "sha256": "951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6",
+      "size": 1613977612
+    },
+    {
+      "path": "models/kokoro/.gitattributes",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/.gitattributes",
+      "sha256": "935717b52cea4c9b1d8b341a3e0c0f4e7073d9c451f487cdfe53c201ff87419f",
+      "size": 1928
+    },
+    {
+      "path": "models/kokoro/DONATE.md",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/DONATE.md",
+      "sha256": "cf31b6b09359786af5ec0de74b59b026b1fdaa0f575c8f64f221a74274ce433b",
+      "size": 2562
+    },
+    {
+      "path": "models/kokoro/README.md",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/README.md",
+      "sha256": "31766be53abd2b182fea067461e935eb6399dbe0e1ce8d165afb1f1c64895b30",
+      "size": 536
+    },
+    {
+      "path": "models/kokoro/SAMPLES.md",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/SAMPLES.md",
+      "sha256": "96b7cc1978491ae89097367952c563d1f7110ae15473a7f5353a0f84b39cc6d1",
+      "size": 5956
+    },
+    {
+      "path": "models/kokoro/VOICES.md",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/VOICES.md",
+      "sha256": "ec7e4941ad7e194af61e3455928528a9ff5360c7c505e412efab27d6a69ea106",
+      "size": 7625
+    },
+    {
+      "path": "models/kokoro/config.json",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/config.json",
+      "sha256": "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f",
+      "size": 2351
+    },
+    {
+      "path": "models/kokoro/kokoro-v1_0.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/kokoro-v1_0.safetensors",
+      "sha256": "4e9ecdf03b8b6cf906070390237feda473dc13327cb8d56a43deaa374c02acd8",
+      "size": 327115152
+    },
+    {
+      "path": "models/kokoro/samples/HEARME.wav",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/samples/HEARME.wav",
+      "sha256": "aad38e96fa60c91c995ac820ce6e86c28b0df7300177c0d3ca0766b9dc78feec",
+      "size": 996044
+    },
+    {
+      "path": "models/kokoro/samples/af_heart_0.wav",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/samples/af_heart_0.wav",
+      "sha256": "dd7999ebbc8369779d5d3f504399ea466c909339f90231143416a7819a2047fc",
+      "size": 237644
+    },
+    {
+      "path": "models/kokoro/samples/af_heart_1.wav",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/samples/af_heart_1.wav",
+      "sha256": "2fe4f363b785fdc233f94dd1885c94a2267f7ceeea8c7fb5cce6bfcf0f7b273d",
+      "size": 517244
+    },
+    {
+      "path": "models/kokoro/samples/af_heart_2.wav",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/samples/af_heart_2.wav",
+      "sha256": "68ee75b2d503415a5b6edbd5230c823fbeb6b430d546b8c37e2284efcf280be8",
+      "size": 496844
+    },
+    {
+      "path": "models/kokoro/samples/af_heart_3.wav",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/samples/af_heart_3.wav",
+      "sha256": "e758efcd852e77569772ee5a424df724695903db61a323a6021ee1c6a50ca616",
+      "size": 1407644
+    },
+    {
+      "path": "models/kokoro/samples/af_heart_4.wav",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/samples/af_heart_4.wav",
+      "sha256": "d50c90f447686200052f4375dee55a3406ec0aa140473cf946e98fdfe860989b",
+      "size": 1116044
+    },
+    {
+      "path": "models/kokoro/samples/af_heart_5.wav",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/samples/af_heart_5.wav",
+      "sha256": "bc4515b9479c219e4e9347463a859ea6716dd0eb45a520f5f42825a7662b5054",
+      "size": 1033244
+    },
+    {
+      "path": "models/kokoro/voices/af_alloy.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_alloy.pt",
+      "sha256": "6d877149dd8b348fbad12e5845b7e43d975390e9f3b68a811d1d86168bef5aa3",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/af_alloy.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_alloy.safetensors",
+      "sha256": "5bb848d02ade7e37981809acad52a1761ef7a586ff9f30d02d65fd71c4af95f9",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_aoede.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_aoede.pt",
+      "sha256": "c03bd1a4c3716c2d8eaa3d50022f62d5c31cfbd6e15933a00b17fefe13841cc4",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/af_aoede.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_aoede.safetensors",
+      "sha256": "23809148777f2a2378983dd856bc14b9c261018279f916f98c23d86e844409a5",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_bella.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_bella.pt",
+      "sha256": "8cb64e02fcc8de0327a8e13817e49c76c945ecf0052ceac97d3081480e8e48d6",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/af_bella.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_bella.safetensors",
+      "sha256": "112d310468cbb3cf23404d3d0b50ad3adf017b87bf38bf9edd15f4ad572df6a3",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_heart.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_heart.pt",
+      "sha256": "0ab5709b8ffab19bfd849cd11d98f75b60af7733253ad0d67b12382a102cb4ff",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/af_heart.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_heart.safetensors",
+      "sha256": "2c1c733b0e6576c810e268d3e440c21dea4e0f0131a3ba4cfc98d7fe6136d094",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_jessica.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_jessica.pt",
+      "sha256": "cdfdccb8cc975aa34ee6b89642963b0064237675de0e41a30ae64cc958dd4e87",
+      "size": 523435
+    },
+    {
+      "path": "models/kokoro/voices/af_jessica.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_jessica.safetensors",
+      "sha256": "c358448e4277b79e8b13b92033711660a1a2205c3940c2dfb16698b99fed58a8",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_kore.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_kore.pt",
+      "sha256": "8bfbc512321c3db49dff984ac675fa5ac7eaed5a96cc31104d3a9080e179d69d",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/af_kore.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_kore.safetensors",
+      "sha256": "c491174280cb1ad25210a842f2f34b46a9ef904ec6f6a8e784839531795fa278",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_nicole.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_nicole.pt",
+      "sha256": "c5561808bcf5250fe8c5f5de32caf2d94f27e57e95befdb098c5c85991d4c5da",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/af_nicole.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_nicole.safetensors",
+      "sha256": "574656386022c81a029e9a72558191925f44c3de2dad2fa2e45751938557d062",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_nova.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_nova.pt",
+      "sha256": "e0233676ddc21908c37a1f102f6b88a59e4e5c1bd764983616eb9eda629dbcd2",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/af_nova.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_nova.safetensors",
+      "sha256": "242b9a0a01eac1ac2865c69fc617a756b20d86df82d5fae3970533e2312ca50e",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_river.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_river.pt",
+      "sha256": "e149459bd9c084416b74756b9bd3418256a8b839088abb07d463730c369dab8f",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/af_river.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_river.safetensors",
+      "sha256": "82c866b0b976d50e82cbd781ac7bc771471ce5bd21decf05ab92812a08fb1c04",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_sarah.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_sarah.pt",
+      "sha256": "49bd364ea3be9eb3e9685e8f9a15448c4883112a7c0ff7ab139fa4088b08cef9",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/af_sarah.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_sarah.safetensors",
+      "sha256": "4940072182542f54c1035d1daf4c1cf3136ca9baa9ac57c8e006b4befcc50be6",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/af_sky.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_sky.pt",
+      "sha256": "c799548aed06e0cb0d655a85a01b48e7f10484d71663f9a3045a5b9362e8512c",
+      "size": 523351
+    },
+    {
+      "path": "models/kokoro/voices/af_sky.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/af_sky.safetensors",
+      "sha256": "957af332330db8e9bd7f9dc449475a946cb0d7d689afef64b91007bbbf20eaa0",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_adam.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_adam.pt",
+      "sha256": "ced7e284aba12472891be1da3ab34db84cc05cc02b5889535796dbf2d8b0cb34",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/am_adam.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_adam.safetensors",
+      "sha256": "a4f60a3b9c20353c2604a17485ba53260502a758681a84d41e8af53cc559d929",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_echo.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_echo.pt",
+      "sha256": "8bcfdc852bc985fb45c396c561e571ffb9183930071f962f1b50df5c97b161e8",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/am_echo.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_echo.safetensors",
+      "sha256": "031fc608a900332c4e1a29bd0884f5d0e84bd0348261fa79981e5cbd138c950d",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_eric.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_eric.pt",
+      "sha256": "ada66f0eefff34ec921b1d7474d7ac8bec00cd863c170f1c534916e9b8212aae",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/am_eric.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_eric.safetensors",
+      "sha256": "1fb4a61dcee1f114f90886ecf29bc2feed05e29eed9caa6ddb109f1934d73274",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_fenrir.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_fenrir.pt",
+      "sha256": "98e507eca1db08230ae3b6232d59c10aec9630022d19accac4f5d12fcec3c37a",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/am_fenrir.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_fenrir.safetensors",
+      "sha256": "9abed964b906c4cae6f404d9849e76260689aea862bc6ca85fc3f5207ba96538",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_liam.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_liam.pt",
+      "sha256": "c82550757ddb31308b97f30040dda8c2d609a9e2de6135848d0a948368138518",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/am_liam.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_liam.safetensors",
+      "sha256": "66b65a96e16c3d91035a6e9019d9986ed524d27ce35b487270cdf61c99e3ebad",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_michael.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_michael.pt",
+      "sha256": "9a443b79a4b22489a5b0ab7c651a0bcd1a30bef675c28333f06971abbd47bd37",
+      "size": 523435
+    },
+    {
+      "path": "models/kokoro/voices/am_michael.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_michael.safetensors",
+      "sha256": "3940147ded35deba0bb52e8132f89b719298e0520258c34584358aa5a24da2ea",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_onyx.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_onyx.pt",
+      "sha256": "e8452be16cd0f6da7b4579eaf7b1e4506e92524882053d86d72b96b9a7fed584",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/am_onyx.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_onyx.safetensors",
+      "sha256": "b5d6132a5747648d98c82c9c4aaa9cf52d7230e63e403c1cb9c12858446ca5f5",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_puck.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_puck.pt",
+      "sha256": "dd1d8973f4ce4b7d8ae407c77a435f485dabc052081b80ea75c4f30b84f36223",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/am_puck.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_puck.safetensors",
+      "sha256": "9a8c2e56413bd2063f814cb4c3885fc425876157369117c3f8258d03c8a9ad89",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/am_santa.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_santa.pt",
+      "sha256": "7f2f7582fa2b1f160e90aafe6d0b442a685e773608b6667e545d743b073e97a7",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/am_santa.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/am_santa.safetensors",
+      "sha256": "d1f433b57ffccf105ea9e434ea19af6c2a8a7916ba6d1a73c34f0046bd226084",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/bf_alice.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bf_alice.pt",
+      "sha256": "d292651b6af6c0d81705c2580dcb4463fccc0ff7b8d618a471dbb4e45655b3f3",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/bf_alice.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bf_alice.safetensors",
+      "sha256": "9c77e390d93d9db7c4a7526c3b1f393290a2be46f233b89a00b8188e850c20a8",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/bf_emma.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bf_emma.pt",
+      "sha256": "d0a423deabf4a52b4f49318c51742c54e21bb89bbbe9a12141e7758ddb5da701",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/bf_emma.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bf_emma.safetensors",
+      "sha256": "8878a75a6661305849eeb1d6293a7177250193616e161b4c3100636434dfe69f",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/bf_isabella.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bf_isabella.pt",
+      "sha256": "cdd4c37003805104d1d08fb1e05855c8fb2c68de24ca6e71f264a30aaa59eefd",
+      "size": 523440
+    },
+    {
+      "path": "models/kokoro/voices/bf_isabella.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bf_isabella.safetensors",
+      "sha256": "f7b6076f025649699fcfed1a6debf13049a87afdc7aafc8c72b7d81246db6ead",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/bf_lily.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bf_lily.pt",
+      "sha256": "6e09c2e481e2d53004d7e5ae7d3a325369e130a6f45c35a6002de75084be9285",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/bf_lily.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bf_lily.safetensors",
+      "sha256": "ee77a419046a765420ac82cb46e8b8cf5754a0b9d20c340fece1d4b18be7ecdb",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/bm_daniel.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bm_daniel.pt",
+      "sha256": "fc3fce4e9c12ed4dbc8fa9680cfe51ee190a96444ce7c3ad647549a30823fc5d",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/bm_daniel.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bm_daniel.safetensors",
+      "sha256": "b195dec592ee024f57ddc5bf481464596082ba60998a2a295eba90bfc1064f4b",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/bm_fable.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bm_fable.pt",
+      "sha256": "d44935f3135257a9064df99f007fc1342ff1aa767552b4a4fa4c3b2e6e59079c",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/bm_fable.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bm_fable.safetensors",
+      "sha256": "9fa80184e96d016a744bc13b0b2e7695e55d6b855556fa003325cb1e5ebf2c2b",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/bm_george.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bm_george.pt",
+      "sha256": "f1bc812213dc59774769e5c80004b13eeb79bd78130b11b2d7f934542dab811b",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/bm_george.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bm_george.safetensors",
+      "sha256": "a3d9b8995cbbe5536f954b6be2a0f1f312f077118ba0d4d2178fc41dc8306672",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/bm_lewis.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bm_lewis.pt",
+      "sha256": "b5204750dcba01029d2ac9cec17aec3b20a6d64073c579d694a23cb40effbd0e",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/bm_lewis.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/bm_lewis.safetensors",
+      "sha256": "e1e68013c21a141efe527aaec561e1174c2f5a6951b3bcecc8396adab315b247",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/ef_dora.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/ef_dora.pt",
+      "sha256": "d9d69b0f8a2b87a345f269d89639f89dfbd1a6c9da0c498ae36dd34afcf35530",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/ef_dora.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/ef_dora.safetensors",
+      "sha256": "13f6dfe8a498ce97a384186af045b586db6292869acbfde123a0fa2798229351",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/em_alex.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/em_alex.pt",
+      "sha256": "5eac53f767c3f31a081918ba531969aea850bed18fe56419b804d642c6973431",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/em_alex.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/em_alex.safetensors",
+      "sha256": "e3bc4bf56ab47f0d52074cd3f84cd4f1713187285fdd85a545c6e167dfa3ab77",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/em_santa.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/em_santa.pt",
+      "sha256": "aa8620cb96cec705823efca0d956a63e158e09ad41aca934d354b7f0778f63cb",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/em_santa.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/em_santa.safetensors",
+      "sha256": "37c44211b77b3f29512f420bd5a2e146c7769a5ad3d904b3455cccd55055db62",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/ff_siwis.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/ff_siwis.pt",
+      "sha256": "8073bf2d2c4b9543a90f2f0fd2144de4ed157e2d4b79ddeb0d5123066171fbc9",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/ff_siwis.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/ff_siwis.safetensors",
+      "sha256": "5c659c9b9e12be28b98a4aa0cd6b1e66f359b6381ba5680264e9072945ac32b8",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/hf_alpha.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/hf_alpha.pt",
+      "sha256": "06906fe05746d13a79c5c01e21fd7233b05027221a933c9ada650f5aafc8f044",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/hf_alpha.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/hf_alpha.safetensors",
+      "sha256": "e93355a43e6f57e8cfde96874008c858f1fb7fd8b65dd043114d451882cad3f6",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/hf_beta.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/hf_beta.pt",
+      "sha256": "63c0a1a6272e98d43f4511bba40e30dd9c8ceaf5f39af869509b9f51a71c503e",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/hf_beta.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/hf_beta.safetensors",
+      "sha256": "976ea52ba7edce5da049c41ef06a663f3807fd470d2ea5c359245dfc2fb00d66",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/hm_omega.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/hm_omega.pt",
+      "sha256": "b55f02a8e8483fffe0afa566e7d22ed8013acf47ad4f6bbee2795a840155703e",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/hm_omega.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/hm_omega.safetensors",
+      "sha256": "227f0c710d1169686bf617fac486e8496982e96cc01617a3acd3579db75dd126",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/hm_psi.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/hm_psi.pt",
+      "sha256": "2f0f055cea4f1083f4ef127ece48d71606347f6557dbb961c0ca5740a2da485b",
+      "size": 523351
+    },
+    {
+      "path": "models/kokoro/voices/hm_psi.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/hm_psi.safetensors",
+      "sha256": "03efb26b99e78c8d40ade3217f9c9905f8f84bbad7f21f921e270c036b01144e",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/if_sara.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/if_sara.pt",
+      "sha256": "6c0b253b955fe32f1a1a86006aebe83d050ea95afd0e7be15182f087deedbf55",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/if_sara.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/if_sara.safetensors",
+      "sha256": "2f3d092c8ba16f2007e8b234c9a55bdebec614a1e50143e41b39dd7f89fdb45b",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/im_nicola.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/im_nicola.pt",
+      "sha256": "234ed06648649f9bd874b37508ea17560b9c993ef85b4ddb3e3a71e062bd2c12",
+      "size": 523341
+    },
+    {
+      "path": "models/kokoro/voices/im_nicola.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/im_nicola.safetensors",
+      "sha256": "96b62f7d25c3e7efce4f2506beeaa9f63bcc73524c7b2862738c65433fe9ba16",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/jf_alpha.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jf_alpha.pt",
+      "sha256": "1bf4c9dc69e45ee46183b071f4db766349aac5592acbcfeaf051018048a5d787",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/jf_alpha.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jf_alpha.safetensors",
+      "sha256": "455f78a6ebe633929cf314ce7c4a6b595ad1fb0ec7de6de7bc1d62d37e5264d2",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/jf_gongitsune.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jf_gongitsune.pt",
+      "sha256": "1b171917f18f351e65f2bf9657700cd6bfec4e65589c297525b9cf3c20105770",
+      "size": 523351
+    },
+    {
+      "path": "models/kokoro/voices/jf_gongitsune.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jf_gongitsune.safetensors",
+      "sha256": "30d744337db7a7a91185b129dfd24ca86c19f7d46acadf2daf077ba78edaba81",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/jf_nezumi.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jf_nezumi.pt",
+      "sha256": "d83f007a7f01783b77014561a7d493d327a0210e143440e91c9b697590d27661",
+      "size": 523420
+    },
+    {
+      "path": "models/kokoro/voices/jf_nezumi.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jf_nezumi.safetensors",
+      "sha256": "65743c88fa1c8d30d7f41e402ce30a6ce461e2b0f8095c252e51905eb0c0754a",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/jf_tebukuro.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jf_tebukuro.pt",
+      "sha256": "0d6917904438aec85f73a6fa1f7ac2be6481aae47c697834936930a91796c576",
+      "size": 523435
+    },
+    {
+      "path": "models/kokoro/voices/jf_tebukuro.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jf_tebukuro.safetensors",
+      "sha256": "0cc28d928ce14b2ba4586b4c552edba36828a0961a37649530f80b3ad809bdec",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/jm_kumo.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jm_kumo.pt",
+      "sha256": "98340afd68b1cee84fe0cd95528cfa6d4b39e416aa75a9df64049d52c8b55896",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/jm_kumo.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/jm_kumo.safetensors",
+      "sha256": "9f6b9d85ae099c409193924add0f1c478d7c9b6904ef181f2297154bfe05cc2c",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/pf_dora.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/pf_dora.pt",
+      "sha256": "07e4ff987c5d5a8c3995efd15cc4f0db7c4c15e881b198d8ab7f67ecf51f5eb7",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/pf_dora.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/pf_dora.safetensors",
+      "sha256": "9a8d587d60d0e041f593f7e7488943e7a6821f0136961bf0e554572e12c91c77",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/pm_alex.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/pm_alex.pt",
+      "sha256": "cf0ba8c573c2480fc54123683a35cf1e2ae130428e441eb91f9149bdb188a526",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/pm_alex.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/pm_alex.safetensors",
+      "sha256": "bec864eaeb05cc1a6fa12777ad31faaae1b2ed6d5eb2a6f7370fb9cdc48e3e2f",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/pm_santa.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/pm_santa.pt",
+      "sha256": "d42103169c5c872abbafb9129133af7e942bb9d272c3cc3b95c203e7d7198c29",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/pm_santa.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/pm_santa.safetensors",
+      "sha256": "5009747fd93841c0865830be0f577ed50800b41b2122c469dedf51bb8311f78d",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/zf_xiaobei.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zf_xiaobei.pt",
+      "sha256": "9b76be63dab4f4f96962030acc0126a9aee9728608fbbe115e2b58a2bd504df6",
+      "size": 523435
+    },
+    {
+      "path": "models/kokoro/voices/zf_xiaobei.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zf_xiaobei.safetensors",
+      "sha256": "cbda378bbe266c735aa13c94c20b6224f2f8d0e16cf3abe612a4e6d93ebeab51",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/zf_xiaoni.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zf_xiaoni.pt",
+      "sha256": "95b49f169bf1640f4f43c25e13daa39f7b98d15d00823e83ef5c14b3ced59e49",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/zf_xiaoni.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zf_xiaoni.safetensors",
+      "sha256": "ef37a82850e10eb15f18a4549c76707a8eebd682e61facdda6ee4a4dc4eb0bf0",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/zf_xiaoxiao.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zf_xiaoxiao.pt",
+      "sha256": "cfaf6f2ded1ee56f1ff94fcd2b0e6cdf32e5b794bdc05b44e7439d44aef5887c",
+      "size": 523440
+    },
+    {
+      "path": "models/kokoro/voices/zf_xiaoxiao.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zf_xiaoxiao.safetensors",
+      "sha256": "cf507ad2319c50121aca4755cd3b9793bde10eea9aa9caca6cb3b5914d5f258f",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/zf_xiaoyi.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zf_xiaoyi.pt",
+      "sha256": "b5235dbaeef85a4c613bf78af9a88ff63c25bac5f26ba77e36186d8b7ebf05e2",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/zf_xiaoyi.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zf_xiaoyi.safetensors",
+      "sha256": "1f2b7ce315a84870170ca83b2e4c0a072242bacbbd869f8a3b22377cc7d59e0b",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/zm_yunjian.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zm_yunjian.pt",
+      "sha256": "76cbf8bad35901d011d9628a2fdceb7b4f1f127e7a3269cb393b3941eb7fc417",
+      "size": 523435
+    },
+    {
+      "path": "models/kokoro/voices/zm_yunjian.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zm_yunjian.safetensors",
+      "sha256": "a08940c5dd3d8aadfda8a5576aa0f688a184ccbd5e4408d7a2a8144ab1fb3040",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/zm_yunxi.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zm_yunxi.pt",
+      "sha256": "dbe6e1ce7c3dbaf2f5667432947b638b1c6831ccbe154c4610dbcc44f431e27b",
+      "size": 523425
+    },
+    {
+      "path": "models/kokoro/voices/zm_yunxi.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zm_yunxi.safetensors",
+      "sha256": "78d8bb5ba4a2ea75a7f22c6148214a7434b436db85dc791a2ddf2aa7f6cc6fab",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/zm_yunxia.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zm_yunxia.pt",
+      "sha256": "bb2b03b08e84d64e1214440ce3b624987fac177f2eeb5bab8571799a3d980acd",
+      "size": 523430
+    },
+    {
+      "path": "models/kokoro/voices/zm_yunxia.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zm_yunxia.safetensors",
+      "sha256": "59a4ba431ffa7165b95d5b953097affb71110b3039f81c4439cf0f7464bcb2ee",
+      "size": 522320
+    },
+    {
+      "path": "models/kokoro/voices/zm_yunyang.pt",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zm_yunyang.pt",
+      "sha256": "5238ac22e0c7f8b6cdd2eddd6e444b8a700b73c4674d9a047d59a94ff96379a2",
+      "size": 523435
+    },
+    {
+      "path": "models/kokoro/voices/zm_yunyang.safetensors",
+      "url": "https://huggingface.co/mlx-community/Kokoro-82M-bf16/resolve/a71e4d38b236d968966a2002c4c895dbd12b1c3c/voices/zm_yunyang.safetensors",
+      "sha256": "8ad45c1077ab0d973ebb85ebb84f797caf6c6b188255c1178511a6feba3a0611",
+      "size": 522320
+    },
+    {
+      "path": "models/smart-turn/smart-turn-v3.2-cpu.onnx",
+      "url": "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx",
+      "size": 8679182,
+      "sha256": "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"
+    }
+  ],
+  "downloadBytes": 2406693430,
+  "requiredDiskBytes": 7220080290,
+  "previousVersion": "1"
+}
