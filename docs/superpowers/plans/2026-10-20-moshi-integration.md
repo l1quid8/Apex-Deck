@@ -30,3 +30,44 @@ Cancellation during dependency/model setup, child processes surviving window clo
 - Electron microphone permission, audible playback, and the packaged app were not tested. No dev app, DMG, merge, or push was performed. The remaining smoke is to click the mic in an integrated desktop build, allow the microphone, speak/listen, mute, restart, and end the call.
 
 Ruling: cap sessions at 30 minutes with a fixed local restart action, rather than inheriting upstream's roughly five-minute generation limit. A watchdog detects native worker crashes as well as Python exceptions. The voice page gets no Deck preload; main intercepts only its fixed local restart route.
+
+## Packaged follow-up validation
+
+The first Developer ID signed test bundle failed on mic selection: Electron's
+`fs.promises.cp` could not recursively extract `desktop/moshi` from `app.asar`,
+even though the files were present. Replaced both setup/start extraction calls
+with explicit reads and writes of the five client assets. A new real-Electron
+archive regression test failed with the same ENOENT before the fix and passed
+afterward; it uses a readiness stub rather than downloading or running models.
+
+Rebuilt signed test app (no installation or merge):
+`/Users/tylercaldwell/Downloads/apex-deck/release/moshi-911469e-fixed/mac-arm64/Apex Deck.app`.
+The bundle contains the exact modified runtime (SHA-256
+`37c59f443ee3b0aa7ca5d68c3b688df584852b044a9e920155e384a2ca691b89`).
+It uses the existing installed daemon binary for the isolated UI test; this is
+not a complete release candidate. Production app/data were not replaced.
+
+Verified in that unchanged signed bundle:
+
+- `codesign --verify --deep --strict` passed; packaged flag is true and the
+  microphone usage description is present. Existing macOS mic access was granted.
+- Clicked the packaged microphone entry: cached Moshi started automatically,
+  captured a real live microphone at 48 kHz, and ran the playback AudioContext.
+- Fed a 4.96-second recorded question through the test socket after verifying
+  actual microphone capture. Recorded 157 returned 24 kHz PCM frames (12.56 s),
+  RMS 0.04231, with rendered playback RMS peak 0.17085. The model generated a
+  spoken response; these measurements include an analyser attached to the
+  playback worklet, rather than only receiving socket bytes.
+- Mute produced 13 measured frames with no nonzero samples. Close stopped the
+  helper group; reopening started a fresh loopback session with live microphone.
+- Test-only Electron permission denial displayed `Permission denied`, ended the
+  previous mic track, and exposed Start again. OS permissions were unchanged.
+- Final runtime state was off, zero voice windows, and no helper processes.
+- `npx tsc --noEmit` passed, `npm test` passed 1,783/1,783, and the Python runner
+  tests passed 5/5.
+
+Evidence and `moshi-playback.wav` are under the test bundle's parent directory.
+Physical speaker audibility is still awaiting the human's listening check; the
+Mac's default output was an HDMI display. A fresh OS permission prompt was not
+tested because authorization already existed. No claim of physical listening or
+first-use OS permission approval follows from the successful audio measurements.

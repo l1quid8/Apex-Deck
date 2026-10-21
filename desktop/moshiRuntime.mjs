@@ -11,6 +11,16 @@ const UV_SHA256 = '52793821b13ac7e424f76c47f544b103a9bdd10546f165b327eba225d0ba4
 const assets = fileURLToPath(new URL('./moshi/', import.meta.url));
 const exists = file => fs.access(file).then(() => true, () => false);
 
+async function copyClient(root) {
+  const destination = path.join(root, 'client');
+  await fs.mkdir(destination, { recursive: true });
+  // Electron supports reading individual archive files, but fs.cp cannot
+  // recursively extract an app.asar directory. Python needs real files.
+  for (const name of ['runner.py', 'index.html', 'voice.js', 'voice.css', 'audio-worklet.js']) {
+    await fs.writeFile(path.join(destination, name), await fs.readFile(path.join(assets, name)));
+  }
+}
+
 // A group contains the runner AND its two multiprocessing children.
 export function spawnVoiceProcess(command, args, options, signal, report) {
   signal.throwIfAborted();
@@ -79,13 +89,13 @@ export function moshiRuntime(root, { platform = process.platform, arch = process
       report('Installing Moshi…');
       await run(uv, ['pip', 'install', '--python', python, '--only-binary=:all:', 'moshi_mlx==0.3.0'], signal, report);
       // Copy out of app.asar: Python must be able to read these as real files.
-      await fs.cp(assets, path.join(root, 'client'), { recursive: true });
+      await copyClient(root);
       report('Downloading the local voice model (approximately 5.2 GB). This can take a while…');
       await run(python, [path.join(root, 'client/runner.py'), '--download-only'], signal, report);
       await fs.writeFile(marker, 'moshi_mlx==0.3.0\n');
     },
     async launch(signal, report, onExit) {
-      await fs.cp(assets, path.join(root, 'client'), { recursive: true });
+      await copyClient(root);
       const url = `http://127.0.0.1:${await port()}`, token = randomBytes(32).toString('hex');
       const job = spawnVoiceProcess(python, [path.join(root, 'client/runner.py'), '--host', '127.0.0.1', '--port', new URL(url).port,
         '--no-browser', '-q', '4', '--steps', '24000', '--static', path.join(root, 'client')],
