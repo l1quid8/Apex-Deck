@@ -184,6 +184,47 @@ await page.reload();
 await page.getByRole("button", {name:/Weekend architecture/}).first().click();
 await expect(page.locator(".phone-content")).toContainText("@grok test local persistence");
 
+// Verify zero-models /v1/models response enters "no-models" state instead of green live pill.
+let modelProbes = 0;
+await page.route("**/v1/models", async (route) => {
+  modelProbes += 1;
+  await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ object: "list", data: [] }),
+  });
+});
+await page.evaluate(() => {
+  localStorage.setItem(
+    "apex-deck.ios.gateway-config.v1",
+    JSON.stringify({
+      baseUrl: "http://127.0.0.1:9",
+      apiKey: "apx_sk_zero_models_test",
+      hostLabel: "Zero Host",
+      keySuffix: "…est",
+    }),
+  );
+});
+await page.goto(`${base}/#local-chat`);
+await page.reload();
+await expect(page.getByRole("button", { name: "Local chat status", exact: true })).toContainText(
+  "○ No models for this key",
+);
+await expect(page.getByRole("button", { name: "Send local chat message", exact: true })).toBeDisabled();
+await expect(page.locator(".mf-banner")).toContainText("This key sees no models");
+await page.getByRole("button", { name: "Retry connection", exact: true }).click();
+await expect(page.getByRole("button", { name: "Local chat status", exact: true })).toContainText(
+  "○ No models for this key",
+);
+expect(modelProbes).toBeGreaterThanOrEqual(2);
+await page.getByRole("button", { name: "Mention a participant", exact: true }).click();
+await expect(page.getByRole("dialog").locator("button.row").first()).toBeDisabled();
+await page.getByRole("button", { name: "Close sheet", exact: true }).click();
+await page.unroute("**/v1/models");
+await page.evaluate(() => {
+  localStorage.removeItem("apex-deck.ios.gateway-config.v1");
+});
+
 // Live daemon end-to-end verification (opt-in via APEX_LIVE_GATEWAY=1 so offline screenshot/capture runs stay self-contained).
 if (process.env.APEX_LIVE_GATEWAY === "1") {
   const { spawn, execFileSync } = await import("node:child_process");

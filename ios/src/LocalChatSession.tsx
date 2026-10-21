@@ -55,6 +55,7 @@ export type GatewayConnectionConfig = {
 export type LocalChatState =
   | "live"
   | "preview"
+  | "no-models"
   | "revoked"
   | "capped"
   | "tool-refused"
@@ -410,9 +411,13 @@ export function LocalChatThread({
             .map((item: { id?: string }) => item?.id)
             .filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
         : [];
-      if (ids.length > 0) {
-        setAvailableModels(ids);
+      if (ids.length === 0) {
+        setAvailableModels([]);
+        setStatus("no-models");
+        setStatusDetail("The host answered, but this key can see no models.");
+        return;
       }
+      setAvailableModels(ids);
       setStatus("live");
       setStatusDetail("");
     } catch {
@@ -608,18 +613,23 @@ export function LocalChatThread({
       ? "● Local chat"
       : status === "preview"
         ? "● Local chat (preview)"
-        : status === "revoked"
-          ? "○ Local chat paused — reconnect"
-          : status === "capped"
-            ? "○ Daily limit reached"
-            : status === "tool-refused"
-              ? "○ Private tool blocked"
-              : "○ Host offline";
+        : status === "no-models"
+          ? "○ No models for this key"
+          : status === "revoked"
+            ? "○ Local chat paused — reconnect"
+            : status === "capped"
+              ? "○ Daily limit reached"
+              : status === "tool-refused"
+                ? "○ Private tool blocked"
+                : "○ Host offline";
 
   const pillDotColor =
     status === "live" || status === "preview"
       ? "var(--mint)"
-      : status === "revoked" || status === "capped" || status === "tool-refused"
+      : status === "no-models" ||
+          status === "revoked" ||
+          status === "capped" ||
+          status === "tool-refused"
         ? "var(--amber)"
         : "var(--red)";
 
@@ -682,23 +692,27 @@ export function LocalChatThread({
         {!canSend && (
           <div className="mf-banner" role="status">
             <strong>
-              {status === "revoked"
-                ? "Local chat paused — reconnect"
-                : status === "capped"
-                  ? "Daily limit reached on this key"
-                  : status === "tool-refused"
-                    ? "Private host MCP tool blocked"
-                    : "Host offline"}
+              {status === "no-models"
+                ? "This key sees no models"
+                : status === "revoked"
+                  ? "Local chat paused — reconnect"
+                  : status === "capped"
+                    ? "Daily limit reached on this key"
+                    : status === "tool-refused"
+                      ? "Private host MCP tool blocked"
+                      : "Host offline"}
             </strong>
             <p>
               {statusDetail ||
-                (status === "revoked"
-                  ? "Your access key was paused or revoked on the host. Your local chat history on this iPhone is untouched."
-                  : status === "capped"
-                    ? "This key hit its daily turn or monthly spend cap. Your transcript stays readable on this phone."
-                    : status === "tool-refused"
-                      ? "Private host MCP servers (x_mcp, hl_mcp) are never exposed to gateway keys."
-                      : "Can’t reach the host right now. Previous messages remain available on this phone.")}
+                (status === "no-models"
+                  ? "The host answered, but this key can see no models."
+                  : status === "revoked"
+                    ? "Your access key was paused or revoked on the host. Your local chat history on this iPhone is untouched."
+                    : status === "capped"
+                      ? "This key hit its daily turn or monthly spend cap. Your transcript stays readable on this phone."
+                      : status === "tool-refused"
+                        ? "Private host MCP servers (x_mcp, hl_mcp) are never exposed to gateway keys."
+                        : "Can’t reach the host right now. Previous messages remain available on this phone.")}
             </p>
             <button
               className="wide"
@@ -923,14 +937,18 @@ export function LocalChatThread({
                   const familyModels = availableModels.filter((m) =>
                     m.toLowerCase().startsWith(bot.prefix),
                   );
-                  const activeRoute =
-                    session.preferredModels?.[bot.name] ||
-                    familyModels[0] ||
-                    bot.fallbackRoute;
+                  const unavailable =
+                    status === "no-models" && familyModels.length === 0;
+                  const activeRoute = unavailable
+                    ? "No models available for this key"
+                    : session.preferredModels?.[bot.name] ||
+                      familyModels[0] ||
+                      bot.fallbackRoute;
                   return (
                     <button
                       key={bot.name}
                       className="row"
+                      disabled={unavailable}
                       onClick={() => {
                         const nextIdx =
                           familyModels.length > 1
