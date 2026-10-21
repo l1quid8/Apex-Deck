@@ -30,7 +30,10 @@ export function LandingTexture({ settings }: { settings: LandingTextureSettings 
     if (!wrap || !canvas || !settingsRef.current.enabled) return;
     const mode = blockedByMedia();
     if (mode === "off") return;
-    const host = (wrap.offsetParent as HTMLElement | null) ?? wrap.parentElement;
+    // Cached threads can mount under display:none, where offsetParent is null.
+    // Choose the surface structurally so listeners still cover the rain when
+    // that thread is revealed, rather than staying on the small welcome block.
+    const host = wrap.closest<HTMLElement>(".chat-body, .agents-empty") ?? wrap.parentElement;
     if (!host) return;
     const renderer = createLandingRenderer(canvas, settingsRef.current);
     if (!renderer) return;
