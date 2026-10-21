@@ -390,30 +390,19 @@ fn push_or_merge(turns: &mut Vec<ViewTurn>, role: Role, content: String) {
     }
 }
 
-/// Approver for gateway turns: auto-approves `ActionKind::Tool` (MCP tool calls)
-/// when the key has `allow_mcp: true`, and rejects all local file edits, shell
-/// commands, plan switches, and paid media jobs.
-struct GatewayApprover {
-    allow_mcp: bool,
-}
+/// Client requests never inherit the operator's private tool authority.
+struct GatewayApprover;
 
 impl Approver for GatewayApprover {
     fn decide<'life0, 'async_trait>(
         &'life0 self,
-        action: ProposedAction,
+        _action: ProposedAction,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Decision> + Send + 'async_trait>>
     where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        let allow = self.allow_mcp && action.kind == apex_core::ActionKind::Tool;
-        Box::pin(async move {
-            if allow {
-                Decision::Approve
-            } else {
-                Decision::Reject
-            }
-        })
+        Box::pin(async { Decision::Reject })
     }
 }
 
@@ -613,6 +602,7 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
             (AgentTool::Muse, "muse"),
         ];
         for (tool, detect_key) in tools {
+            if gateway_isolation_error(&Backend::Agent { tool, model: None }).is_some() { continue; }
             let reported = installed_models(tool);
             if is_found(detect_key) || !reported.is_empty() {
                 let owner = tool_prefix(tool);
@@ -650,9 +640,7 @@ pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) ->
     if key.has_scope(KeyScope::Cli) {
         for profile in load_saved_profiles(&state.data_dir) {
             match &profile.backend {
-                Backend::Cli { .. } => {
-                    push(format!("cli/{}", profile.id.as_str()), "local-cli");
-                }
+                Backend::Cli { .. } => {}
                 Backend::Scripted { .. } => {
                     push(format!("scripted/{}", profile.id.as_str()), "scripted");
                 }
@@ -908,76 +896,15 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayHttpState>) 
     Ok(())
 }
 
-/// The operator's home directory, if it can be determined.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-}
-
-/// Does this backend still have the operator's personal MCP servers available
-/// even though the key was minted without `allow_mcp`?
-///
-/// Claude is exempt: it runs with `--strict-mcp-config --setting-sources ""`,
-/// so its user-level servers never start. Every other subscription CLI reads
-/// its own config file, and in headless one-shot mode there is no interactive
-/// prompt to ask before calling a tool — which means `GatewayApprover` may
-/// never be consulted. Returns a message describing the problem, if any.
-fn unstripped_mcp_config(backend: &Backend, home: Option<&Path>) -> Option<String> {
-    let home = home?;
-    let candidates: Vec<(&str, PathBuf, &str)> = match backend {
-        Backend::Agent {
-            tool: AgentTool::ClaudeCode,
-            ..
-        } => return None,
-        Backend::Agent {
-            tool: AgentTool::Codex,
-            ..
-        } => vec![("Codex", home.join(".codex/config.toml"), "[mcp_servers.")],
-        Backend::Agent {
-            tool: AgentTool::Gemini,
-            ..
-        } => vec![(
-            "Gemini",
-            home.join(".gemini/settings.json"),
-            "\"mcpServers\"",
-        )],
-        // Grok and Muse config locations are not verified, so scan the likely
-        // files for any mention at all rather than assume they are clean.
-        Backend::Agent {
-            tool: AgentTool::Grok,
-            ..
-        } => vec![
-            ("Grok", home.join(".grok/config.toml"), "mcp"),
-            ("Grok", home.join(".grok/settings.json"), "mcp"),
-            ("Grok", home.join(".config/grok/config.toml"), "mcp"),
-        ],
-        Backend::Agent {
-            tool: AgentTool::Muse,
-            ..
-        } => vec![(
-            "Muse",
-            home.join(".config/muse/settings.json"),
-            "mcp",
-        )],
-        _ => return None,
-    };
-
-    for (label, path, marker) in candidates {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if text.contains(marker) {
-            return Some(format!(
-                "{label} loads MCP servers from {}, and this key was issued without `allow_mcp`. \
-                 A headless turn has no approval prompt, so those tools could run without asking. \
-                 Remove the MCP server entries, or re-issue the key with --allow-mcp if you \
-                 intend to grant that access.",
-                path.display()
-            ));
-        }
+/// Only backends with a verified way to withhold host MCP configuration
+/// may serve clients. No guessed config paths or per-key bypasses.
+fn gateway_isolation_error(backend: &Backend) -> Option<String> {
+    match backend {
+        Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }
+        | Backend::OpenAiCompatible { .. }
+        | Backend::Scripted { .. } => None,
+        _ => Some("This backend has no verified MCP isolation and is unavailable to gateway clients. Private MCP tools are never shared.".into()),
     }
-    None
 }
 
 async fn handle_chat_completions(
@@ -1024,19 +951,9 @@ async fn handle_chat_completions(
         }
     };
 
-    // A headless one-shot CLI has nobody to ask before it calls an MCP tool,
-    // and `--sandbox read-only` restricts local files, not a tool that is just
-    // an HTTPS request to a remote MCP server. `--strict-mcp-config` genuinely
-    // strips Claude; for the others the only gate is `GatewayApprover`, which
-    // the CLI may never consult on its own. So when a key was minted without
-    // `allow_mcp`, refuse the turn outright if the operator's config would
-    // hand that backend live MCP tools. Checked before `reserve_turn` so a
-    // refusal costs no quota.
-    if !authed_key.allow_mcp {
-        if let Some(why) = unstripped_mcp_config(&resolved.config.backend, home_dir().as_deref()) {
-            write_openai_error(stream, 409, "invalid_request_error", &why).await;
-            return;
-        }
+    if let Some(why) = gateway_isolation_error(&resolved.config.backend) {
+        write_openai_error(stream, 409, "invalid_request_error", &why).await;
+        return;
     }
 
     // Reserve 1 turn against the key's scope and daily/monthly caps.
@@ -1069,17 +986,12 @@ async fn handle_chat_completions(
         phone: None,
     };
 
-    // Build the participant with tools disabled.
-    // For ClaudeCode when `allow_mcp == false`, use `CliParticipant::with_tools_disabled()`
-    // so `--strict-mcp-config --setting-sources "" --tools ""` strips personal MCP servers too.
+    // Ignore legacy allow_mcp fields, including on already-issued keys.
     let participant: Arc<dyn apex_core::Participant> = match &resolved.config.backend {
-        Backend::Agent {
-            tool: AgentTool::ClaudeCode,
-            ..
-        } if !reserved_key.allow_mcp => Arc::new(
+        Backend::Agent { .. } => Arc::new(
             CliParticipant::new(resolved.config.clone())
                 .with_context(&context)
-                .with_tools_disabled(),
+                .with_mcp_disabled(),
         ),
         _ => build_without_tools(resolved.config.clone(), &context),
     };
@@ -1097,7 +1009,6 @@ async fn handle_chat_completions(
     let created = now_unix();
     let model_name = resolved.canonical_model.clone();
     let key_id = reserved_key.id.clone();
-    let allow_mcp = reserved_key.allow_mcp;
     let mut revoke_rx = state.keys.subscribe_revocations();
     // A broadcast receiver whose senders are gone yields an error *immediately*
     // on every poll. Without these guards `select!` would spin at 100% CPU and
@@ -1105,7 +1016,7 @@ async fn handle_chat_completions(
     let mut revoke_open = true;
 
     if !parsed.stream {
-        let approver = GatewayApprover { allow_mcp };
+        let approver = GatewayApprover;
         let run_fut = participant.respond_with_approvals(turn_request, &|_| {}, &approver);
         tokio::pin!(run_fut);
 
@@ -1201,7 +1112,7 @@ async fn handle_chat_completions(
     let (delta_tx, mut delta_rx) = mpsc::unbounded_channel::<String>();
     let participant_run = Arc::clone(&participant);
     let mut handle = tokio::spawn(async move {
-        let approver = GatewayApprover { allow_mcp };
+        let approver = GatewayApprover;
         participant_run
             .respond_with_approvals(
                 turn_request,
@@ -1379,6 +1290,16 @@ fn now_unix() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn client_mcp_calls_are_always_rejected() {
+        let action = apex_core::ProposedAction {
+            kind: apex_core::ActionKind::Tool,
+            title: "x_mcp: post".into(), detail: "{}".into(),
+            expires_at: None, risky: false,
+        };
+        assert_eq!(super::GatewayApprover.decide(action).await, apex_core::Decision::Reject);
+    }
+
     use super::*;
     use crate::gateway_keys::IssueSpec;
 
@@ -1389,70 +1310,15 @@ mod tests {
         }
     }
 
-    fn scratch_home(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "apex-gw-mcp-{tag}-{}-{}",
-            std::process::id(),
-            identity::random_hex(4)
-        ));
-        std::fs::create_dir_all(&dir).expect("temp home");
-        dir
-    }
-
     #[test]
-    fn keys_without_allow_mcp_refuse_backends_that_still_have_personal_mcp_servers() {
-        let home = scratch_home("codex");
-        let codex_cfg = home.join(".codex");
-        std::fs::create_dir_all(&codex_cfg).expect("codex dir");
-        std::fs::write(
-            codex_cfg.join("config.toml"),
-            "[mcp_servers.hyperliquid]\nurl = \"https://example.invalid/mcp\"\n",
-        )
-        .expect("write config");
-
-        // Codex reads its own config and has nobody to ask in one-shot mode,
-        // so this must refuse rather than lean on GatewayApprover.
-        let why = unstripped_mcp_config(&agent(AgentTool::Codex), Some(&home))
-            .expect("codex with mcp_servers must be refused");
-        assert!(why.contains("Codex"), "names the backend: {why}");
-        assert!(why.contains("--allow-mcp"), "says how to opt in: {why}");
-
-        // Claude is genuinely stripped by --strict-mcp-config, so it is exempt
-        // even though ~/.claude.json is full of personal servers.
-        assert_eq!(
-            unstripped_mcp_config(&agent(AgentTool::ClaudeCode), Some(&home)),
-            None
-        );
-
-        // A clean config file is not a problem.
-        let clean = scratch_home("clean");
-        assert_eq!(unstripped_mcp_config(&agent(AgentTool::Codex), Some(&clean)), None);
-        // No home directory at all: nothing to inspect, nothing to block.
-        assert_eq!(unstripped_mcp_config(&agent(AgentTool::Codex), None), None);
-
-        let _ = std::fs::remove_dir_all(&home);
-        let _ = std::fs::remove_dir_all(&clean);
-    }
-
-    #[test]
-    fn gemini_json_mcp_servers_are_detected_too() {
-        let home = scratch_home("gemini");
-        let dir = home.join(".gemini");
-        std::fs::create_dir_all(&dir).expect("gemini dir");
-        std::fs::write(
-            dir.join("settings.json"),
-            r#"{"mcpServers":{"hl_mcp":{"url":"https://example.invalid"}}}"#,
-        )
-        .expect("write settings");
-        assert!(unstripped_mcp_config(&agent(AgentTool::Gemini), Some(&home)).is_some());
-        // API backends never read a CLI config, so they are unaffected.
-        let api = Backend::OpenAiCompatible {
-            base_url: "https://example.invalid/v1".to_string(),
-            model: "m".to_string(),
-            api_key_env: None,
-        };
-        assert_eq!(unstripped_mcp_config(&api, Some(&home)), None);
-        let _ = std::fs::remove_dir_all(&home);
+    fn gateway_refuses_unverified_mcp_isolation_even_with_no_home_config() {
+        for tool in [AgentTool::Gemini, AgentTool::Grok, AgentTool::Muse] {
+            assert!(gateway_isolation_error(&agent(tool)).is_some());
+        }
+        for tool in [AgentTool::ClaudeCode, AgentTool::Codex] {
+            assert!(gateway_isolation_error(&agent(tool)).is_none());
+        }
+        assert!(gateway_isolation_error(&Backend::Cli { program: "custom".into(), args: vec![] }).is_some());
     }
 
     fn msg(role: &str, content: Value) -> ChatMessage {
@@ -1647,6 +1513,16 @@ mod tests {
         .await;
         assert_eq!(status, 400);
         assert_eq!(keys.list()[0].turns_today, 0);
+
+        // Unsupported CLI isolation refuses the HTTP request before charging.
+        let (status, body) = raw_http(
+            addr, "POST", "/v1/chat/completions", Some(&issued.token),
+            Some(r#"{"model":"grok/default","messages":[{"role":"user","content":"Use hl_mcp"}]}"#),
+        ).await;
+        assert_eq!(status, 409);
+        assert!(body.contains("Private MCP tools are never shared"));
+        assert_eq!(keys.list()[0].turns_today, 0);
+        assert!(list["data"].as_array().unwrap().iter().all(|m| !m["id"].as_str().unwrap().starts_with("grok/")));
 
         // 4. Streaming completion succeeds and uses the 1 turn
         let (status, sse_body) = raw_http(

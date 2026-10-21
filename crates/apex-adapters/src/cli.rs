@@ -40,6 +40,25 @@ fn effective_turn_config(config: &ParticipantConfig, effort: Option<&str>) -> Pa
     effective
 }
 
+const GATEWAY_CODEX_FLAGS: &[&str] = &[
+    "-c", "features.plugins=false", "-c", "features.remote_plugin=false",
+    "-c", "features.apps=false", "-c", "features.shell_tool=false",
+    "-c", "features.unified_exec=false",
+];
+
+/// Per-process overrides: an empty table merges with user config, so disable
+/// each server explicitly. Never log this listing: it can contain credentials.
+fn codex_mcp_disable_flags(listing: &[u8]) -> Result<Vec<String>, ParticipantError> {
+    let fail = || ParticipantError::Failed("Could not verify Codex MCP isolation; gateway turn refused.".into());
+    let servers: Vec<serde_json::Value> = serde_json::from_slice(listing).map_err(|_| fail())?;
+    let mut flags: Vec<String> = GATEWAY_CODEX_FLAGS.iter().map(|s| (*s).into()).collect();
+    for server in servers {
+        let name = server["name"].as_str().filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))).ok_or_else(fail)?;
+        flags.extend(["-c".into(), format!("mcp_servers.{name}.enabled=false")]);
+    }
+    Ok(flags)
+}
+
 /// A participant backed by a command-line tool.
 ///
 /// Each turn starts the program fresh, writes the whole prompt to its
@@ -60,6 +79,7 @@ pub struct CliParticipant {
     plan: Option<Access>,
     /// Disable every tool for a text-only monitor turn.
     tools_disabled: bool,
+    mcp_disabled: bool,
     processes: Registry,
     cargo_target_dir: Option<PathBuf>,
     attachment_roots: Vec<PathBuf>,
@@ -69,13 +89,23 @@ pub struct CliParticipant {
 
 impl CliParticipant {
     pub fn new(config: ParticipantConfig) -> Self {
-        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None }
+        Self { config, timeout: TURN_TIMEOUT, cwd: None, path: None, codex_hook: None, temp: None, plan: None, tools_disabled: false, mcp_disabled: false, processes: Registry::default(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None }
     }
 
     /// Start a text-only turn with tools disabled at both the CLI and
     /// protocol boundaries. Only Claude currently has a verified path.
     pub fn with_tools_disabled(mut self) -> Self {
         self.tools_disabled = true;
+        self
+    }
+
+    /// Disable personal MCP servers for a gateway turn. Unsupported backends
+    /// refuse the turn rather than inheriting the operator's configuration.
+    pub fn with_mcp_disabled(mut self) -> Self {
+        self.mcp_disabled = true;
+        if matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode, .. }) {
+            self.tools_disabled = true;
+        }
         self
     }
 
@@ -100,6 +130,9 @@ impl CliParticipant {
     /// The program and arguments for this participant's backend, and how
     /// to read what it prints.
     fn command_line(&self) -> Result<(String, Vec<String>, OutputFormat), ParticipantError> {
+        if self.mcp_disabled && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
+            return Err(ParticipantError::Failed("This CLI has no verified MCP isolation; gateway turn refused.".into()));
+        }
         match &self.config.backend {
             Backend::Cli { .. } if self.tools_disabled => Err(ParticipantError::Failed("This CLI does not have a verified tool-free mode, so the monitor check did not run.".into())),
             Backend::Cli { program, args } => Ok((program.clone(), args.clone(), OutputFormat::Text)),
@@ -195,9 +228,22 @@ impl CliParticipant {
         let program = "codex";
         let mut args: Vec<String> = codex_server::ARGS.iter().map(|a| a.to_string()).collect();
         args.extend(phone_env::codex_shell_flags(self.phone.as_ref().filter(|_| !self.tools_disabled), &self.config));
+        if self.mcp_disabled {
+            let mut inventory = Command::new(program);
+            inventory.args(GATEWAY_CODEX_FLAGS).args(["mcp", "list", "--json"]).kill_on_drop(true);
+            if let Some(cwd) = &self.cwd { inventory.current_dir(cwd); }
+            if let Some(path) = &self.path { inventory.env("PATH", path); }
+            let output = tokio::time::timeout(Duration::from_secs(20), inventory.output()).await
+                .map_err(|_| ParticipantError::Failed("Codex MCP isolation check timed out.".into()))?
+                .map_err(|_| ParticipantError::Failed("Could not inspect Codex MCP configuration.".into()))?;
+            if !output.status.success() {
+                return Err(ParticipantError::Failed("Could not inspect Codex MCP configuration; gateway turn refused.".into()));
+            }
+            args.extend(codex_mcp_disable_flags(&output.stdout)?);
+        }
         // Deck's catch-all MCP approval; see codex_hook.rs. A helper that
         // has gone would make Codex run every tool unasked, so check first.
-        let hook = self.codex_hook.as_deref().filter(|helper| helper.is_file()).and_then(|helper| {
+        let hook = self.codex_hook.as_deref().filter(|helper| !self.mcp_disabled && helper.is_file()).and_then(|helper| {
             codex_hook::Hook::bind(helper).map_err(|e| eprintln!("[apex-deck] Codex approval hook unavailable: {e}")).ok()
         });
         let mut env = Vec::new();
@@ -214,6 +260,7 @@ impl CliParticipant {
             access: self.config.access,
             cwd: self.cwd.as_ref().map(|dir| dir.to_string_lossy().into_owned()),
             plan: self.plan.is_some(),
+            mcp_disabled: self.mcp_disabled,
         };
         match codex_server::run_with_images(child, turn, prompt, on_progress, approver, hook.as_ref(), images).await {
             Ok(reply) => Ok(reply),
@@ -581,7 +628,7 @@ impl Participant for CliParticipant {
         if effective != self.config {
             let mut request = request;
             request.effort_override = None;
-            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let scoped = Self { config: effective, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         // The Plan switch: the turn runs read-only, remembering the bot's own
@@ -592,7 +639,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = Access::Read;
-            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let planning = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: Some(self.config.access), tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return planning.respond_with_approvals(request, on_progress, approver).await;
         }
         // Rebuild both CLI launch paths with the scheduler's effective access.
@@ -603,7 +650,7 @@ impl Participant for CliParticipant {
             }
             let mut config = self.config.clone();
             config.access = request.access.unwrap();
-            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
+            let scoped = Self { config, timeout: self.timeout, cwd: self.cwd.clone(), path: self.path.clone(), codex_hook: self.codex_hook.clone(), temp: self.temp.clone(), plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: self.mcp_disabled, processes: self.processes.clone(), cargo_target_dir: self.cargo_target_dir.clone(), attachment_roots: self.attachment_roots.clone(), phone: self.phone.clone() };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         let (program, mut args, format) = self.command_line()?;
@@ -716,6 +763,15 @@ impl Participant for CliParticipant {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn gateway_mcp_inventory_disables_every_named_server_and_rejects_bad_shapes() {
+        let flags = super::codex_mcp_disable_flags(br#"[{"name":"hl_mcp"},{"name":"x-publisher_mcp"}]"#).unwrap();
+        assert!(flags.contains(&"mcp_servers.hl_mcp.enabled=false".to_string()));
+        assert!(flags.contains(&"mcp_servers.x-publisher_mcp.enabled=false".to_string()));
+        assert!(super::codex_mcp_disable_flags(br#"{}"#).is_err());
+        assert!(super::codex_mcp_disable_flags(br#"[{}]"#).is_err());
+    }
     use super::{failure_summary, sign_in_hint, summarize_error, CliParticipant};
     use crate::events::{EventReader, OutputFormat};
 
