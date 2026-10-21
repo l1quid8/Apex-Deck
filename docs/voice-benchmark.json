@@ -1,0 +1,121 @@
+{
+  "scope": "Installed private runtime; clean synthetic input; not audible microphone latency",
+  "compute": {
+    "startupMs": 8983,
+    "sampleCount": 20,
+    "peakRSSBytes": 1359413248,
+    "rows": [
+      {
+        "sttMs": 756,
+        "ttsMs": 299,
+        "computeMs": 1055
+      },
+      {
+        "sttMs": 577,
+        "ttsMs": 229,
+        "computeMs": 806
+      },
+      {
+        "sttMs": 578,
+        "ttsMs": 222,
+        "computeMs": 799
+      },
+      {
+        "sttMs": 568,
+        "ttsMs": 214,
+        "computeMs": 782
+      },
+      {
+        "sttMs": 570,
+        "ttsMs": 212,
+        "computeMs": 782
+      },
+      {
+        "sttMs": 566,
+        "ttsMs": 213,
+        "computeMs": 779
+      },
+      {
+        "sttMs": 566,
+        "ttsMs": 215,
+        "computeMs": 782
+      },
+      {
+        "sttMs": 566,
+        "ttsMs": 215,
+        "computeMs": 782
+      },
+      {
+        "sttMs": 566,
+        "ttsMs": 212,
+        "computeMs": 778
+      },
+      {
+        "sttMs": 589,
+        "ttsMs": 232,
+        "computeMs": 821
+      },
+      {
+        "sttMs": 591,
+        "ttsMs": 229,
+        "computeMs": 820
+      },
+      {
+        "sttMs": 596,
+        "ttsMs": 231,
+        "computeMs": 828
+      },
+      {
+        "sttMs": 596,
+        "ttsMs": 235,
+        "computeMs": 831
+      },
+      {
+        "sttMs": 604,
+        "ttsMs": 237,
+        "computeMs": 841
+      },
+      {
+        "sttMs": 592,
+        "ttsMs": 228,
+        "computeMs": 820
+      },
+      {
+        "sttMs": 582,
+        "ttsMs": 218,
+        "computeMs": 800
+      },
+      {
+        "sttMs": 587,
+        "ttsMs": 221,
+        "computeMs": 808
+      },
+      {
+        "sttMs": 574,
+        "ttsMs": 217,
+        "computeMs": 791
+      },
+      {
+        "sttMs": 588,
+        "ttsMs": 234,
+        "computeMs": 822
+      },
+      {
+        "sttMs": 579,
+        "ttsMs": 232,
+        "computeMs": 811
+      }
+    ],
+    "p50ComputeMs": 807.0,
+    "p95ComputeMs": 841,
+    "note": "Synthetic clean input; excludes endpoint wait, agent, socket and audible playback. Concurrent live call and local Qwen on Mac."
+  },
+  "smartTurn": {
+    "sampleCount": 20,
+    "p50Ms": 39.08337499888148,
+    "p95Ms": 49.07541599823162,
+    "completeProbability": 0.9445840716362,
+    "license": "BSD-2-Clause",
+    "scope": "clean synthetic command, not natural pauses or room mic"
+  }
+}
