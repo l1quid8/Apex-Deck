@@ -2828,7 +2828,7 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
   box-shadow: none;
 }
 :root[data-deck-theme="glass"] .composer-box.adding {
-  background-color: rgb(var(--deck-panel) / max(.62, var(--deck-opacity, .44)));
+  background-color: var(--box);
 }
 
 /* Fade the welcome text, not the landing texture that lives inside .empty. */
@@ -4144,3 +4144,26 @@ button.mod-status:hover { color: var(--text); }
 .md-code-run-actions button:hover, .md-code-run-actions button:focus-visible { color: var(--text); }
 .md-code .md-code-run { max-height: 160px; overflow: auto; padding: 8px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 60%, transparent); white-space: pre-wrap; word-break: break-word; font-size: 12px; }
 .md-code-run-cut, .md-code-run-empty { color: var(--muted); font-style: italic; }
+
+/* Floating composer and transcript adjustment */
+.thread-chat > .composer {
+  border-top: 0;
+  background: transparent;
+}
+
+.thread-chat .chat-body > .transcript {
+  margin-bottom: calc(-1 * var(--composer-h, 0px));
+  padding-bottom: calc(24px + var(--composer-h, 0px));
+  scroll-padding-bottom: calc(24px + var(--composer-h, 0px));
+}
+
+.identicon i {
+  /* dots fade between scramble frames */
+  transition: background-color .08s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .identicon i {
+    transition: none;
+  }
+}

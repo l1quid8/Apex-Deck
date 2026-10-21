@@ -24,3 +24,5 @@
   position: relative;
   z-index: 1;
 }
+/* texture runs on under the floating composer */
+.thread-chat .landing-texture-wrap { bottom: calc(-1 * var(--composer-h, 0px)); }

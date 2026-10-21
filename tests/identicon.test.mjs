@@ -40,3 +40,22 @@ test('the working shimmer runs as a diagonal wave from the top left', () => {
   assert.equal(cells[4].wave, 4);
   assert.equal(cells[24].wave, 8);
 });
+
+test('scramble frames are random mirrored faces, never empty or solid', async () => {
+  const { scrambleFrames } = await import('../src/identicon.ts');
+  const frames = scrambleFrames(4);
+  assert.equal(frames.length, 4);
+  for (const frame of frames) {
+    assert.equal(frame.length, 25);
+    for (let row = 0; row < 5; row++) {
+      for (let col = 0; col < 2; col++) assert.equal(frame[row * 5 + col], frame[row * 5 + 4 - col], 'mirrored left to right');
+    }
+    const lit = frame.filter(Boolean).length;
+    assert.ok(lit > 0 && lit < 25, 'a face, not a blank or a block');
+  }
+  let n = 0;
+  const fixed = () => [0.1, 0.9, 0.3, 0.7][n++ % 4];
+  n = 0; const a = scrambleFrames(2, fixed);
+  n = 0; const b = scrambleFrames(2, fixed);
+  assert.deepEqual(a, b, 'the random source is injectable');
+});

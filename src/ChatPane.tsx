@@ -510,6 +510,18 @@ export function playTileMove(tile: HTMLElement) {
   tile.dataset.move = move;
   tile.dataset.last = move;
 }
+/** A saved agent in the add menu: ticks on click; hover or keyboard focus plays a move and scrambles its dots. */
+function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed: string; color: string; picked: boolean; onToggle: () => void }) {
+  const [scramble, setScramble] = useState(0);
+  const play = (tile: HTMLElement) => { playTileMove(tile); setScramble((n) => n + 1); };
+  return (
+    <button type="button" className="quick-add-tile" style={{ "--ring": color } as CSSProperties} onClick={onToggle} role="checkbox" aria-checked={picked} onPointerEnter={(e) => play(e.currentTarget)} onFocus={(e) => { if (e.currentTarget.matches(":focus-visible")) play(e.currentTarget); }} onAnimationEnd={(e) => { if (e.animationName.startsWith("tile-")) delete e.currentTarget.dataset.move; }}>
+      <span className="quick-add-tick" aria-hidden="true">✓</span>
+      <Avatar seed={seed} color={color} scramble={scramble} />
+      <span className="quick-add-tile-name">{name}</span>
+    </button>
+  );
+}
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
@@ -668,6 +680,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   /** The docked add menu, so focus can move into it when it opens. */
   const quickAddForm = useRef<HTMLFormElement>(null);
   useEffect(() => { if (quickAdd) quickAddForm.current?.querySelector<HTMLElement>(".quick-add-tile, .quick-add-another")?.focus(); }, [quickAdd]);
+  /** The button that opened the add menu, so focus can go back to it on close. */
+  const quickAddOpener = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const back = quickAddOpener.current;
+    if (quickAdd || !back) return;
+    quickAddOpener.current = null;
+    if (document.activeElement === document.body || document.activeElement === null) {
+      (back.isConnected ? back : input.current)?.focus();
+    }
+  }, [quickAdd]);
   /** The bot whose ⋯ menu is open in the details sidebar. */
   const [botMenu, setBotMenu] = useState<string | null>(null);
   useEffect(() => {
@@ -756,6 +778,16 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   const [unread, setUnread] = useState(0);
   /** The chat's root element; its pane's size decides what fits. */
   const root = useRef<HTMLDivElement>(null);
+  // The composer floats over the chat: tell the CSS how tall it is.
+  useEffect(() => {
+    const box = composer.current;
+    if (!box) return;
+    const publish = () => root.current?.style.setProperty("--composer-h", `${box.offsetHeight}px`);
+    publish();
+    const obs = new ResizeObserver(publish);
+    obs.observe(box);
+    return () => obs.disconnect();
+  }, [profileMode]);
   /** Open approval cards wholly out of view, oldest first. */
   const [cardsAway, setCardsAway] = useState<CardBox[]>([]);
   /** Find the open cards on screen and note which are out of view. */
@@ -2962,8 +2994,9 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   };
   /** Saved agents not already in this thread, offered as tiles in the add menu. */
   const pickableAgents = availableProfiles.filter((p) => !participants.some((own) => own.id === p.id));
-  const openQuickAdd = (where: "dock" | "details") => {
+  const openQuickAdd = (where: "dock" | "details", opener?: HTMLElement) => {
     if (quickAdd === where) return setQuickAdd(null);
+    quickAddOpener.current = opener ?? null;
     nameTouched.current = false;
     setPickedAgents(new Set());
     setQueuedBots([]);
@@ -2994,11 +3027,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           {pickableAgents.map((p) => {
             const look = p.appearance ?? legacyAppearance(p.id);
             return (
-              <button type="button" key={p.id} className="quick-add-tile" style={{ "--ring": look.color } as CSSProperties} onClick={() => togglePicked(p.id)} role="checkbox" aria-checked={pickedAgents.has(p.id)} onPointerEnter={(e) => playTileMove(e.currentTarget)} onFocus={(e) => playTileMove(e.currentTarget)} onAnimationEnd={(e) => { delete e.currentTarget.dataset.move; }}>
-                <span className="quick-add-tick" aria-hidden="true">✓</span>
-                <Avatar seed={look.seed} color={look.color} />
-                <span className="quick-add-tile-name">{p.display_name}</span>
-              </button>
+              <AgentTile key={p.id} name={p.display_name} seed={look.seed} color={look.color} picked={pickedAgents.has(p.id)} onToggle={() => togglePicked(p.id)} />
             );
           })}
         </div>
@@ -3113,7 +3142,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
   );
   const quickAddButton = (where: "details", primary: boolean) => (
     <span className={`quick-add-wrap ${where}`}>
-      <button className={primary ? "primary" : "ghost"} disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={() => openQuickAdd(where)}>+ Add bot</button>
+      <button className={primary ? "primary" : "ghost"} disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === where} onClick={(e) => openQuickAdd(where, e.currentTarget)}>+ Add bot</button>
       {quickAdd === where && quickAddMenu}
     </span>
   );
@@ -3271,7 +3300,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
           this seat an empty thread would have no way to add a bot back. */}
       {(participants.length > 0 || entries.length > 0) && (
         <span className="quick-add-wrap roster">
-          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={() => { if (availablePresets.length === 0 && availableProfiles.length === 0) openNewForm(); else openQuickAdd("dock"); }}>
+          <button className="chip-add" onPointerDown={(event) => event.preventDefault()} disabled={!ready} aria-label="Add bot" title="Add bot" aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => { if (availablePresets.length === 0 && availableProfiles.length === 0) openNewForm(); else openQuickAdd("dock", e.currentTarget); }}>
             <PersonPlus /><span className="chip-add-label">Add bot</span>
           </button>
         </span>
@@ -3345,7 +3374,7 @@ export function ChatPane({ pane, cwd, workspaceName = "", onStatus, onSeen, addR
                 ? "Add two or more models, then ask them something. Each one sees the whole conversation."
                 : "Type a message below. Use @name to pick who answers, or @all for everyone."}
             </p>
-            {participants.length === 0 && <button className="primary" disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={() => openQuickAdd("dock")}>+ Add bots</button>}
+            {participants.length === 0 && <button className="primary" disabled={!ready || (availablePresets.length === 0 && availableProfiles.length === 0)} aria-haspopup="dialog" aria-expanded={quickAdd === "dock"} onClick={(e) => openQuickAdd("dock", e.currentTarget)}>+ Add bots</button>}
             {participants.length > 0 && <div className="example-rows" aria-label="Examples">
               {exampleRows(participants).map((row) => (
                 <button key={row.text} type="button" className="example-row" onClick={() => insertExample(row.text)}>{row.label}</button>

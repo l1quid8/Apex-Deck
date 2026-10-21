@@ -70,3 +70,36 @@ export function createAppearance(used: AgentAppearance[] = []): AgentAppearance 
   }
   return { seed: crypto.randomUUID(), color };
 }
+
+/** Random faces for the hover scramble: each mirrored left to right like a real avatar, never blank or solid. */
+export function scrambleFrames(count: number, random: () => number = Math.random): boolean[][] {
+  const frames: boolean[][] = [];
+  for (let i = 0; i < count; i++) {
+    const half: boolean[] = new Array(15).fill(false);
+    for (let j = 0; j < 15; j++) {
+      half[j] = random() < 0.5;
+    }
+
+    let litCount = 0;
+    const grid: boolean[] = new Array(25).fill(false);
+
+    for (let row = 0; row < 5; row++) {
+      for (let col = 0; col < 5; col++) {
+        const source = col < 3 ? col : 4 - col;
+        const index = row * 5 + col;
+        const halfIndex = row * 3 + source;
+        grid[index] = half[halfIndex];
+        litCount += grid[index] ? 1 : 0;
+      }
+    }
+
+    if (litCount === 0) {
+      grid[12] = true;
+    } else if (litCount === 25) {
+      grid[12] = false;
+    }
+
+    frames.push(grid);
+  }
+  return frames;
+}

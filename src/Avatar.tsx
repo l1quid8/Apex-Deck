@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { batteryCells, refillDelay, REFILL_STAGGER_MS, shellState, type Levels } from "./battery";
-import { identiconCells } from "./identicon";
+import { identiconCells, scrambleFrames } from "./identicon";
 
 /** Counters that go up when a side should refill, bottom row first. */
 export interface Refills {
@@ -16,15 +16,19 @@ const REFILL_MS = 4 * REFILL_STAGGER_MS + 420;
  *  colour. The lit squares shimmer while it is working. Given `levels`, it
  *  is also a battery: context left on the left half, plan left on the right
  *  (see battery.ts). */
-export function Avatar({ seed, color, size = "md", working = false, levels, refills }: { seed: string; color: string; size?: "sm" | "md" | "lg"; working?: boolean; levels?: Levels; refills?: Refills }) {
+export function Avatar({ seed, color, size = "md", working = false, levels, refills, scramble }: { seed: string; color: string; size?: "sm" | "md" | "lg"; working?: boolean; levels?: Levels; refills?: Refills; scramble?: number }) {
   const cells = useMemo(() => identiconCells(seed), [seed]);
   const refilling = useRefill(refills);
+  const frame = useScramble(scramble);
   if (!levels) {
     return (
       <span className={`identicon identicon-${size}${working ? " working" : ""}`} style={{ "--who": color } as CSSProperties} aria-hidden="true">
-        {cells.map((cell, i) => (
-          <i key={i} className={cell.on ? "on" : undefined} style={cell.on && working ? { animationDelay: `${cell.wave * 80}ms` } : undefined} />
-        ))}
+        {cells.map((cell, i) => {
+          const isLit = frame ? frame[i] : cell.on;
+          return (
+            <i key={i} className={isLit ? "on" : undefined} style={isLit && working ? { animationDelay: `${cell.wave * 80}ms` } : undefined} />
+          );
+        })}
       </span>
     );
   }
@@ -64,4 +68,32 @@ function useRefill(refills: Refills | undefined): ("context" | "plan")[] {
   }, [refills?.context, refills?.plan]);
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
   return sides;
+}
+
+/** While a scramble plays, the frame to draw in place of the avatar's own face; null otherwise.
+ *  Plays when `scramble` goes up, never on first render, and not with Reduce Motion on. */
+function useScramble(scramble: number | undefined): boolean[] | null {
+  const seen = useRef(scramble);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const [frame, setFrame] = useState<boolean[] | null>(null);
+
+  useEffect(() => {
+    const before = seen.current;
+    seen.current = scramble;
+    if (scramble === undefined || before === undefined || scramble <= before) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+
+    const frames = scrambleFrames(4);
+    for (let i = 0; i < frames.length; i++) {
+      timers.current.push(setTimeout(() => setFrame(frames[i]), i * 90));
+    }
+    timers.current.push(setTimeout(() => setFrame(null), frames.length * 90));
+  }, [scramble]);
+
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
+
+  return frame;
 }
