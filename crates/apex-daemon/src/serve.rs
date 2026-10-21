@@ -13,7 +13,7 @@ use tokio::net::{TcpListener, UnixListener, UnixStream};
 
 use crate::cli::ServeOptions;
 use crate::protocol::{self, Daemon, Trust, PROTOCOL};
-use crate::{files, gateway_http, identity, paths, signals, websocket};
+use crate::{files, identity, paths, signals, websocket};
 
 /// The local socket, inside the data folder.
 pub const SOCKET: &str = "daemon.sock";
@@ -79,7 +79,7 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     let listener = TcpListener::bind((options.bind, options.port)).await.map_err(|e| format!("could not listen on {}:{}: {e}", options.bind, options.port))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let remote = start_remote(&daemon, &paths.data, &options).await?;
-    let (gateway, gateway_task) = start_gateway(&daemon, &options).await?;
+    let gateway = crate::gateway_admin::start(&daemon, options.gateway_port, options.gateway_bind).await?;
     // Holding the lock means no live daemon is using a socket left here.
     let _ = std::fs::remove_file(&socket);
     let local = UnixListener::bind(&socket).map_err(|e| format!("could not listen on {}: {e}", socket.display()))?;
@@ -95,7 +95,7 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     if !remote.is_null() {
         eprintln!("apex-daemon: remote access on as endpoint {} (UDP port {})", remote["endpoint_id"].as_str().unwrap_or_default(), remote["port"]);
     }
-    if !gateway.is_null() {
+    if gateway["enabled"] == true {
         eprintln!("apex-daemon: model gateway on http://{}:{}/v1", gateway["bind"].as_str().unwrap_or_default(), gateway["port"]);
     }
 
@@ -113,9 +113,7 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
         }
     }
     eprintln!("apex-daemon: stopping");
-    if let Some(handle) = gateway_task {
-        handle.abort();
-    }
+    crate::gateway_admin::stop(&daemon).await;
     drop((listener, local));
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&info_path);
@@ -143,31 +141,6 @@ async fn start_remote(_daemon: &Arc<Daemon>, _data: &Path, options: &ServeOption
         return Err("this apex-daemon was built without remote access (cargo feature `remote`)".into());
     }
     Ok(serde_json::Value::Null)
-}
-
-/// With `--gateway-port`, start the OpenAI-compatible HTTP gateway listener.
-///
-/// It shares `daemon.gateway_keys` with the local socket on purpose: a key
-/// issued over `daemon.sock` must authenticate here at once, and a revocation
-/// must reach HTTP turns already streaming.
-async fn start_gateway(
-    daemon: &Arc<Daemon>,
-    options: &ServeOptions,
-) -> Result<(serde_json::Value, Option<tokio::task::JoinHandle<()>>), String> {
-    let Some(req_port) = options.gateway_port else {
-        return Ok((serde_json::Value::Null, None));
-    };
-    let listener = TcpListener::bind((options.gateway_bind, req_port))
-        .await
-        .map_err(|e| format!("could not listen for gateway HTTP on {}:{req_port}: {e}", options.gateway_bind))?;
-    let actual_port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let state = gateway_http::GatewayHttpState::new(daemon.data.clone(), Arc::clone(&daemon.gateway_keys));
-    let handle = tokio::spawn(gateway_http::serve(listener, state));
-    let info = json!({
-        "bind": options.gateway_bind.to_string(),
-        "port": actual_port,
-    });
-    Ok((info, Some(handle)))
 }
 
 /// Resolves when stdin reaches its end or fails: the app holding the other

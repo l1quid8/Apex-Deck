@@ -246,7 +246,7 @@ export async function electronBackend(bridge: DeckBridge): Promise<Backend> {
   });
   localConnection.setFinishResync(() => client.finishResync());
   const remoteAccess = plainErrors({ get: () => bridge.remote.get(), set: (on: boolean) => bridge.remote.set(on) });
-  const backend: Backend = guardHostWrites({ ...commandBackend(transport, shell), onMenu, hosts, browser, remoteAccess,
+  const backend: Backend = guardHostWrites({ ...commandBackend(transport, shell), gatewayAdmin: true, onMenu, hosts, browser, remoteAccess,
     host: { id: "local", name: "This Mac", connection: localConnection } }, localConnection);
   const machines = createHostBackends({ local: backend, hosts: await hosts.list(), make: (host, state) => {
     const connect = bridgeConnect(bridge, host.id);

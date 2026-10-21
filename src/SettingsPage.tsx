@@ -11,13 +11,15 @@ import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
 import { DEFAULT_DECISION, DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
+import { ModelGatewaySettings } from "./ModelGatewaySettings";
+import { gatewayOwner } from "./modelGateway";
 import { ModsSettings } from "./ModsSettings";
 import { PairedDevicesSettings } from "./PairedDevicesSettings";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { shortcutList } from "./shortcuts";
 import type { Access, AgentInfo, ParticipantConfig, TurnPolicy } from "./types";
 
-export type SettingsSection = "general" | "appearance" | "hosts" | "remote" | "devices" | "providers" | "threads" | "terminal" | "mods" | "shortcuts";
+export type SettingsSection = "general" | "appearance" | "hosts" | "remote" | "devices" | "providers" | "gateway" | "threads" | "terminal" | "mods" | "shortcuts";
 
 const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
@@ -26,6 +28,7 @@ const ALL_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "remote", label: "Remote access" },
   { id: "devices", label: "Paired devices" },
   { id: "providers", label: "Providers" },
+  { id: "gateway", label: "Model gateway" },
   { id: "threads", label: "New threads" },
   { id: "terminal", label: "Terminal" },
   { id: "mods", label: "Mods" },
@@ -65,7 +68,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
   }, [onClose]);
 
   // Hosts, remote access and paired devices only exist in the Electron app.
-  const SECTIONS = ALL_SECTIONS.filter((s) => (s.id !== "hosts" && s.id !== "devices" && s.id !== "remote") || (s.id === "remote" ? backend.remoteAccess : backend.hosts));
+  const SECTIONS = ALL_SECTIONS.filter(s => s.id !== "gateway" || gatewayOwner(backend)).filter((s) => (s.id !== "hosts" && s.id !== "devices" && s.id !== "remote") || (s.id === "remote" ? backend.remoteAccess : backend.hosts));
   const index = Math.max(0, SECTIONS.findIndex((s) => s.id === section));
   return <div className="settings">
     <aside className="settings-nav">
@@ -90,6 +93,7 @@ export function SettingsPage({ section, onSection, settings, onChange, agents, p
         {section === "hosts" && backend.hosts && <HostsSettings backend={backend} hosts={backend.hosts} />}
         {section === "remote" && backend.remoteAccess && <RemoteAccessSettings backend={backend} remote={backend.remoteAccess} />}
         {section === "devices" && backend.hosts && <PairedDevicesSettings backend={backend} />}
+        {section === "gateway" && <ModelGatewaySettings backend={backend} />}
         {section === "providers" && <Providers settings={settings} onChange={onChange} agents={agents} profiles={profiles} backend={backend} />}
         {section === "threads" && <Threads settings={settings} onChange={onChange} />}
         {section === "terminal" && <TerminalSettings settings={settings} onChange={onChange} />}
@@ -105,6 +109,7 @@ const LEADS: Partial<Record<SettingsSection, string>> = {
   hosts: "The machine this window runs its threads and terminals on: this Mac, or another one over SSH.",
   remote: "Let phones you pair reach this Mac when they aren't on its network.",
   devices: "Phones allowed to reach this machine from outside your network, and what each may do.",
+  gateway: "Share your model stack through an endpoint you control.",
   providers: "Choose which tools appear when adding terminals and bots.",
   mods: "Claude Code mods that Deck runs itself and draws in its own window, for every bot.",
   threads: "Used when you create a thread. Threads you already have keep their own settings.",

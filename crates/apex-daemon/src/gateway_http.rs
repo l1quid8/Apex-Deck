@@ -203,19 +203,26 @@ impl GatewayHttpState {
     }
 }
 
+struct CancelOnDrop(tokio::task::AbortHandle);
+impl Drop for CancelOnDrop { fn drop(&mut self) { self.0.abort(); } }
+
 /// Accept loop for the HTTP gateway listener.
 pub async fn serve(listener: TcpListener, state: Arc<GatewayHttpState>) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        match listener.accept().await {
+        tokio::select! {
+            _ = connections.join_next(), if !connections.is_empty() => {},
+            accepted = listener.accept() => match accepted {
             Ok((stream, _)) => {
                 let state = Arc::clone(&state);
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     let _ = handle_connection(stream, state).await;
                 });
             }
             Err(e) => {
                 eprintln!("apex-daemon: could not accept a gateway HTTP connection: {e}");
                 tokio::time::sleep(Duration::from_millis(100)).await;
+            }
             }
         }
     }
@@ -569,6 +576,33 @@ pub struct OpenAiModelEntry {
     pub owned_by: String,
 }
 
+/// Installed/configured only; no successful upstream completion is implied.
+pub fn provider_readiness(data: &Path) -> Value {
+    let agents = apex_host::agents::detect();
+    let mut rows = Vec::new();
+    for (tool, key) in [(AgentTool::ClaudeCode, "claude"), (AgentTool::Codex, "codex"), (AgentTool::Gemini, "gemini"), (AgentTool::Grok, "grok"), (AgentTool::Muse, "muse")] {
+        let backend = Backend::Agent { tool, model: None };
+        let isolation = gateway_isolation_error(&backend);
+        let installed = if tool == AgentTool::Gemini {
+            let path = apex_host::agents::login_path().unwrap_or_default();
+            std::env::split_paths(&path).any(|p| p.join("gemini").is_file())
+        } else { agents.iter().any(|a| a.key == key && a.found) };
+        rows.push(json!({ "id": key, "name": key, "kind": "Subscription CLI", "available": installed && isolation.is_none(),
+            "detail": isolation.unwrap_or_else(|| if installed { "Installed; login and completion not checked.".into() } else { "Not installed.".into() }) }));
+    }
+    for p in KNOWN_API_PROVIDERS {
+        let configured = apex_adapters::keys::lookup(p.key_env).is_some();
+        rows.push(json!({ "id": p.prefix, "name": p.prefix, "kind": "API provider", "available": configured,
+            "detail": if configured { "API key configured; connection not checked." } else { "No API key configured." } }));
+    }
+    for p in load_saved_profiles(data) {
+        let isolation = gateway_isolation_error(&p.backend);
+        rows.push(json!({ "id": p.id.as_str(), "name": p.display_name, "kind": "Saved profile", "available": isolation.is_none(),
+            "detail": isolation.unwrap_or_else(|| "Configured; completion not checked.".into()) }));
+    }
+    json!({ "providers": rows })
+}
+
 /// Build the `GET /v1/models` catalog filtered by `key.scopes`.
 pub async fn build_models_catalog(state: &GatewayHttpState, key: &GatewayKey) -> Vec<OpenAiModelEntry> {
     let mut entries: Vec<OpenAiModelEntry> = Vec::new();
@@ -907,7 +941,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayHttpState>) 
 
 /// Only backends with a verified way to withhold host MCP configuration
 /// may serve clients. No guessed config paths or per-key bypasses.
-fn gateway_isolation_error(backend: &Backend) -> Option<String> {
+pub(crate) fn gateway_isolation_error(backend: &Backend) -> Option<String> {
     match backend {
         Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }
         | Backend::OpenAiCompatible { .. }
@@ -1147,6 +1181,7 @@ async fn handle_chat_completions(
     // its sender. Under `biased` that ready-immediately branch would win every
     // poll, starving the join branch below: the response never ended and the
     // client blocked on EOF. Turn the branch off instead of re-polling it.
+    let _cancel_on_drop = CancelOnDrop(handle.abort_handle());
     let mut deltas_open = true;
 
     loop {
@@ -1305,6 +1340,24 @@ mod tests {
     /// fixture that deliberately ignores the MCP-disable overrides. No live
     /// account or private MCP server is contacted by this test.
     #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_listener_closes_accepted_connections() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = std::env::temp_dir().join(format!("apex-gateway-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let keys = Arc::new(GatewayKeys::load(&dir).unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, GatewayHttpState::new(dir.clone(), keys)));
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client.write_all(b"GET /v1/models HTTP/1.1\r\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        server.abort(); let _ = server.await;
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut bytes)).await.expect("accepted sockets close with listener").unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn legacy_allow_mcp_key_cannot_reach_private_servers_over_http() {
         use std::os::unix::fs::PermissionsExt;

@@ -479,7 +479,7 @@ mod tests {
 
     async fn daemon(data: &Path) -> (Arc<Daemon>, Endpoint) {
         let host = Host::new(HostPaths { data: data.to_path_buf(), downloads: None }, tokio::runtime::Handle::current());
-        let daemon = Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), data: data.to_path_buf(), invites: Default::default(), endpoint: Default::default() });
+        let daemon = Arc::new(Daemon { host, host_id: "host-1".into(), boot_id: "boot-1".into(), token: None, devices: Arc::new(Devices::open(data)), gateway_keys: Arc::new(crate::gateway_keys::GatewayKeys::load(data).unwrap()), gateway: Default::default(), data: data.to_path_buf(), invites: Default::default(), endpoint: Default::default() });
         let endpoint = bind(key(data).unwrap(), None, 0).await.unwrap();
         tokio::spawn(accept(Arc::clone(&daemon), endpoint.clone()));
         (daemon, endpoint)

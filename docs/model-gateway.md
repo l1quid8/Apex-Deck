@@ -82,3 +82,13 @@ and `GATEWAY_MUSE_OK 42`; a private-tool inventory prompt returned
 directory grants still deny private file contents and direct Keychain queries.
 Opt-in live tests are marked ignored so ordinary tests never consume subscription
 turns.
+
+## Desktop settings
+
+Settings → Model gateway is available on the local owner's desktop only. The daemon also enforces local-socket authority for status, provider configuration checks, listener changes, and key management; paired devices and WebSocket-token clients cannot administer the gateway.
+
+Enable or disable the listener, copy its URL, create family-scoped keys with request/spend limits, and revoke keys from the panel. Secrets are displayed only when created and are not saved by the renderer. Keys remain valid until revoked; expiry is not supported. Disabling the listener preserves keys and closes accepted HTTP connections. Disable before changing the listen address or port.
+
+Listener settings are stored privately in `gateway-settings.json` and restored by `serve`. A failed restored listener leaves the local daemon available and reports an error in Settings so the owner can repair it. Explicit `--gateway-port` arguments override saved settings for that launch. The listener uses HTTP: keep loopback by default, or use a private address with an encrypted tunnel/HTTPS proxy for other devices.
+
+Provider readiness reports installed/configured status, not a successful authentication or completion. Private MCP isolation applies to every gateway key, including legacy `allow_mcp` keys.

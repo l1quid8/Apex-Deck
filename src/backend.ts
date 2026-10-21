@@ -26,6 +26,8 @@ const demoKeys = new Set<string>();
 export type LibraryItem = { file: string; name?: string; kind: "image" | string; source: string; room: string; by?: string; created: number; path: string; bytes?: number };
 
 export interface Backend {
+  /** Only the local desktop bridge may expose gateway administration. */
+  gatewayAdmin?: boolean;
   host?: { id: string; name: string; connection: import("./hostConnections").HostConnectionStore };
   machines?: import("./hostBackends").HostBackends;
   /** True when running in a browser with no desktop shell behind it. */
