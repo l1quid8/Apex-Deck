@@ -1,3 +1,5 @@
+import { readVoiceSettings } from './voice/settings.ts';
+import type { VoiceSettings } from './voice/types.ts';
 // App-wide settings, saved in settings.json beside the session file.
 //
 // Each value is checked when the file is read, so a hand-edited or older
@@ -52,6 +54,7 @@ export function effectiveLandingTexture(landing: LandingTextureSettings, appeara
 }
 
 export interface AppSettings {
+  voice?: VoiceSettings;
   decision?: DecisionSettings;
   /** Saved only after a user changes Appearance; older settings files omit it. */
   appearance?: AppearanceSettings;
@@ -116,6 +119,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
       provider: (["jev", "openrouter", "cloudflare"].includes(String(record(saved.decision).provider)) ? record(saved.decision).provider : "jev") as DecisionSettings["provider"],
       accountId: typeof record(saved.decision).accountId === "string" ? record(saved.decision).accountId as string : "",
     } } : {}),
+    ...(saved.voice ? {voice: readVoiceSettings(saved.voice)} : {}),
     version: 1,
     disabledProviders: strings(saved.disabledProviders) ?? strings(legacyDisabled) ?? [],
     newThread: {
