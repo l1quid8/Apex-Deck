@@ -63,3 +63,46 @@ class SemanticTests(unittest.TestCase):
   self.assertTrue(e.active)
   for i in range(41):events+=e.push(b'\0'*1024,.01)
   self.assertIn('complete',events)
+
+class PiecePipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pieces_share_one_start_and_end_with_100ms_between(self):
+        sent = []
+        async def send(e): sent.append(e)
+        async def synth(text, voice): return b'\1\0' * (2400 if text == 'a b c' else 1200)
+        pipe = Pipeline(send, synth, lambda text: ['a b c', 'd e f g']); pipe.start('c', 0)
+        first_ms = await pipe.speak('r', 1, 'a b c d e f g', 'am_michael')
+        kinds = [e['type'] for e in sent]
+        self.assertEqual((kinds[0], kinds[-1], kinds.count('audioStart')), ('audioStart', 'audioEnd', 1))
+        self.assertEqual(b''.join(e['pcm'] for e in sent if e['type'] == 'audio'), b'\1\0' * 2400 + b'\0' * 4800 + b'\1\0' * 1200)
+        self.assertIsInstance(first_ms, int)
+    async def test_cancel_between_pieces_sends_nothing_more(self):
+        sent = []
+        async def send(e): sent.append(e)
+        pipe = Pipeline(send, None, lambda text: ['one two three', 'four five six'])
+        async def synth(text, voice):
+            if text == 'four five six': pipe.cancel(1)
+            return b'\0' * 1024
+        pipe.synth = synth; pipe.start('c', 0)
+        await pipe.speak('r', 1, 'x', 'am_michael')
+        self.assertNotIn('audioEnd', [e['type'] for e in sent])
+        self.assertEqual(sum(len(e['pcm']) for e in sent if e['type'] == 'audio'), 1024)
+    async def test_without_pieces_the_mac_path_is_unchanged(self):
+        sent = []
+        async def send(e): sent.append(e)
+        async def synth(text, voice): return b'\1\0' * 3000
+        pipe = Pipeline(send, synth); pipe.start('c', 0)
+        await pipe.speak('r', 1, 'a b c d e f g h i j k l m', 'am_michael')
+        self.assertEqual(b''.join(e['pcm'] for e in sent if e['type'] == 'audio'), b'\1\0' * 3000)
+
+class CancelDuringSendTests(unittest.IsolatedAsyncioTestCase):
+ async def test_cancel_on_last_chunk_does_not_synthesize_the_next_piece(self):
+  calls=[]
+  async def synth(text, voice):
+   calls.append(text)
+   return b'\0' * 1024
+  async def send(event):
+   if event['type']=='audio': pipe.cancel(1)
+  pipe=Pipeline(send,synth,lambda text:['first piece','second piece'])
+  pipe.start('call',0)
+  await pipe.speak('reply',1,'ignored','am_michael')
+  self.assertEqual(calls,['first piece'])

@@ -45,3 +45,12 @@ The deterministic tests use fake speech engines. Real-model results and remainin
 | Phonemizer / eSpeak-ng linguistic assets | phonemizer-fork and espeakng-loader contain GPL-family components; preserve their wheel/license notices; distribution/legal review remains a release gate |
 
 Pipecat was considered. A small asyncio transport retains the measured demo's MLX behavior without adding a second frame/lifecycle abstraction. The Smart Turn model is reused directly through ONNX Runtime and WhisperFeatureExtractor, following its upstream inference implementation. An orchestration framework would not remove Deck's thread-correlation or browser-audio responsibilities.
+
+## Linux servers
+
+The optional Linux x86-64 daemon runtime uses `--engine cpu`: faster-whisper
+`base.en` int8, Kokoro ONNX, Silero ONNX and Smart Turn. Setup is daemon-managed
+from the phone with Full access, isolated from system Python and verified against
+`runtime-manifest-linux-x86_64.json`. No torch, MLX or CUDA packages are installed.
+The default `--engine mlx` remains the Mac path. CPU speech is split into short
+clauses so the first audio can play before a whole sentence is synthesized.

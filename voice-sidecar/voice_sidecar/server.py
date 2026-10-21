@@ -6,7 +6,10 @@ from .pipeline import Pipeline
 
 async def run(args):
  from websockets.asyncio.server import serve
- from .engines import Engines
+ if getattr(args,'engine','mlx')=='cpu':
+  from .engines_cpu import Engines
+ else:
+  from .engines import Engines
  token=os.read(args.token_fd,256).decode().strip();os.close(args.token_fd)
  if len(token)<32:raise ValueError('Missing runtime token')
  pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -32,13 +35,13 @@ async def run(args):
      await ws.send(encode_audio(event['generation'],sequence,event['pcm']))
     else:await ws.send(json.dumps(event))
    async def synth(t,v):return await loop.run_in_executor(pool,engines.synthesize,t,v)
-   pipe=Pipeline(send,synth);endpoint=EndpointDetector();voice='am_michael';hints=[];credits=PlaybackCredits()
+   pipe=Pipeline(send,synth,getattr(engines,'pieces',None));endpoint=EndpointDetector();voice='am_michael';hints=[];credits=PlaybackCredits()
    async def speaker():
     while True:
      gen,rid,sid,text,v=await speech_queue.get()
      if gen==pipe.generation:
-      t=time.monotonic();await pipe.speak(rid,sid,text,v)
-      await send(dict(type='timing',callId=pipe.call_id,generation=pipe.generation,ttsMs=round((time.monotonic()-t)*1000)))
+      t=time.monotonic();first_ms=await pipe.speak(rid,sid,text,v)
+      await send(dict(type='timing',callId=pipe.call_id,generation=pipe.generation,ttsMs=round((time.monotonic()-t)*1000),**({'ttsFirstMs':first_ms} if first_ms is not None else {})))
    speaker_task=asyncio.create_task(speaker())
    async def transcribe_chunk(pcm):
     return await loop.run_in_executor(pool,engines.transcribe,pcm,hints)
@@ -125,5 +128,5 @@ async def run(args):
   await asyncio.Future()
 
 if __name__=='__main__':
- p=argparse.ArgumentParser();p.add_argument('--port',type=int,default=0);p.add_argument('--token-fd',type=int,required=True);p.add_argument('--root',required=True);p.add_argument('--origin',action='append',default=[])
+ p=argparse.ArgumentParser();p.add_argument('--engine',choices=['mlx','cpu'],default='mlx');p.add_argument('--port',type=int,default=0);p.add_argument('--token-fd',type=int,required=True);p.add_argument('--root',required=True);p.add_argument('--origin',action='append',default=[])
  asyncio.run(run(p.parse_args()))

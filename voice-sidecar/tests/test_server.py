@@ -15,7 +15,9 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
   from voice_sidecar.server import run
   read,write=os.pipe();self.token='a'*64;os.write(write,self.token.encode());os.close(write)
   args=types.SimpleNamespace(token_fd=read,root='unused',port=0,origin=['app://deck'])
-  self.patch=patch('voice_sidecar.engines.Engines',FakeEngines);self.patch.start()
+  if getattr(self,'engine',None):args.engine=self.engine
+  module='engines_cpu' if getattr(self,'engine',None)=='cpu' else 'engines'
+  self.patch=patch('voice_sidecar.'+module+'.Engines',FakeEngines);self.patch.start()
   self.output=io.StringIO();self.redirect=contextlib.redirect_stdout(self.output);self.redirect.__enter__()
   self.task=asyncio.create_task(run(args))
   for i in range(100):
@@ -63,3 +65,22 @@ class LongReplyTests(SocketTests):
    with contextlib.suppress(Exception):
     while True:await asyncio.wait_for(ws.recv(),3)
    self.assertNotEqual(ws.close_code,1011)
+
+@unittest.skipUnless(importlib.util.find_spec('websockets'),'Socket tests require the managed runtime')
+class CpuEngineTests(SocketTests):
+ engine='cpu'
+ async def test_cpu_stream_emits_first_audio_timing(self):
+  from websockets.asyncio.client import connect
+  async with connect(self.url,origin='app://deck') as ws:
+   await ws.send(json.dumps({'type':'auth','token':self.token}))
+   await ws.send(json.dumps({'type':'start','callId':'cpu','generation':0,'voice':'am_michael'}))
+   self.assertEqual(json.loads(await asyncio.wait_for(ws.recv(),2))['type'],'ready')
+   await ws.send(json.dumps({'type':'speak','callId':'cpu','generation':0,'requestId':'r','segmentId':1,'text':'Ready.'}))
+   events=[];audio=[]
+   while not any(e.get('type')=='timing' for e in events):
+    raw=await asyncio.wait_for(ws.recv(),2)
+    if isinstance(raw,bytes):audio.append(raw)
+    else:events.append(json.loads(raw))
+   self.assertTrue(audio)
+   self.assertEqual([e['type'] for e in events],['audioStart','audioEnd','timing'])
+   self.assertIsInstance(events[-1]['ttsFirstMs'],int)
