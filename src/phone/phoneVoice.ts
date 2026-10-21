@@ -167,7 +167,6 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
         };
       },
       openAudio: deps.openAudio ?? openVoiceAudio,
-      keepWorkOnError: true,
       candidates: () => {
         const s = controller.getState().scope;
         return s ? candidates(s.hostId, s.roomId) : [];
@@ -246,7 +245,7 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
     },
     leftScreen: () => {
       if (controller.getState().status !== "off")
-        void controller.end("app left the screen", { keepWork: true });
+        void controller.end("app left the screen");
     },
   };
 }

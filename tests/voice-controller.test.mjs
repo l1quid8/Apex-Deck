@@ -340,8 +340,8 @@ test("unsupported machine explains its reason", async () => {
   assert.equal(f.c.getState().status, "error");
   assert.equal(f.c.getState().error, reason);
 });
-test("keepWork ends audio without canceling the agent and passes close reason", async () => {
-  for (const keepWork of [true, false]) {
+test("ending a call never cancels the agent's reply and passes close reason", async () => {
+  for (const reason of ["ended by user", "spoken stop phrase", "thread closed", "app left the screen"]) {
     const f = fixture();
     await f.c.start(f.scope);
     const start = f.sent.find((m) => m.type === "start");
@@ -359,9 +359,9 @@ test("keepWork ends audio without canceling the agent and passes close reason", 
       text: "check the build",
     });
     await new Promise((r) => setImmediate(r));
-    await f.c.end("app left the screen", { keepWork });
-    assert.equal(f.stopped.length, keepWork ? 0 : 1);
-    assert.deepEqual(f.closeReasons, ["app left the screen"]);
+    await f.c.end(reason);
+    assert.equal(f.stopped.length, 0, reason);
+    assert.deepEqual(f.closeReasons, [reason]);
   }
 });
 
@@ -384,7 +384,7 @@ test("ending during a delayed reconnect closes that runtime without closing a ne
   await f.c.start(f.scope);
   f.disconnect();
   await new Promise((r) => setImmediate(r));
-  await f.c.end("app left the screen", { keepWork: true });
+  await f.c.end("app left the screen");
   await f.c.start(f.scope);
   resolveReconnect(second);
   await new Promise((r) => setImmediate(r));

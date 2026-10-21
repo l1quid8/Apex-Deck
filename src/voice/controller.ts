@@ -40,8 +40,6 @@ export interface VoiceDependencies<R = VoiceRuntime> {
   voice(scope: CallScope): string;
   silence(): number;
   focus(scope: CallScope): void;
-  /** Phone audio failures release capture while leaving the accepted agent turn running. */
-  keepWorkOnError?: boolean;
 }
 const same = (a: CallScope, b: CallScope) =>
   a.hostId === b.hostId &&
@@ -116,7 +114,7 @@ export function createVoiceController<R = VoiceRuntime>(
       return;
     }
     const scope = state.scope;
-    void end("error: " + e.message, { keepWork: deps.keepWorkOnError })
+    void end("error: " + e.message)
       .catch(() => {})
       .finally(() => set({ status: "error", scope, error: e.message }));
   }
@@ -130,10 +128,7 @@ export function createVoiceController<R = VoiceRuntime>(
     if (a) cleanup = cleanup.then(() => a.bridge.cancel(a.id));
     return cleanup;
   }
-  async function end(
-    reason = "ended by user",
-    options?: { keepWork?: boolean },
-  ) {
+  async function end(reason = "ended by user") {
     // Every call end is logged with its reason so drops can be traced.
     if (callId || state.status !== "off")
       console.warn(
@@ -149,7 +144,10 @@ export function createVoiceController<R = VoiceRuntime>(
     client?.close(reason);
     client = undefined;
     generation++;
-    const stopping = options?.keepWork ? (detach(), cleanup) : cancel();
+    // Ending a call only stops the audio. The agent keeps working and its
+    // reply still lands in the thread.
+    detach();
+    const stopping = cleanup;
     set({
       status: "off",
       scope: undefined,
