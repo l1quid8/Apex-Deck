@@ -12,7 +12,7 @@ import { ruleFor, sameRule } from "./allowedRules";
 import { electronBackend } from "./electronShell.ts";
 import type { AgentInfo, AgentTool, AllowedRule, ApiModel, AppSession, FileChange, FilePreview, FileSearchResult, FolderListing, ModelChoice, ParticipantConfig, PersonaDraftResult, PhoneInput, PhoneStatus, PhoneView, PreviewProbe, ProposedAction, RoomEvent, RoomOptions, RevertPlan, RoomSnapshot, ThreadDiff, TokenTotals, WorktreeAdd, WorktreeList } from "./types";
 
-type Unlisten = () => void;
+export type Unlisten = () => void;
 
 export type PtySummary = { id: string; name: string; project: string | null; cwd: string | null; tail: string; matched?: string; state: "running" | "exited"; exitCode: number | null; lastActivity: number; cursor: number };
 export type PtySnapshot = { id: string; output: string; cursor: number; state: "running" | "exited"; exitCode: number | null };
@@ -125,13 +125,15 @@ export interface Backend {
   worktreePrune(path: string): Promise<void>;
   roomPost(id: string, text: string, interactiveAnswers?: boolean): Promise<void>;
   roomTargets(id: string, text: string): Promise<string[]>;
-  roomPostTo(id: string, text: string, targets: string[], routed?: boolean, interactiveAnswers?: boolean): Promise<void>;
+  roomPostTo(id: string, text: string, targets: string[], routed?: boolean, interactiveAnswers?: boolean, voice?: { client_turn_id: string; max_bot_hops: 0 }): Promise<void>;
   /** Run participants on the transcript as it is, one after another, without
    *  posting anything. `hops` caps the rounds of bots answering bots that may
    *  follow: null keeps the room's limit (which itself may be unlimited),
    *  0 buys exactly one reply each. */
   roomTurn(id: string, participants: string[], hops: number | null, interactiveAnswers?: boolean): Promise<void>;
   roomStop(id: string, participant?: string): Promise<void>;
+  voiceCapabilities?(): Promise<{voice_turn_correlation_v1:boolean}>;
+  roomStopRequest?(id:string,participant:string,requestId:string):Promise<string>;
   /** Answer an action a bot proposed, named by the `request` from its event.
    *  `always` saves a rule with the thread, so the same thing isn't asked again
    *  until it is removed in thread details. */

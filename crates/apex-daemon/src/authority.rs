@@ -51,6 +51,7 @@ pub fn command_needs(command: &Command) -> Need {
     use Scope::{Global, GlobalRead};
     match command {
         // Read-only.
+        VoiceCapabilities {} => read(GlobalRead),
         SessionLoad {} => read(GlobalRead),
         MonitorList {} | MonitorGet { .. } => read(Global),
         AssistantTasksList { .. } => read(Global),
@@ -80,6 +81,7 @@ pub fn command_needs(command: &Command) -> Need {
         RoomPostTo { id, .. } => chat(thread(id)),
         RoomTargets { id, .. } => chat(thread(id)),
         RoomTurn { id, .. } => chat(thread(id)),
+        RoomStopRequest { id, .. } => chat(thread(id)),
         RoomStop { id, .. } => chat(thread(id)),
         RoomDecide { id, .. } => chat(thread(id)),
         RoomAnswer { id, .. } => chat(thread(id)),
@@ -303,12 +305,14 @@ mod tests {
             ("room_bot_models", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
             ("room_bot_balance", Some((ReadOnly, "thread")), json!({ "room": "mine", "participant": "deep" })),
             ("answer_save", Some((Chat, "thread")), json!({ "room": "mine", "key": "1:hosting", "fingerprint": "0a1b2c3d", "inputs": {}, "revision": 0 })),
+            ("voice_capabilities", Some((ReadOnly, "global_read")), json!({})),
             ("agents_detect", Some((ReadOnly, "global_read")), json!({})),
             ("agent_models", Some((ReadOnly, "global_read")), json!({ "tool": "codex" })),
             ("room_post", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),
             ("room_post_to", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi", "targets": [] })),
             ("room_targets", Some((Chat, "thread")), json!({ "id": "mine", "text": "hi" })),
             ("room_turn", Some((Chat, "thread")), json!({ "id": "mine", "participants": [] })),
+            ("room_stop_request", Some((Chat, "thread")), json!({ "id": "mine", "participant":"a", "client_turn_id":"v1" })),
             ("room_stop", Some((Chat, "thread")), json!({ "id": "mine" })),
             ("room_decide", Some((Chat, "thread")), json!({ "id": "mine", "request": "r", "approve": true })),
             ("room_answer", Some((Chat, "thread")), json!({ "id": "mine", "request": "r" })),

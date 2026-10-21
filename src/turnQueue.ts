@@ -5,7 +5,7 @@ import type { Mentionable } from "./slug.ts";
 /** "turn" runs bots on the transcript as it is and posts no text (see ParticipantQueues.turn). */
 export type TurnKind = "message" | "compact" | "turn";
 /** `hops` is set on "turn" items only: the cap on bot-to-bot rounds, null for the room's own. */
-export interface QueuedMessage { id: number; text: string; kind: TurnKind; hops?: number | null; manual?: boolean }
+export interface QueuedMessage { id: number; text: string; kind: TurnKind; hops?: number | null; manual?: boolean; voice?: {requestId:string; canceled?:()=>boolean} }
 export class TurnQueue {
   items: QueuedMessage[] = [];
   active = false;
@@ -65,11 +65,11 @@ export class ParticipantQueues {
   private draining = false;
   private rerun = false;
   private targets: (text: string) => Promise<string[]>;
-  private post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>;
+  private post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>;
   private stop: (id?: string) => Promise<void>;
   private changed: (items: ParticipantMessage[]) => void;
   private failed: (error: unknown) => void;
-  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true, retainFailed = true) {
+  constructor(targets: (text: string) => Promise<string[]>, post: (text: string, to: string[], kind: TurnKind, hops?: number | null, manual?: boolean, voice?: {requestId:string; canceled?:()=>boolean}) => Promise<void>, stop: (id?: string) => Promise<void>, changed: (items: ParticipantMessage[]) => void, failed: (error: unknown) => void = () => {}, available: () => boolean = () => true, retainFailed = true) {
     this.targets = targets; this.post = post; this.stop = stop; this.changed = changed; this.failed = failed;
     this.available = available; this.retainFailed = retainFailed;
   }
@@ -94,11 +94,12 @@ export class ParticipantQueues {
     return accepted;
   }
   /** Queue `text` for exactly `to`, as a next step sent to the bot that suggested it. */
-  sendTo(text: string, to: string[]): Promise<number> {
+  sendTo(text: string, to: string[], voice?: {requestId:string; canceled?:()=>boolean}): Promise<number> {
     const accepted = this.accepting.then(async () => {
       this.requireAvailable();
+      if(voice?.canceled?.()) throw new Error("Voice turn canceled before dispatch");
       const id = ++this.serial;
-      this.items.push({ id, text, kind: "message", to, manual: true }); this.publish();
+      this.items.push({ id, text, kind: "message", to, manual: true, ...(voice ? {voice}: {}) }); this.publish();
       await this.drain(); return id;
     });
     this.accepting = accepted.catch(() => {});
@@ -173,6 +174,7 @@ export class ParticipantQueues {
     try {
       const blocked = new Set<string>();
       for (const item of [...this.items]) {
+        if(item.voice?.canceled?.()){this.items=this.items.filter(x=>x.id!==item.id);this.publish();continue;}
         if (!this.available() || this.connectionPaused) break;
         if (item.failed || item.to.some(id => blocked.has(id) || this.paused.has(id) || this.state[id] === "working") || (item.kind === "compact" && this.active)) {
           if (item.kind === "compact") break;
@@ -181,7 +183,7 @@ export class ParticipantQueues {
         item.to.forEach(id => { this.state[id] = "working"; });
         this.items = this.items.filter(x => x.id !== item.id); this.publish();
         try {
-          await this.post(item.text, item.to, item.kind, item.hops, item.manual);
+          await this.post(item.text, item.to, item.kind, item.hops, item.manual, item.voice);
           if (item.kind === "compact") { item.to.forEach(id => { this.state[id] = "idle"; }); this.publish(); }
         }
         catch (error) {
@@ -190,7 +192,7 @@ export class ParticipantQueues {
           // A rejected transport does not prove the host failed to commit it.
           // A one-off turn has no draft and is hidden from the queued-message
           // UI. Retaining it would leave an invisible, unretryable FIFO blocker.
-          if (this.retainFailed && item.kind !== "turn") this.items.unshift({ ...item, failed: true });
+          if (this.retainFailed && item.kind !== "turn" && !item.voice) this.items.unshift({ ...item, failed: true });
           this.failed(error); this.publish();
         }
       }

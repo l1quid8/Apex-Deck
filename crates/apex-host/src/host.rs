@@ -791,6 +791,24 @@ impl Host {
         Ok(())
     }
 
+    pub(crate) async fn room_voice_post(self: &Arc<Self>, id: String, text: String, participant: ParticipantId, request_id: String) -> Result<(), String> {
+        if self.assistant_tasks.execution(&id).ok().flatten().is_some() { return Err("Call the agent in a regular thread; task execution owns this conversation".into()); }
+        let handle = self.handle(&id)?;
+        let error = Mutex::new(None);
+        let batch = handle.runtime.begin_voice_post(&text, participant, request_id, &self.turn_sink(&id, &handle, &error)).await?;
+        if let Some(why) = error.into_inner().unwrap() { return Err(why); }
+        checkpoint_room(&handle, &self.store, &id).await?;
+        if let Some(batch) = batch {
+            handle.observation_revision.fetch_add(1, Ordering::SeqCst);
+            self.run_batch_in_background(id, handle, batch);
+        }
+        Ok(())
+    }
+    pub(crate) fn room_voice_stop(&self, id: String, participant: ParticipantId, request_id: String) -> Result<String, String> {
+        let handle = self.handle(&id)?;
+        Ok(handle.runtime.stop_request(&participant, &request_id).into())
+    }
+
     /// Run participants on the transcript as it is, one after another, without
     /// posting anything (Try again, Let them answer). `hops` caps the bot-to-bot
     /// rounds that may follow: `None` keeps the room's limit, `Some(0)` buys
@@ -2316,7 +2334,7 @@ mod host_tests {
             let verified = apex_core::GeneratedUiCapability::Verified;
             let post = crate::Command::RoomPost { id: "r".into(), text: "calculator".into(), interactive_answers: None };
             host.call_with_client_capability(post, verified).await.unwrap();
-            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], routed: false, interactive_answers: None };
+            let post_to = crate::Command::RoomPostTo { id: "r".into(), text: "chart".into(), targets: vec![ParticipantId::new("bot")], routed: false, interactive_answers: None, client_turn_id: None, max_bot_hops: None };
             host.call_with_client_capability(post_to, verified).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 while host.handle("r").unwrap().runtime.busy() { tokio::task::yield_now().await; }

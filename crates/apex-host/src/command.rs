@@ -124,7 +124,9 @@ pub enum Command {
     RoomState { id: String },
     RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
     RoomTargets { id: String, text: String },
-    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default)] routed: bool, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
+    RoomPostTo { id: String, text: String, targets: Vec<ParticipantId>, #[serde(default)] routed: bool, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool>, #[serde(default, alias = "client_turn_id")] client_turn_id: Option<String>, #[serde(default, alias = "max_bot_hops")] max_bot_hops: Option<usize> },
+    VoiceCapabilities {},
+    RoomStopRequest { id: String, participant: ParticipantId, #[serde(alias = "client_turn_id")] client_turn_id: String },
     RoomTurn { id: String, participants: Vec<ParticipantId>, hops: Option<usize>, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
     RoomStop { id: String, participant: Option<ParticipantId> },
     RoomDecide { id: String, request: String, approve: bool, always: Option<bool> },
@@ -354,7 +356,14 @@ impl Host {
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers } => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
             RoomTargets { id, text } => reply(self.room_targets(id, text).await?),
-            RoomPostTo { id, text, targets, routed, interactive_answers } => reply(self.room_post_to_with_answer_guidance(id, text, targets, routed, interactive_answers, capability).await?),
+            RoomPostTo { id, text, targets, routed, interactive_answers, client_turn_id, max_bot_hops } => {
+                if let Some(request_id) = client_turn_id {
+                    if max_bot_hops != Some(0) || targets.len() != 1 { return Err("voice requires one recipient and max_bot_hops=0".into()); }
+                    reply(self.room_voice_post(id, text, targets[0].clone(), request_id).await?)
+                } else { reply(self.room_post_to_with_answer_guidance(id, text, targets, routed, interactive_answers, capability).await?) }
+            },
+            VoiceCapabilities {} => reply(serde_json::json!({"voice_turn_correlation_v1": true})),
+            RoomStopRequest { id, participant, client_turn_id } => reply(self.room_voice_stop(id, participant, client_turn_id)?),
             RoomTurn { id, participants, hops, interactive_answers } => reply(self.room_turn_with_answer_guidance(id, participants, hops, interactive_answers, capability).await?),
             RoomStop { id, participant } => { self.room_stop(id, participant); reply(()) },
             RoomDecide { id, request, approve, always } => reply(self.room_decide(id, request, approve, always)?),
@@ -497,7 +506,9 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 149);
+        assert_eq!(names.len(), 151);
+        assert!(names.contains(&"voice_capabilities".to_string()));
+        assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));
         assert!(names.contains(&"file_write".to_string()));
         assert!(names.contains(&"answers_load".to_string()));

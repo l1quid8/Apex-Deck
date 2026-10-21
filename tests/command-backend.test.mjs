@@ -30,6 +30,9 @@ const rule = { kind: 'command', command: 'ls' };
 // Every command-backed method: how it's called, and the exact command and
 // arguments the host expects for it.
 const COMMANDS = [
+  ['voiceCapabilities', [], 'voice_capabilities', {}],
+  ['roomStopRequest', ['r','p','v1'], 'room_stop_request', {id:'r',participant:'p',client_turn_id:'v1'}],
+  ['roomPostTo', ['r','hello',['p'],false,false,{client_turn_id:'v1',max_bot_hops:0}], 'room_post_to', {id:'r',text:'hello',targets:['p'],routed:false,interactive_answers:false,client_turn_id:'v1',max_bot_hops:0}],
   ['roomState', ['r'], 'room_state', { id: 'r' }],
   ['listToolServers', ['r', 'a'], 'list_tool_servers', { room: 'r', agent: 'a' }],
   ['detectAgents', [], 'agents_detect', undefined],

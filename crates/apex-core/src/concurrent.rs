@@ -40,6 +40,7 @@ struct Ticket {
     generation: u64,
     previous: Ready,
     release: Option<oneshot::Sender<()>>,
+    origin: Option<(String, Arc<AtomicBool>)>,
 }
 impl Drop for Ticket {
     fn drop(&mut self) {
@@ -96,6 +97,7 @@ pub struct ConcurrentRoom {
     write_owner: Option<String>,
     cleanup_holds: Arc<Mutex<HashMap<ParticipantId, (String, bool)>>>,
     turn_start: Option<Arc<dyn TurnStartHook>>,
+    voice_requests: Arc<Mutex<HashMap<String, (ParticipantId, String, Arc<AtomicBool>, Arc<AtomicBool>)>>>,
 }
 impl ConcurrentRoom {
     pub fn new(room: Room) -> Self {
@@ -108,6 +110,7 @@ impl ConcurrentRoom {
             write_owner: None,
             cleanup_holds: Arc::default(),
             turn_start: None,
+            voice_requests: Arc::default(),
         }
     }
     /// Await `hook` before each participant starts a turn.
@@ -181,6 +184,7 @@ impl ConcurrentRoom {
             generation,
             previous,
             release: Some(release),
+            origin: None,
         }
     }
     pub async fn begin_post(
@@ -207,6 +211,37 @@ impl ConcurrentRoom {
             room.configs().into_iter().map(|c| c.id).collect(),
             room.answers_handle().load(Ordering::SeqCst),
         ))
+    }
+    /// Reservation, transcript append, correlation and deduplication are atomic
+    /// under the room lock. IDs are retained for this process lifetime (bounded).
+    pub async fn begin_voice_post(&self, text: &str, id: ParticipantId, request_id: String, sink: Sink<'_>) -> Result<Option<TurnBatch>, String> {
+        let mut room = self.room.lock().await;
+        if !room.has(&id) { return Err("voice recipient no longer exists".into()); }
+        if request_id.is_empty() || request_id.len() > 128 || text.trim().is_empty() || text.len() > 32_000 { return Err("invalid voice request".into()); }
+        let mut requests = self.voice_requests.lock().unwrap();
+        if let Some((prior_id, prior_text, _, _)) = requests.get(&request_id) {
+            return if prior_id == &id && prior_text == text { Ok(None) } else { Err("voice request ID reused with different content".into()) };
+        }
+        // Do not evict an old ID and accidentally allow a replay to execute.
+        if requests.len() >= 4096 { return Err("voice request limit reached; restart host before another call".into()); }
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        requests.insert(request_id.clone(), (id.clone(), text.to_string(), stop.clone(), done));
+        room.remember_targets(vec![id.clone()]);
+        room.push(Speaker::Human, text.to_string(), sink);
+        let mut batch = self.batch(vec![id], false, Some(0), room.configs().into_iter().map(|c| c.id).collect(), false);
+        batch.tickets[0].origin = Some((request_id, stop));
+        Ok(Some(batch))
+    }
+    /// Only this request's flag changes; a subsequent same-agent turn is safe.
+    pub fn stop_request(&self, id: &ParticipantId, request_id: &str) -> &'static str {
+        let requests = self.voice_requests.lock().unwrap();
+        match requests.get(request_id) {
+            Some((by, _, _, _)) if by != id => "mismatch",
+            Some((_, _, _, done)) if done.load(Ordering::SeqCst) => "already-ended",
+            Some((_, _, stop, _)) => { stop.store(true, Ordering::SeqCst); "stopped" },
+            None => "mismatch",
+        }
     }
     /// Turns on the transcript as it is; nothing is posted. Several
     /// participants answer one after another, each seeing the replies before
@@ -278,6 +313,9 @@ impl ConcurrentRoom {
         }
     }
     pub fn stop(&self, id: Option<&ParticipantId>) {
+        for (by, _, stop, done) in self.voice_requests.lock().unwrap().values() {
+            if (id.is_none() || id == Some(by)) && !done.load(Ordering::SeqCst) { stop.store(true, Ordering::SeqCst); }
+        }
         let slots = self.slots.lock().unwrap();
         for (by, slot) in slots.iter() {
             if id.is_none() || id == Some(by) {
@@ -395,7 +433,7 @@ impl ConcurrentRoom {
         ticket.previous.clone().await;
         {
             let _slots = self.slots.lock().unwrap();
-            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) { return; }
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) || ticket.origin.as_ref().is_some_and(|(_, stop)| stop.load(Ordering::SeqCst)) { return; }
             ticket.slot.stop.store(false, Ordering::SeqCst);
         }
         let should_admit = {
@@ -406,7 +444,7 @@ impl ConcurrentRoom {
             })
         };
         if !should_admit { return; }
-        let stop = ticket.slot.stop.clone();
+        let stop = ticket.origin.as_ref().map(|(_,stop)| stop.clone()).unwrap_or_else(|| ticket.slot.stop.clone());
         // Cancellation while queued removes the waiter; never reduce access to Read.
         let acquired = if batch.retained_owner {
             gate.acquire_retained(batch.write_owner.clone(), stop).await
@@ -431,6 +469,17 @@ impl ConcurrentRoom {
         answers: bool,
         generated_ui: GeneratedUiCapability,
     ) -> Vec<ParticipantId> {
+        let request_stop = ticket.origin.as_ref().map(|(_, stop)| stop.clone()).unwrap_or_else(|| ticket.slot.stop.clone());
+        let tagged = |event: RoomEvent| {
+            sink(event.clone());
+            if let Some((request_id, _)) = &ticket.origin {
+                sink(RoomEvent::VoiceEvent { client_turn_id: request_id.clone(), id: ticket.id.clone(), event: Box::new(event) });
+            }
+        };
+        let sink: Sink<'_> = &tagged;
+        struct Completed(Option<Arc<AtomicBool>>);
+        impl Drop for Completed { fn drop(&mut self) { if let Some(done) = &self.0 { done.store(true, Ordering::SeqCst); } } }
+        let _completed = Completed(ticket.origin.as_ref().and_then(|(key, _)| self.voice_requests.lock().unwrap().get(key).map(|(_,_,_,done)| done.clone())));
         let ready = ticket.previous.clone().now_or_never().is_some();
         let prepared = if ready {
             prepared
@@ -442,7 +491,7 @@ impl ConcurrentRoom {
             // Start and stop share this short critical section; a start cannot
             // accidentally clear cancellation arriving between its checks.
             let _slots = self.slots.lock().unwrap();
-            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) {
+            if ticket.generation != ticket.slot.generation.load(Ordering::SeqCst) || (ticket.origin.is_some() && request_stop.load(Ordering::SeqCst)) {
                 true
             } else {
                 ticket.slot.stop.store(false, Ordering::SeqCst);
@@ -509,6 +558,7 @@ impl ConcurrentRoom {
                 return Vec::new();
             }
         }
+        if ticket.origin.is_some() { request.system.push_str("\nThis is a voice call. Begin with a concise speakable sentence. End with a short plain-language result. Keep code in the thread.\n"); }
         sink(RoomEvent::TurnStarted {
             id: ticket.id.clone(),
         });
@@ -533,7 +583,7 @@ impl ConcurrentRoom {
         let outcome = Room::interruptible(
             participant.as_ref(),
             request,
-            ticket.slot.stop.clone(),
+            request_stop.clone(),
             &progress,
             &approver,
         )
@@ -549,7 +599,7 @@ impl ConcurrentRoom {
             if let Some(editor) = editor.as_mut() { editor.retain(); }
         }
         let mut room = self.room.lock().await;
-        let cancelled = ticket.slot.stop.load(Ordering::SeqCst);
+        let cancelled = request_stop.load(Ordering::SeqCst);
         desk.reject_for(&ticket.id);
         room.record_changes(changes.into_inner().unwrap());
         let next = if cancelled {

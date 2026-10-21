@@ -254,6 +254,7 @@ export interface NextStep { label: string; prompt: string }
 export type QuestionEnd = "answered" | "skipped" | "dropped";
 
 export type RoomEvent = { recovery_seq?: number } & (
+  | { type: "voice_event"; client_turn_id: string; id:string; event:RoomEvent }
   | { type: "participant_changed"; participant: ParticipantConfig }
   | { type: "participants_changed"; participants: ParticipantConfig[] }
   | { type: "message_added"; message: Message }

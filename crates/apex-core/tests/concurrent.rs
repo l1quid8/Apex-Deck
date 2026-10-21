@@ -921,3 +921,34 @@ fn a_removed_recipient_releases_its_reservation_before_room_idle() {
         ]);
     });
 }
+
+#[test]
+fn voice_request_is_correlated_idempotent_and_does_not_hop() {
+ block_on(async {
+  let first=Arc::new(ScriptedParticipant::new("first", &["@second continue"]));
+  let second=Arc::new(ScriptedParticipant::new("second", &["unexpected"]));
+  let runtime=ConcurrentRoom::new(Room::new(vec![first.clone(),second.clone()],RoomOptions::default()));
+  let events=Mutex::new(Vec::new());let sink=|e|events.lock().unwrap().push(e);
+  let batch=runtime.begin_voice_post("hello",ParticipantId::new("first"),"v1".into(),&sink).await.unwrap().unwrap();
+  assert!(runtime.begin_voice_post("hello",ParticipantId::new("first"),"v1".into(),&sink).await.unwrap().is_none());
+  assert!(runtime.begin_voice_post("different",ParticipantId::new("first"),"v1".into(),&sink).await.is_err());
+  runtime.run(batch,&sink).await;
+  assert_eq!(first.requests().len(),1);assert_eq!(second.requests().len(),0);
+  assert!(events.lock().unwrap().iter().any(|e|matches!(e,RoomEvent::VoiceEvent{client_turn_id,event,..} if client_turn_id=="v1"&&matches!(**event,RoomEvent::Delta{..}))));
+  assert_eq!(runtime.stop_request(&ParticipantId::new("first"),"v1"),"already-ended");
+  let typed=runtime.begin_post("@first new unrelated",None,&sink).await.unwrap();
+  assert_eq!(runtime.stop_request(&ParticipantId::new("first"),"v1"),"already-ended");
+  runtime.run(typed,&sink).await;
+ });
+}
+#[test]
+fn voice_cancel_only_its_ticket_and_keeps_terminal_canceled() {
+ block_on(async {
+  let (runtime,_release)=setup();let sink=|_|{};
+  let batch=runtime.begin_voice_post("go",ParticipantId::new("null"),"v2".into(),&sink).await.unwrap().unwrap();
+  assert_eq!(runtime.stop_request(&ParticipantId::new("jigga"),"v2"),"mismatch");
+  assert_eq!(runtime.stop_request(&ParticipantId::new("null"),"v2"),"stopped");
+  runtime.run(batch,&sink).await;
+  assert!(runtime.begin_voice_post("go",ParticipantId::new("null"),"v2".into(),&sink).await.unwrap().is_none());
+ });
+}

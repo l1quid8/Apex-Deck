@@ -60,6 +60,8 @@ clear, step-by-step plan.";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RoomEvent {
+    /// Request-scoped companion event. Ordinary room events remain unchanged.
+    VoiceEvent { client_turn_id: String, id: ParticipantId, event: Box<RoomEvent> },
     /// Settings saved by any connected client. Applies to the next turn.
     ParticipantChanged { participant: ParticipantConfig },
     ParticipantsChanged { participants: Vec<ParticipantConfig> },
