@@ -2187,16 +2187,23 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const chipText = useRef<string | null>(null);
   useLayoutEffect(() => {
     const row = chipRow.current;
-    if (!row || row.textContent === chipText.current) return;
-    chipText.current = row.textContent;
+    if (!row || `${chipParts.style}:${folded}:${row.textContent}` === chipText.current) return;
+    chipText.current = `${chipParts.style}:${folded}:${row.textContent}`;
     fitChips(row);
   });
   useEffect(() => {
     const row = chipRow.current;
     if (!row) return;
-    const observer = new ResizeObserver(() => fitChips(row));
+    let width = row.clientWidth;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (row.clientWidth === width) return;
+      width = row.clientWidth;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => fitChips(row));
+    });
     observer.observe(row);
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, []);
 
   // The newest local server address a bot mentioned, for the chip in the pane
@@ -3311,10 +3318,13 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** The bots the message goes to, as the room last answered. */
   const lit = new Set(serverTargets);
   const botChips = (
-    <div ref={chipRow} className={`chips composer-bots${folded ? " folded" : ""}`}>
+    <div ref={chipRow} data-chip-style={chipParts.style ?? "classic"} className={`chips composer-bots${folded ? " folded" : ""}`}>
       {participants.map((p) => {
         const levels = levelsFor(p.id);
         const shown = levelsShown(levels, chipParts, isLow);
+        const queueCount = queued.filter(item => item.to.includes(p.id)).length;
+        const phase: string = working[p.id] ? working[p.id].phase : "idle";
+        const stateLabel = `${p.display_name}: ${phase}${isLow(levels.context) ? ", context low" : ""}${isLow(levels.plan) ? ", plan low" : ""}${queueCount ? `, ${queueCount} queued` : ""}${editor === p.id ? ", editing" : ""}${lit.has(p.id) ? ", gets your message" : ""}`;
         return (
         <span
           className="chip-wrap"
@@ -3325,18 +3335,22 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           onBlur={(e) => { const to = e.relatedTarget as Node | null; if (!e.currentTarget.contains(to) && !cardBox.current?.contains(to)) setCard((open) => (open === p.id ? null : open)); }}
           onKeyDown={(e) => { if (e.key === "Escape") setCard(null); }}
         >
-            <span className={lit.has(p.id) ? "chip to" : "chip"} style={{ "--who": color(p.id) } as CSSProperties}>
-              <button className="chip-name" onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
+            <span data-editing={editor === p.id} className={lit.has(p.id) ? "chip to" : "chip"} style={{ "--who": color(p.id) } as CSSProperties}>
+              <button className="chip-name" aria-label={`${stateLabel} · ${chipDescription(p, chipParts)} · ${p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "open bot settings" : "mention bot"}`} onPointerDown={(event) => event.preventDefault()} aria-haspopup={p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible" ? "dialog" : undefined} aria-expanded={quickSettings?.id === p.id} onClick={(event) => {
                 if (p.backend.kind === "agent" || p.backend.kind === "open_ai_compatible") {
                   setCard(null);
                   setQuickSettings(quickSettings?.id === p.id ? null : { id: p.id, anchor: event.currentTarget });
                 } else mention(p);
-              }} title={lit.has(p.id) ? `${p.display_name} gets your message · model and reasoning` : `Model and reasoning for ${p.display_name}`}>
+              }} title={`${stateLabel} · ${chipDescription(p, chipParts)}`}>
                 <Avatar seed={appearance(p.id).seed} color={color(p.id)} size="sm" working={Boolean(working[p.id]) && !asks[p.id]?.length} levels={levels} refills={refillsFor(p.id)} />
                 <span className={`participant-status ${working[p.id]?.phase ?? "idle"}`} aria-label={`${p.display_name}: ${working[p.id]?.phase ?? "idle"}`} />
+                {(chipParts.style === "stack" || chipParts.style === "tiles") && (isLow(levels.context) || isLow(levels.plan)) && <span className="chip-low" title="Usage running low">low</span>}
+                <span className="chip-copy">
                 <span className="chip-label">{p.display_name}</span>
+                <span className="chip-details">
+                {(chipParts.style === "ledger" || chipParts.style === "two-line") && <span className="chip-phase">{phase === "idle" ? "Idle" : "Working"}</span>}
                 {pendingSettings[p.id] && <span className="settings-pending" role="status" aria-label="Settings pending for next reply" title="Settings apply to the next reply" />}
-                {queued.some(item => item.to.includes(p.id)) && <span className="chip-meta chip-queued" title="Messages waiting for this bot">{queued.filter(item => item.to.includes(p.id)).length}<span className="chip-queued-word"> queued</span></span>}
+                {queueCount > 0 && <span className="chip-meta chip-queued" title="Messages waiting for this bot">{queueCount}<span className="chip-queued-word"> queued</span></span>}
                 {editor === p.id && <span className="editor-badge">editing</span>}
                 <span className="chip-meta chip-description">{chipDescription(p, chipParts)}</span>
                 {(shown.context !== null || shown.plan !== null) && (
@@ -3346,6 +3360,8 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                     {shown.plan !== null && <span title="Plan left">plan {percent(shown.plan)}%{isLow(shown.plan) && <span className="usage-low"> low</span>}</span>}
                   </span>
                 )}
+                </span>
+                </span>
               </button>
               {!profileMode && <button type="button" className="chip-kick" disabled={!ready} aria-label={`Kick ${p.display_name}`} title={`Kick ${p.display_name}`} onPointerDown={(event) => event.preventDefault()} onClick={() => kick(p)}>×</button>}
             </span>
@@ -3373,7 +3389,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const landing = entries.length === 0 && Object.keys(drafts).length === 0;
 
   return (
-    <div ref={root} className={`chat ${profileMode ? "" : `thread-chat${landing ? " thread-landing" : ""}`}`}>
+    <div ref={root} data-bot-chip-style={chipParts.style ?? "classic"} className={`chat ${profileMode ? "" : `thread-chat${landing ? " thread-landing" : ""}`}`}>
       {!profileMode && <ConnectionBanner backend={backend} />}
       {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
 

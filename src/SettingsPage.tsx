@@ -2,6 +2,7 @@
 // It takes the place of the deck until closed. Per-thread and per-bot
 // controls stay in thread details and the Agents tab.
 
+import { CHIP_STYLES, isChipStyle } from "./botChip";
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { defaultAppearanceSettings } from "./themes";
@@ -269,7 +270,15 @@ function Threads({ settings, onChange }: { settings: AppSettings; onChange: (s: 
     <Row label="Confirm before steering" note="Steering stops a bot mid-turn. Threads can override this in Thread details.">
       <input type="checkbox" aria-label="Confirm before steering" checked={settings.confirmSteer} onChange={(e) => onChange({ ...settings, confirmSteer: e.target.checked })} />
     </Row>
-    <div className="settings-subhead"><h3>Bot chips</h3><p>What each bot's chip under the message box shows. Its name, model and "asks first" always show.</p></div>
+    <div className="settings-subhead"><h3>Bot chips</h3><p>What each bot's chip under the message box shows. Compact styles keep details in the hover card and bot settings.</p></div>
+    <Row label="Chip style" note="Applies to all chats, including popped-out windows. Classic keeps the original look.">
+      <select aria-label="Chip style" value={settings.botChips.style ?? "classic"} onChange={(e) => {
+        const style = e.target.value;
+        if (isChipStyle(style)) onChange({ ...settings, botChips: { ...settings.botChips, style } });
+      }}>
+        {CHIP_STYLES.map(style => <option key={style.id} value={style.id}>{style.label}</option>)}
+      </select>
+    </Row>
     <Row label="Show effort" note="How hard the bot thinks, such as high.">
       <input type="checkbox" aria-label="Show effort" checked={settings.botChips.effort} onChange={(e) => onChange({ ...settings, botChips: { ...settings.botChips, effort: e.target.checked } })} />
     </Row>

@@ -6,7 +6,7 @@ import type { VoiceSettings } from './voice/types.ts';
 // file loses only the values that make no sense, never the rest.
 
 import type { Access, ParticipantConfig, RoomOptions, TurnPolicy } from "./types";
-import type { ChipParts } from "./botChip";
+import { isChipStyle, type ChipParts } from "./botChip.ts";
 import { accentHex, readAppearance, themeMode, type AppearanceSettings, type AppearanceValues } from "./themes.ts";
 
 export interface DecisionSettings { enabled: boolean; provider: "jev" | "openrouter" | "cloudflare"; accountId: string; }
@@ -137,6 +137,7 @@ export function readSettings(raw: unknown, legacyDisabled?: unknown): AppSetting
     confirmSteer: typeof saved.confirmSteer === "boolean" ? saved.confirmSteer : d.confirmSteer,
     codeRunButtons: typeof saved.codeRunButtons === "boolean" ? saved.codeRunButtons : d.codeRunButtons,
     botChips: {
+      ...(isChipStyle(chips.style) ? { style: chips.style } : {}),
       tool: typeof chips.tool === "boolean" ? chips.tool : d.botChips.tool,
       effort: typeof chips.effort === "boolean" ? chips.effort : d.botChips.effort,
       usage: typeof chips.usage === "boolean" ? chips.usage : d.botChips.usage,

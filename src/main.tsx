@@ -9,6 +9,7 @@ import "./appearance-settings.css";
 import "./apex-agent-panel.css";
 import "./apex-agent-widget.css";
 import "./popout.css";
+import "./bot-chip-styles.css";
 
 // A pop-out window shows one pane and never the deck: it mounts no layout,
 // loads no startup state and saves nothing.

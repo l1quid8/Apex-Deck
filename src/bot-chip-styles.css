@@ -1,0 +1,109 @@
+/* Appearance only: ChatPane owns the shared chip actions and state.
+   Loaded after themes so the chosen geometry survives every skin. */
+.composer-bots .chip-copy, .composer-bots .chip-details { display: contents; }
+.composer-bots .chip-phase { font-size: 10px; font-weight: 400; color: var(--muted); }
+.composer-bots[data-chip-style]:where(:not([data-chip-style="classic"])) { padding: 5px 4px 7px; }
+.composer-bots[data-chip-style]:not([data-chip-style="classic"]) .chip { position: relative; flex: none; }
+.composer-bots .chip-name:focus-visible, .composer-bots .chip-kick:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+
+.composer-bots[data-chip-style="dashed"] .chip { border: 1px dashed var(--muted); background: transparent; }
+.composer-bots[data-chip-style="dashed"] .chip.to { border: 1px solid var(--who); background: var(--who); color: #111622; }
+.composer-bots[data-chip-style="dashed"] .chip.to :is(button,.chip-meta,.editor-badge) { color: #111622; }
+.composer-bots[data-chip-style="dashed"] .chip.to .editor-badge { border-color: #11162266; }
+
+.composer-bots[data-chip-style="tinted"] .chip { border-color: color-mix(in srgb,var(--who) 20%,transparent); background: color-mix(in srgb,var(--who) 8%,var(--panel)); color: var(--muted); }
+.composer-bots[data-chip-style="tinted"] .chip.to { border-color: var(--who); background: color-mix(in srgb,var(--who) 24%,var(--panel)); color: var(--text); }
+
+.composer-bots[data-chip-style="stamp"] { gap: 10px; }
+.composer-bots[data-chip-style="stamp"] .chip { border: 1px solid var(--who); border-radius: 2px; box-shadow: 2px 2px 0 var(--who); background: transparent; overflow: visible; }
+.composer-bots[data-chip-style="stamp"] .chip-name { padding: 4px 8px 4px 4px; }
+.composer-bots[data-chip-style="stamp"] .chip-label { text-transform: uppercase; letter-spacing: .04em; font-size: 10px; }
+.composer-bots[data-chip-style="stamp"] .chip.to { outline: 2px solid var(--text); outline-offset: 3px; }
+.composer-bots[data-chip-style="stamp"] .chip[data-editing="true"] { background: var(--who); color: #111622; box-shadow: none; }
+.composer-bots[data-chip-style="stamp"] .chip[data-editing="true"] :is(button,.chip-meta,.editor-badge) { color: #111622; }
+.composer-bots[data-chip-style="stamp"] .chip[data-editing="true"] .editor-badge { border-color: #11162266; }
+
+.composer-bots[data-chip-style="mono"] .chip { border-radius: 4px; border-color: var(--line); background: transparent; color: var(--muted); }
+.composer-bots[data-chip-style="mono"] .chip-name { font: 500 11px ui-monospace,"SF Mono",Menlo,monospace; text-transform: uppercase; letter-spacing: .06em; }
+.composer-bots[data-chip-style="mono"] .chip.to { border-color: var(--who); color: var(--who); }
+.composer-bots[data-chip-style="mono"] :is(.chip-meta,.editor-badge) { text-transform: none; letter-spacing: 0; font-family: inherit; }
+.composer-bots[data-chip-style="mono"] .chip-add { border-radius: 4px; }
+
+.composer-bots[data-chip-style="ticket"] .chip { border: 1px dashed color-mix(in srgb,var(--who) 65%,var(--line)); border-radius: 8px; background: transparent; }
+.composer-bots[data-chip-style="ticket"] .chip-name { padding: 0 8px 0 0; gap: 6px; }
+.composer-bots[data-chip-style="ticket"] .identicon { width: 32px; height: 32px; border-radius: 0; padding: 6px; background: color-mix(in srgb,var(--who) 18%,var(--panel)); border-right: 1px dashed var(--line); }
+.composer-bots[data-chip-style="ticket"] .chip.to { border-style: solid; border-color: var(--who); background: color-mix(in srgb,var(--who) 10%,transparent); }
+
+.composer-bots[data-chip-style="keycap"] .chip { border: 1px solid var(--line); border-bottom-width: 4px; border-radius: 7px; background: var(--well,var(--panel)); }
+.composer-bots[data-chip-style="keycap"] .chip-name { padding: 4px 8px 4px 4px; }
+.composer-bots[data-chip-style="keycap"] .chip[data-editing="true"] { transform: translateY(2px); border-bottom-width: 2px; }
+.composer-bots[data-chip-style="keycap"] .chip.to { border-color: var(--who); box-shadow: inset 3px 0 0 var(--who); }
+
+/* The composer is above the row: tabs attach at their top edge. */
+.chat[data-bot-chip-style="tab"] .composer-box { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.composer-bots[data-chip-style="tab"] { margin-top: 0; padding-top: 0; align-items: flex-start; }
+.composer-bots[data-chip-style="tab"] .chip { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 8px 8px; background: var(--panel); }
+.composer-bots[data-chip-style="tab"] .chip-name { padding: 7px 8px 6px 4px; }
+.composer-bots[data-chip-style="tab"] .chip[data-editing="true"] .chip-name { padding-bottom: 10px; }
+.composer-bots[data-chip-style="tab"] .chip.to { border-color: var(--who); border-bottom-width: 3px; }
+.composer-bots[data-chip-style="tab"] :is(.quick-add-wrap,.chips-fold) { margin-top: 5px; }
+
+.composer-bots:is([data-chip-style="ledger"],[data-chip-style="two-line"]) .chip { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.composer-bots:is([data-chip-style="ledger"],[data-chip-style="two-line"]) .chip-name { padding: 5px 8px 5px 4px; gap: 7px; }
+.composer-bots:is([data-chip-style="ledger"],[data-chip-style="two-line"]) .chip-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.composer-bots:is([data-chip-style="ledger"],[data-chip-style="two-line"]) .chip-details { display: flex; align-items: center; gap: 5px; }
+.composer-bots:is([data-chip-style="ledger"],[data-chip-style="two-line"]) .chip.to { border-color: var(--who); }
+.composer-bots[data-chip-style="ledger"] .chip-description { display: none; }
+.composer-bots[data-chip-style="ledger"] .editor-badge { border: 0; padding: 0; color: var(--who); }
+.composer-bots[data-chip-style="two-line"] .chip-name { padding: 5px 12px 5px 5px; }
+.composer-bots[data-chip-style="two-line"] .identicon { --cell: 4px; width: 32px; height: 32px; }
+.composer-bots[data-chip-style="two-line"] .chip.to { background: color-mix(in srgb,var(--who) 10%,var(--panel)); }
+
+.composer-bots[data-chip-style="terminal"] .chip { border: 0; border-radius: 0; background: transparent; }
+.composer-bots[data-chip-style="terminal"] .chip-name { font: 500 11px ui-monospace,"SF Mono",Menlo,monospace; padding: 4px 0; gap: 4px; }
+.composer-bots[data-chip-style="terminal"] .chip-name::before { content: '['; }
+.composer-bots[data-chip-style="terminal"] .chip-name::after { content: ']'; }
+.composer-bots[data-chip-style="terminal"] .chip-label::before { content: '@'; }
+.composer-bots[data-chip-style="terminal"] .chip.to { color: var(--who); }
+.composer-bots[data-chip-style="terminal"] .chip.to .chip-label { text-decoration: underline; text-underline-offset: 3px; }
+.composer-bots[data-chip-style="terminal"] .editor-badge { border: 0; padding: 0; }
+/* Keep a face when folded or automatically compacted, so a name-free token is still identifiable. */
+.composer-bots[data-chip-style="terminal"]:not(.folded):not([data-fit="faces"]) .identicon { display: none; }
+
+/* Compact layouts retain queue and editing as separate badges. The complete
+   state and name are also on the button's accessible label and tooltip. */
+.composer-bots[data-chip-style="stack"] { gap: 0; padding-left: 12px; }
+.composer-bots[data-chip-style="stack"] .chip-wrap { margin-left: -8px; }
+.composer-bots[data-chip-style="stack"] .chip-wrap:is(:hover,:focus-within) { position: relative; z-index: 3; }
+.composer-bots[data-chip-style="stack"] .chip { overflow: visible; border: 0; background: var(--panel); border-radius: 50%; box-shadow: 0 0 0 2px var(--panel); }
+.composer-bots[data-chip-style="stack"] .chip.to { box-shadow: 0 0 0 2px var(--panel),0 0 0 4px var(--who); z-index: 1; }
+.composer-bots[data-chip-style="stack"] .chip-name { position: relative; min-width: 36px; min-height: 36px; padding: 4px; }
+.composer-bots[data-chip-style="stack"] .identicon { border-radius: 50%; }
+.composer-bots[data-chip-style="stack"] :is(.chip-label,.chip-description,.chip-levels,.chip-queued-word) { display: none; }
+.composer-bots[data-chip-style="stack"] .participant-status { position: absolute; bottom: 1px; right: 1px; border: 2px solid var(--panel); box-sizing: content-box; }
+.composer-bots[data-chip-style="stack"] .chip-queued { position: absolute; top: -4px; right: -3px; background: var(--who); color: #111622; padding: 1px 4px; border-radius: 9px; z-index: 2; }
+.composer-bots[data-chip-style="stack"] .editor-badge { position: absolute; bottom: -5px; left: -3px; font-size: 0; background: var(--panel); padding: 2px 3px; }
+.composer-bots[data-chip-style="stack"] .editor-badge::after { content: '✎'; font-size: 11px; }
+.composer-bots[data-chip-style="stack"] .quick-add-wrap { margin-left: 12px; }
+
+.composer-bots[data-chip-style="tiles"] { align-items: flex-start; }
+.composer-bots[data-chip-style="tiles"] .chip { overflow: visible; border: 1px solid transparent; border-radius: 10px; background: transparent; }
+.composer-bots[data-chip-style="tiles"] .chip-name { position: relative; flex-direction: column; min-width: 54px; padding: 5px 6px 4px; gap: 3px; font-size: 10.5px; }
+.composer-bots[data-chip-style="tiles"] .chip.to { border-color: var(--who); background: color-mix(in srgb,var(--who) 10%,transparent); }
+.composer-bots[data-chip-style="tiles"] .identicon { --cell: 4px; width: 32px; height: 32px; border-radius: 8px; }
+.composer-bots[data-chip-style="tiles"] :is(.chip-description,.chip-levels,.chip-queued-word) { display: none; }
+.composer-bots[data-chip-style="tiles"] .participant-status { position: absolute; top: 28px; right: 8px; box-shadow: 0 0 0 2px var(--panel); }
+.composer-bots[data-chip-style="tiles"] .chip-queued { position: absolute; top: 0; right: 0; background: var(--who); color: #111622; border-radius: 8px; padding: 1px 4px; }
+.composer-bots[data-chip-style="tiles"] .editor-badge { font-size: 0; border: 0; padding: 0; }
+.composer-bots[data-chip-style="tiles"] .editor-badge::after { content: '✎'; font-size: 11px; }
+.composer-bots[data-chip-style="tiles"] .chip-add { min-height: 48px; border-radius: 10px; }
+
+/* Dense fitting must not erase the layout choice or hide an active editor. */
+.composer-bots.folded :is(.chip-copy,.chip-details), .composer-bots[data-fit="faces"] :is(.chip-copy,.chip-details) { display: contents; }
+.composer-bots.folded .chip-phase, .composer-bots[data-fit="faces"] .chip-phase { display: none; }
+.composer-bots[data-chip-style]:not([data-chip-style="classic"]) .editor-badge { display: inline; }
+.composer-bots.folded .editor-badge { font-size: 0; padding: 0 2px; }
+.composer-bots.folded .editor-badge::after { content: '✎'; font-size: 11px; }
+@media (prefers-reduced-motion: reduce) { .composer-bots .chip { transition: none; } }
+.composer-bots .chip-low { position: absolute; top: -6px; left: 0; padding: 1px 3px; border-radius: 3px; background: var(--panel); color: var(--danger); font-size: 9px; z-index: 3; }
+.composer-bots[data-chip-style="stack"] .chip-wrap:first-child { margin-left: 0; }
