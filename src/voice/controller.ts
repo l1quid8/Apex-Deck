@@ -12,11 +12,15 @@ import type { VoiceAudio } from "./audio.ts";
 import type { LocalVoiceClient } from "./localClient.ts";
 import { resolveCallCommand } from "./routing.ts";
 import { SpeechText } from "./speechText.ts";
-export interface VoiceDependencies {
+export interface VoiceDependencies<R = VoiceRuntime> {
   runtime: {
-    status(): Promise<{ installed: boolean; supported: boolean }>;
-    start(): Promise<VoiceRuntime>;
-    stop(): Promise<unknown>;
+    status(): Promise<{
+      installed: boolean;
+      supported: boolean;
+      reason?: string;
+    }>;
+    start(): Promise<R>;
+    stop(runtime?: R): Promise<unknown>;
   };
   openAudio(
     onFrame: (pcm: Int16Array) => void,
@@ -26,7 +30,7 @@ export interface VoiceDependencies {
     onConsumed?: (bytes: number) => void,
   ): Promise<VoiceAudio>;
   connect(
-    runtime: VoiceRuntime,
+    runtime: R,
     event: (e: HelperEvent) => void,
     audio: (pcm: Int16Array, generation: number) => void,
     error: (e: Error) => void,
@@ -36,15 +40,19 @@ export interface VoiceDependencies {
   voice(scope: CallScope): string;
   silence(): number;
   focus(scope: CallScope): void;
+  /** Phone audio failures release capture while leaving the accepted agent turn running. */
+  keepWorkOnError?: boolean;
 }
 const same = (a: CallScope, b: CallScope) =>
   a.hostId === b.hostId &&
   a.roomId === b.roomId &&
   a.participantId === b.participantId;
-export function createVoiceController(deps: VoiceDependencies) {
+export function createVoiceController<R = VoiceRuntime>(
+  deps: VoiceDependencies<R>,
+) {
   let state: VoiceState = { status: "off", muted: false, voices: [] };
   const listeners = new Set<() => void>();
-  let runtimeAcquired = false;
+  let runtimeAcquired: R | undefined;
   let callId = "",
     generation = 0,
     epoch = 0,
@@ -97,7 +105,9 @@ export function createVoiceController(deps: VoiceDependencies) {
     control({ type: "cancel", resetInput });
   };
   const note = (event: string, detail: Record<string, unknown> = {}) =>
-    console.warn("[voice event] " + JSON.stringify({ callId, event, ...detail }));
+    console.warn(
+      "[voice event] " + JSON.stringify({ callId, event, ...detail }),
+    );
   let reconnecting = false;
   function error(e: Error) {
     if (state.status === "off" || state.status === "error") return;
@@ -106,7 +116,7 @@ export function createVoiceController(deps: VoiceDependencies) {
       return;
     }
     const scope = state.scope;
-    void end("error: " + e.message)
+    void end("error: " + e.message, { keepWork: deps.keepWorkOnError })
       .catch(() => {})
       .finally(() => set({ status: "error", scope, error: e.message }));
   }
@@ -120,7 +130,10 @@ export function createVoiceController(deps: VoiceDependencies) {
     if (a) cleanup = cleanup.then(() => a.bridge.cancel(a.id));
     return cleanup;
   }
-  async function end(reason = "ended by user") {
+  async function end(
+    reason = "ended by user",
+    options?: { keepWork?: boolean },
+  ) {
     // Every call end is logged with its reason so drops can be traced.
     if (callId || state.status !== "off")
       console.warn(
@@ -129,14 +142,14 @@ export function createVoiceController(deps: VoiceDependencies) {
       );
     epoch++;
     const owned = runtimeAcquired;
-    runtimeAcquired = false;
+    runtimeAcquired = undefined;
     callId = "";
     audio?.close();
     audio = undefined;
-    client?.close();
+    client?.close(reason);
     client = undefined;
     generation++;
-    const stopping = cancel();
+    const stopping = options?.keepWork ? (detach(), cleanup) : cancel();
     set({
       status: "off",
       scope: undefined,
@@ -148,7 +161,7 @@ export function createVoiceController(deps: VoiceDependencies) {
     try {
       await stopping;
     } finally {
-      if (owned) await deps.runtime.stop();
+      if (owned) await deps.runtime.stop(owned);
     }
   }
   // The helper dropped its connection: open a fresh one on the same call so the
@@ -159,7 +172,7 @@ export function createVoiceController(deps: VoiceDependencies) {
     const myEpoch = epoch,
       scope = state.scope;
     note("helper disconnected", { reason: cause.message });
-    client?.close();
+    client?.close(cause.message);
     client = undefined;
     generation++;
     audio?.flush(generation);
@@ -168,7 +181,11 @@ export function createVoiceController(deps: VoiceDependencies) {
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const runtime = await deps.runtime.start();
-          if (myEpoch !== epoch || !callId || !scope) return;
+          if (myEpoch !== epoch || !callId || !scope) {
+            await deps.runtime.stop(runtime);
+            return;
+          }
+          runtimeAcquired = runtime;
           const connected = await connectHelper(runtime);
           if (myEpoch !== epoch || !callId) {
             connected.close();
@@ -187,13 +204,17 @@ export function createVoiceController(deps: VoiceDependencies) {
       }
       if (myEpoch === epoch && callId) {
         reconnecting = false;
-        error(Error("Voice helper stopped and could not restart. Start a new call."));
+        error(
+          Error(
+            "Voice helper stopped and could not restart. Start a new call.",
+          ),
+        );
       }
     } finally {
       reconnecting = false;
     }
   }
-  function connectHelper(runtime: VoiceRuntime) {
+  function connectHelper(runtime: R) {
     return deps.connect(
       runtime,
       helper,
@@ -351,8 +372,14 @@ export function createVoiceController(deps: VoiceDependencies) {
       playbackRequest = e.requestId ?? "";
     }
     if (e.type === "timing") {
-      const timing = e as HelperEvent & { sttMs?: number; ttsMs?: number };
+      const timing = e as HelperEvent & {
+        sttMs?: number;
+        ttsMs?: number;
+        ttsFirstMs?: number;
+      };
       if (typeof timing.sttMs === "number") metric("stt-wait", timing.sttMs);
+      if (typeof timing.ttsFirstMs === "number")
+        metric("speech-first-audio", timing.ttsFirstMs, e.requestId);
       if (typeof timing.ttsMs === "number")
         metric("speech-generation-and-send", timing.ttsMs, e.requestId);
       return;
@@ -393,17 +420,17 @@ export function createVoiceController(deps: VoiceDependencies) {
       const status = await deps.runtime.status();
       if (myEpoch !== epoch) return;
       if (!status.supported)
-        throw Error("Local calls require Apple Silicon macOS");
+        throw Error(status.reason ?? "Local calls require Apple Silicon macOS");
       if (!status.installed) {
         set({ status: "setup" });
         return;
       }
       const runtime = await deps.runtime.start();
       if (myEpoch !== epoch) {
-        await deps.runtime.stop();
+        await deps.runtime.stop(runtime);
         return;
       }
-      runtimeAcquired = true;
+      runtimeAcquired = runtime;
       callId = crypto.randomUUID();
       generation = 0;
       segment = 0;
@@ -475,3 +502,7 @@ export function createVoiceController(deps: VoiceDependencies) {
     },
   };
 }
+
+export type VoiceController<R = VoiceRuntime> = ReturnType<
+  typeof createVoiceController<R>
+>;

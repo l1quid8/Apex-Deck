@@ -6,6 +6,7 @@ import Speech
 class MainViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(SpeechRecognitionPlugin())
+        bridge?.registerPluginInstance(CallScreenPlugin())
     }
 }
 

@@ -3,6 +3,7 @@
 // link carries it. It says hello, matches replies to calls, hands events to
 // listeners, and reconnects after a drop, resuming from the last event it
 // saw. No DOM and no Electron here, so the phone app can use it too.
+import type { VoiceFrame } from "../voice/types.ts";
 import type { ClientCapabilities } from '../../shared/generatedUiCapability.mjs';
 
 /** One connection to the daemon, carrying whole lines. */
@@ -118,6 +119,7 @@ export class DaemonClient {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
+  private readonly voiceListeners = new Set<(frame: VoiceFrame) => void>();
   private readonly statusListeners = new Set<(status: Status) => void>();
   private status: Status = { kind: "connecting" };
   /** Where we are, once a welcome came; resuming needs both. */
@@ -166,6 +168,17 @@ export class DaemonClient {
     });
   }
 
+  sendVoice(frame: VoiceFrame): boolean {
+    if (!this.ready || !this.link) return false;
+    try { this.link.send(JSON.stringify({ voice: frame })); return true; }
+    catch { return false; }
+  }
+
+  onVoice(cb: (frame: VoiceFrame) => void): () => void {
+    this.voiceListeners.add(cb);
+    return () => this.voiceListeners.delete(cb);
+  }
+
   on<T>(event: string, cb: (payload: T) => void): () => void {
     let set = this.listeners.get(event);
     if (!set) this.listeners.set(event, (set = new Set()));
@@ -197,6 +210,7 @@ export class DaemonClient {
     const link = this.link;
     this.drop(LOST);
     link?.close();
+    this.setStatus({ kind: "failed", reason: LOST });
   }
 
   /** Recovery has read this host's rooms; ordinary commands can resume. */
@@ -263,13 +277,24 @@ export class DaemonClient {
   }
 
   private receive(link: Link, line: string) {
-    let frame: { id?: number | null; ok?: unknown; err?: string; reason?: unknown; seq?: number; event?: string; payload?: unknown };
+    let frame: { voice?: VoiceFrame; id?: number | null; ok?: unknown; err?: string; reason?: unknown; seq?: number; event?: string; payload?: unknown };
     try {
       frame = JSON.parse(line);
     } catch {
       link.close();
       const shown = line.length > 80 ? `${line.slice(0, 80)}…` : line;
       this.lost(`The host sent something that isn't part of the protocol: "${shown}". A shell startup file there may be printing it.`);
+      return;
+    }
+    if (!frame || typeof frame !== "object") return;
+    if ("voice" in frame) {
+      const v = frame.voice;
+      if (this.ready && v && typeof v === 'object' && Number.isSafeInteger(v.channel) && v.channel > 0 &&
+        (('ctl' in v && v.ctl && typeof v.ctl === 'object' && !Array.isArray(v.ctl) && typeof v.ctl.type === 'string') ||
+         ('bin' in v && typeof v.bin === 'string' && v.bin.length <= 42684) ||
+         ('rx' in v && Number.isInteger(v.rx) && v.rx >= 0 && v.rx <= 0xffffffff) ||
+         ('closed' in v && typeof v.closed === 'string')))
+        this.voiceListeners.forEach(cb => cb(v));
       return;
     }
     if (typeof frame.seq === "number" && typeof frame.event === "string") {

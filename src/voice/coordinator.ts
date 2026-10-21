@@ -1,4 +1,4 @@
-import { createVoiceController } from "./controller.ts";
+import { createVoiceController, type VoiceController } from "./controller.ts";
 import { openVoiceAudio } from "./audio.ts";
 import { connectLocalVoice } from "./localClient.ts";
 import { preferenceFor, readVoiceSettings } from "./settings.ts";
@@ -36,7 +36,7 @@ export function warmVoice() {
   lastWarm = now;
   void window.apexDeck?.voice?.warm?.().catch(() => {});
 }
-export const voiceController = createVoiceController({
+export const voiceController: VoiceController = createVoiceController({
   runtime: {
     status: () => runtime().status(),
     start: () => runtime().start(),

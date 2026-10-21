@@ -73,3 +73,13 @@ export type HelperEvent = {
   message?: string;
   semantic?: boolean;
 };
+export type VoiceFrame = { channel: number } & ({ ctl: Record<string, unknown> } | { bin: string } | { rx: number } | { closed: string });
+export type ServerVoiceRuntime = { channel: number; protocolVersion: 1 };
+export type ServerVoiceStatus = { supported: boolean; reason?: string; installed: boolean; installing?: { stage: string; downloaded: number; total: number }; failed?: string; running: boolean; busy: boolean; downloadBytes: number; requiredDiskBytes: number };
+export interface ServerVoiceLink {
+  status(): Promise<ServerVoiceStatus>; install(): Promise<void>; cancelInstall(): Promise<void>;
+  warm(room: string): Promise<void>; open(room: string): Promise<ServerVoiceRuntime>; close(channel: number, reason: string): Promise<void>;
+  attach(channel: number, cb: (frame: VoiceFrame) => void): () => void;
+  send(frame: VoiceFrame): boolean;
+  onLost(cb: (reason: string) => void): () => void;
+}

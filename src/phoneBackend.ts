@@ -1,6 +1,8 @@
 // One connection from the phone to a machine's apex-daemon, by WebSocket or over iroh.
 // The Mac being asleep does not close the others: each machine has its own client.
 
+import { serverVoiceLink } from "./voice/serverClient.ts";
+import type { ServerVoiceLink } from "./voice/types.ts";
 import type { Backend } from "./backend";
 import type { Shell } from "./commandBackend.ts";
 import { commandBackend } from "./commandBackend.ts";
@@ -12,6 +14,8 @@ import { isPaired, type Machine, type RemoteAccess } from "./phoneRules.ts";
 
 export interface PhoneHost {
   machine: Machine;
+  voice: ServerVoiceLink;
+  supports(capability: string): boolean;
   backend: Backend;
   connection: HostConnectionStore;
   /** What the machine lets this phone do, from its latest welcome; null over WebSocket or before one. */
@@ -40,6 +44,8 @@ export function openPhoneHost(machine: Machine, connect: Connect, shell: Shell, 
   }, connection);
   return {
     machine,
+    voice: serverVoiceLink(client),
+    supports: capability => client.hasCapability(capability),
     backend,
     connection,
     access: () => client.welcome?.access ?? null,

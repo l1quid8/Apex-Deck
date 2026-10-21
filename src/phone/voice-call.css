@@ -1,0 +1,75 @@
+.ph-call-mic {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ph-muted, currentColor);
+  padding: 0;
+  align-self: flex-end;
+}
+.ph-call-mic.active {
+  color: var(--ph-mint, #85dfbf);
+}
+.ph-call-mic:disabled {
+  opacity: 0.35;
+}
+.ph-voice-sheet {
+  padding: 0 20px 20px;
+}
+.ph-voice-sheet p {
+  line-height: 1.5;
+}
+.ph-voice-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 16px 0;
+  border: 0;
+  border-bottom: 1px solid #ffffff12;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.ph-voice-row select {
+  margin-left: auto;
+  max-width: 60%;
+}
+.ph-voice-row input {
+  width: 100%;
+}
+.ph-voice-row small {
+  opacity: 0.6;
+}
+.ph-voice-actions {
+  display: flex;
+  gap: 20px;
+  padding: 16px 0;
+}
+.ph-voice-dot {
+  width: 7px;
+  height: 7px;
+  background: #85dfbf;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 9px;
+}
+.ph-call-bar {
+  position: fixed;
+  bottom: calc(72px + env(safe-area-inset-bottom));
+  left: 16px;
+  right: 16px;
+  z-index: 35;
+  padding: 12px 16px;
+  border: 1px solid #85dfbf44;
+  border-radius: 22px;
+  background: #16352d;
+  color: #baf3dc;
+  text-align: center;
+}

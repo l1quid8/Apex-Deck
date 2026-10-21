@@ -3,7 +3,7 @@ import type { HelperEvent, VoiceRuntime } from "./types.ts";
 export interface LocalVoiceClient {
   send(message: Record<string, unknown>): void;
   audio(pcm: Int16Array, generation: number): void;
-  close(): void;
+  close(reason?: string): void;
 }
 // Marks a dropped helper connection, which the controller reconnects instead of ending the call.
 export const disconnected = (message: string) =>

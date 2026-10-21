@@ -1,3 +1,7 @@
+import { createPhoneVoice, type PhoneVoice } from './phoneVoice.ts';
+import { postFromPhone } from './phonePost.ts';
+import { keepAwake } from './callScreen.ts';
+import { VoiceCall, PhoneCallBar } from './VoiceCall.tsx';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 import { botChangeGate, botSendGate } from "../phoneBots";
@@ -591,6 +595,18 @@ export function PhoneApp() {
   // The queue outlives renders, so it reads the machines and who is working as they are now.
   const hostsRef = useRef(hosts);
   hostsRef.current = hosts;
+  const participantsRef = useRef(new Map<string, {id:string;display_name:string;media?:unknown}[]>());
+  const screenRef = useRef({hostId:openHostId,roomId:openPane?.id ?? '',shown:tab==='threads' && openId!==null});
+  screenRef.current={hostId:openHostId,roomId:openPane?.id ?? '',shown:tab==='threads' && openId!==null};
+  if (room && openHostId) participantsRef.current.set(JSON.stringify([openHostId,room.id]),room.configs.map(p=>({id:p.id,display_name:p.display_name,media:p.media})));
+  const phoneVoiceRef = useRef<PhoneVoice | null>(null);
+  if (!phoneVoiceRef.current) phoneVoiceRef.current=createPhoneVoice({
+    host:id=> {const h=hostsRef.current.find(h=>h.machine.id===id); if(!h)return null;return {name:h.machine.name,backend:h.backend,voice:h.voice,canCall:()=>h.supports('voice_server_v1')&&h.access()?.tier!=='read_only',whenConnected:ms=>new Promise<void>((resolve,reject)=>{if(h.connection.get().status.kind==='connected'){resolve();return;}const timer=setTimeout(()=>{off();reject(Error(`Can't reach ${h.machine.name} right now.`));},ms);const off=h.connection.subscribe(()=>{if(h.connection.get().status.kind==='connected'){clearTimeout(timer);off();resolve();}});})};},
+    queue:(host,room)=>queueFor(room,host),participants:(host,room)=>participantsRef.current.get(JSON.stringify([host,room]))??[],onScreen:(host,room)=>screenRef.current.shown&&screenRef.current.hostId===host&&screenRef.current.roomId===room,storage:localStorage,keepAwake,
+  });
+  const phoneVoice=phoneVoiceRef.current;
+  useEffect(()=>{const left=()=>{if(document.hidden)phoneVoice.leftScreen();};document.addEventListener('visibilitychange',left);return()=>{document.removeEventListener('visibilitychange',left);phoneVoice.leftScreen();};},[phoneVoice]);
+  useEffect(()=>{if(openPane&&openHostId)phoneVoice.threadOpened(openHostId,openPane.id);},[openPane?.id,openHostId]);
   const busyRef = useRef(busy);
   busyRef.current = busy;
   /** Put a queued message back in its thread's box, with the files it was sent with. */
@@ -617,10 +633,11 @@ export function PhoneApp() {
         return sticky ?? backend().roomTargets(paneId, text);
       },
       // Routed like a typed message unless it is a next step for the bot that offered it.
-      async (text, to, _kind, _hops, manual) => {
+      async (text, to, _kind, _hops, manual, voice) => {
         const key = `${paneId}\u0000${text}`;
-        try { await backend().roomPostTo(paneId, text, to, !manual); }
+        try { await postFromPhone(backend(), paneId, text, to, manual, voice); }
         catch (error) {
+          if (voice) { phoneVoice.failed(hostId,paneId,to[0],voice.requestId,error); throw error; }
           const sent = queuedDrafts.current.get(key);
           // The queue holds these bots after a failure, as on the desktop. When the message is in the box again,
           // sending it again should just send, so let go of any bot with nothing else waiting once the queue has paused it.
@@ -1321,6 +1338,7 @@ export function PhoneApp() {
 
   return (
     <div className="ph-app" data-rev={tick}>
+      <PhoneCallBar hidden={inChat && phoneVoice.controller.getState().scope?.roomId===openPane?.id} voice={phoneVoice} onOpen={(_host,room)=>{setTab("threads");setOpenId(room);}} />
       <div className="phone-frame">
         {!inChat && (
           <header className="ph-head" inert={covered}>
@@ -1339,6 +1357,7 @@ export function PhoneApp() {
         )}
         {inChat && openWorkspace && openLink ? (
           <ThreadView
+            call={openPane && phoneVoice.canCall(openHostId) && phoneHost(openHostId) ? <VoiceCall voice={phoneVoice} hostId={openHostId} roomId={openPane.id} addressed={answerers?.paneId===openPane.id?answerers.ids:null} machine={openLink.name} link={phoneHost(openHostId)!.voice} canSetUp={!phoneHost(openHostId)!.access() || phoneHost(openHostId)!.access()?.tier==='full'} disabled={openLink.status!=='online'} Sheet={Sheet} /> : null}
             title={openPane?.title ?? "New thread"}
             draftThread={viewingPending}
             project={openWorkspace.name}
@@ -2019,6 +2038,7 @@ function MenuRow({ label, detail, danger, onClick }: { label: string; detail?: s
 }
 
 function ThreadView(props: {
+  call?: ReactNode;
   title: string; draftThread: boolean; project: string; machine: string; path: string; kind: MachineKind; link: LinkView;
   hostIcon: ReactNode; started: boolean; covered: boolean;
   messages: Message[]; approvals: { id: string; request: string; action: import("../types").ProposedAction }[];
@@ -2389,6 +2409,7 @@ function ThreadView(props: {
               // Keep the keyboard up when it is: the box keeps focus.
               onPointerDown={(event) => event.preventDefault()}
               onClick={props.onTldr}><span aria-hidden="true">TL;</span><span aria-hidden="true">DR</span></button>
+            {props.call}
             <button type="submit" className="ph-send" aria-label={props.sending ? `Sending to ${props.machine}` : props.attaching ? "Attaching a file" : props.queueing && props.to ? `Queue for ${props.to}. It goes when ${props.to} finishes` : `Send to ${props.machine}`} disabled={!props.gate.enabled || props.sending || props.attaching}><ArrowUp size={21} /></button>
           </div>
         </div>

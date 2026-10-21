@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createVoiceController } from "../src/voice/controller.ts";
-function fixture() {
-  let helper, listener, drained, playing;
+function fixture(options = {}) {
+  let helper, listener, drained, playing, disconnected;
   const sent = [],
     posted = [],
-    stopped = [];
+    stopped = [],
+    closeReasons = [],
+    runtimeStops = [];
   let closed = 0;
   const scope = { hostId: "h", roomId: "r", participantId: "a" };
   const candidate = { ...scope, profileId: "a", name: "Null", aliases: [] };
@@ -24,9 +26,14 @@ function fixture() {
   };
   const c = createVoiceController({
     runtime: {
-      status: async () => ({ installed: true, supported: true }),
-      start: async () => ({ port: 1, token: "x", protocolVersion: 1 }),
-      stop: async () => {},
+      status: async () =>
+        options.status ?? { installed: true, supported: true },
+      start:
+        options.start ??
+        (async () => ({ port: 1, token: "x", protocolVersion: 1 })),
+      stop: async (runtime) => {
+        runtimeStops.push(runtime);
+      },
     },
     openAudio: async (_frame, onDrain, onPlay) => {
       drained = onDrain;
@@ -42,9 +49,16 @@ function fixture() {
         echoCancellation: true,
       };
     },
-    connect: async (_r, fn) => {
+    connect: async (_r, fn, _audio, failure) => {
       helper = fn;
-      return { send: (m) => sent.push(m), audio() {}, close() {} };
+      disconnected = failure;
+      return {
+        send: (m) => sent.push(m),
+        audio() {},
+        close(reason) {
+          closeReasons.push(reason);
+        },
+      };
     },
     candidates: () => [candidate],
     bridge: () => bridge,
@@ -58,6 +72,10 @@ function fixture() {
     sent,
     posted,
     stopped,
+    closeReasons,
+    runtimeStops,
+    disconnect: () =>
+      disconnected(Object.assign(Error("lost"), { name: "VoiceDisconnected" })),
     bridge,
     get closed() {
       return closed;
@@ -189,27 +207,45 @@ test("playback drain returns an idle call to listening", async () => {
   await f.c.end();
 });
 
-
 test("waiting for an agent stays silent until its reply arrives", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture();
   t.after(() => f.c.end());
   await f.c.start(f.scope);
   const start = f.sent.find((m) => m.type === "start");
-  f.event({ type: "transcript", callId: start.callId, generation: 0,
-    utteranceId: "silent-wait", text: "Check the build" });
+  f.event({
+    type: "transcript",
+    callId: start.callId,
+    generation: 0,
+    utteranceId: "silent-wait",
+    text: "Check the build",
+  });
   await Promise.resolve();
   assert.equal(f.posted.length, 1);
   t.mock.timers.tick(5000);
   assert.equal(f.c.getState().status, "waiting");
-  assert.deepEqual(f.sent.filter((m) => m.type === "speak"), []);
-  f.reply({ scope: f.scope, requestId: f.posted[0].requestId,
-    type: "text", text: "The build passed. " });
+  assert.deepEqual(
+    f.sent.filter((m) => m.type === "speak"),
+    [],
+  );
+  f.reply({
+    scope: f.scope,
+    requestId: f.posted[0].requestId,
+    type: "text",
+    text: "The build passed. ",
+  });
   f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "done" });
-  assert.equal(f.sent.filter((m) => m.type === "speak").map((m) => m.text).join(" "), "The build passed.");
+  assert.equal(
+    f.sent
+      .filter((m) => m.type === "speak")
+      .map((m) => m.text)
+      .join(" "),
+    "The build passed.",
+  );
 });
 test("a dropped helper connection reconnects and keeps the call", async () => {
-  let fail, connects = 0;
+  let fail,
+    connects = 0;
   const sent = [];
   const scope = { hostId: "h", roomId: "r", participantId: "a" };
   const c = createVoiceController({
@@ -218,21 +254,36 @@ test("a dropped helper connection reconnects and keeps the call", async () => {
       start: async () => ({ port: 1, token: "x", protocolVersion: 1 }),
       stop: async () => {},
     },
-    openAudio: async () => ({ mute() {}, play() {}, segmentEnd() {}, flush() {}, close() {}, echoCancellation: true }),
+    openAudio: async () => ({
+      mute() {},
+      play() {},
+      segmentEnd() {},
+      flush() {},
+      close() {},
+      echoCancellation: true,
+    }),
     connect: async (_r, _fn, _a, err) => {
       connects++;
       fail = err;
       return { send: (m) => sent.push(m), audio() {}, close() {} };
     },
     candidates: () => [{ ...scope, profileId: "a", name: "Null", aliases: [] }],
-    bridge: () => ({ submit: async () => ({}), cancel: async () => {}, subscribe: () => () => {} }),
+    bridge: () => ({
+      submit: async () => ({}),
+      cancel: async () => {},
+      subscribe: () => () => {},
+    }),
     voice: () => "am_michael",
     silence: () => 700,
     focus: () => {},
   });
   await c.start(scope);
   const callId = sent.find((m) => m.type === "start").callId;
-  fail(Object.assign(Error("Local voice disconnected"), { name: "VoiceDisconnected" }));
+  fail(
+    Object.assign(Error("Local voice disconnected"), {
+      name: "VoiceDisconnected",
+    }),
+  );
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(connects, 2);
   const starts = sent.filter((m) => m.type === "start");
@@ -245,18 +296,99 @@ test("muting mid-reply keeps the agent working and speaking", async () => {
   const f = fixture();
   await f.c.start(f.scope);
   const start = f.sent.find((m) => m.type === "start");
-  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_michael"] });
-  f.event({ type: "transcript", callId: start.callId, generation: 0,
-    utteranceId: "m", text: "Explain the build" });
+  f.event({
+    type: "ready",
+    callId: start.callId,
+    generation: 0,
+    voices: ["am_michael"],
+  });
+  f.event({
+    type: "transcript",
+    callId: start.callId,
+    generation: 0,
+    utteranceId: "m",
+    text: "Explain the build",
+  });
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(f.posted.length, 1);
   f.c.mute(true);
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(f.stopped, []);
   assert.equal(f.sent.filter((m) => m.type === "cancel").length, 0);
-  f.reply({ scope: f.scope, requestId: f.posted[0].requestId,
-    type: "text", text: "The build passed. " });
+  f.reply({
+    scope: f.scope,
+    requestId: f.posted[0].requestId,
+    type: "text",
+    text: "The build passed. ",
+  });
   f.reply({ scope: f.scope, requestId: f.posted[0].requestId, type: "done" });
-  assert.equal(f.sent.filter((m) => m.type === "speak").map((m) => m.text).join(" "), "The build passed.");
+  assert.equal(
+    f.sent
+      .filter((m) => m.type === "speak")
+      .map((m) => m.text)
+      .join(" "),
+    "The build passed.",
+  );
+  await f.c.end();
+});
+
+test("unsupported machine explains its reason", async () => {
+  const reason = "Phone voice calls need a Linux x86-64 server for now.",
+    f = fixture({ status: { supported: false, installed: false, reason } });
+  await f.c.start(f.scope);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(f.c.getState().status, "error");
+  assert.equal(f.c.getState().error, reason);
+});
+test("keepWork ends audio without canceling the agent and passes close reason", async () => {
+  for (const keepWork of [true, false]) {
+    const f = fixture();
+    await f.c.start(f.scope);
+    const start = f.sent.find((m) => m.type === "start");
+    f.event({
+      type: "ready",
+      callId: start.callId,
+      generation: 0,
+      voices: ["am_michael"],
+    });
+    f.event({
+      type: "transcript",
+      callId: start.callId,
+      generation: 0,
+      utteranceId: "keep",
+      text: "check the build",
+    });
+    await new Promise((r) => setImmediate(r));
+    await f.c.end("app left the screen", { keepWork });
+    assert.equal(f.stopped.length, keepWork ? 0 : 1);
+    assert.deepEqual(f.closeReasons, ["app left the screen"]);
+  }
+});
+
+test("ending during a delayed reconnect closes that runtime without closing a newer call", async () => {
+  let launches = 0,
+    resolveReconnect;
+  const first = { port: 1 },
+    second = { port: 2 },
+    third = { port: 3 };
+  const f = fixture({
+    start: () => {
+      launches++;
+      return launches === 1
+        ? Promise.resolve(first)
+        : launches === 2
+          ? new Promise((r) => (resolveReconnect = r))
+          : Promise.resolve(third);
+    },
+  });
+  await f.c.start(f.scope);
+  f.disconnect();
+  await new Promise((r) => setImmediate(r));
+  await f.c.end("app left the screen", { keepWork: true });
+  await f.c.start(f.scope);
+  resolveReconnect(second);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(f.runtimeStops, [first, second]);
+  assert.notEqual(f.c.getState().status, "off");
   await f.c.end();
 });
