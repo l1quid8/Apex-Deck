@@ -21,6 +21,8 @@ export type VoicePreferences = { voice: string; aliases: string[] };
 export type VoiceSettings = {
   enabled: boolean;
   silenceMs: number;
+  /** How a running call shows on screen (callView.ts). */
+  look: import("./callView.ts").CallLook;
   preferences: Record<string, VoicePreferences>;
 };
 export type VoiceState = {
@@ -35,6 +37,10 @@ export type VoiceState = {
     | "needs-attention"
     | "error";
   scope?: CallScope;
+  /** Date.now() when this call started, for its timer. */
+  startedAt?: number;
+  /** The helper dropped and the call is opening a fresh connection. */
+  reconnecting?: boolean;
   muted: boolean;
   semantic?: boolean;
   error?: string;

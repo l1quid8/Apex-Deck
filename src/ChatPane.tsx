@@ -1,4 +1,4 @@
-import { VoiceCallControls } from './voice/VoiceCallControls';
+import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, type VoiceWho } from './voice/VoiceCallControls';
 import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
 import { createThreadVoiceBridge } from './voice/threadBridge';
 import { readVoiceSettings, preferenceFor } from './voice/settings';
@@ -1534,6 +1534,8 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const voiceHost=backend.host?.id??'local';
   const voiceConfig=readVoiceSettings(voiceSettings);
   const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
+  const voiceWho:VoiceWho=id=>{const p=participants.find(x=>x.id===id),look=appearance(id);return {...look,kind:p?.backend.kind==='agent'?AGENT_LABEL[p.backend.tool]:undefined};};
+  const voiceHint=useVoiceHint({candidates:voiceCandidates,settings:voiceConfig});
   const voiceLive=useRef({ready,participants,voiceCandidates,voiceConfig,onVoiceSettings,onVoiceFocus});
   voiceLive.current={ready,participants,voiceCandidates,voiceConfig,onVoiceSettings,onVoiceFocus};
   useEffect(()=>{
@@ -3391,7 +3393,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   return (
     <div ref={root} data-bot-chip-style={chipParts.style ?? "classic"} className={`chat ${profileMode ? "" : `thread-chat${landing ? " thread-landing" : ""}`}`}>
       {!profileMode && <ConnectionBanner backend={backend} />}
-      {!profileMode && headSlot && createPortal(threadCounts, headSlot)}
+      {!profileMode && headSlot && createPortal(<><VoiceCallCapsule settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />{threadCounts}</>, headSlot)}
 
       {quickSettings && participants.find(p => p.id === quickSettings.id) && <BotSettings key={quickSettings.id} roomId={pane.id} config={participants.find(p => p.id === quickSettings.id)!} anchor={quickSettings.anchor} backend={backend} close={closeQuickSettings} avatar={<Avatar seed={appearance(quickSettings.id).seed} color={color(quickSettings.id)} working={Boolean(working[quickSettings.id]) && !asks[quickSettings.id]?.length} levels={levelsFor(quickSettings.id)} refills={refillsFor(quickSettings.id)} />} meters={(() => { const levels = levelsFor(quickSettings.id); const now = Date.now() / 1000; const row = (name: string, level: number | null, title: string, resetsAt?: number | null, used = false) => { const shown = level === null ? null : used ? 1 - level : level; return <span key={title} className="bot-meter" title={resetsAt != null ? `${title} · resets ${resetDate(resetsAt)}` : title}>{name}<span className="bot-meter-track" aria-hidden="true">{shown !== null && <span style={{ width: `${percent(shown)}%` }} className={isLow(level!) ? "low" : undefined} />}</span>{shown === null ? "—" : `${percent(shown)}%`}<span className="bot-meter-timer">{resetsAt != null ? countdown(resetsAt, now) : ""}</span></span>; }; const provider = planProvider(configOf(quickSettings.id)); const windows = provider ? liveWindows(plans[provider]?.windows ?? [], now) : []; return <span className="bot-meters">{!makesMedia(configOf(quickSettings.id)) && row("ctx", levels.context, "Context used", null, true)}{windows.length ? windows.map(w => row(w.window_minutes === 10_080 ? "wk" : w.window_minutes === 300 ? "5h" : windowLabel(w), 1 - Math.min(100, w.used_percent) / 100, `${windowLabel(w)} limit left`, w.resets_at)) : moneyRow(configOf(quickSettings.id)) ?? (accountOf(configOf(quickSettings.id)) ? null : row("plan", levels.plan, "Plan left"))}</span>; })()} save={async (config, base) => {
         const saved = await backend.roomUpdateParticipant(pane.id, config, base);
@@ -3717,6 +3719,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         </div>}
         {/* One line: + on the left, the text, then TL;DR and Send. They stay by the last line as the text grows.
             A thread with no messages yet adds a row under it to pick the project and machine; after that, + has Files and Tools. */}
+        <VoiceCallBar settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} />
         <div className={`composer-box${stacked ? " stacked" : ""}${work && !work.started ? " with-tray" : ""}${quickAdd === "dock" ? " adding" : ""}`} ref={field}>
           {quickAdd === "dock" && quickAddMenu}
           <ComposerMenu ref={composerMenu} planOn={planOn} participants={participants} mods={modHost.allCommands()} servers={serverTargets.flatMap(agent => (serverLists[agent] ?? []).map(entry => ({agent, ...entry})))} serverStatus={serverTargets.map(id => serverErrors[id] ?? (serverLists[id] ? "" : `Loading ${names.get(id) ?? id}’s servers, apps and plugins…`)).filter(Boolean).join(" · ")} trigger={findTrigger(text, caret)} choose={(item, trigger) => {
@@ -3760,7 +3763,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
             }
           }}
           rows={1}
-          placeholder={waitingForOwner ? "Waiting for Deck…" : form.kind === "steps" && !text ? form.offer.steps[0].prompt : copy.placeholder}
+          placeholder={waitingForOwner ? "Waiting for Deck…" : voiceHint ?? (form.kind === "steps" && !text ? form.offer.steps[0].prompt : copy.placeholder)}
           disabled={!roomReady || participants.length === 0}
         />
           </div>
@@ -3774,7 +3777,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
           // Keep focus in the message box, so you can type straight after.
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => { toggleTldr(); input.current?.focus(); }}><span aria-hidden>TL;</span><span aria-hidden>DR</span></button>
-          <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} disabled={!ready || saving} />
+          <VoiceCallControls settings={voiceConfig} candidates={voiceCandidates} who={voiceWho} disabled={!ready || saving} />
           {!busy && pricePill && <span className="media-price-pill" title="What this message is expected to cost">Send · {pricePill}</span>}
           {busy
             ? <button type="button" className="round-send stop" aria-label="Stop all" title="Stop every bot (Esc)" onClick={() => { if (Date.now() - flippedAt.current > 600) stopBots(); }}><StopSquare size={12} /></button>

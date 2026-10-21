@@ -1,3 +1,4 @@
+import { readCallLook } from "./callView.ts";
 import type { VoicePreferences, VoiceSettings } from "./types.ts";
 export const DEFAULT_VOICE = "am_michael";
 export const voicePreferenceKey = (
@@ -43,6 +44,7 @@ export function readVoiceSettings(raw: unknown): VoiceSettings {
       typeof r.silenceMs === "number" && Number.isFinite(r.silenceMs)
         ? Math.min(2000, Math.max(100, Math.round(r.silenceMs)))
         : 100,
+    look: readCallLook(r.look),
     preferences,
   };
 }

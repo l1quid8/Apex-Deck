@@ -153,6 +153,8 @@ export function createVoiceController<R = VoiceRuntime>(
     set({
       status: "off",
       scope: undefined,
+      startedAt: undefined,
+      reconnecting: false,
       muted: false,
       candidates: undefined,
       error: undefined,
@@ -176,7 +178,7 @@ export function createVoiceController<R = VoiceRuntime>(
     client = undefined;
     generation++;
     audio?.flush(generation);
-    set({ status: "warming" });
+    set({ status: "warming", reconnecting: true });
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
@@ -193,6 +195,7 @@ export function createVoiceController<R = VoiceRuntime>(
           }
           client = connected;
           sendStart(scope);
+          set({ reconnecting: false });
           note("helper reconnected", { attempt });
           return;
         } catch (e) {
@@ -212,6 +215,7 @@ export function createVoiceController<R = VoiceRuntime>(
       }
     } finally {
       reconnecting = false;
+      if (state.reconnecting) set({ reconnecting: false });
     }
   }
   function connectHelper(runtime: R) {
@@ -415,7 +419,7 @@ export function createVoiceController<R = VoiceRuntime>(
     await end("new call started");
     cleanup = Promise.resolve();
     const myEpoch = ++epoch;
-    set({ status: "warming", scope, muted: false, error: undefined });
+    set({ status: "warming", scope, startedAt: Date.now(), muted: false, error: undefined });
     try {
       const status = await deps.runtime.status();
       if (myEpoch !== epoch) return;

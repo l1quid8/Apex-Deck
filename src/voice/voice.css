@@ -33,54 +33,403 @@
   outline: 2px solid currentColor;
   outline-offset: 2px;
 }
-.voice-call-panel {
-  position: fixed;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 320px;
-  box-sizing: border-box;
-  max-width: calc(100vw - 16px);
-  max-height: min(65vh, calc(100vh - 16px));
-  overflow: auto;
-  padding: 16px;
-  border: 1px solid var(--border, #555);
-  border-radius: 12px;
-  background: var(--bg, #202024);
-  color: var(--text, #eee);
-  box-shadow: 0 10px 40px #0005;
+
+/* Shared by the bar, pill, capsule and their panels. Skins (Clay, Glass) set the --deck-* names; other themes fall back. */
+.voice-call-ui {
+  --agent: var(--accent);
+  --vc-raised: var(--panel-2, var(--panel));
+  --vc-edge: var(--deck-edge, var(--line));
+  --vc-sunk: var(--deck-code, var(--bg));
+  --vc-danger: var(--deck-danger, var(--danger, #e5484d));
+  --vc-selected: var(--deck-selected, color-mix(in srgb, var(--text) 12%, transparent));
+  --vc-radius: var(--deck-radius, var(--radius, 10px));
+  color: var(--text);
 }
-.voice-call-panel label {
-  display: flex;
-  flex-wrap: wrap;
+.voice-callbtn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.voice-callbtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 9%, transparent) !important;
+  color: var(--text);
+}
+.voice-callbtn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--vc-danger) 18%, transparent);
+  color: var(--vc-danger);
+}
+.voice-callbtn[aria-expanded="true"] {
+  background: var(--vc-selected);
+  color: var(--text);
+}
+.voice-callbtn.boxed {
+  border: 1px solid var(--vc-edge);
+  border-radius: 6px;
+}
+.voice-end {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-}
-.voice-call-panel select {
-  max-width: 220px;
-}
-.voice-call-panel p,
-.voice-call-panel span {
+  gap: 5px;
+  height: 28px;
+  flex: none;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 999px;
+  background: #b92d42;
+  color: #fff;
   font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
-.voice-recipients {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+.voice-end:hover:not(:disabled) {
+  background: #c93a50 !important;
+}
+.voice-end.round {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+.voice-who {
+  flex: none;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--agent) 70%, var(--text));
+}
+.voice-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tone-warn .voice-status {
+  color: var(--warn, #f59e0b);
+}
+.tone-muted .voice-status {
+  color: var(--vc-danger);
+}
+.voice-timer {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.voice-live-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: #d9475d;
+  box-shadow: 0 0 0 3px rgb(217 71 93 / 0.2);
+  animation: voice-dot 1.6s ease-in-out infinite;
+}
+.tone-warn .voice-live-dot {
+  background: var(--warn, #f59e0b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn, #f59e0b) 22%, transparent);
+}
+.voice-spacer {
+  flex: 1;
 }
 
-.voice-call-heading {
+/* Sound wave: the bot's colour while it talks, yours while it hears you, dots while it works. */
+.voice-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 16px;
+  flex: none;
+  color: var(--muted);
+}
+.voice-wave i {
+  display: block;
+  width: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.voice-wave[data-mode="bot"] { color: var(--agent); }
+.voice-wave[data-mode="bot"] i { animation: voice-bounce 0.9s ease-in-out infinite; }
+.voice-wave[data-mode="you"] { color: var(--text); }
+.voice-wave[data-mode="you"] i { --h: 9px; animation: voice-bounce 1.3s ease-in-out infinite; }
+.voice-wave i:nth-child(1) { --h: 7px; animation-delay: -0.2s; }
+.voice-wave i:nth-child(2) { --h: 13px; animation-delay: -0.5s; }
+.voice-wave i:nth-child(3) { --h: 16px; animation-delay: -0.1s; }
+.voice-wave i:nth-child(4) { --h: 11px; animation-delay: -0.7s; }
+.voice-wave i:nth-child(5) { --h: 6px; animation-delay: -0.35s; }
+.voice-wave[data-mode="you"] i:nth-child(3) { --h: 10px; }
+.voice-wave[data-mode="flat"] i { height: 3px; opacity: 0.45; }
+.voice-wave[data-mode="dots"] { gap: 3px; color: var(--agent); }
+.voice-wave[data-mode="dots"] i { width: 4px; height: 4px; border-radius: 50%; animation: voice-dot 1.2s ease-in-out infinite; }
+.voice-wave[data-mode="dots"] i:nth-child(n + 4) { display: none; }
+.voice-wave[data-mode="dots"] i:nth-child(2) { animation-delay: 0.2s; }
+.voice-wave[data-mode="dots"] i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes voice-bounce { 0%, 100% { height: 4px; } 50% { height: var(--h); } }
+@keyframes voice-dot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .voice-wave i, .voice-live-dot { animation: none !important; }
+}
+
+/* A: the call bar over the chat box. */
+.voice-callbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 5px 6px 5px 12px;
+  border: 1px solid var(--vc-edge);
+  border-radius: calc(var(--vc-radius) * 1.6);
+  background: var(--vc-raised);
+}
+
+/* B: the mic grown into a pill. */
+.voice-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #b92d42 16%, var(--vc-raised));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #b92d42 45%, transparent);
+}
+.voice-pill .voice-callbtn,
+.voice-pill .voice-end.round {
+  width: 26px;
+  height: 26px;
+}
+.voice-pill .voice-callbtn {
+  color: var(--text);
+}
+.voice-pill.tone-muted {
+  background: color-mix(in srgb, var(--vc-danger) 12%, var(--vc-raised));
+}
+.voice-pill-mid {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.voice-pill-mid:hover:not(:disabled),
+.voice-pill-mid[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--text) 9%, transparent) !important;
+}
+.voice-pill .voice-timer {
+  color: var(--text);
+}
+.voice-pill.tone-warn .voice-wave {
+  color: var(--warn, #f59e0b);
+}
+
+/* C: the capsule in the thread's top bar. It takes the spacer's place, so the title gives way to it, never under it. */
+.pane-head:has(> .pane-counts > .voice-capsule) > .spacer,
+.popout-bar:has(.voice-capsule) > .spacer {
+  display: none;
+}
+.voice-capsule {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 420px;
+  height: 32px;
+  box-sizing: border-box;
+  margin-inline: auto;
+  padding: 0 3px 0 4px;
+  border: 1px solid var(--vc-edge);
+  border-radius: 18px;
+  background: var(--vc-sunk);
+  font-size: 12.5px;
+}
+.voice-capsule.open {
+  background: var(--vc-raised);
+}
+.voice-capsule .voice-callbtn,
+.voice-capsule .voice-end.round {
+  width: 24px;
+  height: 24px;
+}
+.voice-capsule-body {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.voice-capsule-body:hover:not(:disabled),
+.voice-capsule-body[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--text) 8%, transparent) !important;
+}
+
+/* Panels: call settings, Call who?, setup and errors. */
+.voice-pop {
+  position: fixed;
+  z-index: 30;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  max-height: min(70vh, calc(100vh - 16px));
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--vc-edge);
+  border-radius: max(8px, calc(var(--vc-radius) * 0.8));
+  background: var(--vc-raised);
+  box-shadow: 0 14px 36px -18px rgb(0 0 0 / 0.45);
+  font-size: 12.5px;
+}
+.voice-pop p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.voice-pop-head {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+.voice-pop-note {
+  display: block;
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.voice-pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.voice-settings { width: 300px; }
+.voice-setup { width: 320px; }
+.voice-pick { width: 240px; padding: 6px; }
+.voice-pick .voice-pop-head {
+  margin: 0;
+  padding: 4px 8px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.voice-pick .voice-pop-note { margin: 4px 8px; }
+.voice-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.voice-pick-row:hover,
+.voice-pick-row:focus-visible {
+  background: color-mix(in srgb, var(--accent) 16%, transparent) !important;
+}
+.voice-pick-row b { font-weight: 600; }
+.voice-pick-row span:last-child {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.voice-set-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  margin: 0 0 10px;
 }
-.voice-call-heading strong {
+.voice-set-row > span:first-child {
+  flex: none;
+  color: var(--muted);
+}
+.voice-set-row.col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.voice-set-row.col > span:first-child {
+  display: flex;
+  justify-content: space-between;
+}
+.voice-set-row.col b {
+  color: var(--text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.voice-set-row input[type="range"] {
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+.voice-set-row input[type="text"],
+.voice-voice select {
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--vc-edge);
+  border-radius: 6px;
+  background: var(--vc-sunk);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.voice-set-row input[type="text"] {
+  width: 150px;
+}
+.voice-voice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
-  overflow-wrap: anywhere;
 }
-.voice-call-heading button {
-  flex-shrink: 0;
+.voice-voice select {
+  max-width: 150px;
+}
+.voice-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 14px;
+  background: var(--vc-sunk);
+}
+.voice-seg button {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
   font-size: 12px;
+  cursor: pointer;
+}
+.voice-seg button[aria-pressed="true"] {
+  background: var(--vc-raised);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--vc-edge);
 }

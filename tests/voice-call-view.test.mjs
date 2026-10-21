@@ -1,0 +1,60 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { callLine, callClock, readCallLook, DEFAULT_CALL_LOOK } from "../src/voice/callView.ts";
+import { readVoiceSettings } from "../src/voice/settings.ts";
+
+const state = (patch) => ({ status: "listening", muted: false, voices: [], ...patch });
+
+test("the look is one of the three, and the pill when unset or unknown", () => {
+  assert.equal(DEFAULT_CALL_LOOK, "pill");
+  for (const look of ["bar", "pill", "capsule"]) assert.equal(readCallLook(look), look);
+  for (const bad of [undefined, null, "", "dock", 3, {}]) assert.equal(readCallLook(bad), "pill");
+  assert.equal(readVoiceSettings(undefined).look, "pill");
+  assert.equal(readVoiceSettings({ look: "capsule" }).look, "capsule");
+  assert.equal(readVoiceSettings({ look: "island" }).look, "pill");
+});
+
+test("each moment of a call has its own words and wave", () => {
+  assert.deepEqual(callLine(state({ status: "speaking" }), "Null"), {
+    status: "Talking · speak to interrupt",
+    hint: "Null is talking · speak to interrupt",
+    wave: "bot",
+    tone: "ok",
+  });
+  assert.equal(callLine(state({ status: "waiting" }), "Null").hint, "Null is working…");
+  assert.equal(callLine(state({ status: "waiting" }), "Null").wave, "dots");
+  assert.equal(callLine(state({ status: "hearing" }), "Null").wave, "you");
+  assert.equal(callLine(state({ status: "listening" }), "Null").status, "Listening");
+  assert.equal(callLine(state({ status: "warming" }), "Null").status, "Starting…");
+});
+
+test("reconnecting, problems and mute read differently from a normal call", () => {
+  const back = callLine(state({ status: "warming", reconnecting: true }), "Null");
+  assert.equal(back.status, "Reconnecting…");
+  assert.equal(back.tone, "warn");
+  const lost = callLine(state({ status: "needs-attention", error: "Choose which agent to call." }), "Null");
+  assert.equal(lost.status, "Choose which agent to call.");
+  assert.equal(lost.tone, "warn");
+  assert.equal(callLine(state({ status: "needs-attention" }), "Null").status, "Needs you in the thread");
+  const muted = callLine(state({ muted: true }), "Null");
+  assert.equal(muted.status, "Muted · Null can still talk");
+  assert.equal(muted.tone, "muted");
+  assert.equal(muted.wave, "flat");
+  // A muted call still shows the bot's voice moving while it talks.
+  assert.equal(callLine(state({ muted: true, status: "speaking" }), "Null").wave, "bot");
+});
+
+test("the call timer reads m:ss, then h:mm:ss after an hour", () => {
+  assert.equal(callClock(0), "0:00");
+  assert.equal(callClock(-5000), "0:00");
+  assert.equal(callClock(134_900), "2:14");
+  assert.equal(callClock(3_600_000 + 65_000), "1:01:05");
+});
+
+test("voice ids read as a name and accent", async () => {
+  const { voiceLabel } = await import("../src/voice/callView.ts");
+  assert.equal(voiceLabel("am_michael"), "Michael · US");
+  assert.equal(voiceLabel("bf_emma"), "Emma · UK");
+  assert.equal(voiceLabel("custom"), "custom");
+  assert.equal(voiceLabel("qx_odd"), "qx_odd");
+});
