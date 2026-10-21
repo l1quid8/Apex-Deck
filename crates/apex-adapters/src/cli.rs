@@ -672,7 +672,11 @@ impl Participant for CliParticipant {
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }
         if self.mcp_disabled && self.isolation.is_none() && !matches!(self.config.backend, Backend::Agent { tool: AgentTool::ClaudeCode | AgentTool::Codex, .. }) {
-            let isolation = std::sync::Arc::new(crate::gateway_sandbox::Isolation::new(&self.config.backend)?);
+            let backend = self.config.backend.clone();
+            // Credential lookup may wait on Keychain; keep it off the async worker.
+            let isolation = tokio::task::spawn_blocking(move || crate::gateway_sandbox::Isolation::new(&backend))
+                .await.map_err(|_| ParticipantError::Failed("Gateway isolation setup failed".into()))??;
+            let isolation = std::sync::Arc::new(isolation);
             let scoped = Self { config: self.config.clone(), timeout: self.timeout, cwd: None, path: self.path.clone(), codex_hook: None, temp: None, plan: self.plan, tools_disabled: self.tools_disabled, mcp_disabled: true, isolation: Some(isolation), processes: self.processes.clone(), cargo_target_dir: None, attachment_roots: Vec::new(), phone: None };
             return scoped.respond_with_approvals(request, on_progress, approver).await;
         }

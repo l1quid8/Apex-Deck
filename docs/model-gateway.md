@@ -13,7 +13,7 @@ request; they do not fall back to an unrestricted CLI.
 
 ## Other CLI backends on macOS
 
-Gemini, Grok, and saved custom CLI profiles use a separate per-turn home, work
+Gemini, Grok, Muse, and saved custom CLI profiles use a separate per-turn home, work
 folder, temporary directory and XDG configuration directories. The child gets a
 fresh environment, not the host's MCP secrets, endpoint overrides or daemon
 socket variables. The native macOS sandbox applies to the process and its
@@ -43,20 +43,29 @@ Do not embed private MCP credentials or endpoints in its code/arguments.
   servers should be configured as API profiles instead of bypassing the
   sandbox's loopback restriction.
 
-These three additional paths are withheld on non-macOS hosts until an equivalent
+These additional paths are withheld on non-macOS hosts until an equivalent
 process boundary exists. Missing executables, unavailable sandbox facilities,
 authentication failures and unsupported runtime layouts fail the request and
 refund its turn reservation. They never trigger an unrestricted retry.
 
-## Muse remains withheld
+## Muse subscription authentication
 
-Muse is omitted from `/v1/models` and direct requests return HTTP 409. Its
-current macOS subscription login uses Keychain: a normal session starts, but
-the isolated session fails with Keychain OSStatus -50. Broad Keychain or
-preferences-service exceptions would expose more than the model credential and
-are deliberately absent. A future trusted host helper must supply only Muse's
-model authentication through a supported isolated authentication interface
-before this backend can be enabled. An old `allow_mcp` key cannot bypass this.
+On macOS, Muse is available through the same private process boundary. The
+trusted daemon uses the macOS credential helper to resolve only the
+`ai.meta.dev.credentials` / `meta` Keychain item, with a ten-second timeout.
+Only its OAuth subscription access token and selected model-login metadata are
+staged in a private 0600 auth file; API-key and MCP credential slots are omitted.
+The request's private 0700 directory is removed when the participant is dropped.
+Host credentials and settings are not rewritten, and the sandboxed child still
+cannot query Keychain. Unsupported auth schemas and credential failures fail
+closed without an unrestricted retry.
+
+Muse plugins are disabled. Its safe directory walker may open the selected
+executable's ancestor directories and the literal `/Library` and
+`/Library/Application Support` directories. These are directory-only grants,
+not permission to read files or subtrees beneath them. User MCP configuration,
+private credential files, host sockets and loopback connections remain blocked.
+An old `allow_mcp` key cannot change this policy.
 
 ## Verification and limits
 
@@ -66,6 +75,10 @@ MCP canary return `PRIVATE_MCP_UNAVAILABLE` with no secret content. Separate
 kernel-enforced tests verify absolute file reads and connections to host TCP
 and Unix-socket canaries fail. A Gemini fixture checks native CLI selection and
 private settings. A live Grok completion through the HTTP listener with a legacy key returned HTTP 200 and `GATEWAY_OK 42`. The Gemini fixture does
-not prove an authenticated Google completion, and Muse's live completion is
-currently blocked as described above. Opt-in live tests are marked ignored so
-ordinary tests never consume subscription turns.
+not prove an authenticated Google completion. A real Muse Spark 1.3 completion
+through the HTTP listener with an old `allow_mcp: true` key returned HTTP 200
+and `GATEWAY_MUSE_OK 42`; a private-tool inventory prompt returned
+`PRIVATE_MCP_UNAVAILABLE`. Independent kernel tests verify that the Muse
+directory grants still deny private file contents and direct Keychain queries.
+Opt-in live tests are marked ignored so ordinary tests never consume subscription
+turns.
