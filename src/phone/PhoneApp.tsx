@@ -136,6 +136,9 @@ type Browse = {
 
 const emptyDraft = (): Draft => ({ text: "", files: [] });
 const words = (error: unknown) => String(error).replace(/^Error: /, "");
+const tabName = (tab: Tab) => tab[0].toUpperCase() + tab.slice(1);
+/** ageWords says "now" for under a minute, which takes no "ago". */
+const activeWords = (age: string) => age === "now" ? "Active now" : `Active ${age} ago`;
 const folderName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 
 function toLink(status: HostConnection["status"]): LinkStatus {
@@ -218,6 +221,8 @@ export function PhoneApp() {
   });
   const [appearanceSaveError, setAppearanceSaveError] = useState(false);
   const settingsReturn = useRef<Tab>("threads");
+  /** Machines opens from Threads (Pair) or from Settings; its back button returns there. */
+  const machinesReturn = useRef<Tab>("threads");
   useLayoutEffect(() => applyPhoneTheme(document.documentElement, appearance.current.appearance), [appearance]);
   const changeAppearance = (next: AppearanceState) => {
     setAppearance(next);
@@ -254,6 +259,9 @@ export function PhoneApp() {
   const [terminalSwitcherOpen, setTerminalSwitcherOpen] = useState(false);
   const [terminalResumeSignal, setTerminalResumeSignal] = useState(0);
   const [terminalNeedsAnswer, setTerminalNeedsAnswer] = useState(false);
+  /** A terminal is open on the Code tab, so the header shows ‹ Code; the back button bumps the home signal. */
+  const [terminalViewing, setTerminalViewing] = useState(false);
+  const [terminalHomeSignal, setTerminalHomeSignal] = useState(0);
   const codeHoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const codeHeld = useRef(false);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -1325,6 +1333,9 @@ export function PhoneApp() {
   const started = Boolean(openPane && (openPane.assistantTaskId || (room && room.id === openPane.id ? room.messages.length : 0) > (openPane.fork?.at ?? 0) || openPane.activeAt));
   const inChat = tab === "threads" && openId !== null && (openPane !== null || viewingPending) && openWorkspace !== null && openLink !== null;
   const covered = composerOpen || sheet !== null || menu !== null || ask !== null || browse !== null || botSheet !== null || pairing !== null || assistantWorkspaceId !== null || personalOpen;
+  // Settings and Machines sit above a tab, so the tab they were opened from stays lit.
+  const shownTab = tab === "machines" ? machinesReturn.current : tab;
+  const litTab = shownTab === "settings" || shownTab === "appearance" ? settingsReturn.current : shownTab;
   const menuPane = menu && (menu.kind === "thread" || menu.kind === "rename" || menu.kind === "bots") ? panes.find((pane) => pane.id === menu.id) ?? null : null;
   // A Bots sheet that can't show (thread closed or its room not loaded) must not leave the screen covered.
   const botsStale = menu?.kind === "bots" && !(menuPane && room && room.id === menuPane.id);
@@ -1345,15 +1356,18 @@ export function PhoneApp() {
         {!inChat && (
           <header className="ph-head" inert={covered}>
             {tab === "appearance"
-              ? <button type="button" className="ph-back" onClick={() => setTab("settings")}><ArrowLeft size={20} />Settings</button>
+              ? <BackButton label="Settings" onClick={() => setTab("settings")} />
               : tab === "settings"
-              ? <button type="button" className="ph-back" onClick={() => setTab(settingsReturn.current)}><ArrowLeft size={20} />{settingsReturn.current[0].toUpperCase() + settingsReturn.current.slice(1)}</button>
+              ? <BackButton label={tabName(settingsReturn.current)} onClick={() => setTab(settingsReturn.current)} />
               : tab === "machines"
-              ? <button type="button" className="ph-back" onClick={() => { setOpenId(null); setSheet(null); setTab("threads"); }}><ArrowLeft size={20} />Threads</button>
-              : <h1 className="ph-large"><img className="ph-mark" src="/branding/mark.svg" alt="" width="26" height="26" />{tab[0].toUpperCase() + tab.slice(1)}</h1>}
+              ? <BackButton label={tabName(machinesReturn.current)} onClick={() => { setOpenId(null); setSheet(null); setTab(machinesReturn.current); }} />
+              : tab === "code" && terminalViewing
+              ? <BackButton label="Code" onClick={() => setTerminalHomeSignal((n) => n + 1)} />
+              : <h1 className="ph-large"><img className="ph-mark" src="/branding/mark.svg" alt="" width="26" height="26" />{tabName(tab)}</h1>}
             <span className="ph-head-actions">
               {tab === "threads" && newAllowed && <button type="button" className="ph-icon" aria-label="New thread" onClick={() => { setQuery(""); setMenu({ kind: "new" }); }}><Plus size={22} /></button>}
-              {tab !== "settings" && tab !== "appearance" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
+              {/* Machines is part of Settings, so it has no way back into Settings of its own. */}
+              {tab !== "settings" && tab !== "appearance" && tab !== "machines" && <button type="button" className="ph-icon" aria-label="Settings" onClick={() => { settingsReturn.current = tab; setTab("settings"); setOpenId(null); }}><Settings size={20} /></button>}
             </span>
           </header>
         )}
@@ -1467,7 +1481,7 @@ export function PhoneApp() {
             onPick={newAllowed ? () => { setQuery(""); setMenu({ kind: "new" }); } : undefined}
             onThreadMenu={(id) => { if (!panes.find((pane) => pane.id === id)?.assistantTaskId) setMenu({ kind: "thread", id }); }}
             onProjectMenu={(id) => setMenu({ kind: "project", id })}
-            onMachines={() => setTab("machines")}
+            onMachines={() => { machinesReturn.current = "threads"; setTab("machines"); }}
             onRetry={(id) => phoneHost(id)?.connection.retryNow()}
             archived={sections.archived.length}
             onArchived={() => setMenu({ kind: "archived" })}
@@ -1476,9 +1490,9 @@ export function PhoneApp() {
           <main className="ph-content" inert={covered}>
             <h2>Settings</h2>
             <p className="ph-intro">Preferences for this phone.</p>
-            <div className="ph-group">
-              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={18} /></button>
-              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("machines")}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={18} /></button>
+            <div className="ph-list">
+              <button type="button" className="ph-srow ph-preference" onClick={() => setTab("appearance")}><span className="ph-grow"><strong>Appearance</strong><small>{appearance.current.name} · Themes, glass and colors</small></span><ChevronRight size={15} /></button>
+              <button type="button" className="ph-srow ph-preference" onClick={() => { machinesReturn.current = "settings"; setTab("machines"); }}><span className="ph-grow"><strong>Machines</strong><small>Connections and paired devices</small></span><ChevronRight size={15} /></button>
             </div>
           </main>
         ) : tab === "appearance" ? (
@@ -1511,6 +1525,7 @@ export function PhoneApp() {
           />
         ) : (
           <SideTab tab={tab} link={openLink ?? mac ?? null} host={openLink ? phoneHost(openLink.id) : macHost} hosts={hosts} terminalCwd={openWorkspace?.path ?? workspaces.find((workspace) => workspaceHost(workspace) === (openLink ?? mac)?.id)?.path ?? null} agents={agents} covered={covered} assistantProjects={assistantProjects} assistantRegistryErrors={assistantRegistryErrors} terminalSwitcherOpen={terminalSwitcherOpen} onTerminalSwitcherOpened={() => setTerminalSwitcherOpen(false)} terminalResumeSignal={terminalResumeSignal} onTerminalWaiting={setTerminalNeedsAnswer}
+            terminalHomeSignal={terminalHomeSignal} onTerminalViewing={setTerminalViewing}
             personal={personal} onPersonal={() => setPersonalOpen(true)}
             library={<PhoneLibrary machines={libraryMachines} threads={panes} workspaces={workspaces} onOpenThread={openThread} />}
             bots={(session?.profiles ?? []).map((profile) => ({ ...toPerson(profile), tool: toolWords(profile), ...botDoing(profile.id) }))}
@@ -1530,7 +1545,7 @@ export function PhoneApp() {
         )}
         {!inChat && <nav className="ph-tabs" aria-label="Sections" inert={covered}>
           {([[Command, "Agents", "agents"], [Terminal, "Code", "code"], [MessageSquare, "Threads", "threads"], [Folder, "Library", "library"]] as const).map(([Icon, label, item]) => (
-            <button key={item} type="button" className={tab === item || (item === "threads" && tab === "machines") ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") setOpenId(null); }}>
+            <button key={item} type="button" className={litTab === item ? "on" : ""} aria-current={tab === item ? "page" : undefined} aria-label={item === "code" ? "Code. Hold to switch terminals." : undefined} onPointerDown={item === "code" ? () => { codeHeld.current = false; if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = setTimeout(() => { codeHeld.current = true; setTab("code"); setOpenId(null); setTerminalSwitcherOpen(true); }, 500); } : undefined} onPointerUp={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onPointerLeave={item === "code" ? () => { if (codeHoldTimer.current) clearTimeout(codeHoldTimer.current); codeHoldTimer.current = null; } : undefined} onClick={() => { if (item === "code") { if (codeHeld.current) { codeHeld.current = false; return; } if (tab === "code") setTerminalResumeSignal((n) => n + 1); } setTab(item); if (item === "threads") setOpenId(null); }}>
               <Icon size={21} />{label}{item === "code" && terminalNeedsAnswer && <i className="ph-tabs-amber-dot" />}
             </button>
           ))}
@@ -1667,7 +1682,7 @@ export function PhoneApp() {
               <div className="ph-card">
                 <p><strong>{workspace?.name ?? "No project"}</strong>{link ? ` · ${link.name}` : ""}</p>
                 {workspace?.path && <p className="ph-path">{workspace.path}</p>}
-                <p className="ph-meta">{link && link.status !== "online" ? `${downLine(link)} · ` : ""}{menuPane.activeAt ? `Active ${ageWords(Date.now() - menuPane.activeAt)} ago` : "Not started"}</p>
+                <p className="ph-meta">{link && link.status !== "online" ? `${downLine(link)} · ` : ""}{menuPane.activeAt ? activeWords(ageWords(Date.now() - menuPane.activeAt)) : "Not started"}</p>
               </div>
               {menuPane.id === openId && room && room.id === openPane?.id && (
                 <button type="button" className="ph-srow ph-bots-menu" onClick={() => { setBotChange(null); setMenu({ kind: "bots", id: menuPane.id }); }}>
@@ -1830,6 +1845,11 @@ export function PhoneApp() {
   );
 }
 
+/** The phone's one back button: the iOS chevron, as in a thread's title bar, then where it goes. */
+function BackButton({ label, onClick, className }: { label: string; onClick(): void; className?: string }) {
+  return <button type="button" className={`ph-back${className ? ` ${className}` : ""}`} aria-label={`Back to ${label}`} onClick={onClick}><ChevronLeft size={26} />{label}</button>;
+}
+
 function Sheet({ title, onClose, children, variant }: { title: string; onClose(): void; children: ReactNode; variant?: "location" }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.focus(); }, []);
@@ -1944,7 +1964,7 @@ function BotSheet(props: {
   if (view === "models" && choices) {
     return (
       <Sheet title="Model" onClose={props.onClose}>
-        <button type="button" className="ph-back ph-sheet-back-link" onClick={() => setView("bot")}><ChevronLeft size={18} />{name}</button>
+        <BackButton className="ph-sheet-back-link" label={name} onClick={() => setView("bot")} />
         <div className="ph-group" role="menu" aria-label={`Model for ${name}`}>
           {tool && modelRow({ id: "" })}
           {model && !all.some((m) => m.id === model) && modelRow({ id: model })}
@@ -2637,20 +2657,21 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   );
 }
 
-function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, terminalSwitcherOpen, onTerminalSwitcherOpened, terminalResumeSignal, onTerminalWaiting, onAssistant, onShow, personal, onPersonal }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; hosts: PhoneHost[]; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; terminalSwitcherOpen: boolean; onTerminalSwitcherOpened(): void; terminalResumeSignal: number; onTerminalWaiting(waiting: boolean): void; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void }) {
+function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, library, assistantProjects, assistantRegistryErrors, terminalSwitcherOpen, onTerminalSwitcherOpened, terminalResumeSignal, onTerminalWaiting, terminalHomeSignal, onTerminalViewing, onAssistant, onShow, personal, onPersonal }: { tab: Tab; link: LinkView | null; host: PhoneHost | null; hosts: PhoneHost[]; terminalCwd: string | null; agents: string[]; bots: (Person & { tool: string; working: string | null; cutOff: string | null })[]; covered: boolean; library: ReactNode; assistantProjects: { workspace: Workspace; link: LinkView | null; allowed: boolean }[]; assistantRegistryErrors: Record<string, string>; terminalSwitcherOpen: boolean; onTerminalSwitcherOpened(): void; terminalResumeSignal: number; onTerminalWaiting(waiting: boolean): void; terminalHomeSignal: number; onTerminalViewing(viewing: boolean): void; onAssistant(workspaceId: string): void; onShow(): void; personal: PersonalLane | null; onPersonal(): void }) {
   useEffect(() => { if (tab === "agents") onShow(); }, [tab, link?.id, link?.status]);
   // The Library lists every paired machine itself, so it doesn't follow one machine or wait on the Mac.
   if (tab === "library") return <main className="ph-content" inert={covered}>{library}</main>;
   const offline = !link || link.status !== "online";
   return (
     <main className="ph-content" inert={covered}>
-      {link && <p className="ph-intro"><i className={`ph-dot${link.status === "online" ? " on" : link.status === "offline" ? " off" : ""}`} />Follows {link.name}</p>}
+      {/* Code names its project and machine itself, so only Agents says which machine it follows. */}
+      {link && tab === "agents" && <p className="ph-intro"><i className={`ph-dot${link.status === "online" ? " on" : link.status === "offline" ? " off" : ""}`} />Follows {link.name}</p>}
       {!link && <div className="ph-empty"><h3>Pair a machine first</h3><p>Open Settings → Machines.</p></div>}
       {link && offline && <div className="ph-banner"><strong>{link.name} can't be reached</strong><p>{downLine(link)}</p></div>}
       {tab === "agents" && bots.length > 0 && <>
         <div className="ph-section">Your bots</div>
-        <div className="ph-group">{bots.map((bot) => (
-          <div key={bot.id} className="ph-srow ph-inset">
+        <div className="ph-list">{bots.map((bot) => (
+          <div key={bot.id} className="ph-srow">
             <Avatar seed={bot.look.seed} color={bot.look.color} working={bot.working !== null} />
             <span className="ph-grow"><strong>{bot.display_name}</strong><small className={bot.working ? "ph-mint" : bot.cutOff ? "ph-amber" : undefined}>{bot.working ? `Working in ${bot.working}` : bot.cutOff ?? bot.tool}</small></span>
           </div>
@@ -2658,7 +2679,7 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
       </>}
       {tab === "agents" && personal && <>
         <div className="ph-section">Your assistant</div>
-        <div className="ph-group">{(() => {
+        <div className="ph-list">{(() => {
           const waiting = personal.assistant?.tasks.filter((task) => task.status === "needsYou" && task.decision?.status === "open").length ?? 0;
           // Tasks that need you, plus delivered notices nobody has seen yet.
           const unseen = personal.assistant?.notices?.filter((notice) => notice.deliveredAt && !notice.seenAt).length ?? 0;
@@ -2666,17 +2687,16 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
           const usable = !!personal.assistant && !personal.offline;
           const detail = personal.problem ?? (personal.offline ? `${personal.hostName} can't be reached` : !personal.assistant ? `Set it up on ${personal.hostName} from the Mac` : needYou ? `${personal.hostName} · ${needYou} need${needYou === 1 ? "s" : ""} you` : `${personal.hostName} · Open conversation`);
           return <button type="button" className="ph-srow ph-project-assistant" disabled={!usable} onClick={onPersonal}>
-            <span className="ph-srow-icon ph-muted-icon"><MessageSquare size={18} /></span>
             <span className="ph-grow"><strong>{personal.name}</strong><small className={needYou ? "ph-amber" : undefined}>{detail}</small></span>
-            {usable && <ChevronRight size={16} />}
+            {usable && <ChevronRight size={15} />}
           </button>;
         })()}</div>
       </>}
       {tab === "agents" && <>
         <div className="ph-section">Project assistants</div>
         {assistantProjects.length === 0
-          ? <div className="ph-empty"><h3>No projects yet</h3><p>Add a project from Threads to set up ApexAgent.</p></div>
-          : <div className="ph-group">{assistantProjects.map(({ workspace, link: projectLink, allowed }) => {
+          ? <p className="ph-list-note">No projects yet. Add one from Threads to set up ApexAgent.</p>
+          : <div className="ph-list">{assistantProjects.map(({ workspace, link: projectLink, allowed }) => {
             const available = projectLink?.status === "online" && allowed;
             const error = assistantRegistryErrors[workspace.id];
             const detail = error ? `ApexAgent unavailable: ${error}`
@@ -2684,16 +2704,18 @@ function SideTab({ tab, link, host, hosts, terminalCwd, agents, bots, covered, l
               : projectLink.status !== "online" ? downLine(projectLink)
                 : !allowed ? "Needs Full access on its machine" : `${projectLink.name} · Open project assistant`;
             return <button key={workspace.id} type="button" className="ph-srow ph-project-assistant" disabled={!available} onClick={() => onAssistant(workspace.id)}>
-              <span className="ph-srow-icon ph-muted-icon"><MessageSquare size={18} /></span>
               <span className="ph-grow"><strong>{workspace.name}</strong><small>{detail}</small></span>
-              {available && <ChevronRight size={16} />}
+              {available && <ChevronRight size={15} />}
             </button>;
           })}</div>}
       </>}
-      {link && !offline && tab === "agents" && (agents.length === 0
-        ? <div className="ph-empty"><h3>No coding agents found</h3><p>Nothing installed on {link.name} yet.</p></div>
-        : <><div className="ph-section">Installed on {link.name}</div><div className="ph-group">{agents.map((agent) => <div key={agent} className="ph-srow ph-inset"><span className="ph-srow-icon ph-muted-icon"><Terminal size={18} /></span><span className="ph-grow"><strong>{agent}</strong><small>Ready</small></span></div>)}</div></>)}
-      {link && <PhoneTerminal host={host} hosts={hosts} name={link.name} cwd={terminalCwd} hidden={tab !== "code"} openSwitcher={terminalSwitcherOpen} onSwitcherOpened={onTerminalSwitcherOpened} resumeSignal={terminalResumeSignal} onWaitingChange={onTerminalWaiting} />}
+      {link && !offline && tab === "agents" && <>
+        <div className="ph-section">Installed on {link.name}</div>
+        {agents.length === 0
+          ? <p className="ph-list-note">No coding agents found.</p>
+          : <div className="ph-list">{agents.map((agent) => <div key={agent} className="ph-srow"><span className="ph-grow"><strong>{agent}</strong><small>Ready</small></span></div>)}</div>}
+      </>}
+      {link && <PhoneTerminal host={host} hosts={hosts} name={link.name} cwd={terminalCwd} hidden={tab !== "code"} openSwitcher={terminalSwitcherOpen} onSwitcherOpened={onTerminalSwitcherOpened} resumeSignal={terminalResumeSignal} onWaitingChange={onTerminalWaiting} homeSignal={terminalHomeSignal} onViewingChange={onTerminalViewing} />}
     </main>
   );
 }

@@ -10,14 +10,25 @@ import { nextTitle } from "../terminalTitle";
 import { writeClipboard } from "../threadCopy";
 import { age, appendTail, askLine, arrowCode, controlCode, dotState, fromPhone, groupForSheet, isYesNo, lastLine, nextDotChange, questionText, readTerminalCache, stripAnsi, stripOrder, swipeIntent, writeTerminalCache, type PhoneTerminal as PhoneTerminalInfo } from "./phoneTerminals";
 import { copyLastOutput, endTerminal, renameTerminal, resizePhoneTerminal } from "./terminalActions";
+import { Check, ChevronDown, Plus, X } from "./icons";
 
 type View = { kind: "home" } | { kind: "terminal"; machineId: string; id: string };
 type HostInfo = { host: PhoneHost; name: string; id: string; online: boolean; access: boolean };
-type Props = { host: PhoneHost | null; hosts: PhoneHost[]; name: string; cwd: string | null; openSwitcher?: boolean; resumeSignal?: number; onSwitcherOpened?: () => void; onWaitingChange?: (waiting: boolean) => void; hidden?: boolean; canWriteClipboard?: (text: string) => Promise<boolean> };
+type Props = {
+  host: PhoneHost | null; hosts: PhoneHost[]; name: string; cwd: string | null; openSwitcher?: boolean; resumeSignal?: number; onSwitcherOpened?: () => void; onWaitingChange?: (waiting: boolean) => void; hidden?: boolean; canWriteClipboard?: (text: string) => Promise<boolean>;
+  /** Bumped by the header's ‹ Code button: back to the terminal list. */
+  homeSignal?: number;
+  /** Whether a terminal is open, so the header can show ‹ Code instead of the Code title. */
+  onViewingChange?: (viewing: boolean) => void;
+};
 const closedKey = (id: string) => `apex-deck.phone.closed-terminals.${id}`;
 const dotText: Record<string, string> = { ask: "Needs an answer", run: "Running", idle: "Idle", fail: "Failed", ended: "Finished" };
+/** The Code home lists this many of the machine's terminals; See all has the rest. */
+const HOME_ROWS = 8;
+/** age() says "now" for under a minute, which takes no "ago". */
+const ago = (when: string) => when === "now" ? "just now" : `${when} ago`;
 
-export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSignal, onSwitcherOpened, onWaitingChange, hidden, canWriteClipboard }: Props) {
+export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSignal, onSwitcherOpened, onWaitingChange, hidden, canWriteClipboard, homeSignal, onViewingChange }: Props) {
   const [summaries, setSummariesState] = useState<Record<string, PhoneTerminalInfo[]>>(() => readTerminalCache());
   const setSummaries = (update: SetStateAction<Record<string, PhoneTerminalInfo[]>>) => setSummariesState((current) => {
     const next = typeof update === "function" ? update(current) : update;
@@ -66,7 +77,13 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     if (status.kind === "resync") return "The connection is resynchronizing.";
     return hostErrors[info.id] || `${info.name} is offline`;
   };
-  const project = view.kind === "terminal" ? (visible.find((item) => item.machineId === view.machineId && item.id === view.id)?.project ?? cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? name) : cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? name;
+  const folder = cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? null;
+  const project = view.kind === "terminal" ? (visible.find((item) => item.machineId === view.machineId && item.id === view.id)?.project ?? folder ?? name) : folder ?? name;
+  /** This machine's terminals, for the Code home. */
+  const here = visible.filter((item) => item.machineId === machine?.id);
+  const listed = (at: View | null) => at?.kind === "terminal" && here.slice(0, HOME_ROWS).some((item) => item.id === at.id && item.machineId === at.machineId);
+  /** Resume offers the last terminal while it's open and not already a row on the home. */
+  const resumable = lastTerminal?.kind === "terminal" && visible.some((item) => item.id === lastTerminal.id && item.machineId === lastTerminal.machineId) && !listed(lastTerminal);
   const terminal = view.kind === "terminal" ? visible.find((item) => item.machineId === view.machineId && item.id === view.id) ?? null : null;
   const strip = terminal ? stripOrder(visible, terminal.machineId, terminal.project) : [];
   const groups = useMemo(() => groupForSheet(infos, visible, { machineId: machine?.id ?? "", project }), [summaries, hostState, view, machine?.id, project]);
@@ -75,6 +92,9 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
   useEffect(() => { setSheetPortal(termRoot.current?.closest(".phone-frame") ?? null); }, []);
   useEffect(() => { sheetDialog.current?.focus(); }, [sheet, sheetPortal]);
   useEffect(() => { if (resumeSignal && view.kind === "home" && lastTerminal) setView(lastTerminal); }, [resumeSignal]);
+  useEffect(() => { if (homeSignal) setView({ kind: "home" }); }, [homeSignal]);
+  useEffect(() => { onViewingChange?.(view.kind === "terminal"); }, [view.kind]);
+  useEffect(() => () => onViewingChange?.(false), []);
   const waiting = visible.some((item) => dotState(item) === "ask");
   useEffect(() => { onWaitingChange?.(waiting); }, [waiting]);
   // A terminal that goes quiet sends nothing to redraw its dot, so redraw when the next dot is due to change.
@@ -233,17 +253,17 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
     const at = needle ? snippet.toLowerCase().indexOf(needle.toLowerCase()) : -1;
     const snippetContent = at >= 0 ? <>{snippet.slice(0, at)}<mark>{snippet.slice(at, at + needle.length)}</mark>{snippet.slice(at + needle.length)}</> : snippet;
     return <button key={`${item.machineId}:${item.id}`} type="button" className="ph-term-row" onClick={() => { if (holdFired.current) { holdFired.current = false; return; } open(item); }} {...holdBind(item)}>
-      <i className={`ph-term-dot ${dotState(item)}`} /><span className="ph-term-row-main"><b>{item.name}{fromPhone(item.id) && <small> · from this phone</small>}</b><small>{dotText[dotState(item)]}{snippet ? <> · {snippetContent}</> : ""}</small></span><span className="ph-term-age">{current ? "✓" : age(item.lastActivity)}</span>
+      <i className={`ph-term-dot ${dotState(item)}`} /><span className="ph-term-row-main"><b>{item.name}{fromPhone(item.id) && <small> · from this phone</small>}</b><small>{dotText[dotState(item)]}{snippet ? <> · {snippetContent}</> : ""}</small></span><span className="ph-term-age">{current ? <Check size={16} /> : age(item.lastActivity)}</span>
     </button>;
   };
   const sheetContent = <>
-    {sheet === "list" && <div className="ph-sheet-back" onClick={() => setSheet(null)}><div className="ph-sheet" role="dialog" aria-modal="true" aria-label="Terminals" tabIndex={-1} ref={sheetDialog} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") setSheet(null); }}><div className="ph-handle" /><div className="ph-sheet-title"><h3>Terminals</h3><button type="button" className="ph-icon" aria-label="Close" onClick={() => setSheet(null)}>×</button></div><div className="ph-sheet-body"><div className="ph-term-sheet"><input className="ph-term-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search names and output" />
+    {sheet === "list" && <div className="ph-sheet-back" onClick={() => setSheet(null)}><div className="ph-sheet" role="dialog" aria-modal="true" aria-label="Terminals" tabIndex={-1} ref={sheetDialog} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") setSheet(null); }}><div className="ph-handle" /><div className="ph-sheet-title"><h3>Terminals</h3><button type="button" className="ph-icon" aria-label="Close" onClick={() => setSheet(null)}><X size={20} /></button></div><div className="ph-sheet-body"><div className="ph-term-sheet"><input className="ph-term-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search names and output" />
       {(query ? searchResults ?? [] : visible).length === 0 && query && <p className="ph-term-muted">No terminal name or recent output matches “{query}”.</p>}
       {(query ? groupForSheet(infos, searchResults ?? [], { machineId: machine?.id ?? "", project }) : groups).map((group) => <div key={`${group.machine.id}:${group.project}`}><h4>{group.machine.name} · {group.project}</h4>{group.terminals.map((item) => row(item, view.kind === "terminal" && item.id === view.id))}</div>)}
       {infos.filter((info) => !info.access || !info.online || hostState[info.id] === "old" || hostState[info.id] === "needs-all-threads" || hostState[info.id] === "error").map((info) => <p className="ph-term-muted" role={!info.online || hostState[info.id] === "error" || hostState[info.id] === "old" || hostState[info.id] === "needs-all-threads" ? "status" : undefined} key={info.id}>{info.name}: {hostState[info.id] === "old" ? `Update Apex Deck on ${info.name} to see its terminals (${hostErrors[info.id]})` : hostState[info.id] === "needs-all-threads" ? `Allow this phone every thread on ${info.name} (${hostErrors[info.id]})` : hostState[info.id] === "error" ? `Couldn't load terminals: ${hostErrors[info.id]}` : !info.online ? `Couldn't load terminals: ${terminalHostIssue(info)}` : `Needs Full access on ${info.name}`}</p>)}
-      {!query && machine && <button className="ph-term-new" onClick={() => void newShell(machine)}>＋ New shell in {project}</button>}
+      {!query && machine && <button type="button" className="ph-list-add" onClick={() => void newShell(machine)}>New shell in {project}</button>}
       <p className="ph-term-foot">Shows terminals opened in Apex Deck. Terminal.app and iTerm windows aren't listed.</p></div></div></div></div>}
-    {sheet === "menu" && target && <div className="ph-sheet-back" onClick={() => setSheet(null)}><div className="ph-sheet" role="dialog" aria-modal="true" aria-label={`${target.name} actions`} tabIndex={-1} ref={sheetDialog} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") setSheet(null); }}><div className="ph-handle" /><div className="ph-sheet-title"><h3><i className={`ph-term-dot ${dotState(target)}`} /> {target.name}</h3><button type="button" className="ph-icon" aria-label="Close" onClick={() => { setSheet(null); setTarget(null); }}>×</button></div><div className="ph-sheet-body"><div className="ph-term-sheet"><p className="ph-term-muted">{target.project} · {target.machineName} · {dotText[dotState(target)]}</p>
+    {sheet === "menu" && target && <div className="ph-sheet-back" onClick={() => setSheet(null)}><div className="ph-sheet" role="dialog" aria-modal="true" aria-label={`${target.name} actions`} tabIndex={-1} ref={sheetDialog} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") setSheet(null); }}><div className="ph-handle" /><div className="ph-sheet-title"><h3><i className={`ph-term-dot ${dotState(target)}`} /> {target.name}</h3><button type="button" className="ph-icon" aria-label="Close" onClick={() => { setSheet(null); setTarget(null); }}><X size={20} /></button></div><div className="ph-sheet-body"><div className="ph-term-sheet"><p className="ph-term-muted">{target.project} · {target.machineName} · {dotText[dotState(target)]}</p>
       {rename === target.id ? <form onSubmit={(event) => { event.preventDefault(); const targetHost = infos.find((info) => info.id === target.machineId); if (!targetHost) return; void renameTerminal(targetHost.host.backend, target.id, renameValue).then(() => { setSummaries((s) => ({ ...s, [target.machineId]: (s[target.machineId] ?? []).map((item) => item.id === target.id ? { ...item, name: renameValue } : item) })); setRename(null); setSheet(null); }).catch((error) => setNotice(String(error))); }}><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} /><button type="submit">Save</button></form> : <button className="ph-term-action" onClick={() => { setRenameValue(target.name); setRename(target.id); }}>Rename</button>}
       <button className="ph-term-action" onClick={() => { const buffer = xterm.current?.buffer.active; const count = Math.min(200, buffer?.length ?? 0); const text = terminal?.id === target.id && buffer ? Array.from({ length: count }, (_, index) => buffer.getLine(buffer.length - count + index)?.translateToString(true) ?? "").join("\n") : stripAnsi(target.tail); const copy = canWriteClipboard ?? ((value: string) => writeClipboard(value, navigator.clipboard)); void copyLastOutput(text, copy).then((ok) => setNotice(ok ? "Copied" : "Couldn't copy output")); setSheet(null); }}>Copy last output</button>
       <button className="ph-term-action danger" onClick={() => { const targetHost = infos.find((info) => info.id === target.machineId); if (!targetHost) return; void endTerminal(targetHost.host.backend, target.id).then(() => { setNotice(`Ended ${target.name}`); setSheet(null); }).catch((error) => setNotice(String(error))); }}>End terminal</button>
@@ -253,27 +273,32 @@ export function PhoneTerminal({ host, hosts, name, cwd, openSwitcher, resumeSign
   return <>
   <div className={view.kind === "terminal" ? "ph-term-root viewing" : "ph-term-root"} hidden={hidden} ref={termRoot}>
     {view.kind === "home" ? <>
-      <p className="ph-intro"><i className="ph-dot on" />{name}</p><h1 className="ph-term-title">Code</h1><p className="ph-term-project">{project}</p>
-      <div className="ph-group">
-        {[["Workspace files", "Browse this project", "▤"], ["Changes to review", "Review recent changes", "⌁"], ["Browser", "Later", "◉"]].map(([label, detail, icon]) => <div key={label} className="ph-term-row disabled"><span className="ph-term-plain-icon">{icon}</span><span className="ph-term-row-main"><b>{label}</b><small>{detail}</small></span></div>)}
-        <div className="ph-term-later"><b>Latest build</b><small>Later</small></div>
-      </div>
-      <div className="ph-term-home-head"><b>Terminals</b><button type="button" onClick={() => { setQuery(""); setSheet("list"); }}>See all</button></div>
-      {machine && !machine.online ? <p className="ph-term-muted" role="status">Couldn't load terminals: {terminalHostIssue(machine)}</p> : machine && !machine.access ? <p className="ph-term-muted">Needs Full access</p> : eligible.length === 0 ? <p className="ph-term-muted">Needs Full access</p> : <>
-        <button type="button" className="ph-term-open-list" onClick={() => { setQuery(""); setSheet("list"); }}>{visible.filter((item) => item.machineId === machine?.id).length} open · {visible.filter((item) => item.machineId === machine?.id && item.state === "running").length} running · {visible.filter((item) => item.machineId === machine?.id && dotState(item) === "ask").length} needs an answer</button>
-        {machine?.online && machine.access && <button type="button" className="ph-term-new" onClick={() => void newShell(machine)}>＋ New shell</button>}
-        {machine && hostErrors[machine.id] && <p className="ph-term-muted" role="status">Couldn't load terminals: {hostErrors[machine.id]}</p>}
-        <div className="ph-group">{visible.filter((item) => item.machineId === machine?.id).slice(0, 3).map((item) => row(item))}</div>
-      </>}
-      <p className="ph-term-foot">Hold the Code tab to jump to any terminal.</p>
-      {lastTerminal && <button className="ph-term-resume" onClick={() => setView(lastTerminal)}>Resume last terminal</button>}
+      {/* The header says Code; this one line says where a new shell starts. */}
+      <p className="ph-intro"><i className={`ph-dot${machine?.online ? " on" : " off"}`} />{folder ? `${folder} · ${machine?.name ?? name}` : machine?.name ?? name}</p>
+      <div className="ph-section">Terminals<button type="button" className="ph-section-action" onClick={() => { setQuery(""); setSheet("list"); }}>See all</button></div>
+      {machine && !machine.online ? <p className="ph-list-note" role="status">Couldn't load terminals: {terminalHostIssue(machine)}</p>
+        : (machine && !machine.access) || eligible.length === 0 ? <p className="ph-list-note">Needs Full access on {machine?.name ?? name}.</p>
+        : <>
+          {machine && hostErrors[machine.id] && <p className="ph-list-note" role="status">Couldn't load terminals: {hostErrors[machine.id]}</p>}
+          {here.length > 0 ? <>
+            <div className="ph-list">
+              {here.slice(0, HOME_ROWS).map((item) => row(item))}
+              {machine && <button type="button" className="ph-list-add" onClick={() => void newShell(machine)}>New shell</button>}
+            </div>
+          </> : machine && !hostState[machine.id] ? <p className="ph-list-note" role="status">Loading terminals…</p>
+            : <div className="ph-empty">
+              <h3>No open terminals</h3>
+              {machine && <><p>Start a shell in {project} on {machine.name}.</p><button type="button" className="primary ph-wide" onClick={() => void newShell(machine)}>New shell</button></>}
+            </div>}
+        </>}
+      {resumable && lastTerminal && <button type="button" className="ph-term-resume" onClick={() => setView(lastTerminal)}>Resume last terminal</button>}
+      {visible.length > 0 && <p className="ph-foot">Hold the Code tab to jump to any terminal.</p>}
     </> : <>
-      <button className="ph-term-back" onClick={() => setView({ kind: "home" })}>‹ Code</button>
-      <div className="ph-term-title-row"><h1 className="ph-term-title">Terminal</h1><button type="button" aria-label={`New shell in ${project}`} onClick={() => machine && void newShell(machine, terminal ?? undefined)}>＋</button></div>
-      <button type="button" className="ph-term-project-button" onClick={() => { setQuery(""); setSheet("list"); }}>{project} · <b>{terminal?.name ?? "Terminal"}</b> ▾</button>
+      <div className="ph-term-title-row"><h1 className="ph-term-title">Terminal</h1><button type="button" aria-label={`New shell in ${project}`} onClick={() => machine && void newShell(machine, terminal ?? undefined)}><Plus size={22} /></button></div>
+      <button type="button" className="ph-term-project-button" onClick={() => { setQuery(""); setSheet("list"); }}>{project} · <b>{terminal?.name ?? "Terminal"}</b><ChevronDown size={12} /></button>
       <div className="ph-term-strip" role="tablist" aria-label="Open terminals">{strip.map((item) => <button key={item.id} ref={item.id === terminal?.id ? selectedStrip : undefined} type="button" role="tab" aria-selected={item.id === terminal?.id} className={item.id === terminal?.id ? "selected" : ""} {...holdBind(item)} onClick={() => { if (holdFired.current) { holdFired.current = false; return; } open(item); }}><i className={`ph-term-dot ${dotState(item)}`} />{item.name}{fromPhone(item.id) && <small>phone</small>}</button>)}</div>
       {terminal && <>
-        <div className={`ph-term-status ${dotState(terminal)}`}>{dotState(terminal) === "ask" ? <><span>Asking: {askLine(questionText(terminal))}</span>{isYesNo(questionText(terminal)) &&<span><button onClick={() => void sendText("n\r")}>No</button><button onClick={() => void sendText("y\r")}>Yes</button></span>}</> : dotState(terminal) === "ended" || dotState(terminal) === "fail" ? <><span>Finished {age(terminal.lastActivity)} ago · exit {terminal.exitCode ?? "?"}</span><span><button onClick={() => closeTerminal(terminal)}>Close</button><button onClick={() => machine && void newShell(machine, terminal, terminal.name)}>Start again</button></span></> : <span>Full permission · input enabled</span>}</div>
+        <div className={`ph-term-status ${dotState(terminal)}`}>{dotState(terminal) === "ask" ? <><span>Asking: {askLine(questionText(terminal))}</span>{isYesNo(questionText(terminal)) &&<span><button onClick={() => void sendText("n\r")}>No</button><button onClick={() => void sendText("y\r")}>Yes</button></span>}</> : dotState(terminal) === "ended" || dotState(terminal) === "fail" ? <><span>Finished {ago(age(terminal.lastActivity))} · exit {terminal.exitCode ?? "?"}</span><span><button onClick={() => closeTerminal(terminal)}>Close</button><button onClick={() => machine && void newShell(machine, terminal, terminal.name)}>Start again</button></span></> : <span>Full permission · input enabled</span>}</div>
         <div className={`ph-term-swipe${dragX !== 0 ? " dragging" : ""}`} onPointerDown={swipeStart} onPointerMove={swipeMove} onPointerUp={swipeEnd} onPointerCancel={swipeEnd} style={{ transform: `translateX(${dragX / 4}px)` }}><div ref={xtermHost} className="ph-term-xterm" />{dragX !== 0 && (() => { const at = strip.findIndex((item) => item.id === terminal.id); const preview = strip[at + (dragX < 0 ? 1 : -1)]; return preview ? <div className={`ph-term-preview ${dragX < 0 ? "next" : "previous"}`}><b>{preview.name}</b><pre>{stripAnsi(preview.tail).split(/\r?\n/u).slice(-40).join("\n")}</pre></div> : null; })()}</div>
         {terminal.state === "running" && <><div className="ph-term-keys">{[["Esc", "\x1b"], ["Tab", "\t"], [ctrl ? "Ctrl ✓" : "Ctrl", "ctrl"], ["←", "D"], ["↓", "B"], ["↑", "A"], ["→", "C"]].map(([label, data]) => <button key={label} type="button" className={data === "ctrl" && ctrl ? "active" : ""} onClick={() => data === "ctrl" ? setCtrl((value) => !value) : void sendText(["A", "B", "C", "D"].includes(data) ? arrowCode(data as "A" | "B" | "C" | "D", !!xterm.current?.modes.applicationCursorKeysMode) : data)}>{label}</button>)}</div><form className="ph-term-command" onSubmit={sendInput}><input value={input} onChange={(event) => setInput(event.target.value)} onBeforeInput={onBeforeInput} placeholder="Type a command…" enterKeyHint="send" autoCapitalize="off" autoCorrect="off" spellCheck={false} /><button type="submit" aria-label="Send">↵</button></form></>}
       </>}
