@@ -2430,7 +2430,7 @@ export function App() {
         )}
 
         <main ref={canvasRef} className={`canvas section-${section}`} inert={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined} aria-hidden={(sidePanelFull || (apexAgentFull && (apexAgentAllOpen || !!apexWorkspace))) ? true : undefined}>
-          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} />}
+          {section === "agents" && <AgentsSection agents={agents} backend={backend} profiles={profiles} disabledProviders={disabledProviders} onChange={saveAgents} addRequest={newAgentRequest} voiceSettings={settings.voice} />}
           {section === "library" && <LibraryView machines={[{ id: "local", name: hostNameFor("local"), offline: false }, ...hostList.filter((h) => h.remote).map((h) => ({ id: h.id, name: h.name, offline: offlineHost(h.id) }))]}
             backendOf={(id) => backend ? hostBackend(id) : null} threads={listed} workspaces={workspaces} onOpenThread={(room) => { const pane = viewPanes.find((p) => p.id === room); if (pane) focusPane(pane); }} />}
           {(section === "code" || section === "threads") && !current && (

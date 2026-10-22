@@ -100,6 +100,7 @@ fn scripted(id: &str, lines: &[&str]) -> Value {
         access: Default::default(),
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     })
     .unwrap()
@@ -235,6 +236,7 @@ fn winding_down_stops_running_agents_and_keeps_their_chat() {
         access: Default::default(),
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     })
     .unwrap();
@@ -288,6 +290,7 @@ fn opening_a_room_again_mid_turn_keeps_the_running_room() {
         access: Default::default(),
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     })
     .unwrap();

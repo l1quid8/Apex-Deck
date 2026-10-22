@@ -51,6 +51,8 @@ export interface ParticipantConfig {
   appearance?: { seed: string; color: string } | null;
   /** Choices for a bot whose model makes pictures or videos (see media.ts). */
   media?: MediaSettings | null;
+  /** The voice it speaks with on calls. Missing uses the default voice from Settings. */
+  voice?: string | null;
 }
 
 /** A name and persona an AI wrote for a new agent from a short description (persona_draft). Nothing is saved until the person saves the form. */

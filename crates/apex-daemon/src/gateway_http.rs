@@ -468,6 +468,7 @@ pub fn resolve_model_target(
             access: Access::Read,
             effort,
             speed: None,
+            voice: None,
             appearance: None,
             media: None,
         };
@@ -496,6 +497,7 @@ pub fn resolve_model_target(
             access: Access::Read,
             effort,
             speed: None,
+            voice: None,
             appearance: None,
             media: None,
         };

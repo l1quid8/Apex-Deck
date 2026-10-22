@@ -4,7 +4,7 @@ import { Avatar } from "../Avatar";
 import type { PhoneVoice } from "./phoneVoice.ts";
 import type { ServerVoiceLink, ServerVoiceStatus, VoiceCandidate } from "../voice/types.ts";
 import { CALL_LOOKS, callClock, callLine, voiceLabel, type CallLook, type WaveMode } from "../voice/callView.ts";
-import { DEFAULT_VOICE, preferenceFor, voicePreferenceKey } from "../voice/settings.ts";
+import { chatVoice, preferenceFor, voiceFor, withChatPreference } from "../voice/settings.ts";
 import { voiceCallView } from "./voiceCallView.ts";
 import "./voice-call.css";
 
@@ -210,11 +210,8 @@ export function VoiceCall(props: Base & {
   };
   const save = (patch: Partial<ReturnType<PhoneVoice["settingsFor"]>>) => voice.save({ ...voice.settingsFor(hostId), ...patch }, hostId);
   const pref = (c: VoiceCandidate) => preferenceFor(voice.settingsFor(hostId), c.hostId, c.profileId, c.roomId, c.participantId);
-  const savePref = (c: VoiceCandidate, patch: { voice?: string; aliases?: string[] }) => {
-    const s = voice.settingsFor(hostId);
-    const key = voicePreferenceKey(c.hostId, c.profileId, c.roomId, c.participantId);
-    save({ preferences: { ...s.preferences, [key]: { ...pref(c), ...patch } } });
-  };
+  const savePref = (c: VoiceCandidate, patch: { voice?: string; aliases?: string[] }) =>
+    voice.save(withChatPreference(voice.settingsFor(hostId), c.hostId, c.profileId, c.roomId, c.participantId, patch), hostId);
   const close = () => setOpen(null);
 
   const button =
@@ -240,7 +237,11 @@ export function VoiceCall(props: Base & {
   let sheet: ReactNode = null;
   if (shown === "settings" && live && call.candidate) {
     const c = call.candidate;
-    const voices = state.voices.length ? state.voices : [DEFAULT_VOICE];
+    // A voice picked here is for this chat only; "Default" follows the agent's form, then the machine's Settings.
+    const s = voice.settingsFor(hostId);
+    const picked = chatVoice(s, c.hostId, c.profileId, c.roomId, c.participantId);
+    const fallback = voiceFor(s, c.hostId, c.profileId, undefined, undefined, c.agentVoice);
+    const voices = [...new Set([...(picked ? [picked] : []), ...state.voices])];
     sheet = (
       <Sheet title={`Call with ${c.name}`} onClose={close}>
         <div className="ph-voice-sheet">
@@ -268,10 +269,11 @@ export function VoiceCall(props: Base & {
           <label className="ph-call-set">
             <span>{c.name}'s voice</span>
             <span className="ph-call-voice">
-              <select value={pref(c).voice} onChange={(e) => savePref(c, { voice: e.target.value })}>
+              <select value={picked} onChange={(e) => savePref(c, { voice: e.target.value })}>
+                <option value="">Default · {voiceLabel(fallback)}</option>
                 {voices.map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
               </select>
-              <button type="button" className="ph-call-round small" aria-label="Preview voice" onClick={() => voice.controller.preview(pref(c).voice)}>{Ico.play}</button>
+              <button type="button" className="ph-call-round small" aria-label="Preview voice" onClick={() => voice.controller.preview(picked || fallback)}>{Ico.play}</button>
             </span>
           </label>
           <label className="ph-call-set col">

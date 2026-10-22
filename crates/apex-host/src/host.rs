@@ -2513,7 +2513,7 @@ mod host_tests {
         apex_core::ParticipantConfig {
             id: ParticipantId::new(id), display_name: id.into(),
             backend: apex_core::Backend::Scripted { lines: lines.iter().map(|l| l.to_string()).collect() },
-            persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, appearance: None, media: None
+            persona: String::new(), access: apex_core::Access::Read, effort: None, speed: None, voice: None, appearance: None, media: None
         }
     }
 

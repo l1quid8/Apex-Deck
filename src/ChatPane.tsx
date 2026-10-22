@@ -2,7 +2,8 @@ import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoi
 import { composerButton } from './voice/callView';
 import { registerVoiceThread, unregisterVoiceThread, scopeKey } from './voice/coordinator';
 import { createThreadVoiceBridge } from './voice/threadBridge';
-import { readVoiceSettings, preferenceFor } from './voice/settings';
+import { CALL_VOICES, defaultVoiceOf, readVoiceSettings, preferenceFor } from './voice/settings';
+import { voiceLabel } from './voice/callView';
 import type { VoiceSettings, VoiceTurn } from './voice/types';
 import { useHostConnection } from "./useHostConnection";
 import { ConnectionBanner } from "./ConnectionBanner";
@@ -315,6 +316,8 @@ interface Draft {
   command: string;
   persona: string;
   access: Access;
+  /** Its voice on calls. Empty uses the default voice from Settings. */
+  voice?: string;
 }
 
 /** Whether the preset's form asks for an API key. */
@@ -368,7 +371,7 @@ function quoteArg(arg: string): string {
 
 /** The form values that would recreate `config`, for editing it. */
 export function configToDraft(config: ParticipantConfig): Draft {
-  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", speed: config.speed ?? ("" as const), keyEnv: "", command: "", baseUrl: "", model: "" };
+  const base = { appearance: config.appearance ?? legacyAppearance(config.id), name: config.display_name, persona: config.persona, access: config.access, effort: config.effort ?? "", speed: config.speed ?? ("" as const), voice: config.voice ?? "", keyEnv: "", command: "", baseUrl: "", model: "" };
   const b = config.backend;
   if (b.kind === "agent") return { ...base, preset: b.tool, model: b.model ?? "" };
   if (b.kind === "open_ai_compatible") {
@@ -400,7 +403,7 @@ export function draftToConfig(draft: Draft): ParticipantConfig | string {
   // A model with no effort setting must not be sent one.
   const levels = preset?.agent ? effortsFor(preset.efforts, AGENT_MODELS[preset.agent.tool], draft.model) : (preset?.efforts ?? []);
   const effort = levels.length > 0 ? draft.effort.trim().toLowerCase() || null : null;
-  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
+  return { id, display_name: draft.name.trim(), backend, persona: draft.persona.trim(), access: draft.access, effort, ...(draft.speed && supportsSpeed(backend) ? { speed: draft.speed } : {}), ...(draft.voice ? { voice: draft.voice } : {}), ...(draft.appearance ? { appearance: draft.appearance } : {}) };
 }
 
 /** A turn that is still running. */
@@ -1533,7 +1536,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   }, [backend, turnQueue]);
   const voiceHost=backend.host?.id??'local';
   const voiceConfig=readVoiceSettings(voiceSettings);
-  const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
+  const voiceCandidates=profileMode?[]:participants.filter(p=>!p.media).map(p=>({hostId:voiceHost,roomId:pane.id,participantId:p.id,profileId:p.id,name:p.display_name,agentVoice:p.voice,aliases:preferenceFor(voiceConfig,voiceHost,p.id,pane.id,p.id).aliases}));
   const voiceWho:VoiceWho=id=>{const p=participants.find(x=>x.id===id),look=appearance(id);return {...look,kind:p?.backend.kind==='agent'?AGENT_LABEL[p.backend.tool]:undefined};};
   const voiceHint=useVoiceHint({candidates:voiceCandidates,settings:voiceConfig});
   const voiceSlot=useVoiceSlot({candidates:voiceCandidates,settings:voiceConfig});
@@ -2906,6 +2909,16 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
               <span className="hint">{accessNote}</span>
             </div>
           )}
+          <label className="voice-field">
+            Voice
+            <select name="voice" value={draft.voice ?? ""} onChange={(e) => set("voice", e.target.value)}>
+              <option value="">Default · {voiceLabel(defaultVoiceOf(voiceConfig))}</option>
+              {[...new Set([...(draft.voice ? [draft.voice] : []), ...CALL_VOICES])].map((v) => (
+                <option key={v} value={v}>{voiceLabel(v)}</option>
+              ))}
+            </select>
+            <span className="hint">How it sounds on calls. Default follows Settings. Picking a voice during a call changes only that chat.</span>
+          </label>
           <PersonaDraft
             key={`persona:${editing ?? "new"}`}
             writers={personaWriters(

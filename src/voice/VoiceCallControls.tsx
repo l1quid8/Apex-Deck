@@ -4,7 +4,7 @@ import { Avatar } from "../Avatar";
 import { popoverTop } from "../floating.ts";
 import { CALL_LOOKS, callClock, callLine, readCallLook, voiceLabel, type CallLook, type WaveMode } from "./callView.ts";
 import { voiceController, voiceRegistration, warmVoice } from "./coordinator.ts";
-import { DEFAULT_VOICE, preferenceFor, voicePreferenceKey } from "./settings.ts";
+import { chatVoice, preferenceFor, voiceFor, withChatPreference } from "./settings.ts";
 import type { VoiceCandidate, VoiceSettings } from "./types.ts";
 import "./voice.css";
 
@@ -228,14 +228,12 @@ function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; 
   const settings = r.settings;
   const profile = candidate?.profileId ?? scope.participantId;
   const preference = preferenceFor(settings, scope.hostId, profile, scope.roomId, scope.participantId);
+  // A voice picked here is for this chat only; "Default" follows the agent's form, then Settings.
+  const picked = chatVoice(settings, scope.hostId, profile, scope.roomId, scope.participantId);
+  const fallback = voiceFor(settings, scope.hostId, profile, undefined, undefined, candidate?.agentVoice);
+  const speaking = picked || fallback;
   const savePreference = (patch: Partial<typeof preference>) =>
-    r.save({
-      ...r.settings,
-      preferences: {
-        ...r.settings.preferences,
-        [voicePreferenceKey(scope.hostId, profile, scope.roomId, scope.participantId)]: { ...preference, ...patch },
-      },
-    });
+    r.save(withChatPreference(r.settings, scope.hostId, profile, scope.roomId, scope.participantId, patch));
   const look = readCallLook(settings.look);
   const here = candidates.filter((c) => c.hostId === scope.hostId && c.roomId === scope.roomId);
   return (
@@ -257,13 +255,14 @@ function CallSettings({ call, candidates }: { call: ReturnType<typeof useCall>; 
       <label className="voice-set-row">
         <span>{name}'s voice</span>
         <span className="voice-voice">
-          <select value={preference.voice} disabled={!state.voices.length} onChange={(e) => savePreference({ voice: e.target.value })}>
-            {[...new Set([preference.voice || DEFAULT_VOICE, ...state.voices])].map((v) => (
+          <select value={picked} disabled={!state.voices.length} onChange={(e) => savePreference({ voice: e.target.value })}>
+            <option value="">Default · {voiceLabel(fallback)}</option>
+            {[...new Set([...(picked ? [picked] : []), ...state.voices])].map((v) => (
               <option key={v} value={v}>{voiceLabel(v)}</option>
             ))}
           </select>
           <button type="button" className="voice-callbtn boxed" aria-label="Preview voice" title="Preview voice"
-            disabled={!state.voices.includes(preference.voice)} onClick={() => voiceController.preview(preference.voice)}>
+            disabled={!state.voices.includes(speaking)} onClick={() => voiceController.preview(speaking)}>
             {Icon.play}
           </button>
         </span>

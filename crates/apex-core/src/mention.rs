@@ -203,6 +203,7 @@ mod tests {
                 access: Access::Read,
                 effort: None,
                 speed: None,
+                voice: None,
                 appearance: None, media: None
             })
             .collect()

@@ -10,6 +10,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Backend, KeyState } from "./backend";
 import { forgetModels, rememberedModels } from "./modelMemory";
 import { providerEnabled } from "./providers";
+import { CALL_VOICES, defaultVoiceOf, readVoiceSettings } from "./voice/settings";
+import { voiceLabel } from "./voice/callView";
 import { DEFAULT_LANDING_TEXTURE, FONT_SIZES, MAX_ROUNDS, SCROLLBACK_CHOICES, keyNamesIn, type AppSettings } from "./settings";
 import { HostsSettings } from "./HostsSettings";
 import { ModelGatewaySettings } from "./ModelGatewaySettings";
@@ -134,6 +136,7 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
   const [remembered, setRemembered] = useState(() => Object.values(rememberedModels()).filter((list) => Array.isArray(list) && list.length > 0).length);
   const [autoOpen, setAutoOpen] = useState(artifactAutoOpen);
   useEffect(() => { backend.dataFolder().then(setFolder, () => setFolder("")); }, [backend]);
+  const voice = readVoiceSettings(settings.voice);
   return <div className="settings-card">
     <Row label="Theme" note={themeName}><button onClick={onAppearance}>Appearance…</button></Row>
     <Row label="Saved in" note={<span className="mono">{folder || "…"}</span>}>
@@ -148,6 +151,11 @@ function General({ backend, themeName, onAppearance, settings, onChange }: { bac
       <select aria-label="New artifacts" value={autoOpen ? "open" : "notify"} onChange={(e) => { const on = e.target.value === "open"; setArtifactAutoOpen(on); setAutoOpen(on); }}>
         <option value="open">Open the pane</option>
         <option value="notify">Just notify</option>
+      </select>
+    </Row>
+    <Row label="Voice for calls" note="For agents with no voice of their own. Set one agent's voice in its form.">
+      <select aria-label="Voice for calls" value={defaultVoiceOf(voice)} onChange={(e) => onChange({ ...settings, voice: { ...voice, defaultVoice: e.target.value } })}>
+        {[...new Set([defaultVoiceOf(voice), ...CALL_VOICES])].map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
       </select>
     </Row>
     <Row label="Remembered models" note={remembered === 0 ? "None yet. Model names you type in the bot form are offered again next time." : `Model names from ${remembered} ${remembered === 1 ? "provider" : "providers"}, offered again in the bot form.`}>

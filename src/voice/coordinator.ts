@@ -1,7 +1,7 @@
 import { createVoiceController, type VoiceController } from "./controller.ts";
 import { openVoiceAudio } from "./audio.ts";
 import { connectLocalVoice } from "./localClient.ts";
-import { preferenceFor, readVoiceSettings } from "./settings.ts";
+import { readVoiceSettings, voiceFor } from "./settings.ts";
 import type {
   CallScope,
   ThreadVoiceBridge,
@@ -49,13 +49,14 @@ export const voiceController: VoiceController = createVoiceController({
   voice: (scope) => {
     const e = lookup(scope),
       c = e.candidates.find((c) => c.participantId === scope.participantId);
-    return preferenceFor(
+    return voiceFor(
       e.settings,
       scope.hostId,
       c?.profileId ?? scope.participantId,
       scope.roomId,
       scope.participantId,
-    ).voice;
+      c?.agentVoice,
+    );
   },
   silence: () => {
     const scope = voiceController.getState().scope;
