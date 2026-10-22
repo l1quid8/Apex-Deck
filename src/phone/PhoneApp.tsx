@@ -3,6 +3,8 @@ import { postFromPhone } from './phonePost.ts';
 import { keepAwake } from './callScreen.ts';
 import { VoiceCall, PhoneCallBar, PhoneCallCapsule, PhoneCallStrip, usePhoneCallSlot, type PhoneVoiceWho } from './VoiceCall.tsx';
 import { composerButton, type CallLook } from '../voice/callView.ts';
+import { Capacitor } from "@capacitor/core";
+import { App } from "@capacitor/app";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 
 import { botChangeGate, botSendGate } from "../phoneBots";
@@ -71,6 +73,8 @@ import { serialEdits, stopProjectPanes } from "./sessionEdits";
 import { UNDO_MS } from "../closing";
 import type { PhoneLibraryMachine } from "./libraryMachines";
 import { parsePairingLink, scansAtLaunch, withPairedMachine } from "./pairing";
+import { createPairingGate, openIncomingLinks, reserveLocal, routePairingLink, settlePairing, shouldAutoScan, takeScan, type LinkOutcome, type PairingGate } from "./incomingLinks";
+import { ScanCodeButton } from "./ScanCodeButton";
 import { qrScanner } from "./remotePlugin";
 import { createRoomRecovery, loadRoomState, representedRoomEvent } from "../roomRecovery";
 import { mergePhoneSessionChange } from "../sessionSync";
@@ -247,7 +251,12 @@ export function PhoneApp() {
   const machinesRef = useRef(machines);
   machinesRef.current = machines;
   const scanner = useMemo(() => qrScanner(), []);
-  const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string } | null>(null);
+  const [pairing, setPairing] = useState<{ link: string; kind: MachineKind; id: string; name: string; attempt: number } | null>(null);
+  const pairingRef = useRef(pairing);
+  pairingRef.current = pairing;
+  const attemptSeq = useRef(0);
+  const gateRef = useRef<PairingGate | null>(null);
+  const noticeRef = useRef<(message: string) => void>(() => {});
   const [tick, setTick] = useState(0);
   const [session, setSession] = useState<AppSession | null>(readSession);
   const sessionRef = useRef(session);
@@ -256,9 +265,19 @@ export function PhoneApp() {
   const sessionEventVersion = useRef(0);
   const phoneSaveTag = useRef(`phone-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
   const phoneSaveSeq = useRef(0);
-  /** An empty list at launch opens the camera once, from Add a machine. Machines clears it when it does. */
-  const [scanAtLaunch, setScanAtLaunch] = useState(() => scansAtLaunch(machines.length, Boolean(plugin && scanner)));
+  /** An empty list at launch opens the camera once, from Add a machine. On a phone, that waits until a launch link has been ruled out. */
+  const [scanAtLaunch, setScanAtLaunch] = useState(() => !Capacitor.isNativePlatform() && scansAtLaunch(machines.length, Boolean(plugin && scanner)));
   const [tab, setTab] = useState<Tab>(() => (scanAtLaunch ? "machines" : "threads"));
+  const linkResolve = useRef<((outcome: LinkOutcome) => void) | null>(null);
+  const linkSeq = useRef(0);
+  const [incomingLink, setIncomingLink] = useState<{ id: number; url: string; kind: "mac"; adding: true } | null>(null);
+  const pairFromLinkRef = useRef<(url: string) => Promise<LinkOutcome>>(async () => "failed");
+  pairFromLinkRef.current = (url) => new Promise((resolve) => {
+    linkResolve.current = resolve;
+    const route = routePairingLink();
+    setIncomingLink({ id: ++linkSeq.current, url, kind: route.kind, adding: route.adding });
+    setTab(route.tab);
+  });
   const [terminalSwitcherOpen, setTerminalSwitcherOpen] = useState(false);
   const [terminalResumeSignal, setTerminalResumeSignal] = useState(0);
   const [terminalNeedsAnswer, setTerminalNeedsAnswer] = useState(false);
@@ -280,6 +299,42 @@ export function PhoneApp() {
   const [folded, setFolded] = useState<Record<string, boolean>>(() => { try { return readFolds(localStorage.getItem(FOLDS_KEY)); } catch { return {}; } });
   useEffect(() => { try { localStorage.setItem(FOLDS_KEY, JSON.stringify(folded)); } catch { /* retain choices for this session */ } }, [folded]);
   const [notice, setNotice] = useState("");
+  noticeRef.current = setNotice;
+  if (gateRef.current === null) gateRef.current = createPairingGate((message) => noticeRef.current(message));
+  // Release the slot now. `close` is false when the error should stay on screen.
+  const settle = (outcome: LinkOutcome, close: boolean) => {
+    const current = pairingRef.current;
+    const resolve = linkResolve.current;
+    linkResolve.current = null;
+    if (current && gateRef.current) settlePairing(gateRef.current, current.link, outcome, resolve);
+    else if (resolve) resolve(outcome);
+    if (close) setPairing(null);
+  };
+  const endLink = (outcome: Exclude<LinkOutcome, "paired">) => settle(outcome, true);
+  // Listener first, then the launch link, before the camera is allowed to open.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const opened = openIncomingLinks({
+      addListener: (event, listener) => App.addListener(event, listener),
+      getLaunchUrl: () => App.getLaunchUrl(),
+    }, (url) => pairFromLinkRef.current(url), {
+      refuse: (message) => setNotice(message),
+      invalid: (message) => setNotice(message),
+      broken: (message) => setNotice(message),
+    }, gateRef.current!);
+    let live = true;
+    void opened.launch.then((url) => {
+      if (!live) return;
+      if (shouldAutoScan(url, machinesRef.current.length, Boolean(plugin && scanner))) {
+        setScanAtLaunch(true);
+        setTab("machines");
+      }
+    });
+    return () => {
+      live = false;
+      opened.close();
+    };
+  }, [plugin, scanner]);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [assistantWorkspaceId, setAssistantWorkspaceId] = useState<string | null>(null);
   const [personalOpen, setPersonalOpen] = useState(false);
@@ -1502,11 +1557,16 @@ export function PhoneApp() {
             routes={routes}
             covered={covered}
             pairing={plugin !== null}
-            ready={ready}
             scan={scanner ? scanner.scan : null}
             autoScan={scanAtLaunch}
             onAutoScan={() => setScanAtLaunch(false)}
-            onPair={setPairing}
+            incoming={incomingLink}
+            onIncomingHandled={() => setIncomingLink(null)}
+            onIncomingFailed={() => endLink("failed")}
+            onPair={(request) => setPairing({ ...request, attempt: ++attemptSeq.current })}
+            reserve={(link) => reserveLocal(gateRef.current!, link)}
+            adopt={(link) => takeScan(gateRef.current!, link)}
+            giveBack={(link) => gateRef.current!.release(link, "failed")}
             machineIcon={machineIcon}
             missing={[...new Set(workspaces.map((workspace) => workspaceHost(workspace)))].filter((id) => !machines.some((machine) => machine.id === id))}
             confirm={confirmUnpair}
@@ -1574,10 +1634,11 @@ export function PhoneApp() {
           /></div>
           : <div className="apex-agent-backdrop"><section className="apex-agent" role="dialog" aria-modal="true" aria-label={`ApexAgent for ${assistantWorkspace.name}`}><header className="apex-agent-head"><h1>Project access required</h1><button className="icon" onClick={() => setAssistantWorkspaceId(null)} aria-label="Close ApexAgent">×</button></header><p className="ph-sheet-text">Project assistant needs Full access on {assistantWorkspaceHost.machine.name}. Change this phone's level in that machine's Settings → Paired devices.</p></section></div>)}
         {pairing && plugin && (
-          <Sheet title={`Pair ${pairing.name}`} onClose={() => setPairing(null)}>
-            <PairSheet plugin={plugin} link={pairing.link} label="iPhone" ready={ready} onClose={() => setPairing(null)} onPaired={(paired) => {
+          <Sheet title={`Pair ${pairing.name}`} onClose={() => endLink("cancelled")}>
+            <PairSheet key={pairing.attempt} plugin={plugin} link={pairing.link} label="iPhone" ready={ready} onFailed={() => settle("failed", false)} onClose={(why) => endLink(why === "failed" ? "failed" : "cancelled")} onPaired={(paired) => {
               const made: PairedMachine = { id: pairing.id, name: pairing.name, kind: pairing.kind, transport: "iroh", hostEndpointId: paired.hostEndpointId, addrs: paired.addrs, pairedAt: Date.now() };
               setMachines((list) => { try { return withPairedMachine(list, made); } catch (error) { setNotice(words(error)); return list; } });
+              settle("paired", false);
             }} />
           </Sheet>
         )}
@@ -2516,17 +2577,26 @@ function WorkSheet({ rows, links, workspaces, project, stays, machineIcon, onPic
 /** How a new machine is reached: its QR code, or an address and token typed in. */
 type AddHow = "qr" | "address";
 
-function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, ready, scan, autoScan, onAutoScan, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
+function Machines({ machines, links, routes, covered, machineIcon, missing, confirm, pairing, scan, autoScan, onAutoScan, incoming, onIncomingHandled, onIncomingFailed, reserve, adopt, giveBack, onAdd, onPair, onEdit, onUnpair, onConfirm, onRetry, onError }: {
   machines: Machine[]; links: LinkView[]; routes: Record<string, Route | null>; covered: boolean; machineIcon(hostId: string, size?: number): ReactNode; missing: string[]; confirm: string | null;
   /** The native plugin can pair from a QR code. */
   pairing: boolean;
-  /** Settles once Automatic mode is set. Pairing waits on it. */
-  ready: Promise<void>;
   /** The camera scanner, when there is one. */
   scan: (() => Promise<string>) | null;
   /** Open the camera now, as the first thing: no machine is saved yet. */
   autoScan: boolean;
   onAutoScan(): void;
+  /** A pairing link opened from outside this screen. Handed to pairWith as a Mac. */
+  incoming: { id: number; url: string; kind: "mac"; adding: true } | null;
+  /** The link has been handed to pairWith, so a later visit must not pair it again. */
+  onIncomingHandled(): void;
+  onIncomingFailed(): void;
+  /** Camera and paste take the same slot as a link. False leaves the open sheet where it is. */
+  reserve(link: string): boolean;
+  /** The open camera read a link. True only when that scan still holds the slot. */
+  adopt(link: string): boolean;
+  /** The slot was taken, then the link was rejected before a sheet opened. */
+  giveBack(link: string): void;
   onAdd(machine: DirectMachine): void; onPair(request: { link: string; kind: MachineKind; id: string; name: string }): void;
   onEdit(id: string, machine: Machine): void; onUnpair(id: string): void; onConfirm(id: string | null): void; onRetry(id: string): void; onError(message: string): void;
 }) {
@@ -2539,31 +2609,38 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
   /** The machine being edited. Its form takes the place of its card. */
   const [editing, setEditing] = useState<string | null>(null);
   const [edit, setEdit] = useState(() => blank("mac"));
-  const pairWith = (link: string) => {
-    void whenAutomatic(ready, () => {
-      const preview = parsePairingLink(link);
-      const name = form.name.trim() || preview.name;
+  const pairWith = (link: string, over?: { kind: MachineKind }, held = false): boolean => {
+    const trimmed = link.trim();
+    // A link already holds the slot. Camera and paste take it here, or leave the open sheet alone.
+    if (!held && !reserve(trimmed)) return false;
+    const kind = over?.kind ?? form.kind;
+    try {
+      const preview = parsePairingLink(trimmed);
+      const name = (over ? "" : form.name.trim()) || preview.name;
+      const id = kind === "mac" ? "local" : form.id.trim();
       // Checked now, so a bad name or id doesn't surface only after the machine approved.
-      withPairedMachine(machines, { id: form.kind === "mac" ? "local" : form.id.trim(), name, kind: form.kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
-      onPair({ link: link.trim(), kind: form.kind, id: form.kind === "mac" ? "local" : form.id.trim(), name });
+      withPairedMachine(machines, { id, name, kind, transport: "iroh", hostEndpointId: preview.host, addrs: preview.addrs, pairedAt: 0 });
+      onPair({ link: trimmed, kind, id, name });
       setAdding(false);
       setPasted("");
-    }).catch((error: unknown) => onError(words(error)));
+      return true;
+    } catch (error) {
+      if (!held) giveBack(trimmed);
+      onError(words(error));
+      return false;
+    }
   };
-  const scanCode = () => {
-    if (!scan) return;
-    scan().then(pairWith, (error: unknown) => {
-      const why = words(error);
-      if (why === "cancelled") return;
-      onError(why === "denied" ? "Apex Deck can't use the camera. Allow it in Settings → Apex Deck, or paste the pairing link instead." : `Couldn't scan: ${why}`);
-    });
-  };
-  // Once per launch. If the person cancels, the Add a machine form just stays open.
+  // A link from any screen. Kind is taken from the link, not from whatever form was open.
   useEffect(() => {
-    if (!autoScan) return;
-    onAutoScan();
-    scanCode();
-  }, []);
+    if (!incoming) return;
+    const link = incoming;
+    onIncomingHandled();
+    setEditing(null);
+    setHow("qr");
+    setForm(blank(link.kind));
+    if (link.adding) setAdding(true);
+    if (!pairWith(link.url, { kind: link.kind }, true)) onIncomingFailed();
+  }, [incoming]);
   return (
     <main className="ph-content" inert={covered}>
       <h2>Machines</h2>
@@ -2633,7 +2710,7 @@ function Machines({ machines, links, routes, covered, machineIcon, missing, conf
           {form.kind === "server" && <label className="ph-label">Id<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} placeholder={missing[0] ?? "h-…"} required autoCapitalize="off" autoCorrect="off" spellCheck={false} /><small>{missing.length > 0 ? `The id your Mac uses for it: ${missing.join(" or ")}` : "The id your Mac uses for this server"}</small></label>}
           {how === "qr" ? <>
             <p className="ph-muted">{PAIR_MACHINE_HINT} On a server, run <code>apex-daemon pair</code>.</p>
-            {scan && <button type="button" className="primary ph-wide" onClick={scanCode}>Scan QR code</button>}
+            {scan && <ScanCodeButton scan={scan} reserve={reserve} adopt={adopt} giveBack={giveBack} onCode={(text) => pairWith(text, undefined, true)} onError={onError} auto={autoScan && !incoming} onAuto={onAutoScan} />}
             <label className="ph-label">Or paste the pairing link<input value={pasted} onChange={(event) => setPasted(event.target.value)} placeholder="apexdeck://pair?p=…" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
             <button type="submit" className={scan ? "ph-wide" : "primary ph-wide"} disabled={!pasted.trim()}>Pair with link</button>
           </> : <>
