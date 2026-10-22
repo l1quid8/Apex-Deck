@@ -16,7 +16,8 @@ export function PairSheet({ plugin, link, label, onPaired, onClose }: {
   link: string;
   label: string;
   onPaired(paired: Paired): void;
-  onClose(): void;
+  /** "done" is the success button. "failed" is the error button. Anything else is a cancel. */
+  onClose(why: "cancelled" | "failed" | "done"): void;
 }) {
   const [state, setState] = useState<PairState>({ kind: "dialing" });
   const paired = useRef(onPaired);
@@ -32,7 +33,7 @@ export function PairSheet({ plugin, link, label, onPaired, onClose }: {
   if (state.kind === "dialing") return (
     <>
       <p className="ph-sheet-text">Reaching the machine…</p>
-      <button type="button" className="ph-plain ph-wide" onClick={onClose}>Cancel</button>
+      <button type="button" className="ph-plain ph-wide" onClick={() => onClose("cancelled")}>Cancel</button>
     </>
   );
   if (state.kind === "code") return (
@@ -40,19 +41,19 @@ export function PairSheet({ plugin, link, label, onPaired, onClose }: {
       <p className="ph-sheet-text">Check that {state.hostName} shows this code, then press Approve there.</p>
       <p className="ph-pair-code" aria-label={`Code ${state.code.split("").join(" ")}`}>{state.code}</p>
       <p className="ph-muted">If the codes don't match, press Deny on the machine.</p>
-      <button type="button" className="ph-plain ph-wide" onClick={onClose}>Cancel</button>
+      <button type="button" className="ph-plain ph-wide" onClick={() => onClose("cancelled")}>Cancel</button>
     </>
   );
   if (state.kind === "done") return (
     <>
       <p className="ph-sheet-text">Paired with {state.paired.name}.{state.paired.tier === "full" ? "" : state.paired.tier === "chat" ? " This phone can chat in existing threads but not start new ones." : " This phone can read threads but not send."}</p>
-      <button type="button" className="primary ph-wide" onClick={onClose}>Done</button>
+      <button type="button" className="primary ph-wide" onClick={() => onClose("done")}>Done</button>
     </>
   );
   return (
     <>
       <p className="ph-sheet-text ph-red">{state.message}</p>
-      <button type="button" className="primary ph-wide" onClick={onClose}>OK</button>
+      <button type="button" className="primary ph-wide" onClick={() => onClose("failed")}>OK</button>
     </>
   );
 }
