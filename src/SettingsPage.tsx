@@ -2,7 +2,7 @@
 // It takes the place of the deck until closed. Per-thread and per-bot
 // controls stay in thread details and the Agents tab.
 
-import { CHIP_STYLES, isChipStyle } from "./botChip";
+import { ChipStylePicker } from "./ChipStylePicker";
 import { artifactAutoOpen, setArtifactAutoOpen } from "./artifacts";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { defaultAppearanceSettings } from "./themes";
@@ -276,14 +276,10 @@ function Threads({ settings, onChange }: { settings: AppSettings; onChange: (s: 
       <input type="checkbox" aria-label="Confirm before steering" checked={settings.confirmSteer} onChange={(e) => onChange({ ...settings, confirmSteer: e.target.checked })} />
     </Row>
     <div className="settings-subhead"><h3>Bot chips</h3><p>What each bot's chip under the message box shows. Compact styles keep details in the hover card and bot settings.</p></div>
-    <Row label="Chip style" note="Applies to all chats, including popped-out windows. Classic keeps the original look.">
-      <select aria-label="Chip style" value={settings.botChips.style ?? "classic"} onChange={(e) => {
-        const style = e.target.value;
-        if (isChipStyle(style)) onChange({ ...settings, botChips: { ...settings.botChips, style } });
-      }}>
-        {CHIP_STYLES.map(style => <option key={style.id} value={style.id}>{style.label}</option>)}
-      </select>
-    </Row>
+    <div className="settings-row chip-style-row">
+      <div className="settings-label"><strong>Chip style</strong><small>Applies to all chats, including popped-out windows. Hover a name to preview it; click to use it.</small></div>
+      <ChipStylePicker value={settings.botChips.style ?? "classic"} onChange={(style) => onChange({ ...settings, botChips: { ...settings.botChips, style } })} />
+    </div>
     <Row label="Show effort" note="How hard the bot thinks, such as high.">
       <input type="checkbox" aria-label="Show effort" checked={settings.botChips.effort} onChange={(e) => onChange({ ...settings, botChips: { ...settings.botChips, effort: e.target.checked } })} />
     </Row>
