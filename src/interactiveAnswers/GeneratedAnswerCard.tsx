@@ -17,18 +17,33 @@ interface Props {
   onDiscuss?: (snapshot: string) => void;
 }
 
-/** Native views cannot be clipped by CSS: require the entire slot to be visible. */
+/** Native views cannot be clipped by CSS: constrain them to the visible intersection. */
 export function visibleGeneratedBounds(slot: HTMLElement): GeneratedBounds | null {
   if (document.visibilityState !== "visible" || !slot.isConnected) return null;
-  const rect = slot.getBoundingClientRect();
-  if (rect.width < 100 || rect.height < 200 || rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight) return null;
+  const slotRect = slot.getBoundingClientRect();
+  const rect = {
+    left: Math.max(0, slotRect.left), top: Math.max(40, slotRect.top),
+    right: Math.min(innerWidth, slotRect.right), bottom: Math.min(innerHeight, slotRect.bottom),
+  };
   for (let parent = slot.parentElement; parent; parent = parent.parentElement) {
     const style = getComputedStyle(parent);
     if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) return null;
     const clip = parent.getBoundingClientRect();
-    if (/(auto|scroll|hidden|clip)/.test(style.overflowY) && (rect.top < clip.top || rect.bottom > clip.bottom)) return null;
-    if (/(auto|scroll|hidden|clip)/.test(style.overflowX) && (rect.left < clip.left || rect.right > clip.right)) return null;
+    // Use the scroll container's client area, excluding borders and scrollbars.
+    if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+      const top = clip.top + (parent.clientTop || 0);
+      rect.top = Math.max(rect.top, top);
+      rect.bottom = Math.min(rect.bottom, parent.clientHeight ? top + parent.clientHeight : clip.bottom);
+    }
+    if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
+      const left = clip.left + (parent.clientLeft || 0);
+      rect.left = Math.max(rect.left, left);
+      rect.right = Math.min(rect.right, parent.clientWidth ? left + parent.clientWidth : clip.right);
+    }
   }
+  const x = Math.ceil(rect.left), y = Math.ceil(rect.top);
+  const width = Math.floor(rect.right) - x, height = Math.floor(rect.bottom) - y;
+  if (width < 100 || height < 200) return null;
   // App-wide overlays always take precedence over native generated content.
   for (const overlay of document.querySelectorAll("[role=dialog], [role=alertdialog], [role=menu], [role=listbox], [data-apex-agent-overlay], [popover]:popover-open, dialog[open], .modal-backdrop, .mod-modal-backdrop, .thread-details.overlay, .artifacts-panel.overlay, .context-menu, .composer-menu, .menu-list, .bot-popover")) {
     if (!overlay.getClientRects().length || getComputedStyle(overlay).visibility === "hidden") continue;
@@ -37,10 +52,9 @@ export function visibleGeneratedBounds(slot: HTMLElement): GeneratedBounds | nul
       if (Math.min(rect.right, cover.right) - Math.max(rect.left, cover.left) >= 1 && Math.min(rect.bottom, cover.bottom) - Math.max(rect.top, cover.top) >= 1) return null;
     } else return null;
   }
-  const points = [[rect.left + 2, rect.top + 2], [rect.right - 2, rect.top + 2], [rect.left + 2, rect.bottom - 2], [rect.right - 2, rect.bottom - 2], [rect.left + rect.width / 2, rect.top + rect.height / 2]];
+  const points = [[rect.left + 2, rect.top + 2], [rect.right - 2, rect.top + 2], [rect.left + 2, rect.bottom - 2], [rect.right - 2, rect.bottom - 2], [(rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2]];
   if (points.some(([x, y]) => !slot.contains(document.elementFromPoint(x, y)))) return null;
-  const x = Math.ceil(rect.left), y = Math.ceil(rect.top);
-  return { x, y, width: Math.floor(rect.right) - x, height: Math.floor(rect.bottom) - y };
+  return { x, y, width, height };
 }
 
 /** Code is never put in Deck's DOM. Only main can create the isolated host. */
@@ -78,10 +92,11 @@ export function GeneratedAnswerCard({ card, source, version, author, identity, h
     const revokeGeometry = () => {
       const run = controller.current;
       if (run?.state.phase === "idle") void run.autoStart(null, performance.now());
-      else run?.place(null);
+      else if (run?.state.phase === "starting") run.place(null);
+      else if (run) run.place(slot.current ? visibleGeneratedBounds(slot.current) : null);
     };
-    // Scrolling/reflow can put a native view over trusted controls before the
-    // next paint. Revoke immediately; a stopped card only restarts explicitly.
+    // Update synchronously on scroll so native content stays inside the visible
+    // chat area. Pending starts still revoke their previously approved geometry.
     document.addEventListener("scroll", revokeGeometry, true);
     window.addEventListener("resize", revokeGeometry);
     document.addEventListener("visibilitychange", revokeGeometry);
@@ -101,7 +116,7 @@ export function GeneratedAnswerCard({ card, source, version, author, identity, h
       viewportHeight.current = Math.ceil(slot.current.getBoundingClientRect().height);
       void controller.current?.start(bounds);
     }
-    else setState((old) => ({ ...old, reason: "Bring the whole interface into view before running it." }));
+    else setState((old) => ({ ...old, reason: "Scroll at least 200px of the interface into view before running it." }));
   };
   const active = state.phase !== "idle";
   // Keep the opening footprint. Changing it can cause Chromium
@@ -117,7 +132,7 @@ export function GeneratedAnswerCard({ card, source, version, author, identity, h
       {(!supported || !state.enabled) && <p className="generated-fallback">{card.fallback}</p>}
       {supported && <>
         {(state.enabled || active) && <div className="generated-slot" ref={slot} style={{ height: (active ? viewportHeight.current : null) ?? state.height }} aria-label={`${card.title} interface`} aria-busy={state.phase === "starting"}>
-          {!active && <span>{autoStart && !automaticAttempted.current ? "Opens automatically when fully in view." : "Interface paused."}</span>}
+          {!active && <span>{autoStart && !automaticAttempted.current ? "Opens automatically when in view. Scroll inside to see the full interface." : "Interface paused."}</span>}
         </div>}
         <footer className="answer-foot">
           {!active && state.enabled && (!autoStart || state.attempted || automaticAttempted.current) && <button type="button" className="ghost small" onClick={run}>{state.attempted || automaticAttempted.current ? "Restart" : "Open interface"}</button>}

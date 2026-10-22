@@ -113,3 +113,34 @@ test('a rejected generated card hides raw code in desktop and phone fallbacks',(
  const shown=ThreadCard({source:JSON.stringify(invalid),seq:1,author:'Null',versions:new Map(),answers:null,readOnly:true,onOpen(){}});
  assert.equal(shown.props.hideSource,true);
 });
+
+test('partially clipped cards use the visible scrollable viewport instead of refusing to open',()=>{
+ let rect={left:20,top:80,right:520,bottom:680,width:500,height:600};
+ const parent={parentElement:null,getBoundingClientRect:()=>({left:0,top:120,right:700,bottom:500})};
+ const slot={isConnected:true,parentElement:parent,getBoundingClientRect:()=>rect,contains:n=>n===slot};
+ const document={visibilityState:'visible',elementFromPoint:()=>slot,querySelectorAll:()=>[]};
+ const bounds=new Function('document','getComputedStyle','innerWidth','innerHeight',geometryCode+'\nreturn visibleGeneratedBounds;')(document,()=>({visibility:'visible',display:'block',opacity:'1',overflowY:'auto',overflowX:'hidden'}),1000,800);
+ assert.deepEqual(bounds(slot),{x:20,y:120,width:500,height:380});
+ rect={left:20,top:-100,right:520,bottom:400,width:500,height:500};
+ assert.deepEqual(bounds(slot),{x:20,y:120,width:500,height:280});
+ rect={left:20,top:450,right:520,bottom:750,width:500,height:300};
+ assert.equal(bounds(slot),null,'less than the minimum usable height must stay hidden');
+});
+
+test('scrolling a running card updates its visible bounds without stopping it',()=>{
+ const effects=[],listeners=new Map(),calls=[];
+ const slot={isConnected:true,parentElement:null,getBoundingClientRect:()=>({left:20,top:80,right:520,bottom:380}),contains:n=>n===slot};
+ const document={visibilityState:'visible',body:{},elementFromPoint:()=>slot,querySelectorAll:()=>[],addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener(){}};
+ const window={apexDeck:{generatedUI:{}},addEventListener(){},removeEventListener(){},setInterval:()=>0};
+ class Run {
+  state={phase:'running'};
+  checkCapability(){}
+  place(bounds){calls.push(bounds);}
+ }
+ let ref=0;
+ const component=new Function('React','useState','useRef','useEffect','GeneratedRun','window','document','getComputedStyle','innerWidth','innerHeight','MutationObserver',code+'\nreturn GeneratedAnswerCard;')(
+  React,x=>[x,()=>{}],x=>({current:ref++===1?slot:x}),fn=>effects.push(fn),Run,window,document,()=>({visibility:'visible'}),1000,800,class{observe(){} disconnect(){}});
+ component(props);effects.forEach(fn=>fn());
+ listeners.get('scroll')();
+ assert.deepEqual(calls,[{x:20,y:80,width:500,height:300}]);
+});
