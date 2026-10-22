@@ -204,7 +204,7 @@ pub struct Fact {
 
 impl Fact {
     pub fn current(&self, now: u64) -> bool {
-        self.deleted_at.is_none() && self.superseded_by.is_none() && self.expires_at.is_none_or(|at| at > now)
+        crate::memory_lifecycle::current(self.deleted_at, self.superseded_by.as_deref(), self.expires_at, now)
     }
 }
 

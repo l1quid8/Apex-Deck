@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { Backend, HostEntry } from "./backend";
-import { assistantIdentityKey, type AssistantRef, type AssistantLook } from "./assistantIdentity.ts";
+import { assistantIdentityKey, projectIdentityKey, type AssistantRef, type AssistantLook } from "./assistantIdentity.ts";
 import { ASSISTANT_FOLDER, ASSISTANT_PROFILE, linkThisMacOn, requestId, runMachineBridge } from "./personalAssistant.ts";
 import type { PersonalAssistantRecord, PersonalLane, PersonalSettings, ConnectorState, BrowserView, BrowserInput } from "./personalAssistant.ts";
 import { unsupported as unsupportedCommand } from "./threadMove.ts";
+import { createProjectMemoryClient, PROJECT_MEMORY_CAPABILITY } from "./projectMemory.ts";
 
 export type PersonalAssistantsOptions = {
   hosts: Pick<HostEntry, "id" | "name" | "remote">[];
@@ -165,6 +166,15 @@ export class PersonalAssistantsCollection {
     const request = () => requestId(this.options.device ?? "mac");
     const call = <T,>(cmd: string, args: Record<string, unknown> = {}): Promise<T> => { need(); return route.call<T>(cmd, args); };
     const attachment = async (work: () => Promise<string>) => { need(); const result = await work(); if (this.rows.get(key)?.epoch !== epoch) throw new Error("The attachment's assistant was removed while saving."); return result; };
+    const expectedMemoryRevision = row.assistant.revision;
+    const memoryRevision = () => route.supports?.(PROJECT_MEMORY_CAPABILITY) === true ? { expectedRevision: expectedMemoryRevision } : {};
+    const projectMemory = route.supports?.(PROJECT_MEMORY_CAPABILITY) !== true ? undefined : createProjectMemoryClient({
+      assistant: { ...row.ref }, route, assertAvailable: () => { need(); },
+      assertBinding: project => {
+        const identity = projectIdentityKey(project);
+        if (!this.rows.get(key)?.assistant.projects?.some(binding => projectIdentityKey(binding.project) === identity)) throw new Error("This project is no longer assigned to this assistant. Refresh its projects before reading memory.");
+      },
+    });
     return {
       ref: { ...row.ref }, draftKey: key, attachmentKey: key,
       name: row.assistant.name, assistant: row.assistant, hostName: this.hosts.get(row.routeHostId)?.name ?? row.routeHostId, offline: this.offline(row), problem: this.hosts.get(row.routeHostId)?.problem,
@@ -186,9 +196,10 @@ export class PersonalAssistantsCollection {
       },
       addRule: (text, cls, mode) => after("personal_rule_add", { text, class: cls, mode }),
       removeRule: ruleId => after("personal_rule_remove", { ruleId }),
-      remember: text => after("personal_memory_add", { text }),
-      correctFact: (factId, text) => after("personal_memory_correct", { factId, text }),
-      forgetFact: factId => after("personal_memory_forget", { factId }),
+      remember: text => after("personal_memory_add", { text, ...memoryRevision() }),
+      correctFact: (factId, text) => after("personal_memory_correct", { factId, text, ...memoryRevision() }),
+      forgetFact: factId => after("personal_memory_forget", { factId, ...memoryRevision() }),
+      projectMemory, projectMemoryProblem: projectMemory ? undefined : "Update this machine's service to inspect and edit shared project memory.",
       cancelSchedule: scheduleId => after("personal_schedule_cancel", { requestId: request(), scheduleId }),
       seeNotices: () => after("personal_notices_seen", { upTo: Date.now() }),
       localHostId: this.localHostId,

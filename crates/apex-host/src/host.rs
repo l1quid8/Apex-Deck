@@ -107,6 +107,7 @@ pub struct Host {
     write_gates: Mutex<HashMap<PathBuf, apex_core::CheckoutWriteGate>>,
     room_lifecycle: Mutex<()>,
     pub(crate) assistant_tasks: crate::assistant_tasks::AssistantTasks,
+    pub(crate) project_memory: crate::project_memory::ProjectMemory,
     pub(crate) monitor_wake: Arc<tokio::sync::Notify>,
     pub(crate) monitor_clock: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) personal_wake: Arc<tokio::sync::Notify>,
@@ -171,6 +172,7 @@ impl Host {
     pub fn try_new(paths: HostPaths, runtime: tokio::runtime::Handle) -> Result<Arc<Host>, String> {
         crate::storage::prepare_private_root(&paths.data)?;
         let assistant_tasks = crate::assistant_tasks::AssistantTasks::open(paths.data.join("assistant-tasks-v1.json")).map_err(|e| e.to_string())?;
+        let project_memory = crate::project_memory::ProjectMemory::open(paths.data.join("project-memory-v1.json")).map_err(|e| e.to_string())?;
         let assistant_conversations = crate::assistant_conversation::ConversationStore::open(paths.data.join("assistant-conversations-v1.json")).map_err(|e| e.to_string())?;
         let store = Store::new(paths.data.join("saved-chats-v1"));
         let snapshots = Arc::new(checkpoints::Snapshots::new(paths.data.join("snapshots")));
@@ -192,6 +194,7 @@ impl Host {
             chains: AtomicUsize::new(0),
             startup: Mutex::new(None),
             assistant_tasks,
+            project_memory,
             assistant_conversations,
             assistant_runs: Mutex::default(),
             assistant_apply: tokio::sync::Mutex::new(()),

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PersonalBrowser } from './PersonalBrowser.tsx';
+import { ProjectMemoryPanel } from './ProjectMemoryPanel.tsx';
 import { CLASS_LABEL, MODE_LABEL, TASK_STATUS, type ActionMode, type ConnectorState, type CostEntry, type PersonalAssistantRecord, type PersonalLane, type PersonalSettings, type PersonalTask, type ToolClass } from './personalAssistant.ts';
 
 export type PanelName = 'activity' | 'scheduled' | 'memory' | 'rules' | 'settings' | 'costs' | 'notices' | 'connections';
@@ -55,6 +56,7 @@ type Draft = {
   name: string; style: string; timezone: string; quietStart: string; quietEnd: string; dailyDollars: string;
   unknownCostOk: boolean; localOnly: boolean; endpoints: string; contextChars: string;
 };
+type PrivateCorrection = { id: string; text: string; save: (text: string) => Promise<void> };
 
 function draftOf(a: PersonalAssistantRecord): Draft {
   return {
@@ -96,12 +98,20 @@ function settingsPatch(a: PersonalAssistantRecord, d: Draft): Partial<PersonalSe
 
 /** One panel for the personal assistant: tabs on top, one scrollable view below. */
 export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: PersonalLane; initial?: PanelName; onClose: () => void }) {
+  const ownerKey = JSON.stringify([lane.ref?.hostId ?? lane.assistant?.hostId, lane.ref?.assistantId ?? lane.assistant?.id]);
   const [panel, setPanel] = useState<PanelName>(initial);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [pending, setPending] = useState<Record<string, number | undefined>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const operation = useRef(0);
+  const busy = pending[ownerKey] !== undefined;
+  const error = errors[ownerKey] ?? '';
   const [openTask, setOpenTask] = useState<string | null>(null);
-  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
-  const [memoryText, setMemoryText] = useState('');
+  const [corrections, setCorrections] = useState<Record<string, PrivateCorrection | null>>({});
+  const editing = corrections[ownerKey] ?? null;
+  const setEditing = (value: PrivateCorrection | null) => setCorrections(before => ({ ...before, [ownerKey]: value }));
+  const [memoryDrafts, setMemoryDrafts] = useState<Record<string, string>>({});
+  const memoryText = memoryDrafts[ownerKey] ?? '';
+  const setMemoryText = (value: string) => setMemoryDrafts(before => ({ ...before, [ownerKey]: value }));
   const [rule, setRule] = useState<{ text: string; cls: ToolClass; mode: ActionMode }>({ text: '', cls: 'write', mode: 'ask' });
   const [draft, setDraft] = useState<{ rev: number; value: Draft } | null>(null);
   const [connectors, setConnectors] = useState<ConnectorState[]>([]);
@@ -120,14 +130,15 @@ export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: 
   const now = Date.now();
 
   const run = async (work: () => Promise<void>) => {
-    setBusy(true);
-    setError('');
+    const ticket = ++operation.current;
+    setPending(before => ({ ...before, [ownerKey]: ticket }));
+    setErrors(before => ({ ...before, [ownerKey]: '' }));
     try {
       await work();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setErrors(before => ({ ...before, [ownerKey]: err instanceof Error ? err.message : String(err) }));
     } finally {
-      setBusy(false);
+      setPending(before => before[ownerKey] === ticket ? { ...before, [ownerKey]: undefined } : before);
     }
   };
 
@@ -191,12 +202,18 @@ export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: 
     const older = facts.filter((fact) => !fact.deletedAt && fact.supersededBy);
     return (
       <>
+        <h4>Private assistant memory</h4>
+        <p className="personal-panels-muted">Private to {rec.name} on {lane.hostName}. Saved assistant revision {rec.revision}; these facts are separate from shared project notes.</p>
         {lane.remember && (
           <form className="personal-panels-inline" onSubmit={(event) => {
             event.preventDefault();
             const text = memoryText.trim();
             if (!text) return;
-            void run(async () => { await lane.remember!(text); setMemoryText(''); });
+            const submitted = memoryText;
+            void run(async () => {
+              await lane.remember!(text);
+              setMemoryDrafts(before => before[ownerKey] === submitted ? { ...before, [ownerKey]: '' } : before);
+            });
           }}>
             <input aria-label="Something to remember" value={memoryText} onChange={(event) => setMemoryText(event.target.value)} placeholder="Something to remember" />
             <button type="submit" disabled={locked || !memoryText.trim()}>Remember</button>
@@ -207,8 +224,14 @@ export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: 
           <div className="personal-panels-row" key={fact.id}>
             {editing?.id === fact.id ? (
               <div className="personal-panels-inline">
-                <input aria-label="Corrected fact" value={editing.text} onChange={(event) => setEditing({ id: fact.id, text: event.target.value })} />
-                <button type="button" disabled={locked || !editing.text.trim()} onClick={() => void run(async () => { await lane.correctFact!(fact.id, editing.text.trim()); setEditing(null); })}>Save</button>
+                <input aria-label="Corrected fact" value={editing.text} onChange={(event) => setEditing({ ...editing, text: event.target.value })} />
+                <button type="button" disabled={locked || !editing.text.trim()} onClick={() => {
+                  const correction = editing;
+                  void run(async () => {
+                    await correction.save(correction.text.trim());
+                    setCorrections(before => before[ownerKey] === correction ? { ...before, [ownerKey]: null } : before);
+                  });
+                }}>Save</button>
                 <button type="button" onClick={() => setEditing(null)}>Cancel</button>
               </div>
             ) : (
@@ -216,10 +239,16 @@ export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: 
             )}
             <div className="personal-panels-muted">
               {fact.kind} · {fact.explicit ? 'You said' : 'Inferred'}{!fact.explicit && ` · ${fact.confidence}%`} · {dayOf(fact.createdAt)}
+              <br />{fact.id} · revision {rec.revision} · created {when(fact.createdAt)}
+              {fact.source.messageId && <> · message {fact.source.messageId}</>}{fact.source.taskId && <> · task {fact.source.taskId}</>}
+              {fact.expiresAt !== undefined && <> · expires {when(fact.expiresAt)}</>}
             </div>
             {editing?.id !== fact.id && (
               <div className="personal-panels-actions">
-                {lane.correctFact && <button type="button" disabled={locked} onClick={() => setEditing({ id: fact.id, text: fact.text })}>Correct</button>}
+                {lane.correctFact && <button type="button" disabled={locked} onClick={() => {
+                  const correct = lane.correctFact!;
+                  setEditing({ id: fact.id, text: fact.text, save: text => correct(fact.id, text) });
+                }}>Correct</button>}
                 {lane.forgetFact && <button type="button" disabled={locked} onClick={() => {
                   if (typeof window !== 'undefined' && !window.confirm('Forget this?')) return;
                   void run(() => lane.forgetFact!(fact.id));
@@ -234,6 +263,7 @@ export function PersonalPanels({ lane, initial = 'activity', onClose }: { lane: 
             <ul>{older.map((fact) => <li key={fact.id} className="personal-panels-muted personal-panels-struck">{fact.text}</li>)}</ul>
           </details>
         )}
+        <ProjectMemoryPanel key={JSON.stringify([rec.hostId, rec.id])} lane={lane} />
       </>
     );
   };

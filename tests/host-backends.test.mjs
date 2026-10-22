@@ -68,6 +68,23 @@ test('versioned assistant settings reject disconnected writes without replaying 
   assert.deepEqual(await guarded.call('personal_workspace_configure', args), { saved: true });
   assert.deepEqual(calls, [['personal_workspace_configure', args]]);
 });
+
+test('project notebook mutations reject disconnected delivery and never replay on reconnect', async () => {
+  const connection = store.hostConnectionStore('server', 'Server');
+  const calls = [];
+  const guarded = mod.guardHostWrites({ call: async (...args) => { calls.push(args); return { saved: true }; } }, connection);
+  const commands = ['project_memory_save', 'project_memory_forget', 'project_memory_stage', 'project_memory_promote'];
+  const args = { assistant: { hostId: 'server', assistantId: 'asst-1' }, project: { hostId: 'server', workspaceId: 'w', cwd: '/repo' } };
+  for (const status of [{ kind: 'idle' }, { kind: 'resync' }, { kind: 'reconnecting', attempt: 1 }]) {
+    connection.setStatus(status);
+    for (const command of commands) await assert.rejects(guarded.call(command, args), /nothing was queued/);
+  }
+  connection.setStatus({ kind: 'connected', hostId: 'server' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, []);
+  for (const command of commands) assert.deepEqual(await guarded.call(command, args), { saved: true });
+  assert.deepEqual(calls, commands.map(command => [command, args]));
+});
 test('stable host registry starts only requested hosts and keeps preferences on Mac',async()=>{
   assert.equal(typeof mod.createHostBackends,'function');
   const seen=[];let starts=0;

@@ -57,7 +57,8 @@ pub fn command_needs(command: &Command) -> Need {
         AssistantTasksList { .. } => read(Global),
         // D3: the personal assistant holds one conversation across everything,
         // so even reading it needs a device allowed every thread at Full tier.
-        PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalPause { .. }
+        ProjectMemoryList { .. } | ProjectMemorySave { .. } | ProjectMemoryForget { .. } | ProjectMemoryStage { .. } | ProjectMemoryPromote { .. }
+        | PersonalList {} | PersonalGet { .. } | PersonalCreate { .. } | PersonalSend { .. } | PersonalReact { .. } | PersonalDecide { .. } | PersonalCancel { .. } | PersonalPause { .. }
         | PersonalScheduleCancel { .. } | PersonalWorkspaceConfigure { .. } | PersonalConfigure { .. } | PersonalRuleAdd { .. } | PersonalRuleRemove { .. }
         | PersonalMemoryAdd { .. } | PersonalMemoryCorrect { .. } | PersonalMemoryForget { .. } | PersonalNoticesSeen { .. }
         | PersonalPushRegister { .. } | PersonalMachineLink { .. } | PersonalMachineUnlink { .. } | PersonalMachineClaim { .. }
@@ -286,6 +287,11 @@ mod tests {
             ("personal_memory_add", Some((Full, "global")), json!({ "assistantId": "asst-1", "text": "x" })),
             ("personal_memory_correct", Some((Full, "global")), json!({ "assistantId": "asst-1", "factId": "f-1", "text": "x" })),
             ("personal_notices_seen", Some((Full, "global")), json!({ "assistantId": "asst-1", "upTo": 1 })),
+            ("project_memory_list", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"}})),
+            ("project_memory_save", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"},"text":"x","kind":"fact"})),
+            ("project_memory_forget", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"},"id":"note-1","expectedVersion":1})),
+            ("project_memory_stage", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"},"taskId":"task-1","attempt":1,"runId":"run-1","expectedTaskRevision":1,"text":"x","kind":"fact"})),
+            ("project_memory_promote", Some((Full, "global")), json!({"assistant":{"hostId":"owner","assistantId":"asst-1"},"project":{"hostId":"owner","workspaceId":"w","cwd":"/p"},"taskId":"task-1","attempt":1,"runId":"run-1","expectedTaskRevision":1,"scratchId":"scratch-1","promotionId":"delivery-1"})),
             ("personal_push_register", Some((Full, "global")), json!({ "assistantId": "asst-1", "token": "ab" })),
             ("personal_machine_link", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac", "name": "Mac", "folder": "/x" })),
             ("personal_machine_unlink", Some((Full, "global")), json!({ "assistantId": "asst-1", "hostId": "mac" })),

@@ -6,6 +6,7 @@ import { usePersonalAssistants, type PersonalAssistantsOptions } from "./usePers
 import type { Backend } from "./backend";
 import type { ParticipantConfig } from "./types";
 import type { AssistantLook, AssistantProjectBinding } from "./assistantIdentity.ts";
+import type { ProjectMemoryApi } from "./projectMemory.ts";
 
 export type PersonalMessage = { id: string; role: "human" | "assistant" | "system"; kind: "chat" | "approval" | "result" | "update" | "helper" | "notice"; text: string; at: number; taskId?: string; eventId?: string; reactions?: string[] };
 export type ToolClass = "read" | "write" | "send" | "spend";
@@ -97,6 +98,9 @@ export type PersonalLane = {
   remember?(text: string): Promise<void>;
   correctFact?(factId: string, text: string): Promise<void>;
   forgetFact?(factId: string): Promise<void>;
+  /** Negotiated, assignment-scoped project notebook; private facts stay on this assistant. */
+  projectMemory?: ProjectMemoryApi;
+  projectMemoryProblem?: string;
   cancelSchedule?(scheduleId: string): Promise<void>;
   seeNotices?(): Promise<void>;
   /** Let the assistant run commands on this Mac, in one folder, while Deck is open here. */

@@ -66,11 +66,38 @@ Independent review reproduced and resolved two wrong-owner mutation paths (bridg
 
 An earlier full-suite attempt ran while draft regressions were deliberately RED: 2,012/2,014 passed with those two expected failures. A separate overlapping full attempt was canceled; neither is presented as a passing gate. The parent-owned final 2,027-test run above supersedes both. No development app launch, native UI smoke, production-data migration, installation, merge to main or release was performed.
 
+## Phase 3: scoped project memory and inspectable reads
+
+Status: verified implementation and independent source review; source checkpoint only, not an installation.
+
+- `assistant_project_memory_v1` negotiates the new notebook operations. Each read/write revalidates the durable assistant host, exact assigned project, canonical workspace/folder and current grant. Current support requires the assistant and project to share one authenticated host; remote authority is still unavailable.
+- Shared notes live in `project-memory-v1.json`. Private facts remain in the original personal document. Direct human edits carry null author and no invented worker source. The Memory panel separates private facts from selected-project notes and shows IDs, versions, timestamps, provenance and fresh-read time. Existing monitor decisions/preferences are read-only sources, never copied into writable notes.
+- Edits require the inspected note version. Atomic transactions reject stale concurrent writes. Forget clears words across the complete correction chain and retained scratch copies; already-issued task results/snapshots are historical evidence and are not represented as erased.
+- Durable scratch freezes an exact excerpt of the current completed worker result with assistant/project/task/attempt/run identity. `capturedTaskRevision` remains fixed; explicit re-review may advance `expectedTaskRevision` before first promotion without changing source ID, bytes or expiry. Source deduplication and delivery-ID bindings are separate, so a new request ID cannot save a second copy. Accepting work and saving memory remain separate actions.
+- Assistant lineage is additive/omitted on legacy tasks; legacy owner keys and hashes remain unchanged. Legacy/unassigned tasks cannot manufacture assistant authorship. Actual personal-to-project lineage creation and worker context injection belong to Phase 4; this phase does not claim that existing production workers use the new notebook or that a promotion button has been added to task review.
+- Retrieval excludes other assistants, unrelated projects, whole conversations, expired and forgotten notes. Private facts additionally require an allowed target provider; local evidence assembly performs no model/network call. The eventual sender must independently enforce provider/host policy before sending. Quoted JSON evidence cannot grant permissions; the existing gateway test verifies malicious memory cannot bypass Ask or Project tools Off.
+- The full serialized context, including assignment, JSON escaping and provenance, obeys the total character budget. Per-scope quotas are ceilings. Optional notes are dropped to fit; an assignment that cannot fit with its provenance fails explicitly.
+- Project limits: 500 active notes, 5000 retained notes, 2000 Unicode characters per note, 1000 current scratch records, 5000 retained scratch records and 10000 delivery IDs. Scratch expires after 24 hours. Capacity errors preserve dedup/tombstone metadata; future maintenance is not silently invented here.
+- Private-memory mutations accept optional expected assistant revisions. New clients send a captured revision; old hosts omit the unsupported field and keep their legacy operation. Assistant/project switches cannot retarget an in-flight request, editor draft, correction or late receipt. Offline mutations are refused without reconnect replay.
+
+Independent review identified two production issues, both fixed with failing regressions before the fixes: serialized-budget overflow and scratch stranded by a later task-acceptance revision. Source review found no remaining Important/Critical finding. Earlier harness failures and an outdated command-count expectation were repaired and are not presented as feature regressions.
+
+| Final gate | Result | Evidence |
+| --- | --- | --- |
+| `npm test` | 2,045 passed; zero failures/skips | `/tmp/apex-phase3-js-final.log` |
+| `npx tsc --noEmit` | Passed | Parent-executed final check |
+| `cargo test -p apex-host` | 539 unit + 19 integration passed; 4 explicitly ignored | `/tmp/apex-phase3-host-final.log`; ignored live provider/simulator/trash checks were not run |
+| `cargo test -p apex-daemon` | 144 unit + 25 integration passed; 1 explicitly ignored live model-turn test | `/tmp/apex-phase3-daemon-final.log` |
+| Independent focused frontend review | 24 passed | Reviewer-executed actual client/component tests |
+| Production Agents screen | Exact match to `4d40cc0` | Parent byte comparison |
+
+No installed app, live daemon, production data, main checkout or development window was changed. The phase-6 main-pane redesign remains pending; these Memory controls are added to the existing panel component.
+
 ## Remaining phase gates
 
 1. Phase 1 foundation passed as described above.
 2. Phase 2 passed: discovery, owner-bound operations, phone compatibility and per-assistant session drafts.
-3. Add versioned project notes, bounded authorized context and separate reviewed scratch promotion.
+3. Phase 3 passed for the supported same-host notebook contract; production delegation injection follows in Phase 4.
 4. Connect proposed personal handoffs to the existing coding executor with immutable ownership and receipts.
 5. Verify independent controls, retries and restart reconciliation.
 6. Build the approved main-pane assistant interface and durable avatar flow.

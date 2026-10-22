@@ -140,11 +140,28 @@ impl crate::Host {
         })
     }
 
+    fn memory_changed(&self, id: &str, expected_revision: Option<u64>, change: impl FnOnce(&mut PersonalAssistant) -> Result<(), String>) -> Result<Changed, String> {
+        self.change_personal(|assistants| {
+            let assistant = assistants.iter_mut().find(|a| a.id == id).ok_or("That assistant doesn't exist on this machine.")?;
+            if expected_revision.is_some_and(|version| version != assistant.revision) {
+                return Err("This assistant changed. Refresh memory before saving again.".into());
+            }
+            let before = assistant.clone();
+            change(assistant)?;
+            if *assistant != before { assistant.revision += 1; }
+            Ok(Changed { assistant: assistant.clone() })
+        })
+    }
+
     /// Something the human tells it to remember, so it's explicit.
     pub fn personal_memory_add(&self, id: &str, text: &str) -> Result<Changed, String> {
+        self.personal_memory_add_at_revision(id, text, None)
+    }
+
+    pub fn personal_memory_add_at_revision(&self, id: &str, text: &str, expected_revision: Option<u64>) -> Result<Changed, String> {
         let text = text.trim();
         if text.is_empty() || text.len() > 500 { return Err("Say what to remember in up to 500 characters.".into()); }
-        self.changed(id, |assistant| {
+        self.memory_changed(id, expected_revision, |assistant| {
             let at = now();
             if assistant.facts.iter().filter(|f| f.current(at)).count() >= MAX_FACTS { return Err("Memory is full; forget something first.".into()); }
             let fact_id = assistant.next_fact_id();
@@ -155,9 +172,13 @@ impl crate::Host {
 
     /// A correction is a new fact; the old one stays as history, superseded.
     pub fn personal_memory_correct(&self, id: &str, fact_id: &str, text: &str) -> Result<Changed, String> {
+        self.personal_memory_correct_at_revision(id, fact_id, text, None)
+    }
+
+    pub fn personal_memory_correct_at_revision(&self, id: &str, fact_id: &str, text: &str, expected_revision: Option<u64>) -> Result<Changed, String> {
         let text = text.trim();
         if text.is_empty() || text.len() > 500 { return Err("Say what it should remember in up to 500 characters.".into()); }
-        self.changed(id, |assistant| {
+        self.memory_changed(id, expected_revision, |assistant| {
             let at = now();
             let new_id = assistant.next_fact_id();
             let old = assistant.facts.iter_mut().find(|f| f.id == fact_id && f.current(at)).ok_or("That memory isn't current any more.")?;
@@ -170,15 +191,14 @@ impl crate::Host {
 
     /// Forgetting removes the words, and every older version of them.
     pub fn personal_memory_forget(&self, id: &str, fact_id: &str) -> Result<Changed, String> {
-        self.changed(id, |assistant| {
+        self.personal_memory_forget_at_revision(id, fact_id, None)
+    }
+
+    pub fn personal_memory_forget_at_revision(&self, id: &str, fact_id: &str, expected_revision: Option<u64>) -> Result<Changed, String> {
+        self.memory_changed(id, expected_revision, |assistant| {
             let at = now();
-            let mut chain = vec![fact_id.to_owned()];
-            // Earlier versions this one replaced go too.
-            loop {
-                let more: Vec<String> = assistant.facts.iter().filter(|f| f.superseded_by.as_ref().is_some_and(|s| chain.contains(s)) && !chain.contains(&f.id)).map(|f| f.id.clone()).collect();
-                if more.is_empty() { break; }
-                chain.extend(more);
-            }
+            let chain = crate::memory_lifecycle::correction_chain(fact_id,
+                assistant.facts.iter().map(|f| (f.id.as_str(), f.superseded_by.as_deref())));
             let mut found = false;
             for fact in assistant.facts.iter_mut().filter(|f| chain.contains(&f.id)) {
                 found = true;

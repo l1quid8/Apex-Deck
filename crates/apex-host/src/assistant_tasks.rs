@@ -129,10 +129,22 @@ pub struct TaskAttempt {
     pub usage: Option<TaskUsage>,
 }
 
+/// Optional only for legacy records. New personal delegations bind immutable owners.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantLineage {
+    pub assistant: crate::personal_workspace::AssistantRef,
+    pub project: crate::personal_workspace::ProjectRef,
+    pub source_event_id: String,
+    pub delegation_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantTask {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AssistantLineage>,
     pub workspace_id: String,
     pub owner: TaskOwner,
     pub destination: Option<TaskDestination>,
@@ -320,6 +332,14 @@ impl AssistantTasks {
             .tasks
             .get(task_id)
             .cloned())
+    }
+
+    /// Keep the source revision stable until a notebook snapshot/receipt is durable.
+    /// Lock order for callers: personal document, task ledger, then project memory.
+    pub(crate) fn with_task<T>(&self, id: &str, inspect: impl FnOnce(&AssistantTask) -> Result<T, String>) -> Result<T, String> {
+        let document = self.inner.document.lock().unwrap();
+        let task = document.tasks.get(id).ok_or("Task not found.")?;
+        inspect(task)
     }
 
     pub fn snapshot_revision(&self) -> u64 {
@@ -1069,6 +1089,7 @@ fn make_task(
     let parent_thread_id = destination.as_ref().and_then(|d| d.thread_id.clone());
     let task = AssistantTask {
         id: id.clone(),
+        lineage: None,
         workspace_id: owner.workspace_id.clone(),
         parent_thread_id,
         owner,

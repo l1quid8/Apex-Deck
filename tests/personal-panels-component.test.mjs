@@ -14,6 +14,7 @@ const find = (node, predicate) => !node || typeof node !== 'object' ? null : pre
 const findAll = (node, predicate, out = []) => { if (!node || typeof node !== 'object') return out; if (predicate(node)) out.push(node); node.children?.forEach(child => findAll(child, predicate, out)); return out; };
 const button = (tree, label) => find(tree, node => node.type === 'button' && textOf(node) === label);
 const settle = () => new Promise(resolve => setImmediate(resolve));
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
 const now = Date.now();
 const record = {
@@ -64,7 +65,8 @@ function mount(props) {
     return [states[i], value => { states[i] = typeof value === 'function' ? value(states[i]) : value; }];
   };
   const useEffect = (effect) => { cursor++; effect(); };
-  const component = new Function('React', 'useState', 'useEffect', 'PersonalBrowser', 'TASK_STATUS', 'CLASS_LABEL', 'MODE_LABEL', `${compiled}\nreturn PersonalPanels;`)(React, useState, useEffect, () => null, TASK_STATUS, CLASS_LABEL, MODE_LABEL);
+  const useRef = initial => { const i = cursor++; return states[i] ??= { current: initial }; };
+  const component = new Function('React', 'useState', 'useEffect', 'useRef', 'PersonalBrowser', 'ProjectMemoryPanel', 'TASK_STATUS', 'CLASS_LABEL', 'MODE_LABEL', `${compiled}\nreturn PersonalPanels;`)(React, useState, useEffect, useRef, () => null, () => null, TASK_STATUS, CLASS_LABEL, MODE_LABEL);
   return { render() { cursor = 0; return component({ onClose() {}, ...props }); } };
 }
 
@@ -112,6 +114,8 @@ test('memory hides the superseded fact from the main list and Forget calls forge
     const tab = find(tree, node => node.props?.role === 'tab' && textOf(node) === 'Memory');
     tab.props.onClick();
     tree = h.render();
+    assert.match(textOf(tree), /Private assistant memory/);
+    assert.match(textOf(tree), /f1.*revision 7/);
     const rows = findAll(tree, node => node.props?.className === 'personal-panels-row');
     assert.ok(rows.some(row => textOf(row).includes('Prefers morning meetings')));
     assert.ok(!rows.some(row => textOf(row).includes('Office is in Leeds')), 'superseded fact is not in the main list');
@@ -159,4 +163,34 @@ test('a failed mutation shows its message in the alert line', async () => {
   tree = h.render();
   const alert = find(tree, node => node.props?.role === 'alert');
   assert.match(textOf(alert), /Host refused the stop/);
+});
+
+test('private-memory drafts stay with their owner and a late save cannot clear another assistant draft', async () => {
+  const saving = deferred(), f = fakeLane({ remember: () => saving.promise }), props = { lane: f.lane, initial: 'memory' }, h = mount(props);
+  let tree = h.render(); find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.onChange({ target: { value: 'Alpha private draft' } }); tree = h.render();
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  props.lane = fakeLane({ assistant: { ...structuredClone(record), hostId: 'beta', name: 'Beta' } }).lane;
+  tree = h.render(); assert.equal(find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.value, '');
+  find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.onChange({ target: { value: 'Beta private draft' } });
+  saving.resolve(); await settle(); tree = h.render();
+  assert.equal(find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.value, 'Beta private draft');
+});
+
+test('a private correction uses the lane revision captured when editing began', async () => {
+  const calls = [], old = fakeLane({ correctFact: async (...args) => calls.push(['revision-7', ...args]) });
+  const props = { lane: old.lane, initial: 'memory' }, h = mount(props); let tree = h.render();
+  button(tree, 'Correct').props.onClick(); tree = h.render();
+  find(tree, node => node.props?.['aria-label'] === 'Corrected fact').props.onChange({ target: { value: 'Retained revision draft' } });
+  props.lane = { ...old.lane, assistant: { ...old.lane.assistant, revision: 8 }, correctFact: async (...args) => calls.push(['revision-8', ...args]) };
+  tree = h.render(); button(tree, 'Save').props.onClick(); await settle();
+  assert.deepEqual(calls, [['revision-7', 'f1', 'Retained revision draft']]);
+});
+
+test('a late private-memory error cannot appear under another selected assistant', async () => {
+  const saving = deferred(), old = fakeLane({ remember: () => saving.promise }), props = { lane: old.lane, initial: 'memory' }, h = mount(props);
+  let tree = h.render(); find(tree, node => node.props?.['aria-label'] === 'Something to remember').props.onChange({ target: { value: 'Alpha preference' } }); tree = h.render();
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  props.lane = fakeLane({ assistant: { ...structuredClone(record), hostId: 'beta', name: 'Beta' } }).lane; h.render();
+  saving.reject(new Error('Alpha-only private error')); await settle(); tree = h.render();
+  assert.doesNotMatch(textOf(tree), /Alpha-only private error/);
 });

@@ -36,6 +36,11 @@ pub enum Command {
     AssistantTasksList { owner: crate::assistant_tasks::TaskOwner, #[serde(default)] request_id: Option<String> },
     AssistantTaskAction { #[serde(flatten)] input: crate::assistant_service::AssistantActionInput },
     MonitorSuggestSources { cwd: String },
+    ProjectMemoryList { #[serde(flatten)] input: crate::project_memory_service::ReadNotes },
+    ProjectMemorySave { #[serde(flatten)] input: crate::project_memory_service::SaveNotes },
+    ProjectMemoryForget { #[serde(flatten)] input: crate::project_memory_service::ForgetNote },
+    ProjectMemoryStage { #[serde(flatten)] input: crate::project_memory_service::StageNote },
+    ProjectMemoryPromote { #[serde(flatten)] input: crate::project_memory_service::PromoteNote },
     PersonalList {},
     PersonalGet { assistant_id: String },
     PersonalCreate { #[serde(flatten)] input: crate::personal::CreateInput },
@@ -49,9 +54,9 @@ pub enum Command {
     PersonalConfigure { assistant_id: String, settings: crate::personal_settings::Settings },
     PersonalRuleAdd { assistant_id: String, text: String, class: crate::personal::ToolClass, mode: crate::personal::ActionMode },
     PersonalRuleRemove { assistant_id: String, rule_id: String },
-    PersonalMemoryAdd { assistant_id: String, text: String },
-    PersonalMemoryCorrect { assistant_id: String, fact_id: String, text: String },
-    PersonalMemoryForget { assistant_id: String, fact_id: String },
+    PersonalMemoryAdd { assistant_id: String, text: String, #[serde(default)] expected_revision: Option<u64> },
+    PersonalMemoryCorrect { assistant_id: String, fact_id: String, text: String, #[serde(default)] expected_revision: Option<u64> },
+    PersonalMemoryForget { assistant_id: String, fact_id: String, #[serde(default)] expected_revision: Option<u64> },
     PersonalNoticesSeen { assistant_id: String, up_to: u64 },
     PersonalPushRegister { assistant_id: String, token: String },
     PersonalMachineLink { assistant_id: String, host_id: String, name: String, folder: String },
@@ -244,13 +249,18 @@ impl Host {
             PersonalCancel { assistant_id, request_id, task_id } => reply(self.personal_cancel(&assistant_id, &request_id, &task_id)?),
             PersonalPause { assistant_id, request_id, paused } => reply(self.personal_pause(&assistant_id, &request_id, paused)?),
             PersonalScheduleCancel { assistant_id, request_id, schedule_id } => reply(self.personal_schedule_cancel(&assistant_id, &request_id, &schedule_id)?),
+            ProjectMemoryList { input } => reply(self.project_memory_list(input)?),
+            ProjectMemorySave { input } => reply(self.project_memory_save(input)?),
+            ProjectMemoryForget { input } => reply(self.project_memory_forget(input)?),
+            ProjectMemoryStage { input } => reply(self.project_memory_stage(input)?),
+            ProjectMemoryPromote { input } => reply(self.project_memory_promote(input)?),
             PersonalWorkspaceConfigure { input } => reply(self.personal_workspace_configure(input).await?),
             PersonalConfigure { assistant_id, settings } => reply(self.personal_configure(&assistant_id, settings)?),
             PersonalRuleAdd { assistant_id, text, class, mode } => reply(self.personal_rule_add(&assistant_id, &text, class, mode)?),
             PersonalRuleRemove { assistant_id, rule_id } => reply(self.personal_rule_remove(&assistant_id, &rule_id)?),
-            PersonalMemoryAdd { assistant_id, text } => reply(self.personal_memory_add(&assistant_id, &text)?),
-            PersonalMemoryCorrect { assistant_id, fact_id, text } => reply(self.personal_memory_correct(&assistant_id, &fact_id, &text)?),
-            PersonalMemoryForget { assistant_id, fact_id } => reply(self.personal_memory_forget(&assistant_id, &fact_id)?),
+            PersonalMemoryAdd { assistant_id, text, expected_revision } => reply(self.personal_memory_add_at_revision(&assistant_id, &text, expected_revision)?),
+            PersonalMemoryCorrect { assistant_id, fact_id, text, expected_revision } => reply(self.personal_memory_correct_at_revision(&assistant_id, &fact_id, &text, expected_revision)?),
+            PersonalMemoryForget { assistant_id, fact_id, expected_revision } => reply(self.personal_memory_forget_at_revision(&assistant_id, &fact_id, expected_revision)?),
             PersonalNoticesSeen { assistant_id, up_to } => reply(self.personal_notices_seen(&assistant_id, up_to)?),
             PersonalPushRegister { assistant_id, token } => reply(self.personal_push_register(&assistant_id, &token)?),
             PersonalMachineLink { assistant_id, host_id, name, folder } => reply(self.personal_machine_link(&assistant_id, &host_id, &name, &folder)?),
@@ -506,7 +516,8 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 153);
+        assert_eq!(names.len(), 158);
+        for name in ["project_memory_list", "project_memory_save", "project_memory_forget", "project_memory_stage", "project_memory_promote"] { assert!(names.contains(&name.to_owned())); }
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));

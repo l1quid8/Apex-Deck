@@ -198,7 +198,7 @@ fn parse_profile(value: Value) -> Result<ParticipantConfig, String> {
     }
     Ok(profile)
 }
-fn same_provider(a: &ParticipantConfig, b: &ParticipantConfig) -> bool {
+pub(crate) fn same_provider(a: &ParticipantConfig, b: &ParticipantConfig) -> bool {
     match (&a.backend, &b.backend) {
         (
             Backend::OpenAiCompatible {
@@ -338,6 +338,64 @@ impl Host {
         Ok(profile)
     }
 
+    pub(crate) fn validate_project_binding(&self, assistant: &PersonalAssistant, mut binding: AssistantProjectBinding) -> Result<AssistantProjectBinding, String> {
+        let local = self.local_host_id()?;
+        let workspaces = self
+            .session()?
+            .and_then(|s| s.workspaces)
+            .unwrap_or_default();
+        let project = &mut binding.project;
+        if !identifier(&project.host_id)
+            || !identifier(&project.workspace_id)
+            || !identifier(&project.cwd)
+            || !Path::new(&project.cwd).is_absolute()
+        {
+            return Err("The project identity is invalid.".into());
+        }
+        if project.host_id != local {
+            return Err("Remote project authority cannot be verified on this host yet. Assign the project only after its owning host can validate it.".into());
+        }
+        let cwd = Path::new(&project.cwd)
+            .canonicalize()
+            .map_err(|_| "The project folder is unavailable on its owning host.")?;
+        if !cwd.is_dir() {
+            return Err("The project must name an existing folder.".into());
+        }
+        let saved = workspaces
+            .iter()
+            .filter(|ws| ws["id"].as_str() == Some(&project.workspace_id))
+            .any(|ws| {
+                (matches!(ws["hostId"].as_str(), None | Some("local"))
+                    || ws["hostId"].as_str() == Some(&local))
+                    && ws["path"]
+                        .as_str()
+                        .and_then(|path| Path::new(path).canonicalize().ok())
+                        .as_ref()
+                        == Some(&cwd)
+            });
+        let monitor = self.monitor_get(&project.workspace_id)?;
+        let monitored = monitor.as_ref().is_some_and(|m| {
+            (m.host_id == local || m.host_id == "local")
+                && Path::new(&m.cwd).canonicalize().ok().as_ref() == Some(&cwd)
+        });
+        if !saved && !monitored {
+            return Err(
+                "That workspace and folder do not identify a saved project on this host."
+                    .into(),
+            );
+        }
+        if !assistant
+            .allowed_folders
+            .iter()
+            .filter_map(|folder| Path::new(folder).canonicalize().ok())
+            .any(|folder| cwd.starts_with(folder))
+        {
+            return Err("That project has no existing folder grant for this assistant.".into());
+        }
+        project.cwd = cwd.to_string_lossy().into_owned();
+        Ok(binding)
+    }
+
     fn workspace_projects(
         &self,
         assistant: &PersonalAssistant,
@@ -347,61 +405,10 @@ impl Host {
             return Err("Too many project assignments.".into());
         }
         let local = self.local_host_id()?;
-        let workspaces = self
-            .session()?
-            .and_then(|s| s.workspaces)
-            .unwrap_or_default();
         let mut canonical = Vec::new();
-        for mut binding in projects {
-            let project = &mut binding.project;
-            if !identifier(&project.host_id)
-                || !identifier(&project.workspace_id)
-                || !identifier(&project.cwd)
-                || !Path::new(&project.cwd).is_absolute()
-            {
-                return Err("The project identity is invalid.".into());
-            }
-            if project.host_id != local {
-                return Err("Remote project authority cannot be verified on this host yet. Assign the project only after its owning host can validate it.".into());
-            }
-            let cwd = Path::new(&project.cwd)
-                .canonicalize()
-                .map_err(|_| "The project folder is unavailable on its owning host.")?;
-            if !cwd.is_dir() {
-                return Err("The project must name an existing folder.".into());
-            }
-            let saved = workspaces
-                .iter()
-                .filter(|ws| ws["id"].as_str() == Some(&project.workspace_id))
-                .any(|ws| {
-                    (matches!(ws["hostId"].as_str(), None | Some("local"))
-                        || ws["hostId"].as_str() == Some(&local))
-                        && ws["path"]
-                            .as_str()
-                            .and_then(|path| Path::new(path).canonicalize().ok())
-                            .as_ref()
-                            == Some(&cwd)
-                });
-            let monitor = self.monitor_get(&project.workspace_id)?;
-            let monitored = monitor.as_ref().is_some_and(|m| {
-                (m.host_id == local || m.host_id == "local")
-                    && Path::new(&m.cwd).canonicalize().ok().as_ref() == Some(&cwd)
-            });
-            if !saved && !monitored {
-                return Err(
-                    "That workspace and folder do not identify a saved project on this host."
-                        .into(),
-                );
-            }
-            if !assistant
-                .allowed_folders
-                .iter()
-                .filter_map(|folder| Path::new(folder).canonicalize().ok())
-                .any(|folder| cwd.starts_with(folder))
-            {
-                return Err("That project has no existing folder grant for this assistant.".into());
-            }
-            project.cwd = cwd.to_string_lossy().into_owned();
+        for binding in projects {
+            let binding = self.validate_project_binding(assistant, binding)?;
+            let project = &binding.project;
             if canonical
                 .iter()
                 .any(|b: &AssistantProjectBinding| b.project == *project)
