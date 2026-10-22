@@ -107,3 +107,15 @@
 @media (prefers-reduced-motion: reduce) { .composer-bots .chip { transition: none; } }
 .composer-bots .chip-low { position: absolute; top: -6px; left: 0; padding: 1px 3px; border-radius: 3px; background: var(--panel); color: var(--danger); font-size: 9px; z-index: 3; }
 .composer-bots[data-chip-style="stack"] .chip-wrap:first-child { margin-left: 0; }
+
+/* Settings: chip style picker (one live preview + style names). */
+.settings-row.chip-style-row { flex-direction: column; align-items: stretch; gap: 10px; }
+.chip-style-picker { display: grid; gap: 8px; }
+.chip-style-preview { display: block; height: auto; min-height: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); pointer-events: none; overflow: hidden; }
+.chip-style-preview .chips.composer-bots { position: static; margin: 0; }
+.chip-style-preview-composer { height: 14px; padding: 0; min-height: 0; margin: 0 0 0; border: 1px solid var(--line); background: var(--panel); }
+.chip-style-caption { margin: 0; font-size: 12px; color: var(--muted); }
+.chip-style-names { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.chip-style-name { padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--text); font-size: 12px; cursor: pointer; }
+.chip-style-name:hover, .chip-style-name:focus-visible { border-color: var(--muted); }
+.chip-style-name.current { border-color: var(--text); font-weight: 600; }
