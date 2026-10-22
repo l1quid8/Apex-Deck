@@ -645,12 +645,12 @@ mod tests {
         let other = Temp::new();
         let mut room = Room::new(vec![], RoomOptions::default());
         room.post_human("timestamped", &|_| {}).await;
-        let mut saved = SavedRoom {
+        let mut saved = SavedRoom { mounts: vec![],
             cwd: Some(root.path().to_string_lossy().into_owned()),
             snapshot: room.snapshot(),
         };
         saved.snapshot.transcript[0].at = Some(42);
-        let wrong = SavedRoom {
+        let wrong = SavedRoom { mounts: vec![],
             cwd: Some(other.path().to_string_lossy().into_owned()),
             snapshot: saved.snapshot.clone(),
         };

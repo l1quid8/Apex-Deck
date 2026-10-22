@@ -18,6 +18,7 @@ function botIdOf(message: Message): string | null {
 export function turnFilesFor(
   messages: Message[],
   changes: MadeChange[],
+  mounts: {seq:number; changeCount?:number}[] = [],
 ): Map<number, TurnFile[]> {
   const out = new Map<number, TurnFile[]>();
   const byAuthor = new Map<string, Message[]>();
@@ -32,10 +33,12 @@ export function turnFilesFor(
 
   // Attribute each change to its reply, aggregating by path.
   const buckets = new Map<number, Map<string, TurnFile>>();
-  for (const record of changes) {
+  for (const [index, record] of changes.entries()) {
     const replies = byAuthor.get(record.by);
     if (!replies) continue;
-    const reply = replies.find((message) => message.seq >= record.seq);
+    // A failed/pass turn must not transfer its edits to a later checkout's reply.
+    const epoch = mounts.filter(mount => mount.changeCount == null ? record.seq >= mount.seq : index >= mount.changeCount).length;
+    const reply = replies.find((message) => message.seq >= record.seq && mounts.filter(mount => message.seq >= mount.seq).length === epoch);
     if (!reply) continue;
     let bucket = buckets.get(reply.seq);
     if (!bucket) {

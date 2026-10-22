@@ -55,6 +55,8 @@ export interface ForkResult {
 
 /** What the owner hands the pop-out window so it can show the same item. */
 export interface PopoutSnapshot {
+  pendingMount?: string | null;
+  busyTurn?: boolean;
   kind: PopoutKind;
   /** Pane id when kind is pane, tab id when kind is tab. */
   id: string;
@@ -119,6 +121,8 @@ export interface TabSpot {
 
 /** What a pop-out asks its owner to do. Starts, closes and saves run in the owner, never in the pop-out. */
 export type PopoutAction =
+  | { type: "mount-worktree"; id: string; path: string }
+  | { type: "cancel-mount"; id: string }
   | { type: "restart-terminal" }
   | { type: "start-pane"; id: string }
   | { type: "show-pane"; id: string }
@@ -140,6 +144,8 @@ export type PopoutAction =
 
 /** What the owner pushes to a pop-out while it is open: titles, selection, runs and rows. */
 export interface PopoutUpdate {
+  pendingMount?: string | null;
+  busyTurn?: boolean;
   title?: string;
   workspaceId?: string;
   activePaneId?: string;

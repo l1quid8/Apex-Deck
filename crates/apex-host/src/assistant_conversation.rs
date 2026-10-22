@@ -683,7 +683,7 @@ mod tests {
     }
 
     fn saved_chat(cwd: &str, messages: Vec<(Speaker, String, Option<u64>)>) -> SavedRoom {
-        SavedRoom {
+        SavedRoom { mounts: vec![],
             cwd: Some(cwd.into()),
             snapshot: RoomSnapshot {
                 participants: vec![],

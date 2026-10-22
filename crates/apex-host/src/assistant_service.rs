@@ -3003,7 +3003,7 @@ mod tests {
     fn routing_choices_use_saved_chat_workers_and_exclude_other_folders() {
         let f = fixture();
         let saved = f.host.store().room("parent").unwrap().unwrap();
-        f.host.store().save_room("elsewhere", &crate::storage::SavedRoom {
+        f.host.store().save_room("elsewhere", &crate::storage::SavedRoom { mounts: vec![],
             cwd: Some("/another/project".into()), snapshot: saved.snapshot,
         }).unwrap();
         f.host.store().save_session(&json!({

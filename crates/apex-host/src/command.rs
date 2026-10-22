@@ -100,6 +100,8 @@ pub enum Command {
     PtyResize { id: String, cols: u16, rows: u16 },
     PtyKill { id: String },
     RoomDiff { id: String },
+    RoomGitStatus { id: String },
+    RoomGitAction { id: String, action: crate::git_changes::Action },
     RoomFork { source: String, target: String, upto: Option<usize> },
     /// A thread's snapshot made into a new room here: a fork to this machine, or a thread moved before it started.
     /// With `replace`, a room already called `id` here is written over in one step and then closed, as when a thread that hasn't started moves to another folder.
@@ -118,6 +120,7 @@ pub enum Command {
     LibraryList {},
     LibraryRemove { file: String },
     LibraryRename { file: String, name: String },
+    RoomMount { id: String, cwd: String },
     RoomCreate { id: String, participants: Vec<ParticipantConfig>, options: RoomOptions, cwd: Option<String> },
     RoomState { id: String },
     RoomPost { id: String, text: String, #[serde(default, alias = "interactive_answers")] interactive_answers: Option<bool> },
@@ -330,6 +333,8 @@ impl Host {
             PtyResize { id, cols, rows } => reply(self.pty_resize(id, cols, rows)?),
             PtyKill { id } => { self.pty_kill(id); reply(()) },
             RoomDiff { id } => reply(self.room_diff(id).await?),
+            RoomGitStatus { id } => reply(self.room_git_status(id).await?),
+            RoomGitAction { id, action } => reply(self.room_git_action(id, action).await?),
             RoomFork { source, target, upto } => reply(self.room_fork(source, target, upto)?),
             RoomImport { id, snapshot, cwd, replace } => reply(self.room_import(id, snapshot, cwd, replace.unwrap_or(false))?),
             ExportThread { file_name, contents } => reply(self.export_thread(file_name, contents)?),
@@ -345,6 +350,7 @@ impl Host {
             LibraryList {} => reply(self.library_list()),
             LibraryRemove { file } => reply(self.library_remove(file)?),
             LibraryRename { file, name } => reply(self.library_rename(file, name)?),
+            RoomMount { id, cwd } => reply(self.room_mount(id, cwd)?),
             RoomCreate { id, participants, options, cwd } => reply(self.room_create(id, participants, options, cwd)?),
             RoomState { id } => reply(self.room_state(id)?),
             RoomPost { id, text, interactive_answers } => reply(self.room_post_with_answer_guidance(id, text, interactive_answers, capability).await?),
@@ -498,7 +504,7 @@ mod tests {
     #[test]
     fn names_lists_every_command() {
         let names = names();
-        assert_eq!(names.len(), 149);
+        assert_eq!(names.len(), 152);
         assert!(names.contains(&"voice_capabilities".to_string()));
         assert!(names.contains(&"room_stop_request".to_string()));
         assert!(names.contains(&"room_bot_models".to_string()));
@@ -515,6 +521,7 @@ mod tests {
         assert!(names.contains(&"room_import".to_string()));
         assert!(names.contains(&"room_set_plan".to_string()));
         assert!(names.contains(&"room_state".to_string()));
+        assert!(names.contains(&"room_mount".to_string()));
         assert!(names.contains(&"session_load".to_string()));
         assert!(names.contains(&"mod_env_get".to_string()));
         assert!(names.contains(&"monitor_list".to_string()));

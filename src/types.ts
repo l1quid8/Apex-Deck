@@ -202,6 +202,8 @@ export interface Compaction {
 
 export type AppSection = "agents" | "code" | "threads" | "library";
 export interface RoomState {
+  cwd?: string | null;
+  mounts?: import("./worktreeMount").MountBoundary[];
   recovery_seq?: number;
   snapshot: RoomSnapshot;
   active: string[];
@@ -347,6 +349,8 @@ export interface WorktreeList { root: string; items: Worktree[] }
 export interface WorktreeAdd { branch: string; newBranch: boolean; base: string | null; folder: string | null }
 
 export interface Pane {
+  /** This chat is mounted in another checkout of its project. */
+  mount?: string;
   id: string;
   workspaceId: string;
   kind: PaneKind;
@@ -381,6 +385,8 @@ export interface Pane {
 
 /** What a thread reports to App through ChatPane's `onStatus`. */
 export interface ThreadStatus {
+  /** Includes queued work and waits, not only visible streaming replies. */
+  busy?: boolean;
   /** The muted words in the pane head when no flag shows, e.g. "2 bots · replying". */
   text: string;
   /** Display names of bots producing a reply right now (not counting ones stopped on a card). */

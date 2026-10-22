@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod changes;
+pub mod git_changes;
 pub mod checkpoints;
 pub mod export;
 pub mod images;

@@ -129,6 +129,7 @@ export function PopoutApp({ token }: { token: string }) {
     });
     const off = bridge.popout.onUpdate((patch) => {
       if (!live) return;
+      if (patch.pendingMount !== undefined || patch.busyTurn !== undefined) setSnapshot(old => old ? {...old, ...patch} : old);
       if (patch.title !== undefined) setTitle(patch.title);
       if (patch.ptyId !== undefined) setPtyId(patch.ptyId);
       if (patch.url !== undefined) setUrl(patch.url);
@@ -510,7 +511,7 @@ function TabBody({ snapshot, backend, route, title, url, rows, activeChatId, cwd
     );
   }
   if (tabKind === "worktrees") {
-    return <RightWorktreesTab root={cwd || null} backend={route} visible onOpen={openPath} />;
+    return <RightWorktreesTab root={cwd || null} backend={route} visible mounted={cwd} pendingMount={snapshot.pendingMount ?? undefined} busyTurn={snapshot.busyTurn} onMount={activeChatId ? path => send({type:"mount-worktree",id:activeChatId,path}) : undefined} onCancelMount={() => { if(activeChatId) send({type:"cancel-mount",id:activeChatId}); }} onOpen={openPath} />;
   }
   if (tabKind === "browser") {
     return (

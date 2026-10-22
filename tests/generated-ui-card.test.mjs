@@ -49,7 +49,8 @@ test('Retry and Revert invalidate a generated run before an asynchronous history
  const fn=chat.slice(chat.indexOf('  const runGoBack ='),chat.indexOf('  const answerGoBack ='));
  const body=transform(fn,{transforms:['typescript']}).code;
  const calls=[];
- const run=new Function('setGoingBack','goBackRequest','backend','pane','setGoneBack',body+'\nreturn runGoBack;')(()=>{},()=>({chat:true,files:[]}),{roomRevert(){calls.push('revert');return new Promise(()=>{});}},{id:'thread'},()=>calls.push('invalidate'));
+ const route={roomRevert(){calls.push('revert');return new Promise(()=>{});}};
+ const run=new Function('setGoingBack','goBackRequest','backend','pane','setGoneBack','ready','currentPlace','cwd',body+'\nreturn runGoBack;')(()=>{},()=>({chat:true,files:[]}),route,{id:'thread'},()=>calls.push('invalidate'),true,{current:{backend:route,cwd:'/repo'}},'/repo');
  run('revert',{seq:1,speaker:{kind:'human'}},{},'both',[]);
  assert.deepEqual(calls,['invalidate','revert']);
 });

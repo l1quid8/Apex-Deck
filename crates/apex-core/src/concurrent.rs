@@ -87,6 +87,7 @@ pub trait TurnStartHook: Send + Sync {
 }
 #[derive(Clone)]
 pub struct ConcurrentRoom {
+    retired: Arc<AtomicBool>,
     room: Arc<AsyncMutex<Room>>,
     slots: Arc<Mutex<HashMap<ParticipantId, Arc<Slot>>>>,
     pending: Arc<AtomicUsize>,
@@ -103,6 +104,7 @@ impl ConcurrentRoom {
             room: Arc::new(AsyncMutex::new(room)),
             slots: Arc::default(),
             pending: Arc::default(),
+            retired: Arc::default(),
             editor: Arc::default(),
             write_gate: None,
             write_owner: None,
@@ -128,6 +130,19 @@ impl ConcurrentRoom {
     }
     pub fn busy(&self) -> bool {
         self.pending.load(Ordering::SeqCst) != 0
+    }
+    /// Retire only between turns, with persistence under the admission lock.
+    /// A stale handle cannot admit another post after this succeeds.
+    pub fn retire_if_idle<T>(&self, persist: impl FnOnce(&Room) -> Result<T, String>) -> Result<T, String> {
+        let room = self.room.try_lock().ok_or("room-busy: Wait for the current turn to finish.")?;
+        if self.busy() || !self.cleanup_holds.lock().unwrap().is_empty() { return Err("room-busy: Wait for the current turn to finish.".into()); }
+        if self.retired.load(Ordering::SeqCst) { return Err("The chat folder changed. Reopen the chat.".into()); }
+        let result = persist(&room)?;
+        self.retired.store(true, Ordering::SeqCst);
+        Ok(result)
+    }
+    fn check_open(&self) -> Result<(), String> {
+        if self.retired.load(Ordering::SeqCst) { Err("The chat folder changed. Reopen the chat.".into()) } else { Ok(()) }
     }
     /// Release a cleanup hold only after the caller has verified that every
     /// process owned by this participant has stopped. Durable task owners are
@@ -192,6 +207,7 @@ impl ConcurrentRoom {
         sink: Sink<'_>,
     ) -> Result<TurnBatch, String> {
         let mut room = self.room.lock().await;
+        self.check_open()?;
         let resolved = room.resolve_targets(text);
         let targets = targets.unwrap_or(resolved.clone());
         if targets.iter().any(|id| !room.has(id)) {
@@ -214,6 +230,7 @@ impl ConcurrentRoom {
     /// under the room lock. IDs are retained for this process lifetime (bounded).
     pub async fn begin_voice_post(&self, text: &str, id: ParticipantId, request_id: String, sink: Sink<'_>) -> Result<Option<TurnBatch>, String> {
         let mut room = self.room.lock().await;
+        self.check_open()?;
         if !room.has(&id) { return Err("voice recipient no longer exists".into()); }
         if request_id.is_empty() || request_id.len() > 128 || text.trim().is_empty() || text.len() > 32_000 { return Err("invalid voice request".into()); }
         let mut requests = self.voice_requests.lock().unwrap();
@@ -248,6 +265,7 @@ impl ConcurrentRoom {
     /// `Some(0)` buys exactly one reply each.
     pub async fn begin_turn(&self, ids: Vec<ParticipantId>, hops: Option<usize>) -> Result<TurnBatch, String> {
         let room = self.room.lock().await;
+        self.check_open()?;
         if ids.is_empty() {
             return Err("no one was named to answer".into());
         }

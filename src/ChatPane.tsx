@@ -1,3 +1,4 @@
+import { changeFolder, type MountBoundary } from "./worktreeMount";
 import { VoiceCallBar, VoiceCallCapsule, VoiceCallControls, useVoiceHint, useVoiceSlot, type VoiceWho } from './voice/VoiceCallControls';
 import { VoiceSampleButton } from './voice/VoiceSampleButton';
 import { composerButton } from './voice/callView';
@@ -80,6 +81,7 @@ import { recentFiles } from "./recentFiles.ts";
 export type ThreadMenuRequest = "fork" | "export" | "share_pdf" | "copy_markdown" | "copy_reply";
 import { DiffPanel } from "./DiffPanel";
 import { ChangedFilesStrip } from "./ChangedFilesStrip";
+import { GitChangesMenu, type GitMenuRequest } from "./GitChangesMenu";
 import { MAX_STEPS_SHOWN, SavedSteps, WorkSteps } from "./WorkSteps.tsx";
 import { applyStepEvent, createStepsIndexLoader, dropStepsFrom, emptyTurnSteps, readReplySteps, savedEntry, type TurnSteps } from "./workSteps.ts";
 import { turnFilesFor } from "./turnChanges";
@@ -129,6 +131,8 @@ interface Props {
   pane: Pane;
   /** The workspace folder. Command-line participants run here. */
   cwd: string;
+  onFolder?: (cwd: string) => void;
+  onWorktrees?: () => void;
   /** Which coding agents are installed, to enable their presets. */
   agents: AgentInfo[];
   backend: Backend;
@@ -201,7 +205,7 @@ interface Props {
 }
 
 /** A line in the transcript from the app. `action` adds Try again or Let them answer. */
-type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction; source?: "room-load" };
+type Notice = { key: number; text: string; tone: "info" | "error"; action?: NoticeAction; source?: "room-load" | "mount" };
 /** Where `/compact` cut in: the models see `summary` instead of the messages above it. */
 type Summary = { by: string | null; summary: string; upto: number };
 /** An agent's context has just dropped to the low mark; shown once under its reply. */
@@ -538,7 +542,7 @@ function AgentTile({ name, seed, color, picked, onToggle }: { name: string; seed
 /** No renames to apply: one array, so the default never looks like a change. */
 const NO_RENAMES: CopyRename[] = [];
 
-export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
+export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, cwd, onFolder, onWorktrees, workspaceName = "", onStatus, onSeen, addRequest, agents, backend, focused, visible = true, onActivity, onSignal, onApprovals, onServer, onPreview, onFork, moveAsk, work, menuRequest, onMenuDone, onCopy, profiles, onProfilesChange, disabledProviders, newThread = { policy: "mention", max_bot_hops: 3 }, newBotAccess = "read", confirmSteer = true, onConfirmSteer, chipParts = ALL_PARTS, landingTexture = DEFAULT_LANDING_TEXTURE, profileMode = false, copyRenames = NO_RENAMES, onCopyRenamed, details, artifactsHost, followArtifacts = false, countsSlot, attach = false, codeRunButtons = true, onOpenTerminal }: Props) {
   // Hydrate on first display, then keep the DOM so switching chats preserves
   // selection, scroll position, expanded messages and loaded media.
   const transcriptMounted = useRef(visible);
@@ -635,13 +639,27 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   /** Which file to auto-expand in the changes panel after a strip file click. Null expands none. */
   const [focusPath, setFocusPath] = useState<string | null>(null);
   /** Files each bot reply changed, from the change events' author and round offset. Model-agnostic. */
-  const turnFiles = useMemo(() => turnFilesFor(messagesOf(entries), changes), [entries, changes]);
-  const openTurnDiff = (seq: number, path?: string) => {
-    const files = turnFiles.get(seq) ?? [];
-    setTurnPaths(files.map((file) => file.path));
-    setFocusPath(path ?? null);
-    details?.show("changes");
-    loadDiff();
+  const [mountHistory, setMountHistory] = useState<MountBoundary[]>([]);
+  const turnFiles = useMemo(() => turnFilesFor(messagesOf(entries), changes, mountHistory), [entries, changes, mountHistory]);
+  const currentPlace = useRef({backend,cwd});
+  // Keep an identity for each folder lifecycle, including a switch away and back.
+  if (currentPlace.current.backend !== backend || currentPlace.current.cwd !== cwd) currentPlace.current = {backend,cwd};
+  const folderChanged = useRef(onFolder); folderChanged.current = onFolder;
+  const [gitMenuRequest, setGitMenuRequest] = useState<GitMenuRequest | null>(null);
+  const [gitCardSeq, setGitCardSeq] = useState<number | null>(null);
+  const [gitCardTarget, setGitCardTarget] = useState<HTMLDivElement | null>(null);
+  const closeGitCard = useCallback(() => { setGitMenuRequest(null); setGitCardSeq(null); }, []);
+  const latestGitReply = [...entries].reverse().find(entry => entry.kind === "message" && entry.message.speaker.kind === "bot" && turnFiles.get(entry.message.seq)?.length);
+  const latestGitSeq = latestGitReply?.kind === "message" ? latestGitReply.message.seq : null;
+  const openGitCard = (seq: number, paths: string[] | null) => {
+    setGitCardSeq(seq);
+    setGitMenuRequest(previous => ({ paths, nonce: (previous?.nonce ?? 0) + 1 }));
+  };
+  const openTurnDiff = (seq: number) => {
+    if (gitMenuRequest && gitCardSeq === seq) { closeGitCard(); return; }
+    const origin = changeFolder(mountHistory, seq, cwd);
+    setGitCardSeq(seq);
+    setGitMenuRequest(previous => ({paths: origin === cwd ? (turnFiles.get(seq) ?? []).map(file => file.path) : [], nonce:(previous?.nonce ?? 0)+1, ...(origin === cwd ? {} : {note:`These changes were made in ${origin.split(/[\\/]/).filter(Boolean).at(-1)}.`})}));
   };
   const [quickSettings, setQuickSettings] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [pendingSettings, setPendingSettings] = useState<Record<string, boolean>>({});
@@ -1163,6 +1181,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       apply: (state) => {
         if (!alive) return;
         const saved = state.snapshot;
+        setMountHistory(state.mounts ?? []);
+        if (state.cwd && state.cwd !== cwd) folderChanged.current?.(state.cwd);
+        closeGitCard();
         recoveredState = state;
         refreshSteps.current();
         messageNumbers.restore(saved.transcript);
@@ -1192,7 +1213,9 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         const restored: Entry[] = saved.transcript.map((message) => ({ kind: "message", message }));
         // A saved summary does not say who wrote it.
         if (saved.compaction) restored.splice(Math.min(saved.compaction.upto, restored.length), 0, { kind: "summary", summary: { by: null, ...saved.compaction } });
-        setEntries(old => [...restored, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load")]);
+        const mounted = state.mounts?.at(-1);
+        const mountNotice: Entry[] = mounted ? [{kind:"notice", notice:{key:noticeKey.current++, text:mounted.note ?? `Now working in ${mounted.to.split(/[\\/]/).filter(Boolean).at(-1)}.`, tone:"info", source:"mount"}}] : [];
+        setEntries(old => [...restored, ...mountNotice, ...old.filter(e => e.kind === "notice" && e.notice.source !== "room-load" && e.notice.source !== "mount")]);
         // Open at "New since you looked" when replies came in after you last looked.
         const seen = seenList(saved.transcript);
         const from = firstUnseen(seen, lastSeenRef.current);
@@ -1248,7 +1271,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       forgetQuestions(pane.id);
       approvals.current?.(pane.id, null);
       // Attach mode only watches: closing the view must never close the owner's room.
-      if (!attach) backend.roomClose(pane.id).catch(() => {});
+      if (!attach && currentPlace.current.cwd === cwd && currentPlace.current.backend === backend) backend.roomClose(pane.id).catch(() => {});
     };
     // The room lives as long as the pane, where the pane runs. A thread that
     // hasn't started can be moved (App imports it there first), so it reopens.
@@ -1699,26 +1722,33 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   const retryIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
   const revertIcon = <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4v3.5h3.5M3.4 7.3A5 5 0 1 1 4.5 11.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
   /** The Retry or Revert waiting on its confirmation. */
-  const [goingBack, setGoingBack] = useState<{ kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[] } | null>(null);
+  const [goingBack, setGoingBack] = useState<{ kind: GoBack; message: Message; plan: RevertPlan; scope: RevertScope; ticked: string[]; place: { backend: Backend; cwd: string } } | null>(null);
+  useEffect(() => { setGoingBack(null); }, [backend, cwd]);
   /** Invalidates generated approval when Retry or Revert starts, before history or files can change. */
   const [goneBack, setGoneBack] = useState(0);
   /** Retry on a bot's reply, Revert on your message: delete from there, put this thread's files back. */
   const goBack = (message: Message) => {
+    if (!ready) return;
     if (busy) return notify("Stop the bots first.", "error");
     const kind: GoBack = message.speaker.kind === "bot" ? "retry" : "revert";
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     if (kind === "retry" && !participants.some((p) => p.id === bot)) return notify(`${names.get(bot ?? "") ?? bot} isn't in this thread any more, so it can't answer again.`, "error");
+    const origin = currentPlace.current;
     void backend.roomRevertPlan(pane.id, message.seq, bot).then((plan) => {
-      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan) });
+      if (currentPlace.current !== origin) return;
+      if (goBackAsks(goBackAlways(kind), plan)) setGoingBack({ kind, message, plan, scope: "both", ticked: initialFiles(plan), place: origin });
       else runGoBack(kind, message, plan, "both", initialFiles(plan));
     }).catch((error) => notify(`Could not ${kind}: ${String(error)}`, "error"));
   };
   const runGoBack = (kind: GoBack, message: Message, plan: RevertPlan, scope: RevertScope, ticked: string[]) => {
+    if (!ready || currentPlace.current.backend !== backend || currentPlace.current.cwd !== cwd) return;
     setGoingBack(null);
     const bot = message.speaker.kind === "bot" ? message.speaker.id : null;
     const request = goBackRequest(kind === "retry" ? "both" : scope, plan, ticked);
     setGoneBack((n) => n + 1);
+    const origin = currentPlace.current;
     void backend.roomRevert(pane.id, message.seq, bot, request.chat, request.files).then((failed) => {
+      if (currentPlace.current !== origin) return;
       if (request.chat) discardAnswerSettingsAfter(answerCurrent.current, message.seq);
       if (request.chat) messageNumbers.truncate(message.seq);
       if (request.chat) {
@@ -1739,6 +1769,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
   };
   const answerGoBack = (always: boolean) => {
     if (!goingBack) return;
+    if (goingBack.place !== currentPlace.current) { setGoingBack(null); return; }
     if (always) saveGoBackAlways(goingBack.kind, true);
     runGoBack(goingBack.kind, goingBack.message, goingBack.plan, goingBack.scope, goingBack.ticked);
   };
@@ -1899,7 +1930,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
         setText(""); return exportAs(command.format);
 
       case "diff":
-        setText(""); setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); return;
+        setText(""); if (latestGitSeq !== null) openGitCard(latestGitSeq, null); else { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); } return;
       case "plan":
         setText(""); void setPlan(!planOn); return;
       case "image": {
@@ -2607,7 +2638,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       startedAt: working[p.id].startedAt,
       heardAt: isCommandLine(p.backend) ? heard.current.get(p.id) ?? working[p.id].startedAt : null,
     }));
-  const status: ThreadStatus = { ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), hasReply: transcriptFacts.hasReply, lastAt: transcriptFacts.lastAt, started };
+  const status: ThreadStatus = { busy: busy || turnQueue.active, ...threadStatusOf(participants, Object.keys(working), Object.keys(asks).filter((id) => asks[id].length > 0)), text: headLine(participants.length, headBots, now), hasReply: transcriptFacts.hasReply, lastAt: transcriptFacts.lastAt, started };
   const statusKey = JSON.stringify(status);
   useEffect(() => { if (!profileMode) onStatus?.(pane.id, status); }, [statusKey]);
   // The title bar's + New agent opens the form here.
@@ -3320,7 +3351,6 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       </ul>}
     {removedNote && <p className="allowed-removed" role="status"><span aria-hidden="true">✓</span>{removedNote}</p>}
   </>;
-  const changedFiles = new Set(changes.map((c) => c.change.path)).size;
   const newArtifacts = unseenArtifacts > 0 && !liveView;
   // Labels hide on a crowded top line, so each button names itself for screen readers.
   const threadCounts = (
@@ -3328,9 +3358,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
       {artifacts.artifacts.length > 0 && <button key={artifactGlow || undefined} className={`ghost small${liveView ? " on" : ""}${artifactGlow ? " artifact-glow" : ""}`} aria-pressed={liveView !== null} aria-label={`Artifacts · ${artifacts.artifacts.length}${newArtifacts ? `, ${unseenArtifacts} new` : ""}`} title="Artifacts" onClick={toggleArtifacts}>
         <ArtifactsIcon /><span className="count-label">Artifacts · </span>{artifacts.artifacts.length}{newArtifacts && <span className="new-dot" aria-hidden="true" />}
       </button>}
-      {changes.length > 0 && <button className="ghost small" aria-label={`Changes · ${changedFiles}`} title="Changes" onClick={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }}>
-        <ChangesIcon /><span className="count-label">Changes · </span>{changedFiles}
-      </button>}
+      {!profileMode && cwd && <GitChangesMenu key={`${pane.id}:${cwd}:${backend.host?.id ?? "local"}`} backend={backend} room={pane.id} cwd={cwd} active={focused} ready={ready} revision={changes.length} request={gitMenuRequest} target={gitCardTarget} canOpen={latestGitSeq !== null} onOpen={() => { if (latestGitSeq !== null) openGitCard(latestGitSeq, null); }} onClose={closeGitCard} onWorktrees={onWorktrees} onChanged={() => { if (showChangesRef.current) loadDiff(); }} onReview={() => { setTurnPaths(null); setFocusPath(null); details?.show("changes"); loadDiff(); }} />}
     </div>
   );
   // The bots sit in their own row under the message box.
@@ -3528,7 +3556,7 @@ export function ChatPane({ voiceSettings, onVoiceSettings, onVoiceFocus, pane, c
                 {(() => {
                   const files = turnFiles.get(entry.message.seq);
                   if (!files?.length) return null;
-                  return <ChangedFilesStrip files={files} onOpenFile={(path) => openTurnDiff(entry.message.seq, path)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />;
+                  return <><ChangedFilesStrip files={files} expanded={Boolean(gitMenuRequest && gitCardSeq === entry.message.seq)} onOpenTurn={() => openTurnDiff(entry.message.seq)} />{gitCardSeq === entry.message.seq && <div className="git-changes-slot" ref={setGitCardTarget} />}</>;
                 })()}
                 {(() => {
                   const seq = entry.message.seq;
@@ -3835,9 +3863,6 @@ function ArtifactsIcon() {
   return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6M9 14l-2 2 2 2m6-4 2 2-2 2" /></svg>;
 }
 
-function ChangesIcon() {
-  return <svg className="count-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 4v8M8 8h8M8 18h8" /></svg>;
-}
 
 function PersonPlus() {
   return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="4" /><path d="M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1M19 8v6M16 11h6" /></svg>;
