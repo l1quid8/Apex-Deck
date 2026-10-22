@@ -32,13 +32,14 @@ function scratchPlist() {
   return { dir, plistPath: path.join(dir, 'LaunchAgents', `${LABEL}.plist`) };
 }
 
-test('the plist runs serve --remote with no stdin tie, stays up, and logs to one file', () => {
+test('the plist runs serve with no --remote and no stdin tie, stays up, and logs to one file', () => {
   const plist = agentPlist({
     bin: '/Applications/Apex Deck.app/Contents/Resources/bin/apex-daemon',
     logFile: '/Users/me/Library/Logs/Apex Deck/apex-daemon.log',
   });
   assert.match(plist, /<key>Label<\/key>\s*<string>dev\.apexdeck\.daemon<\/string>/);
-  assert.match(plist, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/Applications\/Apex Deck\.app\/Contents\/Resources\/bin\/apex-daemon<\/string>\s*<string>serve<\/string>\s*<string>--remote<\/string>\s*<\/array>/);
+  assert.match(plist, /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/Applications\/Apex Deck\.app\/Contents\/Resources\/bin\/apex-daemon<\/string>\s*<string>serve<\/string>\s*<\/array>/);
+  assert.doesNotMatch(plist, /--remote/);
   assert.doesNotMatch(plist, /exit-on-stdin-close/);
   assert.doesNotMatch(plist, /--data-dir/, 'no data folder is named when none is set');
   assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
@@ -48,9 +49,10 @@ test('the plist runs serve --remote with no stdin tie, stays up, and logs to one
   assert.match(plist, /<key>StandardErrorPath<\/key>\s*<string>\/Users\/me\/Library\/Logs\/Apex Deck\/apex-daemon\.log<\/string>/);
 });
 
-test('a data folder is named after --remote, in the same order serve takes it', () => {
+test('a data folder is named after serve, in the same order serve takes it', () => {
   const plist = agentPlist({ bin: '/bin/apex-daemon', dataDir: '/tmp/d', logFile: '/tmp/l.log' });
-  assert.match(plist, /<string>serve<\/string>\s*<string>--remote<\/string>\s*<string>--data-dir<\/string>\s*<string>\/tmp\/d<\/string>/);
+  assert.match(plist, /<string>serve<\/string>\s*<string>--data-dir<\/string>\s*<string>\/tmp\/d<\/string>/);
+  assert.doesNotMatch(plist, /--remote/);
 });
 
 test('every string in the plist is XML-escaped', () => {
@@ -226,11 +228,14 @@ test('agentState reads the pid launchd prints, and none while the agent waits to
   assert.deepEqual(await agentState(UID, fakeMac().run), { loaded: false, pid: null });
 });
 
-test('the agent counts as started only once its own daemon serves with Remote access up', async () => {
-  const mac = fakeMac({ onInstall: (m) => { m.pid = 700; m.serving = true; m.info = { pid: 700, remote: remoteOn }; } });
-  assert.equal(await start(mac), 'agent');
-  assert.equal(mac.installs, 1);
-  assert.equal(mac.removes, 0);
+test('the agent counts as started once its own daemon is serving, phone connections on or off', async () => {
+  const on = fakeMac({ onInstall: (m) => { m.pid = 700; m.serving = true; m.info = { pid: 700, remote: remoteOn }; } });
+  assert.equal(await start(on), 'agent');
+  assert.equal(on.installs, 1);
+  assert.equal(on.removes, 0);
+  const off = fakeMac({ onInstall: (m) => { m.pid = 700; m.serving = true; m.info = { pid: 700, remote: null }; } });
+  assert.equal(await start(off), 'agent');
+  assert.equal(off.removes, 0);
 });
 
 test('a daemon Deck did not start, already on the socket, is attached to and the agent is not started', async () => {
@@ -256,12 +261,6 @@ test('another daemon that takes the socket while the agent starts: the agent is 
 test('a stale daemon.json from an earlier daemon does not count as the agent being ready', async () => {
   const mac = fakeMac({ info: { pid: 12, remote: remoteOn }, onInstall: (m) => { m.pid = 700; } });
   await assert.rejects(start(mac), /didn't start within/);
-  assert.equal(mac.removes, 1);
-});
-
-test('the agent\'s daemon serving without Remote access is not reported as on', async () => {
-  const mac = fakeMac({ onInstall: (m) => { m.pid = 700; m.serving = true; m.info = { pid: 700, remote: null }; } });
-  await assert.rejects(start(mac), /started without Remote access/);
   assert.equal(mac.removes, 1);
 });
 

@@ -121,11 +121,12 @@ async fn serve(paths: HostPaths, socket: PathBuf, options: ServeOptions, _lock: 
     Ok(())
 }
 
-/// With `--remote`, start the iroh endpoint and accept paired devices on it.
-/// What `daemon.json` says about it, or null when off.
+/// Start the iroh endpoint when this boot should have phone connections:
+/// `--remote` forces on, otherwise `remote-settings.json` decides (no file
+/// is off). What `daemon.json` says about it, or null when off.
 #[cfg(feature = "remote")]
 async fn start_remote(daemon: &Arc<Daemon>, data: &Path, options: &ServeOptions) -> Result<serde_json::Value, String> {
-    if !options.remote {
+    if !crate::remote_settings::enabled_at_boot(data, options.remote) {
         return Ok(serde_json::Value::Null);
     }
     let (endpoint, info) = crate::remote::start(data, options.remote_port).await?;
@@ -136,8 +137,8 @@ async fn start_remote(daemon: &Arc<Daemon>, data: &Path, options: &ServeOptions)
 }
 
 #[cfg(not(feature = "remote"))]
-async fn start_remote(_daemon: &Arc<Daemon>, _data: &Path, options: &ServeOptions) -> Result<serde_json::Value, String> {
-    if options.remote {
+async fn start_remote(_daemon: &Arc<Daemon>, data: &Path, options: &ServeOptions) -> Result<serde_json::Value, String> {
+    if options.remote || crate::remote_settings::enabled(data) == Some(true) {
         return Err("this apex-daemon was built without remote access (cargo feature `remote`)".into());
     }
     Ok(serde_json::Value::Null)

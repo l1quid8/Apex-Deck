@@ -19,7 +19,7 @@ import { socketLink, sshLink } from './link.mjs';
 import { createHostLinks } from './hostLinks.mjs';
 import { applyHostUpdate, bindHostIdentity, checkWelcome, probeWelcome, verifiedLink } from './hostIdentity.mjs';
 import { QuitGate } from './quit.mjs';
-import { answers, daemonBinary, dataFolder, localDaemon, remoteAccessSaved, saveRemoteAccess, waitForSocket } from './sidecar.mjs';
+import { answers, daemonBinary, dataFolder, localDaemon, remoteAccessSaved, saveRemoteAccess } from './sidecar.mjs';
 import { agentPlist, agentPlistPath, daemonBuild, installAgent, removeAgent, startAgentDaemon, usesLaunchAgent } from './launchAgent.mjs';
 import { changeRemoteAccess } from './remoteSwitch.mjs';
 import { beginPdfExport, pdfPageSize, pdfRequestAllowed } from './pdfExport.mjs';
@@ -61,13 +61,13 @@ let restarting = null;
 
 /** Settings → Remote access, kept with the app's own settings. */
 const desktopSettingsFile = () => path.join(app.getPath('userData'), 'desktop-settings.json');
-/** Read once the app is ready; the daemon serves `--remote` while it is on. */
+/** Read once the app is ready. Dev builds still pass it as `--remote`. The LaunchAgent does not: the daemon reads its own file. */
 let remoteAccess = false;
 
 /** Whether the daemon can run as a LaunchAgent, which outlives the app (see launchAgent.mjs). */
 const agentMode = usesLaunchAgent({ packaged: app.isPackaged, dataDir });
-/** Whether the LaunchAgent should be the daemon right now: Remote access is on. */
-const agentWanted = () => agentMode && remoteAccess;
+/** On a packaged Mac the LaunchAgent always runs the daemon, phone connections on or off. */
+const agentWanted = () => agentMode;
 /** Where the agent's daemon writes its output: the app's logs folder. */
 const agentLogFile = () => path.join(app.getPath('logs'), 'apex-daemon.log');
 /** The daemon's `daemon.sock`, whichever way it was started. */
@@ -93,14 +93,6 @@ async function startAgent() {
   return { socket, owned: false, agent: true, child: null, alive: () => true, stop: async () => {} };
 }
 
-/** Remove the LaunchAgent, so the daemon stops; wait until it has let go of the data folder. */
-async function stopAgent() {
-  const wasRunning = await removeAgent({ plistPath: agentPlistPath(), uid: process.getuid() });
-  if (wasRunning && !await waitForSocket(await socketFile(), { wanted: false })) {
-    throw new Error("The background apex-daemon didn't stop within 15 seconds.");
-  }
-}
-
 /** A daemon Deck can restart: one it started, or the LaunchAgent (launchctl restarts that one). */
 const restartable = (daemon) => daemon.owned || daemon.agent === true;
 
@@ -120,10 +112,10 @@ function ensureLocal() {
 
 /**
  * Make this Mac's daemon match the Remote access setting, which is already
- * saved and set when this runs. The daemon Deck started is stopped; the
- * LaunchAgent is removed when Remote access is off, and started by
- * ensureLocal when it is on. A daemon Deck found running is left alone: it
- * keeps the flags it was started with. Windows reconnect by themselves.
+ * saved and set when this runs. A child daemon Deck started is stopped and
+ * started again with the flag. The LaunchAgent is left running: phone
+ * connections are the daemon's own setting (Task 1b switches that live).
+ * A daemon Deck found running is left alone. Windows reconnect by themselves.
  */
 async function restartLocal() {
   if (starting) await starting.catch(() => {});
@@ -131,7 +123,6 @@ async function restartLocal() {
     const old = local;
     local = null;
     if (old?.owned && old.alive()) await old.stop();
-    if (agentMode && !remoteAccess) await stopAgent();
   })().finally(() => { restarting = null; });
   await restarting;
   return ensureLocal();
@@ -924,11 +915,7 @@ app.whenReady().then(async () => {
   hosts = state;
   warnings.forEach((warning) => console.warn(`hosts: ${warning}`));
   Menu.setApplicationMenu(menu());
-  // Remote access off but a LaunchAgent left from when it was on: stop it before the app starts its own daemon.
-  if (agentMode && !remoteAccess && fs.existsSync(agentPlistPath())) {
-    await stopAgent().catch((e) => console.warn(`launch agent: ${e.message}`));
-  }
-  // Started now rather than when a window asks, so paired phones can reach this Mac from the start.
+  // The LaunchAgent always runs on a packaged Mac. The daemon reads whether phone connections are on.
   if (agentWanted()) ensureLocal().catch((e) => console.warn(`apex-daemon: ${e.message}`));
   // Each window a step down from the one before, so none hides another.
   const first = createWindow(LOCAL);
