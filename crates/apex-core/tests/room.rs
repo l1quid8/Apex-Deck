@@ -379,6 +379,7 @@ fn activity_and_token_use_are_reported_alongside_the_reply() {
         access: Access::Read,
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     };
     let quiet = bot("quiet", &["hello"]);
@@ -564,6 +565,7 @@ fn asking_room() -> (Room, ParticipantId) {
         access: Access::Ask,
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     };
     let roster: Vec<Arc<dyn Participant>> = vec![Arc::new(AskingBot(config))];
@@ -801,6 +803,7 @@ fn token_totals_add_up_per_bot_survive_a_restart_and_clear_but_not_a_fork() {
         access: Access::Read,
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     };
     let quiet = bot("quiet", &["hello", "again"]);

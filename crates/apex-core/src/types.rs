@@ -111,6 +111,10 @@ pub struct ParticipantConfig {
     /// choices use the defaults in `apex_adapters::media`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaSettings>,
+    /// The voice this bot speaks with on calls (a Kokoro voice id such as
+    /// "bf_emma"). `None` uses the app's default voice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
 }
 
 /// How fast a bot's tool answers. Fast costs more on both Codex and Claude.

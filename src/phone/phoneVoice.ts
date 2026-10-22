@@ -7,7 +7,7 @@ import {
 } from "../voice/controller.ts";
 import { connectServerVoice } from "../voice/serverClient.ts";
 import { openVoiceAudio } from "../voice/audio.ts";
-import { preferenceFor, readVoiceSettings } from "../voice/settings.ts";
+import { preferenceFor, readVoiceSettings, voiceFor } from "../voice/settings.ts";
 import { createThreadVoiceBridge } from "../voice/threadBridge.ts";
 import { machineVoice, type PhoneTouched } from "./machineVoice.ts";
 import type { CallLook } from "../voice/callView.ts";
@@ -34,7 +34,7 @@ export interface PhoneVoiceDeps {
   participants(
     hostId: string,
     roomId: string,
-  ): readonly { id: string; display_name: string; media?: unknown }[];
+  ): readonly { id: string; display_name: string; media?: unknown; voice?: string | null }[];
   onScreen(hostId: string, roomId: string): boolean;
   storage: Pick<Storage, "getItem" | "setItem">;
   keepAwake(on: boolean): void;
@@ -112,6 +112,7 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
         participantId: p.id,
         profileId: p.id,
         name: p.display_name,
+        agentVoice: p.voice,
         aliases: preferenceFor(settingsFor(hostId), hostId, p.id, roomId, p.id)
           .aliases,
       }));
@@ -191,13 +192,14 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
       },
       bridge,
       voice: (s) =>
-        preferenceFor(
+        voiceFor(
           settingsFor(s.hostId),
           s.hostId,
           s.participantId,
           s.roomId,
           s.participantId,
-        ).voice,
+          deps.participants(s.hostId, s.roomId).find((p) => p.id === s.participantId)?.voice,
+        ),
       silence: () => {
         const s = controller.getState().scope;
         return (s ? settingsFor(s.hostId) : settings).silenceMs;

@@ -2813,6 +2813,7 @@ mod tests {
             access,
             effort: None,
             speed: None,
+            voice: None,
             appearance: None,
             media: None,
         }

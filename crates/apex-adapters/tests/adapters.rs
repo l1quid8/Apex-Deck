@@ -19,6 +19,7 @@ fn config(id: &str, backend: Backend) -> ParticipantConfig {
         access: Access::Read,
         effort: None,
         speed: None,
+        voice: None,
         appearance: None, media: None
     }
 }

@@ -21,6 +21,7 @@ fn participant_config_shapes() {
         access: Access::Edits,
         effort: Some("high".into()),
         speed: None,
+        voice: None,
         appearance: None, media: None
     };
     assert_eq!(
@@ -54,6 +55,23 @@ fn participant_config_shapes() {
 
     let scripted = Backend::Scripted { lines: vec!["hi".into()] };
     assert_eq!(to_value(&scripted).unwrap(), json!({ "kind": "scripted", "lines": ["hi"] }));
+}
+
+#[test]
+fn participant_config_keeps_its_voice() {
+    let saved = json!({
+        "id": "null", "display_name": "Null",
+        "backend": { "kind": "agent", "tool": "codex" },
+        "voice": "bf_emma"
+    });
+    let config: ParticipantConfig = serde_json::from_value(saved).unwrap();
+    assert_eq!(config.voice.as_deref(), Some("bf_emma"));
+    assert_eq!(to_value(&config).unwrap()["voice"], json!("bf_emma"));
+    let none: ParticipantConfig = serde_json::from_value(json!({
+        "id": "null", "display_name": "Null", "backend": { "kind": "agent", "tool": "codex" }
+    })).unwrap();
+    assert_eq!(none.voice, None);
+    assert!(to_value(&none).unwrap().get("voice").is_none());
 }
 
 #[test]
