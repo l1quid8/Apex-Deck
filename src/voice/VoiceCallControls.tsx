@@ -201,11 +201,13 @@ const choose = (c: VoiceCandidate, active: boolean) => {
   void (active ? voiceController.switchAgent(c) : voiceController.start(c));
 };
 
-function PickMenu({ list, who, active, onDone }: { list: VoiceCandidate[]; who?: VoiceWho; active: boolean; onDone(): void }) {
+function PickMenu({ list, who, active, onDone, threadQuery }: { list: VoiceCandidate[]; who?: VoiceWho; active: boolean; onDone(): void; threadQuery?: string }) {
+  const choosingThread = threadQuery !== undefined;
   return (
     <>
-      <div className="voice-pop-head">Call who?</div>
-      {pickRows(list, (c) => who?.(c.participantId).kind ?? "").map(({ candidate: c, detail }) => (
+      <div className="voice-pop-head">{choosingThread ? "Which thread?" : "Call who?"}</div>
+      {choosingThread && <p className="voice-pop-note">Heard “{threadQuery}”.</p>}
+      {pickRows(list, (c) => who?.(c.participantId).kind ?? "", choosingThread).map(({ candidate: c, detail }) => (
         <button type="button" role="menuitem" className="voice-pick-row" key={JSON.stringify(c)} title={detail || undefined}
           onClick={() => { onDone(); choose(c, active); }}>
           <Who who={who} id={c.participantId} />
@@ -213,7 +215,7 @@ function PickMenu({ list, who, active, onDone }: { list: VoiceCandidate[]; who?:
           <span>{detail}</span>
         </button>
       ))}
-      <p className="voice-pop-note">{pickNote(list)}</p>
+      <p className="voice-pop-note">{pickNote(list, choosingThread)}</p>
     </>
   );
 }
@@ -421,8 +423,8 @@ export function VoiceCallControls({ disabled = false, ...props }: Props & { disa
         </Popover>
       )}
       {menu && (
-        <Popover anchor={wrap} role="menu" className="voice-pick" label="Call who?" onClose={() => setPicking(false)}>
-          <PickMenu list={menu} who={who} active={active && here} onDone={() => setPicking(false)} />
+        <Popover anchor={wrap} role="menu" className="voice-pick" label={asking && state.threadQuery !== undefined ? "Which thread?" : "Call who?"} onClose={() => setPicking(false)}>
+          <PickMenu list={menu} who={who} active={active && here} onDone={() => setPicking(false)} threadQuery={asking ? state.threadQuery : undefined} />
         </Popover>
       )}
       {here && state.status === "setup" && (

@@ -35,6 +35,7 @@ export interface PhoneVoiceDeps {
     hostId: string,
     roomId: string,
   ): readonly { id: string; display_name: string; media?: unknown; voice?: string | null }[];
+  roomTitle?(hostId: string, roomId: string): string | undefined;
   onScreen(hostId: string, roomId: string): boolean;
   storage: Pick<Storage, "getItem" | "setItem">;
   keepAwake(on: boolean): void;
@@ -109,6 +110,7 @@ export function createPhoneVoice(deps: PhoneVoiceDeps): PhoneVoice {
       .map((p) => ({
         hostId,
         roomId,
+        roomTitle: deps.roomTitle?.(hostId, roomId),
         participantId: p.id,
         profileId: p.id,
         name: p.display_name,

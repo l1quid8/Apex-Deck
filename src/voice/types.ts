@@ -53,6 +53,8 @@ export type VoiceState = {
   error?: string;
   voices: string[];
   candidates?: VoiceCandidate[];
+  /** An unresolved spoken thread name; choices must be confirmed before dispatch. */
+  threadQuery?: string;
 };
 export type BridgeEvent = {
   requestId: string;

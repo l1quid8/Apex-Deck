@@ -4,7 +4,7 @@ import { createPhoneVoice, PHONE_VOICE_KEY } from "../src/phone/phoneVoice.ts";
 import { ParticipantQueues } from "../src/turnQueue.ts";
 import { voicePreferenceKey } from "../src/voice/settings.ts";
 const tick = () => new Promise((r) => setImmediate(r));
-function fixture(storage = new Map()) {
+function fixture(storage = new Map(), options = {}) {
   let event,
     roomEvent,
     screen = true,
@@ -50,6 +50,7 @@ function fixture(storage = new Map()) {
     host: (id) => (id === "h" ? host : null),
     queue: () => q,
     participants: () => [{ id: "null", display_name: "Null" }],
+    roomTitle: options.roomTitle,
     onScreen: () => screen,
     storage: {
       getItem: (k) => storage.get(k) ?? null,
@@ -97,6 +98,18 @@ test("canCall requires eligible host", () => {
   assert.equal(f.voice.canCall("h"), true);
   f.host.canCall = () => false;
   assert.equal(f.voice.canCall("h"), false);
+});
+test("phone voice candidates carry the current title for their host and thread", () => {
+  let title = "Voice calls";
+  const f = fixture(new Map(), {
+    roomTitle: (hostId, roomId) => hostId === "h" && roomId === "r" ? title : undefined,
+  });
+  assert.equal(f.voice.candidates("h", "r")[0].roomTitle, "Voice calls");
+  title = "Voice call fixes";
+  assert.equal(f.voice.candidates("h", "r")[0].roomTitle, "Voice call fixes", "renames are read without recreating voice");
+  assert.equal(f.voice.candidates("h", "other")[0].roomTitle, undefined);
+  assert.equal(f.voice.candidates("other", "r")[0].roomTitle, undefined);
+  assert.equal(fixture().voice.candidates("h", "r")[0].roomTitle, undefined, "existing callers can omit title lookup");
 });
 test("call transcripts target chosen agent; leaving preserves turn and releases awake", async () => {
   const f = fixture();

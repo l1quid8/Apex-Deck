@@ -636,3 +636,116 @@ test("speaker startup failure reaches the sample caller and releases the runtime
   await rejected;
   assert.equal(f.runtimeStops.length, 1);
 });
+
+const caller = { hostId: "h", roomId: "r", participantId: "a", profileId: "a", name: "Null", aliases: [], roomTitle: "Current chat" };
+const remoteCaller = { ...caller, roomId: "s", roomTitle: "Voice calls" };
+async function choosingFixture() {
+  const f = fixture({ candidates: [caller, remoteCaller] });
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_michael"] });
+  let utterance = 0;
+  const transcript = async (text) => {
+    f.event({ type: "speechStart", callId: start.callId, generation: f.sent.at(-1).generation });
+    const generation = f.sent.at(-1).generation;
+    f.event({ type: "transcript", callId: start.callId, generation, utteranceId: `choice-${++utterance}`, text });
+    await new Promise((r) => setImmediate(r));
+  };
+  return { ...f, transcript };
+}
+test("uncertain calls speak a choice and dispatch only after the thread is chosen", async () => {
+  for (const answer of ["yes", "Voice calls", "call Null in Voice calls", "menu"]) {
+    const f = await choosingFixture();
+    await f.transcript("call Null in voise calls, check the build");
+    assert.equal(f.posted.length, 0, answer);
+    assert.equal(f.c.getState().scope.roomId, "r", answer);
+    assert.equal(f.c.getState().threadQuery, "voise calls");
+    assert.deepEqual(f.c.getState().candidates.map((c) => c.roomId), ["s"]);
+    assert.match(f.sent.find((m) => m.type === "speak").text, /Voice calls/);
+    f.playing();
+    f.drained();
+    assert.equal(f.c.getState().status, "needs-attention");
+    if (answer === "menu") await f.c.switchAgent(remoteCaller);
+    else await f.transcript(answer);
+    assert.equal(f.posted.length, 1, answer);
+    assert.equal(f.posted[0].scope.roomId, "s", answer);
+    assert.equal(f.posted[0].text, "check the build", answer);
+    assert.equal(f.c.getState().candidates, undefined);
+    assert.equal(f.c.getState().threadQuery, undefined);
+    await f.c.end();
+  }
+});
+test("unrecognized choice replies stay pending and cancel discards the held message", async () => {
+  const f = await choosingFixture();
+  await f.transcript("call Null in voise calls, check the build");
+  await f.transcript("somewhere else");
+  assert.equal(f.posted.length, 0);
+  assert.equal(f.c.getState().status, "needs-attention");
+  await f.transcript("cancel");
+  assert.equal(f.posted.length, 0);
+  assert.equal(f.c.getState().candidates, undefined);
+  assert.equal(f.c.getState().status, "listening");
+  await f.c.switchAgent(remoteCaller);
+  assert.equal(f.posted.length, 0);
+  await f.c.end();
+});
+test("ending or replacing a choice cannot send its held message later", async () => {
+  for (const action of ["end", "replace", "other agent"]) {
+    const f = await choosingFixture();
+    await f.transcript("call Null in voise calls, old request");
+    if (action === "end") {
+      await f.c.end();
+      await f.c.start(f.scope);
+      await f.c.switchAgent(remoteCaller);
+      assert.equal(f.posted.length, 0);
+    } else if (action === "replace") {
+      await f.transcript("call Null in Voice calls, new request");
+      assert.deepEqual(f.posted.map((t) => t.text), ["new request"]);
+    } else {
+      await f.transcript("call Null in Current chat");
+      assert.equal(f.posted.length, 0);
+    }
+    await f.c.end();
+  }
+});
+
+test("a held request beginning with call is sent as a message after a menu choice", async () => {
+  const f = await choosingFixture();
+  await f.transcript("call Null in voise calls, call the test helper");
+  await f.c.switchAgent(remoteCaller);
+  assert.deepEqual(f.posted.map((t) => [t.scope.roomId, t.text]), [["s", "call the test helper"]]);
+  await f.c.end();
+});
+
+test("a new uncertain call replaces the previous held request", async () => {
+  const f = await choosingFixture();
+  await f.transcript("call Null in voise calls, old request");
+  await f.transcript("call Null in some other missing thread");
+  await f.transcript("Voice calls");
+  assert.equal(f.c.getState().scope.roomId, "s");
+  assert.equal(f.posted.length, 0);
+  await f.c.end();
+});
+test("multiple candidates with the same title never offer yes as a unique confirmation", async () => {
+  const duplicate = { ...remoteCaller, roomId: "t" };
+  const f = fixture({ candidates: [caller, remoteCaller, duplicate] });
+  await f.c.start(f.scope);
+  const start = f.sent.find((m) => m.type === "start");
+  f.event({ type: "ready", callId: start.callId, generation: 0, voices: ["am_michael"] });
+  f.event({ type: "transcript", callId: start.callId, generation: 0, utteranceId: "duplicates", text: "call Null in voise calls" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(f.c.getState().candidates.length, 2);
+  assert.equal(f.posted.length, 0);
+  assert.doesNotMatch(f.sent.find((m) => m.type === "speak").text, /say yes/i);
+  await f.c.end();
+});
+
+test("muting the microphone does not discard a request confirmed by tapping a thread", async () => {
+  const f = await choosingFixture();
+  await f.transcript("call Null in voise calls, check the build");
+  f.c.mute(true);
+  await f.c.switchAgent(remoteCaller);
+  assert.deepEqual(f.posted.map((t) => [t.scope.roomId, t.text]), [["s", "check the build"]]);
+  assert.equal(f.c.getState().muted, true);
+  await f.c.end();
+});
