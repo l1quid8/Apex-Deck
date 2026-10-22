@@ -1,0 +1,43 @@
+{
+  "verifiedAt": "2026-10-22T20:07:48.415691+00:00",
+  "scope": "Browser-local mockup only. No production implementation or provider request.",
+  "method": "CUA browser actions and DOM read-back; existing Node state smoke checks",
+  "creationOrder": [
+    "Name",
+    "AI model: Provider, Model, Reasoning",
+    "Access: Project tools, Browser",
+    "Avatar",
+    "Create"
+  ],
+  "settingsOrder": [
+    "Identity",
+    "AI model",
+    "Access",
+    "Connected context",
+    "Skills & tools",
+    "Avatar",
+    "Save changes"
+  ],
+  "observations": [
+    "Creation and Settings use the documented DOM order.",
+    "Only one Project tools control appears in Settings; old duplicate element absent.",
+    "GPT-4.1 demo selection disables Reasoning with Not supported.",
+    "Created Setup validation in the separate localhost preview origin; main 127.0.0.1 profiles unchanged.",
+    "After Create and reload: OpenAI / GPT-6.1 Sol / High / Full access / Browser Off read back from Settings.",
+    "Generated bundled sample remained a candidate until Apply; candidate did not replace selected pixel preview.",
+    "Applied sample avatar survived Create/reload and Settings Save/reload.",
+    "Pixel fallback retained hex #3366AA after image selection and reload.",
+    "Settings Browser Ask first survived Save and reload.",
+    "New assistant with no assignments displays zero checked project boxes after reload; fixed reset ordering.",
+    "Main preview Tasks sidebar remained open through Settings navigation."
+  ],
+  "stateSmoke": {
+    "command": "node mockups/apex-dot/coordination-state.smoke.cjs",
+    "passed": 11,
+    "failed": 0,
+    "publicationWorktreePassed": 11,
+    "moduleScope": "Added preview-local CommonJS package marker; parent Apex repository is ESM."
+  },
+  "console": "Observed wallet-extension warnings/error from chrome-extension URLs, no mockup error in the inspected sample.",
+  "limits": "Static demo providers/models; image generation always loads a bundled sample. No actual runtime permissions or AI calls tested."
+}

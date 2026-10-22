@@ -1,0 +1,9 @@
+Use case: stylized-concept
+Asset type: sample AI-generated assistant avatar bitmap for an interactive desktop app mockup, designed to remain clear when displayed at 28 x 28 pixels.
+Primary request: one friendly teal pixel-art owl avatar with a genuinely transparent background.
+Subject: a single centered front-facing symmetrical owl, compact head and body, two large readable eyes, small beak and simple ear tufts.
+Style/medium: flat bold coarse pixel geometry with crisp square pixel edges and very few large blocks, inspired by simple identicons; use a logical low-resolution pixel grid. No fine texture or tiny details.
+Composition/framing: square image, centered balanced silhouette, entire owl visible with a small transparent margin. Owl occupies most of the square so it reads at small size.
+Color palette: teal main body, darker teal accents, pale mint eye surrounds and dark pupils; limited flat palette.
+Constraints: true alpha transparency outside owl; two clearly separated eyes; friendly expression; simple silhouette; no text, no letters, no symbols, no watermark, no UI.
+Avoid: decorative environment, circles or background tiles behind owl, gradients, shadows, 3D, antialiased vector curves, photorealism, extra animals.
