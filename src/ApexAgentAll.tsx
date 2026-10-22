@@ -21,6 +21,7 @@ import { findTrigger } from './composerMenu.ts';
 import type { ComposerMenuHandle } from './ComposerTools.tsx';
 import type { Command } from './commands.ts';
 import { parseComposer } from './commands.ts';
+import { assistantComposerDraftFor, useAssistantComposerDraftState } from './assistantComposerDrafts.ts';
 
 export type ApexAgentTaskContext = { id: string; project: string; label: string; send: (text: string) => Promise<void> };
 
@@ -47,9 +48,11 @@ function evidenceList(items: MonitorEvidence[], open?: (item: MonitorEvidence) =
 }
 
 /** One conversation across every watched project. Replies go to the project they name, or the last one discussed. */
-export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand }: {
+export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp, onClose, onHide, onCustomize, clearedAt = 0, onClear, fullScreen = false, onFullScreen, offlineWorkspaceIds = [], onOpenEvidence, onOverview, overviewEntries = [], tasks, taskNodes, filterWorkspaceId = null, onClearFilter, taskContext = null, onClearTaskContext, personal = null, draftKey, onReact, saveAttachment, pickAttachmentFolder, pickFolderUnavailableReason, serversByLane = {}, serverStatusByLane = {}, onCommand }: {
   /** The personal assistant on its durable host, shown as one more lane in this conversation. */
   personal?: PersonalLane | null;
+  /** Session draft owner: durable host+assistant identity. The caller keys this component by the same value. */
+  draftKey?: string;
   onReact?: (workspaceId: string, messageId: string, emoji: MessageReaction, enabled: boolean) => Promise<void>;
   saveAttachment?: (laneId: string, name: string, bytes: Uint8Array) => Promise<string>;
   pickAttachmentFolder?: (laneId: string) => Promise<string | null>;
@@ -106,29 +109,29 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     .filter((item) => inView(item.workspaceId));
   const shownTasks = taskNodes ? (filterWorkspaceId ? taskNodes.filter((item) => item.workspaceId === filterWorkspaceId) : taskNodes).map((item) => item.node) : tasks;
   const filterName = filterWorkspaceId ? names[filterWorkspaceId] ?? 'Project' : '';
-  const [text, setText] = useState('');
-  const [replyQuotes, setReplyQuotes] = useState<(MessageQuote & { laneId: string })[]>([]);
+  const [text, setText] = useAssistantComposerDraftState(draftKey, 'text', '');
+  const [replyQuotes, setReplyQuotes] = useAssistantComposerDraftState<(MessageQuote & { laneId: string })[]>(draftKey, 'replyQuotes', []);
   /** A second Reply stacks instead of replacing; exact duplicates are ignored. The first quote fixes the lane. */
   const addReplyQuote = (quote: MessageQuote & { laneId: string }) => {
     setReplyQuotes((list) => list.some((item) => item.messageId === quote.messageId && item.laneId === quote.laneId && item.text === quote.text) ? list : [...list, quote]);
     setDraftTaskContext(null); onClearTaskContext?.(); setFocus(quote.laneId); setDraftFallback(quote.laneId); requestAnimationFrame(() => composerInput.current?.focus());
   };
-  const [attachmentState, setAttachmentState] = useState<{ paths: string[]; pending: boolean; hasErrors: boolean }>({ paths: [], pending: false, hasErrors: false });
-  const [attachmentLane, setAttachmentLane] = useState<string | null>(null);
-  const [draftTaskContext, setDraftTaskContext] = useState<ApexAgentTaskContext | null | undefined>(undefined);
+  const [attachmentState, setAttachmentState] = useAssistantComposerDraftState<{ paths: string[]; pending: boolean; hasErrors: boolean }>(draftKey, 'attachmentState', { paths: [], pending: false, hasErrors: false });
+  const [attachmentLane, setAttachmentLane] = useAssistantComposerDraftState<string | null>(draftKey, 'attachmentLane', null);
+  const [draftTaskContext, setDraftTaskContext] = useAssistantComposerDraftState<ApexAgentTaskContext | null | undefined>(draftKey, 'draftTaskContext', undefined);
   const selectedTaskContext = draftTaskContext === undefined ? taskContext : draftTaskContext;
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useAssistantComposerDraftState(draftKey, 'busy', false);
   // Task cards whose details and history are expanded.
   const [openTasks, setOpenTasks] = useState<string[]>([]);
-  const [error, setError] = useState('');
-  const [focus, setFocus] = useState<string | null>(null);
+  const [error, setError] = useAssistantComposerDraftState(draftKey, 'error', '');
+  const [focus, setFocus] = useAssistantComposerDraftState<string | null>(draftKey, 'focus', null);
   // The assistant's detail panels open as a sheet over the transcript.
   const [panelOpen, setPanelOpen] = useState<PanelName | null>(null);
   const [calling, setCalling] = useState(false);
   // One conversation, plus a Tasks view. Each project's task components report their rows here by store.
-  const [view, setView] = useState<'chat' | 'tasks' | 'notifications'>('chat');
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [placeFilter, setPlaceFilter] = useState<string | null>(null);
+  const [view, setView] = useAssistantComposerDraftState<'chat' | 'tasks' | 'notifications'>(draftKey, 'view', 'chat');
+  const [selectedKey, setSelectedKey] = useAssistantComposerDraftState<string | null>(draftKey, 'selectedKey', null);
+  const [placeFilter, setPlaceFilter] = useAssistantComposerDraftState<string | null>(draftKey, 'placeFilter', null);
   const [reported, setReported] = useState<Record<string, TaskSummary[]>>({});
   const [noticesSeenThrough, setNoticesSeenThrough] = useState(0);
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -143,9 +146,13 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     input.style.height = `${Math.min(input.scrollHeight, 144)}px`;
   }, [text, view]);
   // Scroll positions are remembered per view; null means the chat has not been left yet.
-  const chatScroll = useRef<number | null>(null);
-  const tasksScroll = useRef(0);
-  const notificationsScroll = useRef(0);
+  const scrollDraft = assistantComposerDraftFor(draftKey);
+  if (scrollDraft && !scrollDraft.fields.has('scroll')) scrollDraft.fields.set('scroll', { chat: null, tasks: 0, notifications: 0 });
+  const savedScroll = scrollDraft?.fields.get('scroll') as { chat: number | null; tasks: number; notifications: number } | undefined;
+  const chatScroll = useRef<number | null>(savedScroll?.chat ?? null);
+  const restoringScroll = useRef(savedScroll?.chat ?? null);
+  const tasksScroll = useRef(savedScroll?.tasks ?? 0);
+  const notificationsScroll = useRef(savedScroll?.notifications ?? 0);
   const stateRef = useRef<{ view: 'chat' | 'tasks' | 'notifications'; selectedKey: string | null }>({ view: 'chat', selectedKey: null });
   stateRef.current = { view, selectedKey };
   const openPanel = (name: PanelName, event?: { currentTarget: EventTarget | null }) => {
@@ -153,7 +160,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     setPanelOpen(name);
   };
   // The project a draft continues is fixed when typing starts, so a background message can't redirect it.
-  const [draftFallback, setDraftFallback] = useState<string | null>(null);
+  const [draftFallback, setDraftFallback] = useAssistantComposerDraftState<string | null>(draftKey, 'draftFallback', null);
   // Clear only hides messages, so the project last discussed is still taken from the full history.
   // While filtering, the filtered project is the default target.
   const lastSpoken = filterWorkspaceId ?? allEntries[allEntries.length - 1]?.workspaceId ?? null;
@@ -176,7 +183,13 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
   const bottom = useRef<HTMLDivElement | null>(null);
   // `busy` only updates on the next render; this blocks a second Enter pressed before then.
   const sending = useRef(false);
-  useEffect(() => { if (stateRef.current.view === 'chat') bottom.current?.scrollIntoView?.({ block: 'end' }); }, [entries.length, findings.length]);
+  useEffect(() => {
+    if (stateRef.current.view !== 'chat') return;
+    if (restoringScroll.current !== null) {
+      if (scroller.current) scroller.current.scrollTop = restoringScroll.current;
+      restoringScroll.current = null;
+    } else bottom.current?.scrollIntoView?.({ block: 'end' });
+  }, [entries.length, findings.length]);
   // Returning to a view puts its list back where it was; a detail always starts at the top.
   useEffect(() => {
     const el = scroller.current;
@@ -246,7 +259,8 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       setText(''); runCommand(parsed.command, commandTarget); return;
     }
     const message = parsed.text.startsWith('//') ? parsed.text.slice(1) : parsed.text;
-    const capturedPaths = composerTools.current?.paths() ?? [];
+    const capturedTools = composerTools.current;
+    const capturedPaths = capturedTools?.paths() ?? [];
     if ((!message && !capturedPaths.length) || (!selectedTaskContext && !target && !globalReply)) return;
     sending.current = true;
     // Empty the box now so anything typed while waiting survives; a failed send restores the message only into an empty box.
@@ -254,7 +268,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     const capturedQuotes = replyQuotes;
     const sendLane = attachmentLane ?? capturedQuotes[0]?.laneId ?? target;
     const withQuote = capturedQuotes.length ? `${formatApexAgentQuote(capturedQuotes)}${message}` : message;
-    const outgoing = composerTools.current?.decorate(withQuote) ?? withQuote;
+    const outgoing = capturedTools?.decorate(withQuote) ?? withQuote;
     setText(''); setDraftFallback(null); setDraftTaskContext(undefined); setFocus(globalReply ? '*' : sendLane);
     void run(async () => {
       try {
@@ -262,7 +276,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
         else if (globalReply || sendLane === '*') await onOverview!(outgoing);
         else if (sendLane === PERSONAL) await personal!.send(outgoing);
         else await onReply(sendLane!, outgoing);
-        composerTools.current?.clear(capturedPaths);
+        capturedTools?.clear(capturedPaths);
         if (capturedQuotes.length) setReplyQuotes((current) => current === capturedQuotes ? [] : current);
       } catch (cause) { setText((current) => { if (current.trim()) return current; setDraftTaskContext(capturedTask); return message; }); throw cause; } finally { sending.current = false; }
     });
@@ -529,7 +543,15 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
     </header>
     {filterWorkspaceId && <div className="apex-agent-filter-bar" role="status"><span>Showing {filterName} only</span><button type="button" onClick={() => onClearFilter?.()}>Show all</button></div>}
     {error && <div className="apex-agent-error" role="alert">{error}</div>}
-    <div className="apex-agent-tabpanel" ref={scroller}><div className="assistant-chat-transcript" aria-live="polite">
+    <div className="apex-agent-tabpanel" ref={scroller} onScroll={(event) => {
+      if (!savedScroll) return;
+      const current = stateRef.current;
+      if (current.view === 'tasks' && current.selectedKey) return;
+      savedScroll[current.view] = event.currentTarget.scrollTop;
+      if (current.view === 'chat') chatScroll.current = event.currentTarget.scrollTop;
+      else if (current.view === 'tasks') tasksScroll.current = event.currentTarget.scrollTop;
+      else notificationsScroll.current = event.currentTarget.scrollTop;
+    }}><div className="assistant-chat-transcript" aria-live="polite">
       {view === 'chat' ? <>
       {entries.map(({ workspaceId, project, message, ...entry }) => {
         const item = 'personal' in entry ? entry.personal as PersonalMessage : null;
@@ -579,7 +601,7 @@ export function ApexAgentAll({ workspaces, monitors, onReply, onMutate, onSetUp,
       {selectedTaskContext && <div className="assistant-composer-heading"><strong>{selectedTaskContext.project} · {selectedTaskContext.label}</strong><button type="button" onClick={() => { setDraftTaskContext(null); setFocus(null); setDraftFallback(null); onClearTaskContext?.(); }}>New message</button></div>}
       <ApexAgentReplyQuote quotes={replyQuotes} onClear={() => setReplyQuotes([])} onRemove={(index) => setReplyQuotes((list) => list.filter((_, i) => i !== index))} />
       <div className="apex-agent-all-compose-box">
-        <ApexAgentComposerTools ref={composerTools} value={text} disabled={busy} onChange={(value) => { setText(value); setCaret(composerInput.current?.selectionStart ?? value.length); }} inputRef={composerInput} menuRef={composerMenu} participants={lanes.map((lane) => ({ id: lane.id, display_name: lane.name, mention: laneHandles.get(lane.id) }))} servers={serversByLane[composerLane] ?? []} serverStatus={serverStatusByLane[composerLane]} includeAll={!!onOverview && !filterWorkspaceId} allMentionDetail="Ask across projects" onTools={composerLane === PERSONAL && assistant ? () => setPanelOpen('connections') : undefined} folderUnavailableReason={pickFolderUnavailableReason} filesUnavailableReason={!saveAttachment ? 'File attachments are unavailable on this destination.' : undefined} trigger={findTrigger(text, caret)}
+        <ApexAgentComposerTools draftKey={draftKey} ref={composerTools} value={text} disabled={busy} onChange={(value) => { setText(value); setCaret(composerInput.current?.selectionStart ?? value.length); }} inputRef={composerInput} menuRef={composerMenu} participants={lanes.map((lane) => ({ id: lane.id, display_name: lane.name, mention: laneHandles.get(lane.id) }))} servers={serversByLane[composerLane] ?? []} serverStatus={serverStatusByLane[composerLane]} includeAll={!!onOverview && !filterWorkspaceId} allMentionDetail="Ask across projects" onTools={composerLane === PERSONAL && assistant ? () => setPanelOpen('connections') : undefined} folderUnavailableReason={pickFolderUnavailableReason} filesUnavailableReason={!saveAttachment ? 'File attachments are unavailable on this destination.' : undefined} trigger={findTrigger(text, caret)}
           saveAttachment={saveAttachment && !selectedTaskContext ? (name, bytes) => {
             if (busy || sending.current) throw new Error('Wait until the current message finishes before adding attachments.');
             const lane = attachmentLane ?? replyQuotes[0]?.laneId ?? target ?? PERSONAL;

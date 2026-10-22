@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { RefObject } from 'react';
 import type { ToolServer } from './types';
 import type { Command } from './commands';
@@ -6,6 +6,7 @@ import { ComposerMenu, type ComposerMenuHandle } from './ComposerTools';
 import { insertAt, type MenuItem, type MenuPerson, type Trigger } from './composerMenu';
 import { attachmentName, isImage, withAttachments } from './attachments';
 import './apex-agent-composer.css';
+import { assistantComposerDraftFor, useAssistantComposerDraftState } from './assistantComposerDrafts.ts';
 
 export type ApexAgentComposerToolsHandle = {
   paths: () => string[];
@@ -20,6 +21,7 @@ type PendingAttachment = { id: string; name: string; file?: File; save?: (name: 
 /** Shared ApexAgent composer controls. The host owns file persistence and
  *  command execution because each lane may have a different machine/destination. */
 export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
+  draftKey?: string;
   value: string;
   onChange: (value: string) => void;
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -44,7 +46,7 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
   disabled?: boolean;
   trigger: Trigger | null;
 }>(({
-  value, onChange, inputRef, menuRef, participants, servers = [], serverStatus, mods = [], planOn = false,
+  draftKey, value, onChange, inputRef, menuRef, participants, servers = [], serverStatus, mods = [], planOn = false,
   onCommand, saveAttachment, pickFolder, onChooseAttachment, onChooseFolder, onTools, onAttachmentState, includeAll = true, allMentionDetail,
   folderUnavailableReason, filesUnavailableReason, disabledCommands, disabled = false, trigger,
 }, ref) => {
@@ -52,9 +54,10 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
   const caret = useRef(0);
   const chooserId = useRef<string | null>(null);
   const chooserSave = useRef(saveAttachment);
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [attachments, setAttachments] = useAssistantComposerDraftState<PendingAttachment[]>(draftKey, 'attachments', []);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
+  const currentAttachments = () => assistantComposerDraftFor(draftKey)?.fields.get('attachments') as PendingAttachment[] | undefined ?? attachmentsRef.current;
   const attachmentStateCallback = useRef(onAttachmentState);
   attachmentStateCallback.current = onAttachmentState;
   useEffect(() => {
@@ -73,14 +76,14 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
     return () => input.removeEventListener('cancel', cancel);
   }, []);
   useImperativeHandle(ref, () => ({
-    paths: () => attachmentsRef.current.flatMap(item => item.path ? [item.path] : []),
-    pending: () => attachmentsRef.current.some(item => item.busy),
-    hasErrors: () => attachmentsRef.current.some(item => !!item.error),
-    decorate: (text) => withAttachments(text, attachmentsRef.current.flatMap(item => item.path ? [item.path] : [])),
+    paths: () => currentAttachments().flatMap(item => item.path ? [item.path] : []),
+    pending: () => currentAttachments().some(item => item.busy),
+    hasErrors: () => currentAttachments().some(item => !!item.error),
+    decorate: (text) => withAttachments(text, currentAttachments().flatMap(item => item.path ? [item.path] : [])),
     clear: (paths) => {
       const selected = paths ? new Set(paths) : null;
-      const kept = attachmentsRef.current.filter(item => selected ? !item.path || !selected.has(item.path) : false);
-      attachmentsRef.current.filter(item => !kept.includes(item)).forEach(item => item.preview && URL.revokeObjectURL(item.preview));
+      const kept = currentAttachments().filter(item => selected ? !item.path || !selected.has(item.path) : false);
+      currentAttachments().filter(item => !kept.includes(item)).forEach(item => item.preview && URL.revokeObjectURL(item.preview));
       attachmentsRef.current = kept;
       setAttachments(kept);
     },
@@ -112,7 +115,7 @@ export const ApexAgentComposerTools = forwardRef<ApexAgentComposerToolsHandle, {
   };
   const attachFolder = async (existingId?: string) => {
     const id = existingId ?? `${Date.now()}-${Math.random()}`;
-    const picker = existingId ? attachmentsRef.current.find(item => item.id === id)?.pickFolder : pickFolder;
+    const picker = existingId ? currentAttachments().find(item => item.id === id)?.pickFolder : pickFolder;
     if (!picker) return;
     setAttachments(previous => existingId
       ? previous.map(item => item.id === id ? { ...item, name: 'Selecting folder…', error: undefined, busy: true } : item)

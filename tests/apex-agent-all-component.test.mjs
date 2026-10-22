@@ -1,3 +1,4 @@
+import { assistantComposerDraftFor, draftHookFor } from './helpers/assistant-draft-hook.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -31,20 +32,20 @@ const ApexAgentReplyQuoteStub = (props) => ({ type: ApexAgentReplyQuoteStub, pro
 const ApexAgentComposerToolsStub = (props) => ({ type: ApexAgentComposerToolsStub, props, children: [] });
 globalThis.requestAnimationFrame ??= callback => callback();
 
-function harness(props) {
-  const states = [];
+function harness(props, { effects = false } = {}) {
+  const states = [], refs = [], queuedEffects = [], effectDeps = [];
   let cursor = 0;
   const hooks = {
     useState(initial) { const i = cursor++; if (!(i in states)) states[i] = initial; return [states[i], value => { states[i] = typeof value === 'function' ? value(states[i]) : value; }]; },
-    useRef(initial) { cursor++; return { current: initial }; },
+    useRef(initial) { const i = cursor++; return effects ? refs[i] ??= { current: initial } : { current: initial }; },
     useMemo(fn) { cursor++; return fn(); },
-    useEffect() { cursor++; },
+    useEffect(fn, deps) { const i = cursor++; if (effects && (!effectDeps[i] || deps.some((v, j) => v !== effectDeps[i][j]))) { queuedEffects.push(fn); effectDeps[i] = deps; } },
     useCallback(fn) { cursor++; return fn; },
   };
-  const component = new Function('React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'withoutLaneMentions', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
+  const component = new Function('assistantComposerDraftFor', 'useAssistantComposerDraftState', 'React', 'Markdown', ...Object.keys(hooks), 'mergeProjectConversations', 'replyTarget', 'laneMentions', 'mentionedLane', 'mentionsAll', 'withoutLaneMentions', 'PersonalPanels', 'PersonalCall', 'TaskViewContext', 'personalTaskGroup', 'personalTaskKey', 'ApexAgentMessageActions', 'ApexAgentReplyQuote', 'ApexAgentComposerTools', 'findTrigger', 'mentionFor', 'parseComposer', 'formatApexAgentQuote', 'messageStateKey', 'retryMessageText', `${compiled}\nreturn ApexAgentAll;`)(assistantComposerDraftFor, draftHookFor(hooks), React, MarkdownStub, ...Object.values(hooks), mergeProjectConversations, replyTarget, laneMentions, mentionedLane, mentionsAll, withoutLaneMentions, PersonalPanelsStub, PersonalCallStub, TaskViewContext, personalTaskGroup, personalTaskKey, ApexAgentMessageActionsStub, ApexAgentReplyQuoteStub, ApexAgentComposerToolsStub, findTrigger, mentionFor, parseComposer, formatApexAgentQuote, messageStateKey, retryMessageText);
   const replies = [], mutations = [];
   const callbacks = { onReply: async (...args) => { replies.push(args); }, onMutate: async (...args) => { mutations.push(args); }, onSetUp() {}, onClose() {} };
-  return { props, replies, mutations, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
+  return { props, replies, mutations, flushEffects() { queuedEffects.splice(0).forEach(fn => fn()); }, render() { cursor = 0; return component({ ...callbacks, ...props }); } };
 }
 
 test('a project name inside an ordinary word does not redirect a reply', () => {
@@ -861,4 +862,79 @@ test('Retry on a cross-project answer uses the overview route', async () => {
   const h = harness({ workspaces: projects, monitors: [], onOverview: async text => calls.push(text), overviewEntries: [{ workspaceId: '*', project: 'All projects', message: message('overview', 'assistant', 10) }] });
   await find(h.render(), node => node.type === ApexAgentMessageActionsStub && node.props.onRetry).props.onRetry();
   assert.equal(calls.length, 1); assert.equal(h.replies.length, 0);
+});
+
+
+test('durable assistant drafts retain text, quote and task destination across A to B to A remounts', () => {
+  const props = { workspaces: projects, monitors: [monitor('mobile', [message('draft-quote', 'assistant', 20)])] };
+  const a = harness({ ...props, draftKey: '["draft-host","a"]' });
+  let tree = a.render();
+  find(tree, node => node.type === ApexAgentMessageActionsStub && node.props.onReply).props.onReply();
+  tree = a.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'A work brief' } });
+  const b = harness({ ...props, draftKey: '["draft-host","b"]' });
+  tree = b.render();
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, '');
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'B work brief' } });
+  const returnedA = harness({ ...props, draftKey: '["draft-host","a"]' });
+  tree = returnedA.render();
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, 'A work brief');
+  assert.equal(find(tree, node => node.type === ApexAgentReplyQuoteStub).props.quotes[0].messageId, 'draft-quote');
+  assert.equal(find(harness({ ...props, draftKey: '["draft-host","b"]' }).render(), node => node.type === 'textarea').props.value, 'B work brief');
+});
+
+test('late failed send restores only the original durable draft after a switch', async () => {
+  let reject;
+  const wait = new Promise((_, fail) => { reject = fail; });
+  const props = { workspaces: projects, monitors: [monitor('mobile', [message('send-owner', 'human', 20)])] };
+  const a = harness({ ...props, draftKey: '["send-host","a"]', onReply: () => wait });
+  let tree = a.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Original A request' } });
+  tree = a.render();
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  const b = harness({ ...props, draftKey: '["send-host","b"]' });
+  tree = b.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'B stays private' } });
+  reject(new Error('A send failed'));
+  await new Promise(resolve => setImmediate(resolve));
+  tree = harness({ ...props, draftKey: '["send-host","a"]' }).render();
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Original A request');
+  assert.match(textOf(tree), /A send failed/);
+  tree = b.render();
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, 'B stays private');
+  assert.doesNotMatch(textOf(tree), /A send failed/);
+});
+
+
+test('assistant transcript position restores across remount without scrolling to the bottom', () => {
+  const props = { draftKey: '["scroll-host","a"]', workspaces: projects, monitors: [monitor('mobile', [message('scroll', 'assistant', 20)])] };
+  const a = harness(props, { effects: true });
+  let tree = a.render();
+  let panel = find(tree, node => node.props.className === 'apex-agent-tabpanel');
+  panel.props.ref.current = { scrollTop: 0 };
+  a.flushEffects();
+  panel.props.onScroll({ currentTarget: { scrollTop: 234 } });
+  const returned = harness(props, { effects: true });
+  tree = returned.render();
+  panel = find(tree, node => node.props.className === 'apex-agent-tabpanel');
+  const dom = { scrollTop: 0 }; panel.props.ref.current = dom;
+  let bottomScrolls = 0;
+  const bottom = find(tree, node => node.type === 'div' && node.props.ref && node.props.ref !== panel.props.ref);
+  bottom.props.ref.current = { scrollIntoView() { bottomScrolls++; } };
+  returned.flushEffects();
+  assert.equal(dom.scrollTop, 234);
+  assert.equal(bottomScrolls, 0);
+});
+
+test('a remounted work brief keeps its original captured task destination', async () => {
+  const sent = [];
+  const props = { draftKey: '["task-host","a"]', workspaces: projects, monitors: [monitor('mobile')], taskContext: { id: 'task-a', project: 'Mobile', label: 'Original task', send: async text => sent.push(text) } };
+  const a = harness(props);
+  let tree = a.render();
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Keep this task brief' } });
+  tree = harness({ ...props, taskContext: null }).render();
+  assert.match(textOf(tree), /Original task/);
+  find(tree, node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(sent, ['Keep this task brief']);
 });
