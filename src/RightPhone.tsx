@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent } from "react";
+import type { ClipboardEvent, KeyboardEvent, PointerEvent } from "react";
 import type { PhoneApi } from "./backend";
 import type { PhoneStatus } from "./types";
-import { POLL_MS, TYPE_FLUSH_MS, clampToPicture, gesture, holderLine, keyAction, toPicture } from "./phoneModel";
+import { POLL_MS, TYPE_FLUSH_MS, TYPE_MAX, clampToPicture, gesture, holderLine, keyAction, pasteText, toPicture } from "./phoneModel";
 
 /** The latest picture of the phone's screen, ready for an <img>. */
 interface Shown { src: string; width: number; height: number }
@@ -147,6 +147,15 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
       }}
       onPointerCancel={forgetPress}
       onLostPointerCapture={forgetPress}
+      onPaste={(event: ClipboardEvent<HTMLImageElement>) => {
+        event.preventDefault();
+        const { pieces, dropped } = pasteText(event.clipboardData.getData("text/plain"));
+        sendTyped();
+        for (const text of pieces) act(() => api.input({ kind: "type", text }));
+        // Said after the typing, so its own success doesn't clear the note.
+        const note = `Left out ${dropped} character${dropped === 1 ? "" : "s"} the phone can't type.`;
+        if (dropped) queue.current = queue.current.then(() => setProblem({ text: note, fromPoll: false }));
+      }}
       onKeyDown={(event: KeyboardEvent<HTMLImageElement>) => {
         const action = keyAction(event);
         if (!action) return;
@@ -154,13 +163,13 @@ export function RightPhone({ phone, visible, initial }: { phone?: PhoneApi; visi
         if ("text" in action) {
           typed.current += action.text;
           if (typeTimer.current !== null) clearTimeout(typeTimer.current);
-          if (typed.current.length >= 500) sendTyped();
+          if (typed.current.length >= TYPE_MAX) sendTyped();
           else typeTimer.current = setTimeout(sendTyped, TYPE_FLUSH_MS);
         } else {
           sendTyped();
           act(() => api.input({ kind: "key", key: action.key }));
         }
       }} /></div>}
-    <p className="right-phone-state">Typing works while the screen is selected. Plain keyboard characters only.</p>
+    <p className="right-phone-state">Typing and pasting work while the screen is selected. Plain keyboard characters only.</p>
   </div>;
 }

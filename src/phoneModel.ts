@@ -101,6 +101,26 @@ export function keyAction(
   return null;
 }
 
+/** The most the phone types in one go. The host refuses more. */
+export const TYPE_MAX = 500;
+
+/**
+ * Pasted text, made typeable: ends trimmed, line breaks and tabs become spaces, other
+ * characters the phone can't type are left out and counted. Cut into pieces the host accepts.
+ */
+export function pasteText(raw: string): { pieces: string[]; dropped: number } {
+  let text = "";
+  let dropped = 0;
+  for (const char of raw.trim().replace(/[\r\n\t]+/g, " ")) {
+    const code = char.charCodeAt(0);
+    if (char.length === 1 && code >= 32 && code <= 126) text += char;
+    else dropped += 1;
+  }
+  const pieces: string[] = [];
+  for (let at = 0; at < text.length; at += TYPE_MAX) pieces.push(text.slice(at, at + TYPE_MAX));
+  return { pieces, dropped };
+}
+
 /** Who has the phone, in plain words. */
 export function holderLine(status: PhoneStatus): string {
   if (!status.on) return status.starting ? "Turning on…" : "Off";
